@@ -1,0 +1,14 @@
+#!/bin/sh
+# mkosi build hook: runs inside the image after packages are installed.
+#
+# Generate SSH host keys at build time so mkosi's socket-activated sshd
+# (ssh@.service, started by ssh.socket for `mkosi ssh`) has keys on first boot.
+# mkosi wires host-key generation to sshd-keygen.target, which Debian's
+# openssh-server provides but Arch's openssh does NOT — so on Arch the keys are
+# never generated and every `mkosi ssh` connection dies with
+# "sshd: no hostkeys available -- exiting". Generating them here is idempotent
+# and harmless on distros that would generate their own.
+set -eu
+# mkosi runs this on the host (with the image at $BUILDROOT); mkosi-chroot runs
+# the command inside the image, where /etc/ssh exists.
+mkosi-chroot ssh-keygen -A

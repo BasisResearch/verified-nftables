@@ -1,0 +1,79 @@
+# Kernel config fragment for the dev VM.
+#
+# Merged on top of `make defconfig` + `make kvm_guest.config` by build.sh, then
+# normalised with `make olddefconfig`. The goal: a kernel that boots under
+# systemd-vmspawn/QEMU with NO initrd and NO out-of-tree drivers — every device
+# needed to reach userspace and the shared filesystem is built in (=y), while
+# CONFIG_MODULES stays on so you can still insmod your own dev modules.
+#
+# If you add a subsystem you want to hack on (e.g. netfilter, a filesystem),
+# add its CONFIG_* here as =y (or =m) and rebuild: `make kernel`.
+
+# --- Loadable module support (so external dev modules can be insmod'd) ---
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+CONFIG_MODULE_FORCE_UNLOAD=y
+# Unsigned modules load freely; no signing infra to wrestle with in a dev VM.
+# CONFIG_MODULE_SIG is not set
+
+# --- virtio transport + the devices vmspawn/QEMU expose ---
+CONFIG_VIRTIO=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_MMIO=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_VIRTIO_BALLOON=y
+CONFIG_VIRTIO_INPUT=y
+CONFIG_SCSI_VIRTIO=y
+
+# --- The shared host<->guest filesystem (mkosi RuntimeTrees uses virtiofs) ---
+CONFIG_FUSE_FS=y
+CONFIG_VIRTIO_FS=y
+# 9p kept as a fallback share transport.
+CONFIG_NET_9P=y
+CONFIG_NET_9P_VIRTIO=y
+CONFIG_9P_FS=y
+
+# --- Root/general filesystems ---
+CONFIG_EXT4_FS=y
+CONFIG_OVERLAY_FS=y
+CONFIG_TMPFS=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+
+# --- vsock: how ssh.sh reaches the guest (sshd over AF_VSOCK) ---
+CONFIG_VSOCKETS=y
+CONFIG_VIRTIO_VSOCKETS=y
+
+# --- Consoles (vmspawn uses hvc0; ttyS0 is the serial fallback) ---
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_HVC_DRIVER=y
+
+# --- System-firmware credential channels (CRITICAL for vmspawn) ---
+# systemd reads injected credentials — timezone/locale/hostname, console
+# autologin, AND the per-boot SSH key vmspawn authorizes — from SMBIOS Type 11
+# OEM strings (/sys/firmware/dmi/entries/, needs DMI_SYSFS) and qemu fw_cfg
+# (/sys/firmware/qemu_fw_cfg/, needs FW_CFG_SYSFS). Without these the guest
+# can't see the credentials: first-boot stops to prompt and vsock SSH fails.
+CONFIG_DMI=y
+CONFIG_DMIID=y
+CONFIG_DMI_SYSFS=y
+CONFIG_FW_CFG_SYSFS=y
+
+# --- systemd needs these ---
+CONFIG_CGROUPS=y
+CONFIG_INOTIFY_USER=y
+CONFIG_SIGNALFD=y
+CONFIG_TIMERFD=y
+CONFIG_EPOLL=y
+CONFIG_NET=y
+CONFIG_INET=y
+CONFIG_UNIX=y
+
+# --- Speed up the build / drop heavy host-tool dependencies ---
+# BTF needs pahole; skip it (no eBPF CO-RE work here).
+# CONFIG_DEBUG_INFO_BTF is not set
+# Don't drag in an external initramfs source.
+CONFIG_INITRAMFS_SOURCE=""

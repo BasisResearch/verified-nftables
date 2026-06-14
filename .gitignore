@@ -1,0 +1,23 @@
+# Out-of-tree module build artifacts
+module/*.ko
+module/*.o
+module/*.mod
+module/*.mod.c
+module/.*.cmd
+module/modules.order
+module/Module.symvers
+module/.module-common.o*
+
+# VM image build outputs (large) + staged kernel/modules
+vm/mkosi.output/
+vm/.mkosi-private/
+vm/mkosi.extra/usr/
+vm/*.journal
+vm/*.log
+
+# mkosi ssh key/cert (secrets, from `mkosi genkey`)
+vm/mkosi.key
+vm/mkosi.crt
+
+# Editor backups
+*~
