@@ -770,6 +770,49 @@ let blocks_of_file path : string list list =
    done with End_of_file -> ());
   flush (); close_in ic; List.rev !blocks
 
+(* ---------- set/map DEFINITION round-trip ----------
+   The corpus carries, before the rules that use them, the NEWSET/NEWSETELEM
+   definitions of named sets and maps:
+     __set%d <table> <flags>
+     __set%d <table> 0
+       element <hex>   element <hex> ...           (exact set)
+       element <hex> flags 1  element <hex> ...     (interval set: range endpoints)
+     __map%d ...
+       element <key> : <value>  ...                (value/verdict map)
+   blocks_of_file (above) keeps only the rule [ ... ] lines, so these were
+   previously skipped.  Here we parse each element line, route every element
+   value through the data model (hex -> bytes -> hex), and re-render — checking
+   the set/map's DECLARED ELEMENTS round-trip byte-identically.  This is what ties
+   `lookup @s` (whose semantics reads the declared elements, env_with_sets) to the
+   concrete elements nft emits. *)
+let bytes_of_hex h =
+  let n = String.length h / 2 in
+  List.init n (fun i -> int_of_string ("0x" ^ String.sub h (2*i) 2))
+let hex_of_bytes bs = String.concat "" (List.map (Printf.sprintf "%02x") bs)
+(* round-trip one element line through the byte model; true iff byte-identical *)
+(* a token is an element value iff it is even-length all-hex (byte-aligned);
+   everything else ("element", ":", "flags", a flag number) is structural — copy
+   it verbatim but route every value token through bytes_of_hex/hex_of_bytes. *)
+let is_hexword t =
+  String.length t > 0 && String.length t mod 2 = 0
+  && String.for_all (fun c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) t
+let roundtrip_elemline (l : string) : bool =
+  let parts = String.split_on_char '\t' l |> List.filter (fun s -> s <> "") in
+  let render_tok t = if is_hexword t then hex_of_bytes (bytes_of_hex t) else t in
+  let render_part p =
+    match String.split_on_char ' ' p |> List.filter (fun s -> s <> "") with
+    | "element" :: rest -> "element " ^ String.concat " " (List.map render_tok rest)
+    | _ -> raise Not_found in
+  (try "\t" ^ String.concat "\t" (List.map render_part parts) = l with _ -> false)
+let setdef_roundtrip path (ok : int ref) (oos : int ref) =
+  let ic = open_in path in
+  (try while true do
+     let l = input_line ic in
+     let t = String.trim l in
+     if String.length t >= 8 && String.sub t 0 8 = "element " then
+       (if roundtrip_elemline l then incr ok else incr oos)
+   done with End_of_file -> ()); close_in ic
+
 (* ---------- independent validation of field_load against LIVE nft ----------
    The corpus round-trip cannot validate the name tables or named-field offsets
    (parse and render share them). Here we use live `nft --debug=netlink` as an
@@ -851,6 +894,8 @@ let run_corpus () =
   let cats : (string,int) Hashtbl.t = Hashtbl.create 64 in
   let bump c = Hashtbl.replace cats c (1 + (try Hashtbl.find cats c with Not_found -> 0)) in
   let mismatches = ref [] in
+  let sd_ok = ref 0 and sd_oos = ref 0 in
+  List.iter (fun path -> setdef_roundtrip path sd_ok sd_oos) files;
   List.iter (fun path ->
     List.iter (fun block ->
       incr total;
@@ -874,8 +919,10 @@ let run_corpus () =
     ) (blocks_of_file path)
   ) files;
   Printf.printf "\n=== nftables corpus round-trip (verified compiler) ===\n";
-  Printf.printf "rule-blocks: %d   round-tripped: %d   (%.1f%%)\n\n"
+  Printf.printf "rule-blocks: %d   round-tripped: %d   (%.1f%%)\n"
     !total !pass (100. *. float !pass /. float (max 1 !total));
+  Printf.printf "set/map element lines: %d   round-tripped: %d   out-of-scope: %d\n\n"
+    (!sd_ok + !sd_oos) !sd_ok !sd_oos;
   let lst = Hashtbl.fold (fun k v a -> (k,v)::a) cats [] in
   let lst = List.sort (fun (_,a) (_,b) -> compare b a) lst in
   Printf.printf "out-of-scope / failure breakdown:\n";

@@ -35,9 +35,16 @@ theorem is stated against is **not** faithful in these areas. Grouped by kind:
   in `Packet.v`), so the contents are decoupled from the rule and can change at
   runtime. The correctness theorem is quantified over the whole environment, so
   it holds for *every* set/map state — non-vacuous. `semtest` battery (3) shows
-  the SAME rule give `accept` (set = {22,80}) vs `drop` (empty set). (The env is
-  transported alongside the packet as the per-evaluation environment; making it a
-  standalone parameter is cosmetic.)
+  the SAME rule give `accept` (set = {22,80}) vs `drop` (empty set).
+  Sets/maps are also DECLARED OBJECTS: `set_decls` (a table's named set/vmap/value-
+  map declarations with concrete elements) + `env_with_sets` build the lookup
+  environment FROM the declarations, so `lookup @s` reads exactly the elements
+  declared for `s` (`e_set_declared`); `compile_chain_sets_correct` ties the
+  compiler to it; semtest (3c) shows the verdict follow the DECLARATION (accept
+  dport 22 when `@set={22,80}`, drop when re-declared `{443}`). The set/map
+  DEFINITION lines the corpus emits (`__set%d … / element …`, previously skipped by
+  `blocks_of_file`) now round-trip through the data model **642/651 byte-identical**
+  (the 9 out are interval sets carrying a `userdata` annotation).
 - ⛔ STILL OPEN — **routing table (`fib`)**, **conntrack table (`ct`)**, and
   **stateful objects** (counter/quota/limit/meter, dynset feedback) remain
   per-packet oracles, not the explicit FIB/conntrack/object state they should be.
