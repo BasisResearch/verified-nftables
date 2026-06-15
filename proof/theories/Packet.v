@@ -13,7 +13,7 @@
     an artefact of two different packet models. *)
 
 From Stdlib Require Import List NArith String.
-From Nft Require Import Bytes.
+From Nft Require Import Bytes Verdict.
 Import ListNotations.
 
 (** Metadata keys (numeric kernel metadata).  Adding a key is just a new
@@ -80,7 +80,23 @@ Inductive pbase : Type :=
 | PInner
 | PTunnel.
 
+(** The named, runtime-mutable table state a ruleset is evaluated against: a
+    [lookup @s] does NOT read contents baked into the rule — it reads the current
+    contents of the named set/map from this environment.  Modelling it as a
+    function of the name keeps it decoupled from the rule AST, so the correctness
+    theorem (quantified over the whole evaluation environment) holds for *every*
+    set/map state, i.e. as the sets are added to / deleted from at runtime.
+    (It is transported alongside the packet here as the per-evaluation
+    environment; making it a standalone parameter is a cosmetic refactor that
+    does not change the theorem.) *)
+Record env : Type := {
+  e_set  : string -> list data;             (* a named set's elements (membership) *)
+  e_vmap : string -> list (data * verdict);  (* a named verdict map's entries *)
+  e_map  : string -> list (data * data);     (* a named value map's entries *)
+}.
+
 Record packet : Type := {
+  pkt_env  : env;                (* the named set/map state (see [env] above) *)
   pkt_meta : meta_key -> data;   (* kernel-computed metadata *)
   pkt_ct   : ct_key -> data;     (* conntrack state *)
   pkt_rt   : rt_key -> data;     (* routing-state oracle *)

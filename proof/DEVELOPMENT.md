@@ -28,12 +28,19 @@ the model against a real corpus rather than hand-written examples.
 The data-plane semantics (`eval_chain` / `run_rule`) that the correctness
 theorem is stated against is **not** faithful in these areas. Grouped by kind:
 
-**A. External named/shared/mutable state collapsed into AST literals or packet
-oracles** (should be threaded, named state — see instructions.org "(b)"):
-- **Named sets/maps**: contents are inlined into the rule (`MConcatSet … elems`,
-  `vm_entries`, `VMap … entries`) and are always empty in the corpus, so "look up
-  `@s`" reads a baked-in empty list, not a runtime-mutable table. *This is the
-  flaw that triggered this audit; the in-progress fix threads an `env`.*
+**A. External named/shared/mutable state** *(named sets/maps: FIXED, 2026-06)*:
+- ✅ **Named sets/maps**: the inlined `elems`/`vm_entries`/`entries` are GONE from
+  the rule AST and the bytecode. A `lookup @s` reads the current contents of the
+  named set/map from the evaluation environment `env` (`e_set`/`e_vmap`/`e_map`,
+  in `Packet.v`), so the contents are decoupled from the rule and can change at
+  runtime. The correctness theorem is quantified over the whole environment, so
+  it holds for *every* set/map state — non-vacuous. `semtest` battery (3) shows
+  the SAME rule give `accept` (set = {22,80}) vs `drop` (empty set). (The env is
+  transported alongside the packet as the per-evaluation environment; making it a
+  standalone parameter is cosmetic.)
+- ⛔ STILL OPEN — **routing table (`fib`)**, **conntrack table (`ct`)**, and
+  **stateful objects** (counter/quota/limit/meter, dynset feedback) remain
+  per-packet oracles, not the explicit FIB/conntrack/object state they should be.
 - **Routing table (`fib`)**: modelled as `pkt_fib : selector -> result -> data`,
   a pure function of the packet. Faithfully `fib` is a lookup against the kernel
   FIB/RIB — system state that changes as routes change. (instructions.org

@@ -242,11 +242,11 @@ let render_instr (i : Bytecode.instr) : string = match i with
       let off = if o > 0 then Printf.sprintf " offset %d" o else "" in
       Printf.sprintf "[ hash reg %d = jhash(reg %d, %d, 0x%x) %% mod %d%s ]"
         (nreg d) (nreg s) len seed m off
-  | Bytecode.ILookup (srcs,name,neg,_) ->
+  | Bytecode.ILookup (srcs,name,neg) ->
       let r = nreg (match srcs with x :: _ -> x | [] -> 1) in
       if neg then Printf.sprintf "[ lookup reg %d set %s 0x1 ]" r name
       else Printf.sprintf "[ lookup reg %d set %s ]" r name
-  | Bytecode.IVmap (srcs,name,_) ->
+  | Bytecode.IVmap (srcs,name) ->
       (* entries live in NEWSET, not the rule bytecode; render from the base reg *)
       let r = nreg (match srcs with x :: _ -> x | [] -> 1) in
       Printf.sprintf "[ lookup reg %d set %s dreg 0 ]" r name
@@ -296,7 +296,7 @@ let render_instr (i : Bytecode.instr) : string = match i with
       Printf.sprintf
         "[ payload write reg %d => %db @ %s header + %d csum_type %d csum_off %d csum_flags 0x%x ]"
         src len (name_of_base b) off ct co cf
-  | Bytecode.ILookupVal (keys,name,dreg,_) ->
+  | Bytecode.ILookupVal (keys,name,dreg) ->
       let r = nreg (match keys with x :: _ -> x | [] -> 1) in
       Printf.sprintf "[ lookup reg %d set %s dreg %d ]" r name dreg
   | Bytecode.ITproxy (family,areg,preg) ->

@@ -1,8 +1,8 @@
 -Q theories Nft
 
 theories/Bytes.v
-theories/Packet.v
 theories/Verdict.v
+theories/Packet.v
 theories/Syntax.v
 theories/Bytecode.v
 theories/Semantics.v

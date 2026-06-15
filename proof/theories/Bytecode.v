@@ -65,23 +65,23 @@ Inductive instr : Type :=
 | IBitShift    (dst src : reg) (shl : bool) (amt : nat) (* dst = src >>/<< amt *)
 | IByteorder   (dst src : reg) (hton : bool) (size len : nat)
 | IJhash       (dst src : reg) (len seed modulus offset : nat)
-| ILookup      (srcs : list reg) (name : string) (neg : bool) (elems : list data)
+| ILookup      (srcs : list reg) (name : string) (neg : bool)
                                           (* set membership over the concatenation
                                              of [srcs] (one reg per concatenated
-                                             field; rendered at [hd srcs]); [elems]
-                                             is the set contents, carried for
-                                             semantics and not rendered (NEWSET) *)
-| IVmap        (srcs : list reg) (name : string) (entries : list (data * verdict))
+                                             field; rendered at [hd srcs]); the set
+                                             contents are looked up by [name] in the
+                                             runtime environment, not inlined here *)
+| IVmap        (srcs : list reg) (name : string)
                                           (* verdict-map lookup (lookup .. dreg 0):
-                                             the rule's verdict, or fall-through *)
+                                             the entries are looked up by [name] *)
 | IImmediateData (dst : reg) (v : data)   (* immediate into a data register *)
 | IPayloadWrite (src : reg) (b : pbase) (off len : nat) (ctype coff cflags : nat)
                                           (* payload mangle (verdict-neutral) *)
 | IMetaSet     (k : meta_key) (src : reg)   (* meta set (verdict-neutral) *)
 | ICtSet       (k : ct_key) (src : reg)     (* ct set (verdict-neutral) *)
-| ILookupVal   (keys : list reg) (name : string) (dreg : reg) (entries : list (data * data))
-                                          (* map lookup (lookup .. dreg N>0):
-                                             loads the mapped value into [dreg] *)
+| ILookupVal   (keys : list reg) (name : string) (dreg : reg)
+                                          (* map lookup (lookup .. dreg N>0): loads
+                                             the value mapped by [name] into [dreg] *)
 | INat         (kind family : string) (amin amax pmin pmax : option reg)
                (flags : nat)   (* terminal NAT / masquerade / redirect *)
 | ILimit       (spec : limit_spec)       (* rate limit (can break the rule) *)

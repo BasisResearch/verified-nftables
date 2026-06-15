@@ -362,10 +362,10 @@ let rule_of_block (lines : string list) : Syntax.rule =
        | _ -> raise (Unsupported "trailing-after-vmap")) in
   let mk_vmap ?(after=[]) ?(nat=None) body fields name =
     mk ~after ~nat ~vmap:(Some { Syntax.vm_fields = fields; vm_keyf = None;
-                     vm_name = name; vm_entries = [] }) body Verdict.Continue in
+                     vm_name = name }) body Verdict.Continue in
   let mk_vmap_t ?(after=[]) ?(nat=None) body f ts name =
     mk ~after ~nat ~vmap:(Some { Syntax.vm_fields = [f]; vm_keyf = Some (f, ts);
-                     vm_name = name; vm_entries = [] }) body Verdict.Continue in
+                     vm_name = name }) body Verdict.Continue in
   let nat_spec_of imms (kind,family,amin,amax,pmin,pmax,flags) : Syntax.nat_spec =
     { Syntax.nat_imms = imms; nat_field = None; nat_map = None; nat_src = None;
       nat_kind = kind; nat_family = family; nat_amin = amin; nat_amax = amax;
@@ -451,7 +451,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                                     (match parse_line l3 with
                                      | PTproxy (fam, ar, pr) ->
                                          if more3 <> [] then raise (Unsupported "trailing-after-tproxy");
-                                         mk_tproxy ~portmap:(Some (((m, o), name), []))
+                                         mk_tproxy ~portmap:(Some ((m, o), name))
                                            body (List.rev imms) (fam, ar, pr)
                                      | _ -> raise (Unsupported "symmap-not-tproxy"))
                                   | [] -> raise (Unsupported "symmap-dangling"))
@@ -542,7 +542,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                                 mk ~nat:(Some { Syntax.nat_imms = []; nat_field = None;
                                                 nat_map = None;
                                                 nat_src = Some (Syntax.VHashMap
-                                                  ([f], len, seed, m, o, name, []));
+                                                  ([f], len, seed, m, o, name));
                                                 nat_kind = k; nat_family = fa; nat_amin = a;
                                                 nat_amax = ax; nat_pmin = pm; nat_pmax = px;
                                                 nat_flags = fl }) body Verdict.Continue
@@ -565,7 +565,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          let (ts, rest') = etrans lr [] more in
                          gather ((field_of k, ts) :: eacc) rest'
                      | PLookup (_, name, neg) ->
-                         go (bm body (Syntax.MConcatSetT (List.rev eacc, neg, name, []))) more
+                         go (bm body (Syntax.MConcatSetT (List.rev eacc, neg, name))) more
                      | PVmap (_, name) ->
                          mk_vmap ~after:(parse_after more) body (nott eacc) name
                      | PDynset (op, name, _, dopt) ->
@@ -614,8 +614,8 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          let elems = List.rev eacc in
                          let vmap_src =
                            if List.exists (fun (_,t) -> t <> []) eacc
-                           then Syntax.VMapT (elems, name, [])
-                           else Syntax.VMap (List.map fst elems, [], name, []) in
+                           then Syntax.VMapT (elems, name)
+                           else Syntax.VMap (List.map fst elems, [], name) in
                          (match more with
                           | l3 :: more3 ->
                             (match parse_line l3 with
@@ -664,8 +664,8 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          go (bm body m) more
                      | PLookup (1, name, neg) ->
                          let m = (match List.rev ts with
-                           | [] -> Syntax.MConcatSet ([f], neg, name, [])
-                           | tl -> Syntax.MSetT (f, tl, neg, name, [])) in
+                           | [] -> Syntax.MConcatSet ([f], neg, name)
+                           | tl -> Syntax.MSetT (f, tl, neg, name)) in
                          go (bm body m) more
                      | PVmap (1, name) ->
                          (* a vmap may be followed by a terminal redirect/masquerade
@@ -691,26 +691,26 @@ let rule_of_block (lines : string list) : Syntax.rule =
                           | l3 :: more3 ->
                             (match parse_line l3 with
                              | PMetaSet (k, 1) ->
-                                 go (bs body (Syntax.SMetaSet (k, Syntax.VMap ([f], List.rev ts, name, [])))) more3
+                                 go (bs body (Syntax.SMetaSet (k, Syntax.VMap ([f], List.rev ts, name)))) more3
                              | PCtSet (k, 1) ->
-                                 go (bs body (Syntax.SCtSet (k, Syntax.VMap ([f], List.rev ts, name, [])))) more3
+                                 go (bs body (Syntax.SCtSet (k, Syntax.VMap ([f], List.rev ts, name)))) more3
                              | PNat (kind,fam,a,ax,pm,px,fl) ->
                                  if more3 <> [] then raise (Unsupported "trailing-after-nat");
                                  mk_nat_map body ([f], List.rev ts, name) (kind,fam,a,ax,pm,px,fl)
                              (* map value feeding a terminal fwd device *)
                              | PFwd (dev,addr,nfp) ->
                                  if more3 <> [] then raise (Unsupported "trailing-after-fwd");
-                                 mk_fwd ~src:(Some (Syntax.VMap ([f], List.rev ts, name, [])))
+                                 mk_fwd ~src:(Some (Syntax.VMap ([f], List.rev ts, name)))
                                    body [] (dev,addr,nfp)
                              (* map value feeding a terminal queue number *)
                              | PQueue (sreg, bypass, fanout) ->
                                  if more3 <> [] then raise (Unsupported "trailing-after-queue");
-                                 mk_queue ~src:(Some (Syntax.VMap ([f], List.rev ts, name, [])))
+                                 mk_queue ~src:(Some (Syntax.VMap ([f], List.rev ts, name)))
                                    body [] (sreg, bypass, fanout)
                              (* map value (in reg 1) feeding a dup device/address *)
                              | PDup (dev, addr) ->
                                  go (bs body (Syntax.SDupSrc
-                                       (Syntax.VMap ([f], List.rev ts, name, []),
+                                       (Syntax.VMap ([f], List.rev ts, name),
                                         [], dev, addr))) more3
                              (* map value + an immediate operand feeding a dup *)
                              | PImmData (r, v) ->
@@ -719,7 +719,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                                     (match parse_line l4 with
                                      | PDup (dev, addr) ->
                                          go (bs body (Syntax.SDupSrc
-                                               (Syntax.VMap ([f], List.rev ts, name, []),
+                                               (Syntax.VMap ([f], List.rev ts, name),
                                                 [(r, v)], dev, addr))) more4
                                      | _ -> raise (Unsupported "map-imm-not-dup"))
                                   | [] -> raise (Unsupported "map-imm-dangling"))

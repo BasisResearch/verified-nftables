@@ -32,31 +32,30 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
   | MMasked f neg mask xor v =>
       eval_cmp (if neg then CNe else CEq) (data_bitops (field_value f p) mask xor) v
   | MCmp f op v => eval_cmp op (field_value f p) v
-  | MConcatSet fields neg _ elems =>
-      (* The lookup key is the concatenation of the field values.  NOTE: the
-         kernel pads each concatenated field up to its 4-byte register slot, so
-         for sub-4-byte fields the real set key has inter-field padding this
-         model omits.  This affects only the runtime membership result when
-         [elems] is populated; the control-plane round-trip never populates
-         [elems] (the set contents live in a separate NEWSET object), so the
-         compiler theorem is unaffected.  Faithful for 4-byte-aligned fields. *)
-      xorb neg (data_mem (List.concat (map (fun f => field_value f p) fields)) elems)
+  | MConcatSet fields neg name =>
+      (* membership of the concatenated key in the *named* set, whose contents are
+         read from the runtime environment [pkt_env p], not inlined in the rule.
+         NOTE: the kernel pads each concatenated field to its 4-byte register
+         slot; this model omits that inter-field padding (faithful for
+         4-byte-aligned fields). *)
+      xorb neg (data_mem (List.concat (map (fun f => field_value f p) fields))
+                         (e_set (pkt_env p) name))
   | MTransform f ts op v =>
       eval_cmp op (apply_transforms ts (field_value f p)) v
-  | MSetT f ts neg _ elems =>
-      xorb neg (data_mem (apply_transforms ts (field_value f p)) elems)
+  | MSetT f ts neg name =>
+      xorb neg (data_mem (apply_transforms ts (field_value f p))
+                         (e_set (pkt_env p) name))
   | MRangeT f ts neg lo hi =>
       eval_range (if neg then CNe else CEq) (apply_transforms ts (field_value f p)) lo hi
   | MLimit spec => pkt_limit p spec
   | MQuota spec => pkt_quota p spec
   | MConnlimit spec => pkt_connlimit p spec
-  | MConcatSetT elems neg _ datas =>
+  | MConcatSetT elems neg name =>
       (* like [MConcatSet] but each element is transformed before concatenation;
-         same 4-byte-slot padding caveat (irrelevant for the round-trip, where
-         [datas] is empty — the set contents live in a separate NEWSET object) *)
+         contents read from the named set in [pkt_env p] *)
       xorb neg (data_mem
         (List.concat (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) elems))
-        datas)
+        (e_set (pkt_env p) name))
   end.
 
 (** A rule applies when all its match conditions hold (empty = matches all).
@@ -103,7 +102,7 @@ Definition outcome (r : rule) (p : packet) : option verdict :=
                  | Some (f, ts) => apply_transforms ts (field_value f p)
                  | None => List.concat (map (fun f => field_value f p) (vm_fields vm))
                  end in
-      match assoc_verdict key (vm_entries vm) with
+      match assoc_verdict key (e_vmap (pkt_env p) (vm_name vm)) with
       | Some v => Some v
       | None   => terminal_outcome r p
       end
@@ -181,12 +180,15 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       run_rule (set_reg rf dst (data_byteorder h sz len (rf src))) rest p
   | IJhash dst src l s m o :: rest =>
       run_rule (set_reg rf dst (data_jhash l s m o (rf src))) rest p
-  | ILookup srcs _ neg elems :: rest =>
-      if xorb neg (data_mem (List.concat (map rf srcs)) elems) then run_rule rf rest p else None
-  | IVmap srcs _ entries :: rest =>
+  | ILookup srcs name neg :: rest =>
+      (* set membership: contents read from the named set in [pkt_env p] *)
+      if xorb neg (data_mem (List.concat (map rf srcs)) (e_set (pkt_env p) name))
+      then run_rule rf rest p else None
+  | IVmap srcs name :: rest =>
       (* a verdict map: a hit terminates with that verdict; a miss falls through
-         to the rest (e.g. a trailing redirect/masquerade), exactly as nft does *)
-      match assoc_verdict (List.concat (map rf srcs)) entries with
+         to the rest (e.g. a trailing redirect/masquerade), exactly as nft does.
+         Entries are read by [name] from [pkt_env p]. *)
+      match assoc_verdict (List.concat (map rf srcs)) (e_vmap (pkt_env p) name) with
       | Some v => Some v
       | None   => run_rule rf rest p
       end
@@ -200,8 +202,9 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | IPayloadWrite _ _ _ _ _ _ _ :: rest => run_rule rf rest p
   | IMetaSet _ _ :: rest => run_rule rf rest p
   | ICtSet _ _ :: rest => run_rule rf rest p
-  | ILookupVal keys _ dreg entries :: rest =>
-      run_rule (set_reg rf dreg (map_lookup_data (List.concat (map rf keys)) entries)) rest p
+  | ILookupVal keys name dreg :: rest =>
+      run_rule (set_reg rf dreg (map_lookup_data (List.concat (map rf keys))
+                                                 (e_map (pkt_env p) name))) rest p
   | INat _ _ _ _ _ _ _ :: _ => Some Accept   (* terminal *)
   | ITproxy _ _ _ :: _ => Some Accept        (* terminal redirect *)
   | IFwd _ _ _ :: _ => Some Accept           (* terminal forward *)

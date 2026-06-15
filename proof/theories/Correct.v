@@ -217,9 +217,9 @@ Proof.
   induction ms as [| m ms IH]; intros tail res p Hc rf.
   - cbn [flat_map app forallb]. apply Hc.
   - destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0 | f op v0
-                  | fields neg nm elems | f ts op v0 | f ts neg nm elems
+                  | fields neg nm | f ts op v0 | f ts neg nm
                   | f ts neg lo hi | spec | qspec | clspec
-                  | celems neg nm datas];
+                  | celems neg nm];
       cbn [flat_map compile_match app].
     + (* MEq *) rewrite compile_load_correct.
       cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond]. unfold eval_cmp.
@@ -249,7 +249,8 @@ Proof.
       rewrite map_fst_field, alloc_regs_fst.
       cbn [forallb eval_matchcond].
       destruct (xorb neg
-                 (data_mem (concat (map (fun f => field_value f p) fields)) elems));
+                 (data_mem (concat (map (fun f => field_value f p) fields))
+                           (e_set (pkt_env p) nm)));
         cbn [andb]; [apply IH; exact Hc | reflexivity].
     + (* MTransform *) rewrite compile_load_correct.
       rewrite <- !app_assoc. cbn [app].
@@ -261,11 +262,12 @@ Proof.
     + (* MSetT: set membership of a transformed value *)
       rewrite compile_load_correct. rewrite <- !app_assoc. cbn [app].
       edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
-                  (ILookup [1] nm neg elems :: (flat_map compile_match ms ++ tail)) p)
+                  (ILookup [1] nm neg :: (flat_map compile_match ms ++ tail)) p)
         as [rf' [H1 H2]].
       rewrite H2. cbn [run_rule concat map]. rewrite app_nil_r, H1, set_reg_same.
       cbn [forallb eval_matchcond].
-      destruct (xorb neg (data_mem (apply_transforms ts (field_value f p)) elems));
+      destruct (xorb neg (data_mem (apply_transforms ts (field_value f p))
+                                   (e_set (pkt_env p) nm)));
         cbn [andb]; [apply IH; exact Hc | reflexivity].
     + (* MRangeT: range of a transformed value *)
       rewrite compile_load_correct. rewrite <- !app_assoc. cbn [app].
@@ -292,13 +294,13 @@ Proof.
     + (* MConcatSetT: transformed multi-register key, distinct registers per element *)
       rewrite <- !app_assoc. cbn [app].
       edestruct (run_load_fields_t celems 0 rf
-                  (ILookup (map snd (alloc_regs 0 (map fst celems))) nm neg datas
+                  (ILookup (map snd (alloc_regs 0 (map fst celems))) nm neg
                    :: (flat_map compile_match ms ++ tail)) p) as [rf' [Hrb [_ Hrun]]].
       rewrite Hrun. cbn [run_rule]. rewrite Hrb.
       cbn [forallb eval_matchcond].
       destruct (xorb neg (data_mem
                  (concat (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) celems))
-                 datas));
+                 (e_set (pkt_env p) nm)));
         cbn [andb]; [apply IH; exact Hc | reflexivity].
 Qed.
 
@@ -333,9 +335,9 @@ Qed.
 Lemma run_vsrc_exists : forall vs rf rest p,
   exists rf', run_rule rf (compile_vsrc vs ++ rest) p = run_rule rf' rest p.
 Proof.
-  destruct vs as [v | f ts | fields vts name entries | hf hl hs hm ho
-                 | osrcs ofinal | telems tname tentries
-                 | hmf hml hms hmm hmo hmname hment]; intros rf rest p.
+  destruct vs as [v | f ts | fields vts name | hf hl hs hm ho
+                 | osrcs ofinal | telems tname
+                 | hmf hml hms hmm hmo hmname]; intros rf rest p.
   - exists (set_reg rf 1 v). reflexivity.
   - edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p)) rest p)
       as [rf' [_ Hr]].
@@ -344,7 +346,7 @@ Proof.
        dreg; all verdict-neutral, so the verdict tail is reached from some rf. *)
     cbn [compile_vsrc]. rewrite <- !app_assoc. rewrite run_load_fields.
     edestruct (run_transforms_prefix vts (write_fields rf (alloc_regs 0 fields) p)
-                ([ILookupVal (map snd (alloc_regs 0 fields)) name 1 entries] ++ rest) p)
+                ([ILookupVal (map snd (alloc_regs 0 fields)) name 1] ++ rest) p)
       as [rf' [_ Hr]].
     rewrite Hr. cbn [app run_rule]. eexists; reflexivity.
   - (* VHash: load the concat source fields, then the verdict-neutral IJhash *)
@@ -365,7 +367,7 @@ Proof.
   - (* VMapT: transformed-concat key loaded, then verdict-neutral ILookupVal *)
     cbn [compile_vsrc]. rewrite <- app_assoc.
     edestruct (run_load_fields_t telems 0 rf
-                ([ILookupVal (map snd (alloc_regs 0 (map fst telems))) tname 1 tentries]
+                ([ILookupVal (map snd (alloc_regs 0 (map fst telems))) tname 1]
                  ++ rest) p) as [rf' [_ [_ Hrun]]].
     rewrite Hrun. cbn [app run_rule]. eexists; reflexivity.
   - (* VHashMap: load source, jhash into reg 1, then verdict-neutral ILookupVal *)
@@ -481,9 +483,9 @@ Qed.
 
 (** A symhash-keyed-map tproxy port: the operand immediates, then the
     verdict-neutral symhash + map lookup, then the terminal [ITproxy] accepts. *)
-Lemma run_portmap_tproxy : forall imms m o name entries fam areg preg tail rf p,
+Lemma run_portmap_tproxy : forall imms m o name fam areg preg tail rf p,
   run_rule rf ((map (fun rv => IImmediateData (fst rv) (snd rv)) imms
-                ++ [ISymhash m o 2; ILookupVal [2] name 2 entries])
+                ++ [ISymhash m o 2; ILookupVal [2] name 2])
                ++ ITproxy fam areg preg :: tail) p = Some Accept.
 Proof.
   induction imms as [| [r v] rest IH]; intros; cbn [map fst snd app run_rule].
@@ -537,12 +539,12 @@ Qed.
 Lemma run_map_nat : forall fields ts name tail rf k fam amin amax pmin pmax fl p,
   run_rule rf
     ((load_fields (alloc_regs 0 fields) ++ compile_transforms ts
-        ++ [ILookupVal (map snd (alloc_regs 0 fields)) name 1 []])
+        ++ [ILookupVal (map snd (alloc_regs 0 fields)) name 1])
      ++ INat k fam amin amax pmin pmax fl :: tail) p = Some Accept.
 Proof.
   intros. rewrite <- !app_assoc. rewrite run_load_fields.
   edestruct (run_transforms_prefix ts (write_fields rf (alloc_regs 0 fields) p)
-              ([ILookupVal (map snd (alloc_regs 0 fields)) name 1 []]
+              ([ILookupVal (map snd (alloc_regs 0 fields)) name 1]
                  ++ INat k fam amin amax pmin pmax fl :: tail) p) as [rf' [_ Hr]].
   rewrite Hr. cbn [app run_rule]. reflexivity.
 Qed.
@@ -615,7 +617,7 @@ Proof.
       * apply run_map_nat.
       * destruct (nat_field n) as [[f ts] |]; [apply run_field_nat | apply run_imms_nat].
   - destruct (r_tproxy r) as [t |].
-    + rewrite <- app_assoc. destruct (tp_portmap t) as [[[[m o] name] entries] |];
+    + rewrite <- app_assoc. destruct (tp_portmap t) as [[[m o] name] |];
         [apply run_portmap_tproxy | apply run_imms_tproxy].
     + destruct (r_fwd r) as [w |].
       * rewrite <- app_assoc. destruct (fwd_src w) as [vs |];
@@ -641,19 +643,20 @@ Proof.
     + (* transformed single-field key *)
       cbn [app]. rewrite compile_load_correct. rewrite <- app_assoc.
       edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
-                  ([IVmap [1] (vm_name vm) (vm_entries vm)]
+                  ([IVmap [1] (vm_name vm)]
                      ++ compile_terminal r ++ flat_map compile_stmt (r_after r)) p)
         as [rf' [Hr1 Hr2]].
       rewrite Hr2. cbn [app run_rule concat map].
       rewrite app_nil_r, Hr1, set_reg_same.
-      destruct (assoc_verdict (apply_transforms ts (field_value f p)) (vm_entries vm));
+      destruct (assoc_verdict (apply_transforms ts (field_value f p))
+                              (e_vmap (pkt_env p) (vm_name vm)));
         [reflexivity | apply run_terminal].
     + (* concat key: IVmap reads the loaded concatenation *)
       rewrite <- app_assoc. rewrite run_load_fields. cbn [app run_rule].
       rewrite map_write_fields by apply alloc_regs_nodup.
       rewrite map_fst_field, alloc_regs_fst.
       destruct (assoc_verdict (concat (map (fun f => field_value f p) (vm_fields vm)))
-                              (vm_entries vm));
+                              (e_vmap (pkt_env p) (vm_name vm)));
         [reflexivity | apply run_terminal].
   - (* no verdict map: just the terminal *)
     cbn [app]. apply run_terminal.

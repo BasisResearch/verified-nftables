@@ -119,24 +119,24 @@ Definition compile_match (m : matchcond) : list instr :=
       [compile_load (field_load f) 1; IBitwise 1 1 mask xor;
        ICmp (if neg then CNe else CEq) 1 v]
   | MCmp f op v => [compile_load (field_load f) 1; ICmp op 1 v]
-  | MConcatSet fields neg name elems =>
+  | MConcatSet fields neg name =>
       load_fields (alloc_regs 0 fields) ++
-      [ILookup (map snd (alloc_regs 0 fields)) name neg elems]
+      [ILookup (map snd (alloc_regs 0 fields)) name neg]
   | MTransform f ts op v =>
       compile_load (field_load f) 1 :: compile_transforms ts ++
       [ICmp op 1 v]
-  | MSetT f ts neg name elems =>
+  | MSetT f ts neg name =>
       compile_load (field_load f) 1 :: compile_transforms ts ++
-      [ILookup [1] name neg elems]
+      [ILookup [1] name neg]
   | MRangeT f ts neg lo hi =>
       compile_load (field_load f) 1 :: compile_transforms ts ++
       [IRange (if neg then CNe else CEq) 1 lo hi]
   | MLimit spec => [ILimit spec]
   | MQuota spec => [IQuota spec]
   | MConnlimit spec => [IConnlimit spec]
-  | MConcatSetT elems neg name datas =>
+  | MConcatSetT elems neg name =>
       load_fields_t 0 elems ++
-      [ILookup (map snd (alloc_regs 0 (map fst elems))) name neg datas]
+      [ILookup (map snd (alloc_regs 0 (map fst elems))) name neg]
   end.
 
 (** A [Continue] (fall-through) rule emits no verdict expression, exactly as
@@ -147,9 +147,9 @@ Definition compile_vsrc (vs : vsrc) : list instr :=
   match vs with
   | VImm v      => [IImmediateData 1 v]
   | VField f ts => compile_load (field_load f) 1 :: compile_transforms ts
-  | VMap fields ts name entries =>
+  | VMap fields ts name =>
       load_fields (alloc_regs 0 fields) ++ compile_transforms ts ++
-      [ILookupVal (map snd (alloc_regs 0 fields)) name 1 entries]
+      [ILookupVal (map snd (alloc_regs 0 fields)) name 1]
   | VHash fields len seed modulus offset =>
       (* nft allocates the jhash output in reg 1 and the concatenated source from
          the next 128-bit register (slot 4); the hash reads it into reg 1 *)
@@ -166,14 +166,14 @@ Definition compile_vsrc (vs : vsrc) : list instr :=
             ++ [IBitwiseOr 1 1 2]) rest ++
           compile_transforms_at 1 final
       end
-  | VMapT elems name entries =>
+  | VMapT elems name =>
       load_fields_t 0 elems ++
-      [ILookupVal (map snd (alloc_regs 0 (map fst elems))) name 1 entries]
-  | VHashMap fields len seed modulus offset name entries =>
+      [ILookupVal (map snd (alloc_regs 0 (map fst elems))) name 1]
+  | VHashMap fields len seed modulus offset name =>
       load_fields (alloc_regs 4 fields) ++
       [IJhash 1 (match map snd (alloc_regs 4 fields) with r :: _ => r | [] => 1 end)
               len seed modulus offset] ++
-      [ILookupVal [1] name 1 entries]
+      [ILookupVal [1] name 1]
   end.
 
 Definition compile_stmt (s : stmt) : list instr :=
@@ -233,10 +233,10 @@ Definition compile_vmap (r : rule) : list instr :=
       match vm_keyf vm with
       | Some (f, ts) =>
           compile_load (field_load f) 1 :: compile_transforms ts ++
-          [IVmap [1] (vm_name vm) (vm_entries vm)]
+          [IVmap [1] (vm_name vm)]
       | None =>
           load_fields (alloc_regs 0 (vm_fields vm)) ++
-          [IVmap (map snd (alloc_regs 0 (vm_fields vm))) (vm_name vm) (vm_entries vm)]
+          [IVmap (map snd (alloc_regs 0 (vm_fields vm))) (vm_name vm)]
       end
   | None => []
   end.
@@ -251,7 +251,7 @@ Definition compile_terminal (r : rule) : list instr :=
                match nat_map n with
                | Some (fields, ts, name) =>
                    load_fields (alloc_regs 0 fields) ++ compile_transforms ts ++
-                   [ILookupVal (map snd (alloc_regs 0 fields)) name 1 []]
+                   [ILookupVal (map snd (alloc_regs 0 fields)) name 1]
                | None => match nat_field n with
                          | Some (f, ts) =>
                              compile_load (field_load f) 1 :: compile_transforms ts
@@ -264,9 +264,9 @@ Definition compile_terminal (r : rule) : list instr :=
   | None =>
   match r_tproxy r with
   | Some t => (match tp_portmap t with
-               | Some (m, o, name, entries) =>
+               | Some (m, o, name) =>
                    map (fun rv => IImmediateData (fst rv) (snd rv)) (tp_imms t)
-                   ++ [ISymhash m o 2; ILookupVal [2] name 2 entries]
+                   ++ [ISymhash m o 2; ILookupVal [2] name 2]
                | None => map (fun rv => IImmediateData (fst rv) (snd rv)) (tp_imms t)
                end) ++
               [ITproxy (tp_family t) (tp_areg t) (tp_preg t)]

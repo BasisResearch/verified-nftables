@@ -166,10 +166,11 @@ Inductive matchcond : Type :=
 | MRange  (f : field) (neg : bool) (lo hi : data)
 | MMasked (f : field) (neg : bool) (mask xor v : data)   (* (field & mask) ^ xor cmp v *)
 | MCmp    (f : field) (op : cmpop) (v : data)            (* ordered comparison field <op> v *)
-| MConcatSet (fields : list field) (neg : bool) (name : string) (elems : list data)
-                            (* (concatenation of [fields]) [!]in a set/map *)
+| MConcatSet (fields : list field) (neg : bool) (name : string)
+                            (* (concatenation of [fields]) [!]in the named set/map
+                               (contents looked up at runtime, not inlined) *)
 | MTransform (f : field) (ts : list transform) (op : cmpop) (v : data) (* cmp after transforms *)
-| MSetT (f : field) (ts : list transform) (neg : bool) (name : string) (elems : list data)
+| MSetT (f : field) (ts : list transform) (neg : bool) (name : string)
                             (* set membership of a transformed field value *)
 | MRangeT (f : field) (ts : list transform) (neg : bool) (lo hi : data)
                             (* range test of a transformed field value *)
@@ -177,7 +178,7 @@ Inductive matchcond : Type :=
 | MQuota  (spec : quota_spec)   (* stateful byte quota; passes per the packet oracle *)
 | MConnlimit (spec : connlimit_spec)   (* stateful connection limit; passes per oracle *)
 | MConcatSetT (elems : list (field * list transform)) (neg : bool)
-              (name : string) (datas : list data).
+              (name : string).
                             (* (concatenation of per-element-transformed fields)
                                [!]in a set/map; each element is loaded into its own
                                register slot and transformed in place *)
@@ -190,7 +191,6 @@ Inductive vsrc : Type :=
 | VImm   (v : data)
 | VField (f : field) (ts : list transform)
 | VMap   (fields : list field) (ts : list transform) (name : string)
-         (entries : list (data * data))
 | VHash  (fields : list field) (len seed modulus offset : nat)
                             (* jhash of the concatenation of [fields] (the hashed
                                value is a verdict-neutral set/mangle operand) *)
@@ -200,12 +200,11 @@ Inductive vsrc : Type :=
                                one into reg 2 then [bitwise reg1 = reg1 | reg2],
                                then [final] is applied in place on reg 1 *)
 | VMapT  (elems : list (field * list transform)) (name : string)
-         (entries : list (data * data))
                             (* value looked up by a concatenation key whose
                                elements are each transformed in place (cf.
                                [MConcatSetT]); the looked-up value lands in reg 1 *)
 | VHashMap (fields : list field) (len seed modulus offset : nat)
-           (name : string) (entries : list (data * data)).
+           (name : string).
                             (* jhash of [fields] (into reg 1) used as the key of a
                                map lookup whose value lands in reg 1 — e.g.
                                `dnat to jhash ip saddr mod N map {...}` *)
@@ -261,8 +260,7 @@ Record vmap_spec : Type := {
                             (* if [Some (f, ts)] the lookup key is the single
                                transformed field value [apply_transforms ts f]
                                instead of the concatenation of [vm_fields] *)
-  vm_name    : string;
-  vm_entries : list (data * verdict);
+  vm_name    : string;      (* the verdict map's entries are looked up by name *)
 }.
 
 (** A NAT statement (snat/dnat).  The address/port operands are loaded into data
@@ -297,10 +295,11 @@ Record nat_spec : Type := {
     single-packet verdict model (which sees a terminal Accept). *)
 Record tproxy_spec : Type := {
   tp_imms   : list (nat * data);   (* immediate operand loads (reg, value) *)
-  tp_portmap : option (nat * nat * string * list (data * data));
+  tp_portmap : option (nat * nat * string);
                             (* the target port computed by a symhash (modulus,
                                offset) keyed map lookup into register 2 — e.g.
-                               `tproxy to :symhash mod N map {...}` *)
+                               `tproxy to :symhash mod N map {...}`; the map's
+                               entries are looked up by name at runtime *)
   tp_family : string;              (* "ip" / "ip6" / "" *)
   tp_areg   : option nat;          (* target-address register, if any *)
   tp_preg   : option nat;          (* target-port register, if any *)

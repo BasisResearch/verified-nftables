@@ -16,17 +16,27 @@ let meq f v : Syntax.matchcond = Syntax.MEq (f, v)
 let mneq f v : Syntax.matchcond = Syntax.MNeq (f, v)
 let mrange f lo hi : Syntax.matchcond = Syntax.MRange (f, false, lo, hi)
 let mcmp f op v : Syntax.matchcond = Syntax.MCmp (f, op, v)
-let mset f elems : Syntax.matchcond = Syntax.MConcatSet ([f], false, "set", elems)
+(* a single-field set-membership match against the NAMED set "set" (contents come
+   from the runtime environment, not the rule) *)
+let mset f : Syntax.matchcond = Syntax.MConcatSet ([f], false, "set")
 let rule ms v : Syntax.rule =
   { Syntax.r_body = Stdlib.List.map (fun m -> Syntax.BMatch m) ms;
     r_verdict = v; r_vmap = None; r_nat = None; r_tproxy = None; r_fwd = None;
     r_queue = None; r_after = [] }
 let chain pol rs : Syntax.chain = { Syntax.c_policy = pol; c_rules = rs }
 
+(* ---- the runtime environment (named set/map state the lookups read) ---- *)
+let empty_env : Packet.env =
+  { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []) }
+(* an environment where the set/vmap [name] has the given contents *)
+let env_set name elems : Packet.env = { empty_env with Packet.e_set = (fun n -> if n = name then elems else []) }
+let env_vmap name ents : Packet.env = { empty_env with Packet.e_vmap = (fun n -> if n = name then ents else []) }
+
 (* ---- concrete packet construction ---- *)
 let dummy0 _ = []
-let mk_pkt ?(l4proto = [6]) ?(nh = []) ?(th = []) () : Packet.packet =
-  { Packet.pkt_meta = (fun k -> match k with Packet.MKl4proto -> l4proto | _ -> []);
+let mk_pkt ?(env = empty_env) ?(l4proto = [6]) ?(nh = []) ?(th = []) () : Packet.packet =
+  { Packet.pkt_env = env;
+    pkt_meta = (fun k -> match k with Packet.MKl4proto -> l4proto | _ -> []);
     pkt_ct = dummy0; pkt_rt = dummy0; pkt_sock = dummy0;
     pkt_eh = (fun _ _ _ _ _ -> []);
     pkt_lh = []; pkt_nh = nh; pkt_th = th; pkt_ih = []; pkt_tnl = [];
@@ -68,15 +78,15 @@ let run_battery (fails : int ref) (title : string) (c : Syntax.chain) pkts =
     pkts;
   Printf.printf "\n"
 
-(* a single-field verdict-map rule (tcp), with REAL entries — the corpus never
-   populates a map (set contents live in a separate object), so this exercises a
-   semantics path the round-trip cannot.  [nat] adds a terminal that applies on a
-   map miss (the vmap-then-terminal feature). *)
-let vmap_rule ?(nat = None) f entries : Syntax.rule =
+(* a single-field verdict-map rule (tcp) against the named map "portmap" — the
+   entries live in the runtime environment (env_vmap), NOT the rule, exactly as
+   the user observed they should.  [nat] adds a terminal that applies on a map
+   miss (the vmap-then-terminal feature). *)
+let vmap_rule ?(nat = None) f : Syntax.rule =
   { Syntax.r_body = [ Syntax.BMatch (meq Syntax.FMetaL4proto [6]) ];
     r_verdict = Verdict.Continue;
     r_vmap = Some { Syntax.vm_fields = [f]; vm_keyf = Some (f, []);
-                    vm_name = "portmap"; vm_entries = entries };
+                    vm_name = "portmap" };
     r_nat = nat; r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] }
 
 let redirect : Syntax.nat_spec option =
@@ -110,25 +120,25 @@ let () =
   (* (2) a verdict map with REAL entries, then a terminal redirect on a miss;
      tests the vmap lookup (hit -> mapped verdict) and the vmap-then-terminal
      fall-through (miss -> redirect = Accept) that the corpus cannot exercise. *)
+  let vm_env = env_vmap "portmap" [ ([0; 22], Verdict.Drop); ([0; 80], Verdict.Accept) ] in
   run_battery fails
-    "verdict map { 22:drop, 80:accept } then redirect (vmap lookup + fall-through)"
-    (chain Verdict.Continue
-       [ vmap_rule ~nat:redirect Syntax.FThDport
-           [ ([0; 22], Verdict.Drop); ([0; 80], Verdict.Accept) ] ])
-    [ "tcp dport 22 (hit drop)",  mk_pkt ~th:(th ~dport:[0; 22]) ();
-      "tcp dport 80 (hit accept)", mk_pkt ~th:(th ~dport:[0; 80]) ();
-      "tcp dport 443 (miss->redir)", mk_pkt ~th:(th ~dport:[1; 187]) ();
-      "udp dport 22 (no match)",  mk_pkt ~l4proto:[17] ~th:(th ~dport:[0; 22]) () ];
-  (* (3) anonymous set membership `tcp dport { 22, 80 }` with REAL elements —
-     again a data_mem lookup the corpus never populates. *)
+    "verdict map portmap={22:drop,80:accept} (entries in the ENV) then redirect"
+    (chain Verdict.Continue [ vmap_rule ~nat:redirect Syntax.FThDport ])
+    [ "tcp dport 22 (hit drop)",  mk_pkt ~env:vm_env ~th:(th ~dport:[0; 22]) ();
+      "tcp dport 80 (hit accept)", mk_pkt ~env:vm_env ~th:(th ~dport:[0; 80]) ();
+      "tcp dport 443 (miss->redir)", mk_pkt ~env:vm_env ~th:(th ~dport:[1; 187]) ();
+      "udp dport 22 (no match)",  mk_pkt ~env:vm_env ~l4proto:[17] ~th:(th ~dport:[0; 22]) () ];
+  (* (3) set membership `tcp dport @set` where @set = {22,80} lives in the ENV —
+     the contents are looked up by name at runtime, and the SAME rule sees a
+     different result if the set changes (env_set with different elements). *)
+  let set_env = env_set "set" [ [0; 22]; [0; 80] ] in
   run_battery fails
-    "set membership tcp dport { 22, 80 } accept (data_mem with real elements)"
-    (chain Verdict.Drop
-       [ rule [ l4_tcp; mset Syntax.FThDport [ [0; 22]; [0; 80] ] ] Verdict.Accept ])
-    [ "tcp dport 22 (in set)",  mk_pkt ~th:(th ~dport:[0; 22]) ();
-      "tcp dport 80 (in set)",  mk_pkt ~th:(th ~dport:[0; 80]) ();
-      "tcp dport 443 (not in)", mk_pkt ~th:(th ~dport:[1; 187]) ();
-      "udp dport 22 (no l4)",   mk_pkt ~l4proto:[17] ~th:(th ~dport:[0; 22]) () ];
+    "set membership tcp dport @set (elements {22,80} in the ENV, not the rule)"
+    (chain Verdict.Drop [ rule [ l4_tcp; mset Syntax.FThDport ] Verdict.Accept ])
+    [ "tcp dport 22 (in set)",  mk_pkt ~env:set_env ~th:(th ~dport:[0; 22]) ();
+      "tcp dport 80 (in set)",  mk_pkt ~env:set_env ~th:(th ~dport:[0; 80]) ();
+      "tcp dport 443 (not in)", mk_pkt ~env:set_env ~th:(th ~dport:[1; 187]) ();
+      "tcp dport 22 but EMPTY set (drop)", mk_pkt ~th:(th ~dport:[0; 22]) () ];
   (* (4) control flow: a base chain that JUMPs to a user chain "tcp_in" — tests
      compile_table_correct (jump -> callee accept, or fall-through -> resume base
      -> policy drop). The single-base-chain corpus cannot exercise this. *)
