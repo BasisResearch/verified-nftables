@@ -50,31 +50,40 @@ Proof.
   induction ms as [| m ms IH]; intros tail res p Hc rf.
   - cbn [flat_map app forallb]. apply Hc.
   - destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0 | f neg nm elems
-                  | f ts neg v0];
-      cbn [flat_map compile_match app]; rewrite compile_load_correct.
-    + cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond]. unfold eval_cmp.
+                  | f ts neg v0 | spec];
+      cbn [flat_map compile_match app].
+    + (* MEq *) rewrite compile_load_correct.
+      cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond]. unfold eval_cmp.
       destruct (data_eqb (field_value f p) v0); cbn [andb negb];
         [apply IH; exact Hc | reflexivity].
-    + cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond]. unfold eval_cmp.
+    + (* MNeq *) rewrite compile_load_correct.
+      cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond]. unfold eval_cmp.
       destruct (data_eqb (field_value f p) v0); cbn [andb negb];
         [reflexivity | apply IH; exact Hc].
-    + cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond].
+    + (* MRange *) rewrite compile_load_correct.
+      cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond].
       destruct (eval_range (if neg then CNe else CEq) (field_value f p) lo hi);
         cbn [andb]; [apply IH; exact Hc | reflexivity].
-    + cbn [run_rule]. rewrite !set_reg_same. cbn [forallb eval_matchcond].
+    + (* MMasked *) rewrite compile_load_correct.
+      cbn [run_rule]. rewrite !set_reg_same. cbn [forallb eval_matchcond].
       destruct (eval_cmp (if neg then CNe else CEq)
                  (data_bitops (field_value f p) mask xor) v0);
         cbn [andb]; [apply IH; exact Hc | reflexivity].
-    + cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond].
+    + (* MSet *) rewrite compile_load_correct.
+      cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond].
       destruct (xorb neg (data_mem (field_value f p) elems));
         cbn [andb]; [apply IH; exact Hc | reflexivity].
-    + (* MTransform *)
+    + (* MTransform *) rewrite compile_load_correct.
       rewrite <- !app_assoc. cbn [app].
       edestruct run_transforms_cmp as [rf' Hr]. rewrite Hr. rewrite set_reg_same.
       cbn [forallb eval_matchcond].
       destruct (eval_cmp (if neg then CNe else CEq)
                  (apply_transforms ts (field_value f p)) v0);
         cbn [andb]; [apply IH; exact Hc | reflexivity].
+    + (* MLimit: no load, a stateful break *)
+      cbn [run_rule forallb eval_matchcond].
+      destruct (pkt_limit p spec); cbn [andb];
+        [apply IH; exact Hc | reflexivity].
 Qed.
 
 (** Verdict-neutral statements pass through unchanged. *)

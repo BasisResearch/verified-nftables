@@ -28,6 +28,9 @@ Proof.
     (apply Nat.eq_dec || apply Bool.bool_dec || apply (list_eq_dec Nat.eq_dec)).
 Defined.
 
+Definition limit_spec_eq_dec (a b : limit_spec) : {a = b} + {a <> b}.
+Proof. decide equality; (apply Nat.eq_dec || apply Bool.bool_dec). Defined.
+
 Definition matchcond_eq_dec (a b : matchcond) : {a = b} + {a <> b}.
 Proof.
   decide equality;
@@ -36,7 +39,8 @@ Proof.
     try (apply list_eq_dec; apply transform_eq_dec);
     try apply field_eq_dec;
     try apply Bool.bool_dec;
-    try apply string_dec.
+    try apply string_dec;
+    try apply limit_spec_eq_dec.
 Defined.
 
 (** ** Optimization 1: dead-rule elimination. *)

@@ -136,6 +136,12 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.ILookup (s,name,neg,_) ->
       if neg then Printf.sprintf "[ lookup reg %d set %s 0x1 ]" s name
       else Printf.sprintf "[ lookup reg %d set %s ]" s name
+  | Bytecode.ILimit s ->
+      let u = (match s.Packet.ls_unit with
+               | 0->"second" | 1->"minute" | 2->"hour" | 3->"day" | _->"week") in
+      Printf.sprintf "[ limit rate %d/%s burst %d type %s flags 0x%x ]"
+        s.Packet.ls_rate u s.Packet.ls_burst
+        (if s.Packet.ls_bytes then "bytes" else "packets") s.Packet.ls_flags
   | Bytecode.ICounter (p,b) -> Printf.sprintf "[ counter pkts %d bytes %d ]" p b
   | Bytecode.INotrack -> "[ notrack ]"
   | Bytecode.ILog lv ->
@@ -177,6 +183,7 @@ type pinst =
   | PLookup  of int * string * bool              (* src reg, set name, inverted *)
   | PCounter of int * int
   | PNotrack
+  | PLimit   of Packet.limit_spec
   | PLog     of int option
   | PImm     of Verdict.verdict
 
@@ -251,6 +258,14 @@ let parse_line line : pinst =
        | []         -> raise (Unsupported "verdict:empty"))
   | ["counter"; "pkts"; p; "bytes"; b] -> PCounter (int_of_string p, int_of_string b)
   | ["notrack"] -> PNotrack
+  | ["limit"; "rate"; ru; "burst"; b; "type"; t; "flags"; fl] ->
+      let (r,u) = (match String.split_on_char '/' ru with
+        | [a;b] -> (int_of_string a, b) | _ -> raise (Unsupported "limit:rate")) in
+      let unit_code = (match u with
+        | "second"->0 | "minute"->1 | "hour"->2 | "day"->3 | "week"->4
+        | _ -> raise (Unsupported ("limit:unit:"^u))) in
+      PLimit { Packet.ls_rate = r; ls_unit = unit_code; ls_burst = int_of_string b;
+               ls_bytes = (t = "bytes"); ls_flags = int_of_string fl }
   | "log"::rest ->
       (match rest with
        | [] -> PLog None
@@ -285,6 +300,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
        | PCounter (p,b) -> go matches (Syntax.SCounter (p,b) :: stmts) rest
        | PNotrack -> go matches (Syntax.SNotrack :: stmts) rest
        | PLog l -> go matches (Syntax.SLog l :: stmts) rest
+       | PLimit spec ->
+           if stmts <> [] then raise (Unsupported "limit-after-stmt");
+           go (Syntax.MLimit spec :: matches) stmts rest
        | PLoad (key, lreg) ->
            if stmts <> [] then raise (Unsupported "load-after-stmt");
            if lreg <> 1 then raise (Unsupported "reg!=1");

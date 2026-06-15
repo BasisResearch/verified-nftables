@@ -42,6 +42,17 @@ skeptic call this a toy? If yes, keep going.
   optional, and must run over a real external corpus (see Key steps). Report
   concrete coverage every time you assess progress. A handful of hand-written
   rules is not acceptable evidence that the spec is correct or has parity.
+- Faithfulness of the specification takes priority over coverage speed. Always
+  choose the most faithful representation of the source's semantics, even when a
+  generic or opaque shortcut would cover more cases faster:
+  - Model each feature with its real structure (named fields, real operations),
+    never a single opaque catch-all that merely reproduces bytes without meaning.
+  - For stateful features (rate limits, quotas, stateful sets, connection
+    tracking decisions) that a pure input->output semantics cannot capture,
+    model the external state *explicitly as an oracle input* (e.g. extend the
+    input with "did this packet pass the limiter") rather than approximating
+    them as no-ops. A knowingly-wrong semantics in a verified artifact is worse
+    than an unsupported feature.
 - Always search for existing tools before inventing your own
 - Avoid reimplementing a non-trivial amount of logic in unverified code when there's an option to reuse existing unverified code in the upstream implementation. Our own unverified code should be considered less trustworthy than upstream's unverified but battle-tested code.
 - It is okay to temporarily branch out and run small experimentations before re-integrating into the main branch.

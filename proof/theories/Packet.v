@@ -31,6 +31,12 @@ Inductive ct_key : Type :=
 Inductive exthdr_proto : Type :=
 | EPipv6 | EPtcpopt.
 
+(** A rate-limit configuration (rate per [ls_unit]: 0=second 1=minute 2=hour
+    3=day 4=week; [ls_bytes] = byte-rate vs packet-rate). *)
+Record limit_spec : Type := {
+  ls_rate : nat; ls_unit : nat; ls_burst : nat; ls_bytes : bool; ls_flags : nat
+}.
+
 (** Payload bases: which header a [payload load] reads from. *)
 Inductive pbase : Type :=
 | PLink
@@ -48,6 +54,7 @@ Record packet : Type := {
   pkt_th   : list byte;          (* transport-header bytes (e.g. TCP/UDP) *)
   pkt_ih   : list byte;          (* inner-header bytes (tunnelled packet) *)
   pkt_tnl  : list byte;          (* tunnel-header bytes *)
+  pkt_limit : limit_spec -> bool; (* oracle: does this packet pass a given limiter? *)
 }.
 
 (** Read [len] bytes at [off] from a header byte string. *)

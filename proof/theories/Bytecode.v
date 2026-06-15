@@ -39,6 +39,7 @@ Inductive instr : Type :=
                                           (* set membership; [elems] is the set's
                                              contents, carried for semantics and
                                              not rendered (it lives in NEWSET) *)
+| ILimit       (spec : limit_spec)       (* rate limit (can break the rule) *)
 | ICounter     (pkts bytes : nat)        (* verdict-neutral statements *)
 | INotrack
 | ILog         (level : option nat)

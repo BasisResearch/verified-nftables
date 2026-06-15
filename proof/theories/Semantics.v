@@ -32,6 +32,7 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
       xorb neg (data_mem (field_value f p) elems)
   | MTransform f ts neg v =>
       eval_cmp (if neg then CNe else CEq) (apply_transforms ts (field_value f p)) v
+  | MLimit spec => pkt_limit p spec
   end.
 
 (** A rule applies when all its match conditions hold (empty = matches all). *)
@@ -87,6 +88,8 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       run_rule (set_reg rf dst (data_byteorder h sz len (rf src))) rest p
   | ILookup src _ neg elems :: rest =>
       if xorb neg (data_mem (rf src) elems) then run_rule rf rest p else None
+  | ILimit spec :: rest =>
+      if pkt_limit p spec then run_rule rf rest p else None   (* over-limit breaks *)
   | ICounter _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)
   | INotrack :: rest      => run_rule rf rest p
   | ILog _ :: rest        => run_rule rf rest p
