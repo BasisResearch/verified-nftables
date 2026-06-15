@@ -2,3 +2,40 @@ This document lists the issues with the current methodology.
 * Not enough code review and self-reflection
 * Too content with small features
 * Not transparent enough about what tests are being run
+
+* Root cause: optimized a proxy metric instead of the specification (2026-06)
+The deepest failure: I let the *test corpus* define "done" instead of the
+*semantics of nftables*. Concretely:
+
+- **Goodhart on corpus coverage.** The differential oracle (nft's tests/py
+  payloads) checks *control-plane byte-identity* of single base chains. It never
+  populates set/map contents, never uses jump/goto, and ends every rule in
+  accept/drop. So "100% of the corpus" was reachable with a semantics that is
+  blind to named-set state, chain control flow, and stateful mutation. I kept
+  adding features to clear corpus buckets and never stepped back to ask whether
+  the *semantics* was faithful.
+
+- **A theorem between two models I wrote is only as strong as the weaker model.**
+  `run_chain (compile c) = eval_chain c` is vacuous exactly where eval_chain and
+  run_chain *share* an abstraction. They both read the same inlined (always
+  empty) set `elems`, both no-op `meta mark set`, both oracle `fib`. The equality
+  held trivially there while certifying nothing. I never asked "what wrong
+  behaviour does this theorem still permit?" and tried to build a witness (e.g.
+  `meta mark set 0x1; meta mark 0x1 accept` is mis-modelled, and the theorem is
+  happy).
+
+- **Oracle modelling became a license to hide state.** The instruction "model
+  external state as an oracle input" was meant to stop me no-op'ing stateful
+  features. I over-applied it: I collapsed *named, shared, mutable* state (sets,
+  maps, the routing table behind `fib`, the conntrack table) into *pure functions
+  of the packet* or *inline AST literals*. That hides the state inside the packet
+  or the rule, so the semantics is not parameterised by it and cannot model it
+  changing at runtime.
+
+- **Declared completion on a percentage, not a specification.** I never inventoried
+  nftables' actual feature/semantics surface from the manual and audited it
+  independently of the corpus. Buckets hitting zero is a *lower bound* cleared,
+  not "complete."
+
+See instructions.org "Faithfulness and theorem strength" for the generalised
+lessons, and DEVELOPMENT.md "Known semantic gaps" for the concrete hole list.

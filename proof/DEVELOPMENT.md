@@ -13,6 +13,81 @@ yet): specify the DSL, specify the control-plane bytecode, write a verified
 semantics-preserving compiler, and a verified optimization pass — and validate
 the model against a real corpus rather than hand-written examples.
 
+> **Read this before trusting the 100%.** "2532/2532" is *control-plane
+> byte-identity of single base chains* — it says the compiler emits the same
+> netlink expressions as `nft` for the rule-expression vocabulary the corpus
+> covers. It is **not** a faithful end-to-end *packet semantics*, and the
+> correctness theorem is **vacuous** in several important dimensions because the
+> DSL semantics and the bytecode VM *share* the same abstractions. See
+> **"Known semantic gaps"** below. The corpus could never reveal these (it never
+> populates a set, never uses a jump, always abstracts stateful values), and
+> declaring the work "complete" on it was premature — see `../issues.org`.
+
+## Known semantic gaps (audit against the nftables manual, not the corpus)
+
+The data-plane semantics (`eval_chain` / `run_rule`) that the correctness
+theorem is stated against is **not** faithful in these areas. Grouped by kind:
+
+**A. External named/shared/mutable state collapsed into AST literals or packet
+oracles** (should be threaded, named state — see instructions.org "(b)"):
+- **Named sets/maps**: contents are inlined into the rule (`MConcatSet … elems`,
+  `vm_entries`, `VMap … entries`) and are always empty in the corpus, so "look up
+  `@s`" reads a baked-in empty list, not a runtime-mutable table. *This is the
+  flaw that triggered this audit; the in-progress fix threads an `env`.*
+- **Routing table (`fib`)**: modelled as `pkt_fib : selector -> result -> data`,
+  a pure function of the packet. Faithfully `fib` is a lookup against the kernel
+  FIB/RIB — system state that changes as routes change. (instructions.org
+  explicitly named `fib` as a feature to model properly; it was oracle'd.)
+- **Conntrack table (`ct …`)**: `pkt_ct` is a per-packet oracle; really the ct
+  table is keyed by flow and accumulates across packets (`ct count`, `ct state`).
+- **Stateful named objects**: `counter`/`quota`/`limit`/`ct helper`/`ct timeout`/
+  `synproxy`/`secmark` objects are named & mutable; counters are no-op'd, quota/
+  limit are per-packet oracles (so accumulation across packets is invisible).
+- **Dynamic sets / meters (`dynset`, `update`, `meter`)**: their entire purpose is
+  to mutate set state at runtime so later lookups see it (per-key rate limiting);
+  modelled as verdict-neutral, so the feedback loop is absent.
+- **flowtables, incremental `numgen`, `osf`**: stateful; oracle'd or ignored.
+
+**B. In-traversal mutation ignored ("verdict-neutral" overused)** — a statement
+that doesn't change *this* rule's verdict still mutates state later rules read:
+- `meta mark set`, `ct mark set`, `ip dscp set`, ttl/hoplimit, payload mangle,
+  NAT address/port rewrite, exthdr/tcpopt write are all modelled as no-ops/
+  terminal-Accept. **Concrete mis-model:** `meta mark set 0x1 ; meta mark 0x1
+  accept` — the second rule reads the *original* (oracle) mark, not `0x1`. The
+  compiler theorem still proves because BOTH the DSL semantics and the VM no-op
+  the set — a textbook vacuous-theorem case.
+
+**C. Control flow missing:**
+- `jump` / `goto` / `return` and **user-defined chains** are entirely absent
+  (`Verdict.v` only has Accept/Drop/Continue/Reject/Queue). Real rulesets are
+  built from a base chain dispatching into many user chains.
+- **Hooks, chain priorities, multiple tables/families**: a packet really
+  traverses several base chains across hooks (prerouting→input/forward→output→
+  postrouting) in priority order; we model a *single* base chain. `family` is
+  just a string label.
+
+**D. Data-semantics infidelities inside modelled features:**
+- **Concat-key padding**: the kernel pads each concatenated set-key field to its
+  4-byte register slot; we omit it, so membership is wrong for sub-4-byte
+  concatenated fields (flagged in `Semantics.v`).
+- **Interval/prefix sets** (`flags interval`) and **wildcard interface names**
+  (`iifname "eth*"`) are not modelled (membership is exact-match only).
+- **Operand *value* semantics delegated to "the corpus"** but never actually
+  checked: the proofs only establish *verdict-neutrality* of set/mangle operands;
+  the corpus only checks *bytecode bytes*. So the runtime value of `jhash`,
+  `data_or` (which even truncates to the shorter operand), byteorder, etc. is
+  constrained by neither — an independent ground truth is missing.
+
+**What the theorem *does* still give** (honestly): the compiler and optimizer are
+*internally consistent* w.r.t. this semantics — the compiler introduces no bug
+relative to `eval_chain`, and `optimize_chain` preserves `eval_chain` exactly.
+That is real and useful (especially for the optimizer). It is weaker than "the
+emitted bytecode means what nftables means," which requires closing the gaps
+above. Priority order to close them: (1) thread external named state for
+sets/maps [in progress], (2) jump/goto/return + user chains (fuel-bounded), (3)
+model mutation (mark/ct/NAT) as state threaded across rules, (4) fib/ct as
+explicit tables, (5) interval sets + concat padding.
+
 ## What exists
 
 | File | Role |

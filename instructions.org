@@ -24,10 +24,36 @@ stop, the stopping point must be a *measured plateau or a named blocker*, not
 "a milestone was reached." Before reporting done, answer honestly: would a
 skeptic call this a toy? If yes, keep going.
 
+Corpus coverage is *necessary but not sufficient*, and "100% of the corpus" is
+NOT "complete". A corpus — especially a differential/round-trip oracle where you
+control both sides — can share your model's blind spots: it may never exercise
+the parts of the language your semantics quietly omits (e.g. it never populates
+named state, never takes a control-flow branch, always abstracts a stateful
+value). So a second, independent bar must also be met before claiming done:
+- *Semantic completeness audit.* Inventory the target's full feature/semantics
+  surface from the authoritative spec (manual, RFC, reference-implementation
+  source) — NOT from the test corpus — and check each construct: is it modelled
+  faithfully, modelled with an explicit documented abstraction, or silently
+  ignored? Report this audit alongside the coverage number. Anything the corpus
+  doesn't exercise but the language has (control flow, named/mutable state,
+  in-place mutation) is a hole until proven otherwise, not an implicit pass.
+- Surface the biggest gaps *prominently* (not in a footnote). "X% of the corpus"
+  must always be paired with "...but the semantics does not yet model A, B, C."
+
 ** Tips
 - Constantly assess the verification effort
   - Is the theorem proven useful?
-  - Can the verification catch any injected bugs?
+  - *Vacuity check.* For your top-level theorem, write down explicitly what WRONG
+    behaviour it still permits, and actively try to construct a witness. If the
+    theorem relates two artifacts you authored (a spec and an impl, or two
+    interpreters), it is only as strong as the *less faithful* of the two: any
+    abstraction or omission they SHARE makes the theorem vacuous precisely there.
+    A differential corpus that you generate/compare on both sides does not rescue
+    this — it can share the same blind spot. Find an *independent* ground truth
+    for the property you actually care about.
+  - Can the verification catch any injected bugs? (Inject a bug into the *spec's*
+    modelled behaviour, not just the impl — if the theorem still proves, the spec
+    is too weak.)
   - What is the *measured* coverage against the corpus right now, and which
     specific features are the next batch to add to raise it? (Do not answer
     "plausibly" — report numbers.)
@@ -54,12 +80,36 @@ skeptic call this a toy? If yes, keep going.
   generic or opaque shortcut would cover more cases faster:
   - Model each feature with its real structure (named fields, real operations),
     never a single opaque catch-all that merely reproduces bytes without meaning.
-  - For stateful features (rate limits, quotas, stateful sets, connection
-    tracking decisions) that a pure input->output semantics cannot capture,
-    model the external state *explicitly as an oracle input* (e.g. extend the
-    input with "did this packet pass the limiter") rather than approximating
-    them as no-ops. A knowingly-wrong semantics in a verified artifact is worse
-    than an unsupported feature.
+  - *Distinguish per-input oracles from external mutable state — this is the most
+    common faithfulness trap.* There are three different things, and only the
+    first may be an oracle:
+    (a) a genuine *per-input* value the environment supplies (a packet field) —
+        fine to take as an input/oracle;
+    (b) *named, shared, mutable* state that lives outside any single input and
+        can change at runtime (lookup tables addressed by name: sets/maps, a
+        routing/FIB table, a connection-tracking table, stateful named objects,
+        the definitions of callable chains) — this MUST be modelled as explicit
+        state threaded through the semantics and indexed by name. Never inline
+        its contents into the AST (e.g. a set's elements baked into the rule) and
+        never collapse it into a pure function of the input. Both hide the state
+        and make the correctness theorem vacuous there.
+    (c) *mutation*: a step that writes state a later step reads (set a packet
+        mark, NAT-rewrite an address, add an element to a dynamic set). "Does not
+        change THIS decision" (verdict-neutral) is NOT "has no effect" — thread
+        the mutated state so later reads observe it, or you will mis-model any
+        rule that reads what an earlier rule wrote.
+    Red flag: if you are computing as a *pure function of the input* something the
+    real system derives from shared/mutable state (a route lookup, set
+    membership, a connection count), you have hidden the state — stop and model
+    it. A knowingly-wrong semantics in a verified artifact is worse than an
+    unsupported feature.
+  - Make every abstraction *visible in the theorem statement*: quantify over the
+    state/oracle (`forall st, run st (compile c) = eval st c`) so the assumption
+    is explicit to a reader, rather than buried inside the AST or a definition.
+  - Control flow IS semantics: calls/jumps/returns, branch priorities, and the
+    order in which multiple entry points are traversed are part of the language,
+    not optional extras. Model them (use a fuel-bounded interpreter if recursion
+    through named state is not structurally terminating).
 - Always search for existing tools before inventing your own
 - Avoid reimplementing a non-trivial amount of logic in unverified code when there's an option to reuse existing unverified code in the upstream implementation. Our own unverified code should be considered less trustworthy than upstream's unverified but battle-tested code.
 - It is okay to temporarily branch out and run small experimentations before re-integrating into the main branch.
