@@ -5,7 +5,7 @@ A formally verified compiler from the declarative **nftables DSL** to the
 proved semantics-preserving in **Rocq**, plus a verified DSL optimizer.
 Extracted to OCaml and **differential-tested against the upstream nftables test
 corpus**: the verified compiler reproduces the real tool's bytecode on
-**1272 / 2532 (50.2%)** of the corpus's rule-blocks, with **zero mismatches** on
+**2277 / 2532 (89.9%)** of the corpus's rule-blocks, with **zero mismatches** on
 the supported subset.
 
 This implements the *"Goal for now"* in `../instructions.org` (Rocq only, no VST
@@ -71,7 +71,7 @@ Coverage grew as the verified core grew (each step kept both theorems axiom-free
 | + conntrack & fields | `ct load`, 46 named fields | 979 (38.7%) |
 | + extension headers | parametric `exthdr load` (IPv6 ext / TCP opts) | **1272 (50.2%)** |
 
-Coverage has since grown well past the table — **1934/2532 (76.4%)**, still
+Coverage has since grown well past the table — **2277/2532 (89.9%)**, still
 zero mismatches. Beyond the table: ranges, prefixes, sets, ct/exthdr (incl. the
 `present` existence test), transform chains (bitwise shift, byteorder, jhash),
 statements (counter/notrack/log), reject/queue verdicts, stateful `limit` via an
@@ -91,7 +91,7 @@ so a self-consistent-but-wrong entry would round-trip cleanly (a code review
 proved this: permuting `iif`/`oif`, or corrupting an offset, was invisible).
 That gap is closed separately by **`make validate`**, which feeds each named
 field / meta-ct key to **live `nft`** (an independent oracle we don't control)
-and checks our `field_load` descriptor appears in nft's lowering — 23/23 pass.
+and checks our `field_load` descriptor appears in nft's lowering — 26/26 pass.
 A wrong offset or name fails there.
 
 ## Trust story (TCB)
