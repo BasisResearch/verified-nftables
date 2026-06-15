@@ -238,7 +238,6 @@ let parse_line line : pinst =
         | [] -> (amin, amax, pmin, pmax, flags)
         | _ -> raise (Unsupported "nat:field") in
       let (amin,amax,pmin,pmax,flags) = fields None None None None 0 rest in
-      if amin = None then raise (Unsupported "nat:noaddr");
       PNat (kind, family, amin, amax, pmin, pmax, flags)
   | kind::rest when kind = "masq" || kind = "redir" ->
       let rec fields pmin pmax flags = function

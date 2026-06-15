@@ -300,12 +300,10 @@ let render_instr (i : Bytecode.instr) : string = match i with
       let fl = if flags > 0 then Printf.sprintf " flags 0x%x" flags else "" in
       (match kind with
        | "snat" | "dnat" ->
-           (* the verified compiler always supplies addr_min for snat/dnat; the
-              [None] arm is unreachable from [compile] but kept total for safety *)
-           let a = (match amin with Some r -> Printf.sprintf " reg %d" r | None -> "") in
-           Printf.sprintf "[ nat %s %s addr_min%s%s%s%s%s ]"
-             kind family a (opt "addr_max" amax) (opt "proto_min" pmin)
-             (opt "proto_max" pmax) fl
+           (* a port-only redirect (`dnat to :port`) has no addr_min at all *)
+           Printf.sprintf "[ nat %s %s%s%s%s%s%s ]"
+             kind family (opt "addr_min" amin) (opt "addr_max" amax)
+             (opt "proto_min" pmin) (opt "proto_max" pmax) fl
        | _ ->  (* masq / redir: no address/family *)
            Printf.sprintf "[ %s%s%s%s ]" kind (opt "proto_min" pmin)
              (opt "proto_max" pmax) fl)
