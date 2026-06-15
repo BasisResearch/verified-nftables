@@ -408,25 +408,36 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
     <const>` / `ct mark set <field>` shapes, incl. the set-then-match bug. *)
 Definition simple_vsrc (vs : vsrc) : bool :=
   match vs with VImm _ | VField _ _ => true | _ => false end.
-Definition simple_writes (r : rule) : bool :=
+(** A body is "simple" for the mutation theorem when every statement is a meta/ct
+    set with a simple operand (matches are unrestricted).  Other statements in the
+    same rule are out of scope (their value semantics are not modelled). *)
+Definition simple_body (body : list body_item) : bool :=
   forallb (fun it => match it with
+                     | BMatch _ => true
                      | BStmt (SMetaSet _ vs) | BStmt (SCtSet _ vs) => simple_vsrc vs
-                     | _ => true end) (r_body r).
+                     | BStmt _ => false
+                     end) body.
+Definition simple_writes (r : rule) : bool := simple_body (r_body r).
 
-(** The declarative meta/ct effect of one rule: when it applies, fold its set
-    statements (in body order, later overrides earlier) writing [eval_vsrc vs];
-    the operand is evaluated against the packet mutated so far, matching the VM
-    (whose operand loads read the already-mutated packet). *)
-Definition dsl_writes (r : rule) (p : packet) : packet :=
-  if rule_applies r p then
-    fold_left (fun acc it => match it with
-                             | BStmt (SMetaSet k vs) => set_meta acc k (eval_vsrc vs acc)
-                             | BStmt (SCtSet k vs)   => set_ct acc k (eval_vsrc vs acc)
-                             | _ => acc end) (r_body r) p
-  else p.
+(** The declarative meta/ct effect of one rule's body, processed left-to-right
+    exactly as the kernel executes it: a [set] writes [eval_vsrc vs] against the
+    packet mutated so far (so a later operand sees an earlier write); a match that
+    fails stops execution, keeping the writes made *before* it (statements before a
+    failing match still ran).  This mirrors [run_rule_writes] on the compiled body. *)
+Fixpoint body_writes (body : list body_item) (p : packet) : packet :=
+  match body with
+  | [] => p
+  | BMatch m :: rest => if eval_matchcond m p then body_writes rest p else p
+  | BStmt (SMetaSet k vs) :: rest => body_writes rest (set_meta p k (eval_vsrc vs p))
+  | BStmt (SCtSet k vs)   :: rest => body_writes rest (set_ct p k (eval_vsrc vs p))
+  | BStmt _ :: rest => body_writes rest p
+  end.
+Definition dsl_writes (r : rule) (p : packet) : packet := body_writes (r_body r) p.
 
-(** Mutation-aware rule-list evaluation: a non-terminal applicable rule threads
-    its writes to the rest, so a later rule observes an earlier `set`. *)
+(** Mutation-aware rule-list evaluation: every non-terminal rule threads its
+    writes to the rest, so a later rule observes an earlier `set` (the write
+    happens whether or not the rule's verdict matched — a non-applicable rule
+    still ran the statements up to its failing match). *)
 Fixpoint eval_rules_mut (rs : list rule) (p : packet) : option verdict :=
   match rs with
   | [] => None
@@ -436,7 +447,7 @@ Fixpoint eval_rules_mut (rs : list rule) (p : packet) : option verdict :=
         | Some v => if terminal v then Some v else eval_rules_mut rest (dsl_writes r p)
         | None   => eval_rules_mut rest (dsl_writes r p)
         end
-      else eval_rules_mut rest p
+      else eval_rules_mut rest (dsl_writes r p)
   end.
 
 Fixpoint run_program_mut (prog : program) (p : packet) : option verdict :=

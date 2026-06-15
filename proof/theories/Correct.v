@@ -439,6 +439,300 @@ Proof.
   - cbn [map fst snd app run_rule]. apply IH.
 Qed.
 
+(** ---- run_rule_writes twins of the load/transform/operand helpers ---- *)
+(** These mirror [compile_load_correct] / [run_load_fields] / [run_compile_transform]
+    / [run_transforms_prefix] exactly: register threading is identical in
+    [run_rule_writes], only the return type differs. *)
+Lemma compile_load_writes : forall f dst rf rest p,
+  run_rule_writes rf (compile_load (field_load f) dst :: rest) p =
+  run_rule_writes (set_reg rf dst (field_value f p)) rest p.
+Proof.
+  intros f dst rf rest p. unfold field_value, do_load, compile_load.
+  destruct (field_load f) eqn:E; simpl; reflexivity.
+Qed.
+
+Lemma run_load_fields_writes : forall pairs rf tail p,
+  run_rule_writes rf (load_fields pairs ++ tail) p = run_rule_writes (write_fields rf pairs p) tail p.
+Proof.
+  induction pairs as [| [f r] rest IH]; intros rf tail p.
+  - reflexivity.
+  - cbn [load_fields map fst snd app write_fields]. rewrite compile_load_writes. apply IH.
+Qed.
+
+Lemma run_compile_transform_writes : forall t rf rest p,
+  run_rule_writes rf (compile_transform t :: rest) p
+  = run_rule_writes (set_reg rf 1 (apply_transform t (rf 1))) rest p.
+Proof. intros t rf rest p. destruct t; reflexivity. Qed.
+
+Lemma run_transforms_prefix_writes : forall ts rf rest p,
+  exists rf', rf' 1 = apply_transforms ts (rf 1) /\
+    run_rule_writes rf (compile_transforms ts ++ rest) p = run_rule_writes rf' rest p.
+Proof.
+  induction ts as [| t ts IH]; intros rf rest p.
+  - exists rf. split; reflexivity.
+  - cbn [compile_transforms app]. rewrite run_compile_transform_writes.
+    edestruct (IH (set_reg rf 1 (apply_transform t (rf 1)))) as [rf' [H1 H2]].
+    exists rf'. rewrite set_reg_same in H1. split; [exact H1 | exact H2].
+Qed.
+
+(** A simple operand leaves [eval_vsrc vs p] in register 1 under [run_rule_writes]
+    too (the operand is packet-neutral; it only loads/transforms registers). *)
+Lemma writes_vsrc_simple : forall vs rf rest p,
+  simple_vsrc vs = true ->
+  exists rf', run_rule_writes rf (compile_vsrc vs ++ rest) p = run_rule_writes rf' rest p
+              /\ rf' 1 = eval_vsrc vs p.
+Proof.
+  intros vs rf rest p Hs.
+  destruct vs as [v | f ts | | | | | ]; cbn [simple_vsrc] in Hs; try discriminate.
+  - (* VImm *) exists (set_reg rf 1 v). cbn [compile_vsrc app run_rule_writes].
+    split; [reflexivity | apply set_reg_same].
+  - (* VField *) cbn [compile_vsrc app]. rewrite compile_load_writes.
+    edestruct (run_transforms_prefix_writes ts (set_reg rf 1 (field_value f p)) rest p) as [rf' [H1 H2]].
+    exists rf'. split; [exact H2 |]. cbn [eval_vsrc]. rewrite H1, set_reg_same. reflexivity.
+Qed.
+
+Lemma run_transforms_at_prefix_writes : forall ts r rf rest p,
+  exists rf', rf' r = apply_transforms ts (rf r)
+    /\ (forall r0, r0 <> r -> rf' r0 = rf r0)
+    /\ run_rule_writes rf (compile_transforms_at r ts ++ rest) p = run_rule_writes rf' rest p.
+Proof.
+  induction ts as [| t ts IH]; intros r rf rest p.
+  - exists rf. cbn [compile_transforms_at map app]. repeat split; reflexivity.
+  - edestruct (IH r (set_reg rf r (apply_transform t (rf r))) rest p) as [rf' [H1 [H2 H3]]].
+    exists rf'. split; [| split].
+    + rewrite H1, set_reg_same. reflexivity.
+    + intros r0 Hne. rewrite (H2 r0 Hne). apply set_reg_other.
+      intro Heq; apply Hne; symmetry; exact Heq.
+    + cbn [compile_transforms_at map app]. destruct t;
+        cbn [compile_transform_at run_rule_writes]; exact H3.
+Qed.
+
+Lemma run_load_fields_t_writes : forall elems slot rf tail p,
+  exists rf',
+    map rf' (map snd (alloc_regs slot (map fst elems)))
+      = map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) elems
+    /\ (forall r0, ~ In r0 (map snd (alloc_regs slot (map fst elems))) -> rf' r0 = rf r0)
+    /\ run_rule_writes rf (load_fields_t slot elems ++ tail) p = run_rule_writes rf' tail p.
+Proof.
+  induction elems as [| [f ts] rest IH]; intros slot rf tail p.
+  - exists rf. cbn [load_fields_t map alloc_regs app]. repeat split; reflexivity.
+  - cbn [load_fields_t map fst snd alloc_regs].
+    edestruct (run_transforms_at_prefix_writes ts (reg_of_slot slot)
+                (set_reg rf (reg_of_slot slot) (field_value f p))
+                (load_fields_t (slot + field_slots f) rest ++ tail) p) as [rf1 [Ht1 [Ht2 Ht3]]].
+    edestruct (IH (slot + field_slots f) rf1 tail p) as [rf' [Hr1 [Hr2 Hr3]]].
+    exists rf'. split; [| split].
+    + cbn [map]. f_equal.
+      * rewrite (Hr2 (reg_of_slot slot) (reg_head_not_in f (map fst rest) slot)).
+        rewrite Ht1, set_reg_same. reflexivity.
+      * exact Hr1.
+    + intros r0 Hni. cbn [map] in Hni.
+      assert (r0 <> reg_of_slot slot) as Hne by (intro; apply Hni; left; symmetry; assumption).
+      rewrite (Hr2 r0 (fun H => Hni (or_intror H))).
+      rewrite (Ht2 r0 Hne). apply set_reg_other.
+      intro Heq; apply Hne; symmetry; exact Heq.
+    + rewrite <- app_assoc. cbn [app].
+      rewrite compile_load_writes, Ht3, Hr3. reflexivity.
+Qed.
+
+(** Single-match gating under [run_rule_writes]: a match passes (continue to the
+    [run_rule_writes]-constant tail result [R]) or breaks (return the packet
+    unchanged), exactly tracking [eval_matchcond].  Mirrors the per-match cases of
+    [run_compile_matches_const], with the break returning [p] instead of [None]. *)
+Lemma writes_match_one : forall m X p R,
+  (forall rf, run_rule_writes rf X p = R) ->
+  forall rf, run_rule_writes rf (compile_match m ++ X) p = if eval_matchcond m p then R else p.
+Proof.
+  intros m X p R Hc rf.
+  destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0 | f op v0
+                | fields neg nm | f ts op v0 | f ts neg nm
+                | f ts neg lo hi | spec | qspec | clspec
+                | celems neg nm]; cbn [compile_match app].
+  - (* MEq *) rewrite compile_load_writes. cbn [run_rule_writes]. rewrite set_reg_same.
+    cbn [eval_matchcond]. unfold eval_cmp.
+    destruct (data_eqb (field_value f p) v0); [apply Hc | reflexivity].
+  - (* MNeq *) rewrite compile_load_writes. cbn [run_rule_writes]. rewrite set_reg_same.
+    cbn [eval_matchcond]. unfold eval_cmp.
+    destruct (data_eqb (field_value f p) v0); cbn [negb]; [reflexivity | apply Hc].
+  - (* MRange *) rewrite compile_load_writes. cbn [run_rule_writes]. rewrite set_reg_same.
+    cbn [eval_matchcond].
+    destruct (eval_range (if neg then CNe else CEq) (field_value f p) lo hi);
+      [apply Hc | reflexivity].
+  - (* MMasked *) rewrite compile_load_writes. cbn [run_rule_writes]. rewrite !set_reg_same.
+    cbn [eval_matchcond].
+    destruct (eval_cmp (if neg then CNe else CEq) (data_bitops (field_value f p) mask xor) v0);
+      [apply Hc | reflexivity].
+  - (* MCmp *) rewrite compile_load_writes. cbn [run_rule_writes]. rewrite set_reg_same.
+    cbn [eval_matchcond].
+    destruct (eval_cmp op (field_value f p) v0); [apply Hc | reflexivity].
+  - (* MConcatSet *) rewrite <- !app_assoc. cbn [app].
+    rewrite run_load_fields_writes. cbn [run_rule_writes].
+    rewrite map_write_fields by apply alloc_regs_nodup.
+    rewrite map_fst_field, alloc_regs_fst. cbn [eval_matchcond].
+    destruct (xorb neg (data_mem (concat (map (fun f => field_value f p) fields))
+                                 (e_set (pkt_env p) nm)));
+      [apply Hc | reflexivity].
+  - (* MTransform *) rewrite compile_load_writes. rewrite <- !app_assoc. cbn [app].
+    edestruct (run_transforms_prefix_writes ts (set_reg rf 1 (field_value f p))
+                (ICmp op 1 v0 :: X) p) as [rf' [H1 H2]].
+    rewrite H2. cbn [run_rule_writes]. rewrite H1, set_reg_same. cbn [eval_matchcond].
+    destruct (eval_cmp op (apply_transforms ts (field_value f p)) v0); [apply Hc | reflexivity].
+  - (* MSetT *) rewrite compile_load_writes. rewrite <- !app_assoc. cbn [app].
+    edestruct (run_transforms_prefix_writes ts (set_reg rf 1 (field_value f p))
+                (ILookup [1] nm neg :: X) p) as [rf' [H1 H2]].
+    rewrite H2. cbn [run_rule_writes concat map]. rewrite app_nil_r, H1, set_reg_same.
+    cbn [eval_matchcond].
+    destruct (xorb neg (data_mem (apply_transforms ts (field_value f p)) (e_set (pkt_env p) nm)));
+      [apply Hc | reflexivity].
+  - (* MRangeT *) rewrite compile_load_writes. rewrite <- !app_assoc. cbn [app].
+    edestruct (run_transforms_prefix_writes ts (set_reg rf 1 (field_value f p))
+                (IRange (if neg then CNe else CEq) 1 lo hi :: X) p) as [rf' [H1 H2]].
+    rewrite H2. cbn [run_rule_writes]. rewrite H1, set_reg_same. cbn [eval_matchcond].
+    destruct (eval_range (if neg then CNe else CEq) (apply_transforms ts (field_value f p)) lo hi);
+      [apply Hc | reflexivity].
+  - (* MLimit *) cbn [run_rule_writes eval_matchcond].
+    destruct (pkt_limit p spec); [apply Hc | reflexivity].
+  - (* MQuota *) cbn [run_rule_writes eval_matchcond].
+    destruct (pkt_quota p qspec); [apply Hc | reflexivity].
+  - (* MConnlimit *) cbn [run_rule_writes eval_matchcond].
+    destruct (pkt_connlimit p clspec); [apply Hc | reflexivity].
+  - (* MConcatSetT *) rewrite <- !app_assoc. cbn [app].
+    edestruct (run_load_fields_t_writes celems 0 rf
+                (ILookup (map snd (alloc_regs 0 (map fst celems))) nm neg :: X) p)
+      as [rf' [Hrb [_ Hrun]]].
+    rewrite Hrun. cbn [run_rule_writes]. rewrite Hrb. cbn [eval_matchcond].
+    destruct (xorb neg (data_mem
+               (concat (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) celems))
+               (e_set (pkt_env p) nm)));
+      [apply Hc | reflexivity].
+Qed.
+
+(** ---- the compiler emits IMetaSet/ICtSet only for SMetaSet/SCtSet body
+    statements; every other compiled fragment is [no_writes] ---- *)
+Lemma nw_cons : forall i l, no_writes (i :: l) = negb (writes_instr i) && no_writes l.
+Proof. reflexivity. Qed.
+Lemma nw_app : forall a b, no_writes (a ++ b) = no_writes a && no_writes b.
+Proof. intros a b. apply forallb_app. Qed.
+Lemma nw_map : forall {A} (g : A -> instr) (l : list A),
+  (forall x, writes_instr (g x) = false) -> no_writes (map g l) = true.
+Proof.
+  intros A g l Hg. induction l as [| x xs IH]; [reflexivity|].
+  cbn [map]. rewrite nw_cons, Hg, IH. reflexivity.
+Qed.
+Lemma nw_load_fields : forall pairs, no_writes (load_fields pairs) = true.
+Proof.
+  intros. unfold load_fields. apply nw_map. intros [f r]. cbn [fst snd].
+  unfold compile_load. destruct (field_load f); reflexivity.
+Qed.
+Lemma nw_imms : forall (imms : list (reg * data)),
+  no_writes (map (fun rv => IImmediateData (fst rv) (snd rv)) imms) = true.
+Proof. intros. apply nw_map. reflexivity. Qed.
+Lemma nw_flat_map : forall {A} (g : A -> list instr) (l : list A),
+  (forall x, no_writes (g x) = true) -> no_writes (flat_map g l) = true.
+Proof.
+  intros A g l Hg. induction l as [| x xs IH]; [reflexivity|].
+  cbn [flat_map]. rewrite nw_app, Hg, IH. reflexivity.
+Qed.
+Lemma nw_transforms : forall ts, no_writes (compile_transforms ts) = true.
+Proof.
+  induction ts as [| t ts IH]; [reflexivity|].
+  cbn [compile_transforms]. rewrite nw_cons, IH, Bool.andb_true_r. destruct t; reflexivity.
+Qed.
+Lemma nw_transforms_at : forall r ts, no_writes (compile_transforms_at r ts) = true.
+Proof.
+  intros r ts. unfold compile_transforms_at. apply nw_map. intros t. destruct t; reflexivity.
+Qed.
+Lemma nw_load_fields_t : forall elems slot, no_writes (load_fields_t slot elems) = true.
+Proof.
+  induction elems as [| [f ts] rest IH]; intros slot; [reflexivity|].
+  cbn [load_fields_t]. rewrite nw_app, nw_cons, nw_transforms_at, IH.
+  unfold compile_load; destruct (field_load f); reflexivity.
+Qed.
+Lemma nw_vsrc : forall vs, no_writes (compile_vsrc vs) = true.
+Proof.
+  destruct vs as [v | f ts | fields ts nm | fields len seed modulus offset
+                 | osrcs ofinal | elems nm | fields len seed modulus offset nm];
+    cbn [compile_vsrc].
+  - reflexivity.
+  - rewrite nw_cons, nw_transforms. unfold compile_load; destruct (field_load f); reflexivity.
+  - rewrite nw_app, nw_load_fields, nw_app, nw_transforms. reflexivity.
+  - rewrite nw_app, nw_load_fields. reflexivity.
+  - destruct osrcs as [| [f0 ts0] rest]; [reflexivity|].
+    rewrite !nw_app, nw_cons.
+    rewrite (nw_flat_map _ rest).
+    2: { intros [f ts0']. cbn [fst snd]. rewrite nw_cons, nw_app, nw_transforms_at.
+         unfold compile_load; destruct (field_load f); reflexivity. }
+    rewrite !nw_transforms_at.
+    unfold compile_load; destruct (field_load f0); reflexivity.
+  - rewrite nw_app, nw_load_fields_t. reflexivity.
+  - rewrite nw_app, nw_load_fields, nw_app. reflexivity.
+Qed.
+Lemma nw_verdict_tail : forall v, no_writes (verdict_tail v) = true.
+Proof. destruct v; reflexivity. Qed.
+Lemma nw_compile_vmap : forall r, no_writes (compile_vmap r) = true.
+Proof.
+  intros r. unfold compile_vmap. destruct (r_vmap r) as [vm |]; [|reflexivity].
+  destruct (vm_keyf vm) as [[f ts] |].
+  - rewrite nw_cons, nw_app, nw_transforms. unfold compile_load; destruct (field_load f); reflexivity.
+  - rewrite nw_app, nw_load_fields. reflexivity.
+Qed.
+Lemma nw_compile_terminal : forall r, no_writes (compile_terminal r) = true.
+Proof.
+  intros r. unfold compile_terminal.
+  destruct (r_nat r) as [n |].
+  { rewrite nw_app. destruct (nat_src n) as [vs |]; [rewrite nw_vsrc; reflexivity|].
+    destruct (nat_map n) as [[[fields ts] name] |].
+    - rewrite nw_app, nw_load_fields, nw_app, nw_transforms. reflexivity.
+    - destruct (nat_field n) as [[f ts] |].
+      + rewrite nw_cons, nw_transforms. unfold compile_load; destruct (field_load f); reflexivity.
+      + rewrite nw_imms. reflexivity. }
+  destruct (r_tproxy r) as [t |].
+  { rewrite nw_app. destruct (tp_portmap t) as [[[m o] name] |].
+    - rewrite nw_app, nw_imms. reflexivity.
+    - rewrite nw_imms. reflexivity. }
+  destruct (r_fwd r) as [w |].
+  { rewrite nw_app. destruct (fwd_src w) as [vs |]; [rewrite nw_vsrc | rewrite nw_imms]; reflexivity. }
+  destruct (r_queue r) as [q |].
+  { rewrite nw_app. destruct (q_src q) as [vs |]; [rewrite nw_vsrc | rewrite nw_imms]; reflexivity. }
+  apply nw_verdict_tail.
+Qed.
+Lemma nw_compile_end : forall r, no_writes (compile_end r) = true.
+Proof.
+  intros r. unfold compile_end. rewrite nw_app, nw_compile_vmap, nw_compile_terminal. reflexivity.
+Qed.
+
+(** The body, compiled and run under [run_rule_writes] before a packet-neutral
+    tail, realises exactly [body_writes] — the declarative meta/ct effect. *)
+Lemma run_compile_body_writes : forall body tail,
+  (forall rf p, run_rule_writes rf tail p = p) ->
+  simple_body body = true ->
+  forall rf p, run_rule_writes rf (flat_map compile_body_item body ++ tail) p = body_writes body p.
+Proof.
+  induction body as [| it body IH]; intros tail Htail Hsb rf p.
+  - cbn [flat_map app body_writes]. apply Htail.
+  - cbn [simple_body forallb] in Hsb. apply Bool.andb_true_iff in Hsb. destruct Hsb as [Hit Hsb'].
+    destruct it as [m | s]; cbn [flat_map compile_body_item].
+    + (* BMatch *) rewrite <- app_assoc.
+      rewrite (writes_match_one m (flat_map compile_body_item body ++ tail) p
+                 (body_writes body p) (fun rf0 => IH tail Htail Hsb' rf0 p)).
+      reflexivity.
+    + (* BStmt: only SMetaSet/SCtSet survive [simple_body] *)
+      destruct s; cbn in Hit; try discriminate Hit;
+      cbn [compile_stmt]; rewrite <- !app_assoc.
+      * (* SMetaSet k vs *)
+        edestruct (writes_vsrc_simple vs rf
+                    ([IMetaSet k 1] ++ (flat_map compile_body_item body ++ tail)) p Hit)
+          as [rf' [Hr Hv]].
+        rewrite Hr. cbn [app run_rule_writes]. rewrite Hv.
+        cbn [body_writes]. apply IH; [exact Htail | exact Hsb'].
+      * (* SCtSet k vs *)
+        edestruct (writes_vsrc_simple vs rf
+                    ([ICtSet k 1] ++ (flat_map compile_body_item body ++ tail)) p Hit)
+          as [rf' [Hr Hv]].
+        rewrite Hr. cbn [app run_rule_writes]. rewrite Hv.
+        cbn [body_writes]. apply IH; [exact Htail | exact Hsb'].
+Qed.
+
 Lemma run_stmt_exists : forall s rf rest p,
   exists rf', run_rule rf (compile_stmt s ++ rest) p = run_rule rf' rest p.
 Proof.
@@ -735,6 +1029,52 @@ Theorem compile_chain_correct : forall c p,
 Proof.
   intros c p. unfold run_chain, eval_chain, compile_chain.
   rewrite run_program_compile_chain. reflexivity.
+Qed.
+
+(** ** Phase B main theorem: the compiler preserves in-traversal mutation.
+
+    For a plain rule whose set statements use simple (immediate/field) operands,
+    the compiled bytecode's meta/ct effect equals the declarative one — so a
+    `meta/ct set` is faithfully visible to later rules on BOTH sides, and the
+    mutation-aware semantics agree end to end. *)
+Lemma run_rule_writes_compile_rule : forall r p,
+  simple_writes r = true -> r_after r = [] ->
+  run_rule_writes empty_rf (compile_rule r) p = dsl_writes r p.
+Proof.
+  intros r p Hs Ha. unfold compile_rule. rewrite Ha. cbn [flat_map].
+  rewrite app_nil_r. unfold dsl_writes.
+  apply run_compile_body_writes; [| exact Hs].
+  intros rf p'. apply run_rule_writes_neutral, nw_compile_end.
+Qed.
+
+(** A ruleset is "plain & simple" when every rule has simple set-operands and no
+    post-outcome statements — the fragment on which mutation is modelled. *)
+Definition plain_simple (r : rule) : bool :=
+  simple_writes r && match r_after r with [] => true | _ :: _ => false end.
+
+Lemma run_program_mut_compile_chain : forall rs p,
+  forallb plain_simple rs = true ->
+  run_program_mut (map compile_rule rs) p = eval_rules_mut rs p.
+Proof.
+  induction rs as [| r rs IH]; intros p Hall; [reflexivity|].
+  cbn [forallb] in Hall. apply Bool.andb_true_iff in Hall. destruct Hall as [Hr Hrs].
+  unfold plain_simple in Hr. apply Bool.andb_true_iff in Hr. destruct Hr as [Hs Ha].
+  assert (Hae : r_after r = []) by (destruct (r_after r); [reflexivity | discriminate Ha]).
+  cbn [map run_program_mut eval_rules_mut].
+  rewrite run_rule_compile_rule. rewrite (run_rule_writes_compile_rule r p Hs Hae).
+  destruct (rule_applies r p).
+  - destruct (outcome r p) as [v |].
+    + destruct (terminal v); [reflexivity | apply IH; exact Hrs].
+    + apply IH; exact Hrs.
+  - apply IH; exact Hrs.
+Qed.
+
+Theorem compile_chain_mut_correct : forall c p,
+  forallb plain_simple (c_rules c) = true ->
+  run_chain_mut (compile_chain c) (c_policy c) p = eval_chain_mut c p.
+Proof.
+  intros c p Hall. unfold run_chain_mut, eval_chain_mut, compile_chain.
+  rewrite run_program_mut_compile_chain by exact Hall. reflexivity.
 Qed.
 
 (** ** Multi-chain semantic preservation (jump / goto / return + user chains).

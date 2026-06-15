@@ -64,19 +64,22 @@ that doesn't change *this* rule's verdict still mutates state later rules read:
   compiler theorem still proves because BOTH the DSL semantics and the VM no-op
   the set — a textbook vacuous-theorem case.
 
-  *Design to fix (in progress).* Thread a mutated packet across rules: a new VM
-  effect `run_rule_writes : regfile -> rule_prog -> packet -> packet` (mirrors
-  `run_rule` but, on an `IMetaSet k src` reached after the matches pass, returns
-  `set_meta p k (rf src)`; cmp/range/limit break → unchanged `p`) and a DSL
-  `dsl_writes r p` (applies `set_meta`/`set_ct` for the body's set statements with
-  operand value `eval_vsrc vs p`, gated by `rule_applies`). `eval_rules` and
-  `run_program` (and the jump variants) thread `…rest (writes r/rp p)`. The
-  catch — and why this is the *largest* phase — is the agreement lemma
-  `run_rule_writes (compile_rule r) p = dsl_writes r p`, which needs the
-  **operand value-correctness** `eval_vsrc vs p = (regfile after compile_vsrc vs) 1`
-  for *every* `vsrc` (the value the proof currently delegates to the corpus). NB
-  the VMap key subtlety: reg 1 is the *first* concat field's slot, so a key
-  transform chain on reg 1 transforms only that component.
+  *Status: FIXED (2026-06) for the common fragment.* A mutated packet is threaded
+  across rules: the VM effect `run_rule_writes` (mirrors `run_rule`'s register
+  threading but, on an `IMetaSet/ICtSet` reached after the matches pass, returns
+  `set_meta/set_ct p k (rf src)`; cmp/range/lookup/limit break → unchanged `p`)
+  and the DSL `body_writes`/`dsl_writes` (left-to-right: a `set` writes
+  `eval_vsrc vs` against the packet mutated so far; a failing match stops, keeping
+  earlier writes). `eval_rules_mut`/`run_program_mut` (and `eval/run_chain_mut`)
+  thread the writes so a later rule observes an earlier `set`. The theorem
+  **`compile_chain_mut_correct`** (axiom-free) proves
+  `run_chain_mut (compile_chain c) policy = eval_chain_mut c` for every rule whose
+  set-statement operands are simple (immediate/field) and which has no
+  post-outcome statements (`plain_simple`) — the cited `meta mark set 0x1 ; meta
+  mark 0x1 accept` bug now ACCEPTS on both DSL and VM (semtest witness). Built on
+  the operand value-correctness `eval_vsrc vs p = (regfile after compile_vsrc vs) 1`
+  (proved for immediate/field operands; extending it to map/hash/or operands and
+  to mixed/other statements widens the theorem's scope).
 
 **C. Control flow** *(jump/goto/return + user chains: FIXED, 2026-06)*:
 - ✅ `jump` / `goto` / `return` and **user-defined chains** are now modelled:
