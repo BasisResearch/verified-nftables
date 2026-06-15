@@ -522,17 +522,30 @@ Proof.
       rewrite compile_load_writes, Ht3, Hr3. reflexivity.
 Qed.
 
+(** The head register of a field allocation holds the first field's value (the
+    later fields occupy strictly higher registers, so they never clobber it). *)
+Lemma write_fields_head : forall f frest slot rf p,
+  write_fields rf (alloc_regs slot (f :: frest)) p (reg_of_slot slot) = field_value f p.
+Proof.
+  intros f frest slot rf p. cbn [alloc_regs write_fields].
+  rewrite write_fields_other.
+  - apply set_reg_same.
+  - intro Hin. apply alloc_regs_lb in Hin. pose proof (field_slots_pos f).
+    assert (slot < slot + field_slots f) as Hlt by lia. apply reg_of_slot_mono in Hlt. lia.
+Qed.
+
 (** A simple operand leaves exactly [eval_vsrc vs p] in register 1 under
     [run_rule_writes] (the operand is packet-neutral; it only loads/transforms/
-    looks-up registers).  Covers immediate, field, nonempty-key value map, and
-    transformed-concat value map operands. *)
+    looks-up/hashes registers).  Covers immediate, field, nonempty-key value map,
+    transformed-concat value map, and jhash(-then-map) operands. *)
 Lemma writes_vsrc_simple : forall vs rf rest p,
   simple_vsrc vs = true ->
   exists rf', run_rule_writes rf (compile_vsrc vs ++ rest) p = run_rule_writes rf' rest p
               /\ rf' 1 = eval_vsrc vs p.
 Proof.
   intros vs rf rest p Hs.
-  destruct vs as [v | f ts | fields ts nm | | | elems nm | ];
+  destruct vs as [v | f ts | fields ts nm | hfields hlen hseed hmod hoff
+                 | | elems nm | mfields mlen mseed mmod moff mnm];
     cbn [simple_vsrc] in Hs; try discriminate.
   - (* VImm *) exists (set_reg rf 1 v). cbn [compile_vsrc app run_rule_writes].
     split; [reflexivity | apply set_reg_same].
@@ -549,6 +562,14 @@ Proof.
     cbn [eval_vsrc apply_transforms].
     rewrite map_write_fields by apply alloc_regs_nodup.
     rewrite map_fst_field, alloc_regs_fst. reflexivity.
+  - (* VHash (hf0 :: hfr) ... : jhash of the first loaded field *)
+    destruct hfields as [| hf0 hfr]; [discriminate Hs |].
+    cbn [compile_vsrc]. rewrite <- app_assoc. rewrite run_load_fields_writes.
+    replace (match map snd (alloc_regs 4 (hf0 :: hfr)) with r :: _ => r | [] => 1 end)
+      with (reg_of_slot 4) by reflexivity.
+    cbn [app run_rule_writes].
+    eexists. split; [reflexivity |]. rewrite set_reg_same, write_fields_head.
+    cbn [eval_vsrc]. reflexivity.
   - (* VMapT elems nm : transformed-concat key, then lookup *)
     cbn [compile_vsrc]. rewrite <- app_assoc.
     edestruct (run_load_fields_t_writes elems 0 rf
@@ -556,6 +577,14 @@ Proof.
       as [rf' [Hrb [_ Hr]]].
     rewrite Hr. cbn [app run_rule_writes].
     eexists. split; [reflexivity |]. rewrite set_reg_same, Hrb. reflexivity.
+  - (* VHashMap (mf0 :: mfr) ... : jhash then value-map lookup *)
+    destruct mfields as [| mf0 mfr]; [discriminate Hs |].
+    cbn [compile_vsrc]. rewrite <- !app_assoc. rewrite run_load_fields_writes.
+    replace (match map snd (alloc_regs 4 (mf0 :: mfr)) with r :: _ => r | [] => 1 end)
+      with (reg_of_slot 4) by reflexivity.
+    cbn [app run_rule_writes map concat].
+    eexists. split; [reflexivity |]. rewrite !set_reg_same, app_nil_r, write_fields_head.
+    cbn [eval_vsrc]. reflexivity.
 Qed.
 
 (** Single-match gating under [run_rule_writes]: a match passes (continue to the
