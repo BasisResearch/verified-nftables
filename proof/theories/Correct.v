@@ -287,6 +287,10 @@ Proof.
   - (* SObjrefMap: load the key fields, then the verdict-neutral IObjrefMap *)
     cbn [compile_stmt]. rewrite <- app_assoc. rewrite run_load_fields.
     cbn [app run_rule]. eexists; reflexivity.
+  - (* SExthdrWrite: value source, then the verdict-neutral IExthdrWrite *)
+    edestruct (run_vsrc_exists vs rf (IExthdrWrite proto htype off len 1 :: rest) p) as [rf' Hr].
+    exists rf'. cbn [compile_stmt]. rewrite <- app_assoc. cbn [app].
+    rewrite Hr. reflexivity.
 Qed.
 
 Lemma run_stmts_exists : forall ss rf tail p,

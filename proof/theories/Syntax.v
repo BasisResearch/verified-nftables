@@ -213,7 +213,10 @@ Inductive stmt : Type :=
 | SDup (imms : list (nat * data)) (devreg addrreg : option nat)
                             (* duplicate the packet to a device/address loaded by
                                [imms]; verdict-neutral (the dup is a side effect) *)
-| SObjrefMap (keyfs : list field) (name : string).
+| SObjrefMap (keyfs : list field) (name : string)
+| SExthdrWrite (vs : vsrc) (proto : string) (htype off len : nat).
+                            (* write a value into a TCP-option exthdr field;
+                               verdict-neutral (packet rewrite outside the model) *)
                             (* reference a stateful object selected by looking up
                                the concatenation of [keyfs] in a named object map *)
                             (* dynamically add/delete the concatenation of [keyfs]

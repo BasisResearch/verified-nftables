@@ -66,6 +66,7 @@ type pinst =
   | PLast    of string                             (* `last` info (count or "never") *)
   | PDynset  of string * string * int * int option (* op, set name, key reg, data reg *)
   | PExthdrReset of string * int                   (* proto, htype *)
+  | PExthdrWrite of string * int * int * int * int (* proto, src reg, htype, off, len *)
   | PDup     of int option * int option            (* dev reg, addr reg *)
   | PFwd     of int option * int option * int option (* dev reg, addr reg, nfproto *)
   | PImm     of Verdict.verdict
@@ -283,6 +284,9 @@ let parse_line line : pinst =
   | ["dynset"; op; "reg_key"; k; "set"; name; "sreg_data"; d] ->
       PDynset (op, name, int_of_string k, Some (int_of_string d))
   | ["exthdr"; "reset"; proto; h] -> PExthdrReset (proto, int_of_string h)
+  | "exthdr"::"write"::proto::"reg"::r::"=>"::lb::"@"::htype::"+"::off::[] ->
+      let len = int_of_string (String.sub lb 0 (String.length lb - 1)) in
+      PExthdrWrite (proto, int_of_string r, int_of_string htype, int_of_string off, len)
   | "dup"::rest ->
       let rec p dev addr = function
         | "sreg_dev"::r::t -> p (Some (int_of_string r)) addr t
@@ -380,7 +384,8 @@ let rule_of_block (lines : string list) : Syntax.rule =
            mk_nat body [] (k,f,a,ax,pm,px,fl)
        | PImmData (r, v) ->
            let is_set l = (try (match parse_line l with
-                                | PWrite _ | PMetaSet _ | PCtSet _ | PCtSetDir _ -> true | _ -> false)
+                                | PWrite _ | PMetaSet _ | PCtSet _ | PCtSetDir _
+                                | PExthdrWrite _ -> true | _ -> false)
                            with _ -> false) in
            (match rest with
             | l2 :: more2 when r = 1 && is_set l2 ->   (* immediate + a set/write = mangle *)
@@ -390,6 +395,8 @@ let rule_of_block (lines : string list) : Syntax.rule =
                  | PMetaSet (k, 1) -> go (bs body (Syntax.SMetaSet (k, Syntax.VImm v))) more2
                  | PCtSet (k, 1) -> go (bs body (Syntax.SCtSet (k, Syntax.VImm v))) more2
                  | PCtSetDir (key, dir, 1) -> go (bs body (Syntax.SCtSetDir (key, dir, Syntax.VImm v))) more2
+                 | PExthdrWrite (proto, 1, htype, off, len) ->
+                     go (bs body (Syntax.SExthdrWrite (Syntax.VImm v, proto, htype, off, len))) more2
                  | _ -> raise (Unsupported "set:reg"))
             | _ ->
                 (* otherwise: gather operand immediates, then a nat/tproxy/dup *)

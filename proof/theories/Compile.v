@@ -156,6 +156,8 @@ Definition compile_stmt (s : stmt) : list instr :=
   | SObjrefMap keyfs name =>
       load_fields (alloc_regs 0 keyfs) ++
       [IObjrefMap (map snd (alloc_regs 0 keyfs)) name]
+  | SExthdrWrite vs proto htype off len =>
+      compile_vsrc vs ++ [IExthdrWrite proto htype off len 1]
   end.
 
 Definition verdict_tail (v : verdict) : list instr :=
