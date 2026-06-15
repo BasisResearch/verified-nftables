@@ -16,7 +16,8 @@ Inductive verdict : Type :=
 | Accept
 | Drop
 | Continue
-| Reject (typ code : nat).   (* reject with ICMP type/code *)
+| Reject (typ code : nat)              (* reject with ICMP type/code *)
+| Queue (lo hi : nat) (bypass fanout : bool).
 
 Definition terminal (v : verdict) : bool :=
   match v with

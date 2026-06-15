@@ -43,7 +43,8 @@ Inductive field : Type :=
 (* transport header (TCP/UDP/ICMP) *)
 | FThSport | FThDport | FTcpSeq | FTcpAck | FTcpFlags
 | FUdpLen | FUdpCsum | FIcmpType | FIcmpCode
-(* parametric extension-header / TCP-option field *)
+(* parametric payload field (any base/offset/length) and exthdr field *)
+| FPayload (b : pbase) (off len : nat)
 | FExthdr (ep : exthdr_proto) (htype off len : nat).
 
 (** The denotation of each field as a load. *)
@@ -74,6 +75,7 @@ Definition field_load (f : field) : loaddesc :=
   | FTcpFlags     => LPayload PTransport 13 1
   | FUdpLen       => LPayload PTransport 4 2 | FUdpCsum   => LPayload PTransport 6 2
   | FIcmpType     => LPayload PTransport 0 1 | FIcmpCode  => LPayload PTransport 1 1
+  | FPayload b off len => LPayload b off len
   | FExthdr ep htype off len => LExthdr ep htype off len
   end.
 
@@ -116,7 +118,8 @@ Inductive matchcond : Type :=
     verdict (counter accounts; notrack disables conntrack). *)
 Inductive stmt : Type :=
 | SCounter (pkts bytes : nat)
-| SNotrack.
+| SNotrack
+| SLog (level : option nat).
 
 (** A rule: matches, then verdict-neutral statements, then a verdict. *)
 Record rule : Type := {

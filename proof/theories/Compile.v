@@ -37,14 +37,16 @@ Definition compile_stmt (s : stmt) : list instr :=
   match s with
   | SCounter p b => [ICounter p b]
   | SNotrack     => [INotrack]
+  | SLog level   => [ILog level]
   end.
 
 Definition verdict_tail (v : verdict) : list instr :=
   match v with
-  | Continue   => []
-  | Accept     => [IImmediate Accept]
-  | Drop       => [IImmediate Drop]
-  | Reject t c => [IReject t c]
+  | Continue        => []
+  | Accept          => [IImmediate Accept]
+  | Drop            => [IImmediate Drop]
+  | Reject t c      => [IReject t c]
+  | Queue lo hi b f => [IQueue lo hi b f]
   end.
 
 Definition compile_rule (r : rule) : rule_prog :=

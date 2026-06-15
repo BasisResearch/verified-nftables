@@ -44,10 +44,12 @@ let name_of_ehproto = function
 
 let base_of_name = function
   | "link" -> Some Packet.PLink | "network" -> Some Packet.PNetwork
-  | "transport" -> Some Packet.PTransport | _ -> None
+  | "transport" -> Some Packet.PTransport
+  | "inner" -> Some Packet.PInner | "tunnel" -> Some Packet.PTunnel | _ -> None
 let name_of_base = function
   | Packet.PLink -> "link" | Packet.PNetwork -> "network"
   | Packet.PTransport -> "transport"
+  | Packet.PInner -> "inner" | Packet.PTunnel -> "tunnel"
 
 (* descriptor (loaddesc) -> a string key, for the reverse map and equality *)
 let key_of_load (ld : Syntax.loaddesc) = match ld with
@@ -66,15 +68,17 @@ let () = List.iter
 (* resolve a descriptor key to a DSL field: parametric exthdr keys are built
    directly; everything else is a fixed named field from the reverse map. *)
 let field_of_key_str key : Syntax.field option =
-  if String.length key >= 2 && String.sub key 0 2 = "x:" then
-    match String.split_on_char ':' key with
-    | ["x"; proto; h; o; l] ->
-        (match ehproto_of_name proto with
-         | Some ep -> Some (Syntax.FExthdr (ep, int_of_string h,
-                                            int_of_string o, int_of_string l))
-         | None -> None)
-    | _ -> None
-  else (try Some (Hashtbl.find field_of_key key) with Not_found -> None)
+  match String.split_on_char ':' key with
+  | ["x"; proto; h; o; l] ->
+      (match ehproto_of_name proto with
+       | Some ep -> Some (Syntax.FExthdr (ep, int_of_string h,
+                                          int_of_string o, int_of_string l))
+       | None -> None)
+  | ["p"; base; o; l] ->
+      (match base_of_name base with
+       | Some b -> Some (Syntax.FPayload (b, int_of_string o, int_of_string l))
+       | None -> None)
+  | _ -> (try Some (Hashtbl.find field_of_key key) with Not_found -> None)
 
 (* ---------- corpus value <-> bytes ---------- *)
 
@@ -128,7 +132,13 @@ let render_instr (i : Bytecode.instr) : string = match i with
       else Printf.sprintf "[ lookup reg %d set %s ]" s name
   | Bytecode.ICounter (p,b) -> Printf.sprintf "[ counter pkts %d bytes %d ]" p b
   | Bytecode.INotrack -> "[ notrack ]"
+  | Bytecode.ILog lv ->
+      (match lv with None -> "[ log ]" | Some n -> Printf.sprintf "[ log level %d ]" n)
   | Bytecode.IReject (t,c) -> Printf.sprintf "[ reject type %d code %d ]" t c
+  | Bytecode.IQueue (lo,hi,byp,fan) ->
+      let nums = if lo=hi then string_of_int lo else Printf.sprintf "%d-%d" lo hi in
+      "[ queue num " ^ nums ^ (if byp then " bypass" else "")
+        ^ (if fan then " fanout" else "") ^ " ]"
   | Bytecode.IImmediate v ->
       let vn = (match v with Verdict.Accept->"accept"|Verdict.Drop->"drop"
                             |Verdict.Continue->"continue"|Verdict.Reject _->"reject") in
@@ -159,6 +169,7 @@ type pinst =
   | PLookup  of int * string * bool              (* src reg, set name, inverted *)
   | PCounter of int * int
   | PNotrack
+  | PLog     of int option
   | PImm     of Verdict.verdict
 
 let rec take_until tok = function
@@ -219,8 +230,22 @@ let parse_line line : pinst =
        | []         -> raise (Unsupported "verdict:empty"))
   | ["counter"; "pkts"; p; "bytes"; b] -> PCounter (int_of_string p, int_of_string b)
   | ["notrack"] -> PNotrack
+  | "log"::rest ->
+      (match rest with
+       | [] -> PLog None
+       | ["level"; n] -> PLog (Some (int_of_string n))
+       | _ -> raise (Unsupported "log:opts"))
   | ["reject"; "type"; t; "code"; c] ->
       PImm (Verdict.Reject (int_of_string t, int_of_string c))
+  | "queue"::"num"::spec::flags ->
+      let (lo,hi) = (match String.split_on_char '-' spec with
+        | [a] -> (int_of_string a, int_of_string a)
+        | [a;b] -> (int_of_string a, int_of_string b)
+        | _ -> raise (Unsupported "queue:spec")) in
+      if List.for_all (fun f -> f="bypass" || f="fanout") flags then
+        PImm (Verdict.Queue (lo, hi, List.mem "bypass" flags, List.mem "fanout" flags))
+      else raise (Unsupported "queue:flags")
+  | "queue"::_ -> raise (Unsupported "queue:sreg")
   | tok::_ -> raise (Unsupported ("instr:"^tok))
   | [] -> raise (Unsupported "empty")
 
@@ -238,6 +263,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
            mk matches stmts v
        | PCounter (p,b) -> go matches (Syntax.SCounter (p,b) :: stmts) rest
        | PNotrack -> go matches (Syntax.SNotrack :: stmts) rest
+       | PLog l -> go matches (Syntax.SLog l :: stmts) rest
        | PLoad (key, lreg) ->
            if stmts <> [] then raise (Unsupported "load-after-stmt");
            if lreg <> 1 then raise (Unsupported "reg!=1");
