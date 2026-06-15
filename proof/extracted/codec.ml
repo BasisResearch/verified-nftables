@@ -236,6 +236,9 @@ let render_instr (i : Bytecode.instr) : string = match i with
       Printf.sprintf "[ limit rate %d/%s burst %d type %s flags 0x%x ]"
         s.Packet.ls_rate u s.Packet.ls_burst
         (if s.Packet.ls_bytes then "bytes" else "packets") s.Packet.ls_flags
+  | Bytecode.IQuota s ->
+      Printf.sprintf "[ quota bytes %d consumed %d flags %d ]"
+        s.Packet.q_bytes s.Packet.q_consumed s.Packet.q_flags
   | Bytecode.ICounter (p,b) -> Printf.sprintf "[ counter pkts %d bytes %d ]" p b
   | Bytecode.INotrack -> "[ notrack ]"
   | Bytecode.ILog lv ->

@@ -47,6 +47,7 @@ type pinst =
   | PCounter of int * int
   | PNotrack
   | PLimit   of Packet.limit_spec
+  | PQuota   of Packet.quota_spec
   | PLog     of int option
   | PImmData of int * int list                    (* immediate into a data register *)
   | PWrite   of int * Packet.pbase * int * int * int * int * int
@@ -248,6 +249,9 @@ let parse_line line : pinst =
         | _ -> raise (Unsupported ("limit:unit:"^u))) in
       PLimit { Packet.ls_rate = r; ls_unit = unit_code; ls_burst = int_of_string b;
                ls_bytes = (t = "bytes"); ls_flags = int_of_string fl }
+  | ["quota"; "bytes"; b; "consumed"; c; "flags"; fl] ->
+      PQuota { Packet.q_bytes = int_of_string b; q_consumed = int_of_string c;
+               q_flags = int_of_string fl }
   | "log"::rest ->
       (match rest with
        | [] -> PLog None
@@ -341,6 +345,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
        | PLimit spec ->
            if stmts <> [] then raise (Unsupported "limit-after-stmt");
            go (Syntax.MLimit spec :: matches) stmts rest
+       | PQuota spec ->
+           if stmts <> [] then raise (Unsupported "quota-after-stmt");
+           go (Syntax.MQuota spec :: matches) stmts rest
        | PLoad (key, lreg) ->
            if stmts <> [] then raise (Unsupported "load-after-stmt");
            let field_of k = (match field_of_key_str k with Some f -> f

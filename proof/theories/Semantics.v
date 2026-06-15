@@ -46,6 +46,7 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
   | MRangeT f ts neg lo hi =>
       eval_range (if neg then CNe else CEq) (apply_transforms ts (field_value f p)) lo hi
   | MLimit spec => pkt_limit p spec
+  | MQuota spec => pkt_quota p spec
   end.
 
 (** A rule applies when all its match conditions hold (empty = matches all). *)
@@ -159,6 +160,8 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | ITproxy _ _ _ :: _ => Some Accept        (* terminal redirect *)
   | ILimit spec :: rest =>
       if pkt_limit p spec then run_rule rf rest p else None   (* over-limit breaks *)
+  | IQuota spec :: rest =>
+      if pkt_quota p spec then run_rule rf rest p else None   (* over-quota breaks *)
   | ICounter _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)
   | INotrack :: rest      => run_rule rf rest p
   | ILog _ :: rest        => run_rule rf rest p

@@ -58,6 +58,12 @@ Record numgen_spec : Type := {
   ng_random : bool; ng_mod : nat; ng_offset : nat
 }.
 
+(** A quota: [q_bytes] the limit, [q_consumed] bytes already used, [q_flags] the
+    NFT_QUOTA_F_* bits (bit 0 = "over"/inverted). *)
+Record quota_spec : Type := {
+  q_bytes : nat; q_consumed : nat; q_flags : nat
+}.
+
 (** Payload bases: which header a [payload load] reads from. *)
 Inductive pbase : Type :=
 | PLink
@@ -80,6 +86,7 @@ Record packet : Type := {
   pkt_ih   : list byte;          (* inner-header bytes (tunnelled packet) *)
   pkt_tnl  : list byte;          (* tunnel-header bytes *)
   pkt_limit : limit_spec -> bool; (* oracle: does this packet pass a given limiter? *)
+  pkt_quota : quota_spec -> bool; (* oracle: does this packet pass a given quota? *)
   pkt_numgen : numgen_spec -> data;  (* oracle: numgen output (per-packet abstraction
                                         of a global counter; cannot distinguish two
                                         firings of one packet — see DEVELOPMENT.md) *)

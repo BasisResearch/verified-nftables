@@ -159,7 +159,8 @@ Inductive matchcond : Type :=
                             (* set membership of a transformed field value *)
 | MRangeT (f : field) (ts : list transform) (neg : bool) (lo hi : data)
                             (* range test of a transformed field value *)
-| MLimit  (spec : limit_spec).  (* stateful rate limit; passes per the packet oracle *)
+| MLimit  (spec : limit_spec)   (* stateful rate limit; passes per the packet oracle *)
+| MQuota  (spec : quota_spec).  (* stateful byte quota; passes per the packet oracle *)
 
 (** Verdict-neutral statements: they emit bytecode but do not change the packet's
     verdict (counter accounts; notrack disables conntrack). *)

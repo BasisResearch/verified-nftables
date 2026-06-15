@@ -103,6 +103,7 @@ Definition compile_match (m : matchcond) : list instr :=
       compile_load (field_load f) 1 :: compile_transforms ts ++
       [IRange (if neg then CNe else CEq) 1 lo hi]
   | MLimit spec => [ILimit spec]
+  | MQuota spec => [IQuota spec]
   end.
 
 (** A [Continue] (fall-through) rule emits no verdict expression, exactly as
