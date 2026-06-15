@@ -341,6 +341,18 @@ let rule_of_block (lines : string list) : Syntax.rule =
                      | PVmap (_, name) ->
                          if more <> [] then raise (Unsupported "trailing-after-vmap");
                          mk_vmap matches stmts (List.rev facc) name
+                     (* concat key looked up in a map for a value (dreg 1) feeding a set *)
+                     | PMapVal (_, name, 1) ->
+                         let fields = List.rev facc in
+                         (match more with
+                          | l3 :: more3 ->
+                            (match parse_line l3 with
+                             | PMetaSet (k, 1) ->
+                                 go matches (Syntax.SMetaSet (k, Syntax.VMap (fields, name, [])) :: stmts) more3
+                             | PCtSet (k, 1) ->
+                                 go matches (Syntax.SCtSet (k, Syntax.VMap (fields, name, [])) :: stmts) more3
+                             | _ -> raise (Unsupported "map-not-set"))
+                          | [] -> raise (Unsupported "map-dangling"))
                      | _ -> raise (Unsupported "concat-not-lookup"))
                   | [] -> raise (Unsupported "concat-dangling")
                 in gather [f] rest
@@ -388,9 +400,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
                           | l3 :: more3 ->
                             (match parse_line l3 with
                              | PMetaSet (k, 1) ->
-                                 go matches (Syntax.SMetaSet (k, Syntax.VMap (f, name, [])) :: stmts) more3
+                                 go matches (Syntax.SMetaSet (k, Syntax.VMap ([f], name, [])) :: stmts) more3
                              | PCtSet (k, 1) ->
-                                 go matches (Syntax.SCtSet (k, Syntax.VMap (f, name, [])) :: stmts) more3
+                                 go matches (Syntax.SCtSet (k, Syntax.VMap ([f], name, [])) :: stmts) more3
                              | _ -> raise (Unsupported "map-not-set"))
                           | [] -> raise (Unsupported "map-dangling"))
                      (* load (+ transforms) feeding a set/mangle = a value statement *)
@@ -404,10 +416,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                      | PLookup _ -> raise (Unsupported "lookup:reg")
                      | PBitwise _ | PShift _ | PByteorder _ | PJhash _ | PCmp _ ->
                          raise (Unsupported "reg!=1")
-                     | _ ->
-                         (if Sys.getenv_opt "DBG" <> None then
-                            Printf.eprintf "LNFT[ts=%d]: %s\n" (List.length ts) l);
-                         raise (Unsupported "load-not-followed-by-test"))
+                     | _ -> raise (Unsupported "load-not-followed-by-test"))
                   | [] -> raise (Unsupported "dangling-load")
                 in collect [] rest)
        | _ -> raise (Unsupported "test-without-load"))

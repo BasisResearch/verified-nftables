@@ -147,8 +147,8 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | IPayloadWrite _ _ _ _ _ _ _ :: rest => run_rule rf rest p
   | IMetaSet _ _ :: rest => run_rule rf rest p
   | ICtSet _ _ :: rest => run_rule rf rest p
-  | ILookupVal key _ dreg entries :: rest =>
-      run_rule (set_reg rf dreg (map_lookup_data (rf key) entries)) rest p
+  | ILookupVal keys _ dreg entries :: rest =>
+      run_rule (set_reg rf dreg (map_lookup_data (concat (map rf keys)) entries)) rest p
   | INat _ _ _ _ _ _ _ :: _ => Some Accept   (* terminal *)
   | ILimit spec :: rest =>
       if pkt_limit p spec then run_rule rf rest p else None   (* over-limit breaks *)
