@@ -28,7 +28,9 @@ Inductive meta_key : Type :=
 
 (** Conntrack keys (read by a [ct load] expression). *)
 Inductive ct_key : Type :=
-| CKstate | CKstatus | CKmark | CKdirection | CKexpiration | CKid.
+| CKstate | CKstatus | CKmark | CKdirection | CKexpiration | CKid
+| CKavgpkt | CKbytes | CKhelper | CKl3proto | CKlabel | CKpackets
+| CKproto | CKzone | CKevent.
 
 (** Routing-state keys ([rt load]) and socket keys ([socket load]); both read
     external state, modelled as packet oracles. *)

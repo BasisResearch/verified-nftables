@@ -46,6 +46,9 @@ let cts = [
   "state", Packet.CKstate; "status", Packet.CKstatus; "mark", Packet.CKmark;
   "direction", Packet.CKdirection; "expiration", Packet.CKexpiration;
   "id", Packet.CKid;
+  "avgpkt", Packet.CKavgpkt; "bytes", Packet.CKbytes; "helper", Packet.CKhelper;
+  "l3protocol", Packet.CKl3proto; "label", Packet.CKlabel; "packets", Packet.CKpackets;
+  "protocol", Packet.CKproto; "zone", Packet.CKzone; "event", Packet.CKevent;
 ]
 let ct_of_name n = try Some (List.assoc n cts) with Not_found -> None
 let name_of_ct k =
