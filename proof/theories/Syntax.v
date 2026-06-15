@@ -14,7 +14,7 @@
     cannot check them because its parser and renderer share these tables. *)
 
 From Stdlib Require Import List NArith String.
-From Nft Require Import Bytes Packet Verdict.
+From Nft Require Import Bytes Packet Verdict Bytecode.
 Import ListNotations.
 
 (** How to read a field's value out of a packet. *)
@@ -139,6 +139,7 @@ Inductive matchcond : Type :=
 | MNeq    (f : field) (v : data)
 | MRange  (f : field) (neg : bool) (lo hi : data)
 | MMasked (f : field) (neg : bool) (mask xor v : data)   (* (field & mask) ^ xor cmp v *)
+| MCmp    (f : field) (op : cmpop) (v : data)            (* ordered comparison field <op> v *)
 | MConcatSet (fields : list field) (neg : bool) (name : string) (elems : list data)
                             (* (concatenation of [fields]) [!]in a set/map *)
 | MTransform (f : field) (ts : list transform) (neg : bool) (v : data) (* cmp after transforms *)

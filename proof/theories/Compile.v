@@ -82,6 +82,7 @@ Definition compile_match (m : matchcond) : list instr :=
   | MMasked f neg mask xor v =>
       [compile_load (field_load f) 1; IBitwise 1 1 mask xor;
        ICmp (if neg then CNe else CEq) 1 v]
+  | MCmp f op v => [compile_load (field_load f) 1; ICmp op 1 v]
   | MConcatSet fields neg name elems =>
       load_fields (alloc_regs 0 fields) ++
       [ILookup (map snd (alloc_regs 0 fields)) name neg elems]

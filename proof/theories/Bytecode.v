@@ -21,7 +21,11 @@ Import ListNotations.
 (** Comparison operators of a [cmp] expression. *)
 Inductive cmpop : Type :=
 | CEq
-| CNe.
+| CNe
+| CLt
+| CGt
+| CLe
+| CGe.
 
 Definition reg := nat.   (* register index; reg 0 is the verdict register *)
 
@@ -92,12 +96,16 @@ Definition eval_cmp (op : cmpop) (a b : data) : bool :=
   match op with
   | CEq => data_eqb a b
   | CNe => negb (data_eqb a b)
+  | CLt => andb (data_le a b) (negb (data_eqb a b))
+  | CGt => negb (data_le a b)
+  | CLe => data_le a b
+  | CGe => data_le b a
   end.
 
 (** range eq: [lo <= x <= hi]; range neq: the complement. *)
 Definition eval_range (op : cmpop) (x lo hi : data) : bool :=
   let inr := andb (data_le lo x) (data_le x hi) in
   match op with
-  | CEq => inr
   | CNe => negb inr
+  | _   => inr
   end.

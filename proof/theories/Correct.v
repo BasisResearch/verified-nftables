@@ -150,7 +150,7 @@ Lemma run_compile_matches_const : forall ms tail res p,
 Proof.
   induction ms as [| m ms IH]; intros tail res p Hc rf.
   - cbn [flat_map app forallb]. apply Hc.
-  - destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0
+  - destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0 | f op v0
                   | fields neg nm elems | f ts neg v0 | f ts neg nm elems
                   | f ts neg lo hi | spec];
       cbn [flat_map compile_match app].
@@ -170,6 +170,10 @@ Proof.
       cbn [run_rule]. rewrite !set_reg_same. cbn [forallb eval_matchcond].
       destruct (eval_cmp (if neg then CNe else CEq)
                  (data_bitops (field_value f p) mask xor) v0);
+        cbn [andb]; [apply IH; exact Hc | reflexivity].
+    + (* MCmp: ordered comparison *) rewrite compile_load_correct.
+      cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond].
+      destruct (eval_cmp op (field_value f p) v0);
         cbn [andb]; [apply IH; exact Hc | reflexivity].
     + (* MConcatSet: multi-register key, distinct registers per field *)
       rewrite <- !app_assoc. cbn [app].

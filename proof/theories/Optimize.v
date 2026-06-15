@@ -44,7 +44,8 @@ Proof.
     try apply field_eq_dec;
     try apply Bool.bool_dec;
     try apply string_dec;
-    try apply limit_spec_eq_dec.
+    try apply limit_spec_eq_dec;
+    try (decide equality).
 Defined.
 
 (** ** Optimization 1: dead-rule elimination. *)

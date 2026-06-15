@@ -154,6 +154,11 @@ let nreg r =
   else let slot = r - 8 in
        if slot mod 4 = 0 then slot / 4 + 1 else slot + 8
 
+let cmpop_name = function
+  | Bytecode.CEq -> "eq" | Bytecode.CNe -> "neq"
+  | Bytecode.CLt -> "lt" | Bytecode.CGt -> "gt"
+  | Bytecode.CLe -> "lte" | Bytecode.CGe -> "gte"
+
 (* ---------- render our compiled instrs back to corpus text ---------- *)
 let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.IMetaLoad (k,r) ->
@@ -177,11 +182,9 @@ let render_instr (i : Bytecode.instr) : string = match i with
       Printf.sprintf "[ payload load %db @ %s header + %d => reg %d ]"
         l (name_of_base b) o (nreg r)
   | Bytecode.ICmp (op,r,v) ->
-      let opn = (match op with Bytecode.CEq -> "eq" | Bytecode.CNe -> "neq") in
-      Printf.sprintf "[ cmp %s reg %d %s ]" opn r (render_value v)
+      Printf.sprintf "[ cmp %s reg %d %s ]" (cmpop_name op) r (render_value v)
   | Bytecode.IRange (op,r,lo,hi) ->
-      let opn = (match op with Bytecode.CEq -> "eq" | Bytecode.CNe -> "neq") in
-      Printf.sprintf "[ range %s reg %d %s %s ]" opn r (render_value lo) (render_value hi)
+      Printf.sprintf "[ range %s reg %d %s %s ]" (cmpop_name op) r (render_value lo) (render_value hi)
   | Bytecode.IBitwise (d,s,mask,xor) ->
       Printf.sprintf "[ bitwise reg %d = ( reg %d & %s ) ^ %s ]"
         d s (render_value mask) (render_value xor)
@@ -269,6 +272,7 @@ let toks_of_line line =
 type pinst =
   | PLoad    of string * int                 (* descriptor key, dst reg *)
   | PCmp     of bool * int * int list         (* is_eq, src reg, value bytes *)
+  | POrdCmp  of Bytecode.cmpop * int * int list  (* ordered cmp lt/gt/lte/gte *)
   | PRange   of bool * int * string list      (* is_eq, src reg, lo++hi hexwords *)
   | PBitwise of int * int * int list * int list  (* dst, src, mask, xor *)
   | PShift   of int * int * bool * int            (* dst, src, is_left, amount *)
@@ -343,9 +347,15 @@ let parse_line line : pinst =
                   int_of_string r)
        | _ -> raise (Unsupported "exthdr:form"))
   | "cmp"::op::"reg"::r::rest ->
-      let iseq = match op with "eq"->true | "neq"->false
-                 | _ -> raise (Unsupported ("cmpop:"^op)) in
-      PCmp (iseq, int_of_string r, bytes_of_hexwords rest)
+      let v = bytes_of_hexwords rest in
+      (match op with
+       | "eq"  -> PCmp (true,  int_of_string r, v)
+       | "neq" -> PCmp (false, int_of_string r, v)
+       | "lt"  -> POrdCmp (Bytecode.CLt, int_of_string r, v)
+       | "gt"  -> POrdCmp (Bytecode.CGt, int_of_string r, v)
+       | "lte" -> POrdCmp (Bytecode.CLe, int_of_string r, v)
+       | "gte" -> POrdCmp (Bytecode.CGe, int_of_string r, v)
+       | _ -> raise (Unsupported ("cmpop:"^op)))
   | "range"::op::"reg"::r::rest ->
       let iseq = match op with "eq"->true | "neq"->false
                  | _ -> raise (Unsupported ("rangeop:"^op)) in
@@ -552,6 +562,8 @@ let rule_of_block (lines : string list) : Syntax.rule =
                            | [] -> if iseq then Syntax.MEq (f,v) else Syntax.MNeq (f,v)
                            | _ -> Syntax.MTransform (f, tl, not iseq, v)) in
                          go (m :: matches) stmts more
+                     | POrdCmp (op, 1, v) when ts = [] ->
+                         go (Syntax.MCmp (f, op, v) :: matches) stmts more
                      | PRange (iseq, 1, words) ->
                          let n = List.length words in
                          if n land 1 <> 0 then raise (Unsupported "range-odd-words");

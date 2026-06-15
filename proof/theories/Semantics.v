@@ -29,6 +29,7 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
       eval_range (if neg then CNe else CEq) (field_value f p) lo hi
   | MMasked f neg mask xor v =>
       eval_cmp (if neg then CNe else CEq) (data_bitops (field_value f p) mask xor) v
+  | MCmp f op v => eval_cmp op (field_value f p) v
   | MConcatSet fields neg _ elems =>
       (* The lookup key is the concatenation of the field values.  NOTE: the
          kernel pads each concatenated field up to its 4-byte register slot, so
