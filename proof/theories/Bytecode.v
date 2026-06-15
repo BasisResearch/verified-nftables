@@ -46,6 +46,9 @@ Inductive instr : Type :=
                                              field; rendered at [hd srcs]); [elems]
                                              is the set contents, carried for
                                              semantics and not rendered (NEWSET) *)
+| IVmap        (srcs : list reg) (name : string) (entries : list (data * verdict))
+                                          (* verdict-map lookup (lookup .. dreg 0):
+                                             the rule's verdict, or fall-through *)
 | ILimit       (spec : limit_spec)       (* rate limit (can break the rule) *)
 | ICounter     (pkts bytes : nat)        (* verdict-neutral statements *)
 | INotrack

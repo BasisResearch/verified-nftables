@@ -222,7 +222,7 @@ Proof.
 Qed.
 
 Definition verdict_result (v : verdict) : option verdict :=
-  match v with Continue => None | _ => Some v end.
+  match v with Continue => None | v0 => Some v0 end.
 
 Lemma run_verdict_tail : forall v rf p,
   run_rule rf (verdict_tail v) p = verdict_result v.
@@ -232,11 +232,16 @@ Proof. intros v rf p. destruct v; reflexivity. Qed.
     verdict-neutral statements never change that). *)
 Lemma run_rule_compile_rule : forall r p,
   run_rule empty_rf (compile_rule r) p =
-  if rule_applies r p then verdict_result (r_verdict r) else None.
+  if rule_applies r p then outcome r p else None.
 Proof.
   intros r p. unfold compile_rule, rule_applies.
   apply run_compile_matches_const.
-  intro rf. rewrite run_stmts_passthrough. apply run_verdict_tail.
+  intro rf. rewrite run_stmts_passthrough.
+  unfold compile_end, outcome. destruct (r_vmap r) as [vm |].
+  - rewrite run_load_fields. cbn [run_rule].
+    rewrite map_write_fields by apply alloc_regs_nodup.
+    rewrite map_fst_field, alloc_regs_fst. reflexivity.
+  - destruct (r_verdict r); rewrite run_verdict_tail; reflexivity.
 Qed.
 
 (** Chain level: the compiled program reproduces the rule-list evaluation. *)
@@ -246,8 +251,11 @@ Proof.
   induction rs as [| r rs IH]; intros p.
   - reflexivity.
   - cbn [map run_program eval_rules]. rewrite run_rule_compile_rule.
-    destruct (rule_applies r p); destruct (r_verdict r);
-      cbn [terminal verdict_result]; try reflexivity; apply IH.
+    destruct (rule_applies r p); cbn [terminal].
+    + destruct (outcome r p) as [v |].
+      * destruct (terminal v); [reflexivity | apply IH].
+      * apply IH.
+    + apply IH.
 Qed.
 
 (** ** Main theorem: semantic preservation. *)

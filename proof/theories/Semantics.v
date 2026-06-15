@@ -51,6 +51,22 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
 Definition rule_applies (r : rule) (p : packet) : bool :=
   forallb (fun m => eval_matchcond m p) (r_matches r).
 
+(** Look up a key in a verdict map's entries. *)
+Fixpoint assoc_verdict (key : data) (entries : list (data * verdict)) : option verdict :=
+  match entries with
+  | [] => None
+  | (k, v) :: rest => if data_eqb key k then Some v else assoc_verdict key rest
+  end.
+
+(** A rule's outcome (when it applies): a [Some v] (verdict reached) or [None]
+    (fall through), for a static verdict or a verdict-map lookup. *)
+Definition outcome (r : rule) (p : packet) : option verdict :=
+  match r_vmap r with
+  | Some vm => assoc_verdict (concat (map (fun f => field_value f p) (vm_fields vm)))
+                             (vm_entries vm)
+  | None    => match r_verdict r with Continue => None | v => Some v end
+  end.
+
 (** Evaluate a rule list.  [None] means "fell through every rule"; [Some v]
     means a terminal verdict [v] was reached.  A [Continue] verdict on an
     applicable rule simply proceeds, exactly like a non-applicable rule. *)
@@ -59,9 +75,9 @@ Fixpoint eval_rules (rs : list rule) (p : packet) : option verdict :=
   | [] => None
   | r :: rest =>
       if rule_applies r p then
-        match r_verdict r with
-        | Continue => eval_rules rest p
-        | v        => Some v
+        match outcome r p with
+        | Some v => if terminal v then Some v else eval_rules rest p
+        | None   => eval_rules rest p
         end
       else eval_rules rest p
   end.
@@ -110,6 +126,8 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       run_rule (set_reg rf dst (data_jhash l s m o (rf src))) rest p
   | ILookup srcs _ neg elems :: rest =>
       if xorb neg (data_mem (concat (map rf srcs)) elems) then run_rule rf rest p else None
+  | IVmap srcs _ entries :: _ =>
+      assoc_verdict (concat (map rf srcs)) entries   (* verdict from the map, or None *)
   | ILimit spec :: rest =>
       if pkt_limit p spec then run_rule rf rest p else None   (* over-limit breaks *)
   | ICounter _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)

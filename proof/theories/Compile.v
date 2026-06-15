@@ -42,8 +42,18 @@ Fixpoint compile_transforms (ts : list transform) : list instr :=
     bytes occupies [ceil(len/4)] slots (>=1).  The lookup then reads the
     concatenation starting at reg 1.  We reproduce this allocation exactly so the
     emitted bytecode is byte-identical to nft. *)
+(** Byte width of a meta value (only matters for slot allocation when >4, i.e.
+    the interface-name keys; everything <=4 occupies one slot regardless). *)
+Definition meta_width (k : meta_key) : nat :=
+  match k with
+  | MKiifname | MKoifname | MKbri_iifname | MKbri_oifname => 16
+  | MKibrhwaddr => 6
+  | _ => 4
+  end.
+
 Definition load_width (ld : loaddesc) : nat :=
   match ld with
+  | LMeta k            => meta_width k
   | LPayload _ _ len   => len
   | LExthdr _ _ _ len _ => len
   | _                  => 4
@@ -106,10 +116,19 @@ Definition verdict_tail (v : verdict) : list instr :=
   | Queue lo hi b f => [IQueue lo hi b f]
   end.
 
+(** A rule ends either with a verdict map lookup (loads of the key fields then a
+    [lookup .. dreg 0]) or with the static verdict tail. *)
+Definition compile_end (r : rule) : list instr :=
+  match r_vmap r with
+  | Some vm => load_fields (alloc_regs 0 (vm_fields vm)) ++
+               [IVmap (map snd (alloc_regs 0 (vm_fields vm))) (vm_name vm) (vm_entries vm)]
+  | None    => verdict_tail (r_verdict r)
+  end.
+
 Definition compile_rule (r : rule) : rule_prog :=
   flat_map compile_match (r_matches r) ++
   flat_map compile_stmt (r_stmts r) ++
-  verdict_tail (r_verdict r).
+  compile_end r.
 
 Definition compile_chain (c : chain) : program :=
   map compile_rule (c_rules c).

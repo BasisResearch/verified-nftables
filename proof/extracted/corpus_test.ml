@@ -199,6 +199,9 @@ let render_instr (i : Bytecode.instr) : string = match i with
       let r = nreg (match srcs with x :: _ -> x | [] -> 1) in
       if neg then Printf.sprintf "[ lookup reg %d set %s 0x1 ]" r name
       else Printf.sprintf "[ lookup reg %d set %s ]" r name
+  | Bytecode.IVmap (srcs,name,_) ->
+      let r = nreg (match srcs with x :: _ -> x | [] -> 1) in
+      Printf.sprintf "[ lookup reg %d set %s dreg 0 ]" r name
   | Bytecode.ILimit s ->
       let u = (match s.Packet.ls_unit with
                | 0->"second" | 1->"minute" | 2->"hour" | 3->"day" | _->"week") in
@@ -245,6 +248,7 @@ type pinst =
   | PByteorder of int * int * bool * int * int    (* dst, src, hton, size, len *)
   | PJhash   of int * int * int * int * int * int (* dst, src, len, seed, mod, offset *)
   | PLookup  of int * string * bool              (* src reg, set name, inverted *)
+  | PVmap    of int * string                     (* verdict map: lookup .. dreg 0 *)
   | PCounter of int * int
   | PNotrack
   | PLimit   of Packet.limit_spec
@@ -337,6 +341,7 @@ let parse_line line : pinst =
   | "lookup"::"reg"::r::"set"::name::rest ->
       (match rest with
        | [] -> PLookup (int_of_string r, name, false)
+       | ["dreg"; "0"] -> PVmap (int_of_string r, name)
        | "dreg"::_ -> raise (Unsupported "lookup:map")
        | [h] when String.length h >= 2 && String.sub h 0 2 = "0x" ->
            PLookup (int_of_string r, name, true)
@@ -380,8 +385,13 @@ let parse_line line : pinst =
 (* fold a block into a DSL rule: (load;test)* then verdict-neutral statements
    then a verdict. *)
 let rule_of_block (lines : string list) : Syntax.rule =
-  let mk matches stmts v : Syntax.rule =
-    { Syntax.r_matches = List.rev matches; r_stmts = List.rev stmts; r_verdict = v } in
+  let mk ?(vmap=None) matches stmts v : Syntax.rule =
+    { Syntax.r_matches = List.rev matches; r_stmts = List.rev stmts;
+      r_verdict = v; r_vmap = vmap } in
+  (* a verdict-map lookup ends the rule: prior matches + a vmap outcome *)
+  let mk_vmap matches stmts fields name =
+    mk ~vmap:(Some { Syntax.vm_fields = fields; vm_name = name; vm_entries = [] })
+       matches stmts Verdict.Continue in
   let rec go matches stmts = function
     | [] -> mk matches stmts Verdict.Continue   (* match-only rule: falls through *)
     | l1 :: rest ->
@@ -414,6 +424,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
                      | PLookup (_, name, neg) ->
                          go (Syntax.MConcatSet (List.rev facc, neg, name, []) :: matches)
                             stmts more
+                     | PVmap (_, name) ->
+                         if more <> [] then raise (Unsupported "trailing-after-vmap");
+                         mk_vmap matches stmts (List.rev facc) name
                      | _ -> raise (Unsupported "concat-not-lookup"))
                   | [] -> raise (Unsupported "concat-dangling")
                 in gather [f] rest
@@ -447,6 +460,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
                            | [] -> Syntax.MConcatSet ([f], neg, name, [])
                            | tl -> Syntax.MSetT (f, tl, neg, name, [])) in
                          go (m :: matches) stmts more
+                     | PVmap (1, name) when ts = [] ->
+                         if more <> [] then raise (Unsupported "trailing-after-vmap");
+                         mk_vmap matches stmts [f] name
                      | PRange _ -> raise (Unsupported "range:reg")
                      | PLookup _ -> raise (Unsupported "lookup:reg")
                      | PBitwise _ | PShift _ | PByteorder _ | PJhash _ | PCmp _ ->

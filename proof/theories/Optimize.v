@@ -52,9 +52,12 @@ Defined.
 Definition is_empty {A} (l : list A) : bool :=
   match l with [] => true | _ => false end.
 
-(** A rule that matches everything and stops chain traversal. *)
+(** A rule that matches everything and stops chain traversal: no match
+    conditions, a terminal static verdict, and no verdict-map (whose result
+    could be a fall-through). *)
 Definition shadows (r : rule) : bool :=
-  is_empty (r_matches r) && terminal (r_verdict r).
+  is_empty (r_matches r) && terminal (r_verdict r) &&
+  (match r_vmap r with None => true | Some _ => false end).
 
 Fixpoint dce (rs : list rule) : list rule :=
   match rs with
@@ -67,15 +70,19 @@ Proof.
   induction rs as [| r rs IH]; intros p.
   - reflexivity.
   - cbn [dce]. destruct (shadows r) eqn:Hs.
-    + (* r shadows the rest: r matches all and is terminal *)
-      unfold shadows in Hs. apply andb_true_iff in Hs. destruct Hs as [Hm Hv].
-      cbn [eval_rules]. unfold rule_applies.
+    + (* r shadows the rest: matches all, terminal verdict, no vmap *)
+      unfold shadows in Hs. apply andb_true_iff in Hs. destruct Hs as [Hs1 Hvm].
+      apply andb_true_iff in Hs1. destruct Hs1 as [Hm Hv].
+      cbn [eval_rules]. unfold rule_applies, outcome.
       destruct (r_matches r) as [| m ms] eqn:Em; [| discriminate Hm].
-      cbn [forallb]. destruct (r_verdict r) eqn:Ev; cbn in Hv; try discriminate Hv;
-        reflexivity.
+      destruct (r_vmap r) as [vm |] eqn:Evm; [discriminate Hvm |].
+      cbn [forallb]. destruct (r_verdict r) eqn:Ev; cbn in Hv |- *;
+        try discriminate Hv; reflexivity.
     + (* keep r, recurse *)
-      cbn [eval_rules]. destruct (rule_applies r p) eqn:Ha.
-      * destruct (r_verdict r); try reflexivity; apply IH.
+      cbn [eval_rules]. destruct (rule_applies r p).
+      * destruct (outcome r p) as [v |].
+        -- destruct (terminal v); [reflexivity | apply IH].
+        -- apply IH.
       * apply IH.
 Qed.
 
@@ -84,7 +91,8 @@ Qed.
 Definition dedup_rule (r : rule) : rule :=
   {| r_matches := nodup matchcond_eq_dec (r_matches r);
      r_stmts   := r_stmts r;
-     r_verdict := r_verdict r |}.
+     r_verdict := r_verdict r;
+     r_vmap    := r_vmap r |}.
 
 Lemma forallb_nodup :
   forall (A : Type) (dec : forall x y : A, {x = y} + {x <> y}) f (l : list A),
@@ -107,15 +115,19 @@ Proof.
   apply forallb_nodup.
 Qed.
 
+Lemma outcome_dedup : forall r p, outcome (dedup_rule r) p = outcome r p.
+Proof. intros r p. unfold outcome, dedup_rule. reflexivity. Qed.
+
 Lemma eval_rules_map_dedup : forall rs p,
   eval_rules (map dedup_rule rs) p = eval_rules rs p.
 Proof.
   induction rs as [| r rs IH]; intros p.
   - reflexivity.
-  - cbn [map eval_rules]. rewrite rule_applies_dedup.
-    destruct (rule_applies r p) eqn:Ha.
-    + (* r_verdict (dedup_rule r) = r_verdict r definitionally *)
-      cbn [r_verdict dedup_rule]. destruct (r_verdict r); try reflexivity; apply IH.
+  - cbn [map eval_rules]. rewrite rule_applies_dedup, outcome_dedup.
+    destruct (rule_applies r p).
+    + destruct (outcome r p) as [v |].
+      * destruct (terminal v); [reflexivity | apply IH].
+      * apply IH.
     + apply IH.
 Qed.
 

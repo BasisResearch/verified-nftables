@@ -155,11 +155,22 @@ Inductive stmt : Type :=
 | SNotrack
 | SLog (level : option nat).
 
-(** A rule: matches, then verdict-neutral statements, then a verdict. *)
+(** A verdict map: the rule's verdict comes from looking up the concatenation of
+    [vm_fields] in the named map (entries live in NEWSET; carried for semantics,
+    empty in the control-plane round-trip). *)
+Record vmap_spec : Type := {
+  vm_fields  : list field;
+  vm_name    : string;
+  vm_entries : list (data * verdict);
+}.
+
+(** A rule: matches, then verdict-neutral statements, then either a static
+    verdict ([r_vmap = None]) or a verdict-map lookup ([r_vmap = Some ...]). *)
 Record rule : Type := {
   r_matches : list matchcond;
   r_stmts   : list stmt;
   r_verdict : verdict;
+  r_vmap    : option vmap_spec;
 }.
 
 (** A base chain: a default policy and an ordered list of rules. *)
