@@ -334,8 +334,8 @@ let rule_of_block (lines : string list) : Syntax.rule =
                     nat_kind = kind; nat_family = family;
                     nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
                     nat_pmax = pmax; nat_flags = flags }) body Verdict.Continue in
-  let mk_nat_map body (f,ts,name) (kind,family,amin,amax,pmin,pmax,flags) =
-    mk ~nat:(Some { Syntax.nat_imms = []; nat_map = Some ((f, ts), name);
+  let mk_nat_map body (fields,ts,name) (kind,family,amin,amax,pmin,pmax,flags) =
+    mk ~nat:(Some { Syntax.nat_imms = []; nat_map = Some ((fields, ts), name);
                     nat_kind = kind; nat_family = family;
                     nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
                     nat_pmax = pmax; nat_flags = flags }) body Verdict.Continue in
@@ -428,6 +428,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
                                  go (bs body (Syntax.SMetaSet (k, Syntax.VMap (fields, [], name, [])))) more3
                              | PCtSet (k, 1) ->
                                  go (bs body (Syntax.SCtSet (k, Syntax.VMap (fields, [], name, [])))) more3
+                             | PNat (kind,fam,a,ax,pm,px,fl) ->
+                                 if more3 <> [] then raise (Unsupported "trailing-after-nat");
+                                 mk_nat_map body (fields, [], name) (kind,fam,a,ax,pm,px,fl)
                              | _ -> raise (Unsupported "map-not-set"))
                           | [] -> raise (Unsupported "map-dangling"))
                      | _ -> raise (Unsupported "concat-not-lookup"))
@@ -483,7 +486,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                                  go (bs body (Syntax.SCtSet (k, Syntax.VMap ([f], List.rev ts, name, [])))) more3
                              | PNat (kind,fam,a,ax,pm,px,fl) ->
                                  if more3 <> [] then raise (Unsupported "trailing-after-nat");
-                                 mk_nat_map body (f, List.rev ts, name) (kind,fam,a,ax,pm,px,fl)
+                                 mk_nat_map body ([f], List.rev ts, name) (kind,fam,a,ax,pm,px,fl)
                              | _ -> raise (Unsupported "map-not-set"))
                           | [] -> raise (Unsupported "map-dangling"))
                      | PDynset (op, name, 1, None) when ts = [] ->

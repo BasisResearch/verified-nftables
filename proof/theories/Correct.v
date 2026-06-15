@@ -324,15 +324,16 @@ Qed.
 (** A map-sourced NAT operand: load the key (+ transforms), look it up in the map
     (into reg 1), then the terminal [INat] accepts — all verdict-neutral until
     [INat]. *)
-Lemma run_map_nat : forall f ts name tail rf k fam amin amax pmin pmax fl p,
+Lemma run_map_nat : forall fields ts name tail rf k fam amin amax pmin pmax fl p,
   run_rule rf
-    ((compile_load (field_load f) 1 :: compile_transforms ts ++ [ILookupVal [1] name 1 []])
+    ((load_fields (alloc_regs 0 fields) ++ compile_transforms ts
+        ++ [ILookupVal (map snd (alloc_regs 0 fields)) name 1 []])
      ++ INat k fam amin amax pmin pmax fl :: tail) p = Some Accept.
 Proof.
-  intros. cbn [app]. rewrite compile_load_correct. rewrite <- app_assoc.
-  edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
-              ([ILookupVal [1] name 1 []] ++ INat k fam amin amax pmin pmax fl :: tail) p)
-    as [rf' [_ Hr]].
+  intros. rewrite <- !app_assoc. rewrite run_load_fields.
+  edestruct (run_transforms_prefix ts (write_fields rf (alloc_regs 0 fields) p)
+              ([ILookupVal (map snd (alloc_regs 0 fields)) name 1 []]
+                 ++ INat k fam amin amax pmin pmax fl :: tail) p) as [rf' [_ Hr]].
   rewrite Hr. cbn [app run_rule]. reflexivity.
 Qed.
 
@@ -387,7 +388,7 @@ Proof.
   (* the trailing tail is the outcome instrs then the post-outcome statements;
      a terminal outcome ignores them, a Continue tail runs them to None *)
   intro rf. unfold compile_end, outcome. destruct (r_nat r) as [n |].
-  - rewrite <- app_assoc. destruct (nat_map n) as [[[f ts] name] |];
+  - rewrite <- app_assoc. destruct (nat_map n) as [[[fields ts] name] |];
       [apply run_map_nat | apply run_imms_nat].
   - destruct (r_tproxy r) as [t |].
     + rewrite <- app_assoc. apply run_imms_tproxy.

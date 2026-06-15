@@ -224,10 +224,12 @@ Record vmap_spec : Type := {
     rewrite itself is a side effect outside the single-packet verdict model. *)
 Record nat_spec : Type := {
   nat_imms   : list (nat * data);   (* immediate operand loads (reg, value) *)
-  nat_map    : option (field * list transform * string);
-                            (* alternative operand source: the value of [field]
-                               (after the transforms) looked up in a named map,
-                               into register 1 — `dnat to ip saddr map {...}` *)
+  nat_map    : option (list field * list transform * string);
+                            (* alternative operand source: the concatenation of
+                               [fields] (after the transforms) looked up in a named
+                               map, into register 1 — `dnat to ip saddr map {...}`.
+                               The looked-up value is consumed by the terminal NAT,
+                               which the single-packet model sees only as Accept. *)
   nat_kind   : string;              (* "snat" / "dnat" / "masq" / "redir" *)
   nat_family : string;              (* "ip" / "ip6"; "" for masq/redir *)
   nat_amin   : option nat;          (* None for masq/redir *)
