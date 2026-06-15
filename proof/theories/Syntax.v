@@ -198,9 +198,12 @@ Inductive stmt : Type :=
                             (* add/delete [keyfs] (-> [dataf] for a map) to a set *)
 | SExthdrReset (proto : string) (htype : nat)
                             (* reset (clear) a TCP option; verdict-neutral *)
-| SDup (imms : list (nat * data)) (devreg addrreg : option nat).
+| SDup (imms : list (nat * data)) (devreg addrreg : option nat)
                             (* duplicate the packet to a device/address loaded by
                                [imms]; verdict-neutral (the dup is a side effect) *)
+| SObjrefMap (keyfs : list field) (name : string).
+                            (* reference a stateful object selected by looking up
+                               the concatenation of [keyfs] in a named object map *)
                             (* dynamically add/delete the concatenation of [keyfs]
                                to a set; verdict-neutral (the mutation is a side
                                effect outside the single-packet model) *)

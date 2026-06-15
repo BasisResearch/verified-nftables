@@ -144,6 +144,9 @@ Definition compile_stmt (s : stmt) : list instr :=
   | SExthdrReset proto htype => [IExthdrReset proto htype]
   | SDup imms dev addr =>
       map (fun rv => IImmediateData (fst rv) (snd rv)) imms ++ [IDup dev addr]
+  | SObjrefMap keyfs name =>
+      load_fields (alloc_regs 0 keyfs) ++
+      [IObjrefMap (map snd (alloc_regs 0 keyfs)) name]
   end.
 
 Definition verdict_tail (v : verdict) : list instr :=

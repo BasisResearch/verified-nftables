@@ -250,6 +250,9 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.IConnlimit s ->
       Printf.sprintf "[ connlimit count %d flags %d ]" s.Packet.cl_count s.Packet.cl_flags
   | Bytecode.IObjref (t,n) -> Printf.sprintf "[ objref type %d name %s ]" t n
+  | Bytecode.IObjrefMap (srs,n) ->
+      let r = nreg (match srs with x :: _ -> x | [] -> 1) in
+      Printf.sprintf "[ objref sreg %d set %s ]" r n
   | Bytecode.ISynproxy (m,w) -> Printf.sprintf "[ synproxy mss %d wscale %d ]" m w
   | Bytecode.ILast info -> Printf.sprintf "[ last %s ]" info
   | Bytecode.IExthdrReset (proto,h) ->

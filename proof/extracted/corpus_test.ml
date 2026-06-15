@@ -60,6 +60,7 @@ type pinst =
                             (* kind, family, amin, amax, pmin, pmax, flags *)
   | PTproxy  of string * int option * int option   (* family, addr reg, port reg *)
   | PObjref  of int * string                       (* object type, object name *)
+  | PObjrefMap of int * string                     (* sreg, object-map name *)
   | PSynproxy of int * int                         (* mss, wscale *)
   | PLast    of string                             (* `last` info (count or "never") *)
   | PDynset  of string * string * int * int option (* op, set name, key reg, data reg *)
@@ -265,6 +266,7 @@ let parse_line line : pinst =
       PConnlimit { Packet.cl_count = int_of_string c; cl_flags = int_of_string fl }
   | "log"::rest -> PLog (String.concat " " rest)
   | ["objref"; "type"; t; "name"; n] -> PObjref (int_of_string t, n)
+  | ["objref"; "sreg"; r; "set"; name] -> PObjrefMap (int_of_string r, name)
   | ["synproxy"; "mss"; m; "wscale"; w] -> PSynproxy (int_of_string m, int_of_string w)
   | ["last"; info] -> PLast info
   | ["dynset"; op; "reg_key"; k; "set"; name] ->
@@ -419,6 +421,8 @@ let rule_of_block (lines : string list) : Syntax.rule =
                                (List.filteri (fun i _ -> i < n-1) fields,
                                 List.filteri (fun i _ -> i = n-1) fields)) in
                          go (bs body (Syntax.SDynset (op, name, keys, data))) more
+                     | PObjrefMap (_, name) ->
+                         go (bs body (Syntax.SObjrefMap (List.rev facc, name))) more
                      | PMapVal (_, name, 1) ->
                          let fields = List.rev facc in
                          (match more with
@@ -491,6 +495,8 @@ let rule_of_block (lines : string list) : Syntax.rule =
                           | [] -> raise (Unsupported "map-dangling"))
                      | PDynset (op, name, 1, None) when ts = [] ->
                          go (bs body (Syntax.SDynset (op, name, [f], []))) more
+                     | PObjrefMap (1, name) when ts = [] ->
+                         go (bs body (Syntax.SObjrefMap ([f], name))) more
                      | PMetaSet (k, 1) ->
                          go (bs body (Syntax.SMetaSet (k, Syntax.VField (f, List.rev ts)))) more
                      | PCtSet (k, 1) ->
