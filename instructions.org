@@ -15,6 +15,41 @@
 - Identify the correct deployment path
 - Document the development process, reflect on the progress, and be open to significantly refactor or experiment with new approaches when stuck
 
+** How to work: an adversarial writer/assessor loop
+Construction and critique are different jobs, and the author is the worst critic of
+their own spec: you rationalize the design choices a fresh, uninvested reviewer flags
+in minutes. The recurring failure modes — a theorem that is vacuous because the two
+artifacts it relates share an abstraction; a hypothesis that quietly excludes the hard
+inputs; a "theorem" that is a one-line corollary; a spec reverse-engineered to match
+the implementation; a differential test that only shows your parser and renderer are
+mutual inverses — are reliably caught by review that does NOT come from the writer. So
+make that review part of the loop rather than waiting to be asked for it:
+
+1. WRITER: land ONE small, green, axiom-free, end-to-end increment (a feature modelled
+   + implemented/translated + proved + differential-tested), committed.
+2. ASSESSOR: at each milestone, spawn several reviewer SUBAGENTS in parallel — run them
+   as *separate* agents precisely so they carry no authoring context — each owning one
+   dimension, each told to be maximally harsh and to assume the proof is weaker than it
+   claims:
+   - Vacuity / spec strength: do the related artifacts share primitives so the equality
+     holds by definitional unfolding? What wrong behaviour does the top theorem still
+     permit — build a witness. Inject a bug into the SPEC (not just the impl) and
+     confirm a theorem breaks.
+   - Faithfulness: enumerate every oracle / unconstrained data structure / stub /
+     abstracted value; flag those that hide mutable state or real computation.
+   - Theorem honesty: for each named theorem, is its advertised content actually in the
+     STATEMENT? Is it a corollary or a congruence lemma dressed up? Is each hypothesis
+     genuine well-formedness or a feature-excluding scope? Would it still hold if the
+     implementation were replaced by a wrong one?
+   - Trusted base / oracle: is the differential test self-inverse? Is there an
+     INDEPENDENT ground truth? Does every reported number exercise the verified core?
+   Each subagent returns concrete findings: {severity, location, claim-vs-reality}.
+3. SYNTHESIZE; high-severity findings become the next work-list. Do NOT advance to a
+   new feature while one is open. This also keeps you from idling or declaring victory
+   early — the adversary keeps producing the next task until it genuinely cannot.
+4. Stop only at a measured coverage plateau AND a clean adversarial pass (no open
+   high-severity findings; remaining limitations documented *prominently*).
+
 ** Definition of done
 The effort is a *prototype*, not a deliverable, until it runs against the chosen
 external corpus and you report measured coverage (N of M cases passing) plus a
@@ -39,6 +74,10 @@ value). So a second, independent bar must also be met before claiming done:
   in-place mutation) is a hole until proven otherwise, not an implicit pass.
 - Surface the biggest gaps *prominently* (not in a footnote). "X% of the corpus"
   must always be paired with "...but the semantics does not yet model A, B, C."
+- *Adversarial-clean.* A fresh harsh review (see the writer/assessor loop) must
+  find no open high-severity issue: no vacuity, no feature-hiding theorem
+  hypothesis, no trivial-corollary inflation, no spec-mirrors-impl, no self-inverse-
+  only differential test. Every accepted limitation must be documented prominently.
 
 ** Tips
 - Constantly assess the verification effort
@@ -67,14 +106,15 @@ value). So a second, independent bar must also be met before claiming done:
 - Differential testing against the upstream implementation is REQUIRED, not
   optional, and must run over a real external corpus (see Key steps). Report
   concrete coverage every time you assess progress. A handful of hand-written
-  rules is not acceptable evidence that the spec is correct or has parity.
+  examples is not acceptable evidence that the spec is correct or has parity.
 - Prioritize the HARD but central/common features over easy or niche ones. Do
   not cherry-pick the simple additive cases and defer the structurally hard ones
-  (e.g. multi-register dataflow / concatenations / maps, routing lookups like
-  fib) to "later" — those are usually the most common and most valuable, and
-  their proofs are the interesting ones. Go straight at the challenging proof;
-  if a feature needs a deeper model (e.g. a byte-addressable register file), do
-  that refactor rather than working around it. Easy long-tail features can wait.
+  — the constructs with cross-cutting dataflow, shared mutable state, recursion,
+  or several interacting components — to "later"; those are usually the most
+  common and most valuable, and their proofs are the interesting ones. Go straight
+  at the challenging proof; if a feature needs a deeper model (a richer state
+  representation, a more expressive value domain), do that refactor rather than
+  working around it. Easy long-tail features can wait.
 - Faithfulness of the specification takes priority over coverage speed. Always
   choose the most faithful representation of the source's semantics, even when a
   generic or opaque shortcut would cover more cases faster:
@@ -83,24 +123,24 @@ value). So a second, independent bar must also be met before claiming done:
   - *Distinguish per-input oracles from external mutable state — this is the most
     common faithfulness trap.* There are three different things, and only the
     first may be an oracle:
-    (a) a genuine *per-input* value the environment supplies (a packet field) —
-        fine to take as an input/oracle;
+    (a) a genuine *per-input* value the environment supplies with each unit of
+        work — fine to take as an input/oracle;
     (b) *named, shared, mutable* state that lives outside any single input and
-        can change at runtime (lookup tables addressed by name: sets/maps, a
-        routing/FIB table, a connection-tracking table, stateful named objects,
-        the definitions of callable chains) — this MUST be modelled as explicit
-        state threaded through the semantics and indexed by name. Never inline
-        its contents into the AST (e.g. a set's elements baked into the rule) and
-        never collapse it into a pure function of the input. Both hide the state
-        and make the correctness theorem vacuous there.
-    (c) *mutation*: a step that writes state a later step reads (set a packet
-        mark, NAT-rewrite an address, add an element to a dynamic set). "Does not
-        change THIS decision" (verdict-neutral) is NOT "has no effect" — thread
-        the mutated state so later reads observe it, or you will mis-model any
-        rule that reads what an earlier rule wrote.
+        can change at runtime (named lookup tables, a global registry, the
+        definitions of callable subroutines, any stateful named object the inputs
+        refer to by name) — this MUST be modelled as explicit state threaded
+        through the semantics and indexed by name. Never inline its contents into
+        the AST (e.g. baking a table's current entries into the term that
+        references it) and never collapse it into a pure function of the input.
+        Both hide the state and make the correctness theorem vacuous there.
+    (c) *mutation*: a step that writes state a later step reads (updating a field,
+        rewriting a value, inserting into a shared collection). "Does not change
+        THIS step's outcome" is NOT "has no effect" — thread the mutated state so
+        later reads observe it, or you will mis-model any step that reads what an
+        earlier step wrote.
     Red flag: if you are computing as a *pure function of the input* something the
-    real system derives from shared/mutable state (a route lookup, set
-    membership, a connection count), you have hidden the state — stop and model
+    real system derives from shared/mutable state (a lookup into named state, a
+    membership test, a running count), you have hidden the state — stop and model
     it. A knowingly-wrong semantics in a verified artifact is worse than an
     unsupported feature.
   - Make every abstraction *visible in the theorem statement*: quantify over the
@@ -110,6 +150,51 @@ value). So a second, independent bar must also be met before claiming done:
     order in which multiple entry points are traversed are part of the language,
     not optional extras. Model them (use a fuel-bounded interpreter if recursion
     through named state is not structurally terminating).
+- *Write the spec independently of the implementation.* The subtlest vacuity is
+  co-designing the two sides of the equality: if a "spec" function is defined to
+  mirror what the implementation produces, the correctness theorem holds by
+  construction and certifies nothing. Derive the spec from the authoritative reference
+  (manual / standard / reference source), ideally before writing the implementation,
+  and never adjust the spec to make a proof go through.
+- *A theorem's hypotheses are a red flag — distinguish well-formedness from feature
+  scope.* A precondition that excludes real inputs (a predicate that drops every input
+  containing some construct, an emptiness assumption on a field, a "no recursion"
+  restriction) HIDES unmodelled behaviour rather than scoping it. Strive for
+  unconditional theorems. If you genuinely must restrict, the hypothesis must be a
+  true *well-formedness* predicate (excluding only inputs the target itself rejects),
+  you must state precisely what it excludes, and you must confirm it does not quietly
+  drop the hard cases. "Generalize this theorem to all inputs" is itself a standing
+  work item, not a finished state.
+- *Do not inflate the theorem count.* A one-line corollary, or a congruence lemma
+  whose interesting parameter is left universally quantified ("for ANY such function,
+  the result agrees"), adds breadth, not assurance — the advertised content is not in
+  the statement. Judge and present each theorem by what its STATEMENT pins down, and
+  apply the sensitivity test: would it still prove if the implementation were replaced
+  by a wrong one?
+- *Named/shared state should be a DECLARED OBJECT, not merely an oracle.* Beyond
+  threading it as state (point (b) above): model the object's *definition* — its
+  contents and type — in the source artifact, and DERIVE the lookup environment from
+  those declarations, so a lookup provably reads the declared object. And remember the
+  differential corpus usually contains the object DEFINITIONS too, not just the obvious
+  unit you focused on; round-trip those — skipping them is exactly how "I model X"
+  degenerates into "I have an abstract function disconnected from any X."
+- *The differential oracle must be INDEPENDENT, and every metric must exercise the
+  verified artifact.* A round-trip whose parser and renderer share the same tables
+  only proves they are mutual inverses — it cannot catch a wrong constant used on both
+  sides. Add at least one check that runs the REAL target on the same input and
+  compares its output independently; better, a *runtime* check (feed inputs to the real
+  system and compare observable behaviour, not just the static artifact). A reported
+  "N/M" that never invokes the verified core (e.g. a transform composed with its own
+  inverse) proves nothing — do not cite it as evidence.
+- *A fix that forces disabling a previously-verified component, or that globally
+  weakens a core operation to accommodate one niche feature, is a smell.* Prefer a new
+  distinct construct over mutating the shared core; otherwise you trade a real
+  guarantee for a cosmetic feature and may silently break soundness elsewhere.
+- *Be honest in framing and naming.* State plainly what the proof establishes (e.g.
+  internal consistency between an implementation and a self-authored spec) and what it
+  does NOT (fidelity to the real target, which rests on the differential oracle and
+  independent checks). A self-consistent verification is a legitimate goal — but never
+  let a theorem's NAME or a summary claim more than its statement supports.
 - Always search for existing tools before inventing your own
 - Avoid reimplementing a non-trivial amount of logic in unverified code when there's an option to reuse existing unverified code in the upstream implementation. Our own unverified code should be considered less trustworthy than upstream's unverified but battle-tested code.
 - It is okay to temporarily branch out and run small experimentations before re-integrating into the main branch.
