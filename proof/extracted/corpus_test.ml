@@ -556,15 +556,20 @@ let rule_of_block (lines : string list) : Syntax.rule =
                              | _ -> raise (Unsupported "hash-not-set"))
                           | [] -> raise (Unsupported "hash-dangling"))
                      | PMapVal (_, name, 1) ->
-                         let fields = nott eacc in
+                         let elems = List.rev eacc in
+                         let vmap_src =
+                           if List.exists (fun (_,t) -> t <> []) eacc
+                           then Syntax.VMapT (elems, name, [])
+                           else Syntax.VMap (List.map fst elems, [], name, []) in
                          (match more with
                           | l3 :: more3 ->
                             (match parse_line l3 with
                              | PMetaSet (k, 1) ->
-                                 go (bs body (Syntax.SMetaSet (k, Syntax.VMap (fields, [], name, [])))) more3
+                                 go (bs body (Syntax.SMetaSet (k, vmap_src))) more3
                              | PCtSet (k, 1) ->
-                                 go (bs body (Syntax.SCtSet (k, Syntax.VMap (fields, [], name, [])))) more3
+                                 go (bs body (Syntax.SCtSet (k, vmap_src))) more3
                              | PNat (kind,fam,a,ax,pm,px,fl) ->
+                                 let fields = nott eacc in
                                  if more3 <> [] then raise (Unsupported "trailing-after-nat");
                                  mk_nat_map body (fields, [], name) (kind,fam,a,ax,pm,px,fl)
                              | _ -> raise (Unsupported "map-not-set"))

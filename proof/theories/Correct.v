@@ -334,7 +334,7 @@ Lemma run_vsrc_exists : forall vs rf rest p,
   exists rf', run_rule rf (compile_vsrc vs ++ rest) p = run_rule rf' rest p.
 Proof.
   destruct vs as [v | f ts | fields vts name entries | hf hl hs hm ho
-                 | osrcs ofinal]; intros rf rest p.
+                 | osrcs ofinal | telems tname tentries]; intros rf rest p.
   - exists (set_reg rf 1 v). reflexivity.
   - edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p)) rest p)
       as [rf' [_ Hr]].
@@ -361,6 +361,12 @@ Proof.
       rewrite Hc.
       edestruct (run_transforms_at_prefix ofinal 1 rf2 rest p) as [rf' [_ [_ Hf]]].
       rewrite Hf. exists rf'. reflexivity.
+  - (* VMapT: transformed-concat key loaded, then verdict-neutral ILookupVal *)
+    cbn [compile_vsrc]. rewrite <- app_assoc.
+    edestruct (run_load_fields_t telems 0 rf
+                ([ILookupVal (map snd (alloc_regs 0 (map fst telems))) tname 1 tentries]
+                 ++ rest) p) as [rf' [_ [_ Hrun]]].
+    rewrite Hrun. cbn [app run_rule]. eexists; reflexivity.
 Qed.
 
 (** Operand immediates are verdict-neutral: running them leaves the tail reached

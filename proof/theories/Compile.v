@@ -166,6 +166,9 @@ Definition compile_vsrc (vs : vsrc) : list instr :=
             ++ [IBitwiseOr 1 1 2]) rest ++
           compile_transforms_at 1 final
       end
+  | VMapT elems name entries =>
+      load_fields_t 0 elems ++
+      [ILookupVal (map snd (alloc_regs 0 (map fst elems))) name 1 entries]
   end.
 
 Definition compile_stmt (s : stmt) : list instr :=
