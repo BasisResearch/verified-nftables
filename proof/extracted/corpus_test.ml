@@ -93,6 +93,7 @@ let key_of_load (ld : Syntax.loaddesc) = match ld with
       Printf.sprintf "ng:%b:%d:%d" s.Packet.ng_random s.Packet.ng_mod s.Packet.ng_offset
   | Syntax.LOsf -> "osf:"
   | Syntax.LFib (sel,res) -> Printf.sprintf "fib:%s:%s" sel (name_of_fibres res)
+  | Syntax.LInner (t,h,fl,desc,w) -> Printf.sprintf "inner:%d:%d:%d:%d:%s" t h fl w desc
   | Syntax.LPayload (b,o,l) -> Printf.sprintf "p:%s:%d:%d" (name_of_base b) o l
 
 (* reverse map: descriptor key -> field, built from the verified field table *)
@@ -125,6 +126,9 @@ let field_of_key_str key : Syntax.field option =
       (match fibres_of_name res with
        | Some r -> Some (Syntax.FFib (sel, r))
        | None -> None)
+  | ["inner"; t; h; fl; w; desc] ->
+      Some (Syntax.FInner (int_of_string t, int_of_string h, int_of_string fl,
+                           desc, int_of_string w))
   | _ -> (try Some (Hashtbl.find field_of_key key) with Not_found -> None)
 
 (* ---------- corpus value <-> bytes ---------- *)
@@ -187,6 +191,9 @@ let render_instr (i : Bytecode.instr) : string = match i with
         (name_of_ehproto ep) l h o (if pr then " present" else "") (nreg r)
   | Bytecode.IFibLoad (sel,res,r) ->
       Printf.sprintf "[ fib %s %s => reg %d ]" sel (name_of_fibres res) (nreg r)
+  | Bytecode.IInnerLoad (t,h,fl,desc,_,r) ->
+      Printf.sprintf "[ inner type %d hdrsize %d flags %x [ %s => reg %d ] ]"
+        t h fl desc (nreg r)
   | Bytecode.INumgen (s,r) ->
       (* mirror upstream nft: it omits "offset" when 0, never emits "offset 0" *)
       let off = if s.Packet.ng_offset > 0 then Printf.sprintf " offset %d" s.Packet.ng_offset else "" in
@@ -351,6 +358,20 @@ let parse_line line : pinst =
         { Packet.ng_random = (mode = "random"); ng_mod = int_of_string m;
           ng_offset = off }), int_of_string n)
   | "osf"::"dreg"::n::[] -> PLoad (key_of_load Syntax.LOsf, int_of_string n)
+  | "inner"::"type"::t::"hdrsize"::h::"flags"::fl::"["::rest ->
+      let (inner_toks, _) = take_until "]" rest in
+      let (desc_toks, after) = take_until "=>" inner_toks in
+      let r = (match after with ["reg"; n] -> int_of_string n
+               | _ -> raise (Unsupported "inner:form")) in
+      let width = (match desc_toks with
+        | "meta"::_ -> 4
+        | "payload"::"load"::lb::_ ->
+            int_of_string (String.sub lb 0 (String.length lb - 1))
+        | _ -> raise (Unsupported "inner:innerload")) in
+      let desc = String.concat " " desc_toks in
+      PLoad (Printf.sprintf "inner:%d:%d:%d:%d:%s"
+               (int_of_string t) (int_of_string h)
+               (int_of_string ("0x"^fl)) width desc, r)
   | "fib"::rest ->
       let (lhs, after) = take_until "=>" rest in
       let r = (match after with ["reg"; n] -> int_of_string n
@@ -694,6 +715,11 @@ let validate_pairs : (string * string * Syntax.field) list = [
   "ip",  "meta priority 0",        Syntax.FMetaGen Packet.MKpriority;
   "ip",  "ct state new",           Syntax.FCtState;
   "ip",  "ct mark 1",              Syntax.FCtMark;
+  (* fib: independently confirm the selector/result tokenization against live nft
+     (the round-trip alone can't, since fib's sel string is free-form). *)
+  "inet", "fib daddr . iif type local",   Syntax.FFib ("daddr . iif", Packet.FRtype);
+  "inet", "fib saddr . iif oifname \"lo\"", Syntax.FFib ("saddr . iif", Packet.FRoifname);
+  "inet", "fib saddr . iif oif != 0",     Syntax.FFib ("saddr . iif", Packet.FRoif);
 ]
 
 let run_validation () =

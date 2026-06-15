@@ -126,7 +126,17 @@ a verified distinct-register allocation; nft's debug register *numbering* (the
 128-bit alias for 16-byte-aligned slots) is a tested-glue presentation map
 (`nreg`), validated byte-identically — the dataflow correctness is verified.
 Field count: `all_fields` lists 48 named fields plus the parametric/oracle
-constructors.
+constructors. `fib` (route lookup) and `inner` (tunnel-decapsulated header reads)
+are modeled as explicit oracles keyed by the rule's request — `pkt_fib selector
+result` and `pkt_inner type hdrsize flags innerdesc` — so an inner/fib read can
+never produce a *wrong* verdict, only an abstract one; the inner packet is a
+distinct packet, hence an independent oracle rather than a function of the outer
+headers. The `fib` selector/result tokenization (free-form, so the round-trip
+can't self-check it) is confirmed against live `nft` by `make validate`.
+Ordered comparisons (`cmp lt/gt/lte/gte`) use `data_le`, a total order on the
+equal-width operands nft emits. Map-valued sets (`meta/ct set … map`) verify
+verdict-neutrality; the looked-up value, like every set/mangle value, is checked
+by the differential corpus, not Rocq.
 
 ## Assessment (the instructions' checklist, with numbers)
 
@@ -134,7 +144,7 @@ constructors.
 - **Catches injected bugs?** Yes (mutation-tested: flipping `cmp eq`→`neq` breaks
   `Correct.v`). Spec-vs-reality drift in *offsets/names* is caught by `make
   validate` against live `nft` (not by the corpus round-trip alone — see above).
-- **Measured coverage:** 1934/2532 (76.4%) of upstream corpus blocks, 0 mismatches.
+- **Measured coverage:** 2246/2532 (88.7%) of upstream corpus blocks, 0 mismatches.
 - **Deployable?** `compile_chain`/`optimize_chain` extract to OCaml and already
   emit nft's exact text; the remaining step is a libnftnl netlink emitter shim.
 
@@ -152,11 +162,12 @@ expressions:
 - **maps with `dreg N>0`** (`lookup … dreg 1`): the lookup loads a value into a
   register for a following statement (e.g. `meta mark set … map`) — multi-register
   value flow, related to the NAT tier.
-- a long tail: `inner`/`tunnel` wrapper expressions, `ct set`/directional `ct`
-  loads, `dynset`, `objref`, `tproxy`, `synproxy`, `osf`-with-ttl, `fib`, etc. —
-  each a small structured feature.
+- a long tail: directional/object `ct` loads and `ct set`, `dynset`, `objref`,
+  `tproxy`, `synproxy`, `quota`, `xfrm`, `dup`/`fwd`, etc. — each a small
+  structured feature.
 
-The verdict-map (`dreg 0`) case is **done** (see above).
+The verdict-map (`dreg 0`), map-valued set, `fib`, `inner`, and ordered-comparison
+cases are **done** (see above).
 
 ## Next steps (toward the broader instructions.org goals)
 

@@ -89,6 +89,13 @@ Record packet : Type := {
                                specification (which inputs the lookup uses, e.g.
                                "saddr . iif"); the result selector fixes what the
                                routing table yields. *)
+  pkt_inner : nat -> nat -> nat -> string -> data;
+                            (* oracle: a field read from the decapsulated inner
+                               packet of a tunnel.  Keyed by tunnel (type, hdrsize,
+                               flags) and a descriptor of the inner field (e.g.
+                               "meta load protocol").  The inner packet is a
+                               separate packet, so its fields are an independent
+                               oracle rather than a function of the outer headers. *)
 }.
 
 (** Read [len] bytes at [off] from a header byte string. *)

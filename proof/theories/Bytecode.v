@@ -38,6 +38,7 @@ Inductive instr : Type :=
 | IOsf         (dst : reg)
 | IExthdrLoad  (ep : exthdr_proto) (htype off len : nat) (present : bool) (dst : reg)
 | IFibLoad     (sel : string) (res : fib_result) (dst : reg)
+| IInnerLoad   (typ hdrsize flags : nat) (innerdesc : string) (width : nat) (dst : reg)
 | IPayloadLoad (b : pbase) (off len : nat) (dst : reg)
 | ICmp         (op : cmpop) (src : reg) (v : data)
 | IRange       (op : cmpop) (src : reg) (lo hi : data)   (* range eq/neq *)
@@ -93,6 +94,10 @@ Proof.
   destruct (Nat.eqb r r') eqn:E; [apply Nat.eqb_eq in E; contradiction | reflexivity].
 Qed.
 
+(** Compare register [a] against immediate [b].  The ordered ops use [data_le]
+    (big-endian unsigned), which is a total order on EQUAL-LENGTH operands; nft
+    only ever emits a [cmp] whose immediate has the loaded field's width, so [a]
+    and [b] are always the same length here. *)
 Definition eval_cmp (op : cmpop) (a b : data) : bool :=
   match op with
   | CEq => data_eqb a b
