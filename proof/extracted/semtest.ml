@@ -16,6 +16,7 @@ let meq f v : Syntax.matchcond = Syntax.MEq (f, v)
 let mneq f v : Syntax.matchcond = Syntax.MNeq (f, v)
 let mrange f lo hi : Syntax.matchcond = Syntax.MRange (f, false, lo, hi)
 let mcmp f op v : Syntax.matchcond = Syntax.MCmp (f, op, v)
+let mset f elems : Syntax.matchcond = Syntax.MConcatSet ([f], false, "set", elems)
 let rule ms v : Syntax.rule =
   { Syntax.r_body = Stdlib.List.map (fun m -> Syntax.BMatch m) ms;
     r_verdict = v; r_vmap = None; r_nat = None; r_tproxy = None; r_fwd = None;
@@ -118,6 +119,16 @@ let () =
       "tcp dport 80 (hit accept)", mk_pkt ~th:(th ~dport:[0; 80]) ();
       "tcp dport 443 (miss->redir)", mk_pkt ~th:(th ~dport:[1; 187]) ();
       "udp dport 22 (no match)",  mk_pkt ~l4proto:[17] ~th:(th ~dport:[0; 22]) () ];
+  (* (3) anonymous set membership `tcp dport { 22, 80 }` with REAL elements —
+     again a data_mem lookup the corpus never populates. *)
+  run_battery fails
+    "set membership tcp dport { 22, 80 } accept (data_mem with real elements)"
+    (chain Verdict.Drop
+       [ rule [ l4_tcp; mset Syntax.FThDport [ [0; 22]; [0; 80] ] ] Verdict.Accept ])
+    [ "tcp dport 22 (in set)",  mk_pkt ~th:(th ~dport:[0; 22]) ();
+      "tcp dport 80 (in set)",  mk_pkt ~th:(th ~dport:[0; 80]) ();
+      "tcp dport 443 (not in)", mk_pkt ~th:(th ~dport:[1; 187]) ();
+      "udp dport 22 (no l4)",   mk_pkt ~l4proto:[17] ~th:(th ~dport:[0; 22]) () ];
   Printf.printf "%s: compile & optimize preserve the DSL verdict on every packet\n"
     (if !fails = 0 then "PASS" else Printf.sprintf "FAIL (%d mismatches)" !fails);
   if !fails > 0 then exit 1
