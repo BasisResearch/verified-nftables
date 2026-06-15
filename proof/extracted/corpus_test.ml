@@ -385,8 +385,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
                     nat_kind = kind; nat_family = family;
                     nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
                     nat_pmax = pmax; nat_flags = flags }) body Verdict.Continue in
-  let mk_tproxy body imms (family,areg,preg) =
-    mk ~tproxy:(Some { Syntax.tp_imms = imms; tp_family = family;
+  let mk_tproxy ?(portmap=None) body imms (family,areg,preg) =
+    mk ~tproxy:(Some { Syntax.tp_imms = imms; tp_portmap = portmap;
+                       tp_family = family;
                        tp_areg = areg; tp_preg = preg }) body Verdict.Continue in
   (* fold a block into a rule body, preserving the source order of matches and
      verdict-neutral statements (nft interleaves them; our [r_body] is ordered). *)
@@ -436,6 +437,26 @@ let rule_of_block (lines : string list) : Syntax.rule =
                      | PQueue (sreg,bypass,fanout) ->
                          if more <> [] then raise (Unsupported "trailing-after-queue");
                          mk_queue body (List.rev imms) (sreg,bypass,fanout)
+                     (* a symhash (into reg 2) keyed map lookup feeding a tproxy port *)
+                     | PLoad (key, 2) when String.length key >= 4 && String.sub key 0 4 = "sym:" ->
+                         let (m, o) = (match String.split_on_char ':' key with
+                                       | ["sym"; ms; os] -> (int_of_string ms, int_of_string os)
+                                       | _ -> raise (Unsupported "sym:form")) in
+                         (match more with
+                          | l2 :: more2 ->
+                            (match parse_line l2 with
+                             | PMapVal (2, name, 2) ->
+                                 (match more2 with
+                                  | l3 :: more3 ->
+                                    (match parse_line l3 with
+                                     | PTproxy (fam, ar, pr) ->
+                                         if more3 <> [] then raise (Unsupported "trailing-after-tproxy");
+                                         mk_tproxy ~portmap:(Some (((m, o), name), []))
+                                           body (List.rev imms) (fam, ar, pr)
+                                     | _ -> raise (Unsupported "symmap-not-tproxy"))
+                                  | [] -> raise (Unsupported "symmap-dangling"))
+                             | _ -> raise (Unsupported "sym-not-map"))
+                          | [] -> raise (Unsupported "sym-dangling"))
                      | _ -> raise (Unsupported "imm-not-nat"))
                   | [] -> raise (Unsupported "imm-dangling")
                 in gnat [(r, v)] rest)

@@ -262,7 +262,12 @@ Definition compile_terminal (r : rule) : list instr :=
                     (nat_amax n) (nat_pmin n) (nat_pmax n) (nat_flags n)]
   | None =>
   match r_tproxy r with
-  | Some t => map (fun rv => IImmediateData (fst rv) (snd rv)) (tp_imms t) ++
+  | Some t => (match tp_portmap t with
+               | Some (m, o, name, entries) =>
+                   map (fun rv => IImmediateData (fst rv) (snd rv)) (tp_imms t)
+                   ++ [ISymhash m o 2; ILookupVal [2] name 2 entries]
+               | None => map (fun rv => IImmediateData (fst rv) (snd rv)) (tp_imms t)
+               end) ++
               [ITproxy (tp_family t) (tp_areg t) (tp_preg t)]
   | None =>
   match r_fwd r with

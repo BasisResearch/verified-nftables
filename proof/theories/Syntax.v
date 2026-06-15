@@ -297,6 +297,10 @@ Record nat_spec : Type := {
     single-packet verdict model (which sees a terminal Accept). *)
 Record tproxy_spec : Type := {
   tp_imms   : list (nat * data);   (* immediate operand loads (reg, value) *)
+  tp_portmap : option (nat * nat * string * list (data * data));
+                            (* the target port computed by a symhash (modulus,
+                               offset) keyed map lookup into register 2 — e.g.
+                               `tproxy to :symhash mod N map {...}` *)
   tp_family : string;              (* "ip" / "ip6" / "" *)
   tp_areg   : option nat;          (* target-address register, if any *)
   tp_preg   : option nat;          (* target-port register, if any *)

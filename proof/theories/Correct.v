@@ -479,6 +479,18 @@ Proof.
   - apply IH.
 Qed.
 
+(** A symhash-keyed-map tproxy port: the operand immediates, then the
+    verdict-neutral symhash + map lookup, then the terminal [ITproxy] accepts. *)
+Lemma run_portmap_tproxy : forall imms m o name entries fam areg preg tail rf p,
+  run_rule rf ((map (fun rv => IImmediateData (fst rv) (snd rv)) imms
+                ++ [ISymhash m o 2; ILookupVal [2] name 2 entries])
+               ++ ITproxy fam areg preg :: tail) p = Some Accept.
+Proof.
+  induction imms as [| [r v] rest IH]; intros; cbn [map fst snd app run_rule].
+  - reflexivity.
+  - apply IH.
+Qed.
+
 (** A fwd outcome: the operand immediates pass through and the terminal [IFwd]
     accepts (ignoring anything after it). *)
 Lemma run_imms_fwd : forall imms tail rf dev addr nfp p,
@@ -603,7 +615,8 @@ Proof.
       * apply run_map_nat.
       * destruct (nat_field n) as [[f ts] |]; [apply run_field_nat | apply run_imms_nat].
   - destruct (r_tproxy r) as [t |].
-    + rewrite <- app_assoc. apply run_imms_tproxy.
+    + rewrite <- app_assoc. destruct (tp_portmap t) as [[[[m o] name] entries] |];
+        [apply run_portmap_tproxy | apply run_imms_tproxy].
     + destruct (r_fwd r) as [w |].
       * rewrite <- app_assoc. destruct (fwd_src w) as [vs |];
           [apply run_vsrc_fwd | apply run_imms_fwd].
