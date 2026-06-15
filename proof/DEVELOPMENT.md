@@ -57,14 +57,18 @@ that doesn't change *this* rule's verdict still mutates state later rules read:
   compiler theorem still proves because BOTH the DSL semantics and the VM no-op
   the set — a textbook vacuous-theorem case.
 
-**C. Control flow missing:**
-- `jump` / `goto` / `return` and **user-defined chains** are entirely absent
-  (`Verdict.v` only has Accept/Drop/Continue/Reject/Queue). Real rulesets are
-  built from a base chain dispatching into many user chains.
-- **Hooks, chain priorities, multiple tables/families**: a packet really
-  traverses several base chains across hooks (prerouting→input/forward→output→
-  postrouting) in priority order; we model a *single* base chain. `family` is
-  just a string label.
+**C. Control flow** *(jump/goto/return + user chains: FIXED, 2026-06)*:
+- ✅ `jump` / `goto` / `return` and **user-defined chains** are now modelled:
+  `verdict` carries Jump/Goto/Return; `eval_rules_j`/`eval_table` (DSL) and
+  `run_rules_j`/`run_table` (VM) are fuel-bounded interpreters over a named chain
+  environment, and `compile_table_correct` proves the compiler preserves the
+  whole-ruleset verdict for every fuel (axiom-free; `semtest` battery (4) is an
+  executable witness with a real `jump`).
+- ⛔ STILL OPEN — **hooks, chain priorities, multiple tables/families**: a packet
+  really traverses several base chains across hooks (prerouting→input/forward→
+  output→postrouting) in priority order; we still evaluate a *single* base chain
+  (+ its user chains). `family` is a string label. This is netfilter-core
+  dispatch above the per-ruleset semantics; a separate modelling layer.
 
 **D. Data-semantics infidelities inside modelled features:**
 - **Concat-key padding**: the kernel pads each concatenated set-key field to its

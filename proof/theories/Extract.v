@@ -25,4 +25,7 @@ Separate Extraction
   field_load
   all_fields
   eval_chain
-  run_chain.
+  run_chain
+  compile_env
+  eval_table
+  run_table.

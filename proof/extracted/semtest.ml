@@ -129,6 +129,26 @@ let () =
       "tcp dport 80 (in set)",  mk_pkt ~th:(th ~dport:[0; 80]) ();
       "tcp dport 443 (not in)", mk_pkt ~th:(th ~dport:[1; 187]) ();
       "udp dport 22 (no l4)",   mk_pkt ~l4proto:[17] ~th:(th ~dport:[0; 22]) () ];
+  (* (4) control flow: a base chain that JUMPs to a user chain "tcp_in" — tests
+     compile_table_correct (jump -> callee accept, or fall-through -> resume base
+     -> policy drop). The single-base-chain corpus cannot exercise this. *)
+  let fuel = 1000 in
+  let tcp_in = chain Verdict.Continue [ rule [ meq Syntax.FThDport [0; 22] ] Verdict.Accept ] in
+  let base   = chain Verdict.Drop     [ rule [ l4_tcp ] (Verdict.Jump "tcp_in") ] in
+  let cenv   = [ ("tcp_in", tcp_in) ] in
+  let cprog  = Compile.compile_env cenv and bprog = Compile.compile_chain base in
+  Printf.printf "=== base chain `jump tcp_in` then policy (compile_table_correct) ===\n";
+  Stdlib.List.iter (fun (name, p) ->
+    let dsl = Semantics.eval_table fuel cenv base p in
+    let vm  = Semantics.run_table  fuel cprog bprog base.Syntax.c_policy p in
+    let ok = dsl = vm in
+    Printf.printf "  %-32s DSL=%-8s VM=%-8s %s\n"
+      name (string_of_verdict dsl) (string_of_verdict vm) (if ok then "ok" else "MISMATCH");
+    if not ok then incr fails)
+    [ "tcp dport 22 (jump->accept)",        mk_pkt ~th:(th ~dport:[0; 22]) ();
+      "tcp dport 80 (jump->fallthru->drop)", mk_pkt ~th:(th ~dport:[0; 80]) ();
+      "udp (rule skipped -> policy drop)",   mk_pkt ~l4proto:[17] ~th:(th ~dport:[0; 22]) () ];
+  Printf.printf "\n";
   Printf.printf "%s: compile & optimize preserve the DSL verdict on every packet\n"
     (if !fails = 0 then "PASS" else Printf.sprintf "FAIL (%d mismatches)" !fails);
   if !fails > 0 then exit 1
