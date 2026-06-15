@@ -230,7 +230,8 @@ let render_instr (i : Bytecode.instr) : string = match i with
       let fl = if flags > 0 then Printf.sprintf " flags 0x%x" flags else "" in
       (match kind with
        | "snat" | "dnat" ->
-           let a = (match amin with Some r -> r | None -> 0) in
+           let a = (match amin with Some r -> r
+                    | None -> failwith "snat/dnat without addr_min") in
            Printf.sprintf "[ nat %s %s addr_min reg %d%s%s%s%s ]"
              kind family a (opt "addr_max" amax) (opt "proto_min" pmin)
              (opt "proto_max" pmax) fl

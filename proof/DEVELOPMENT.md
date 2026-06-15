@@ -118,7 +118,10 @@ these is future work.
 ICMP / userspace hand-off; sets carry their elements inside the `lookup`
 instruction (the real set lives in a separate NEWSET object; dynamic set mutation
 is out of scope); `notrack` is verdict-neutral here (its conntrack side effect is
-outside the single-packet model). Concatenation now uses multiple registers with
+outside the single-packet model). `nat`/`masq`/`redir` model only their terminal
+control-flow (accept + stop traversal); the address/port translation loaded into
+registers 1–4 is carried for byte-identical rendering but is outside the
+single-packet verdict model — exactly like reject's ICMP emission. Concatenation now uses multiple registers with
 a verified distinct-register allocation; nft's debug register *numbering* (the
 128-bit alias for 16-byte-aligned slots) is a tested-glue presentation map
 (`nreg`), validated byte-identically — the dataflow correctness is verified.
