@@ -114,6 +114,7 @@ let field_of_key_str key : Syntax.field option =
        | Some b -> Some (Syntax.FPayload (b, int_of_string o, int_of_string l))
        | None -> None)
   | ["m"; n] -> (match meta_of_name n with Some k -> Some (Syntax.FMetaGen k) | None -> None)
+  | ["c"; n] -> (match ct_of_name n with Some k -> Some (Syntax.FCtGen k) | None -> None)
   | ["r"; n] -> (match rt_of_name n with Some k -> Some (Syntax.FRtGen k) | None -> None)
   | ["s"; n] -> (match sock_of_name n with Some k -> Some (Syntax.FSocketGen k) | None -> None)
   | ["ng"; rnd; m; off] ->

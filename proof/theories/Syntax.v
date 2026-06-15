@@ -56,6 +56,7 @@ Inductive field : Type :=
 | FExthdr (ep : exthdr_proto) (htype off len : nat) (present : bool)
 (* typed oracle-keyed fields: any meta key, routing key, socket key *)
 | FMetaGen (k : meta_key)
+| FCtGen (k : ct_key)
 | FRtGen (k : rt_key)
 | FSocketGen (k : socket_key)
 | FNumgen (spec : numgen_spec)
@@ -95,6 +96,7 @@ Definition field_load (f : field) : loaddesc :=
   | FPayload b off len => LPayload b off len
   | FExthdr ep htype off len present => LExthdr ep htype off len present
   | FMetaGen k => LMeta k
+  | FCtGen k => LCt k
   | FRtGen k => LRt k
   | FSocketGen k => LSocket k
   | FNumgen spec => LNumgen spec
