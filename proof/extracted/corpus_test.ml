@@ -39,6 +39,7 @@ type pinst =
   | POrdCmp  of Bytecode.cmpop * int * int list  (* ordered cmp lt/gt/lte/gte *)
   | PRange   of bool * int * string list      (* is_eq, src reg, lo++hi hexwords *)
   | PBitwise of int * int * int list * int list  (* dst, src, mask, xor *)
+  | PBitOr   of int * int * int                   (* dst, src1, src2  (reg|reg) *)
   | PShift   of int * int * bool * int            (* dst, src, is_left, amount *)
   | PByteorder of int * int * bool * int * int    (* dst, src, hton, size, len *)
   | PJhash   of int * int * int * int * int * int (* dst, src, len, seed, mod, offset *)
@@ -188,6 +189,8 @@ let parse_line line : pinst =
   | "bitwise"::"reg"::dst::"="::"("::"reg"::src::op::amt::")"::[]
     when op = ">>" || op = "<<" ->
       PShift (int_of_string dst, int_of_string src, op = "<<", int_of_string amt)
+  | "bitwise"::"reg"::dst::"="::"("::"reg"::s1::"|"::"reg"::s2::")"::[] ->
+      PBitOr (int_of_string dst, int_of_string s1, int_of_string s2)
   | "bitwise"::_ -> raise (Unsupported "bitwise:form")
   | "byteorder"::"reg"::dst::"="::ftok::src::size::len::[] ->
       let hton = String.length ftok >= 4 && String.sub ftok 0 4 = "hton" in
@@ -465,6 +468,34 @@ let rule_of_block (lines : string list) : Syntax.rule =
              | [] -> (List.rev tacc, [])
            in
            let (ts0, rest0) = etrans lreg [] rest in
+           (* OR-combined value: base in reg 1, then one or more
+              [load => reg 2][transforms@2][bitwise reg1 = (reg1|reg2)] steps,
+              then optional final transforms on reg 1, feeding a meta/ct set. *)
+           let rec or_chain acc lines =
+             match lines with
+             | l :: more when (match (try Some (parse_line l) with _ -> None) with
+                               | Some (PLoad (_, 2)) -> true | _ -> false) ->
+                 let k = (match parse_line l with PLoad (k,_) -> k | _ -> assert false) in
+                 let (ts2, after2) = etrans 2 [] more in
+                 (match after2 with
+                  | l2 :: more2 when (match (try Some (parse_line l2) with _ -> None) with
+                                      | Some (PBitOr (1,1,2)) -> true | _ -> false) ->
+                      or_chain ((field_of k, ts2) :: acc) more2
+                  | _ -> (List.rev acc, lines))
+             | _ -> (List.rev acc, lines)
+           in
+           let (orsrcs, rest_or) = (if lreg = 1 then or_chain [] rest0 else ([], rest0)) in
+           if orsrcs <> [] then begin
+             let (final_ts, rest_f) = etrans 1 [] rest_or in
+             let vs = Syntax.VOr ((f, ts0) :: orsrcs, final_ts) in
+             (match rest_f with
+              | l :: more ->
+                  (match parse_line l with
+                   | PMetaSet (k, 1) -> go (bs body (Syntax.SMetaSet (k, vs))) more
+                   | PCtSet (k, 1)   -> go (bs body (Syntax.SCtSet (k, vs))) more
+                   | _ -> raise (Unsupported "or-not-set"))
+              | [] -> raise (Unsupported "or-dangling"))
+           end else
            (match rest0 with
             | l2 :: _ when is_load l2 ->
                 (* concatenation key (elements may carry an in-place transform) *)

@@ -230,6 +230,8 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.IBitwise (d,s,mask,xor) ->
       Printf.sprintf "[ bitwise reg %d = ( reg %d & %s ) ^ %s ]"
         d s (render_value mask) (render_value xor)
+  | Bytecode.IBitwiseOr (d,s1,s2) ->
+      Printf.sprintf "[ bitwise reg %d = ( reg %d | reg %d ) ]" d s1 s2
   | Bytecode.IBitShift (d,s,shl,amt) ->
       Printf.sprintf "[ bitwise reg %d = ( reg %d %s 0x%08x ) ]"
         d s (if shl then "<<" else ">>") amt

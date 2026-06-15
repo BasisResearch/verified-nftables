@@ -44,6 +44,16 @@ Fixpoint map_lookup_data (k : data) (entries : list (data * data)) : data :=
     performs (used to model prefix/masked matches such as a /24). *)
 Definition byte_and (a b : byte) : byte := Nat.land a b.
 Definition byte_xor (a b : byte) : byte := Nat.lxor a b.
+Definition byte_or  (a b : byte) : byte := Nat.lor a b.
+
+(** Bytewise OR of two values, the operation an nftables register-to-register
+    [bitwise ... | ...] expression performs (used when a value is composed by
+    OR-ing several field sources, e.g. [meta mark | meta iif]). *)
+Fixpoint data_or (a b : data) : data :=
+  match a, b with
+  | x :: xs, y :: ys => byte_or x y :: data_or xs ys
+  | _, _ => []
+  end.
 
 Fixpoint data_bitops (a mask xor : data) : data :=
   match a, mask, xor with

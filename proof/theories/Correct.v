@@ -307,10 +307,34 @@ Qed.
     yields an existential register file) and fall through to the verdict tail.
     Because every verdict tail is register-independent, this existential is all
     the rule-correctness proof needs. *)
+(** An OR-chain of value sources: each later source is loaded into reg 2,
+    transformed in place, then [bitwise reg1 = reg1 | reg2] folds it into the
+    accumulator.  Every instruction is verdict-neutral, so the trailing program
+    is reached from some register file. *)
+Lemma run_or_chain : forall srcs rf tail p,
+  exists rf',
+    run_rule rf
+      (flat_map (fun e =>
+         compile_load (field_load (fst e)) 2 :: compile_transforms_at 2 (snd e)
+         ++ [IBitwiseOr 1 1 2]) srcs ++ tail) p
+    = run_rule rf' tail p.
+Proof.
+  induction srcs as [| [f ts] srcs IH]; intros rf tail p.
+  - exists rf. reflexivity.
+  - cbn [flat_map fst snd]. rewrite <- !app_assoc. cbn [app].
+    rewrite compile_load_correct. rewrite <- app_assoc.
+    edestruct (run_transforms_at_prefix ts 2 (set_reg rf 2 (field_value f p)))
+      as [rf1 [_ [_ Ht]]].
+    rewrite Ht. cbn [app run_rule].
+    edestruct (IH (set_reg rf1 1 (data_or (rf1 1) (rf1 2))) tail p) as [rf' Hr].
+    rewrite Hr. exists rf'. reflexivity.
+Qed.
+
 Lemma run_vsrc_exists : forall vs rf rest p,
   exists rf', run_rule rf (compile_vsrc vs ++ rest) p = run_rule rf' rest p.
 Proof.
-  destruct vs as [v | f ts | fields vts name entries | hf hl hs hm ho]; intros rf rest p.
+  destruct vs as [v | f ts | fields vts name entries | hf hl hs hm ho
+                 | osrcs ofinal]; intros rf rest p.
   - exists (set_reg rf 1 v). reflexivity.
   - edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p)) rest p)
       as [rf' [_ Hr]].
@@ -325,6 +349,18 @@ Proof.
   - (* VHash: load the concat source fields, then the verdict-neutral IJhash *)
     cbn [compile_vsrc]. rewrite <- app_assoc. rewrite run_load_fields.
     cbn [app run_rule]. eexists; reflexivity.
+  - (* VOr: base into reg1, OR-chain folding more sources, then final transforms *)
+    destruct osrcs as [| [f0 ts0] orest].
+    + exists rf. cbn [compile_vsrc app]. reflexivity.
+    + cbn [compile_vsrc fst snd]. rewrite <- !app_assoc. cbn [app].
+      rewrite compile_load_correct.
+      edestruct (run_transforms_at_prefix ts0 1 (set_reg rf 1 (field_value f0 p)))
+        as [rf1 [_ [_ Ht0]]].
+      rewrite Ht0.
+      edestruct (run_or_chain orest rf1) as [rf2 Hc].
+      rewrite Hc.
+      edestruct (run_transforms_at_prefix ofinal 1 rf2 rest p) as [rf' [_ [_ Hf]]].
+      rewrite Hf. exists rf'. reflexivity.
 Qed.
 
 (** Operand immediates are verdict-neutral: running them leaves the tail reached

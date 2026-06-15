@@ -191,9 +191,14 @@ Inductive vsrc : Type :=
 | VField (f : field) (ts : list transform)
 | VMap   (fields : list field) (ts : list transform) (name : string)
          (entries : list (data * data))
-| VHash  (fields : list field) (len seed modulus offset : nat).
+| VHash  (fields : list field) (len seed modulus offset : nat)
                             (* jhash of the concatenation of [fields] (the hashed
                                value is a verdict-neutral set/mangle operand) *)
+| VOr    (srcs : list (field * list transform)) (final : list transform).
+                            (* a value built by OR-ing several (transformed) field
+                               sources: the first is loaded into reg 1, each later
+                               one into reg 2 then [bitwise reg1 = reg1 | reg2],
+                               then [final] is applied in place on reg 1 *)
                             (* value looked up by the concatenation of [fields]
                                (each, if a single field, optionally transformed by
                                [ts]) in a named map *)

@@ -161,6 +161,8 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       if eval_range op (rf src) lo hi then run_rule rf rest p else None
   | IBitwise dst src mask xor :: rest =>
       run_rule (set_reg rf dst (data_bitops (rf src) mask xor)) rest p
+  | IBitwiseOr dst src1 src2 :: rest =>
+      run_rule (set_reg rf dst (data_or (rf src1) (rf src2))) rest p
   | IBitShift dst src shl amt :: rest =>
       run_rule (set_reg rf dst (data_shift shl amt (rf src))) rest p
   | IByteorder dst src h sz len :: rest =>

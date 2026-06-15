@@ -156,6 +156,16 @@ Definition compile_vsrc (vs : vsrc) : list instr :=
       load_fields (alloc_regs 4 fields) ++
       [IJhash 1 (match map snd (alloc_regs 4 fields) with r :: _ => r | [] => 1 end)
               len seed modulus offset]
+  | VOr srcs final =>
+      match srcs with
+      | []             => []
+      | (f0, ts0) :: rest =>
+          (compile_load (field_load f0) 1 :: compile_transforms_at 1 ts0) ++
+          flat_map (fun e =>
+            compile_load (field_load (fst e)) 2 :: compile_transforms_at 2 (snd e)
+            ++ [IBitwiseOr 1 1 2]) rest ++
+          compile_transforms_at 1 final
+      end
   end.
 
 Definition compile_stmt (s : stmt) : list instr :=
