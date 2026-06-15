@@ -95,13 +95,15 @@ Record env : Type := {
                                                CIDR/range = [lo,hi]); see [set_mem] *)
   e_vmap : string -> list (data * verdict);  (* a named verdict map's entries *)
   e_map  : string -> list (data * data);     (* a named value map's entries *)
-  e_fib  : string -> fib_result -> data;     (* the routing table a `fib` lookup
-                                                consults, keyed by the selector
-                                                spec (e.g. "saddr . iif") and the
-                                                result selector.  Shared external
-                                                routing state, NOT a per-packet
-                                                property: two packets evaluate
-                                                against the same (mutable) table. *)
+  e_routes : list (data * data * (fib_result -> data));
+                            (* the ROUTING TABLE a `fib` lookup consults: a list of
+                               routes, each a destination interval [lo,hi] (a prefix
+                               10.0.0.0/8 = [10.0.0.0, 10.255.255.255]) paired with
+                               its result function (oif / type / oifname / present).
+                               Shared external state.  The fib RESULT is *computed*
+                               by [lpm_fib] (first containing route, i.e. the table
+                               ordered most-specific-first = longest-prefix-match),
+                               not an opaque oracle. *)
   e_rt   : rt_key -> data;                   (* routing-state (rt) keys, likewise
                                                 shared external routing state. *)
   e_limit : limit_spec -> nat;               (* a rate limiter's REMAINING tokens;
@@ -129,6 +131,11 @@ Record packet : Type := {
   pkt_th   : list byte;          (* transport-header bytes (e.g. TCP/UDP) *)
   pkt_ih   : list byte;          (* inner-header bytes (tunnelled packet) *)
   pkt_tnl  : list byte;          (* tunnel-header bytes *)
+  pkt_fibkey : string -> data;   (* the lookup KEY a fib selector extracts from
+                                    this packet (e.g. for "saddr . iif" the source
+                                    address): genuinely packet-determined.  The
+                                    routing-table LOOKUP on this key is computed by
+                                    [lpm_fib] against the shared [e_routes]. *)
   pkt_numgen : numgen_spec -> data;  (* oracle: numgen output (per-packet abstraction
                                         of a global counter; cannot distinguish two
                                         firings of one packet — see DEVELOPMENT.md) *)
@@ -163,4 +170,18 @@ Definition read_payload (b : pbase) (off len : nat) (p : packet) : data :=
   | PTransport => slice (pkt_th p) off len
   | PInner     => slice (pkt_ih p) off len
   | PTunnel    => slice (pkt_tnl p) off len
+  end.
+
+(** Longest-prefix-match routing lookup: return the result-[res] component of the
+    first route whose destination interval contains [key] (the table is kept
+    most-specific-first, so "first containing route" = longest prefix match); [] if
+    no route matches (unreachable).  Used by the `fib` field semantics on both
+    sides, so the routing-table lookup is a *computed* function of the shared route
+    table, not an opaque per-packet oracle. *)
+Fixpoint lpm_fib (routes : list (data * data * (fib_result -> data)))
+                 (key : data) (res : fib_result) : data :=
+  match routes with
+  | [] => []
+  | (lo, hi, f) :: rest =>
+      if andb (data_le lo key) (data_le key hi) then f res else lpm_fib rest key res
   end.

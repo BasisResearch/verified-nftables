@@ -32,7 +32,7 @@ let rule_b body v : Syntax.rule =
 (* ---- the runtime environment (named set/map state the lookups read) ---- *)
 let empty_env : Packet.env =
   { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
-    e_fib = (fun _ _ -> []); e_rt = (fun _ -> []);
+    e_routes = []; e_rt = (fun _ -> []);
     (* limiters default to 1 remaining token (0 < 1 -> the match passes) *)
     e_limit = (fun _ -> 1); e_quota = (fun _ -> 1); e_connlimit = (fun _ -> 1) }
 (* an environment whose rate-limiter "lim" has [n] remaining tokens *)
@@ -48,12 +48,13 @@ let env_vmap name ents : Packet.env = { empty_env with Packet.e_vmap = (fun n ->
 
 (* ---- concrete packet construction ---- *)
 let dummy0 _ = []
-let mk_pkt ?(env = empty_env) ?(l4proto = [6]) ?(nh = []) ?(th = []) () : Packet.packet =
+let mk_pkt ?(env = empty_env) ?(l4proto = [6]) ?(nh = []) ?(th = []) ?(fibkey = (fun _ -> [])) () : Packet.packet =
   { Packet.pkt_env = env;
     pkt_meta = (fun k -> match k with Packet.MKl4proto -> l4proto | _ -> []);
     pkt_ct = dummy0; pkt_sock = dummy0;
     pkt_eh = (fun _ _ _ _ _ -> []);
     pkt_lh = []; pkt_nh = nh; pkt_th = th; pkt_ih = []; pkt_tnl = [];
+    pkt_fibkey = fibkey;
     pkt_numgen = dummy0; pkt_osf = [];
     pkt_tunnel = (fun _ -> []);
     pkt_symhash = (fun _ _ -> []); pkt_xfrm = (fun _ _ _ -> []);
@@ -202,6 +203,20 @@ let () =
     [ "tcp dport 22 (base2 drops)",   mk_pkt ~th:(th ~dport:[0; 22]) ();
       "tcp dport 80 (both accept)",   mk_pkt ~th:(th ~dport:[0; 80]) () ];
   Printf.printf "\n";
+  (* (4d) LONGEST-PREFIX-MATCH FIB: a routing table with one route 10.0.0.0/8 ->
+     oif 3 lives in the ENV; `fib saddr oif` computes the oif via lpm_fib against
+     the packet's source address (its fibkey).  The rule `fib saddr oif 3 accept`
+     matches a packet routed out oif 3.  Computed (not oracle'd), and VM = DSL. *)
+  let route_env =
+    { empty_env with Packet.e_routes =
+        [ (([10; 0; 0; 0], [10; 255; 255; 255]),
+           (fun (r : Packet.fib_result) -> match r with Packet.FRoif -> [3] | _ -> [])) ] } in
+  let fibkey_of addr = (fun (sel : string) -> if sel = "saddr" then addr else []) in
+  run_battery fails
+    "fib saddr oif 3 accept (LPM route 10.0.0.0/8 -> oif 3, in the ENV)"
+    (chain Verdict.Drop [ rule [ meq (Syntax.FFib ("saddr", Packet.FRoif)) [3] ] Verdict.Accept ])
+    [ "saddr 10.1.2.3 (routed via oif 3)",  mk_pkt ~env:route_env ~fibkey:(fibkey_of [10; 1; 2; 3]) ();
+      "saddr 192.168.1.1 (no route)",       mk_pkt ~env:route_env ~fibkey:(fibkey_of [192; 168; 1; 1]) () ];
   (* (4c) STATEFUL ACCUMULATION (compile_seq_correct): a rate limiter shared
      across a packet sequence.  `tcp limit accept` (policy drop) accepts iff the
      limiter has tokens; each accept consumes one.  From 2 tokens, three tcp

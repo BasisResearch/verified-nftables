@@ -45,9 +45,16 @@ theorem is stated against is **not** faithful in these areas. Grouped by kind:
   `rt` now read from the evaluation environment (`e_fib : selector -> result ->
   data`, `e_rt : rt_key -> data` in `env`), NOT from the packet — so the routing
   table is shared external state decoupled from any one packet, and the theorems
-  quantify over it (hold as routes change). Still abstract (no longest-prefix-match
-  model); a faithful FIB would compute the result from a route list + the packet's
-  addresses, which remains future work.
+  quantify over it (hold as routes change).
+- ✅ **Longest-prefix-match FIB** *(FIXED 2026-06)*: the abstract `e_fib` is replaced
+  by a **routing table** `e_routes : list ([lo,hi] * (fib_result -> data))` in `env`,
+  and `fib`'s result is *computed* by `lpm_fib` — the first route whose destination
+  interval contains the key (table kept most-specific-first = longest-prefix-match).
+  Key extraction (which packet bytes the selector reads) is `pkt_fibkey : string ->
+  data` (genuinely packet-determined); the table lookup is computed, not oracle'd.
+  semtest (4d): route `10.0.0.0/8 -> oif 3`, `fib saddr oif 3 accept` accepts
+  `10.1.2.3`, drops `192.168.1.1`, VM=DSL. (Selector→key parsing is abstracted into
+  `pkt_fibkey`; exact ECMP/scope tie-breaking not modelled.)
 - **Conntrack table (`ct …`)**: `pkt_ct` is a per-packet oracle; really the ct
   table is keyed by flow and accumulates across packets (`ct count`, `ct state`).
 - ✅ **Stateful limiters `limit`/`quota`/`connlimit`** *(FIXED 2026-06)*: relocated
