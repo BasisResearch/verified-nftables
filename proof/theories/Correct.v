@@ -522,6 +522,36 @@ Proof.
       rewrite compile_load_writes, Ht3, Hr3. reflexivity.
 Qed.
 
+(** Writes-version of the OR-chain, additionally tracking register 1's folded
+    value: each source is loaded into reg 2 (transformed there), then OR'd into
+    the accumulator reg 1. *)
+Lemma run_or_chain_writes : forall srcs rf tail p,
+  exists rf',
+    run_rule_writes rf
+      (flat_map (fun e =>
+         compile_load (field_load (fst e)) 2 :: compile_transforms_at 2 (snd e)
+         ++ [IBitwiseOr 1 1 2]) srcs ++ tail) p
+    = run_rule_writes rf' tail p
+    /\ rf' 1 = fold_left
+                 (fun acc e => data_or acc (apply_transforms (snd e) (field_value (fst e) p)))
+                 srcs (rf 1).
+Proof.
+  induction srcs as [| [f ts] srcs IH]; intros rf tail p.
+  - exists rf. split; reflexivity.
+  - cbn [flat_map fst snd]. rewrite <- !app_assoc. cbn [app].
+    rewrite compile_load_writes. rewrite <- !app_assoc.
+    edestruct (run_transforms_at_prefix_writes ts 2 (set_reg rf 2 (field_value f p))
+                ([IBitwiseOr 1 1 2] ++ flat_map (fun e =>
+                   compile_load (field_load (fst e)) 2 :: compile_transforms_at 2 (snd e)
+                   ++ [IBitwiseOr 1 1 2]) srcs ++ tail) p) as [rf1 [Ht1 [Ht2 Ht3]]].
+    rewrite Ht3. cbn [app run_rule_writes].
+    edestruct (IH (set_reg rf1 1 (data_or (rf1 1) (rf1 2))) tail p) as [rf' [Hr Hv]].
+    rewrite Hr. exists rf'. split; [reflexivity |].
+    rewrite Hv, set_reg_same. cbn [fold_left]. f_equal.
+    rewrite Ht1, set_reg_same. rewrite (Ht2 1) by (intro; discriminate).
+    rewrite set_reg_other by (intro; discriminate). reflexivity.
+Qed.
+
 (** The head register of a field allocation holds the first field's value (the
     later fields occupy strictly higher registers, so they never clobber it). *)
 Lemma write_fields_head : forall f frest slot rf p,
@@ -545,7 +575,7 @@ Lemma writes_vsrc_simple : forall vs rf rest p,
 Proof.
   intros vs rf rest p Hs.
   destruct vs as [v | f ts | fields ts nm | hfields hlen hseed hmod hoff
-                 | | elems nm | mfields mlen mseed mmod moff mnm];
+                 | osrcs ofinal | elems nm | mfields mlen mseed mmod moff mnm];
     cbn [simple_vsrc] in Hs; try discriminate.
   - (* VImm *) exists (set_reg rf 1 v). cbn [compile_vsrc app run_rule_writes].
     split; [reflexivity | apply set_reg_same].
@@ -570,6 +600,21 @@ Proof.
     cbn [app run_rule_writes].
     eexists. split; [reflexivity |]. rewrite set_reg_same, write_fields_head.
     cbn [eval_vsrc]. reflexivity.
+  - (* VOr ((f0,ts0) :: orest) ofinal : base into reg 1, OR-fold, final transforms *)
+    destruct osrcs as [| [f0 ts0] orest]; [discriminate Hs |].
+    cbn [compile_vsrc fst snd]. rewrite <- !app_assoc. cbn [app].
+    rewrite compile_load_writes.
+    edestruct (run_transforms_at_prefix_writes ts0 1 (set_reg rf 1 (field_value f0 p))
+                (flat_map (fun e => compile_load (field_load (fst e)) 2
+                                    :: compile_transforms_at 2 (snd e) ++ [IBitwiseOr 1 1 2]) orest
+                 ++ compile_transforms_at 1 ofinal ++ rest) p) as [rf1 [Hv1 [_ Hr1]]].
+    rewrite Hr1.
+    edestruct (run_or_chain_writes orest rf1 (compile_transforms_at 1 ofinal ++ rest) p)
+      as [rf2 [Hr2 Hv2]].
+    rewrite Hr2.
+    edestruct (run_transforms_at_prefix_writes ofinal 1 rf2 rest p) as [rf3 [Hv3 [_ Hr3]]].
+    rewrite Hr3. exists rf3. split; [reflexivity |].
+    cbn [eval_vsrc fst snd]. rewrite Hv3, Hv2, Hv1, set_reg_same. reflexivity.
   - (* VMapT elems nm : transformed-concat key, then lookup *)
     cbn [compile_vsrc]. rewrite <- app_assoc.
     edestruct (run_load_fields_t_writes elems 0 rf

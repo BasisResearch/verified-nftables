@@ -413,8 +413,9 @@ Definition simple_vsrc (vs : vsrc) : bool :=
   | VMapT _ _ => true                       (* transformed-concat value map *)
   | VHash (_ :: _) _ _ _ _ => true          (* jhash of a (nonempty) source *)
   | VHashMap (_ :: _) _ _ _ _ _ => true     (* jhash then value-map lookup *)
-  | _ => false   (* key-transformed maps and OR operands, and empty-field
-                    operands: value-correctness not yet proven (reg-1 split/fold) *)
+  | VOr (_ :: _) _ => true                  (* OR-fold of (nonempty) sources *)
+  | _ => false   (* key-transformed value maps and empty-field operands: value-
+                    correctness not yet proven (reg-1 split / incoming register) *)
   end.
 (** A body is "simple" for the mutation theorem when every statement is a meta/ct
     set with a simple operand (matches are unrestricted).  Other statements in the
