@@ -20,6 +20,8 @@ Import ListNotations.
 Inductive loaddesc : Type :=
 | LMeta    (k : meta_key)
 | LCt      (k : ct_key)
+| LRt      (k : rt_key)
+| LSocket  (k : socket_key)
 | LExthdr  (ep : exthdr_proto) (htype off len : nat)
 | LPayload (b : pbase) (off len : nat).
 
@@ -45,7 +47,11 @@ Inductive field : Type :=
 | FUdpLen | FUdpCsum | FIcmpType | FIcmpCode
 (* parametric payload field (any base/offset/length) and exthdr field *)
 | FPayload (b : pbase) (off len : nat)
-| FExthdr (ep : exthdr_proto) (htype off len : nat).
+| FExthdr (ep : exthdr_proto) (htype off len : nat)
+(* typed oracle-keyed fields: any meta key, routing key, socket key *)
+| FMetaGen (k : meta_key)
+| FRtGen (k : rt_key)
+| FSocketGen (k : socket_key).
 
 (** The denotation of each field as a load. *)
 Definition field_load (f : field) : loaddesc :=
@@ -77,6 +83,9 @@ Definition field_load (f : field) : loaddesc :=
   | FIcmpType     => LPayload PTransport 0 1 | FIcmpCode  => LPayload PTransport 1 1
   | FPayload b off len => LPayload b off len
   | FExthdr ep htype off len => LExthdr ep htype off len
+  | FMetaGen k => LMeta k
+  | FRtGen k => LRt k
+  | FSocketGen k => LSocket k
   end.
 
 (** Enumeration of every field, for the glue's load->field reverse map. *)
@@ -97,6 +106,8 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
   match ld with
   | LMeta k         => pkt_meta p k
   | LCt k           => pkt_ct p k
+  | LRt k           => pkt_rt p k
+  | LSocket k       => pkt_sock p k
   | LExthdr ep h o l => pkt_eh p ep h o l
   | LPayload b o l  => read_payload b o l p
   end.

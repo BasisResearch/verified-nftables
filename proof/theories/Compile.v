@@ -13,6 +13,8 @@ Definition compile_load (ld : loaddesc) (dst : reg) : instr :=
   match ld with
   | LMeta k        => IMetaLoad k dst
   | LCt k          => ICtLoad k dst
+  | LRt k          => IRtLoad k dst
+  | LSocket k      => ISocketLoad k dst
   | LExthdr ep h o l => IExthdrLoad ep h o l dst
   | LPayload b o l => IPayloadLoad b o l dst
   end.

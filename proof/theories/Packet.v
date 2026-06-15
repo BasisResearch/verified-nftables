@@ -21,11 +21,21 @@ Import ListNotations.
 Inductive meta_key : Type :=
 | MKl4proto | MKnfproto | MKprotocol | MKmark
 | MKiif | MKoif | MKiiftype | MKoiftype | MKiifname | MKoifname
-| MKlen | MKpkttype | MKcpu | MKskuid | MKskgid | MKpriority.
+| MKlen | MKpkttype | MKcpu | MKskuid | MKskgid | MKpriority
+| MKcgroup | MKday | MKhour | MKiifgroup | MKoifgroup | MKprandom
+| MKrtclassid | MKsdif | MKsdifname | MKsecpath | MKtime
+| MKbri_iifname | MKbri_oifname | MKbri_iifpvid | MKbri_iifvproto | MKibrhwaddr.
 
 (** Conntrack keys (read by a [ct load] expression). *)
 Inductive ct_key : Type :=
 | CKstate | CKstatus | CKmark | CKdirection | CKexpiration | CKid.
+
+(** Routing-state keys ([rt load]) and socket keys ([socket load]); both read
+    external state, modelled as packet oracles. *)
+Inductive rt_key : Type :=
+| RKclassid | RKnexthop4 | RKnexthop6 | RKtcpmss | RKmtu | RKipsec.
+Inductive socket_key : Type :=
+| SKtransparent | SKmark | SKwildcard | SKcgroupv2.
 
 (** Protocol an [exthdr load] reads from (IPv6 extension headers / TCP options). *)
 Inductive exthdr_proto : Type :=
@@ -48,6 +58,8 @@ Inductive pbase : Type :=
 Record packet : Type := {
   pkt_meta : meta_key -> data;   (* kernel-computed metadata *)
   pkt_ct   : ct_key -> data;     (* conntrack state *)
+  pkt_rt   : rt_key -> data;     (* routing-state oracle *)
+  pkt_sock : socket_key -> data; (* socket-state oracle *)
   pkt_eh   : exthdr_proto -> nat -> nat -> nat -> data;  (* exthdr: proto htype off len *)
   pkt_lh   : list byte;          (* link-header bytes (e.g. Ethernet) *)
   pkt_nh   : list byte;          (* network-header bytes (e.g. IPv4/IPv6) *)

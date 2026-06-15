@@ -72,6 +72,10 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       run_rule (set_reg rf dst (pkt_meta p k)) rest p
   | ICtLoad k dst :: rest =>
       run_rule (set_reg rf dst (pkt_ct p k)) rest p
+  | IRtLoad k dst :: rest =>
+      run_rule (set_reg rf dst (pkt_rt p k)) rest p
+  | ISocketLoad k dst :: rest =>
+      run_rule (set_reg rf dst (pkt_sock p k)) rest p
   | IExthdrLoad ep h o l dst :: rest =>
       run_rule (set_reg rf dst (pkt_eh p ep h o l)) rest p
   | IPayloadLoad b o l dst :: rest =>

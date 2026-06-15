@@ -28,6 +28,8 @@ Definition reg := nat.   (* register index; reg 0 is the verdict register *)
 Inductive instr : Type :=
 | IMetaLoad    (k : meta_key) (dst : reg)
 | ICtLoad      (k : ct_key) (dst : reg)
+| IRtLoad      (k : rt_key) (dst : reg)
+| ISocketLoad  (k : socket_key) (dst : reg)
 | IExthdrLoad  (ep : exthdr_proto) (htype off len : nat) (dst : reg)
 | IPayloadLoad (b : pbase) (off len : nat) (dst : reg)
 | ICmp         (op : cmpop) (src : reg) (v : data)

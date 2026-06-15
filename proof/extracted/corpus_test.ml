@@ -23,10 +23,32 @@ let metas = [
   "iifname", Packet.MKiifname; "oifname", Packet.MKoifname;
   "len", Packet.MKlen; "pkttype", Packet.MKpkttype; "cpu", Packet.MKcpu;
   "skuid", Packet.MKskuid; "skgid", Packet.MKskgid; "priority", Packet.MKpriority;
+  "cgroup", Packet.MKcgroup; "day", Packet.MKday; "hour", Packet.MKhour;
+  "iifgroup", Packet.MKiifgroup; "oifgroup", Packet.MKoifgroup;
+  "prandom", Packet.MKprandom; "rtclassid", Packet.MKrtclassid;
+  "sdif", Packet.MKsdif; "sdifname", Packet.MKsdifname; "secpath", Packet.MKsecpath;
+  "time", Packet.MKtime; "bri_iifname", Packet.MKbri_iifname;
+  "bri_oifname", Packet.MKbri_oifname; "bri_iifpvid", Packet.MKbri_iifpvid;
+  "bri_iifvproto", Packet.MKbri_iifvproto; "ibrhwaddr", Packet.MKibrhwaddr;
 ]
 let meta_of_name n = try Some (List.assoc n metas) with Not_found -> None
 let name_of_meta k =
   let r = ref "?" in List.iter (fun (n,k') -> if k'=k then r:=n) metas; !r
+
+let rts = [
+  "classid", Packet.RKclassid; "nexthop4", Packet.RKnexthop4;
+  "nexthop6", Packet.RKnexthop6; "tcpmss", Packet.RKtcpmss;
+  "mtu", Packet.RKmtu; "ipsec", Packet.RKipsec;
+]
+let rt_of_name n = try Some (List.assoc n rts) with Not_found -> None
+let name_of_rt k = let r = ref "?" in List.iter (fun (n,k') -> if k'=k then r:=n) rts; !r
+
+let socks = [
+  "transparent", Packet.SKtransparent; "mark", Packet.SKmark;
+  "wildcard", Packet.SKwildcard; "cgroupv2", Packet.SKcgroupv2;
+]
+let sock_of_name n = try Some (List.assoc n socks) with Not_found -> None
+let name_of_sock k = let r = ref "?" in List.iter (fun (n,k') -> if k'=k then r:=n) socks; !r
 
 let cts = [
   "state", Packet.CKstate; "status", Packet.CKstatus; "mark", Packet.CKmark;
@@ -55,6 +77,8 @@ let name_of_base = function
 let key_of_load (ld : Syntax.loaddesc) = match ld with
   | Syntax.LMeta k -> "m:" ^ name_of_meta k
   | Syntax.LCt k -> "c:" ^ name_of_ct k
+  | Syntax.LRt k -> "r:" ^ name_of_rt k
+  | Syntax.LSocket k -> "s:" ^ name_of_sock k
   | Syntax.LExthdr (ep,h,o,l) ->
       Printf.sprintf "x:%s:%d:%d:%d" (name_of_ehproto ep) h o l
   | Syntax.LPayload (b,o,l) -> Printf.sprintf "p:%s:%d:%d" (name_of_base b) o l
@@ -78,6 +102,9 @@ let field_of_key_str key : Syntax.field option =
       (match base_of_name base with
        | Some b -> Some (Syntax.FPayload (b, int_of_string o, int_of_string l))
        | None -> None)
+  | ["m"; n] -> (match meta_of_name n with Some k -> Some (Syntax.FMetaGen k) | None -> None)
+  | ["r"; n] -> (match rt_of_name n with Some k -> Some (Syntax.FRtGen k) | None -> None)
+  | ["s"; n] -> (match sock_of_name n with Some k -> Some (Syntax.FSocketGen k) | None -> None)
   | _ -> (try Some (Hashtbl.find field_of_key key) with Not_found -> None)
 
 (* ---------- corpus value <-> bytes ---------- *)
@@ -112,6 +139,10 @@ let render_instr (i : Bytecode.instr) : string = match i with
       Printf.sprintf "[ meta load %s => reg %d ]" (name_of_meta k) r
   | Bytecode.ICtLoad (k,r) ->
       Printf.sprintf "[ ct load %s => reg %d ]" (name_of_ct k) r
+  | Bytecode.IRtLoad (k,r) ->
+      Printf.sprintf "[ rt load %s => reg %d ]" (name_of_rt k) r
+  | Bytecode.ISocketLoad (k,r) ->
+      Printf.sprintf "[ socket load %s => reg %d ]" (name_of_sock k) r
   | Bytecode.IExthdrLoad (ep,h,o,l,r) ->
       Printf.sprintf "[ exthdr load %s %db @ %d + %d => reg %d ]"
         (name_of_ehproto ep) l h o r
@@ -214,6 +245,14 @@ let parse_line line : pinst =
       (match ct_of_name name with
        | Some k -> PLoad (key_of_load (Syntax.LCt k), int_of_string r)
        | None -> raise (Unsupported ("ct:"^name)))
+  | "rt"::"load"::name::"=>"::"reg"::r::[] ->
+      (match rt_of_name name with
+       | Some k -> PLoad (key_of_load (Syntax.LRt k), int_of_string r)
+       | None -> raise (Unsupported ("rt:"^name)))
+  | "socket"::"load"::name::"=>"::"reg"::r::[] ->
+      (match sock_of_name name with
+       | Some k -> PLoad (key_of_load (Syntax.LSocket k), int_of_string r)
+       | None -> raise (Unsupported ("socket:"^name)))
   | "exthdr"::"load"::proto::lb::"@"::htype::"+"::off::"=>"::"reg"::r::[] ->
       let len = int_of_string (String.sub lb 0 (String.length lb - 1)) in
       (match ehproto_of_name proto with
