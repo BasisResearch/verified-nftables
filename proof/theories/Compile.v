@@ -187,9 +187,14 @@ Definition compile_end (r : rule) : list instr :=
   end
   end.
 
+Definition compile_body_item (it : body_item) : list instr :=
+  match it with
+  | BMatch m => compile_match m
+  | BStmt s  => compile_stmt s
+  end.
+
 Definition compile_rule (r : rule) : rule_prog :=
-  flat_map compile_match (r_matches r) ++
-  flat_map compile_stmt (r_stmts r) ++
+  flat_map compile_body_item (r_body r) ++
   compile_end r.
 
 Definition compile_chain (c : chain) : program :=

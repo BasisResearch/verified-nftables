@@ -50,9 +50,10 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
   | MConnlimit spec => pkt_connlimit p spec
   end.
 
-(** A rule applies when all its match conditions hold (empty = matches all). *)
+(** A rule applies when all its match conditions hold (empty = matches all).
+    Statements in the body are verdict-neutral and ignored here. *)
 Definition rule_applies (r : rule) (p : packet) : bool :=
-  forallb (fun m => eval_matchcond m p) (r_matches r).
+  forallb (fun m => eval_matchcond m p) (body_matches (r_body r)).
 
 (** Look up a key in a verdict map's entries. *)
 Fixpoint assoc_verdict (key : data) (entries : list (data * verdict)) : option verdict :=

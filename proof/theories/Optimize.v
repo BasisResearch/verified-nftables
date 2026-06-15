@@ -63,6 +63,27 @@ Proof.
     try (decide equality).
 Defined.
 
+(** ** Helpers on rule bodies. *)
+
+Definition body_stmts (b : list body_item) : list stmt :=
+  flat_map (fun it => match it with BStmt s => s :: nil | BMatch _ => nil end) b.
+
+Lemma body_matches_app : forall a b,
+  body_matches (a ++ b) = body_matches a ++ body_matches b.
+Proof. intros. unfold body_matches. apply flat_map_app. Qed.
+
+Lemma body_matches_map_BMatch : forall l, body_matches (map BMatch l) = l.
+Proof.
+  unfold body_matches. induction l as [| m l IH]; simpl;
+    [reflexivity | rewrite IH; reflexivity].
+Qed.
+
+Lemma body_matches_map_BStmt : forall l, body_matches (map BStmt l) = nil.
+Proof.
+  unfold body_matches. induction l as [| s l IH]; simpl;
+    [reflexivity | rewrite IH; reflexivity].
+Qed.
+
 (** ** Optimization 1: dead-rule elimination. *)
 
 Definition is_empty {A} (l : list A) : bool :=
@@ -72,7 +93,7 @@ Definition is_empty {A} (l : list A) : bool :=
     conditions, a terminal static verdict, and no verdict-map (whose result
     could be a fall-through). *)
 Definition shadows (r : rule) : bool :=
-  is_empty (r_matches r) && terminal (r_verdict r) &&
+  is_empty (body_matches (r_body r)) && terminal (r_verdict r) &&
   (match r_vmap r with None => true | Some _ => false end) &&
   (match r_nat r with None => true | Some _ => false end) &&
   (match r_tproxy r with None => true | Some _ => false end).
@@ -95,7 +116,7 @@ Proof.
       apply andb_true_iff in Hs2. destruct Hs2 as [Hs3 Hvm].
       apply andb_true_iff in Hs3. destruct Hs3 as [Hm Hv].
       cbn [eval_rules]. unfold rule_applies, outcome.
-      destruct (r_matches r) as [| m ms] eqn:Em; [| discriminate Hm].
+      destruct (body_matches (r_body r)) as [| m ms] eqn:Em; [| discriminate Hm].
       destruct (r_nat r) as [n |] eqn:Enat; [discriminate Hnat |].
       destruct (r_tproxy r) as [t |] eqn:Etp; [discriminate Htp |].
       destruct (r_vmap r) as [vm |] eqn:Evm; [discriminate Hvm |].
@@ -111,9 +132,12 @@ Qed.
 
 (** ** Optimization 2: intra-rule match deduplication. *)
 
+(** Deduplicate the match conditions; the statements are kept (after the matches).
+    The reordering is irrelevant to the verdict (matches commute, statements are
+    verdict-neutral) and the optimizer's output is not corpus-checked. *)
 Definition dedup_rule (r : rule) : rule :=
-  {| r_matches := nodup matchcond_eq_dec (r_matches r);
-     r_stmts   := r_stmts r;
+  {| r_body := map BMatch (nodup matchcond_eq_dec (body_matches (r_body r)))
+               ++ map BStmt (body_stmts (r_body r));
      r_verdict := r_verdict r;
      r_vmap    := r_vmap r;
      r_nat     := r_nat r;
@@ -136,8 +160,9 @@ Qed.
 Lemma rule_applies_dedup : forall r p,
   rule_applies (dedup_rule r) p = rule_applies r p.
 Proof.
-  intros r p. unfold rule_applies, dedup_rule. cbn [r_matches].
-  apply forallb_nodup.
+  intros r p. unfold rule_applies, dedup_rule. cbn [r_body].
+  rewrite body_matches_app, body_matches_map_BMatch, body_matches_map_BStmt.
+  rewrite app_nil_r. apply forallb_nodup.
 Qed.
 
 Lemma outcome_dedup : forall r p, outcome (dedup_rule r) p = outcome r p.
@@ -183,19 +208,29 @@ Proof.
     rewrite Bool.andb_comm, data_le_antisym. reflexivity.
 Qed.
 
+Definition simplify_item (it : body_item) : body_item :=
+  match it with BMatch m => BMatch (simplify_match m) | BStmt s => BStmt s end.
+
 Definition simplify_rule (r : rule) : rule :=
-  {| r_matches := map simplify_match (r_matches r);
-     r_stmts   := r_stmts r;
+  {| r_body := map simplify_item (r_body r);
      r_verdict := r_verdict r;
      r_vmap    := r_vmap r;
      r_nat     := r_nat r;
      r_tproxy  := r_tproxy r |}.
 
+Lemma body_matches_simplify : forall b,
+  body_matches (map simplify_item b) = map simplify_match (body_matches b).
+Proof.
+  unfold body_matches. induction b as [| it b IH]; [reflexivity |].
+  destruct it as [m | s]; simpl; rewrite IH; reflexivity.
+Qed.
+
 Lemma rule_applies_simplify : forall r p,
   rule_applies (simplify_rule r) p = rule_applies r p.
 Proof.
-  intros r p. unfold rule_applies, simplify_rule. cbn [r_matches].
-  induction (r_matches r) as [| m ms IH]; [reflexivity |].
+  intros r p. unfold rule_applies, simplify_rule. cbn [r_body].
+  rewrite body_matches_simplify.
+  induction (body_matches (r_body r)) as [| m l IH]; [reflexivity |].
   cbn [map forallb]. rewrite simplify_match_correct, IH. reflexivity.
 Qed.
 
@@ -220,10 +255,10 @@ Qed.
     applied to every packet but always falls through), so it can be deleted
     outright.  Unlike [dce] (which drops rules *after* an unconditional terminal),
     this removes the no-op rule itself — useful for cleaning up after other
-    rewrites.  The [stmts] emptiness is required so a counter/log-only rule, whose
-    side effect we must keep, is never pruned. *)
+    rewrites.  Requiring the whole body empty (not just the matches) keeps a
+    counter/log-only rule, whose side effect we must preserve. *)
 Definition is_noop (r : rule) : bool :=
-  is_empty (r_matches r) && is_empty (r_stmts r) &&
+  is_empty (r_body r) &&
   (match r_verdict r with Continue => true | _ => false end) &&
   (match r_vmap r with None => true | Some _ => false end) &&
   (match r_nat r with None => true | Some _ => false end) &&
@@ -243,9 +278,10 @@ Proof.
     apply andb_true_iff in Hn as [Hn Htp].
     apply andb_true_iff in Hn as [Hn Hnat].
     apply andb_true_iff in Hn as [Hn Hvm].
-    apply andb_true_iff in Hn as [Hm Hv].
+    apply andb_true_iff in Hn as [Hb Hv].
     cbn [eval_rules]. unfold rule_applies, outcome.
-    destruct (r_matches r) as [| m ms]; [| discriminate].
+    destruct (r_body r) as [| it b] eqn:Eb; [| discriminate Hb].
+    cbn [body_matches flat_map forallb].
     destruct (r_nat r); [discriminate |].
     destruct (r_tproxy r); [discriminate |].
     destruct (r_vmap r); [discriminate |].

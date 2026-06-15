@@ -336,15 +336,40 @@ Proof.
   rewrite Hr. cbn [app run_rule]. reflexivity.
 Qed.
 
+(** The body version: an ordered list of matches and verdict-neutral statements.
+    A [BMatch] is the single-match step (reusing [run_compile_matches_const] at a
+    one-element list); a [BStmt] threads the register file through and drops out
+    of [body_matches]. *)
+Lemma run_compile_body : forall body tail res p,
+  (forall rf, run_rule rf tail p = res) ->
+  forall rf, run_rule rf (flat_map compile_body_item body ++ tail) p =
+    if forallb (fun m => eval_matchcond m p) (body_matches body) then res else None.
+Proof.
+  induction body as [| it body IH]; intros tail res p Hc rf.
+  - cbn [flat_map app body_matches forallb]. apply Hc.
+  - destruct it as [m | s]; cbn [flat_map compile_body_item]; rewrite <- app_assoc.
+    + (* BMatch m: a single-match step, then the rest of the body *)
+      replace (compile_match m ++ (flat_map compile_body_item body ++ tail))
+        with (flat_map compile_match [m] ++ (flat_map compile_body_item body ++ tail))
+        by (cbn [flat_map app]; rewrite app_nil_r; reflexivity).
+      rewrite (run_compile_matches_const [m] (flat_map compile_body_item body ++ tail)
+                 (if forallb (fun m => eval_matchcond m p) (body_matches body) then res else None)
+                 p (fun rf0 => IH tail res p Hc rf0)).
+      cbn [body_matches flat_map app forallb]. rewrite Bool.andb_true_r.
+      destruct (eval_matchcond m p); reflexivity.
+    + (* BStmt s: verdict-neutral, drops out of body_matches *)
+      cbn [body_matches flat_map app].
+      edestruct (run_stmt_exists s rf (flat_map compile_body_item body ++ tail) p) as [rf' Hr].
+      rewrite Hr. apply IH; exact Hc.
+Qed.
+
 Lemma run_rule_compile_rule : forall r p,
   run_rule empty_rf (compile_rule r) p =
   if rule_applies r p then outcome r p else None.
 Proof.
   intros r p. unfold compile_rule, rule_applies.
-  apply run_compile_matches_const.
-  intro rf. edestruct (run_stmts_exists (r_stmts r) rf (compile_end r) p) as [rf' H].
-  rewrite H. clear H rf. rename rf' into rf.
-  unfold compile_end, outcome. destruct (r_nat r) as [n |].
+  apply run_compile_body.
+  intro rf. unfold compile_end, outcome. destruct (r_nat r) as [n |].
   - destruct (nat_map n) as [[[f ts] name] |]; [apply run_map_nat | apply run_imms_nat].
   - destruct (r_tproxy r) as [t |]; [apply run_imms_tproxy |].
     destruct (r_vmap r) as [vm |].

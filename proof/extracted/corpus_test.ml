@@ -307,48 +307,42 @@ let parse_line line : pinst =
 (* fold a block into a DSL rule: (load;test)* then verdict-neutral statements
    then a verdict. *)
 let rule_of_block (lines : string list) : Syntax.rule =
-  let mk ?(vmap=None) ?(nat=None) ?(tproxy=None) matches stmts v : Syntax.rule =
-    { Syntax.r_matches = List.rev matches; r_stmts = List.rev stmts;
+  let mk ?(vmap=None) ?(nat=None) ?(tproxy=None) body v : Syntax.rule =
+    { Syntax.r_body = List.rev body;
       r_verdict = v; r_vmap = vmap; r_nat = nat; r_tproxy = tproxy } in
-  (* a verdict-map lookup ends the rule: prior matches + a vmap outcome *)
-  let mk_vmap matches stmts fields name =
+  let bm body m = Syntax.BMatch m :: body in      (* prepend a match in order *)
+  let bs body s = Syntax.BStmt s :: body in       (* prepend a statement in order *)
+  let mk_vmap body fields name =
     mk ~vmap:(Some { Syntax.vm_fields = fields; vm_keyf = None;
-                     vm_name = name; vm_entries = [] })
-       matches stmts Verdict.Continue in
-  (* a verdict map keyed by a single transformed field value *)
-  let mk_vmap_t matches stmts f ts name =
+                     vm_name = name; vm_entries = [] }) body Verdict.Continue in
+  let mk_vmap_t body f ts name =
     mk ~vmap:(Some { Syntax.vm_fields = [f]; vm_keyf = Some (f, ts);
-                     vm_name = name; vm_entries = [] })
-       matches stmts Verdict.Continue in
-  (* a NAT ends the rule: prior matches + operand immediates + the nat statement *)
-  let mk_nat matches stmts imms (kind,family,amin,amax,pmin,pmax,flags) =
+                     vm_name = name; vm_entries = [] }) body Verdict.Continue in
+  let mk_nat body imms (kind,family,amin,amax,pmin,pmax,flags) =
     mk ~nat:(Some { Syntax.nat_imms = imms; nat_map = None;
                     nat_kind = kind; nat_family = family;
                     nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
-                    nat_pmax = pmax; nat_flags = flags })
-       matches stmts Verdict.Continue in
-  (* a NAT whose operand comes from a map lookup of a (transformed) field *)
-  let mk_nat_map matches stmts (f,ts,name) (kind,family,amin,amax,pmin,pmax,flags) =
+                    nat_pmax = pmax; nat_flags = flags }) body Verdict.Continue in
+  let mk_nat_map body (f,ts,name) (kind,family,amin,amax,pmin,pmax,flags) =
     mk ~nat:(Some { Syntax.nat_imms = []; nat_map = Some ((f, ts), name);
                     nat_kind = kind; nat_family = family;
                     nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
-                    nat_pmax = pmax; nat_flags = flags })
-       matches stmts Verdict.Continue in
-  (* a tproxy ends the rule: prior matches + operand immediates + the tproxy *)
-  let mk_tproxy matches stmts imms (family,areg,preg) =
+                    nat_pmax = pmax; nat_flags = flags }) body Verdict.Continue in
+  let mk_tproxy body imms (family,areg,preg) =
     mk ~tproxy:(Some { Syntax.tp_imms = imms; tp_family = family;
-                       tp_areg = areg; tp_preg = preg })
-       matches stmts Verdict.Continue in
-  let rec go matches stmts = function
-    | [] -> mk matches stmts Verdict.Continue   (* match-only rule: falls through *)
+                       tp_areg = areg; tp_preg = preg }) body Verdict.Continue in
+  (* fold a block into a rule body, preserving the source order of matches and
+     verdict-neutral statements (nft interleaves them; our [r_body] is ordered). *)
+  let rec go body = function
+    | [] -> mk body Verdict.Continue   (* match-only rule: falls through *)
     | l1 :: rest ->
       (match parse_line l1 with
        | PImm v ->
            if rest <> [] then raise (Unsupported "trailing-after-verdict");
-           mk matches stmts v
+           mk body v
        | PNat (k,f,a,ax,pm,px,fl) ->
            if rest <> [] then raise (Unsupported "trailing-after-nat");
-           mk_nat matches stmts [] (k,f,a,ax,pm,px,fl)
+           mk_nat body [] (k,f,a,ax,pm,px,fl)
        | PImmData (r, v) ->
            let is_set l = (try (match parse_line l with
                                 | PWrite _ | PMetaSet _ | PCtSet _ -> true | _ -> false)
@@ -357,51 +351,38 @@ let rule_of_block (lines : string list) : Syntax.rule =
             | l2 :: more2 when r = 1 && is_set l2 ->   (* immediate + a set/write = mangle *)
                 (match parse_line l2 with
                  | PWrite (1, b, off, len, ct, co, cf) ->
-                     go matches (Syntax.SMangle (Syntax.VImm v, b, off, len, ct, co, cf) :: stmts) more2
-                 | PMetaSet (k, 1) -> go matches (Syntax.SMetaSet (k, Syntax.VImm v) :: stmts) more2
-                 | PCtSet (k, 1) -> go matches (Syntax.SCtSet (k, Syntax.VImm v) :: stmts) more2
+                     go (bs body (Syntax.SMangle (Syntax.VImm v, b, off, len, ct, co, cf))) more2
+                 | PMetaSet (k, 1) -> go (bs body (Syntax.SMetaSet (k, Syntax.VImm v))) more2
+                 | PCtSet (k, 1) -> go (bs body (Syntax.SCtSet (k, Syntax.VImm v))) more2
                  | _ -> raise (Unsupported "set:reg"))
             | _ ->
-                (* otherwise: gather operand immediates, then a nat statement *)
+                (* otherwise: gather operand immediates, then a nat/tproxy/dup *)
                 let rec gnat imms = function
                   | l :: more ->
                     (match parse_line l with
                      | PImmData (r2, v2) -> gnat ((r2, v2) :: imms) more
                      | PNat (k,f,a,ax,pm,px,fl) ->
                          if more <> [] then raise (Unsupported "trailing-after-nat");
-                         mk_nat matches stmts (List.rev imms) (k,f,a,ax,pm,px,fl)
+                         mk_nat body (List.rev imms) (k,f,a,ax,pm,px,fl)
                      | PTproxy (fam,ar,pr) ->
                          if more <> [] then raise (Unsupported "trailing-after-tproxy");
-                         mk_tproxy matches stmts (List.rev imms) (fam,ar,pr)
+                         mk_tproxy body (List.rev imms) (fam,ar,pr)
                      | PDup (dev,addr) ->
-                         (* dup is verdict-neutral: the rule continues after it *)
-                         go matches (Syntax.SDup (List.rev imms, dev, addr) :: stmts) more
+                         go (bs body (Syntax.SDup (List.rev imms, dev, addr))) more
                      | _ -> raise (Unsupported "imm-not-nat"))
                   | [] -> raise (Unsupported "imm-dangling")
                 in gnat [(r, v)] rest)
-       | PCounter (p,b) -> go matches (Syntax.SCounter (p,b) :: stmts) rest
-       | PNotrack -> go matches (Syntax.SNotrack :: stmts) rest
-       | PLog l -> go matches (Syntax.SLog l :: stmts) rest
-       | PObjref (t,n) -> go matches (Syntax.SObjref (t,n) :: stmts) rest
-       | PSynproxy (m,w) -> go matches (Syntax.SSynproxy (m,w) :: stmts) rest
-       | PLast info -> go matches (Syntax.SLast info :: stmts) rest
-       | PExthdrReset (p,h) -> go matches (Syntax.SExthdrReset (p,h) :: stmts) rest
-       | PLimit spec ->
-           if stmts <> [] then raise (Unsupported "limit-after-stmt");
-           go (Syntax.MLimit spec :: matches) stmts rest
-       | PQuota spec ->
-           if stmts <> [] then raise (Unsupported "quota-after-stmt");
-           go (Syntax.MQuota spec :: matches) stmts rest
-       | PConnlimit spec ->
-           if stmts <> [] then raise (Unsupported "connlimit-after-stmt");
-           go (Syntax.MConnlimit spec :: matches) stmts rest
+       | PCounter (p,b) -> go (bs body (Syntax.SCounter (p,b))) rest
+       | PNotrack -> go (bs body Syntax.SNotrack) rest
+       | PLog l -> go (bs body (Syntax.SLog l)) rest
+       | PObjref (t,n) -> go (bs body (Syntax.SObjref (t,n))) rest
+       | PSynproxy (m,w) -> go (bs body (Syntax.SSynproxy (m,w))) rest
+       | PLast info -> go (bs body (Syntax.SLast info)) rest
+       | PExthdrReset (p,h) -> go (bs body (Syntax.SExthdrReset (p,h))) rest
+       | PLimit spec -> go (bm body (Syntax.MLimit spec)) rest
+       | PQuota spec -> go (bm body (Syntax.MQuota spec)) rest
+       | PConnlimit spec -> go (bm body (Syntax.MConnlimit spec)) rest
        | PLoad (key, lreg) ->
-           (* Loads feeding a *match* always precede statements in nft's emission
-              order, so we require it: a load after a statement would otherwise be
-              placed in r_matches and re-rendered before the statement, diverging
-              from the corpus.  (Faithfully supporting interleaved match/stmt order
-              needs an ordered match|stmt rule body — a future refactor.) *)
-           if stmts <> [] then raise (Unsupported "load-after-stmt");
            let field_of k = (match field_of_key_str k with Some f -> f
                              | None -> raise (Unsupported ("field:"^k))) in
            let f = field_of key in
@@ -409,21 +390,16 @@ let rule_of_block (lines : string list) : Syntax.rule =
                             with _ -> false) in
            (match rest with
             | l2 :: _ when is_load l2 ->
-                (* concatenation key: gather all consecutive loads, then a lookup.
-                   Load reg numbers are re-derived by the verified allocator and
-                   checked at render time, so we collect by field descriptor. *)
+                (* concatenation key: gather consecutive loads, then a lookup/use *)
                 let rec gather facc = function
                   | l :: more ->
                     (match parse_line l with
                      | PLoad (k, _) -> gather (field_of k :: facc) more
                      | PLookup (_, name, neg) ->
-                         go (Syntax.MConcatSet (List.rev facc, neg, name, []) :: matches)
-                            stmts more
+                         go (bm body (Syntax.MConcatSet (List.rev facc, neg, name, []))) more
                      | PVmap (_, name) ->
                          if more <> [] then raise (Unsupported "trailing-after-vmap");
-                         mk_vmap matches stmts (List.rev facc) name
-                     (* concat key added/deleted to a set/map = a dynset statement;
-                        for a map the last gathered load is the data, the rest the key *)
+                         mk_vmap body (List.rev facc) name
                      | PDynset (op, name, _, dopt) ->
                          let fields = List.rev facc in
                          let (keys, data) = (match dopt with
@@ -432,17 +408,16 @@ let rule_of_block (lines : string list) : Syntax.rule =
                                let n = List.length fields in
                                (List.filteri (fun i _ -> i < n-1) fields,
                                 List.filteri (fun i _ -> i = n-1) fields)) in
-                         go matches (Syntax.SDynset (op, name, keys, data) :: stmts) more
-                     (* concat key looked up in a map for a value (dreg 1) feeding a set *)
+                         go (bs body (Syntax.SDynset (op, name, keys, data))) more
                      | PMapVal (_, name, 1) ->
                          let fields = List.rev facc in
                          (match more with
                           | l3 :: more3 ->
                             (match parse_line l3 with
                              | PMetaSet (k, 1) ->
-                                 go matches (Syntax.SMetaSet (k, Syntax.VMap (fields, [], name, [])) :: stmts) more3
+                                 go (bs body (Syntax.SMetaSet (k, Syntax.VMap (fields, [], name, [])))) more3
                              | PCtSet (k, 1) ->
-                                 go matches (Syntax.SCtSet (k, Syntax.VMap (fields, [], name, [])) :: stmts) more3
+                                 go (bs body (Syntax.SCtSet (k, Syntax.VMap (fields, [], name, [])))) more3
                              | _ -> raise (Unsupported "map-not-set"))
                           | [] -> raise (Unsupported "map-dangling"))
                      | _ -> raise (Unsupported "concat-not-lookup"))
@@ -463,12 +438,12 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          let m = (match tl with
                            | [] -> if iseq then Syntax.MEq (f,v) else Syntax.MNeq (f,v)
                            | _ -> Syntax.MTransform (f, tl, (if iseq then Bytecode.CEq else Bytecode.CNe), v)) in
-                         go (m :: matches) stmts more
+                         go (bm body m) more
                      | POrdCmp (op, 1, v) ->
                          let m = (match List.rev ts with
                            | [] -> Syntax.MCmp (f, op, v)
                            | tl -> Syntax.MTransform (f, tl, op, v)) in
-                         go (m :: matches) stmts more
+                         go (bm body m) more
                      | PRange (iseq, 1, words) ->
                          let n = List.length words in
                          if n land 1 <> 0 then raise (Unsupported "range-odd-words");
@@ -477,40 +452,38 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          let m = (match List.rev ts with
                            | [] -> Syntax.MRange (f, not iseq, lo, hi)
                            | tl -> Syntax.MRangeT (f, tl, not iseq, lo, hi)) in
-                         go (m :: matches) stmts more
+                         go (bm body m) more
                      | PLookup (1, name, neg) ->
                          let m = (match List.rev ts with
                            | [] -> Syntax.MConcatSet ([f], neg, name, [])
                            | tl -> Syntax.MSetT (f, tl, neg, name, [])) in
-                         go (m :: matches) stmts more
+                         go (bm body m) more
                      | PVmap (1, name) ->
                          if more <> [] then raise (Unsupported "trailing-after-vmap");
                          (match List.rev ts with
-                          | [] -> mk_vmap matches stmts [f] name
-                          | tl -> mk_vmap_t matches stmts f tl name)
-                     (* load (+ transforms) + map lookup (dreg 1) feeding a set/NAT *)
+                          | [] -> mk_vmap body [f] name
+                          | tl -> mk_vmap_t body f tl name)
                      | PMapVal (1, name, 1) ->
                          (match more with
                           | l3 :: more3 ->
                             (match parse_line l3 with
                              | PMetaSet (k, 1) ->
-                                 go matches (Syntax.SMetaSet (k, Syntax.VMap ([f], List.rev ts, name, [])) :: stmts) more3
+                                 go (bs body (Syntax.SMetaSet (k, Syntax.VMap ([f], List.rev ts, name, [])))) more3
                              | PCtSet (k, 1) ->
-                                 go matches (Syntax.SCtSet (k, Syntax.VMap ([f], List.rev ts, name, [])) :: stmts) more3
+                                 go (bs body (Syntax.SCtSet (k, Syntax.VMap ([f], List.rev ts, name, [])))) more3
                              | PNat (kind,fam,a,ax,pm,px,fl) ->
                                  if more3 <> [] then raise (Unsupported "trailing-after-nat");
-                                 mk_nat_map matches stmts (f, List.rev ts, name) (kind,fam,a,ax,pm,px,fl)
+                                 mk_nat_map body (f, List.rev ts, name) (kind,fam,a,ax,pm,px,fl)
                              | _ -> raise (Unsupported "map-not-set"))
                           | [] -> raise (Unsupported "map-dangling"))
-                     (* load (+ transforms) feeding a set/mangle = a value statement *)
                      | PDynset (op, name, 1, None) when ts = [] ->
-                         go matches (Syntax.SDynset (op, name, [f], []) :: stmts) more
+                         go (bs body (Syntax.SDynset (op, name, [f], []))) more
                      | PMetaSet (k, 1) ->
-                         go matches (Syntax.SMetaSet (k, Syntax.VField (f, List.rev ts)) :: stmts) more
+                         go (bs body (Syntax.SMetaSet (k, Syntax.VField (f, List.rev ts)))) more
                      | PCtSet (k, 1) ->
-                         go matches (Syntax.SCtSet (k, Syntax.VField (f, List.rev ts)) :: stmts) more
+                         go (bs body (Syntax.SCtSet (k, Syntax.VField (f, List.rev ts)))) more
                      | PWrite (1, b, off, len, ct, co, cf) ->
-                         go matches (Syntax.SMangle (Syntax.VField (f, List.rev ts), b, off, len, ct, co, cf) :: stmts) more
+                         go (bs body (Syntax.SMangle (Syntax.VField (f, List.rev ts), b, off, len, ct, co, cf))) more
                      | PRange _ -> raise (Unsupported "range:reg")
                      | PLookup _ -> raise (Unsupported "lookup:reg")
                      | PBitwise _ | PShift _ | PByteorder _ | PJhash _ | PCmp _ ->
@@ -519,7 +492,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                   | [] -> raise (Unsupported "dangling-load")
                 in collect [] rest)
        | _ -> raise (Unsupported "test-without-load"))
-  in go [] [] lines
+  in go [] lines
 
 (* ---------- block extraction: maximal runs of `[ ... ]` lines ---------- *)
 let blocks_of_file path : string list list =

@@ -248,12 +248,23 @@ Record tproxy_spec : Type := {
   tp_preg   : option nat;          (* target-port register, if any *)
 }.
 
-(** A rule: matches, then verdict-neutral statements, then an outcome — a static
-    verdict, a verdict-map lookup ([r_vmap]), or a terminal redirect ([r_nat] /
-    [r_tproxy]). *)
+(** A rule body item: either a match condition or a verdict-neutral statement.
+    nftables emits matches and statements in source order (a match may follow a
+    statement), so the body is an *ordered* list rather than separate match/stmt
+    lists — this lets the compiler reproduce nft's instruction order exactly. *)
+Inductive body_item : Type :=
+| BMatch (m : matchcond)
+| BStmt  (s : stmt).
+
+(** The match conditions of a body, in order (statements dropped). *)
+Definition body_matches (b : list body_item) : list matchcond :=
+  flat_map (fun it => match it with BMatch m => m :: nil | BStmt _ => nil end) b.
+
+(** A rule: an ordered body (matches + verdict-neutral statements) then an
+    outcome — a static verdict, a verdict-map lookup ([r_vmap]), or a terminal
+    redirect ([r_nat] / [r_tproxy]). *)
 Record rule : Type := {
-  r_matches : list matchcond;
-  r_stmts   : list stmt;
+  r_body    : list body_item;
   r_verdict : verdict;
   r_vmap    : option vmap_spec;
   r_nat     : option nat_spec;
