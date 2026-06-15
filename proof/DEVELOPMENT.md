@@ -64,6 +64,20 @@ that doesn't change *this* rule's verdict still mutates state later rules read:
   compiler theorem still proves because BOTH the DSL semantics and the VM no-op
   the set — a textbook vacuous-theorem case.
 
+  *Design to fix (in progress).* Thread a mutated packet across rules: a new VM
+  effect `run_rule_writes : regfile -> rule_prog -> packet -> packet` (mirrors
+  `run_rule` but, on an `IMetaSet k src` reached after the matches pass, returns
+  `set_meta p k (rf src)`; cmp/range/limit break → unchanged `p`) and a DSL
+  `dsl_writes r p` (applies `set_meta`/`set_ct` for the body's set statements with
+  operand value `eval_vsrc vs p`, gated by `rule_applies`). `eval_rules` and
+  `run_program` (and the jump variants) thread `…rest (writes r/rp p)`. The
+  catch — and why this is the *largest* phase — is the agreement lemma
+  `run_rule_writes (compile_rule r) p = dsl_writes r p`, which needs the
+  **operand value-correctness** `eval_vsrc vs p = (regfile after compile_vsrc vs) 1`
+  for *every* `vsrc` (the value the proof currently delegates to the corpus). NB
+  the VMap key subtlety: reg 1 is the *first* concat field's slot, so a key
+  transform chain on reg 1 transforms only that component.
+
 **C. Control flow** *(jump/goto/return + user chains: FIXED, 2026-06)*:
 - ✅ `jump` / `goto` / `return` and **user-defined chains** are now modelled:
   `verdict` carries Jump/Goto/Return; `eval_rules_j`/`eval_table` (DSL) and
