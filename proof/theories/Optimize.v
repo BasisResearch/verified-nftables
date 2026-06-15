@@ -68,6 +68,7 @@ Qed.
 
 Definition dedup_rule (r : rule) : rule :=
   {| r_matches := nodup matchcond_eq_dec (r_matches r);
+     r_stmts   := r_stmts r;
      r_verdict := r_verdict r |}.
 
 Lemma forallb_nodup :

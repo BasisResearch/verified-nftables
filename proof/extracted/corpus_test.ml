@@ -126,9 +126,12 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.ILookup (s,name,neg,_) ->
       if neg then Printf.sprintf "[ lookup reg %d set %s 0x1 ]" s name
       else Printf.sprintf "[ lookup reg %d set %s ]" s name
+  | Bytecode.ICounter (p,b) -> Printf.sprintf "[ counter pkts %d bytes %d ]" p b
+  | Bytecode.INotrack -> "[ notrack ]"
+  | Bytecode.IReject (t,c) -> Printf.sprintf "[ reject type %d code %d ]" t c
   | Bytecode.IImmediate v ->
       let vn = (match v with Verdict.Accept->"accept"|Verdict.Drop->"drop"
-                            |Verdict.Continue->"continue") in
+                            |Verdict.Continue->"continue"|Verdict.Reject _->"reject") in
       Printf.sprintf "[ immediate reg 0 %s ]" vn
 
 (* ---------- parse one corpus expression line ---------- *)
@@ -154,6 +157,8 @@ type pinst =
   | PRange   of bool * int * string list      (* is_eq, src reg, lo++hi hexwords *)
   | PBitwise of int * int * int list * int list  (* dst, src, mask, xor *)
   | PLookup  of int * string * bool              (* src reg, set name, inverted *)
+  | PCounter of int * int
+  | PNotrack
   | PImm     of Verdict.verdict
 
 let rec take_until tok = function
@@ -212,24 +217,34 @@ let parse_line line : pinst =
        | ["drop"]   -> PImm Verdict.Drop
        | v::_       -> raise (Unsupported ("verdict:"^v))
        | []         -> raise (Unsupported "verdict:empty"))
+  | ["counter"; "pkts"; p; "bytes"; b] -> PCounter (int_of_string p, int_of_string b)
+  | ["notrack"] -> PNotrack
+  | ["reject"; "type"; t; "code"; c] ->
+      PImm (Verdict.Reject (int_of_string t, int_of_string c))
   | tok::_ -> raise (Unsupported ("instr:"^tok))
   | [] -> raise (Unsupported "empty")
 
-(* fold a block's parsed instrs into a DSL rule (load;cmp)* ; immediate *)
+(* fold a block into a DSL rule: (load;test)* then verdict-neutral statements
+   then a verdict. *)
 let rule_of_block (lines : string list) : Syntax.rule =
-  let rec go acc = function
-    | [] -> (* match-only rule: falls through (Continue), no verdict expr *)
-        { Syntax.r_matches = List.rev acc; r_verdict = Verdict.Continue }
+  let mk matches stmts v : Syntax.rule =
+    { Syntax.r_matches = List.rev matches; r_stmts = List.rev stmts; r_verdict = v } in
+  let rec go matches stmts = function
+    | [] -> mk matches stmts Verdict.Continue   (* match-only rule: falls through *)
     | l1 :: rest ->
       (match parse_line l1 with
        | PImm v ->
            if rest <> [] then raise (Unsupported "trailing-after-verdict");
-           { Syntax.r_matches = List.rev acc; r_verdict = v }
+           mk matches stmts v
+       | PCounter (p,b) -> go matches (Syntax.SCounter (p,b) :: stmts) rest
+       | PNotrack -> go matches (Syntax.SNotrack :: stmts) rest
        | PLoad (key, lreg) ->
+           if stmts <> [] then raise (Unsupported "load-after-stmt");
            if lreg <> 1 then raise (Unsupported "reg!=1");
            let field_of key =
              match field_of_key_str key with Some f -> f
              | None -> raise (Unsupported ("field:"^key)) in
+           let acc = matches in
            (match rest with
             | l2 :: rest2 ->
               (match parse_line l2 with
@@ -237,7 +252,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                    if creg <> 1 then raise (Unsupported "reg!=1");
                    let f = field_of key in
                    let m = if iseq then Syntax.MEq (f, v) else Syntax.MNeq (f, v) in
-                   go (m :: acc) rest2
+                   go (m :: acc) stmts rest2
                | PRange (iseq, creg, words) ->
                    if creg <> 1 then raise (Unsupported "reg!=1");
                    let n = List.length words in
@@ -245,7 +260,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                    let lo = bytes_of_hexwords (List.filteri (fun i _ -> i < n/2) words)
                    and hi = bytes_of_hexwords (List.filteri (fun i _ -> i >= n/2) words) in
                    let f = field_of key in
-                   go (Syntax.MRange (f, not iseq, lo, hi) :: acc) rest2
+                   go (Syntax.MRange (f, not iseq, lo, hi) :: acc) stmts rest2
                | PBitwise (bd, bs, mask, xor) ->
                    if bd <> 1 || bs <> 1 then raise (Unsupported "reg!=1");
                    (match rest2 with
@@ -254,17 +269,17 @@ let rule_of_block (lines : string list) : Syntax.rule =
                        | PCmp (iseq, creg, v) ->
                            if creg <> 1 then raise (Unsupported "reg!=1");
                            let f = field_of key in
-                           go (Syntax.MMasked (f, not iseq, mask, xor, v) :: acc) rest3
+                           go (Syntax.MMasked (f, not iseq, mask, xor, v) :: acc) stmts rest3
                        | _ -> raise (Unsupported "bitwise-not-followed-by-cmp"))
                     | [] -> raise (Unsupported "dangling-bitwise"))
                | PLookup (lr, name, neg) ->
                    if lr <> 1 then raise (Unsupported "reg!=1");
                    let f = field_of key in
-                   go (Syntax.MSet (f, neg, name, []) :: acc) rest2
+                   go (Syntax.MSet (f, neg, name, []) :: acc) stmts rest2
                | _ -> raise (Unsupported "load-not-followed-by-cmp"))
             | [] -> raise (Unsupported "dangling-load"))
-       | PCmp _ -> raise (Unsupported "cmp-without-load"))
-  in go [] lines
+       | _ -> raise (Unsupported "test-without-load"))
+  in go [] [] lines
 
 (* ---------- block extraction: maximal runs of `[ ... ]` lines ---------- *)
 let blocks_of_file path : string list list =

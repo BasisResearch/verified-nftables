@@ -10,13 +10,16 @@
     they extend this type and the chain semantics without disturbing the
     register/cmp machinery that the compiler proof is really about. *)
 
+From Stdlib Require Import PeanoNat.
+
 Inductive verdict : Type :=
 | Accept
 | Drop
-| Continue.
+| Continue
+| Reject (typ code : nat).   (* reject with ICMP type/code *)
 
 Definition terminal (v : verdict) : bool :=
   match v with
-  | Accept | Drop => true
-  | Continue      => false
+  | Continue => false
+  | _        => true
   end.

@@ -37,6 +37,9 @@ Inductive instr : Type :=
                                           (* set membership; [elems] is the set's
                                              contents, carried for semantics and
                                              not rendered (it lives in NEWSET) *)
+| ICounter     (pkts bytes : nat)        (* verdict-neutral statements *)
+| INotrack
+| IReject      (typ code : nat)          (* terminal reject verdict *)
 | IImmediate   (v : verdict).            (* immediate reg 0 <verdict> *)
 
 (** Expressions of one rule (one NEWRULE message). *)

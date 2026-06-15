@@ -112,9 +112,16 @@ Inductive matchcond : Type :=
 | MMasked (f : field) (neg : bool) (mask xor v : data)   (* (field & mask) ^ xor cmp v *)
 | MSet    (f : field) (neg : bool) (name : string) (elems : list data). (* field [!]in set *)
 
-(** A rule: a conjunction of match conditions and a verdict. *)
+(** Verdict-neutral statements: they emit bytecode but do not change the packet's
+    verdict (counter accounts; notrack disables conntrack). *)
+Inductive stmt : Type :=
+| SCounter (pkts bytes : nat)
+| SNotrack.
+
+(** A rule: matches, then verdict-neutral statements, then a verdict. *)
 Record rule : Type := {
   r_matches : list matchcond;
+  r_stmts   : list stmt;
   r_verdict : verdict;
 }.
 

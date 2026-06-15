@@ -33,12 +33,24 @@ Definition compile_match (m : matchcond) : list instr :=
 (** A [Continue] (fall-through) rule emits no verdict expression, exactly as
     [nft] does for a rule that only narrows; a terminal verdict emits an
     [immediate] into the verdict register. *)
+Definition compile_stmt (s : stmt) : list instr :=
+  match s with
+  | SCounter p b => [ICounter p b]
+  | SNotrack     => [INotrack]
+  end.
+
+Definition verdict_tail (v : verdict) : list instr :=
+  match v with
+  | Continue   => []
+  | Accept     => [IImmediate Accept]
+  | Drop       => [IImmediate Drop]
+  | Reject t c => [IReject t c]
+  end.
+
 Definition compile_rule (r : rule) : rule_prog :=
   flat_map compile_match (r_matches r) ++
-  match r_verdict r with
-  | Continue => []
-  | v        => [IImmediate v]
-  end.
+  flat_map compile_stmt (r_stmts r) ++
+  verdict_tail (r_verdict r).
 
 Definition compile_chain (c : chain) : program :=
   map compile_rule (c_rules c).

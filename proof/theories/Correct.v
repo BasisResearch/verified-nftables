@@ -19,78 +19,63 @@ Proof.
   destruct (field_load f) eqn:E; simpl; reflexivity.
 Qed.
 
-(** The heart of the proof: a compiled match-list followed by an immediate runs
-    to [Some v] iff every match condition holds, else [None] (a [cmp] broke).
-    Quantifying over [rf] gives a strong-enough induction hypothesis. *)
-Lemma run_compile_matches : forall ms rf v p,
-  run_rule rf (flat_map compile_match ms ++ [IImmediate v]) p =
-  if forallb (fun m => eval_matchcond m p) ms then Some v else None.
+(** The heart of the proof, generalized over the trailing program [tail]: as
+    long as [tail] runs to a constant [res] from any register file (true for the
+    verdict tail — an immediate / reject / empty — composed after the
+    verdict-neutral statements), a compiled match-list followed by [tail] runs to
+    [res] iff every match holds, else [None]. *)
+Lemma run_compile_matches_const : forall ms tail res p,
+  (forall rf, run_rule rf tail p = res) ->
+  forall rf, run_rule rf (flat_map compile_match ms ++ tail) p =
+    if forallb (fun m => eval_matchcond m p) ms then res else None.
 Proof.
-  induction ms as [| m ms IH]; intros rf v p.
-  - reflexivity.
+  induction ms as [| m ms IH]; intros tail res p Hc rf.
+  - cbn [flat_map app forallb]. apply Hc.
   - destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0 | f neg nm elems];
       cbn [flat_map compile_match app]; rewrite compile_load_correct.
-    + (* MEq *) cbn [run_rule]. rewrite set_reg_same.
-      cbn [forallb eval_matchcond]. unfold eval_cmp.
+    + cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond]. unfold eval_cmp.
       destruct (data_eqb (field_value f p) v0); cbn [andb negb];
-        [apply IH | reflexivity].
-    + (* MNeq *) cbn [run_rule]. rewrite set_reg_same.
-      cbn [forallb eval_matchcond]. unfold eval_cmp.
+        [apply IH; exact Hc | reflexivity].
+    + cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond]. unfold eval_cmp.
       destruct (data_eqb (field_value f p) v0); cbn [andb negb];
-        [reflexivity | apply IH].
-    + (* MRange *) cbn [run_rule]. rewrite set_reg_same.
-      cbn [forallb eval_matchcond].
+        [reflexivity | apply IH; exact Hc].
+    + cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond].
       destruct (eval_range (if neg then CNe else CEq) (field_value f p) lo hi);
-        cbn [andb]; [apply IH | reflexivity].
-    + (* MMasked *) cbn [run_rule]. rewrite !set_reg_same.
-      cbn [forallb eval_matchcond].
+        cbn [andb]; [apply IH; exact Hc | reflexivity].
+    + cbn [run_rule]. rewrite !set_reg_same. cbn [forallb eval_matchcond].
       destruct (eval_cmp (if neg then CNe else CEq)
                  (data_bitops (field_value f p) mask xor) v0);
-        cbn [andb]; [apply IH | reflexivity].
-    + (* MSet *) cbn [run_rule]. rewrite set_reg_same.
-      cbn [forallb eval_matchcond].
+        cbn [andb]; [apply IH; exact Hc | reflexivity].
+    + cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond].
       destruct (xorb neg (data_mem (field_value f p) elems));
-        cbn [andb]; [apply IH | reflexivity].
+        cbn [andb]; [apply IH; exact Hc | reflexivity].
 Qed.
 
-(** A compiled match list with no trailing verdict always falls through
-    ([None]): a [Continue] rule never sets the verdict register. *)
-Lemma run_matches_no_tail : forall ms rf p,
-  run_rule rf (flat_map compile_match ms) p = None.
+(** Verdict-neutral statements pass through unchanged. *)
+Lemma run_stmts_passthrough : forall ss rf tail p,
+  run_rule rf (flat_map compile_stmt ss ++ tail) p = run_rule rf tail p.
 Proof.
-  induction ms as [| m ms IH]; intros rf p.
+  induction ss as [| s ss IH]; intros rf tail p.
   - reflexivity.
-  - destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0 | f neg nm elems];
-      cbn [flat_map compile_match app]; rewrite compile_load_correct.
-    + cbn [run_rule]. rewrite set_reg_same. unfold eval_cmp.
-      destruct (data_eqb (field_value f p) v0); [apply IH | reflexivity].
-    + cbn [run_rule]. rewrite set_reg_same. unfold eval_cmp.
-      destruct (data_eqb (field_value f p) v0); [reflexivity | apply IH].
-    + cbn [run_rule]. rewrite set_reg_same.
-      destruct (eval_range (if neg then CNe else CEq) (field_value f p) lo hi);
-        [apply IH | reflexivity].
-    + cbn [run_rule]. rewrite !set_reg_same.
-      destruct (eval_cmp (if neg then CNe else CEq)
-                 (data_bitops (field_value f p) mask xor) v0);
-        [apply IH | reflexivity].
-    + cbn [run_rule]. rewrite set_reg_same.
-      destruct (xorb neg (data_mem (field_value f p) elems));
-        [apply IH | reflexivity].
+  - destruct s; cbn [flat_map compile_stmt app run_rule]; apply IH.
 Qed.
 
-(** A compiled rule: a terminal rule runs to its verdict exactly when it
-    applies; a [Continue] rule always falls through. *)
+Definition verdict_result (v : verdict) : option verdict :=
+  match v with Continue => None | _ => Some v end.
+
+Lemma run_verdict_tail : forall v rf p,
+  run_rule rf (verdict_tail v) p = verdict_result v.
+Proof. intros v rf p. destruct v; reflexivity. Qed.
+
+(** A compiled rule runs to its verdict exactly when it applies (the trailing
+    verdict-neutral statements never change that). *)
 Lemma run_rule_compile_rule : forall r p,
   run_rule empty_rf (compile_rule r) p =
-  match r_verdict r with
-  | Continue => None
-  | v        => if rule_applies r p then Some v else None
-  end.
+  if rule_applies r p then verdict_result (r_verdict r) else None.
 Proof.
-  intros r p. unfold compile_rule, rule_applies. destruct (r_verdict r) eqn:Ev.
-  - apply run_compile_matches.
-  - apply run_compile_matches.
-  - rewrite app_nil_r. apply run_matches_no_tail.
+  intros r p. unfold compile_rule, rule_applies.
+  apply run_compile_matches_const.
+  intro rf. rewrite run_stmts_passthrough. apply run_verdict_tail.
 Qed.
 
 (** Chain level: the compiled program reproduces the rule-list evaluation. *)
@@ -100,10 +85,8 @@ Proof.
   induction rs as [| r rs IH]; intros p.
   - reflexivity.
   - cbn [map run_program eval_rules]. rewrite run_rule_compile_rule.
-    destruct (r_verdict r) eqn:Ev.
-    + destruct (rule_applies r p); cbn [terminal]; [reflexivity | apply IH].
-    + destruct (rule_applies r p); cbn [terminal]; [reflexivity | apply IH].
-    + destruct (rule_applies r p); apply IH.
+    destruct (rule_applies r p); destruct (r_verdict r);
+      cbn [terminal verdict_result]; try reflexivity; apply IH.
 Qed.
 
 (** ** Main theorem: semantic preservation. *)
