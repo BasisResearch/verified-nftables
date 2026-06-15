@@ -208,7 +208,7 @@ A known issue with VST is that it relies on CompCert's clightgen, which only wor
 (no need for VST, just Rocq)
 - Formally specify the declarative nftables DSL (tables, chains, rules).
 - Formally specify the nftables control plane bytecode (at the level of the netlink message that =nft= emits. no need to formalize netlink or any form of serialization/deserialization itself)
-- Write a verified compiler from the declarative compiler from the DSL to the control plane bytecode and show that it's semantic preserving. Both languages can be extracted to OCaml with a thin wrapper that emits netlink messages.
+- Write a verified compiler from the declarative DSL to the control plane bytecode and show that it's semantics-preserving. Both languages can be extracted to OCaml with a thin wrapper that emits netlink messages.
 - Write an optimization pass for the declarative DSL and show that it is correct.
 
 ** Future goals
