@@ -29,7 +29,7 @@ let rule ?(stmts = []) (matches : matchcond list) (verdict : verdict) : rule =
       Stdlib.List.map (fun m -> Syntax.BMatch m) matches
       @ Stdlib.List.map (fun s -> Syntax.BStmt s) stmts;
     r_verdict = verdict; r_vmap = None; r_nat = None; r_tproxy = None; r_fwd = None;
-    r_after = [] }
+    r_queue = None; r_after = [] }
 
 let chain (policy : verdict) (rules : rule list) : chain =
   { Syntax.c_policy = policy; c_rules = rules }

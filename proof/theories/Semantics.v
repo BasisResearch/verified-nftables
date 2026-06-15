@@ -74,6 +74,9 @@ Definition outcome (r : rule) (p : packet) : option verdict :=
   match r_fwd r with
   | Some _ => Some Accept   (* fwd is terminal accept (forward is a side effect) *)
   | None =>
+  match r_queue r with
+  | Some _ => Some Accept   (* queue is terminal accept (hand-off is a side effect) *)
+  | None =>
     match r_vmap r with
     | Some vm =>
         let key := match vm_keyf vm with
@@ -83,6 +86,7 @@ Definition outcome (r : rule) (p : packet) : option verdict :=
         assoc_verdict key (vm_entries vm)
     | None    => match r_verdict r with Continue => None | v => Some v end
     end
+  end
   end
   end
   end.
@@ -175,6 +179,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | INat _ _ _ _ _ _ _ :: _ => Some Accept   (* terminal *)
   | ITproxy _ _ _ :: _ => Some Accept        (* terminal redirect *)
   | IFwd _ _ _ :: _ => Some Accept           (* terminal forward *)
+  | IQueueSreg _ _ _ :: _ => Some Accept     (* terminal queue *)
   | ILimit spec :: rest =>
       if pkt_limit p spec then run_rule rf rest p else None   (* over-limit breaks *)
   | IQuota spec :: rest =>

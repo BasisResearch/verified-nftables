@@ -69,6 +69,7 @@ type pinst =
   | PExthdrWrite of string * int * int * int * int (* proto, src reg, htype, off, len *)
   | PDup     of int option * int option            (* dev reg, addr reg *)
   | PFwd     of int option * int option * int option (* dev reg, addr reg, nfproto *)
+  | PQueue   of int * bool * bool                  (* sreg, bypass, fanout *)
   | PImm     of Verdict.verdict
 
 let rec take_until tok = function
@@ -324,20 +325,25 @@ let parse_line line : pinst =
         | _ -> raise (Unsupported "fwd:form") in
       let (dev, addr, nfp) = p None None None rest in
       PFwd (dev, addr, nfp)
-  | "queue"::_ -> raise (Unsupported "queue:sreg")
+  | "queue"::"sreg_qnum"::n::flags ->
+      PQueue (int_of_string n, List.mem "bypass" flags, List.mem "fanout" flags)
+  | "queue"::_ -> raise (Unsupported "queue:form")
   | tok::_ -> raise (Unsupported ("instr:"^tok))
   | [] -> raise (Unsupported "empty")
 
 (* fold a block into a DSL rule: (load;test)* then verdict-neutral statements
    then a verdict. *)
 let rule_of_block (lines : string list) : Syntax.rule =
-  let mk ?(vmap=None) ?(nat=None) ?(tproxy=None) ?(fwd=None) ?(after=[]) body v : Syntax.rule =
+  let mk ?(vmap=None) ?(nat=None) ?(tproxy=None) ?(fwd=None) ?(queue=None) ?(after=[]) body v : Syntax.rule =
     { Syntax.r_body = List.rev body;
       r_verdict = v; r_vmap = vmap; r_nat = nat; r_tproxy = tproxy;
-      r_fwd = fwd; r_after = after } in
+      r_fwd = fwd; r_queue = queue; r_after = after } in
   let mk_fwd body imms (dev,addr,nfp) =
     mk ~fwd:(Some { Syntax.fwd_imms = imms; fwd_devreg = dev;
                     fwd_addrreg = addr; fwd_nfproto = nfp }) body Verdict.Continue in
+  let mk_queue ?(src=None) body imms (sreg,bypass,fanout) =
+    mk ~queue:(Some { Syntax.q_imms = imms; q_src = src; q_sreg = sreg;
+                      q_bypass = bypass; q_fanout = fanout }) body Verdict.Continue in
   let bm body m = Syntax.BMatch m :: body in      (* prepend a match in order *)
   let bs body s = Syntax.BStmt s :: body in       (* prepend a statement in order *)
   (* verdict-neutral statements emitted after a terminal outcome (e.g. a counter
@@ -415,6 +421,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
                      | PFwd (dev,addr,nfp) ->
                          if more <> [] then raise (Unsupported "trailing-after-fwd");
                          mk_fwd body (List.rev imms) (dev,addr,nfp)
+                     | PQueue (sreg,bypass,fanout) ->
+                         if more <> [] then raise (Unsupported "trailing-after-queue");
+                         mk_queue body (List.rev imms) (sreg,bypass,fanout)
                      | _ -> raise (Unsupported "imm-not-nat"))
                   | [] -> raise (Unsupported "imm-dangling")
                 in gnat [(r, v)] rest)
@@ -466,6 +475,10 @@ let rule_of_block (lines : string list) : Syntax.rule =
                                  go (bs body (Syntax.SMetaSet (k, Syntax.VHash (fields, len, seed, m, o)))) more3
                              | PCtSet (k, 1) ->
                                  go (bs body (Syntax.SCtSet (k, Syntax.VHash (fields, len, seed, m, o)))) more3
+                             | PQueue (sreg, bypass, fanout) ->
+                                 if more3 <> [] then raise (Unsupported "trailing-after-queue");
+                                 mk_queue ~src:(Some (Syntax.VHash (fields, len, seed, m, o))) body []
+                                   (sreg, bypass, fanout)
                              | _ -> raise (Unsupported "hash-not-set"))
                           | [] -> raise (Unsupported "hash-dangling"))
                      | PMapVal (_, name, 1) ->
@@ -542,6 +555,10 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          go (bs body (Syntax.SDynset (op, name, [f], []))) more
                      | PObjrefMap (1, name) when ts = [] ->
                          go (bs body (Syntax.SObjrefMap ([f], name))) more
+                     | PQueue (sreg, bypass, fanout) ->
+                         if more <> [] then raise (Unsupported "trailing-after-queue");
+                         mk_queue ~src:(Some (Syntax.VField (f, List.rev ts))) body []
+                           (sreg, bypass, fanout)
                      | PMetaSet (k, 1) ->
                          go (bs body (Syntax.SMetaSet (k, Syntax.VField (f, List.rev ts)))) more
                      | PCtSet (k, 1) ->

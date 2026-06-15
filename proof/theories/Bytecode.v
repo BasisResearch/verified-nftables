@@ -39,6 +39,7 @@ Inductive instr : Type :=
 | IExthdrLoad  (ep : exthdr_proto) (htype off len : nat) (present : bool) (dst : reg)
 | ITproxy      (family : string) (areg preg : option reg)
 | IFwd         (devreg addrreg : option reg) (nfproto : option nat)
+| IQueueSreg   (sreg : reg) (bypass fanout : bool)
 | IFibLoad     (sel : string) (res : fib_result) (dst : reg)
 | IQuota       (spec : quota_spec)
 | IConnlimit   (spec : connlimit_spec)

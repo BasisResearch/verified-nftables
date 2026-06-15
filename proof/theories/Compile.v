@@ -190,6 +190,13 @@ Definition compile_end (r : rule) : list instr :=
   | Some w => map (fun rv => IImmediateData (fst rv) (snd rv)) (fwd_imms w) ++
               [IFwd (fwd_devreg w) (fwd_addrreg w) (fwd_nfproto w)]
   | None =>
+  match r_queue r with
+  | Some q => (match q_src q with
+               | Some vs => compile_vsrc vs
+               | None => map (fun rv => IImmediateData (fst rv) (snd rv)) (q_imms q)
+               end) ++
+              [IQueueSreg (q_sreg q) (q_bypass q) (q_fanout q)]
+  | None =>
     match r_vmap r with
     | Some vm =>
         match vm_keyf vm with
@@ -202,6 +209,7 @@ Definition compile_end (r : rule) : list instr :=
         end
     | None    => verdict_tail (r_verdict r)
     end
+  end
   end
   end
   end.

@@ -97,7 +97,8 @@ Definition shadows (r : rule) : bool :=
   (match r_vmap r with None => true | Some _ => false end) &&
   (match r_nat r with None => true | Some _ => false end) &&
   (match r_tproxy r with None => true | Some _ => false end) &&
-  (match r_fwd r with None => true | Some _ => false end).
+  (match r_fwd r with None => true | Some _ => false end) &&
+  (match r_queue r with None => true | Some _ => false end).
 
 Fixpoint dce (rs : list rule) : list rule :=
   match rs with
@@ -112,16 +113,18 @@ Proof.
   - cbn [dce]. destruct (shadows r) eqn:Hs.
     + (* r shadows the rest: matches all, terminal verdict, no vmap/nat/tproxy *)
       unfold shadows in Hs.
-      apply andb_true_iff in Hs. destruct Hs as [Hs1 Hfwd].
-      apply andb_true_iff in Hs1. destruct Hs1 as [Hs2 Htp].
-      apply andb_true_iff in Hs2. destruct Hs2 as [Hs3 Hnat].
-      apply andb_true_iff in Hs3. destruct Hs3 as [Hs4 Hvm].
-      apply andb_true_iff in Hs4. destruct Hs4 as [Hm Hv].
+      apply andb_true_iff in Hs. destruct Hs as [Hs1 Hq].
+      apply andb_true_iff in Hs1. destruct Hs1 as [Hs2 Hfwd].
+      apply andb_true_iff in Hs2. destruct Hs2 as [Hs3 Htp].
+      apply andb_true_iff in Hs3. destruct Hs3 as [Hs4 Hnat].
+      apply andb_true_iff in Hs4. destruct Hs4 as [Hs5 Hvm].
+      apply andb_true_iff in Hs5. destruct Hs5 as [Hm Hv].
       cbn [eval_rules]. unfold rule_applies, outcome.
       destruct (body_matches (r_body r)) as [| m ms] eqn:Em; [| discriminate Hm].
       destruct (r_nat r) as [n |] eqn:Enat; [discriminate Hnat |].
       destruct (r_tproxy r) as [t |] eqn:Etp; [discriminate Htp |].
       destruct (r_fwd r) as [w |] eqn:Efwd; [discriminate Hfwd |].
+      destruct (r_queue r) as [q |] eqn:Eq; [discriminate Hq |].
       destruct (r_vmap r) as [vm |] eqn:Evm; [discriminate Hvm |].
       cbn [forallb]. destruct (r_verdict r) eqn:Ev; cbn in Hv |- *;
         try discriminate Hv; reflexivity.
@@ -146,6 +149,7 @@ Definition dedup_rule (r : rule) : rule :=
      r_nat     := r_nat r;
      r_tproxy  := r_tproxy r;
      r_fwd     := r_fwd r;
+     r_queue   := r_queue r;
      r_after   := r_after r |}.
 
 Lemma forallb_nodup :
@@ -223,6 +227,7 @@ Definition simplify_rule (r : rule) : rule :=
      r_nat     := r_nat r;
      r_tproxy  := r_tproxy r;
      r_fwd     := r_fwd r;
+     r_queue   := r_queue r;
      r_after   := r_after r |}.
 
 Lemma body_matches_simplify : forall b,
@@ -270,7 +275,8 @@ Definition is_noop (r : rule) : bool :=
   (match r_vmap r with None => true | Some _ => false end) &&
   (match r_nat r with None => true | Some _ => false end) &&
   (match r_tproxy r with None => true | Some _ => false end) &&
-  (match r_fwd r with None => true | Some _ => false end).
+  (match r_fwd r with None => true | Some _ => false end) &&
+  (match r_queue r with None => true | Some _ => false end).
 
 Definition prune_noops (rs : list rule) : list rule :=
   filter (fun r => negb (is_noop r)) rs.
@@ -283,6 +289,7 @@ Proof.
   - (* r is a no-op: it falls through, so dropping it preserves the result *)
     rewrite IH. symmetry.
     unfold is_noop in Hn.
+    apply andb_true_iff in Hn as [Hn Hq].
     apply andb_true_iff in Hn as [Hn Hfwd].
     apply andb_true_iff in Hn as [Hn Htp].
     apply andb_true_iff in Hn as [Hn Hnat].
@@ -295,6 +302,7 @@ Proof.
     destruct (r_nat r); [discriminate |].
     destruct (r_tproxy r); [discriminate |].
     destruct (r_fwd r); [discriminate |].
+    destruct (r_queue r); [discriminate |].
     destruct (r_vmap r); [discriminate |].
     destruct (r_verdict r); cbn in Hv |- *; try discriminate Hv; reflexivity.
   - cbn [eval_rules]. destruct (rule_applies r p).

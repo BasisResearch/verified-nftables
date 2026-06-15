@@ -304,6 +304,9 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.IFwd (dev,addr,nfp) ->
       let opt label = function Some r -> Printf.sprintf " %s %d" label r | None -> "" in
       Printf.sprintf "[ fwd%s%s%s ]" (opt "sreg_dev" dev) (opt "sreg_addr" addr) (opt "nfproto" nfp)
+  | Bytecode.IQueueSreg (sreg,bypass,fanout) ->
+      Printf.sprintf "[ queue sreg_qnum %d%s%s ]" sreg
+        (if bypass then " bypass" else "") (if fanout then " fanout" else "")
   | Bytecode.IMetaSet (k,src) ->
       Printf.sprintf "[ meta set %s with reg %d ]" (name_of_meta k) src
   | Bytecode.ICtSetDir (key,dir,src) ->

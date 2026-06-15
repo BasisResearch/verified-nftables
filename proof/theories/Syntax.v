@@ -278,6 +278,18 @@ Record fwd_spec : Type := {
   fwd_nfproto : option nat;
 }.
 
+(** A register-sourced [queue] verdict: terminal (sends the packet to a userspace
+    queue whose number is in [q_sreg], loaded by [q_imms]); the queue hand-off is
+    a side effect outside the single-packet model (a terminal Accept). *)
+Record queue_spec : Type := {
+  q_imms   : list (nat * data);
+  q_src    : option vsrc;       (* the queue number computed by a value source
+                                   (e.g. numgen/symhash/jhash) instead of immediates *)
+  q_sreg   : nat;
+  q_bypass : bool;
+  q_fanout : bool;
+}.
+
 (** A rule body item: either a match condition or a verdict-neutral statement.
     nftables emits matches and statements in source order (a match may follow a
     statement), so the body is an *ordered* list rather than separate match/stmt
@@ -300,6 +312,7 @@ Record rule : Type := {
   r_nat     : option nat_spec;
   r_tproxy  : option tproxy_spec;
   r_fwd     : option fwd_spec;
+  r_queue   : option queue_spec;
   r_after   : list stmt;
                             (* verdict-neutral statements emitted *after* the
                                outcome (e.g. a counter after a verdict map); they
