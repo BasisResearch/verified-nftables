@@ -98,11 +98,10 @@ that doesn't change *this* rule's verdict still mutates state later rules read:
   (`plain_simple`) — the cited `meta mark set 0x1 ; meta mark 0x1 accept` bug now
   ACCEPTS on both DSL and VM (semtest witness). Built on the operand value-correctness
   `eval_vsrc vs p = (regfile after compile_vsrc vs) 1`, now proved for essentially
-  every operand kind: immediate, field(+transforms), value map (no key transform),
-  transformed-concat map (`VMapT`), jhash, jhash-then-map, and OR-fold. Only
-  key-transformed value maps (the reg-1 readback split) and degenerate empty-field
-  operands remain out of scope; rules mixing other (non-set) statements widen scope
-  further.
+  every operand kind: immediate, field(+transforms), value map (**any** key
+  transform), transformed-concat map (`VMapT`), jhash, jhash-then-map, and OR-fold.
+  Only degenerate empty-field operands (which read an incoming register) remain out
+  of scope; rules mixing other (non-set) statements widen scope further.
 
 **C. Control flow** *(jump/goto/return + user chains, AND multi-table dispatch: FIXED, 2026-06)*:
 - ✅ **Multi-table / multi-hook dispatch**: `eval_ruleset`/`run_ruleset` traverse a

@@ -583,15 +583,31 @@ Proof.
     edestruct (run_transforms_prefix_writes ts (set_reg rf 1 (field_value f p)) rest p)
       as [rf' [H1 [_ H2]]].
     exists rf'. split; [exact H2 |]. cbn [eval_vsrc]. rewrite H1, set_reg_same. reflexivity.
-  - (* VMap (f0 :: fr) [] nm : load key fields (no key transform), lookup *)
+  - (* VMap (f0 :: fr) ts nm : load key fields, transform reg 1, lookup *)
     destruct fields as [| f0 fr]; [discriminate Hs |].
-    destruct ts as [| t ts]; [| discriminate Hs].
-    cbn [compile_vsrc compile_transforms]. rewrite <- !app_assoc. cbn [app].
-    rewrite run_load_fields_writes. cbn [run_rule_writes].
-    eexists. split; [reflexivity |]. rewrite set_reg_same.
-    cbn [eval_vsrc apply_transforms].
-    rewrite map_write_fields by apply alloc_regs_nodup.
-    rewrite map_fst_field, alloc_regs_fst. reflexivity.
+    cbn [compile_vsrc]. rewrite <- !app_assoc. rewrite run_load_fields_writes.
+    edestruct (run_transforms_prefix_writes ts (write_fields rf (alloc_regs 0 (f0 :: fr)) p)
+                ([ILookupVal (map snd (alloc_regs 0 (f0 :: fr))) nm 1] ++ rest) p)
+      as [rf1 [Hv1 [Hfr Hr1]]].
+    rewrite Hr1. cbn [app run_rule_writes].
+    eexists. split; [reflexivity |]. rewrite set_reg_same. cbn [eval_vsrc].
+    do 2 f_equal.
+    replace (map snd (alloc_regs 0 (f0 :: fr)))
+      with (1 :: map snd (alloc_regs (field_slots f0) fr))
+      by (cbn [alloc_regs map snd reg_of_slot Nat.eqb Nat.add]; reflexivity).
+    cbn [map]. f_equal.
+    + (* head: reg 1 holds the transformed first field *)
+      rewrite Hv1. f_equal. apply write_fields_head.
+    + (* tail: later key regs untouched by the reg-1 transforms *)
+      transitivity (map (write_fields rf (alloc_regs 0 (f0 :: fr)) p)
+                        (map snd (alloc_regs (field_slots f0) fr))).
+      * apply map_ext_in. intros r Hin. apply Hfr. intro Heq; subst r.
+        apply alloc_regs_lb in Hin. pose proof (field_slots_pos f0).
+        assert (0 < field_slots f0) as Hlt by lia. apply reg_of_slot_mono in Hlt.
+        cbn [reg_of_slot Nat.eqb] in Hlt. lia.
+      * pose proof (map_write_fields (alloc_regs 0 (f0 :: fr)) rf p (alloc_regs_nodup _ _)) as Hwf.
+        rewrite map_fst_field, alloc_regs_fst in Hwf.
+        cbn [alloc_regs map snd Nat.add] in Hwf. injection Hwf as _ Htl. exact Htl.
   - (* VHash (hf0 :: hfr) ... : jhash of the first loaded field *)
     destruct hfields as [| hf0 hfr]; [discriminate Hs |].
     cbn [compile_vsrc]. rewrite <- app_assoc. rewrite run_load_fields_writes.

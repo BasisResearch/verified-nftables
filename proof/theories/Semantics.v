@@ -405,13 +405,13 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
 Definition simple_vsrc (vs : vsrc) : bool :=
   match vs with
   | VImm _ | VField _ _ => true
-  | VMap (_ :: _) [] _ => true              (* nonempty-key value map, no key transform *)
+  | VMap (_ :: _) _ _ => true               (* nonempty-key value map (any key transform) *)
   | VMapT _ _ => true                       (* transformed-concat value map *)
   | VHash (_ :: _) _ _ _ _ => true          (* jhash of a (nonempty) source *)
   | VHashMap (_ :: _) _ _ _ _ _ => true     (* jhash then value-map lookup *)
   | VOr (_ :: _) _ => true                  (* OR-fold of (nonempty) sources *)
-  | _ => false   (* key-transformed value maps and empty-field operands: value-
-                    correctness not yet proven (reg-1 readback split) *)
+  | _ => false   (* only degenerate empty-field operands (which read an incoming
+                    register) remain out of scope *)
   end.
 (** A body is "simple" for the mutation theorem when every statement is a meta/ct
     set with a simple operand (matches are unrestricted).  Other statements in the
