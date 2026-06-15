@@ -429,16 +429,22 @@ let rule_of_block (lines : string list) : Syntax.rule =
                            | [] -> if iseq then Syntax.MEq (f,v) else Syntax.MNeq (f,v)
                            | _ -> Syntax.MTransform (f, tl, not iseq, v)) in
                          go (m :: matches) stmts more
-                     | PRange (iseq, 1, words) when ts = [] ->
+                     | PRange (iseq, 1, words) ->
                          let n = List.length words in
                          if n land 1 <> 0 then raise (Unsupported "range-odd-words");
                          let lo = bytes_of_hexwords (List.filteri (fun i _ -> i < n/2) words)
                          and hi = bytes_of_hexwords (List.filteri (fun i _ -> i >= n/2) words) in
-                         go (Syntax.MRange (f, not iseq, lo, hi) :: matches) stmts more
-                     | PLookup (1, name, neg) when ts = [] ->
-                         go (Syntax.MConcatSet ([f], neg, name, []) :: matches) stmts more
+                         let m = (match List.rev ts with
+                           | [] -> Syntax.MRange (f, not iseq, lo, hi)
+                           | tl -> Syntax.MRangeT (f, tl, not iseq, lo, hi)) in
+                         go (m :: matches) stmts more
+                     | PLookup (1, name, neg) ->
+                         let m = (match List.rev ts with
+                           | [] -> Syntax.MConcatSet ([f], neg, name, [])
+                           | tl -> Syntax.MSetT (f, tl, neg, name, [])) in
+                         go (m :: matches) stmts more
                      | PRange _ -> raise (Unsupported "transform-then-range")
-                     | PLookup _ -> raise (Unsupported "transform-then-lookup")
+                     | PLookup _ -> raise (Unsupported "lookup:reg")
                      | PBitwise _ | PShift _ | PByteorder _ | PJhash _ | PCmp _ ->
                          raise (Unsupported "reg!=1")
                      | _ -> raise (Unsupported "load-not-followed-by-test"))

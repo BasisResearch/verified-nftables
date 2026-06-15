@@ -78,6 +78,12 @@ Definition compile_match (m : matchcond) : list instr :=
   | MTransform f ts neg v =>
       compile_load (field_load f) 1 :: compile_transforms ts ++
       [ICmp (if neg then CNe else CEq) 1 v]
+  | MSetT f ts neg name elems =>
+      compile_load (field_load f) 1 :: compile_transforms ts ++
+      [ILookup [1] name neg elems]
+  | MRangeT f ts neg lo hi =>
+      compile_load (field_load f) 1 :: compile_transforms ts ++
+      [IRange (if neg then CNe else CEq) 1 lo hi]
   | MLimit spec => [ILimit spec]
   end.
 

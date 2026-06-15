@@ -119,6 +119,25 @@ Proof.
       exists rf'; rewrite Hr; rewrite set_reg_same; reflexivity.
 Qed.
 
+(** General version: a transform chain leaves register 1 holding the transformed
+    value and is otherwise transparent to the trailing program (which reads reg
+    1).  Reusable for any tester after the transforms (cmp / range / lookup). *)
+Lemma run_compile_transform : forall t rf rest p,
+  run_rule rf (compile_transform t :: rest) p
+  = run_rule (set_reg rf 1 (apply_transform t (rf 1))) rest p.
+Proof. intros t rf rest p. destruct t; reflexivity. Qed.
+
+Lemma run_transforms_prefix : forall ts rf rest p,
+  exists rf', rf' 1 = apply_transforms ts (rf 1) /\
+    run_rule rf (compile_transforms ts ++ rest) p = run_rule rf' rest p.
+Proof.
+  induction ts as [| t ts IH]; intros rf rest p.
+  - exists rf. split; reflexivity.
+  - cbn [compile_transforms app]. rewrite run_compile_transform.
+    edestruct (IH (set_reg rf 1 (apply_transform t (rf 1)))) as [rf' [H1 H2]].
+    exists rf'. rewrite set_reg_same in H1. split; [exact H1 | exact H2].
+Qed.
+
 (** The heart of the proof, generalized over the trailing program [tail]: as
     long as [tail] runs to a constant [res] from any register file (true for the
     verdict tail — an immediate / reject / empty — composed after the
@@ -132,7 +151,8 @@ Proof.
   induction ms as [| m ms IH]; intros tail res p Hc rf.
   - cbn [flat_map app forallb]. apply Hc.
   - destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0
-                  | fields neg nm elems | f ts neg v0 | spec];
+                  | fields neg nm elems | f ts neg v0 | f ts neg nm elems
+                  | f ts neg lo hi | spec];
       cbn [flat_map compile_match app].
     + (* MEq *) rewrite compile_load_correct.
       cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond]. unfold eval_cmp.
@@ -166,6 +186,25 @@ Proof.
       cbn [forallb eval_matchcond].
       destruct (eval_cmp (if neg then CNe else CEq)
                  (apply_transforms ts (field_value f p)) v0);
+        cbn [andb]; [apply IH; exact Hc | reflexivity].
+    + (* MSetT: set membership of a transformed value *)
+      rewrite compile_load_correct. rewrite <- !app_assoc. cbn [app].
+      edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
+                  (ILookup [1] nm neg elems :: (flat_map compile_match ms ++ tail)) p)
+        as [rf' [H1 H2]].
+      rewrite H2. cbn [run_rule concat map]. rewrite app_nil_r, H1, set_reg_same.
+      cbn [forallb eval_matchcond].
+      destruct (xorb neg (data_mem (apply_transforms ts (field_value f p)) elems));
+        cbn [andb]; [apply IH; exact Hc | reflexivity].
+    + (* MRangeT: range of a transformed value *)
+      rewrite compile_load_correct. rewrite <- !app_assoc. cbn [app].
+      edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
+                  (IRange (if neg then CNe else CEq) 1 lo hi
+                   :: (flat_map compile_match ms ++ tail)) p) as [rf' [H1 H2]].
+      rewrite H2. cbn [run_rule]. rewrite H1, set_reg_same.
+      cbn [forallb eval_matchcond].
+      destruct (eval_range (if neg then CNe else CEq)
+                 (apply_transforms ts (field_value f p)) lo hi);
         cbn [andb]; [apply IH; exact Hc | reflexivity].
     + (* MLimit: no load, a stateful break *)
       cbn [run_rule forallb eval_matchcond].

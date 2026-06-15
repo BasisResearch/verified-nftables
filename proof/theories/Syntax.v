@@ -142,6 +142,10 @@ Inductive matchcond : Type :=
 | MConcatSet (fields : list field) (neg : bool) (name : string) (elems : list data)
                             (* (concatenation of [fields]) [!]in a set/map *)
 | MTransform (f : field) (ts : list transform) (neg : bool) (v : data) (* cmp after transforms *)
+| MSetT (f : field) (ts : list transform) (neg : bool) (name : string) (elems : list data)
+                            (* set membership of a transformed field value *)
+| MRangeT (f : field) (ts : list transform) (neg : bool) (lo hi : data)
+                            (* range test of a transformed field value *)
 | MLimit  (spec : limit_spec).  (* stateful rate limit; passes per the packet oracle *)
 
 (** Verdict-neutral statements: they emit bytecode but do not change the packet's
