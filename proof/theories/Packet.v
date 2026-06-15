@@ -24,7 +24,8 @@ Inductive meta_key : Type :=
 | MKlen | MKpkttype | MKcpu | MKskuid | MKskgid | MKpriority
 | MKcgroup | MKday | MKhour | MKiifgroup | MKoifgroup | MKprandom
 | MKrtclassid | MKsdif | MKsdifname | MKsecpath | MKtime
-| MKbri_iifname | MKbri_oifname | MKbri_iifpvid | MKbri_iifvproto | MKibrhwaddr.
+| MKbri_iifname | MKbri_oifname | MKbri_iifpvid | MKbri_iifvproto | MKibrhwaddr
+| MKbroute.
 
 (** Conntrack keys (read by a [ct load] expression). *)
 Inductive ct_key : Type :=

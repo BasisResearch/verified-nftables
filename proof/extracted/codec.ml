@@ -22,6 +22,7 @@ let metas = [
   "time", Packet.MKtime; "bri_iifname", Packet.MKbri_iifname;
   "bri_oifname", Packet.MKbri_oifname; "bri_iifpvid", Packet.MKbri_iifpvid;
   "bri_iifvproto", Packet.MKbri_iifvproto; "ibrhwaddr", Packet.MKibrhwaddr;
+  "broute", Packet.MKbroute;
 ]
 let meta_of_name n = try Some (List.assoc n metas) with Not_found -> None
 let name_of_meta k =
