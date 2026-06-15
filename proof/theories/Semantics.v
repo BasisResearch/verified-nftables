@@ -132,6 +132,8 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       run_rule (set_reg rf dst (pkt_ctdir p key dir)) rest p
   | IXfrmLoad dir sp key dst :: rest =>
       run_rule (set_reg rf dst (pkt_xfrm p dir sp key)) rest p
+  | ITunnelLoad key dst :: rest =>
+      run_rule (set_reg rf dst (pkt_tunnel p key)) rest p
   | IInnerLoad t h fl desc _ dst :: rest =>
       run_rule (set_reg rf dst (pkt_inner p t h fl desc)) rest p
   | IPayloadLoad b o l dst :: rest =>

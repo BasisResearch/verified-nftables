@@ -21,6 +21,7 @@ Definition compile_load (ld : loaddesc) (dst : reg) : instr :=
   | LFib sel res   => IFibLoad sel res dst
   | LCtDir key dir => ICtDirLoad key dir dst
   | LXfrm dir sp key => IXfrmLoad dir sp key dst
+  | LTunnel key    => ITunnelLoad key dst
   | LInner t h fl desc w => IInnerLoad t h fl desc w dst
   | LPayload b o l => IPayloadLoad b o l dst
   end.

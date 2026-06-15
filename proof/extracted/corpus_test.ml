@@ -100,6 +100,8 @@ let parse_line line : pinst =
       PLoad (Printf.sprintf "ctd:%s:%s" key dir, int_of_string r)
   | "xfrm"::"load"::dir::sp::key::"=>"::"reg"::r::[] ->
       PLoad (Printf.sprintf "xf:%s:%s:%s" dir sp key, int_of_string r)
+  | "tunnel"::"load"::key::"=>"::"reg"::r::[] ->
+      PLoad (Printf.sprintf "tun:%s" key, int_of_string r)
   | "rt"::"load"::name::"=>"::"reg"::r::[] ->
       (match rt_of_name name with
        | Some k -> PLoad (key_of_load (Syntax.LRt k), int_of_string r)

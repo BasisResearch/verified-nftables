@@ -92,6 +92,7 @@ let key_of_load (ld : Syntax.loaddesc) = match ld with
   | Syntax.LFib (sel,res) -> Printf.sprintf "fib:%s:%s" sel (name_of_fibres res)
   | Syntax.LCtDir (key,dir) -> Printf.sprintf "ctd:%s:%s" key dir
   | Syntax.LXfrm (dir,sp,key) -> Printf.sprintf "xf:%s:%d:%s" dir sp key
+  | Syntax.LTunnel key -> Printf.sprintf "tun:%s" key
   | Syntax.LInner (t,h,fl,desc,w) -> Printf.sprintf "inner:%d:%d:%d:%d:%s" t h fl w desc
   | Syntax.LPayload (b,o,l) -> Printf.sprintf "p:%s:%d:%d" (name_of_base b) o l
 
@@ -128,6 +129,7 @@ let field_of_key_str key : Syntax.field option =
        | None -> None)
   | ["ctd"; key; dir] -> Some (Syntax.FCtDir (key, dir))
   | ["xf"; dir; sp; key] -> Some (Syntax.FXfrm (dir, int_of_string sp, key))
+  | ["tun"; key] -> Some (Syntax.FTunnel key)
   | ["inner"; t; h; fl; w; desc] ->
       Some (Syntax.FInner (int_of_string t, int_of_string h, int_of_string fl,
                            desc, int_of_string w))
@@ -201,6 +203,8 @@ let render_instr (i : Bytecode.instr) : string = match i with
       Printf.sprintf "[ ct load %s => reg %d , dir %s ]" key (nreg r) dir
   | Bytecode.IXfrmLoad (dir,sp,key,r) ->
       Printf.sprintf "[ xfrm load %s %d %s => reg %d ]" dir sp key (nreg r)
+  | Bytecode.ITunnelLoad (key,r) ->
+      Printf.sprintf "[ tunnel load %s => reg %d ]" key (nreg r)
   | Bytecode.IInnerLoad (t,h,fl,desc,_,r) ->
       Printf.sprintf "[ inner type %d hdrsize %d flags %x [ %s => reg %d ] ]"
         t h fl desc (nreg r)

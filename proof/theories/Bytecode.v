@@ -50,6 +50,7 @@ Inductive instr : Type :=
 | IObjrefMap   (sregs : list reg) (name : string)
 | ICtDirLoad   (key dir : string) (dst : reg)
 | IXfrmLoad    (dir : string) (spnum : nat) (key : string) (dst : reg)
+| ITunnelLoad  (key : string) (dst : reg)
 | IInnerLoad   (typ hdrsize flags : nat) (innerdesc : string) (width : nat) (dst : reg)
 | IPayloadLoad (b : pbase) (off len : nat) (dst : reg)
 | ICmp         (op : cmpop) (src : reg) (v : data)
