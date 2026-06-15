@@ -470,6 +470,21 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          go (bs body (Syntax.SDynset (op, name, keys, data))) more
                      | PObjrefMap (_, name) ->
                          go (bs body (Syntax.SObjrefMap (List.rev facc, name))) more
+                     (* dynset whose map data is immediate constants: the concat
+                        key is loaded, then the data words are [immediate]'d into
+                        their own registers, then a dynset references them. *)
+                     | PImmData (r, v) ->
+                         let keyfs = List.rev facc in
+                         let rec gimm iacc = function
+                           | l3 :: more3 ->
+                             (match parse_line l3 with
+                              | PImmData (r2, v2) -> gimm ((r2, v2) :: iacc) more3
+                              | PDynset (op, name, _, Some dreg) ->
+                                  go (bs body (Syntax.SDynsetImm
+                                        (op, name, keyfs, List.rev iacc, dreg))) more3
+                              | _ -> raise (Unsupported "dynset-imm-not-dynset"))
+                           | [] -> raise (Unsupported "dynset-imm-dangling")
+                         in gimm [(r, v)] more
                      (* jhash of the concatenation, feeding a set = a hashed value *)
                      | PJhash (_, _, len, seed, m, o) ->
                          let fields = List.rev facc in
@@ -683,7 +698,13 @@ let run_corpus () =
     List.iter (fun block ->
       incr total;
       match (try `R (rule_of_block block) with Unsupported r -> `U r) with
-      | `U reason -> bump ("unsupported:" ^ reason)
+      | `U reason ->
+          bump ("unsupported:" ^ reason);
+          (match Sys.getenv_opt "DUMP" with
+           | Some pat when pat = "" || pat = reason ->
+               Printf.eprintf "--- [%s] %s\n%s\n" reason path
+                 (String.concat "\n" block)
+           | _ -> ())
       | `R rule ->
           let compiled = Compile.compile_rule rule in
           let ours = List.map render_instr compiled in

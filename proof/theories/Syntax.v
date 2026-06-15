@@ -214,6 +214,10 @@ Inductive stmt : Type :=
                             (* duplicate the packet to a device/address loaded by
                                [imms]; verdict-neutral (the dup is a side effect) *)
 | SObjrefMap (keyfs : list field) (name : string)
+| SDynsetImm (op name : string) (keyfs : list field)
+             (dimms : list (nat * data)) (datareg : nat)
+                            (* dynset whose map data is immediate constants loaded
+                               into data registers [dimms]; verdict-neutral *)
 | SExthdrWrite (vs : vsrc) (proto : string) (htype off len : nat).
                             (* write a value into a TCP-option exthdr field;
                                verdict-neutral (packet rewrite outside the model) *)

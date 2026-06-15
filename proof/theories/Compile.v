@@ -156,6 +156,10 @@ Definition compile_stmt (s : stmt) : list instr :=
   | SObjrefMap keyfs name =>
       load_fields (alloc_regs 0 keyfs) ++
       [IObjrefMap (map snd (alloc_regs 0 keyfs)) name]
+  | SDynsetImm op name keyfs dimms datareg =>
+      load_fields (alloc_regs 0 keyfs) ++
+      map (fun rv => IImmediateData (fst rv) (snd rv)) dimms ++
+      [IDynset op name (map snd (alloc_regs 0 keyfs)) (Some datareg)]
   | SExthdrWrite vs proto htype off len =>
       compile_vsrc vs ++ [IExthdrWrite proto htype off len 1]
   end.
