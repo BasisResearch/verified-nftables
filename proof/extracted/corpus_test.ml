@@ -228,9 +228,15 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.INat (kind,family,amin,amax,pmin,pmax,flags) ->
       let opt label = function Some r -> Printf.sprintf " %s reg %d" label r | None -> "" in
       let fl = if flags > 0 then Printf.sprintf " flags 0x%x" flags else "" in
-      Printf.sprintf "[ nat %s %s addr_min reg %d%s%s%s%s ]"
-        kind family amin (opt "addr_max" amax) (opt "proto_min" pmin)
-        (opt "proto_max" pmax) fl
+      (match kind with
+       | "snat" | "dnat" ->
+           let a = (match amin with Some r -> r | None -> 0) in
+           Printf.sprintf "[ nat %s %s addr_min reg %d%s%s%s%s ]"
+             kind family a (opt "addr_max" amax) (opt "proto_min" pmin)
+             (opt "proto_max" pmax) fl
+       | _ ->  (* masq / redir: no address/family *)
+           Printf.sprintf "[ %s%s%s%s ]" kind (opt "proto_min" pmin)
+             (opt "proto_max" pmax) fl)
 
 (* ---------- parse one corpus expression line ---------- *)
 (* result of trying to interpret a block: either a reconstructed DSL rule, or a
@@ -264,7 +270,7 @@ type pinst =
   | PLimit   of Packet.limit_spec
   | PLog     of int option
   | PImmData of int * int list                    (* immediate into a data register *)
-  | PNat     of string * string * int * int option * int option * int option * int
+  | PNat     of string * string * int option * int option * int option * int option * int
                             (* kind, family, amin, amax, pmin, pmax, flags *)
   | PImm     of Verdict.verdict
 
@@ -369,16 +375,25 @@ let parse_line line : pinst =
       PImmData (int_of_string r, bytes_of_hexwords rest)
   | "nat"::kind::family::rest when kind = "snat" || kind = "dnat" ->
       let rec fields amin amax pmin pmax flags = function
-        | "addr_min"::"reg"::a::r -> fields (int_of_string a) amax pmin pmax flags r
+        | "addr_min"::"reg"::a::r -> fields (Some (int_of_string a)) amax pmin pmax flags r
         | "addr_max"::"reg"::a::r -> fields amin (Some (int_of_string a)) pmin pmax flags r
         | "proto_min"::"reg"::a::r -> fields amin amax (Some (int_of_string a)) pmax flags r
         | "proto_max"::"reg"::a::r -> fields amin amax pmin (Some (int_of_string a)) flags r
         | "flags"::f::r -> fields amin amax pmin pmax (int_of_string f) r
         | [] -> (amin, amax, pmin, pmax, flags)
         | _ -> raise (Unsupported "nat:field") in
-      let (amin,amax,pmin,pmax,flags) = fields (-1) None None None 0 rest in
-      if amin < 0 then raise (Unsupported "nat:noaddr");
+      let (amin,amax,pmin,pmax,flags) = fields None None None None 0 rest in
+      if amin = None then raise (Unsupported "nat:noaddr");
       PNat (kind, family, amin, amax, pmin, pmax, flags)
+  | kind::rest when kind = "masq" || kind = "redir" ->
+      let rec fields pmin pmax flags = function
+        | "proto_min"::"reg"::a::r -> fields (Some (int_of_string a)) pmax flags r
+        | "proto_max"::"reg"::a::r -> fields pmin (Some (int_of_string a)) flags r
+        | "flags"::f::r -> fields pmin pmax (int_of_string f) r
+        | [] -> (pmin, pmax, flags)
+        | _ -> raise (Unsupported "natlike:field") in
+      let (pmin,pmax,flags) = fields None None 0 rest in
+      PNat (kind, "", None, None, pmin, pmax, flags)
   | ["counter"; "pkts"; p; "bytes"; b] -> PCounter (int_of_string p, int_of_string b)
   | ["notrack"] -> PNotrack
   | ["limit"; "rate"; ru; "burst"; b; "type"; t; "flags"; fl] ->
