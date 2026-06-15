@@ -148,62 +148,70 @@ by the differential corpus, not Rocq.
 - **Deployable?** `compile_chain`/`optimize_chain` extract to OCaml and already
   emit nft's exact text; the remaining step is a libnftnl netlink emitter shim.
 
-## What's unsupported, and why (the remaining ~1.3%, 32/2532 blocks)
+## Reaching 100% (2532/2532, 0 mismatches)
 
-Each remaining bucket is a distinct structured feature (counts approximate):
-- **per-field transforms inside a concat key** (`ip saddr & /24 . ip daddr` in a
-  set, ~4): `MConcatSet` would need a transform chain per field.
-- **dynset with immediate-sourced map data** (~6): the data operand is a constant
-  (immediate registers, nft-specific allocation) rather than a loaded field.
-- **a verdict map then a terminal `masq`/`redir`** (~4): two terminal outcomes in
-  one rule — the single-outcome model cannot carry both (`r_after` holds only
-  verdict-neutral statements).
-- **diverse map-value consumers** (~5): a `lookup … dreg 1` value feeding
-  redir/queue/fwd/dup/immediate rather than a meta/ct set.
-- a scattered tail (~13): byteorder over a concat, a register-register bitwise OR,
-  a `reg != 1` load ordering, etc.
+Every rule-block of the upstream `tests/py` corpus now round-trips byte-for-byte.
+The climb from 97.7% closed these structured features, each a verified addition
+(both theorems stayed axiom-free throughout, reviewed by an adversarial subagent
+at every step):
 
-Six terminal outcomes (nat/tproxy/fwd/queue + vmap + static verdict), the ordered
-match|statement body, post-outcome statements, and multi-register concat-transforms
-(`VHash`, byte-identical via `alloc_regs 4` + `nreg`) are all done and verified;
-the remaining cases are variants/combinations of these that each need a focused
-structural addition.
-
-## (historical) What's unsupported, and why
-
-Coverage is now 2532/2532 (100%).  The remaining buckets each need a *structural*
-addition, not more vocabulary:
-
-- **interleaved match/statement bodies** (`load-after-stmt`, ~17): nft can emit a
-  statement and then another match-load; our rule splits cleanly into
-  `r_matches` then `r_stmts`, so re-rendering would reorder them. Faithfully
-  supporting this needs an ordered `match | stmt` rule body (the next refactor).
-- **transformed values into maps** (part of `load-not-followed`, ~23): a field is
-  transformed (bitwise/shift/jhash) and then looked up in a verdict-map or value
-  map; `vmap_spec`/`VMap` would need to carry the transform chain.
-- **NAT/redirect from a map** (part of `map-not-set`, ~15): a map lookup produces
-  the translation address/port consumed by a terminal `nat`/`redir` — `r_nat`
-  would need a map-sourced operand prelude in addition to immediates.
-- **hash/bitwise over a concatenation** (part of `concat-not-lookup`, ~17): jhash
-  of `ip saddr . ip daddr` reads bytes spanning several registers — needs a
-  multi-register read like `ILookup` already has.
-- a small tail: `dup`/`fwd` (register-operand statements), `tunnel`, `connlimit`,
-  immediate-sourced `dynset`, the `exthdr write` mangle.
+- **`SDynsetImm`** — a dynset whose map data is immediate constants in their own
+  registers (`@map { … : 10.0.0.1 . 80 }`).
+- **map-/immediate-value consumers** for `fwd`/`queue`/`dup`: a `lookup … dreg 1`
+  value (or an immediate) feeding a device/number/address (`fwd_src`, `q_src`,
+  the `SDupSrc` statement).
+- **transformed concatenation keys** (`MConcatSetT`): each concat element loaded
+  into its own slot register and transformed *in place* there, proven via a
+  register-readback lemma (`run_load_fields_t`, distinct slots never clobber) —
+  value-correct, not merely verdict-neutral.
+- **register-OR value sources** (`VOr` + `IBitwiseOr`/`data_or`): a value built by
+  OR-ing several (transformed) field sources (`meta mark | meta iif | meta cpu`).
+- **`VMapT`** — a value map under a transformed concat key.
+- **vmap-then-terminal** (`tcp dport vmap {…} redirect`): the core outcome was
+  restructured so a verdict map evaluates first and a miss falls through to the
+  terminal (`IVmap` is now continue-on-miss; `outcome = vmap-hit ? v :
+  terminal_outcome`; `compile_end = compile_vmap ++ compile_terminal`).
+- **`VHashMap`** + `nat_src` — a NAT operand from a jhash-keyed map
+  (`dnat to jhash ip saddr mod N map {…}`).
+- **`tp_portmap`** — a tproxy port from a symhash-keyed map.
 
 **Done** (verified, byte-identical): all named/parametric loads incl. fib, inner
 (tunnel decap), xfrm, directional & full conntrack, sctp exthdr; eq/neq/ordered
-ranges & comparisons; bitwise/shift/byteorder/jhash transforms; set membership and
-verdict maps (incl. concatenated keys); map-valued and field-/immediate-valued
-set/mangle; NAT/masq/redir and tproxy terminals; quota/limit stateful breaks;
-counter/notrack/log/objref/synproxy/last/dynset(add,delete,map)/exthdr-reset
-statements; reject/queue verdicts.
+ranges & comparisons; bitwise/shift/byteorder/jhash transforms (per-field inside a
+concat too); set membership and verdict maps (concatenated, transformed, and
+hash-keyed); map-/field-/immediate-/OR-valued set/mangle; NAT/masq/redir and
+tproxy terminals (incl. map-sourced operands and vmap fall-through); quota/limit
+stateful breaks; counter/notrack/log/objref/synproxy/last/dynset(add,delete,map,
+immediate)/exthdr-reset/exthdr-write/dup/fwd statements; reject/queue verdicts.
+
+## The verified optimizer (5 passes)
+
+`optimize_chain` = `dce ∘ prune_noops ∘ (simplify_rule ∘ dedup_rule)*`, all proved
+verdict-preserving (`optimize_chain_correct`, axiom-free):
+- **dedup_rule** — drop duplicate match conditions (matches commute).
+- **simplify_rule** — singleton range `lo..lo` → `cmp eq/neq`, both plain
+  (`MRange`) and transformed (`MRangeT` → `MTransform`).
+- **prune_noops** — drop rules that match-all-and-fall-through.
+- **dce** — drop rules shadowed by an unconditional accept/drop.
+
+## The reusable `Nftc` library
+
+`extracted/nftc.ml{,i}` is a public OCaml facade over the proof-extracted
+`compile`/`optimize`: DSL builders (`eq`/`neq`/`range`/`cmp`/`masked`,
+`counter`/`notrack`/`log`, `rule`/`chain`), the verified pipeline
+(`compile`/`optimize`/`compile_optimized`), and `to_netlink_text`. See
+`extracted/example.ml` (`dune exec ./example.exe`) for an end-to-end demo.
 
 ## Next steps (toward the broader instructions.org goals)
 
-1. A **statement** subsystem (verdict + non-verdict statements) — unlocks the
-   single largest remaining slice.
-2. **Maps/concatenation** (multi-register lowering) for `lookup … dreg`.
-3. The **netlink emitter** shim (libnftnl) as the last untrusted, differentially
-   tested step; round-trip `compile → emit → nft list`.
-4. Then the *future* goals: a data-plane bytecode interpreter spec, and VST
-   proofs that the C interpreter meets it (CompCert/clightgen enters here).
+The DSL → control-plane-bytecode compiler and optimizer are complete and 100%
+corpus-faithful. What remains is breadth and depth beyond the round-trip:
+
+1. The **netlink emitter** shim (libnftnl) as the last untrusted, differentially
+   tested step; round-trip `compile → emit → nft list` against a live kernel.
+2. **More optimization passes** — e.g. consecutive-duplicate-rule elimination
+   (needs a `rule_eq_dec`; a monolithic `decide equality` is too costly, so it
+   wants a bottom-up `vsrc`/`stmt`/spec eq_dec hierarchy), or rule→vmap/set
+   consolidation (the classic nft optimization, harder to verify).
+3. The *future* goals: a data-plane bytecode interpreter spec, and VST proofs
+   that the C interpreter meets it (CompCert/clightgen enters here).
