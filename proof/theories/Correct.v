@@ -375,6 +375,29 @@ Proof.
     cbn [app run_rule]. eexists; reflexivity.
 Qed.
 
+(** Operand *value*-correctness (Phase-B foundation): the compiled operand leaves
+    exactly [eval_vsrc vs p] in register 1.  Proven here for the common immediate
+    and field(+transform) sources — this is the value the verdict proof delegated
+    to the corpus, and what a `meta/ct set vs` must write for mutation to be
+    modelled faithfully. *)
+Lemma run_vsrc_value_VImm : forall v rf rest p,
+  exists rf', run_rule rf (compile_vsrc (VImm v) ++ rest) p = run_rule rf' rest p
+              /\ rf' 1 = eval_vsrc (VImm v) p.
+Proof.
+  intros. cbn [compile_vsrc app run_rule]. exists (set_reg rf 1 v).
+  split; [reflexivity | apply set_reg_same].
+Qed.
+
+Lemma run_vsrc_value_VField : forall f ts rf rest p,
+  exists rf', run_rule rf (compile_vsrc (VField f ts) ++ rest) p = run_rule rf' rest p
+              /\ rf' 1 = eval_vsrc (VField f ts) p.
+Proof.
+  intros. cbn [compile_vsrc app]. rewrite compile_load_correct.
+  edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p)) rest p) as [rf' [H1 H2]].
+  exists rf'. split; [exact H2 |].
+  cbn [eval_vsrc]. rewrite H1, set_reg_same. reflexivity.
+Qed.
+
 (** Operand immediates are verdict-neutral: running them leaves the tail reached
     from some register file. *)
 Lemma run_imms_through : forall imms rf tail p,

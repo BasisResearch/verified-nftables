@@ -63,6 +63,48 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
 Definition rule_applies (r : rule) (p : packet) : bool :=
   forallb (fun m => eval_matchcond m p) (body_matches (r_body r)).
 
+(** The *value* a value-source computes into register 1 — the operand of a
+    set/mangle/NAT statement.  This is the value-level meaning the verdict proof
+    previously delegated to the corpus; [run_vsrc_value] (in Correct) proves the
+    compiled operand leaves exactly this in reg 1, which is the foundation for
+    modelling mutation (Phase B): a `meta mark set vs` writes [eval_vsrc vs p].
+    (Defined to mirror the bytecode, incl. its simplifications — faithfulness of
+    e.g. jhash-over-concatenation to the kernel is a separate, Phase-D, matter.) *)
+Definition eval_vsrc (vs : vsrc) (p : packet) : data :=
+  match vs with
+  | VImm v      => v
+  | VField f ts => apply_transforms ts (field_value f p)
+  | VMap fields ts name =>
+      let key := match fields with
+                 | [] => apply_transforms ts []
+                 | f0 :: frest =>
+                     List.concat (apply_transforms ts (field_value f0 p)
+                                  :: map (fun f => field_value f p) frest)
+                 end in
+      map_lookup_data key (e_map (pkt_env p) name)
+  | VHash fields len seed modulus offset =>
+      data_jhash len seed modulus offset
+        (match fields with [] => [] | f0 :: _ => field_value f0 p end)
+  | VOr srcs final =>
+      match srcs with
+      | [] => []
+      | base :: rest =>
+          apply_transforms final
+            (fold_left
+               (fun acc e => data_or acc (apply_transforms (snd e) (field_value (fst e) p)))
+               rest (apply_transforms (snd base) (field_value (fst base) p)))
+      end
+  | VMapT elems name =>
+      map_lookup_data
+        (List.concat (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) elems))
+        (e_map (pkt_env p) name)
+  | VHashMap fields len seed modulus offset name =>
+      map_lookup_data
+        (data_jhash len seed modulus offset
+           (match fields with [] => [] | f0 :: _ => field_value f0 p end))
+        (e_map (pkt_env p) name)
+  end.
+
 (** Look up a key in a verdict map's entries. *)
 Fixpoint assoc_verdict (key : data) (entries : list (data * verdict)) : option verdict :=
   match entries with
