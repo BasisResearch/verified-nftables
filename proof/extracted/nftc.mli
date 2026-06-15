@@ -24,6 +24,19 @@ val eq : field -> Bytes.data -> matchcond
 val neq : field -> Bytes.data -> matchcond
 val range : ?neg:bool -> field -> Bytes.data -> Bytes.data -> matchcond
 
+(** [cmp f op v] — an ordered comparison [field <op> v] (op : {!Bytecode.cmpop}). *)
+val cmp : field -> Bytecode.cmpop -> Bytes.data -> matchcond
+
+(** [masked ?neg f mask xor v] — match [(field & mask) ^ xor] against [v]
+    (e.g. an address-prefix test). *)
+val masked : ?neg:bool -> field -> Bytes.data -> Bytes.data -> Bytes.data -> matchcond
+
+(** {2 Verdict-neutral statement builders} (for [rule ~stmts]) *)
+
+val counter : Syntax.stmt   (** a zeroed packet/byte counter *)
+val notrack : Syntax.stmt   (** disable connection tracking *)
+val log : string -> Syntax.stmt  (** log with the given option string *)
+
 (** [rule ?stmts matches verdict] — a rule is a conjunction of matches then a verdict. *)
 val rule : ?stmts:Syntax.stmt list -> matchcond list -> verdict -> rule
 

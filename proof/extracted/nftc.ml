@@ -23,6 +23,16 @@ let eq  (f : field) (v : Bytes.data) : matchcond = Syntax.MEq (f, v)
 let neq (f : field) (v : Bytes.data) : matchcond = Syntax.MNeq (f, v)
 let range ?(neg = false) (f : field) (lo : Bytes.data) (hi : Bytes.data) : matchcond =
   Syntax.MRange (f, neg, lo, hi)
+(* ordered comparison `field <op> v` (op : Bytecode.cmpop, e.g. Bytecode.CLt) *)
+let cmp (f : field) (op : Bytecode.cmpop) (v : Bytes.data) : matchcond = Syntax.MCmp (f, op, v)
+(* masked match `(field & mask) ^ xor {==,!=} v`, e.g. an address prefix *)
+let masked ?(neg = false) (f : field) (mask : Bytes.data) (xor : Bytes.data)
+    (v : Bytes.data) : matchcond = Syntax.MMasked (f, neg, mask, xor, v)
+
+(* ---- verdict-neutral statement builders ---- *)
+let counter : Syntax.stmt = Syntax.SCounter (0, 0)
+let notrack : Syntax.stmt = Syntax.SNotrack
+let log (opts : string) : Syntax.stmt = Syntax.SLog opts
 
 let rule ?(stmts = []) (matches : matchcond list) (verdict : verdict) : rule =
   { Syntax.r_body =
