@@ -107,6 +107,8 @@ Definition compile_stmt (s : stmt) : list instr :=
   | SLog level   => [ILog level]
   | SMangle v b off len ct co cf =>
       [IImmediateData 1 v; IPayloadWrite 1 b off len ct co cf]
+  | SMetaSet k v => [IImmediateData 1 v; IMetaSet k 1]
+  | SCtSet k v   => [IImmediateData 1 v; ICtSet k 1]
   end.
 
 Definition verdict_tail (v : verdict) : list instr :=

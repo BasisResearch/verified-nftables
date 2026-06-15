@@ -135,6 +135,8 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | IImmediateData dst v :: rest =>
       run_rule (set_reg rf dst v) rest p
   | IPayloadWrite _ _ _ _ _ _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)
+  | IMetaSet _ _ :: rest => run_rule rf rest p
+  | ICtSet _ _ :: rest => run_rule rf rest p
   | INat _ _ _ _ _ _ _ :: _ => Some Accept   (* terminal *)
   | ILimit spec :: rest =>
       if pkt_limit p spec then run_rule rf rest p else None   (* over-limit breaks *)

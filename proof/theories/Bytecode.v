@@ -52,6 +52,8 @@ Inductive instr : Type :=
 | IImmediateData (dst : reg) (v : data)   (* immediate into a data register *)
 | IPayloadWrite (src : reg) (b : pbase) (off len : nat) (ctype coff cflags : nat)
                                           (* payload mangle (verdict-neutral) *)
+| IMetaSet     (k : meta_key) (src : reg)   (* meta set (verdict-neutral) *)
+| ICtSet       (k : ct_key) (src : reg)     (* ct set (verdict-neutral) *)
 | INat         (kind family : string) (amin amax pmin pmax : option reg)
                (flags : nat)   (* terminal NAT / masquerade / redirect *)
 | ILimit       (spec : limit_spec)       (* rate limit (can break the rule) *)

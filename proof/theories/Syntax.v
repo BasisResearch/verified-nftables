@@ -154,9 +154,11 @@ Inductive stmt : Type :=
 | SCounter (pkts bytes : nat)
 | SNotrack
 | SLog (level : option nat)
-| SMangle (v : data) (b : pbase) (off len : nat) (ctype coff cflags : nat).
+| SMangle (v : data) (b : pbase) (off len : nat) (ctype coff cflags : nat)
                             (* payload write of an immediate value (verdict-neutral;
                                the packet rewrite is a side effect of the model) *)
+| SMetaSet (k : meta_key) (v : data)   (* meta set <k> with an immediate value *)
+| SCtSet   (k : ct_key) (v : data).    (* ct set <k> with an immediate value *)
 
 (** A verdict map: the rule's verdict comes from looking up the concatenation of
     [vm_fields] in the named map (entries live in NEWSET; carried for semantics,

@@ -220,6 +220,8 @@ Fixpoint apply_stmts (rf : regfile) (ss : list stmt) (p : packet) : regfile :=
   match ss with
   | []                       => rf
   | SMangle v _ _ _ _ _ _ :: rest => apply_stmts (set_reg rf 1 v) rest p
+  | SMetaSet _ v :: rest     => apply_stmts (set_reg rf 1 v) rest p
+  | SCtSet _ v :: rest       => apply_stmts (set_reg rf 1 v) rest p
   | _ :: rest                => apply_stmts rf rest p
   end.
 

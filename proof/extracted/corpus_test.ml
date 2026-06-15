@@ -229,6 +229,10 @@ let render_instr (i : Bytecode.instr) : string = match i with
       Printf.sprintf
         "[ payload write reg %d => %db @ %s header + %d csum_type %d csum_off %d csum_flags 0x%x ]"
         src len (name_of_base b) off ct co cf
+  | Bytecode.IMetaSet (k,src) ->
+      Printf.sprintf "[ meta set %s with reg %d ]" (name_of_meta k) src
+  | Bytecode.ICtSet (k,src) ->
+      Printf.sprintf "[ ct set %s with reg %d ]" (name_of_ct k) src
   | Bytecode.INat (kind,family,amin,amax,pmin,pmax,flags) ->
       let opt label = function Some r -> Printf.sprintf " %s reg %d" label r | None -> "" in
       let fl = if flags > 0 then Printf.sprintf " flags 0x%x" flags else "" in
@@ -277,6 +281,8 @@ type pinst =
   | PImmData of int * int list                    (* immediate into a data register *)
   | PWrite   of int * Packet.pbase * int * int * int * int * int
                             (* payload write: src reg, base, off, len, ctype, coff, cflags *)
+  | PMetaSet of Packet.meta_key * int
+  | PCtSet   of Packet.ct_key * int
   | PNat     of string * string * int option * int option * int option * int option * int
                             (* kind, family, amin, amax, pmin, pmax, flags *)
   | PImm     of Verdict.verdict
@@ -387,6 +393,14 @@ let parse_line line : pinst =
            PWrite (int_of_string r, b, int_of_string off, len,
                    int_of_string ct, int_of_string co, int_of_string cf)
        | _ -> raise (Unsupported "payload:write:form"))
+  | "meta"::"set"::name::"with"::"reg"::r::[] ->
+      (match meta_of_name name with
+       | Some k -> PMetaSet (k, int_of_string r)
+       | None -> raise (Unsupported ("metaset:"^name)))
+  | "ct"::"set"::name::"with"::"reg"::r::[] ->
+      (match ct_of_name name with
+       | Some k -> PCtSet (k, int_of_string r)
+       | None -> raise (Unsupported ("ctset:"^name)))
   | "nat"::kind::family::rest when kind = "snat" || kind = "dnat" ->
       let rec fields amin amax pmin pmax flags = function
         | "addr_min"::"reg"::a::r -> fields (Some (int_of_string a)) amax pmin pmax flags r
@@ -464,14 +478,17 @@ let rule_of_block (lines : string list) : Syntax.rule =
            if rest <> [] then raise (Unsupported "trailing-after-nat");
            mk_nat matches stmts [] (k,f,a,ax,pm,px,fl)
        | PImmData (r, v) ->
-           let is_write l = (try (match parse_line l with PWrite _ -> true | _ -> false)
-                             with _ -> false) in
+           let is_set l = (try (match parse_line l with
+                                | PWrite _ | PMetaSet _ | PCtSet _ -> true | _ -> false)
+                           with _ -> false) in
            (match rest with
-            | l2 :: more2 when is_write l2 ->   (* immediate + payload write = mangle *)
+            | l2 :: more2 when r = 1 && is_set l2 ->   (* immediate + a set/write = mangle *)
                 (match parse_line l2 with
-                 | PWrite (r2, b, off, len, ct, co, cf) when r = 1 && r2 = 1 ->
+                 | PWrite (1, b, off, len, ct, co, cf) ->
                      go matches (Syntax.SMangle (v, b, off, len, ct, co, cf) :: stmts) more2
-                 | _ -> raise (Unsupported "mangle:reg"))
+                 | PMetaSet (k, 1) -> go matches (Syntax.SMetaSet (k, v) :: stmts) more2
+                 | PCtSet (k, 1) -> go matches (Syntax.SCtSet (k, v) :: stmts) more2
+                 | _ -> raise (Unsupported "set:reg"))
             | _ ->
                 (* otherwise: gather operand immediates, then a nat statement *)
                 let rec gnat imms = function
