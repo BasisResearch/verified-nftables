@@ -24,6 +24,10 @@ let rule ms v : Syntax.rule =
     r_verdict = v; r_vmap = None; r_nat = None; r_tproxy = None; r_fwd = None;
     r_queue = None; r_after = [] }
 let chain pol rs : Syntax.chain = { Syntax.c_policy = pol; c_rules = rs }
+(* a rule with an explicit body (matches AND statements interleaved) *)
+let rule_b body v : Syntax.rule =
+  { Syntax.r_body = body; r_verdict = v; r_vmap = None; r_nat = None;
+    r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] }
 
 (* ---- the runtime environment (named set/map state the lookups read) ---- *)
 let empty_env : Packet.env =
@@ -158,6 +162,31 @@ let () =
     [ "tcp dport 22 (jump->accept)",        mk_pkt ~th:(th ~dport:[0; 22]) ();
       "tcp dport 80 (jump->fallthru->drop)", mk_pkt ~th:(th ~dport:[0; 80]) ();
       "udp (rule skipped -> policy drop)",   mk_pkt ~l4proto:[17] ~th:(th ~dport:[0; 22]) () ];
+  Printf.printf "\n";
+  (* (5) Phase B: in-traversal mutation.  Rule 1 sets meta mark; rule 2 matches
+     it.  Under the mutation-aware semantics (eval/run_chain_mut) the second rule
+     observes the write and the packet is ACCEPTED; the old verdict-only eval_chain
+     no-ops the set so it reads the original mark and falls through to DROP.  The
+     witness shows (a) the compiler preserves the mutated verdict (DSL_mut = VM_mut)
+     and (b) mutation actually changes the result (mut != no-mut). *)
+  Printf.printf "=== meta mark set 0x1 ; meta mark 0x1 accept (Phase B: mutation visible later) ===\n";
+  let mut_chain = chain Verdict.Drop [
+    rule_b [ Syntax.BStmt (Syntax.SMetaSet (Packet.MKmark, Syntax.VImm [1])) ] Verdict.Continue;
+    rule_b [ Syntax.BMatch (meq Syntax.FMetaMark [1]) ] Verdict.Accept;
+  ] in
+  let mprog = Compile.compile_chain mut_chain in
+  Stdlib.List.iter (fun (name, p) ->
+    let dsl_mut   = Semantics.eval_chain_mut mut_chain p in
+    let vm_mut    = Semantics.run_chain_mut  mprog mut_chain.Syntax.c_policy p in
+    let dsl_nomut = Semantics.eval_chain mut_chain p in
+    let ok = dsl_mut = vm_mut in
+    Printf.printf "  %-22s mut: DSL=%-7s VM=%-7s | verdict-only DSL=%-7s %s\n"
+      name (string_of_verdict dsl_mut) (string_of_verdict vm_mut) (string_of_verdict dsl_nomut)
+      (if ok then "ok" else "MISMATCH");
+    if not ok then incr fails;
+    if dsl_mut = dsl_nomut then
+      (Printf.printf "    (warning: mutation made no difference for this packet)\n"))
+    [ "mark initially unset", mk_pkt () ];
   Printf.printf "\n";
   Printf.printf "%s: compile & optimize preserve the DSL verdict on every packet\n"
     (if !fails = 0 then "PASS" else Printf.sprintf "FAIL (%d mismatches)" !fails);

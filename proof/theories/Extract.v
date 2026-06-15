@@ -28,4 +28,6 @@ Separate Extraction
   run_chain
   compile_env
   eval_table
-  run_table.
+  run_table
+  eval_chain_mut
+  run_chain_mut.
