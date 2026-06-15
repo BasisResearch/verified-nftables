@@ -450,11 +450,16 @@ Definition simple_vsrc (vs : vsrc) : bool :=
 (** A body is "simple" for the mutation theorem when every statement is a meta/ct
     set with a simple operand (matches are unrestricted).  Other statements in the
     same rule are out of scope (their value semantics are not modelled). *)
+(** A body is well-formed for the mutation theorem when every meta/ct *set*
+    statement carries a non-degenerate operand ([simple_vsrc]); ALL other
+    statements (mangle, NAT, dup, counter, log, dynset, exthdr, objref, …) and
+    all matches are unrestricted — they are packet-neutral for meta/ct and so are
+    threaded through verbatim.  (The only exclusion is a malformed zero-field
+    jhash/map/or operand, which no real ruleset produces.) *)
 Definition simple_body (body : list body_item) : bool :=
   forallb (fun it => match it with
-                     | BMatch _ => true
                      | BStmt (SMetaSet _ vs) | BStmt (SCtSet _ vs) => simple_vsrc vs
-                     | BStmt _ => false
+                     | _ => true
                      end) body.
 Definition simple_writes (r : rule) : bool := simple_body (r_body r).
 

@@ -100,15 +100,19 @@ that doesn't change *this* rule's verdict still mutates state later rules read:
   earlier writes). `eval_rules_mut`/`run_program_mut` (and `eval/run_chain_mut`)
   thread the writes so a later rule observes an earlier `set`. The theorem
   **`compile_chain_mut_correct`** (axiom-free) proves
-  `run_chain_mut (compile_chain c) policy = eval_chain_mut c` for every rule whose
-  set-statement operands are `simple_vsrc` and which has no post-outcome statements
-  (`plain_simple`) — the cited `meta mark set 0x1 ; meta mark 0x1 accept` bug now
-  ACCEPTS on both DSL and VM (semtest witness). Built on the operand value-correctness
-  `eval_vsrc vs p = (regfile after compile_vsrc vs) 1`, now proved for essentially
-  every operand kind: immediate, field(+transforms), value map (**any** key
-  transform), transformed-concat map (`VMapT`), jhash, jhash-then-map, and OR-fold.
-  Only degenerate empty-field operands (which read an incoming register) remain out
-  of scope; rules mixing other (non-set) statements widen scope further.
+  `run_chain_mut (compile_chain c) policy = eval_chain_mut c` for **every rule**
+  (`mut_wf`, a well-formedness — NOT a feature scope): matches, meta/ct sets, AND
+  every other statement (mangle, NAT, dup, counter, log, dynset, exthdr, objref, …,
+  which are threaded as meta/ct-neutral via the `straight`-line-prefix lemma). The
+  cited `meta mark set 0x1 ; meta mark 0x1 accept` bug now ACCEPTS on both sides, and
+  semtest witnesses a rule *mixing* `counter`/`log` with the meta-set. Built on the
+  operand value-correctness `eval_vsrc vs p = (regfile after compile_vsrc vs) 1`,
+  proved for every operand kind (immediate, field(+transforms), value map (any key
+  transform), `VMapT`, jhash, jhash-map, OR-fold). The only `mut_wf` exclusions are a
+  malformed zero-field jhash/map/or operand (no real ruleset emits one) and a
+  meta/ct set inside the post-outcome (`r_after`) statements (always verdict-neutral
+  — counter/log/objref — in the corpus); the *old* `plain_simple` scope (which hid
+  every rule with a non-set statement) is gone.
 
 **C. Control flow** *(jump/goto/return + user chains, AND multi-table dispatch: FIXED, 2026-06)*:
 - ✅ **Multi-table / multi-hook dispatch**: `eval_ruleset`/`run_ruleset` traverse a

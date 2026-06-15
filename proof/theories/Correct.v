@@ -814,6 +814,132 @@ Proof.
   intros r. unfold compile_end. rewrite nw_app, nw_compile_vmap, nw_compile_terminal. reflexivity.
 Qed.
 
+(** ---- "straight-line" instruction lists: no meta/ct write, no break, no
+    terminal.  [run_rule_writes] threads through such a prefix to the tail — this
+    discharges EVERY non-meta/ct statement (mangle/dup/counter/log/dynset/exthdr/
+    objref/ctsetdir), so the mutation theorem no longer has to exclude them. ---- *)
+Definition straight_instr (i : instr) : bool :=
+  match i with
+  | ICmp _ _ _ | IRange _ _ _ _ | ILookup _ _ _ | IVmap _ _
+  | ILimit _ | IQuota _ | IConnlimit _
+  | INat _ _ _ _ _ _ _ | ITproxy _ _ _ | IFwd _ _ _ | IQueueSreg _ _ _
+  | IReject _ _ | IQueue _ _ _ _ | IImmediate _
+  | IMetaSet _ _ | ICtSet _ _ => false
+  | _ => true
+  end.
+Definition straight (is : list instr) : bool := forallb straight_instr is.
+
+Lemma straight_imp_nw : forall is, straight is = true -> no_writes is = true.
+Proof.
+  unfold straight, no_writes. intros is. rewrite !forallb_forall. intros H i Hin.
+  specialize (H i Hin). destruct i; cbn in *; congruence.
+Qed.
+Lemma str_cons : forall i l, straight (i :: l) = straight_instr i && straight l.
+Proof. reflexivity. Qed.
+Lemma str_app : forall a b, straight (a ++ b) = straight a && straight b.
+Proof. intros. apply forallb_app. Qed.
+Lemma str_map : forall {A} (g : A -> instr) (l : list A),
+  (forall x, straight_instr (g x) = true) -> straight (map g l) = true.
+Proof.
+  intros A g l Hg. induction l as [| x xs IH]; [reflexivity|]. cbn [map]. rewrite str_cons, Hg, IH. reflexivity.
+Qed.
+Lemma str_flat_map : forall {A} (g : A -> list instr) (l : list A),
+  (forall x, straight (g x) = true) -> straight (flat_map g l) = true.
+Proof.
+  intros A g l Hg. induction l as [| x xs IH]; [reflexivity|]. cbn [flat_map]. rewrite str_app, Hg, IH. reflexivity.
+Qed.
+Lemma str_load_fields : forall pairs, straight (load_fields pairs) = true.
+Proof.
+  intros. unfold load_fields. apply str_map. intros [f r]. cbn [fst snd].
+  unfold compile_load; destruct (field_load f); reflexivity.
+Qed.
+Lemma str_imms : forall (imms : list (reg * data)),
+  straight (map (fun rv => IImmediateData (fst rv) (snd rv)) imms) = true.
+Proof. intros. apply str_map. reflexivity. Qed.
+Lemma str_transforms : forall ts, straight (compile_transforms ts) = true.
+Proof.
+  induction ts as [| t ts IH]; [reflexivity|].
+  cbn [compile_transforms]. rewrite str_cons, IH, Bool.andb_true_r. destruct t; reflexivity.
+Qed.
+Lemma str_transforms_at : forall r ts, straight (compile_transforms_at r ts) = true.
+Proof.
+  intros r ts. unfold compile_transforms_at. apply str_map. intros t. destruct t; reflexivity.
+Qed.
+Lemma str_load_fields_t : forall elems slot, straight (load_fields_t slot elems) = true.
+Proof.
+  induction elems as [| [f ts] rest IH]; intros slot; [reflexivity|].
+  cbn [load_fields_t]. rewrite str_app, str_cons, str_transforms_at, IH.
+  unfold compile_load; destruct (field_load f); reflexivity.
+Qed.
+Lemma str_vsrc : forall vs, straight (compile_vsrc vs) = true.
+Proof.
+  destruct vs as [v | f ts | fields ts nm | fields len seed modulus offset
+                 | osrcs ofinal | elems nm | fields len seed modulus offset nm];
+    cbn [compile_vsrc].
+  - reflexivity.
+  - rewrite str_cons, str_transforms. unfold compile_load; destruct (field_load f); reflexivity.
+  - rewrite str_app, str_load_fields, str_app, str_transforms. reflexivity.
+  - rewrite str_app, str_load_fields. reflexivity.
+  - destruct osrcs as [| [f0 ts0] rest]; [reflexivity|].
+    rewrite !str_app, str_cons.
+    rewrite (str_flat_map _ rest).
+    2: { intros [f ts0']. cbn [fst snd]. rewrite str_cons, str_app, str_transforms_at.
+         unfold compile_load; destruct (field_load f); reflexivity. }
+    rewrite !str_transforms_at. unfold compile_load; destruct (field_load f0); reflexivity.
+  - rewrite str_app, str_load_fields_t. reflexivity.
+  - rewrite str_app, str_load_fields, str_app. reflexivity.
+Qed.
+
+Lemma run_rule_writes_straight : forall pre rf rest p,
+  straight pre = true ->
+  exists rf', run_rule_writes rf (pre ++ rest) p = run_rule_writes rf' rest p.
+Proof.
+  induction pre as [| i pre IH]; intros rf rest p Hs; [exists rf; reflexivity|].
+  cbn [straight forallb] in Hs. apply Bool.andb_true_iff in Hs. destruct Hs as [Hi Hpre].
+  destruct i; cbn [straight_instr] in Hi; try discriminate Hi;
+    cbn [app run_rule_writes]; apply IH; exact Hpre.
+Qed.
+
+Definition is_set_stmt (s : stmt) : bool :=
+  match s with SMetaSet _ _ | SCtSet _ _ => true | _ => false end.
+Lemma straight_compile_stmt : forall s, is_set_stmt s = false -> straight (compile_stmt s) = true.
+Proof.
+  destruct s; intro H; try discriminate H; cbn [compile_stmt].
+  - reflexivity.                                          (* SCounter *)
+  - reflexivity.                                          (* SNotrack *)
+  - reflexivity.                                          (* SLog *)
+  - rewrite str_app, str_vsrc; reflexivity.               (* SMangle *)
+  - rewrite str_app, str_vsrc; reflexivity.               (* SCtSetDir *)
+  - reflexivity.                                          (* SObjref *)
+  - reflexivity.                                          (* SSynproxy *)
+  - reflexivity.                                          (* SLast *)
+  - rewrite str_app, str_load_fields; reflexivity.        (* SDynset *)
+  - reflexivity.                                          (* SExthdrReset *)
+  - rewrite str_app, str_imms; reflexivity.               (* SDup *)
+  - rewrite str_app, str_load_fields; reflexivity.        (* SObjrefMap *)
+  - rewrite str_app, str_load_fields, str_app, str_imms; reflexivity.  (* SDynsetImm *)
+  - rewrite str_app, str_vsrc; reflexivity.               (* SExthdrWrite *)
+  - rewrite str_app, str_vsrc, str_app, str_imms; reflexivity.         (* SDupSrc *)
+Qed.
+Lemma run_stmt_writes_neutral : forall s rf rest p,
+  is_set_stmt s = false ->
+  exists rf', run_rule_writes rf (compile_stmt s ++ rest) p = run_rule_writes rf' rest p.
+Proof. intros. apply run_rule_writes_straight, straight_compile_stmt; assumption. Qed.
+Lemma body_writes_nonset : forall s body p,
+  is_set_stmt s = false -> body_writes (BStmt s :: body) p = body_writes body p.
+Proof. intros s body p H. destruct s; cbn [is_set_stmt] in H; try discriminate H; reflexivity. Qed.
+(** A statement list with no meta/ct set compiles to a no-write tail. *)
+Lemma nw_flat_compile_stmt : forall ss,
+  forallb (fun s => negb (is_set_stmt s)) ss = true ->
+  no_writes (flat_map compile_stmt ss) = true.
+Proof.
+  induction ss as [| s ss IH]; intro H; [reflexivity|].
+  cbn [flat_map]. cbn [forallb] in H. apply Bool.andb_true_iff in H. destruct H as [Hs Hss].
+  rewrite nw_app. apply Bool.andb_true_iff. split.
+  - apply straight_imp_nw, straight_compile_stmt. destruct (is_set_stmt s); [discriminate Hs | reflexivity].
+  - apply IH; exact Hss.
+Qed.
+
 (** The body, compiled and run under [run_rule_writes] before a packet-neutral
     tail, realises exactly [body_writes] — the declarative meta/ct effect. *)
 Lemma run_compile_body_writes : forall body tail,
@@ -829,21 +955,29 @@ Proof.
       rewrite (writes_match_one m (flat_map compile_body_item body ++ tail) p
                  (body_writes body p) (fun rf0 => IH tail Htail Hsb' rf0 p)).
       reflexivity.
-    + (* BStmt: only SMetaSet/SCtSet survive [simple_body] *)
-      destruct s; cbn in Hit; try discriminate Hit;
-      cbn [compile_stmt]; rewrite <- !app_assoc.
-      * (* SMetaSet k vs *)
-        edestruct (writes_vsrc_simple vs rf
-                    ([IMetaSet k 1] ++ (flat_map compile_body_item body ++ tail)) p Hit)
-          as [rf' [Hr Hv]].
-        rewrite Hr. cbn [app run_rule_writes]. rewrite Hv.
-        cbn [body_writes]. apply IH; [exact Htail | exact Hsb'].
-      * (* SCtSet k vs *)
-        edestruct (writes_vsrc_simple vs rf
-                    ([ICtSet k 1] ++ (flat_map compile_body_item body ++ tail)) p Hit)
-          as [rf' [Hr Hv]].
-        rewrite Hr. cbn [app run_rule_writes]. rewrite Hv.
-        cbn [body_writes]. apply IH; [exact Htail | exact Hsb'].
+    + (* BStmt s.  SMetaSet/SCtSet write meta/ct; every OTHER statement is a
+         "straight-line", meta/ct-neutral prefix threaded through unchanged. *)
+      destruct (is_set_stmt s) eqn:Es.
+      * (* the two genuine meta/ct sets *)
+        destruct s; cbn [is_set_stmt] in Es; try discriminate Es;
+        cbn [compile_stmt] in Hit |- *; rewrite <- !app_assoc.
+        -- (* SMetaSet k vs *)
+           edestruct (writes_vsrc_simple vs rf
+                       ([IMetaSet k 1] ++ (flat_map compile_body_item body ++ tail)) p Hit)
+             as [rf' [Hr Hv]].
+           rewrite Hr. cbn [app run_rule_writes]. rewrite Hv.
+           cbn [body_writes]. apply IH; [exact Htail | exact Hsb'].
+        -- (* SCtSet k vs *)
+           edestruct (writes_vsrc_simple vs rf
+                       ([ICtSet k 1] ++ (flat_map compile_body_item body ++ tail)) p Hit)
+             as [rf' [Hr Hv]].
+           rewrite Hr. cbn [app run_rule_writes]. rewrite Hv.
+           cbn [body_writes]. apply IH; [exact Htail | exact Hsb'].
+      * (* any non-set statement: threaded straight, body_writes is the identity *)
+        edestruct (run_stmt_writes_neutral s rf
+                     (flat_map compile_body_item body ++ tail) p Es) as [rf' Hr].
+        rewrite <- app_assoc, Hr, (body_writes_nonset s body p Es).
+        apply (IH tail Htail Hsb').
 Qed.
 
 Lemma run_stmt_exists : forall s rf rest p,
@@ -1157,35 +1291,41 @@ Proof. intros. apply compile_chain_correct. Qed.
 
 (** ** Phase B main theorem: the compiler preserves in-traversal mutation.
 
-    For a plain rule whose set statements use simple (immediate/field) operands,
-    the compiled bytecode's meta/ct effect equals the declarative one — so a
-    `meta/ct set` is faithfully visible to later rules on BOTH sides, and the
-    mutation-aware semantics agree end to end. *)
+    The compiled bytecode's meta/ct effect equals the declarative one for ANY
+    rule — matches, meta/ct sets (with non-degenerate operands), AND every other
+    statement (mangle, NAT, dup, counter, log, dynset, exthdr, objref, …): those
+    are threaded through as meta/ct-neutral, exactly as they are.  So a `meta/ct
+    set` is faithfully visible to later rules on BOTH sides. *)
 Lemma run_rule_writes_compile_rule : forall r p,
-  simple_writes r = true -> r_after r = [] ->
+  simple_writes r = true ->
+  forallb (fun s => negb (is_set_stmt s)) (r_after r) = true ->
   run_rule_writes empty_rf (compile_rule r) p = dsl_writes r p.
 Proof.
-  intros r p Hs Ha. unfold compile_rule. rewrite Ha. cbn [flat_map].
-  rewrite app_nil_r. unfold dsl_writes.
+  intros r p Hs Ha. unfold compile_rule, dsl_writes.
   apply run_compile_body_writes; [| exact Hs].
-  intros rf p'. apply run_rule_writes_neutral, nw_compile_end.
+  intros rf p'. apply run_rule_writes_neutral.
+  rewrite nw_app, nw_compile_end, (nw_flat_compile_stmt _ Ha). reflexivity.
 Qed.
 
-(** A ruleset is "plain & simple" when every rule has simple set-operands and no
-    post-outcome statements — the fragment on which mutation is modelled. *)
-Definition plain_simple (r : rule) : bool :=
-  simple_writes r && match r_after r with [] => true | _ :: _ => false end.
+(** The mutation theorem's only well-formedness requirement (NOT a feature scope):
+    every meta/ct *set* operand is non-degenerate ([simple_writes] — i.e. not a
+    malformed zero-field jhash/map/or, which no real ruleset emits), and the rule's
+    post-outcome statements contain no meta/ct set (`r_after` is verdict-neutral —
+    counter/log/objref — in every real ruleset; a meta-set after a verdict map is
+    the one residual mutation case).  ALL ordinary statements (mangle/NAT/dup/
+    counter/dynset/exthdr/…) are in scope. *)
+Definition mut_wf (r : rule) : bool :=
+  simple_writes r && forallb (fun s => negb (is_set_stmt s)) (r_after r).
 
 Lemma run_program_mut_compile_chain : forall rs p,
-  forallb plain_simple rs = true ->
+  forallb mut_wf rs = true ->
   run_program_mut (map compile_rule rs) p = eval_rules_mut rs p.
 Proof.
   induction rs as [| r rs IH]; intros p Hall; [reflexivity|].
   cbn [forallb] in Hall. apply Bool.andb_true_iff in Hall. destruct Hall as [Hr Hrs].
-  unfold plain_simple in Hr. apply Bool.andb_true_iff in Hr. destruct Hr as [Hs Ha].
-  assert (Hae : r_after r = []) by (destruct (r_after r); [reflexivity | discriminate Ha]).
+  unfold mut_wf in Hr. apply Bool.andb_true_iff in Hr. destruct Hr as [Hs Ha].
   cbn [map run_program_mut eval_rules_mut].
-  rewrite run_rule_compile_rule. rewrite (run_rule_writes_compile_rule r p Hs Hae).
+  rewrite run_rule_compile_rule. rewrite (run_rule_writes_compile_rule r p Hs Ha).
   destruct (rule_applies r p).
   - destruct (outcome r p) as [v |].
     + destruct (terminal v); [reflexivity | apply IH; exact Hrs].
@@ -1194,7 +1334,7 @@ Proof.
 Qed.
 
 Theorem compile_chain_mut_correct : forall c p,
-  forallb plain_simple (c_rules c) = true ->
+  forallb mut_wf (c_rules c) = true ->
   run_chain_mut (compile_chain c) (c_policy c) p = eval_chain_mut c p.
 Proof.
   intros c p Hall. unfold run_chain_mut, eval_chain_mut, compile_chain.
