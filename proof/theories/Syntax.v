@@ -202,14 +202,27 @@ Record nat_spec : Type := {
   nat_flags  : nat;
 }.
 
+(** A [tproxy] statement (transparent proxy): terminal, like NAT.  The target
+    address/port are loaded into data registers by [tp_imms]; the statement then
+    references those registers.  The redirection is a side effect outside the
+    single-packet verdict model (which sees a terminal Accept). *)
+Record tproxy_spec : Type := {
+  tp_imms   : list (nat * data);   (* immediate operand loads (reg, value) *)
+  tp_family : string;              (* "ip" / "ip6" / "" *)
+  tp_areg   : option nat;          (* target-address register, if any *)
+  tp_preg   : option nat;          (* target-port register, if any *)
+}.
+
 (** A rule: matches, then verdict-neutral statements, then an outcome — a static
-    verdict, a verdict-map lookup ([r_vmap]), or a NAT statement ([r_nat]). *)
+    verdict, a verdict-map lookup ([r_vmap]), or a terminal redirect ([r_nat] /
+    [r_tproxy]). *)
 Record rule : Type := {
   r_matches : list matchcond;
   r_stmts   : list stmt;
   r_verdict : verdict;
   r_vmap    : option vmap_spec;
   r_nat     : option nat_spec;
+  r_tproxy  : option tproxy_spec;
 }.
 
 (** A base chain: a default policy and an ordered list of rules. *)

@@ -145,11 +145,16 @@ Definition compile_end (r : rule) : list instr :=
               [INat (nat_kind n) (nat_family n) (nat_amin n)
                     (nat_amax n) (nat_pmin n) (nat_pmax n) (nat_flags n)]
   | None =>
+  match r_tproxy r with
+  | Some t => map (fun rv => IImmediateData (fst rv) (snd rv)) (tp_imms t) ++
+              [ITproxy (tp_family t) (tp_areg t) (tp_preg t)]
+  | None =>
     match r_vmap r with
     | Some vm => load_fields (alloc_regs 0 (vm_fields vm)) ++
                  [IVmap (map snd (alloc_regs 0 (vm_fields vm))) (vm_name vm) (vm_entries vm)]
     | None    => verdict_tail (r_verdict r)
     end
+  end
   end.
 
 Definition compile_rule (r : rule) : rule_prog :=

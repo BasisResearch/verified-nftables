@@ -56,6 +56,7 @@ type pinst =
   | PMapVal  of int * string * int               (* key reg, map name, dreg *)
   | PNat     of string * string * int option * int option * int option * int option * int
                             (* kind, family, amin, amax, pmin, pmax, flags *)
+  | PTproxy  of string * int option * int option   (* family, addr reg, port reg *)
   | PImm     of Verdict.verdict
 
 let rec take_until tok = function
@@ -259,6 +260,16 @@ let parse_line line : pinst =
       if List.for_all (fun f -> f="bypass" || f="fanout") flags then
         PImm (Verdict.Queue (lo, hi, List.mem "bypass" flags, List.mem "fanout" flags))
       else raise (Unsupported "queue:flags")
+  | "tproxy"::rest ->
+      let (family, rest) = (match rest with
+        | ("ip" | "ip6" as f) :: r -> (f, r) | r -> ("", r)) in
+      let rec p areg preg = function
+        | "addr"::"reg"::n::r -> p (Some (int_of_string n)) preg r
+        | "port"::"reg"::n::r -> p areg (Some (int_of_string n)) r
+        | [] -> (areg, preg)
+        | _ -> raise (Unsupported "tproxy:form") in
+      let (areg, preg) = p None None rest in
+      PTproxy (family, areg, preg)
   | "queue"::_ -> raise (Unsupported "queue:sreg")
   | tok::_ -> raise (Unsupported ("instr:"^tok))
   | [] -> raise (Unsupported "empty")
@@ -266,9 +277,9 @@ let parse_line line : pinst =
 (* fold a block into a DSL rule: (load;test)* then verdict-neutral statements
    then a verdict. *)
 let rule_of_block (lines : string list) : Syntax.rule =
-  let mk ?(vmap=None) ?(nat=None) matches stmts v : Syntax.rule =
+  let mk ?(vmap=None) ?(nat=None) ?(tproxy=None) matches stmts v : Syntax.rule =
     { Syntax.r_matches = List.rev matches; r_stmts = List.rev stmts;
-      r_verdict = v; r_vmap = vmap; r_nat = nat } in
+      r_verdict = v; r_vmap = vmap; r_nat = nat; r_tproxy = tproxy } in
   (* a verdict-map lookup ends the rule: prior matches + a vmap outcome *)
   let mk_vmap matches stmts fields name =
     mk ~vmap:(Some { Syntax.vm_fields = fields; vm_name = name; vm_entries = [] })
@@ -278,6 +289,11 @@ let rule_of_block (lines : string list) : Syntax.rule =
     mk ~nat:(Some { Syntax.nat_imms = imms; nat_kind = kind; nat_family = family;
                     nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
                     nat_pmax = pmax; nat_flags = flags })
+       matches stmts Verdict.Continue in
+  (* a tproxy ends the rule: prior matches + operand immediates + the tproxy *)
+  let mk_tproxy matches stmts imms (family,areg,preg) =
+    mk ~tproxy:(Some { Syntax.tp_imms = imms; tp_family = family;
+                       tp_areg = areg; tp_preg = preg })
        matches stmts Verdict.Continue in
   let rec go matches stmts = function
     | [] -> mk matches stmts Verdict.Continue   (* match-only rule: falls through *)
@@ -310,6 +326,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
                      | PNat (k,f,a,ax,pm,px,fl) ->
                          if more <> [] then raise (Unsupported "trailing-after-nat");
                          mk_nat matches stmts (List.rev imms) (k,f,a,ax,pm,px,fl)
+                     | PTproxy (fam,ar,pr) ->
+                         if more <> [] then raise (Unsupported "trailing-after-tproxy");
+                         mk_tproxy matches stmts (List.rev imms) (fam,ar,pr)
                      | _ -> raise (Unsupported "imm-not-nat"))
                   | [] -> raise (Unsupported "imm-dangling")
                 in gnat [(r, v)] rest)

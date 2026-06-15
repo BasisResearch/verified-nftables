@@ -65,11 +65,15 @@ Definition outcome (r : rule) (p : packet) : option verdict :=
   match r_nat r with
   | Some _ => Some Accept   (* NAT is terminal accept (translation is a side effect) *)
   | None =>
+  match r_tproxy r with
+  | Some _ => Some Accept   (* tproxy is terminal accept (redirect is a side effect) *)
+  | None =>
     match r_vmap r with
     | Some vm => assoc_verdict (concat (map (fun f => field_value f p) (vm_fields vm)))
                                (vm_entries vm)
     | None    => match r_verdict r with Continue => None | v => Some v end
     end
+  end
   end.
 
 (** Evaluate a rule list.  [None] means "fell through every rule"; [Some v]
@@ -150,6 +154,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | ILookupVal keys _ dreg entries :: rest =>
       run_rule (set_reg rf dreg (map_lookup_data (concat (map rf keys)) entries)) rest p
   | INat _ _ _ _ _ _ _ :: _ => Some Accept   (* terminal *)
+  | ITproxy _ _ _ :: _ => Some Accept        (* terminal redirect *)
   | ILimit spec :: rest =>
       if pkt_limit p spec then run_rule rf rest p else None   (* over-limit breaks *)
   | ICounter _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)

@@ -26,7 +26,7 @@ let range ?(neg = false) (f : field) (lo : Bytes.data) (hi : Bytes.data) : match
 
 let rule ?(stmts = []) (matches : matchcond list) (verdict : verdict) : rule =
   { Syntax.r_matches = matches; r_stmts = stmts; r_verdict = verdict;
-    r_vmap = None; r_nat = None }
+    r_vmap = None; r_nat = None; r_tproxy = None }
 
 let chain (policy : verdict) (rules : rule list) : chain =
   { Syntax.c_policy = policy; c_rules = rules }

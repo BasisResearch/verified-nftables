@@ -281,6 +281,17 @@ Proof.
   - apply IH.
 Qed.
 
+(** A tproxy outcome: the operand immediates pass through and the terminal
+    [ITproxy] accepts. *)
+Lemma run_imms_tproxy : forall imms rf fam areg preg p,
+  run_rule rf (map (fun rv => IImmediateData (fst rv) (snd rv)) imms
+               ++ [ITproxy fam areg preg]) p = Some Accept.
+Proof.
+  induction imms as [| [r v] rest IH]; intros; cbn [map fst snd app run_rule].
+  - reflexivity.
+  - apply IH.
+Qed.
+
 Lemma run_rule_compile_rule : forall r p,
   run_rule empty_rf (compile_rule r) p =
   if rule_applies r p then outcome r p else None.
@@ -291,7 +302,8 @@ Proof.
   rewrite H. clear H rf. rename rf' into rf.
   unfold compile_end, outcome. destruct (r_nat r) as [n |].
   - apply run_imms_nat.
-  - destruct (r_vmap r) as [vm |].
+  - destruct (r_tproxy r) as [t |]; [apply run_imms_tproxy |].
+    destruct (r_vmap r) as [vm |].
     + rewrite run_load_fields. cbn [run_rule].
       rewrite map_write_fields by apply alloc_regs_nodup.
       rewrite map_fst_field, alloc_regs_fst. reflexivity.

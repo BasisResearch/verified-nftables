@@ -37,6 +37,7 @@ Inductive instr : Type :=
 | INumgen      (spec : numgen_spec) (dst : reg)
 | IOsf         (dst : reg)
 | IExthdrLoad  (ep : exthdr_proto) (htype off len : nat) (present : bool) (dst : reg)
+| ITproxy      (family : string) (areg preg : option reg)
 | IFibLoad     (sel : string) (res : fib_result) (dst : reg)
 | IInnerLoad   (typ hdrsize flags : nat) (innerdesc : string) (width : nat) (dst : reg)
 | IPayloadLoad (b : pbase) (off len : nat) (dst : reg)
