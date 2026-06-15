@@ -18,6 +18,7 @@ Definition compile_load (ld : loaddesc) (dst : reg) : instr :=
   | LNumgen spec   => INumgen spec dst
   | LOsf           => IOsf dst
   | LExthdr ep h o l pr => IExthdrLoad ep h o l pr dst
+  | LFib sel res   => IFibLoad sel res dst
   | LPayload b o l => IPayloadLoad b o l dst
   end.
 
@@ -56,6 +57,9 @@ Definition load_width (ld : loaddesc) : nat :=
   | LMeta k            => meta_width k
   | LPayload _ _ len   => len
   | LExthdr _ _ _ len _ => len
+  | LFib _ res         => match res with
+                          | FRpresent => 1 | FRoifname => 16 | _ => 4
+                          end
   | _                  => 4
   end.
 

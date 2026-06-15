@@ -73,6 +73,14 @@ let name_of_base = function
   | Packet.PTransport -> "transport"
   | Packet.PInner -> "inner" | Packet.PTunnel -> "tunnel"
 
+let name_of_fibres = function
+  | Packet.FRoif -> "oif" | Packet.FRoifname -> "oifname"
+  | Packet.FRtype -> "type" | Packet.FRpresent -> "present"
+let fibres_of_name = function
+  | "oif" -> Some Packet.FRoif | "oifname" -> Some Packet.FRoifname
+  | "type" -> Some Packet.FRtype | "present" -> Some Packet.FRpresent
+  | _ -> None
+
 (* descriptor (loaddesc) -> a string key, for the reverse map and equality *)
 let key_of_load (ld : Syntax.loaddesc) = match ld with
   | Syntax.LMeta k -> "m:" ^ name_of_meta k
@@ -84,6 +92,7 @@ let key_of_load (ld : Syntax.loaddesc) = match ld with
   | Syntax.LNumgen s ->
       Printf.sprintf "ng:%b:%d:%d" s.Packet.ng_random s.Packet.ng_mod s.Packet.ng_offset
   | Syntax.LOsf -> "osf:"
+  | Syntax.LFib (sel,res) -> Printf.sprintf "fib:%s:%s" sel (name_of_fibres res)
   | Syntax.LPayload (b,o,l) -> Printf.sprintf "p:%s:%d:%d" (name_of_base b) o l
 
 (* reverse map: descriptor key -> field, built from the verified field table *)
@@ -112,6 +121,10 @@ let field_of_key_str key : Syntax.field option =
       Some (Syntax.FNumgen { Packet.ng_random = bool_of_string rnd;
                              ng_mod = int_of_string m; ng_offset = int_of_string off })
   | ["osf"; ""] -> Some Syntax.FOsf
+  | ["fib"; sel; res] ->
+      (match fibres_of_name res with
+       | Some r -> Some (Syntax.FFib (sel, r))
+       | None -> None)
   | _ -> (try Some (Hashtbl.find field_of_key key) with Not_found -> None)
 
 (* ---------- corpus value <-> bytes ---------- *)
@@ -172,6 +185,8 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.IExthdrLoad (ep,h,o,l,pr,r) ->
       Printf.sprintf "[ exthdr load %s %db @ %d + %d%s => reg %d ]"
         (name_of_ehproto ep) l h o (if pr then " present" else "") (nreg r)
+  | Bytecode.IFibLoad (sel,res,r) ->
+      Printf.sprintf "[ fib %s %s => reg %d ]" sel (name_of_fibres res) (nreg r)
   | Bytecode.INumgen (s,r) ->
       (* mirror upstream nft: it omits "offset" when 0, never emits "offset 0" *)
       let off = if s.Packet.ng_offset > 0 then Printf.sprintf " offset %d" s.Packet.ng_offset else "" in
@@ -336,6 +351,15 @@ let parse_line line : pinst =
         { Packet.ng_random = (mode = "random"); ng_mod = int_of_string m;
           ng_offset = off }), int_of_string n)
   | "osf"::"dreg"::n::[] -> PLoad (key_of_load Syntax.LOsf, int_of_string n)
+  | "fib"::rest ->
+      let (lhs, after) = take_until "=>" rest in
+      let r = (match after with ["reg"; n] -> int_of_string n
+               | _ -> raise (Unsupported "fib:form")) in
+      (match List.rev lhs with
+       | res :: sel_rev when fibres_of_name res <> None ->
+           let sel = String.concat " " (List.rev sel_rev) in
+           PLoad (Printf.sprintf "fib:%s:%s" sel res, r)
+       | _ -> raise (Unsupported "fib:result"))
   | "exthdr"::"load"::proto::lb::"@"::htype::"+"::off::rest
     when ehproto_of_name proto <> None ->
       let len = int_of_string (String.sub lb 0 (String.length lb - 1)) in

@@ -12,7 +12,7 @@
     and the bytecode VM, so the equivalence theorem is about real behaviour, not
     an artefact of two different packet models. *)
 
-From Stdlib Require Import List NArith.
+From Stdlib Require Import List NArith String.
 From Nft Require Import Bytes.
 Import ListNotations.
 
@@ -40,6 +40,12 @@ Inductive socket_key : Type :=
 (** Protocol an [exthdr load] reads from (IPv6 extension headers / TCP options). *)
 Inductive exthdr_proto : Type :=
 | EPipv6 | EPtcpopt.
+
+(** The result selector of a `fib` route lookup, which fixes the value width:
+    [FRoif]/[FRtype] are 4-byte words, [FRoifname] a 16-byte interface name,
+    [FRpresent] a 1-byte existence boolean. *)
+Inductive fib_result : Type :=
+| FRoif | FRoifname | FRtype | FRpresent.
 
 (** A rate-limit configuration (rate per [ls_unit]: 0=second 1=minute 2=hour
     3=day 4=week; [ls_bytes] = byte-rate vs packet-rate). *)
@@ -78,6 +84,11 @@ Record packet : Type := {
                                         of a global counter; cannot distinguish two
                                         firings of one packet — see DEVELOPMENT.md) *)
   pkt_osf  : data;                   (* oracle: OS-fingerprint value (packet-determined) *)
+  pkt_fib  : string -> fib_result -> data;
+                            (* oracle: route lookup.  The string is the selector
+                               specification (which inputs the lookup uses, e.g.
+                               "saddr . iif"); the result selector fixes what the
+                               routing table yields. *)
 }.
 
 (** Read [len] bytes at [off] from a header byte string. *)

@@ -115,6 +115,8 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       run_rule (set_reg rf dst (pkt_osf p)) rest p
   | IExthdrLoad ep h o l pr dst :: rest =>
       run_rule (set_reg rf dst (pkt_eh p ep h o l pr)) rest p
+  | IFibLoad sel res dst :: rest =>
+      run_rule (set_reg rf dst (pkt_fib p sel res)) rest p
   | IPayloadLoad b o l dst :: rest =>
       run_rule (set_reg rf dst (read_payload b o l p)) rest p
   | ICmp op src v :: rest =>

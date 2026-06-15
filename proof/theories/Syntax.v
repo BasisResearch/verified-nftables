@@ -26,6 +26,7 @@ Inductive loaddesc : Type :=
 | LNumgen  (spec : numgen_spec)
 | LOsf
 | LExthdr  (ep : exthdr_proto) (htype off len : nat) (present : bool)
+| LFib     (sel : string) (res : fib_result)
 | LPayload (b : pbase) (off len : nat).
 
 (** The high-level header/metadata fields the DSL can match on.  Offsets/lengths
@@ -56,7 +57,8 @@ Inductive field : Type :=
 | FRtGen (k : rt_key)
 | FSocketGen (k : socket_key)
 | FNumgen (spec : numgen_spec)
-| FOsf.
+| FOsf
+| FFib (sel : string) (res : fib_result).
 
 (** The denotation of each field as a load. *)
 Definition field_load (f : field) : loaddesc :=
@@ -93,6 +95,7 @@ Definition field_load (f : field) : loaddesc :=
   | FSocketGen k => LSocket k
   | FNumgen spec => LNumgen spec
   | FOsf => LOsf
+  | FFib sel res => LFib sel res
   end.
 
 (** Enumeration of every field, for the glue's load->field reverse map. *)
@@ -118,6 +121,7 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
   | LNumgen spec    => pkt_numgen p spec
   | LOsf            => pkt_osf p
   | LExthdr ep h o l pr => pkt_eh p ep h o l pr
+  | LFib sel res    => pkt_fib p sel res
   | LPayload b o l  => read_payload b o l p
   end.
 
