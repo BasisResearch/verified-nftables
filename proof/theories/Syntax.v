@@ -200,10 +200,15 @@ Inductive vsrc : Type :=
                                one into reg 2 then [bitwise reg1 = reg1 | reg2],
                                then [final] is applied in place on reg 1 *)
 | VMapT  (elems : list (field * list transform)) (name : string)
-         (entries : list (data * data)).
+         (entries : list (data * data))
                             (* value looked up by a concatenation key whose
                                elements are each transformed in place (cf.
                                [MConcatSetT]); the looked-up value lands in reg 1 *)
+| VHashMap (fields : list field) (len seed modulus offset : nat)
+           (name : string) (entries : list (data * data)).
+                            (* jhash of [fields] (into reg 1) used as the key of a
+                               map lookup whose value lands in reg 1 — e.g.
+                               `dnat to jhash ip saddr mod N map {...}` *)
                             (* value looked up by the concatenation of [fields]
                                (each, if a single field, optionally transformed by
                                [ts]) in a named map *)
@@ -275,6 +280,8 @@ Record nat_spec : Type := {
                                map, into register 1 — `dnat to ip saddr map {...}`.
                                The looked-up value is consumed by the terminal NAT,
                                which the single-packet model sees only as Accept. *)
+  nat_src    : option vsrc;         (* general operand value source into register 1
+                                       (e.g. a jhash-keyed map, [VHashMap]) *)
   nat_kind   : string;              (* "snat" / "dnat" / "masq" / "redir" *)
   nat_family : string;              (* "ip" / "ip6"; "" for masq/redir *)
   nat_amin   : option nat;          (* None for masq/redir *)

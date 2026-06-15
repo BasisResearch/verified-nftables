@@ -334,7 +334,8 @@ Lemma run_vsrc_exists : forall vs rf rest p,
   exists rf', run_rule rf (compile_vsrc vs ++ rest) p = run_rule rf' rest p.
 Proof.
   destruct vs as [v | f ts | fields vts name entries | hf hl hs hm ho
-                 | osrcs ofinal | telems tname tentries]; intros rf rest p.
+                 | osrcs ofinal | telems tname tentries
+                 | hmf hml hms hmm hmo hmname hment]; intros rf rest p.
   - exists (set_reg rf 1 v). reflexivity.
   - edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p)) rest p)
       as [rf' [_ Hr]].
@@ -367,6 +368,9 @@ Proof.
                 ([ILookupVal (map snd (alloc_regs 0 (map fst telems))) tname 1 tentries]
                  ++ rest) p) as [rf' [_ [_ Hrun]]].
     rewrite Hrun. cbn [app run_rule]. eexists; reflexivity.
+  - (* VHashMap: load source, jhash into reg 1, then verdict-neutral ILookupVal *)
+    cbn [compile_vsrc]. rewrite <- !app_assoc. rewrite run_load_fields.
+    cbn [app run_rule]. eexists; reflexivity.
 Qed.
 
 (** Operand immediates are verdict-neutral: running them leaves the tail reached
@@ -452,6 +456,16 @@ Proof.
   induction imms as [| [r v] rest IH]; intros; cbn [map fst snd app run_rule].
   - reflexivity.
   - apply IH.
+Qed.
+
+(** A value-sourced NAT operand: the value source is verdict-neutral, then the
+    terminal [INat] accepts. *)
+Lemma run_vsrc_nat : forall vs tail rf k fam amin amax pmin pmax fl p,
+  run_rule rf (compile_vsrc vs ++ INat k fam amin amax pmin pmax fl :: tail) p = Some Accept.
+Proof.
+  intros. edestruct (run_vsrc_exists vs rf
+                      (INat k fam amin amax pmin pmax fl :: tail) p) as [rf' Hr].
+  rewrite Hr. cbn [run_rule]. reflexivity.
 Qed.
 
 (** A tproxy outcome: the operand immediates pass through and the terminal
@@ -583,9 +597,11 @@ Lemma run_terminal : forall r rf p,
   = terminal_outcome r p.
 Proof.
   intros r rf p. unfold compile_terminal, terminal_outcome. destruct (r_nat r) as [n |].
-  - rewrite <- app_assoc. destruct (nat_map n) as [[[fields ts] name] |].
-    + apply run_map_nat.
-    + destruct (nat_field n) as [[f ts] |]; [apply run_field_nat | apply run_imms_nat].
+  - rewrite <- app_assoc. destruct (nat_src n) as [vs |].
+    + apply run_vsrc_nat.
+    + destruct (nat_map n) as [[[fields ts] name] |].
+      * apply run_map_nat.
+      * destruct (nat_field n) as [[f ts] |]; [apply run_field_nat | apply run_imms_nat].
   - destruct (r_tproxy r) as [t |].
     + rewrite <- app_assoc. apply run_imms_tproxy.
     + destruct (r_fwd r) as [w |].

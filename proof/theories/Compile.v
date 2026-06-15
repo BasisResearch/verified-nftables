@@ -169,6 +169,11 @@ Definition compile_vsrc (vs : vsrc) : list instr :=
   | VMapT elems name entries =>
       load_fields_t 0 elems ++
       [ILookupVal (map snd (alloc_regs 0 (map fst elems))) name 1 entries]
+  | VHashMap fields len seed modulus offset name entries =>
+      load_fields (alloc_regs 4 fields) ++
+      [IJhash 1 (match map snd (alloc_regs 4 fields) with r :: _ => r | [] => 1 end)
+              len seed modulus offset] ++
+      [ILookupVal [1] name 1 entries]
   end.
 
 Definition compile_stmt (s : stmt) : list instr :=
@@ -239,7 +244,10 @@ Definition compile_vmap (r : rule) : list instr :=
     verdict tail. *)
 Definition compile_terminal (r : rule) : list instr :=
   match r_nat r with
-  | Some n => (match nat_map n with
+  | Some n => (match nat_src n with
+               | Some vs => compile_vsrc vs
+               | None =>
+               match nat_map n with
                | Some (fields, ts, name) =>
                    load_fields (alloc_regs 0 fields) ++ compile_transforms ts ++
                    [ILookupVal (map snd (alloc_regs 0 fields)) name 1 []]
@@ -248,6 +256,7 @@ Definition compile_terminal (r : rule) : list instr :=
                              compile_load (field_load f) 1 :: compile_transforms ts
                          | None => map (fun rv => IImmediateData (fst rv) (snd rv)) (nat_imms n)
                          end
+               end
                end) ++
               [INat (nat_kind n) (nat_family n) (nat_amin n)
                     (nat_amax n) (nat_pmin n) (nat_pmax n) (nat_flags n)]

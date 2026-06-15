@@ -367,21 +367,21 @@ let rule_of_block (lines : string list) : Syntax.rule =
     mk ~after ~nat ~vmap:(Some { Syntax.vm_fields = [f]; vm_keyf = Some (f, ts);
                      vm_name = name; vm_entries = [] }) body Verdict.Continue in
   let nat_spec_of imms (kind,family,amin,amax,pmin,pmax,flags) : Syntax.nat_spec =
-    { Syntax.nat_imms = imms; nat_field = None; nat_map = None;
+    { Syntax.nat_imms = imms; nat_field = None; nat_map = None; nat_src = None;
       nat_kind = kind; nat_family = family; nat_amin = amin; nat_amax = amax;
       nat_pmin = pmin; nat_pmax = pmax; nat_flags = flags } in
   let mk_nat body imms (kind,family,amin,amax,pmin,pmax,flags) =
-    mk ~nat:(Some { Syntax.nat_imms = imms; nat_field = None; nat_map = None;
+    mk ~nat:(Some { Syntax.nat_imms = imms; nat_field = None; nat_map = None; nat_src = None;
                     nat_kind = kind; nat_family = family;
                     nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
                     nat_pmax = pmax; nat_flags = flags }) body Verdict.Continue in
   let mk_nat_map body (fields,ts,name) (kind,family,amin,amax,pmin,pmax,flags) =
-    mk ~nat:(Some { Syntax.nat_imms = []; nat_field = None; nat_map = Some ((fields, ts), name);
+    mk ~nat:(Some { Syntax.nat_imms = []; nat_field = None; nat_map = Some ((fields, ts), name); nat_src = None;
                     nat_kind = kind; nat_family = family;
                     nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
                     nat_pmax = pmax; nat_flags = flags }) body Verdict.Continue in
   let mk_nat_field body (f,ts) (kind,family,amin,amax,pmin,pmax,flags) =
-    mk ~nat:(Some { Syntax.nat_imms = []; nat_field = Some (f, ts); nat_map = None;
+    mk ~nat:(Some { Syntax.nat_imms = []; nat_field = Some (f, ts); nat_map = None; nat_src = None;
                     nat_kind = kind; nat_family = family;
                     nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
                     nat_pmax = pmax; nat_flags = flags }) body Verdict.Continue in
@@ -500,6 +500,36 @@ let rule_of_block (lines : string list) : Syntax.rule =
                    | _ -> raise (Unsupported "or-not-set"))
               | [] -> raise (Unsupported "or-dangling"))
            end else
+           (match (match rest0 with
+                   | l :: more when (match (try Some (parse_line l) with _ -> None) with
+                                     | Some (PJhash (1, s, _, _, _, _)) -> s = lreg | _ -> false) ->
+                       (match parse_line l with
+                        | PJhash (_,_,len,seed,m,o) -> Some (len, seed, m, o, more)
+                        | _ -> None)
+                   | _ -> None) with
+            | Some (len, seed, m, o, after_j) ->
+                (* single-field jhash used as a map key, feeding a terminal nat *)
+                (match after_j with
+                 | l :: more_j ->
+                   (match parse_line l with
+                    | PMapVal (1, name, 1) ->
+                        (match more_j with
+                         | l2 :: more2 ->
+                           (match parse_line l2 with
+                            | PNat (k,fa,a,ax,pm,px,fl) ->
+                                if more2 <> [] then raise (Unsupported "trailing-after-nat");
+                                mk ~nat:(Some { Syntax.nat_imms = []; nat_field = None;
+                                                nat_map = None;
+                                                nat_src = Some (Syntax.VHashMap
+                                                  ([f], len, seed, m, o, name, []));
+                                                nat_kind = k; nat_family = fa; nat_amin = a;
+                                                nat_amax = ax; nat_pmin = pm; nat_pmax = px;
+                                                nat_flags = fl }) body Verdict.Continue
+                            | _ -> raise (Unsupported "jhashmap-not-nat"))
+                         | [] -> raise (Unsupported "jhashmap-dangling"))
+                    | _ -> raise (Unsupported "jhash-not-map"))
+                 | [] -> raise (Unsupported "jhash-dangling"))
+            | None ->
            (match rest0 with
             | l2 :: _ when is_load l2 ->
                 (* concatenation key (elements may carry an in-place transform) *)
@@ -702,7 +732,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          raise (Unsupported "reg!=1")
                      | _ -> raise (Unsupported "load-not-followed-by-test"))
                   | [] -> raise (Unsupported "dangling-load")
-                in collect [] rest)
+                in collect [] rest))
        | _ -> raise (Unsupported "test-without-load"))
   in go [] lines
 
