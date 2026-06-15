@@ -48,6 +48,7 @@ type pinst =
   | PNotrack
   | PLimit   of Packet.limit_spec
   | PQuota   of Packet.quota_spec
+  | PConnlimit of Packet.connlimit_spec
   | PLog     of string
   | PImmData of int * int list                    (* immediate into a data register *)
   | PWrite   of int * Packet.pbase * int * int * int * int * int
@@ -260,6 +261,8 @@ let parse_line line : pinst =
   | ["quota"; "bytes"; b; "consumed"; c; "flags"; fl] ->
       PQuota { Packet.q_bytes = int_of_string b; q_consumed = int_of_string c;
                q_flags = int_of_string fl }
+  | ["connlimit"; "count"; c; "flags"; fl] ->
+      PConnlimit { Packet.cl_count = int_of_string c; cl_flags = int_of_string fl }
   | "log"::rest -> PLog (String.concat " " rest)
   | ["objref"; "type"; t; "name"; n] -> PObjref (int_of_string t, n)
   | ["synproxy"; "mss"; m; "wscale"; w] -> PSynproxy (int_of_string m, int_of_string w)
@@ -389,6 +392,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
        | PQuota spec ->
            if stmts <> [] then raise (Unsupported "quota-after-stmt");
            go (Syntax.MQuota spec :: matches) stmts rest
+       | PConnlimit spec ->
+           if stmts <> [] then raise (Unsupported "connlimit-after-stmt");
+           go (Syntax.MConnlimit spec :: matches) stmts rest
        | PLoad (key, lreg) ->
            (* Loads feeding a *match* always precede statements in nft's emission
               order, so we require it: a load after a statement would otherwise be

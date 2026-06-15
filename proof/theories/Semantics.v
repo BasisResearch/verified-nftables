@@ -47,6 +47,7 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
       eval_range (if neg then CNe else CEq) (apply_transforms ts (field_value f p)) lo hi
   | MLimit spec => pkt_limit p spec
   | MQuota spec => pkt_quota p spec
+  | MConnlimit spec => pkt_connlimit p spec
   end.
 
 (** A rule applies when all its match conditions hold (empty = matches all). *)
@@ -168,6 +169,8 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       if pkt_limit p spec then run_rule rf rest p else None   (* over-limit breaks *)
   | IQuota spec :: rest =>
       if pkt_quota p spec then run_rule rf rest p else None   (* over-quota breaks *)
+  | IConnlimit spec :: rest =>
+      if pkt_connlimit p spec then run_rule rf rest p else None   (* over-limit breaks *)
   | ICounter _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)
   | INotrack :: rest      => run_rule rf rest p
   | ILog _ :: rest        => run_rule rf rest p

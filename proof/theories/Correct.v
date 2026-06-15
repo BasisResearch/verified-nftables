@@ -152,7 +152,7 @@ Proof.
   - cbn [flat_map app forallb]. apply Hc.
   - destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0 | f op v0
                   | fields neg nm elems | f ts op v0 | f ts neg nm elems
-                  | f ts neg lo hi | spec | qspec];
+                  | f ts neg lo hi | spec | qspec | clspec];
       cbn [flat_map compile_match app].
     + (* MEq *) rewrite compile_load_correct.
       cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond]. unfold eval_cmp.
@@ -217,6 +217,10 @@ Proof.
     + (* MQuota: no load, a stateful break *)
       cbn [run_rule forallb eval_matchcond].
       destruct (pkt_quota p qspec); cbn [andb];
+        [apply IH; exact Hc | reflexivity].
+    + (* MConnlimit: no load, a stateful break *)
+      cbn [run_rule forallb eval_matchcond].
+      destruct (pkt_connlimit p clspec); cbn [andb];
         [apply IH; exact Hc | reflexivity].
 Qed.
 

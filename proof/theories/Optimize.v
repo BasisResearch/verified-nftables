@@ -44,6 +44,9 @@ Proof. decide equality; (apply Nat.eq_dec || apply Bool.bool_dec). Defined.
 Definition quota_spec_eq_dec (a b : quota_spec) : {a = b} + {a <> b}.
 Proof. decide equality; apply Nat.eq_dec. Defined.
 
+Definition connlimit_spec_eq_dec (a b : connlimit_spec) : {a = b} + {a <> b}.
+Proof. decide equality; apply Nat.eq_dec. Defined.
+
 Definition matchcond_eq_dec (a b : matchcond) : {a = b} + {a <> b}.
 Proof.
   decide equality;
@@ -56,6 +59,7 @@ Proof.
     try apply string_dec;
     try apply limit_spec_eq_dec;
     try apply quota_spec_eq_dec;
+    try apply connlimit_spec_eq_dec;
     try (decide equality).
 Defined.
 

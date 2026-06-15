@@ -40,6 +40,7 @@ Inductive instr : Type :=
 | ITproxy      (family : string) (areg preg : option reg)
 | IFibLoad     (sel : string) (res : fib_result) (dst : reg)
 | IQuota       (spec : quota_spec)
+| IConnlimit   (spec : connlimit_spec)
 | IObjref      (otype : nat) (oname : string)
 | ISynproxy    (mss wscale : nat)
 | ILast        (info : string)

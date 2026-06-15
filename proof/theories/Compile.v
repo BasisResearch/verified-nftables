@@ -105,6 +105,7 @@ Definition compile_match (m : matchcond) : list instr :=
       [IRange (if neg then CNe else CEq) 1 lo hi]
   | MLimit spec => [ILimit spec]
   | MQuota spec => [IQuota spec]
+  | MConnlimit spec => [IConnlimit spec]
   end.
 
 (** A [Continue] (fall-through) rule emits no verdict expression, exactly as

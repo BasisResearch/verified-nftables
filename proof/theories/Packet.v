@@ -66,6 +66,11 @@ Record quota_spec : Type := {
   q_bytes : nat; q_consumed : nat; q_flags : nat
 }.
 
+(** A connection limit: [cl_count] the threshold, [cl_flags] (bit 0 = "over"). *)
+Record connlimit_spec : Type := {
+  cl_count : nat; cl_flags : nat
+}.
+
 (** Payload bases: which header a [payload load] reads from. *)
 Inductive pbase : Type :=
 | PLink
@@ -89,6 +94,7 @@ Record packet : Type := {
   pkt_tnl  : list byte;          (* tunnel-header bytes *)
   pkt_limit : limit_spec -> bool; (* oracle: does this packet pass a given limiter? *)
   pkt_quota : quota_spec -> bool; (* oracle: does this packet pass a given quota? *)
+  pkt_connlimit : connlimit_spec -> bool;  (* oracle: under the connection limit? *)
   pkt_numgen : numgen_spec -> data;  (* oracle: numgen output (per-packet abstraction
                                         of a global counter; cannot distinguish two
                                         firings of one packet — see DEVELOPMENT.md) *)
