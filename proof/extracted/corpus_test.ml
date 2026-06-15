@@ -338,8 +338,8 @@ let rule_of_block (lines : string list) : Syntax.rule =
     { Syntax.r_body = List.rev body;
       r_verdict = v; r_vmap = vmap; r_nat = nat; r_tproxy = tproxy;
       r_fwd = fwd; r_queue = queue; r_after = after } in
-  let mk_fwd body imms (dev,addr,nfp) =
-    mk ~fwd:(Some { Syntax.fwd_imms = imms; fwd_devreg = dev;
+  let mk_fwd ?(src=None) body imms (dev,addr,nfp) =
+    mk ~fwd:(Some { Syntax.fwd_imms = imms; fwd_src = src; fwd_devreg = dev;
                     fwd_addrreg = addr; fwd_nfproto = nfp }) body Verdict.Continue in
   let mk_queue ?(src=None) body imms (sreg,bypass,fanout) =
     mk ~queue:(Some { Syntax.q_imms = imms; q_src = src; q_sreg = sreg;
@@ -569,6 +569,32 @@ let rule_of_block (lines : string list) : Syntax.rule =
                              | PNat (kind,fam,a,ax,pm,px,fl) ->
                                  if more3 <> [] then raise (Unsupported "trailing-after-nat");
                                  mk_nat_map body ([f], List.rev ts, name) (kind,fam,a,ax,pm,px,fl)
+                             (* map value feeding a terminal fwd device *)
+                             | PFwd (dev,addr,nfp) ->
+                                 if more3 <> [] then raise (Unsupported "trailing-after-fwd");
+                                 mk_fwd ~src:(Some (Syntax.VMap ([f], List.rev ts, name, [])))
+                                   body [] (dev,addr,nfp)
+                             (* map value feeding a terminal queue number *)
+                             | PQueue (sreg, bypass, fanout) ->
+                                 if more3 <> [] then raise (Unsupported "trailing-after-queue");
+                                 mk_queue ~src:(Some (Syntax.VMap ([f], List.rev ts, name, [])))
+                                   body [] (sreg, bypass, fanout)
+                             (* map value (in reg 1) feeding a dup device/address *)
+                             | PDup (dev, addr) ->
+                                 go (bs body (Syntax.SDupSrc
+                                       (Syntax.VMap ([f], List.rev ts, name, []),
+                                        [], dev, addr))) more3
+                             (* map value + an immediate operand feeding a dup *)
+                             | PImmData (r, v) ->
+                                 (match more3 with
+                                  | l4 :: more4 ->
+                                    (match parse_line l4 with
+                                     | PDup (dev, addr) ->
+                                         go (bs body (Syntax.SDupSrc
+                                               (Syntax.VMap ([f], List.rev ts, name, []),
+                                                [(r, v)], dev, addr))) more4
+                                     | _ -> raise (Unsupported "map-imm-not-dup"))
+                                  | [] -> raise (Unsupported "map-imm-dangling"))
                              | _ -> raise (Unsupported "map-not-set"))
                           | [] -> raise (Unsupported "map-dangling"))
                      | PDynset (op, name, 1, None) when ts = [] ->

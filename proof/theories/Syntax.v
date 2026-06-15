@@ -218,9 +218,14 @@ Inductive stmt : Type :=
              (dimms : list (nat * data)) (datareg : nat)
                             (* dynset whose map data is immediate constants loaded
                                into data registers [dimms]; verdict-neutral *)
-| SExthdrWrite (vs : vsrc) (proto : string) (htype off len : nat).
+| SExthdrWrite (vs : vsrc) (proto : string) (htype off len : nat)
                             (* write a value into a TCP-option exthdr field;
                                verdict-neutral (packet rewrite outside the model) *)
+| SDupSrc (src : vsrc) (imms : list (nat * data)) (devreg addrreg : option nat).
+                            (* duplicate the packet to a device/address where one
+                               operand is computed by a value source [src] (e.g. a
+                               map lookup into reg 1) and the rest by [imms];
+                               verdict-neutral (the dup is a side effect) *)
                             (* reference a stateful object selected by looking up
                                the concatenation of [keyfs] in a named object map *)
                             (* dynamically add/delete the concatenation of [keyfs]
@@ -280,6 +285,8 @@ Record tproxy_spec : Type := {
     outside the single-packet verdict model (which sees a terminal Accept). *)
 Record fwd_spec : Type := {
   fwd_imms    : list (nat * data);
+  fwd_src     : option vsrc;       (* the device computed by a value source
+                                      (e.g. a map lookup) instead of immediates *)
   fwd_devreg  : option nat;
   fwd_addrreg : option nat;
   fwd_nfproto : option nat;

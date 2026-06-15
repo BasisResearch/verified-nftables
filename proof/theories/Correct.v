@@ -296,6 +296,12 @@ Proof.
     edestruct (run_vsrc_exists vs rf (IExthdrWrite proto htype off len 1 :: rest) p) as [rf' Hr].
     exists rf'. cbn [compile_stmt]. rewrite <- app_assoc. cbn [app].
     rewrite Hr. reflexivity.
+  - (* SDupSrc: value source, then operand immediates, then verdict-neutral IDup *)
+    cbn [compile_stmt]. rewrite <- app_assoc.
+    edestruct run_vsrc_exists as [rf1 Hr1]. rewrite Hr1.
+    rewrite <- app_assoc.
+    edestruct run_imms_through as [rf2 Hr2]. rewrite Hr2.
+    cbn [run_rule]. eexists; reflexivity.
 Qed.
 
 Lemma run_stmts_exists : forall ss rf tail p,
@@ -348,6 +354,15 @@ Proof.
   induction imms as [| [r v] rest IH]; intros; cbn [map fst snd app run_rule].
   - reflexivity.
   - apply IH.
+Qed.
+
+(** A value-sourced fwd device: the value source is verdict-neutral, then the
+    terminal [IFwd] accepts. *)
+Lemma run_vsrc_fwd : forall vs tail rf dev addr nfp p,
+  run_rule rf (compile_vsrc vs ++ IFwd dev addr nfp :: tail) p = Some Accept.
+Proof.
+  intros. edestruct (run_vsrc_exists vs rf (IFwd dev addr nfp :: tail) p) as [rf' Hr].
+  rewrite Hr. cbn [run_rule]. reflexivity.
 Qed.
 
 (** A queue outcome: the operand immediates pass through and the terminal
@@ -455,7 +470,8 @@ Proof.
   - destruct (r_tproxy r) as [t |].
     + rewrite <- app_assoc. apply run_imms_tproxy.
     + destruct (r_fwd r) as [w |].
-      * rewrite <- app_assoc. apply run_imms_fwd.
+      * rewrite <- app_assoc. destruct (fwd_src w) as [vs |];
+          [apply run_vsrc_fwd | apply run_imms_fwd].
       * destruct (r_queue r) as [q |].
         -- rewrite <- app_assoc. destruct (q_src q) as [vs |];
              [apply run_vsrc_queue | apply run_imms_queue].

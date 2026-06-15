@@ -162,6 +162,10 @@ Definition compile_stmt (s : stmt) : list instr :=
       [IDynset op name (map snd (alloc_regs 0 keyfs)) (Some datareg)]
   | SExthdrWrite vs proto htype off len =>
       compile_vsrc vs ++ [IExthdrWrite proto htype off len 1]
+  | SDupSrc src imms devreg addrreg =>
+      compile_vsrc src ++
+      map (fun rv => IImmediateData (fst rv) (snd rv)) imms ++
+      [IDup devreg addrreg]
   end.
 
 Definition verdict_tail (v : verdict) : list instr :=
@@ -195,7 +199,10 @@ Definition compile_end (r : rule) : list instr :=
               [ITproxy (tp_family t) (tp_areg t) (tp_preg t)]
   | None =>
   match r_fwd r with
-  | Some w => map (fun rv => IImmediateData (fst rv) (snd rv)) (fwd_imms w) ++
+  | Some w => (match fwd_src w with
+               | Some vs => compile_vsrc vs
+               | None => map (fun rv => IImmediateData (fst rv) (snd rv)) (fwd_imms w)
+               end) ++
               [IFwd (fwd_devreg w) (fwd_addrreg w) (fwd_nfproto w)]
   | None =>
   match r_queue r with
