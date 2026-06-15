@@ -48,9 +48,11 @@ let env_vmap name ents : Packet.env = { empty_env with Packet.e_vmap = (fun n ->
 
 (* ---- concrete packet construction ---- *)
 let dummy0 _ = []
-let mk_pkt ?(env = empty_env) ?(l4proto = [6]) ?(nh = []) ?(th = []) ?(fibkey = (fun _ -> [])) () : Packet.packet =
+let mk_pkt ?(env = empty_env) ?(l4proto = [6]) ?(nh = []) ?(th = []) ?(fibkey = (fun _ -> []))
+           ?(iifname = []) () : Packet.packet =
   { Packet.pkt_env = env;
-    pkt_meta = (fun k -> match k with Packet.MKl4proto -> l4proto | _ -> []);
+    pkt_meta = (fun k -> match k with
+                         | Packet.MKl4proto -> l4proto | Packet.MKiifname -> iifname | _ -> []);
     pkt_ct = dummy0; pkt_sock = dummy0;
     pkt_eh = (fun _ _ _ _ _ -> []);
     pkt_lh = []; pkt_nh = nh; pkt_th = th; pkt_ih = []; pkt_tnl = [];
@@ -203,6 +205,16 @@ let () =
     [ "tcp dport 22 (base2 drops)",   mk_pkt ~th:(th ~dport:[0; 22]) ();
       "tcp dport 80 (both accept)",   mk_pkt ~th:(th ~dport:[0; 80]) () ];
   Printf.printf "\n";
+  (* (4e) WILDCARD interface name: `iifname "eth"` as a 3-byte prefix cmp matches
+     any interface whose name starts with "eth" (eth0, eth1, ...) — the kernel
+     emits a short cmp value and compares only those bytes (eval_cmp CEq is now a
+     prefix match).  "wlan0" does not match.  VM = DSL. *)
+  run_battery fails
+    "iifname \"eth\" (prefix) accept — wildcard interface match"
+    (chain Verdict.Drop [ rule [ meq (Syntax.FMetaGen Packet.MKiifname) [101; 116; 104] ] Verdict.Accept ])
+    [ "iifname eth0 (prefix match)",  mk_pkt ~iifname:[101; 116; 104; 48] ();      (* "eth0" *)
+      "iifname eth1 (prefix match)",  mk_pkt ~iifname:[101; 116; 104; 49] ();      (* "eth1" *)
+      "iifname wlan0 (no match)",     mk_pkt ~iifname:[119; 108; 97; 110; 48] () ];(* "wlan0" *)
   (* (4d) LONGEST-PREFIX-MATCH FIB: a routing table with one route 10.0.0.0/8 ->
      oif 3 lives in the ENV; `fib saddr oif` computes the oif via lpm_fib against
      the packet's source address (its fibkey).  The rule `fib saddr oif 3 accept`

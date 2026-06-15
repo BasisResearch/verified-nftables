@@ -223,11 +223,11 @@ Proof.
       cbn [flat_map compile_match app].
     + (* MEq *) rewrite compile_load_correct.
       cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond]. unfold eval_cmp.
-      destruct (data_eqb (field_value f p) v0); cbn [andb negb];
+      destruct (data_eqb (List.firstn (List.length v0) (field_value f p)) v0); cbn [andb negb];
         [apply IH; exact Hc | reflexivity].
     + (* MNeq *) rewrite compile_load_correct.
       cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond]. unfold eval_cmp.
-      destruct (data_eqb (field_value f p) v0); cbn [andb negb];
+      destruct (data_eqb (List.firstn (List.length v0) (field_value f p)) v0); cbn [andb negb];
         [reflexivity | apply IH; exact Hc].
     + (* MRange *) rewrite compile_load_correct.
       cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond].
@@ -663,10 +663,10 @@ Proof.
                 | celems neg nm]; cbn [compile_match app].
   - (* MEq *) rewrite compile_load_writes. cbn [run_rule_writes]. rewrite set_reg_same.
     cbn [eval_matchcond]. unfold eval_cmp.
-    destruct (data_eqb (field_value f p) v0); [apply Hc | reflexivity].
+    destruct (data_eqb (List.firstn (List.length v0) (field_value f p)) v0); [apply Hc | reflexivity].
   - (* MNeq *) rewrite compile_load_writes. cbn [run_rule_writes]. rewrite set_reg_same.
     cbn [eval_matchcond]. unfold eval_cmp.
-    destruct (data_eqb (field_value f p) v0); cbn [negb]; [reflexivity | apply Hc].
+    destruct (data_eqb (List.firstn (List.length v0) (field_value f p)) v0); cbn [negb]; [reflexivity | apply Hc].
   - (* MRange *) rewrite compile_load_writes. cbn [run_rule_writes]. rewrite set_reg_same.
     cbn [eval_matchcond].
     destruct (eval_range (if neg then CNe else CEq) (field_value f p) lo hi);

@@ -117,10 +117,16 @@ Qed.
     (big-endian unsigned), which is a total order on EQUAL-LENGTH operands; nft
     only ever emits a [cmp] whose immediate has the loaded field's width, so [a]
     and [b] are always the same length here. *)
+(** Equality compares the first [length b] bytes of [a] — the cmp value's width.
+    For equal-width values this is exact equality; for a *prefix* pattern (a
+    wildcard interface name `iifname "eth*"`, which the kernel emits as a short
+    cmp value) it is the prefix match the kernel performs.  (Range comparisons are
+    unaffected; the singleton-range→eq optimisation is dropped because it is
+    unsound for prefix equality — see Optimize.v.) *)
 Definition eval_cmp (op : cmpop) (a b : data) : bool :=
   match op with
-  | CEq => data_eqb a b
-  | CNe => negb (data_eqb a b)
+  | CEq => data_eqb (List.firstn (List.length b) a) b
+  | CNe => negb (data_eqb (List.firstn (List.length b) a) b)
   | CLt => andb (data_le a b) (negb (data_eqb a b))
   | CGt => negb (data_le a b)
   | CLe => data_le a b

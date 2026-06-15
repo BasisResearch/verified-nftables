@@ -25,8 +25,8 @@ Definition apply_transforms (ts : list transform) (d : data) : data :=
 
 Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
   match m with
-  | MEq  f v => data_eqb (field_value f p) v
-  | MNeq f v => negb (data_eqb (field_value f p) v)
+  | MEq  f v => data_eqb (List.firstn (List.length v) (field_value f p)) v
+  | MNeq f v => negb (data_eqb (List.firstn (List.length v) (field_value f p)) v)
   | MRange f neg lo hi =>
       eval_range (if neg then CNe else CEq) (field_value f p) lo hi
   | MMasked f neg mask xor v =>

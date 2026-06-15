@@ -192,43 +192,20 @@ Proof.
     + apply IH.
 Qed.
 
-(** ** Optimization 3: singleton-range simplification.
+(** ** Optimization 3: singleton-range simplification (now disabled).
 
-    A range test whose bounds coincide ([lo <= x <= lo]) is exactly an equality
-    test, which nft lowers to a single [cmp] instead of a [range] expression.
-    Rewriting it shrinks the emitted bytecode while preserving the match. *)
-Definition simplify_match (m : matchcond) : matchcond :=
-  match m with
-  | MRange f neg lo hi =>
-      if data_eqb lo hi
-      then (if neg then MNeq f lo else MEq f lo)
-      else m
-  | MRangeT f ts neg lo hi =>
-      (* a transformed singleton range is a transformed [cmp eq]/[cmp neq] *)
-      if data_eqb lo hi
-      then MTransform f ts (if neg then CNe else CEq) lo
-      else m
-  | _ => m
-  end.
+    A singleton range [lo <= x <= lo] would be an equality test — but since
+    equality ([MEq]/[eval_cmp CEq]) is now a *prefix* match (length = the value's
+    width, faithful to wildcard interface names), rewriting a full-width singleton
+    range to an [MEq] is no longer semantics-preserving (a longer field value
+    sharing the prefix would match the [MEq] but not the range).  So this pass is
+    the identity; the verdict-preservation guarantee is unaffected, only a minor
+    bytecode-shrinking normalisation is foregone. *)
+Definition simplify_match (m : matchcond) : matchcond := m.
 
 Lemma simplify_match_correct : forall m p,
   eval_matchcond (simplify_match m) p = eval_matchcond m p.
-Proof.
-  intros m p. destruct m; try reflexivity.
-  - (* MRange: singleton range -> eq/neq *)
-    cbn [simplify_match]. destruct (data_eqb lo hi) eqn:E; [| reflexivity].
-    apply data_eqb_true_iff in E; subst hi.
-    destruct neg; cbn [eval_matchcond eval_range].
-    + (* MNeq: complement of the singleton range *)
-      rewrite Bool.andb_comm, data_le_antisym. reflexivity.
-    + (* MEq: the singleton range itself *)
-      rewrite Bool.andb_comm, data_le_antisym. reflexivity.
-  - (* MRangeT: transformed singleton range -> transformed eq/neq *)
-    cbn [simplify_match]. destruct (data_eqb lo hi) eqn:E; [| reflexivity].
-    apply data_eqb_true_iff in E; subst hi.
-    destruct neg; cbn [eval_matchcond eval_range eval_cmp];
-      rewrite Bool.andb_comm, data_le_antisym; reflexivity.
-Qed.
+Proof. reflexivity. Qed.
 
 Definition simplify_item (it : body_item) : body_item :=
   match it with BMatch m => BMatch (simplify_match m) | BStmt s => BStmt s end.
