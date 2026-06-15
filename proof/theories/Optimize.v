@@ -203,6 +203,11 @@ Definition simplify_match (m : matchcond) : matchcond :=
       if data_eqb lo hi
       then (if neg then MNeq f lo else MEq f lo)
       else m
+  | MRangeT f ts neg lo hi =>
+      (* a transformed singleton range is a transformed [cmp eq]/[cmp neq] *)
+      if data_eqb lo hi
+      then MTransform f ts (if neg then CNe else CEq) lo
+      else m
   | _ => m
   end.
 
@@ -210,13 +215,19 @@ Lemma simplify_match_correct : forall m p,
   eval_matchcond (simplify_match m) p = eval_matchcond m p.
 Proof.
   intros m p. destruct m; try reflexivity.
-  cbn [simplify_match]. destruct (data_eqb lo hi) eqn:E; [| reflexivity].
-  apply data_eqb_true_iff in E; subst hi.
-  destruct neg; cbn [eval_matchcond eval_range].
-  - (* MNeq: complement of the singleton range *)
-    rewrite Bool.andb_comm, data_le_antisym. reflexivity.
-  - (* MEq: the singleton range itself *)
-    rewrite Bool.andb_comm, data_le_antisym. reflexivity.
+  - (* MRange: singleton range -> eq/neq *)
+    cbn [simplify_match]. destruct (data_eqb lo hi) eqn:E; [| reflexivity].
+    apply data_eqb_true_iff in E; subst hi.
+    destruct neg; cbn [eval_matchcond eval_range].
+    + (* MNeq: complement of the singleton range *)
+      rewrite Bool.andb_comm, data_le_antisym. reflexivity.
+    + (* MEq: the singleton range itself *)
+      rewrite Bool.andb_comm, data_le_antisym. reflexivity.
+  - (* MRangeT: transformed singleton range -> transformed eq/neq *)
+    cbn [simplify_match]. destruct (data_eqb lo hi) eqn:E; [| reflexivity].
+    apply data_eqb_true_iff in E; subst hi.
+    destruct neg; cbn [eval_matchcond eval_range eval_cmp];
+      rewrite Bool.andb_comm, data_le_antisym; reflexivity.
 Qed.
 
 Definition simplify_item (it : body_item) : body_item :=
