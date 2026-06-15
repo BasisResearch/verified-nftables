@@ -131,6 +131,9 @@ Definition compile_stmt (s : stmt) : list instr :=
   | SObjref o n   => [IObjref o n]
   | SSynproxy m w => [ISynproxy m w]
   | SLast info    => [ILast info]
+  | SDynset op name keyfs =>
+      load_fields (alloc_regs 0 keyfs) ++
+      [IDynset op name (map snd (alloc_regs 0 keyfs))]
   end.
 
 Definition verdict_tail (v : verdict) : list instr :=

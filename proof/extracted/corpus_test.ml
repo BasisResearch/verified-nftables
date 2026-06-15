@@ -61,6 +61,7 @@ type pinst =
   | PObjref  of int * string                       (* object type, object name *)
   | PSynproxy of int * int                         (* mss, wscale *)
   | PLast    of string                             (* `last` info (count or "never") *)
+  | PDynset  of string * string * int              (* op, set name, key reg *)
   | PImm     of Verdict.verdict
 
 let rec take_until tok = function
@@ -259,6 +260,7 @@ let parse_line line : pinst =
   | ["objref"; "type"; t; "name"; n] -> PObjref (int_of_string t, n)
   | ["synproxy"; "mss"; m; "wscale"; w] -> PSynproxy (int_of_string m, int_of_string w)
   | ["last"; info] -> PLast info
+  | ["dynset"; op; "reg_key"; k; "set"; name] -> PDynset (op, name, int_of_string k)
   | ["reject"; "type"; t; "code"; c] ->
       PImm (Verdict.Reject (int_of_string t, int_of_string c))
   | "queue"::"num"::spec::flags ->
@@ -354,6 +356,11 @@ let rule_of_block (lines : string list) : Syntax.rule =
            if stmts <> [] then raise (Unsupported "quota-after-stmt");
            go (Syntax.MQuota spec :: matches) stmts rest
        | PLoad (key, lreg) ->
+           (* Loads feeding a *match* always precede statements in nft's emission
+              order, so we require it: a load after a statement would otherwise be
+              placed in r_matches and re-rendered before the statement, diverging
+              from the corpus.  (Faithfully supporting interleaved match/stmt order
+              needs an ordered match|stmt rule body — a future refactor.) *)
            if stmts <> [] then raise (Unsupported "load-after-stmt");
            let field_of k = (match field_of_key_str k with Some f -> f
                              | None -> raise (Unsupported ("field:"^k))) in
@@ -375,6 +382,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
                      | PVmap (_, name) ->
                          if more <> [] then raise (Unsupported "trailing-after-vmap");
                          mk_vmap matches stmts (List.rev facc) name
+                     (* concat key added/deleted to a set = a dynset statement *)
+                     | PDynset (op, name, _) ->
+                         go matches (Syntax.SDynset (op, name, List.rev facc) :: stmts) more
                      (* concat key looked up in a map for a value (dreg 1) feeding a set *)
                      | PMapVal (_, name, 1) ->
                          let fields = List.rev facc in
@@ -440,6 +450,8 @@ let rule_of_block (lines : string list) : Syntax.rule =
                              | _ -> raise (Unsupported "map-not-set"))
                           | [] -> raise (Unsupported "map-dangling"))
                      (* load (+ transforms) feeding a set/mangle = a value statement *)
+                     | PDynset (op, name, 1) when ts = [] ->
+                         go matches (Syntax.SDynset (op, name, [f]) :: stmts) more
                      | PMetaSet (k, 1) ->
                          go matches (Syntax.SMetaSet (k, Syntax.VField (f, List.rev ts)) :: stmts) more
                      | PCtSet (k, 1) ->

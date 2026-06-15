@@ -246,6 +246,9 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.IObjref (t,n) -> Printf.sprintf "[ objref type %d name %s ]" t n
   | Bytecode.ISynproxy (m,w) -> Printf.sprintf "[ synproxy mss %d wscale %d ]" m w
   | Bytecode.ILast info -> Printf.sprintf "[ last %s ]" info
+  | Bytecode.IDynset (op,name,krs) ->
+      let r = nreg (match krs with x :: _ -> x | [] -> 1) in
+      Printf.sprintf "[ dynset %s reg_key %d set %s ]" op r name
   | Bytecode.ICounter (p,b) -> Printf.sprintf "[ counter pkts %d bytes %d ]" p b
   | Bytecode.INotrack -> "[ notrack ]"
   | Bytecode.ILog opts ->

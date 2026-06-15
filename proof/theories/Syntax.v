@@ -186,7 +186,11 @@ Inductive stmt : Type :=
 | SCtSet   (k : ct_key) (vs : vsrc)     (* ct set <k> with a value *)
 | SObjref  (otype : nat) (oname : string)   (* reference a named stateful object *)
 | SSynproxy (mss wscale : nat)              (* SYN-proxy (verdict-neutral here) *)
-| SLast    (info : string).                 (* `last used` accounting; verbatim *)
+| SLast    (info : string)                  (* `last used` accounting; verbatim *)
+| SDynset  (op name : string) (keyfs : list field).
+                            (* dynamically add/delete the concatenation of [keyfs]
+                               to a set; verdict-neutral (the mutation is a side
+                               effect outside the single-packet model) *)
 
 (** A verdict map: the rule's verdict comes from looking up the concatenation of
     [vm_fields] in the named map (entries live in NEWSET; carried for semantics,
