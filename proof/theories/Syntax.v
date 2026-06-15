@@ -150,7 +150,7 @@ Inductive matchcond : Type :=
 | MCmp    (f : field) (op : cmpop) (v : data)            (* ordered comparison field <op> v *)
 | MConcatSet (fields : list field) (neg : bool) (name : string) (elems : list data)
                             (* (concatenation of [fields]) [!]in a set/map *)
-| MTransform (f : field) (ts : list transform) (neg : bool) (v : data) (* cmp after transforms *)
+| MTransform (f : field) (ts : list transform) (op : cmpop) (v : data) (* cmp after transforms *)
 | MSetT (f : field) (ts : list transform) (neg : bool) (name : string) (elems : list data)
                             (* set membership of a transformed field value *)
 | MRangeT (f : field) (ts : list transform) (neg : bool) (lo hi : data)

@@ -39,8 +39,8 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
          [elems] (the set contents live in a separate NEWSET object), so the
          compiler theorem is unaffected.  Faithful for 4-byte-aligned fields. *)
       xorb neg (data_mem (concat (map (fun f => field_value f p) fields)) elems)
-  | MTransform f ts neg v =>
-      eval_cmp (if neg then CNe else CEq) (apply_transforms ts (field_value f p)) v
+  | MTransform f ts op v =>
+      eval_cmp op (apply_transforms ts (field_value f p)) v
   | MSetT f ts neg _ elems =>
       xorb neg (data_mem (apply_transforms ts (field_value f p)) elems)
   | MRangeT f ts neg lo hi =>

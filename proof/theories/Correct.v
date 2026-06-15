@@ -151,7 +151,7 @@ Proof.
   induction ms as [| m ms IH]; intros tail res p Hc rf.
   - cbn [flat_map app forallb]. apply Hc.
   - destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0 | f op v0
-                  | fields neg nm elems | f ts neg v0 | f ts neg nm elems
+                  | fields neg nm elems | f ts op v0 | f ts neg nm elems
                   | f ts neg lo hi | spec];
       cbn [flat_map compile_match app].
     + (* MEq *) rewrite compile_load_correct.
@@ -188,7 +188,7 @@ Proof.
       rewrite <- !app_assoc. cbn [app].
       edestruct run_transforms_cmp as [rf' Hr]. rewrite Hr. rewrite set_reg_same.
       cbn [forallb eval_matchcond].
-      destruct (eval_cmp (if neg then CNe else CEq)
+      destruct (eval_cmp op
                  (apply_transforms ts (field_value f p)) v0);
         cbn [andb]; [apply IH; exact Hc | reflexivity].
     + (* MSetT: set membership of a transformed value *)

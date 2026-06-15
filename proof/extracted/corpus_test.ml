@@ -622,10 +622,13 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          let tl = List.rev ts in
                          let m = (match tl with
                            | [] -> if iseq then Syntax.MEq (f,v) else Syntax.MNeq (f,v)
-                           | _ -> Syntax.MTransform (f, tl, not iseq, v)) in
+                           | _ -> Syntax.MTransform (f, tl, (if iseq then Bytecode.CEq else Bytecode.CNe), v)) in
                          go (m :: matches) stmts more
-                     | POrdCmp (op, 1, v) when ts = [] ->
-                         go (Syntax.MCmp (f, op, v) :: matches) stmts more
+                     | POrdCmp (op, 1, v) ->
+                         let m = (match List.rev ts with
+                           | [] -> Syntax.MCmp (f, op, v)
+                           | tl -> Syntax.MTransform (f, tl, op, v)) in
+                         go (m :: matches) stmts more
                      | PRange (iseq, 1, words) ->
                          let n = List.length words in
                          if n land 1 <> 0 then raise (Unsupported "range-odd-words");

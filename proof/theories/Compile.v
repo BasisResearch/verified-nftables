@@ -92,9 +92,9 @@ Definition compile_match (m : matchcond) : list instr :=
   | MConcatSet fields neg name elems =>
       load_fields (alloc_regs 0 fields) ++
       [ILookup (map snd (alloc_regs 0 fields)) name neg elems]
-  | MTransform f ts neg v =>
+  | MTransform f ts op v =>
       compile_load (field_load f) 1 :: compile_transforms ts ++
-      [ICmp (if neg then CNe else CEq) 1 v]
+      [ICmp op 1 v]
   | MSetT f ts neg name elems =>
       compile_load (field_load f) 1 :: compile_transforms ts ++
       [ILookup [1] name neg elems]
