@@ -1234,3 +1234,13 @@ Proof.
   rewrite compile_table_correct.
   destruct (base_continues (eval_table fuel cs base p)); [apply IH | reflexivity].
 Qed.
+
+(** Full hook dispatch: select+order the base chains for hook [h], compile each,
+    and the netfilter dispatch over the compiled bases reproduces the DSL
+    [eval_hook] — a corollary of [compile_ruleset_correct] (selection/ordering is
+    a pure list operation applied identically on both sides). *)
+Theorem compile_hook_correct : forall fuel rs h p,
+  run_ruleset fuel (map compile_base (select_hook rs h)) p = eval_hook fuel rs h p.
+Proof.
+  intros fuel rs h p. unfold eval_hook. apply compile_ruleset_correct.
+Qed.

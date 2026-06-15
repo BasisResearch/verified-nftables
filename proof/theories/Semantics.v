@@ -603,3 +603,42 @@ Fixpoint run_ruleset (fuel : nat)
       let v := run_table fuel cs base policy p in
       if base_continues v then run_ruleset fuel rest p else v
   end.
+
+(** ** Hook registration: which base chains are active at which hook, and in what
+    priority order.  This is *separate* metadata from a chain's rules (a base
+    chain is `type filter hook input priority 0`), so we model it as a tagged list
+    rather than fields on [chain] — the engine then filters by hook and sorts by
+    priority to obtain the ordered base-chain list [eval_ruleset] traverses. *)
+Inductive hook_id : Type :=
+| Hprerouting | Hinput | Hforward | Houtput | Hpostrouting | Hingress.
+Definition hook_eqb (a b : hook_id) : bool :=
+  match a, b with
+  | Hprerouting, Hprerouting | Hinput, Hinput | Hforward, Hforward
+  | Houtput, Houtput | Hpostrouting, Hpostrouting | Hingress, Hingress => true
+  | _, _ => false
+  end.
+Record hooked_chain : Type := {
+  hc_hook : hook_id;
+  hc_prio : nat;
+  hc_env  : list (String.string * chain);  (* the jump-target chains in its table *)
+  hc_base : chain;
+}.
+
+Fixpoint insert_hc (x : hooked_chain) (l : list hooked_chain) : list hooked_chain :=
+  match l with
+  | [] => [x]
+  | y :: ys => if Nat.leb (hc_prio x) (hc_prio y) then x :: y :: ys else y :: insert_hc x ys
+  end.
+Fixpoint sort_hc (l : list hooked_chain) : list hooked_chain :=
+  match l with [] => [] | x :: xs => insert_hc x (sort_hc xs) end.
+
+(** The ordered (env, base-chain) list active at hook [h]: the registered base
+    chains for [h], ascending by priority (lower priority runs first). *)
+Definition select_hook (rs : list hooked_chain) (h : hook_id)
+  : list (list (String.string * chain) * chain) :=
+  map (fun hc => (hc_env hc, hc_base hc))
+      (sort_hc (filter (fun hc => hook_eqb (hc_hook hc) h) rs)).
+
+(** Full ruleset evaluation at a hook: select+order the base chains, then dispatch. *)
+Definition eval_hook (fuel : nat) (rs : list hooked_chain) (h : hook_id) (p : packet) : verdict :=
+  eval_ruleset fuel (select_hook rs h) p.

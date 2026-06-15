@@ -93,10 +93,16 @@ that doesn't change *this* rule's verdict still mutates state later rules read:
   an ACCEPT (or accept-policy fall-through) lets the packet proceed to the next base
   chain, DROP/REJECT/QUEUE is terminal. **`compile_ruleset_correct`** (axiom-free)
   proves the compiled dispatch reproduces the DSL one; semtest (4b) witnesses two
-  base chains where the second drops. (Selecting/priority-ordering the base chains
-  for a hook is the control plane's job — modelled as the caller-supplied ordered
-  base-chain list; adding `hook`/`priority` fields to the `chain` AST so the engine
-  itself filters/sorts is the remaining refinement.)
+  base chains where the second drops.
+- ✅ **Hook / priority selection**: base chains are registered with `(hook, priority,
+  env)` (`hooked_chain` — separate metadata, not `chain` fields, faithful to
+  `type filter hook input priority N`). `eval_hook fuel rs h` filters the registered
+  chains by hook `h` and sorts ascending by priority, then dispatches.
+  **`compile_hook_correct`** (axiom-free) proves the compiled hook dispatch equals
+  the DSL one (a corollary of `compile_ruleset_correct`, since selection/ordering is
+  a pure list op applied identically on both sides). So the engine now models the
+  full hook→priority-ordered→base-chain→jump traversal. (Families/`ingress`-vs-`netdev`
+  nuances and exact kernel priority tie-breaking are not separately modelled.)
 - ✅ `jump` / `goto` / `return` and **user-defined chains** are now modelled:
   `verdict` carries Jump/Goto/Return; `eval_rules_j`/`eval_table` (DSL) and
   `run_rules_j`/`run_table` (VM) are fuel-bounded interpreters over a named chain
