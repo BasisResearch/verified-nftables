@@ -239,10 +239,11 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.IQuota s ->
       Printf.sprintf "[ quota bytes %d consumed %d flags %d ]"
         s.Packet.q_bytes s.Packet.q_consumed s.Packet.q_flags
+  | Bytecode.IObjref (t,n) -> Printf.sprintf "[ objref type %d name %s ]" t n
   | Bytecode.ICounter (p,b) -> Printf.sprintf "[ counter pkts %d bytes %d ]" p b
   | Bytecode.INotrack -> "[ notrack ]"
-  | Bytecode.ILog lv ->
-      (match lv with None -> "[ log ]" | Some n -> Printf.sprintf "[ log level %d ]" n)
+  | Bytecode.ILog opts ->
+      if opts = "" then "[ log ]" else Printf.sprintf "[ log %s ]" opts
   | Bytecode.IReject (t,c) -> Printf.sprintf "[ reject type %d code %d ]" t c
   | Bytecode.IQueue (lo,hi,byp,fan) ->
       let nums = if lo=hi then string_of_int lo else Printf.sprintf "%d-%d" lo hi in

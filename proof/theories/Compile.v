@@ -128,6 +128,7 @@ Definition compile_stmt (s : stmt) : list instr :=
       compile_vsrc vs ++ [IPayloadWrite 1 b off len ct co cf]
   | SMetaSet k vs => compile_vsrc vs ++ [IMetaSet k 1]
   | SCtSet k vs   => compile_vsrc vs ++ [ICtSet k 1]
+  | SObjref o n   => [IObjref o n]
   end.
 
 Definition verdict_tail (v : verdict) : list instr :=

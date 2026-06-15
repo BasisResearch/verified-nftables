@@ -48,7 +48,7 @@ type pinst =
   | PNotrack
   | PLimit   of Packet.limit_spec
   | PQuota   of Packet.quota_spec
-  | PLog     of int option
+  | PLog     of string
   | PImmData of int * int list                    (* immediate into a data register *)
   | PWrite   of int * Packet.pbase * int * int * int * int * int
                             (* payload write: src reg, base, off, len, ctype, coff, cflags *)
@@ -58,6 +58,7 @@ type pinst =
   | PNat     of string * string * int option * int option * int option * int option * int
                             (* kind, family, amin, amax, pmin, pmax, flags *)
   | PTproxy  of string * int option * int option   (* family, addr reg, port reg *)
+  | PObjref  of int * string                       (* object type, object name *)
   | PImm     of Verdict.verdict
 
 let rec take_until tok = function
@@ -252,11 +253,8 @@ let parse_line line : pinst =
   | ["quota"; "bytes"; b; "consumed"; c; "flags"; fl] ->
       PQuota { Packet.q_bytes = int_of_string b; q_consumed = int_of_string c;
                q_flags = int_of_string fl }
-  | "log"::rest ->
-      (match rest with
-       | [] -> PLog None
-       | ["level"; n] -> PLog (Some (int_of_string n))
-       | _ -> raise (Unsupported "log:opts"))
+  | "log"::rest -> PLog (String.concat " " rest)
+  | ["objref"; "type"; t; "name"; n] -> PObjref (int_of_string t, n)
   | ["reject"; "type"; t; "code"; c] ->
       PImm (Verdict.Reject (int_of_string t, int_of_string c))
   | "queue"::"num"::spec::flags ->
@@ -342,6 +340,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
        | PCounter (p,b) -> go matches (Syntax.SCounter (p,b) :: stmts) rest
        | PNotrack -> go matches (Syntax.SNotrack :: stmts) rest
        | PLog l -> go matches (Syntax.SLog l :: stmts) rest
+       | PObjref (t,n) -> go matches (Syntax.SObjref (t,n) :: stmts) rest
        | PLimit spec ->
            if stmts <> [] then raise (Unsupported "limit-after-stmt");
            go (Syntax.MLimit spec :: matches) stmts rest

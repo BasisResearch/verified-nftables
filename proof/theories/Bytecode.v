@@ -40,6 +40,7 @@ Inductive instr : Type :=
 | ITproxy      (family : string) (areg preg : option reg)
 | IFibLoad     (sel : string) (res : fib_result) (dst : reg)
 | IQuota       (spec : quota_spec)
+| IObjref      (otype : nat) (oname : string)
 | ICtDirLoad   (key dir : string) (dst : reg)
 | IInnerLoad   (typ hdrsize flags : nat) (innerdesc : string) (width : nat) (dst : reg)
 | IPayloadLoad (b : pbase) (off len : nat) (dst : reg)
@@ -71,7 +72,7 @@ Inductive instr : Type :=
 | ILimit       (spec : limit_spec)       (* rate limit (can break the rule) *)
 | ICounter     (pkts bytes : nat)        (* verdict-neutral statements *)
 | INotrack
-| ILog         (level : option nat)
+| ILog         (opts : string)
 | IReject      (typ code : nat)          (* terminal verdicts *)
 | IQueue       (lo hi : nat) (bypass fanout : bool)
 | IImmediate   (v : verdict).            (* immediate reg 0 <verdict> *)

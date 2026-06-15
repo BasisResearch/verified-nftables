@@ -176,12 +176,13 @@ Inductive vsrc : Type :=
 Inductive stmt : Type :=
 | SCounter (pkts bytes : nat)
 | SNotrack
-| SLog (level : option nat)
+| SLog (opts : string)   (* verbatim log options; verdict-neutral side effect *)
 | SMangle (vs : vsrc) (b : pbase) (off len : nat) (ctype coff cflags : nat)
                             (* payload write (verdict-neutral; the packet rewrite
                                is a side effect outside the model) *)
 | SMetaSet (k : meta_key) (vs : vsrc)   (* meta set <k> with a value *)
-| SCtSet   (k : ct_key) (vs : vsrc).    (* ct set <k> with a value *)
+| SCtSet   (k : ct_key) (vs : vsrc)     (* ct set <k> with a value *)
+| SObjref  (otype : nat) (oname : string).  (* reference a named stateful object *)
 
 (** A verdict map: the rule's verdict comes from looking up the concatenation of
     [vm_fields] in the named map (entries live in NEWSET; carried for semantics,

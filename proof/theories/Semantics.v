@@ -165,6 +165,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | ICounter _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)
   | INotrack :: rest      => run_rule rf rest p
   | ILog _ :: rest        => run_rule rf rest p
+  | IObjref _ _ :: rest   => run_rule rf rest p   (* verdict-neutral *)
   | IReject t c :: _ => Some (Reject t c)
   | IQueue lo hi b f :: _ => Some (Queue lo hi b f)
   | IImmediate v :: _ => Some v
