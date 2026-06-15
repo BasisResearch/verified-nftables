@@ -71,14 +71,16 @@ Coverage grew as the verified core grew (each step kept both theorems axiom-free
 | + conntrack & fields | `ct load`, 46 named fields | 979 (38.7%) |
 | + extension headers | parametric `exthdr load` (IPv6 ext / TCP opts) | **1272 (50.2%)** |
 
-Coverage has since grown well past the table — **1792/2532 (70.8%)**, still
+Coverage has since grown well past the table — **1934/2532 (76.4%)**, still
 zero mismatches. Beyond the table: ranges, prefixes, sets, ct/exthdr (incl. the
 `present` existence test), transform chains (bitwise shift, byteorder, jhash),
 statements (counter/notrack/log), reject/queue verdicts, stateful `limit` via an
 oracle, all meta keys, rt/socket/numgen/osf oracle loads, **verified
 multi-register concatenation** (a real register-allocation proof: distinct
-registers via `NoDup`, non-clobbering loads, concat lookup), and **sets/ranges
-over transformed values** (`MSetT`/`MRangeT`).
+registers via `NoDup`, non-clobbering loads, concat lookup), **sets/ranges over
+transformed values** (`MSetT`/`MRangeT`), and **verified verdict maps** (`vmap`:
+the rule's verdict comes from a map lookup; `eval_rules` refactored through a
+uniform `outcome`, proven a faithful no-op for static verdicts).
 
 **What the round-trip does and does NOT validate (honest scope).** It validates
 the *structural lowering*: that each match becomes the right load + test + the
@@ -129,7 +131,7 @@ constructors.
 - **Catches injected bugs?** Yes (mutation-tested: flipping `cmp eq`→`neq` breaks
   `Correct.v`). Spec-vs-reality drift in *offsets/names* is caught by `make
   validate` against live `nft` (not by the corpus round-trip alone — see above).
-- **Measured coverage:** 1792/2532 (70.8%) of upstream corpus blocks, 0 mismatches.
+- **Measured coverage:** 1934/2532 (76.4%) of upstream corpus blocks, 0 mismatches.
 - **Deployable?** `compile_chain`/`optimize_chain` extract to OCaml and already
   emit nft's exact text; the remaining step is a libnftnl netlink emitter shim.
 
@@ -138,18 +140,20 @@ constructors.
 The largest remaining buckets each need a structural addition, not more match
 expressions:
 
-- **vmaps / maps** (`lookup … dreg N`, ~200 blocks): the rule's verdict (or a
-  value for a following statement) comes *from* a lookup. Needs the rule outcome
-  to be "look up the key and use the result" — a rule-record extension and a
-  proof that the compiled `lookup dreg` reproduces it.
 - **from-register statements** — NAT/redirect/masquerade and payload-mangle
   (`nat snat … reg N`, `payload write … reg N`, `imm:datareg`, ~250 blocks):
-  values (addresses/ports) are loaded into data registers and then consumed by a
-  statement. Needs immediates-into-data-registers and statements that reference
-  registers.
+  addresses/ports are loaded into data registers (`immediate reg N …`, into the
+  128-bit regs 1–4) and then consumed by a terminal statement. Needs
+  immediates-into-data-registers, a third rule outcome (`r_nat`, terminal), and
+  the statement's register references — the next major refactor.
+- **maps with `dreg N>0`** (`lookup … dreg 1`): the lookup loads a value into a
+  register for a following statement (e.g. `meta mark set … map`) — multi-register
+  value flow, related to the NAT tier.
 - a long tail: `inner`/`tunnel` wrapper expressions, `ct set`/directional `ct`
-  loads, `dynset`, `objref`, `tproxy`, `synproxy`, `osf`-with-ttl, etc. — each a
-  small structured feature.
+  loads, `dynset`, `objref`, `tproxy`, `synproxy`, `osf`-with-ttl, `fib`, etc. —
+  each a small structured feature.
+
+The verdict-map (`dreg 0`) case is **done** (see above).
 
 ## Next steps (toward the broader instructions.org goals)
 
