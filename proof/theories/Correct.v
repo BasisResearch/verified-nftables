@@ -327,6 +327,17 @@ Proof.
   - apply IH.
 Qed.
 
+(** A fwd outcome: the operand immediates pass through and the terminal [IFwd]
+    accepts (ignoring anything after it). *)
+Lemma run_imms_fwd : forall imms tail rf dev addr nfp p,
+  run_rule rf (map (fun rv => IImmediateData (fst rv) (snd rv)) imms
+               ++ IFwd dev addr nfp :: tail) p = Some Accept.
+Proof.
+  induction imms as [| [r v] rest IH]; intros; cbn [map fst snd app run_rule].
+  - reflexivity.
+  - apply IH.
+Qed.
+
 (** A map-sourced NAT operand: load the key (+ transforms), look it up in the map
     (into reg 1), then the terminal [INat] accepts — all verdict-neutral until
     [INat]. *)
@@ -398,22 +409,24 @@ Proof.
       [apply run_map_nat | apply run_imms_nat].
   - destruct (r_tproxy r) as [t |].
     + rewrite <- app_assoc. apply run_imms_tproxy.
-    + destruct (r_vmap r) as [vm |].
-      * destruct (vm_keyf vm) as [[f ts] |].
-        -- (* transformed single-field key *)
-           cbn [app]. rewrite compile_load_correct. rewrite <- app_assoc.
-           edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
-                       ([IVmap [1] (vm_name vm) (vm_entries vm)]
-                          ++ flat_map compile_stmt (r_after r)) p) as [rf' [Hr1 Hr2]].
-           rewrite Hr2. cbn [app run_rule concat map].
-           rewrite app_nil_r, Hr1, set_reg_same. reflexivity.
-        -- (* concat key: IVmap reads the loaded concatenation, ignores the tail *)
-           rewrite <- app_assoc. rewrite run_load_fields. cbn [app run_rule].
-           rewrite map_write_fields by apply alloc_regs_nodup.
-           rewrite map_fst_field, alloc_regs_fst. reflexivity.
-      * (* static verdict, then the post-outcome statements *)
-        rewrite run_verdict_tail_after.
-        destruct (r_verdict r); solve [ reflexivity | apply run_stmts_none ].
+    + destruct (r_fwd r) as [w |].
+      * rewrite <- app_assoc. apply run_imms_fwd.
+      * destruct (r_vmap r) as [vm |].
+        -- destruct (vm_keyf vm) as [[f ts] |].
+           ++ (* transformed single-field key *)
+              cbn [app]. rewrite compile_load_correct. rewrite <- app_assoc.
+              edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
+                          ([IVmap [1] (vm_name vm) (vm_entries vm)]
+                             ++ flat_map compile_stmt (r_after r)) p) as [rf' [Hr1 Hr2]].
+              rewrite Hr2. cbn [app run_rule concat map].
+              rewrite app_nil_r, Hr1, set_reg_same. reflexivity.
+           ++ (* concat key: IVmap reads the loaded concatenation, ignores the tail *)
+              rewrite <- app_assoc. rewrite run_load_fields. cbn [app run_rule].
+              rewrite map_write_fields by apply alloc_regs_nodup.
+              rewrite map_fst_field, alloc_regs_fst. reflexivity.
+        -- (* static verdict, then the post-outcome statements *)
+           rewrite run_verdict_tail_after.
+           destruct (r_verdict r); solve [ reflexivity | apply run_stmts_none ].
 Qed.
 
 (** Chain level: the compiled program reproduces the rule-list evaluation. *)

@@ -183,6 +183,10 @@ Definition compile_end (r : rule) : list instr :=
   | Some t => map (fun rv => IImmediateData (fst rv) (snd rv)) (tp_imms t) ++
               [ITproxy (tp_family t) (tp_areg t) (tp_preg t)]
   | None =>
+  match r_fwd r with
+  | Some w => map (fun rv => IImmediateData (fst rv) (snd rv)) (fwd_imms w) ++
+              [IFwd (fwd_devreg w) (fwd_addrreg w) (fwd_nfproto w)]
+  | None =>
     match r_vmap r with
     | Some vm =>
         match vm_keyf vm with
@@ -195,6 +199,7 @@ Definition compile_end (r : rule) : list instr :=
         end
     | None    => verdict_tail (r_verdict r)
     end
+  end
   end
   end.
 

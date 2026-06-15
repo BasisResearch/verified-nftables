@@ -66,6 +66,7 @@ type pinst =
   | PDynset  of string * string * int * int option (* op, set name, key reg, data reg *)
   | PExthdrReset of string * int                   (* proto, htype *)
   | PDup     of int option * int option            (* dev reg, addr reg *)
+  | PFwd     of int option * int option * int option (* dev reg, addr reg, nfproto *)
   | PImm     of Verdict.verdict
 
 let rec take_until tok = function
@@ -307,6 +308,15 @@ let parse_line line : pinst =
         | _ -> raise (Unsupported "tproxy:form") in
       let (areg, preg) = p None None rest in
       PTproxy (family, areg, preg)
+  | "fwd"::rest ->
+      let rec p dev addr nfp = function
+        | "sreg_dev"::n::r -> p (Some (int_of_string n)) addr nfp r
+        | "sreg_addr"::n::r -> p dev (Some (int_of_string n)) nfp r
+        | "nfproto"::n::r -> p dev addr (Some (int_of_string n)) r
+        | [] -> (dev, addr, nfp)
+        | _ -> raise (Unsupported "fwd:form") in
+      let (dev, addr, nfp) = p None None None rest in
+      PFwd (dev, addr, nfp)
   | "queue"::_ -> raise (Unsupported "queue:sreg")
   | tok::_ -> raise (Unsupported ("instr:"^tok))
   | [] -> raise (Unsupported "empty")
@@ -314,9 +324,13 @@ let parse_line line : pinst =
 (* fold a block into a DSL rule: (load;test)* then verdict-neutral statements
    then a verdict. *)
 let rule_of_block (lines : string list) : Syntax.rule =
-  let mk ?(vmap=None) ?(nat=None) ?(tproxy=None) ?(after=[]) body v : Syntax.rule =
+  let mk ?(vmap=None) ?(nat=None) ?(tproxy=None) ?(fwd=None) ?(after=[]) body v : Syntax.rule =
     { Syntax.r_body = List.rev body;
-      r_verdict = v; r_vmap = vmap; r_nat = nat; r_tproxy = tproxy; r_after = after } in
+      r_verdict = v; r_vmap = vmap; r_nat = nat; r_tproxy = tproxy;
+      r_fwd = fwd; r_after = after } in
+  let mk_fwd body imms (dev,addr,nfp) =
+    mk ~fwd:(Some { Syntax.fwd_imms = imms; fwd_devreg = dev;
+                    fwd_addrreg = addr; fwd_nfproto = nfp }) body Verdict.Continue in
   let bm body m = Syntax.BMatch m :: body in      (* prepend a match in order *)
   let bs body s = Syntax.BStmt s :: body in       (* prepend a statement in order *)
   (* verdict-neutral statements emitted after a terminal outcome (e.g. a counter
@@ -387,6 +401,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          mk_tproxy body (List.rev imms) (fam,ar,pr)
                      | PDup (dev,addr) ->
                          go (bs body (Syntax.SDup (List.rev imms, dev, addr))) more
+                     | PFwd (dev,addr,nfp) ->
+                         if more <> [] then raise (Unsupported "trailing-after-fwd");
+                         mk_fwd body (List.rev imms) (dev,addr,nfp)
                      | _ -> raise (Unsupported "imm-not-nat"))
                   | [] -> raise (Unsupported "imm-dangling")
                 in gnat [(r, v)] rest)

@@ -300,6 +300,9 @@ let render_instr (i : Bytecode.instr) : string = match i with
       let opt label = function Some r -> Printf.sprintf " %s reg %d" label r | None -> "" in
       let fam = if family = "" then "" else " " ^ family in
       Printf.sprintf "[ tproxy%s%s%s ]" fam (opt "addr" areg) (opt "port" preg)
+  | Bytecode.IFwd (dev,addr,nfp) ->
+      let opt label = function Some r -> Printf.sprintf " %s %d" label r | None -> "" in
+      Printf.sprintf "[ fwd%s%s%s ]" (opt "sreg_dev" dev) (opt "sreg_addr" addr) (opt "nfproto" nfp)
   | Bytecode.IMetaSet (k,src) ->
       Printf.sprintf "[ meta set %s with reg %d ]" (name_of_meta k) src
   | Bytecode.ICtSet (k,src) ->
