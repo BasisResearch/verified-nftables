@@ -41,10 +41,13 @@ theorem is stated against is **not** faithful in these areas. Grouped by kind:
 - ⛔ STILL OPEN — **routing table (`fib`)**, **conntrack table (`ct`)**, and
   **stateful objects** (counter/quota/limit/meter, dynset feedback) remain
   per-packet oracles, not the explicit FIB/conntrack/object state they should be.
-- **Routing table (`fib`)**: modelled as `pkt_fib : selector -> result -> data`,
-  a pure function of the packet. Faithfully `fib` is a lookup against the kernel
-  FIB/RIB — system state that changes as routes change. (instructions.org
-  explicitly named `fib` as a feature to model properly; it was oracle'd.)
+- **Routing table (`fib`/`rt`)** *(relocated to shared state, 2026-06)*: `fib` and
+  `rt` now read from the evaluation environment (`e_fib : selector -> result ->
+  data`, `e_rt : rt_key -> data` in `env`), NOT from the packet — so the routing
+  table is shared external state decoupled from any one packet, and the theorems
+  quantify over it (hold as routes change). Still abstract (no longest-prefix-match
+  model); a faithful FIB would compute the result from a route list + the packet's
+  addresses, which remains future work.
 - **Conntrack table (`ct …`)**: `pkt_ct` is a per-packet oracle; really the ct
   table is keyed by flow and accumulates across packets (`ct count`, `ct state`).
 - **Stateful named objects**: `counter`/`quota`/`limit`/`ct helper`/`ct timeout`/

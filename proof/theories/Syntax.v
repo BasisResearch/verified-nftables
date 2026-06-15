@@ -133,12 +133,12 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
   match ld with
   | LMeta k         => pkt_meta p k
   | LCt k           => pkt_ct p k
-  | LRt k           => pkt_rt p k
+  | LRt k           => e_rt (pkt_env p) k
   | LSocket k       => pkt_sock p k
   | LNumgen spec    => pkt_numgen p spec
   | LOsf            => pkt_osf p
   | LExthdr ep h o l pr => pkt_eh p ep h o l pr
-  | LFib sel res    => pkt_fib p sel res
+  | LFib sel res    => e_fib (pkt_env p) sel res
   | LCtDir key dir  => pkt_ctdir p key dir
   | LXfrm dir sp key => pkt_xfrm p dir sp key
   | LTunnel key      => pkt_tunnel p key

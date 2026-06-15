@@ -93,13 +93,21 @@ Record env : Type := {
   e_set  : string -> list data;             (* a named set's elements (membership) *)
   e_vmap : string -> list (data * verdict);  (* a named verdict map's entries *)
   e_map  : string -> list (data * data);     (* a named value map's entries *)
+  e_fib  : string -> fib_result -> data;     (* the routing table a `fib` lookup
+                                                consults, keyed by the selector
+                                                spec (e.g. "saddr . iif") and the
+                                                result selector.  Shared external
+                                                routing state, NOT a per-packet
+                                                property: two packets evaluate
+                                                against the same (mutable) table. *)
+  e_rt   : rt_key -> data;                   (* routing-state (rt) keys, likewise
+                                                shared external routing state. *)
 }.
 
 Record packet : Type := {
   pkt_env  : env;                (* the named set/map state (see [env] above) *)
   pkt_meta : meta_key -> data;   (* kernel-computed metadata *)
   pkt_ct   : ct_key -> data;     (* conntrack state *)
-  pkt_rt   : rt_key -> data;     (* routing-state oracle *)
   pkt_sock : socket_key -> data; (* socket-state oracle *)
   pkt_eh   : exthdr_proto -> nat -> nat -> nat -> bool -> data;
                             (* exthdr: proto htype off len present?  present=true
@@ -116,11 +124,6 @@ Record packet : Type := {
                                         of a global counter; cannot distinguish two
                                         firings of one packet — see DEVELOPMENT.md) *)
   pkt_osf  : data;                   (* oracle: OS-fingerprint value (packet-determined) *)
-  pkt_fib  : string -> fib_result -> data;
-                            (* oracle: route lookup.  The string is the selector
-                               specification (which inputs the lookup uses, e.g.
-                               "saddr . iif"); the result selector fixes what the
-                               routing table yields. *)
   pkt_tunnel : string -> data;    (* oracle: a tunnel-metadata field by name *)
   pkt_symhash : nat -> nat -> data;  (* oracle: symmetric packet hash (mod, offset) *)
   pkt_xfrm : string -> nat -> string -> data;

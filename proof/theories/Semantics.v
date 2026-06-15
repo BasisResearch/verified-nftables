@@ -185,7 +185,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | ICtLoad k dst :: rest =>
       run_rule (set_reg rf dst (pkt_ct p k)) rest p
   | IRtLoad k dst :: rest =>
-      run_rule (set_reg rf dst (pkt_rt p k)) rest p
+      run_rule (set_reg rf dst (e_rt (pkt_env p) k)) rest p
   | ISocketLoad k dst :: rest =>
       run_rule (set_reg rf dst (pkt_sock p k)) rest p
   | INumgen spec dst :: rest =>
@@ -195,7 +195,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | IExthdrLoad ep h o l pr dst :: rest =>
       run_rule (set_reg rf dst (pkt_eh p ep h o l pr)) rest p
   | IFibLoad sel res dst :: rest =>
-      run_rule (set_reg rf dst (pkt_fib p sel res)) rest p
+      run_rule (set_reg rf dst (e_fib (pkt_env p) sel res)) rest p
   | ICtDirLoad key dir dst :: rest =>
       run_rule (set_reg rf dst (pkt_ctdir p key dir)) rest p
   | IXfrmLoad dir sp key dst :: rest =>
@@ -313,21 +313,21 @@ Definition ct_eqb (a b : ct_key) : bool := if ct_eq_dec a b then true else false
 Definition set_meta (p : packet) (k : meta_key) (v : data) : packet :=
   {| pkt_env := pkt_env p;
      pkt_meta := (fun k' => if meta_eqb k k' then v else pkt_meta p k');
-     pkt_ct := pkt_ct p; pkt_rt := pkt_rt p; pkt_sock := pkt_sock p;
+     pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_limit := pkt_limit p;
      pkt_quota := pkt_quota p; pkt_connlimit := pkt_connlimit p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p; pkt_fib := pkt_fib p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
 Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
   {| pkt_env := pkt_env p; pkt_meta := pkt_meta p;
      pkt_ct := (fun k' => if ct_eqb k k' then v else pkt_ct p k');
-     pkt_rt := pkt_rt p; pkt_sock := pkt_sock p;
+     pkt_sock := pkt_sock p;
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_limit := pkt_limit p;
      pkt_quota := pkt_quota p; pkt_connlimit := pkt_connlimit p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p; pkt_fib := pkt_fib p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
 
@@ -341,13 +341,13 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
   | [] => p
   | IMetaLoad k dst :: rest => run_rule_writes (set_reg rf dst (pkt_meta p k)) rest p
   | ICtLoad k dst :: rest => run_rule_writes (set_reg rf dst (pkt_ct p k)) rest p
-  | IRtLoad k dst :: rest => run_rule_writes (set_reg rf dst (pkt_rt p k)) rest p
+  | IRtLoad k dst :: rest => run_rule_writes (set_reg rf dst (e_rt (pkt_env p) k)) rest p
   | ISocketLoad k dst :: rest => run_rule_writes (set_reg rf dst (pkt_sock p k)) rest p
   | INumgen spec dst :: rest => run_rule_writes (set_reg rf dst (pkt_numgen p spec)) rest p
   | IOsf dst :: rest => run_rule_writes (set_reg rf dst (pkt_osf p)) rest p
   | IExthdrLoad ep h o l pr dst :: rest =>
       run_rule_writes (set_reg rf dst (pkt_eh p ep h o l pr)) rest p
-  | IFibLoad sel res dst :: rest => run_rule_writes (set_reg rf dst (pkt_fib p sel res)) rest p
+  | IFibLoad sel res dst :: rest => run_rule_writes (set_reg rf dst (e_fib (pkt_env p) sel res)) rest p
   | ICtDirLoad key dir dst :: rest => run_rule_writes (set_reg rf dst (pkt_ctdir p key dir)) rest p
   | IXfrmLoad dir sp key dst :: rest => run_rule_writes (set_reg rf dst (pkt_xfrm p dir sp key)) rest p
   | ITunnelLoad key dst :: rest => run_rule_writes (set_reg rf dst (pkt_tunnel p key)) rest p

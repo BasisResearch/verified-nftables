@@ -31,7 +31,8 @@ let rule_b body v : Syntax.rule =
 
 (* ---- the runtime environment (named set/map state the lookups read) ---- *)
 let empty_env : Packet.env =
-  { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []) }
+  { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
+    e_fib = (fun _ _ -> []); e_rt = (fun _ -> []) }
 (* an environment where the set/vmap [name] has the given contents *)
 let env_set name elems : Packet.env = { empty_env with Packet.e_set = (fun n -> if n = name then elems else []) }
 let env_vmap name ents : Packet.env = { empty_env with Packet.e_vmap = (fun n -> if n = name then ents else []) }
@@ -41,13 +42,13 @@ let dummy0 _ = []
 let mk_pkt ?(env = empty_env) ?(l4proto = [6]) ?(nh = []) ?(th = []) () : Packet.packet =
   { Packet.pkt_env = env;
     pkt_meta = (fun k -> match k with Packet.MKl4proto -> l4proto | _ -> []);
-    pkt_ct = dummy0; pkt_rt = dummy0; pkt_sock = dummy0;
+    pkt_ct = dummy0; pkt_sock = dummy0;
     pkt_eh = (fun _ _ _ _ _ -> []);
     pkt_lh = []; pkt_nh = nh; pkt_th = th; pkt_ih = []; pkt_tnl = [];
     pkt_limit = (fun _ -> true); pkt_quota = (fun _ -> true);
     pkt_connlimit = (fun _ -> true);
     pkt_numgen = dummy0; pkt_osf = [];
-    pkt_fib = (fun _ _ -> []); pkt_tunnel = (fun _ -> []);
+    pkt_tunnel = (fun _ -> []);
     pkt_symhash = (fun _ _ -> []); pkt_xfrm = (fun _ _ _ -> []);
     pkt_ctdir = (fun _ _ -> []); pkt_inner = (fun _ _ _ _ -> []) }
 
