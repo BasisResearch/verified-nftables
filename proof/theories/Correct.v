@@ -5,18 +5,99 @@
     declarative semantics assigns.  Equivalently, the netlink ruleset [nft] would
     install filters packets exactly as the DSL specifies. *)
 
-From Stdlib Require Import List NArith Bool.
+From Stdlib Require Import List NArith Bool Lia PeanoNat.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile.
 Import ListNotations.
 
 (** Executing a compiled load writes the field's value into the destination
-    register and falls through to the rest of the program. *)
-Lemma compile_load_correct : forall f rf rest p,
-  run_rule rf (compile_load (field_load f) 1 :: rest) p =
-  run_rule (set_reg rf 1 (field_value f p)) rest p.
+    register and falls through to the rest of the program (any [dst]). *)
+Lemma compile_load_correct : forall f dst rf rest p,
+  run_rule rf (compile_load (field_load f) dst :: rest) p =
+  run_rule (set_reg rf dst (field_value f p)) rest p.
 Proof.
-  intros f rf rest p. unfold field_value, do_load, compile_load.
+  intros f dst rf rest p. unfold field_value, do_load, compile_load.
   destruct (field_load f) eqn:E; simpl; reflexivity.
+Qed.
+
+(** ** Multi-register concatenation: the allocator emits distinct registers, so
+    the per-field loads do not clobber one another and the lookup reads exactly
+    the concatenation of the field values. *)
+
+Lemma field_slots_pos : forall f, 1 <= field_slots f.
+Proof. intro f. unfold field_slots. apply Nat.le_max_l. Qed.
+
+Lemma reg_of_slot_mono : forall a b, a < b -> reg_of_slot a < reg_of_slot b.
+Proof.
+  intros a b H. unfold reg_of_slot. destruct a; destruct b; simpl; lia.
+Qed.
+
+Lemma alloc_regs_lb : forall fields slot r,
+  In r (map snd (alloc_regs slot fields)) -> reg_of_slot slot <= r.
+Proof.
+  induction fields as [| f fs IH]; intros slot r Hin; simpl in Hin.
+  - contradiction.
+  - destruct Hin as [Heq | Hin].
+    + subst r. reflexivity.
+    + apply IH in Hin. pose proof (field_slots_pos f).
+      assert (slot < slot + field_slots f) as Hlt by lia.
+      apply reg_of_slot_mono in Hlt. lia.
+Qed.
+
+Lemma alloc_regs_nodup : forall fields slot, NoDup (map snd (alloc_regs slot fields)).
+Proof.
+  induction fields as [| f fs IH]; intros slot; simpl.
+  - constructor.
+  - constructor.
+    + intro Hin. apply alloc_regs_lb in Hin. pose proof (field_slots_pos f).
+      assert (slot < slot + field_slots f) as Hlt by lia.
+      apply reg_of_slot_mono in Hlt. lia.
+    + apply IH.
+Qed.
+
+Lemma alloc_regs_fst : forall fields slot,
+  map (@fst field reg) (alloc_regs slot fields) = fields.
+Proof. induction fields; intros; simpl; [reflexivity | f_equal; auto]. Qed.
+
+Lemma map_fst_field : forall (pairs : list (field * reg)) p,
+  map (fun fr => field_value (fst fr) p) pairs
+  = map (fun f => field_value f p) (map (@fst field reg) pairs).
+Proof. induction pairs; intros; simpl; [reflexivity | f_equal; auto]. Qed.
+
+(** The net effect of the field loads on the register file. *)
+Fixpoint write_fields (rf : regfile) (pairs : list (field * reg)) (p : packet) : regfile :=
+  match pairs with
+  | []           => rf
+  | (f, r) :: rest => write_fields (set_reg rf r (field_value f p)) rest p
+  end.
+
+Lemma write_fields_other : forall pairs rf p r,
+  ~ In r (map snd pairs) -> write_fields rf pairs p r = rf r.
+Proof.
+  induction pairs as [| [f r'] rest IH]; intros rf p r Hni; simpl in *.
+  - reflexivity.
+  - rewrite IH by (intro Hin; apply Hni; right; exact Hin).
+    apply set_reg_other. intro Heq; apply Hni; left; exact Heq.
+Qed.
+
+Lemma map_write_fields : forall pairs rf p,
+  NoDup (map snd pairs) ->
+  map (write_fields rf pairs p) (map snd pairs)
+  = map (fun fr => field_value (fst fr) p) pairs.
+Proof.
+  induction pairs as [| [f r] rest IH]; intros rf p Hnd; simpl in *.
+  - reflexivity.
+  - inversion Hnd as [| ? ? Hni Hnd' ]; subst. f_equal.
+    + rewrite write_fields_other by assumption. apply set_reg_same.
+    + apply IH. assumption.
+Qed.
+
+Lemma run_load_fields : forall pairs rf tail p,
+  run_rule rf (load_fields pairs ++ tail) p = run_rule (write_fields rf pairs p) tail p.
+Proof.
+  induction pairs as [| [f r] rest IH]; intros rf tail p.
+  - reflexivity.
+  - cbn [load_fields map fst snd app write_fields].
+    rewrite compile_load_correct. apply IH.
 Qed.
 
 (** Running a compiled transform chain then a [cmp]: the chain leaves register 1
@@ -50,8 +131,8 @@ Lemma run_compile_matches_const : forall ms tail res p,
 Proof.
   induction ms as [| m ms IH]; intros tail res p Hc rf.
   - cbn [flat_map app forallb]. apply Hc.
-  - destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0 | f neg nm elems
-                  | f ts neg v0 | spec];
+  - destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0
+                  | fields neg nm elems | f ts neg v0 | spec];
       cbn [flat_map compile_match app].
     + (* MEq *) rewrite compile_load_correct.
       cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond]. unfold eval_cmp.
@@ -70,9 +151,14 @@ Proof.
       destruct (eval_cmp (if neg then CNe else CEq)
                  (data_bitops (field_value f p) mask xor) v0);
         cbn [andb]; [apply IH; exact Hc | reflexivity].
-    + (* MSet *) rewrite compile_load_correct.
-      cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond].
-      destruct (xorb neg (data_mem (field_value f p) elems));
+    + (* MConcatSet: multi-register key, distinct registers per field *)
+      rewrite <- !app_assoc. cbn [app].
+      rewrite run_load_fields. cbn [run_rule].
+      rewrite map_write_fields by apply alloc_regs_nodup.
+      rewrite map_fst_field, alloc_regs_fst.
+      cbn [forallb eval_matchcond].
+      destruct (xorb neg
+                 (data_mem (concat (map (fun f => field_value f p) fields)) elems));
         cbn [andb]; [apply IH; exact Hc | reflexivity].
     + (* MTransform *) rewrite compile_load_correct.
       rewrite <- !app_assoc. cbn [app].

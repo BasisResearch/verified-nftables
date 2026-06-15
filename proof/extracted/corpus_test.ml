@@ -140,28 +140,39 @@ let render_value (d : int list) : string =
   done;
   Buffer.contents buf
 
+(* The verified compiler allocates concatenation registers monotonically (slot 0
+   -> 1, slot s>0 -> 8+s), which is provably collision-free. nft's debug output
+   instead displays a 16-byte-aligned slot using the 128-bit register alias
+   (reg 1..4) rather than the 32-bit number. This presentation map (untrusted,
+   validated byte-identically by the corpus) translates our register to nft's
+   displayed number. slot of our reg r: r<=1 -> r itself (slot 0); else r-8. *)
+let nreg r =
+  if r <= 1 then r
+  else let slot = r - 8 in
+       if slot mod 4 = 0 then slot / 4 + 1 else slot + 8
+
 (* ---------- render our compiled instrs back to corpus text ---------- *)
 let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.IMetaLoad (k,r) ->
-      Printf.sprintf "[ meta load %s => reg %d ]" (name_of_meta k) r
+      Printf.sprintf "[ meta load %s => reg %d ]" (name_of_meta k) (nreg r)
   | Bytecode.ICtLoad (k,r) ->
-      Printf.sprintf "[ ct load %s => reg %d ]" (name_of_ct k) r
+      Printf.sprintf "[ ct load %s => reg %d ]" (name_of_ct k) (nreg r)
   | Bytecode.IRtLoad (k,r) ->
-      Printf.sprintf "[ rt load %s => reg %d ]" (name_of_rt k) r
+      Printf.sprintf "[ rt load %s => reg %d ]" (name_of_rt k) (nreg r)
   | Bytecode.ISocketLoad (k,r) ->
-      Printf.sprintf "[ socket load %s => reg %d ]" (name_of_sock k) r
+      Printf.sprintf "[ socket load %s => reg %d ]" (name_of_sock k) (nreg r)
   | Bytecode.IExthdrLoad (ep,h,o,l,r) ->
       Printf.sprintf "[ exthdr load %s %db @ %d + %d => reg %d ]"
-        (name_of_ehproto ep) l h o r
+        (name_of_ehproto ep) l h o (nreg r)
   | Bytecode.INumgen (s,r) ->
       (* mirror upstream nft: it omits "offset" when 0, never emits "offset 0" *)
       let off = if s.Packet.ng_offset > 0 then Printf.sprintf " offset %d" s.Packet.ng_offset else "" in
       Printf.sprintf "[ numgen reg %d = %s mod %d%s ]"
-        r (if s.Packet.ng_random then "random" else "inc") s.Packet.ng_mod off
-  | Bytecode.IOsf r -> Printf.sprintf "[ osf dreg %d ]" r
+        (nreg r) (if s.Packet.ng_random then "random" else "inc") s.Packet.ng_mod off
+  | Bytecode.IOsf r -> Printf.sprintf "[ osf dreg %d ]" (nreg r)
   | Bytecode.IPayloadLoad (b,o,l,r) ->
       Printf.sprintf "[ payload load %db @ %s header + %d => reg %d ]"
-        l (name_of_base b) o r
+        l (name_of_base b) o (nreg r)
   | Bytecode.ICmp (op,r,v) ->
       let opn = (match op with Bytecode.CEq -> "eq" | Bytecode.CNe -> "neq") in
       Printf.sprintf "[ cmp %s reg %d %s ]" opn r (render_value v)
@@ -181,9 +192,10 @@ let render_instr (i : Bytecode.instr) : string = match i with
       let off = if o > 0 then Printf.sprintf " offset %d" o else "" in
       Printf.sprintf "[ hash reg %d = jhash(reg %d, %d, 0x%x) %% mod %d%s ]"
         d s len seed m off
-  | Bytecode.ILookup (s,name,neg,_) ->
-      if neg then Printf.sprintf "[ lookup reg %d set %s 0x1 ]" s name
-      else Printf.sprintf "[ lookup reg %d set %s ]" s name
+  | Bytecode.ILookup (srcs,name,neg,_) ->
+      let r = nreg (match srcs with x :: _ -> x | [] -> 1) in
+      if neg then Printf.sprintf "[ lookup reg %d set %s 0x1 ]" r name
+      else Printf.sprintf "[ lookup reg %d set %s ]" r name
   | Bytecode.ILimit s ->
       let u = (match s.Packet.ls_unit with
                | 0->"second" | 1->"minute" | 2->"hour" | 3->"day" | _->"week") in
@@ -378,38 +390,57 @@ let rule_of_block (lines : string list) : Syntax.rule =
            go (Syntax.MLimit spec :: matches) stmts rest
        | PLoad (key, lreg) ->
            if stmts <> [] then raise (Unsupported "load-after-stmt");
-           if lreg <> 1 then raise (Unsupported "reg!=1");
-           let f = (match field_of_key_str key with Some f -> f
-                    | None -> raise (Unsupported ("field:"^key))) in
-           (* collect a chain of register transforms, then a tester *)
-           let rec collect ts = function
-             | l :: more ->
-               (match parse_line l with
-                | PBitwise (1,1,mask,xor) -> collect (Syntax.TBitAnd (mask,xor) :: ts) more
-                | PShift (1,1,shl,amt) -> collect (Syntax.TShift (shl,amt) :: ts) more
-                | PByteorder (1,1,h,sz,ln) -> collect (Syntax.TByteorder (h,sz,ln) :: ts) more
-                | PJhash (1,1,len,seed,m,o) -> collect (Syntax.TJhash (len,seed,m,o) :: ts) more
-                | PCmp (iseq, 1, v) ->
-                    let tl = List.rev ts in
-                    let m = (match tl with
-                      | [] -> if iseq then Syntax.MEq (f,v) else Syntax.MNeq (f,v)
-                      | _ -> Syntax.MTransform (f, tl, not iseq, v)) in
-                    go (m :: matches) stmts more
-                | PRange (iseq, 1, words) when ts = [] ->
-                    let n = List.length words in
-                    if n land 1 <> 0 then raise (Unsupported "range-odd-words");
-                    let lo = bytes_of_hexwords (List.filteri (fun i _ -> i < n/2) words)
-                    and hi = bytes_of_hexwords (List.filteri (fun i _ -> i >= n/2) words) in
-                    go (Syntax.MRange (f, not iseq, lo, hi) :: matches) stmts more
-                | PLookup (1, name, neg) when ts = [] ->
-                    go (Syntax.MSet (f, neg, name, []) :: matches) stmts more
-                | PRange _ -> raise (Unsupported "transform-then-range")
-                | PLookup _ -> raise (Unsupported "transform-then-lookup")
-                | PBitwise _ | PShift _ | PByteorder _ | PJhash _ | PCmp _ ->
-                    raise (Unsupported "reg!=1")
-                | _ -> raise (Unsupported "load-not-followed-by-test"))
-             | [] -> raise (Unsupported "dangling-load")
-           in collect [] rest
+           let field_of k = (match field_of_key_str k with Some f -> f
+                             | None -> raise (Unsupported ("field:"^k))) in
+           let f = field_of key in
+           let is_load l = (try (match parse_line l with PLoad _ -> true | _ -> false)
+                            with _ -> false) in
+           (match rest with
+            | l2 :: _ when is_load l2 ->
+                (* concatenation key: gather all consecutive loads, then a lookup.
+                   Load reg numbers are re-derived by the verified allocator and
+                   checked at render time, so we collect by field descriptor. *)
+                let rec gather facc = function
+                  | l :: more ->
+                    (match parse_line l with
+                     | PLoad (k, _) -> gather (field_of k :: facc) more
+                     | PLookup (_, name, neg) ->
+                         go (Syntax.MConcatSet (List.rev facc, neg, name, []) :: matches)
+                            stmts more
+                     | _ -> raise (Unsupported "concat-not-lookup"))
+                  | [] -> raise (Unsupported "concat-dangling")
+                in gather [f] rest
+            | _ ->
+                if lreg <> 1 then raise (Unsupported "reg!=1");
+                (* single field: collect a transform chain, then a tester *)
+                let rec collect ts = function
+                  | l :: more ->
+                    (match parse_line l with
+                     | PBitwise (1,1,mask,xor) -> collect (Syntax.TBitAnd (mask,xor) :: ts) more
+                     | PShift (1,1,shl,amt) -> collect (Syntax.TShift (shl,amt) :: ts) more
+                     | PByteorder (1,1,h,sz,ln) -> collect (Syntax.TByteorder (h,sz,ln) :: ts) more
+                     | PJhash (1,1,len,seed,m,o) -> collect (Syntax.TJhash (len,seed,m,o) :: ts) more
+                     | PCmp (iseq, 1, v) ->
+                         let tl = List.rev ts in
+                         let m = (match tl with
+                           | [] -> if iseq then Syntax.MEq (f,v) else Syntax.MNeq (f,v)
+                           | _ -> Syntax.MTransform (f, tl, not iseq, v)) in
+                         go (m :: matches) stmts more
+                     | PRange (iseq, 1, words) when ts = [] ->
+                         let n = List.length words in
+                         if n land 1 <> 0 then raise (Unsupported "range-odd-words");
+                         let lo = bytes_of_hexwords (List.filteri (fun i _ -> i < n/2) words)
+                         and hi = bytes_of_hexwords (List.filteri (fun i _ -> i >= n/2) words) in
+                         go (Syntax.MRange (f, not iseq, lo, hi) :: matches) stmts more
+                     | PLookup (1, name, neg) when ts = [] ->
+                         go (Syntax.MConcatSet ([f], neg, name, []) :: matches) stmts more
+                     | PRange _ -> raise (Unsupported "transform-then-range")
+                     | PLookup _ -> raise (Unsupported "transform-then-lookup")
+                     | PBitwise _ | PShift _ | PByteorder _ | PJhash _ | PCmp _ ->
+                         raise (Unsupported "reg!=1")
+                     | _ -> raise (Unsupported "load-not-followed-by-test"))
+                  | [] -> raise (Unsupported "dangling-load")
+                in collect [] rest)
        | _ -> raise (Unsupported "test-without-load"))
   in go [] [] lines
 

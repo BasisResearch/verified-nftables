@@ -29,8 +29,8 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
       eval_range (if neg then CNe else CEq) (field_value f p) lo hi
   | MMasked f neg mask xor v =>
       eval_cmp (if neg then CNe else CEq) (data_bitops (field_value f p) mask xor) v
-  | MSet f neg _ elems =>
-      xorb neg (data_mem (field_value f p) elems)
+  | MConcatSet fields neg _ elems =>
+      xorb neg (data_mem (concat (map (fun f => field_value f p) fields)) elems)
   | MTransform f ts neg v =>
       eval_cmp (if neg then CNe else CEq) (apply_transforms ts (field_value f p)) v
   | MLimit spec => pkt_limit p spec
@@ -97,8 +97,8 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       run_rule (set_reg rf dst (data_byteorder h sz len (rf src))) rest p
   | IJhash dst src l s m o :: rest =>
       run_rule (set_reg rf dst (data_jhash l s m o (rf src))) rest p
-  | ILookup src _ neg elems :: rest =>
-      if xorb neg (data_mem (rf src) elems) then run_rule rf rest p else None
+  | ILookup srcs _ neg elems :: rest =>
+      if xorb neg (data_mem (concat (map rf srcs)) elems) then run_rule rf rest p else None
   | ILimit spec :: rest =>
       if pkt_limit p spec then run_rule rf rest p else None   (* over-limit breaks *)
   | ICounter _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)

@@ -139,7 +139,8 @@ Inductive matchcond : Type :=
 | MNeq    (f : field) (v : data)
 | MRange  (f : field) (neg : bool) (lo hi : data)
 | MMasked (f : field) (neg : bool) (mask xor v : data)   (* (field & mask) ^ xor cmp v *)
-| MSet    (f : field) (neg : bool) (name : string) (elems : list data) (* field [!]in set *)
+| MConcatSet (fields : list field) (neg : bool) (name : string) (elems : list data)
+                            (* (concatenation of [fields]) [!]in a set/map *)
 | MTransform (f : field) (ts : list transform) (neg : bool) (v : data) (* cmp after transforms *)
 | MLimit  (spec : limit_spec).  (* stateful rate limit; passes per the packet oracle *)
 

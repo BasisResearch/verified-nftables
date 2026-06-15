@@ -40,10 +40,12 @@ Inductive instr : Type :=
 | IBitShift    (dst src : reg) (shl : bool) (amt : nat) (* dst = src >>/<< amt *)
 | IByteorder   (dst src : reg) (hton : bool) (size len : nat)
 | IJhash       (dst src : reg) (len seed modulus offset : nat)
-| ILookup      (src : reg) (name : string) (neg : bool) (elems : list data)
-                                          (* set membership; [elems] is the set's
-                                             contents, carried for semantics and
-                                             not rendered (it lives in NEWSET) *)
+| ILookup      (srcs : list reg) (name : string) (neg : bool) (elems : list data)
+                                          (* set membership over the concatenation
+                                             of [srcs] (one reg per concatenated
+                                             field; rendered at [hd srcs]); [elems]
+                                             is the set contents, carried for
+                                             semantics and not rendered (NEWSET) *)
 | ILimit       (spec : limit_spec)       (* rate limit (can break the rule) *)
 | ICounter     (pkts bytes : nat)        (* verdict-neutral statements *)
 | INotrack
@@ -66,6 +68,12 @@ Definition set_reg (rf : regfile) (r : reg) (d : data) : regfile :=
 
 Lemma set_reg_same : forall rf r d, set_reg rf r d r = d.
 Proof. intros. unfold set_reg. now rewrite Nat.eqb_refl. Qed.
+
+Lemma set_reg_other : forall rf r d r', r <> r' -> set_reg rf r d r' = rf r'.
+Proof.
+  intros rf r d r' H. unfold set_reg.
+  destruct (Nat.eqb r r') eqn:E; [apply Nat.eqb_eq in E; contradiction | reflexivity].
+Qed.
 
 Definition eval_cmp (op : cmpop) (a b : data) : bool :=
   match op with

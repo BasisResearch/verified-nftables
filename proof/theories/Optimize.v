@@ -40,6 +40,7 @@ Proof.
     try (apply list_eq_dec; apply Nat.eq_dec);
     try (apply list_eq_dec; apply list_eq_dec; apply Nat.eq_dec);
     try (apply list_eq_dec; apply transform_eq_dec);
+    try (apply list_eq_dec; apply field_eq_dec);
     try apply field_eq_dec;
     try apply Bool.bool_dec;
     try apply string_dec;

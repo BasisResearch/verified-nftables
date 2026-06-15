@@ -5,7 +5,7 @@
     against the immediate, and the rule's verdict becomes a trailing
     [immediate].  Register 1 is reused across matches, exactly as nft does. *)
 
-From Stdlib Require Import List.
+From Stdlib Require Import List PeanoNat.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode.
 Import ListNotations.
 
@@ -35,6 +35,34 @@ Fixpoint compile_transforms (ts : list transform) : list instr :=
   | t :: ts'  => compile_transform t :: compile_transforms ts'
   end.
 
+(** ** Register allocation for concatenated lookup keys.
+
+    nftables loads each concatenated field into its own 4-byte-aligned register
+    "slot": slot 0 is displayed as reg 1, slot s>0 as reg 8+s.  A field of [len]
+    bytes occupies [ceil(len/4)] slots (>=1).  The lookup then reads the
+    concatenation starting at reg 1.  We reproduce this allocation exactly so the
+    emitted bytecode is byte-identical to nft. *)
+Definition load_width (ld : loaddesc) : nat :=
+  match ld with
+  | LPayload _ _ len   => len
+  | LExthdr _ _ _ len  => len
+  | _                  => 4
+  end.
+
+Definition field_slots (f : field) : nat :=
+  Nat.max 1 (Nat.div (load_width (field_load f) + 3) 4).
+
+Definition reg_of_slot (s : nat) : reg := if Nat.eqb s 0 then 1 else 8 + s.
+
+Fixpoint alloc_regs (slot : nat) (fields : list field) : list (field * reg) :=
+  match fields with
+  | []        => []
+  | f :: rest => (f, reg_of_slot slot) :: alloc_regs (slot + field_slots f) rest
+  end.
+
+Definition load_fields (pairs : list (field * reg)) : list instr :=
+  map (fun fr => compile_load (field_load (fst fr)) (snd fr)) pairs.
+
 Definition compile_match (m : matchcond) : list instr :=
   match m with
   | MEq  f v => [compile_load (field_load f) 1; ICmp CEq 1 v]
@@ -44,8 +72,9 @@ Definition compile_match (m : matchcond) : list instr :=
   | MMasked f neg mask xor v =>
       [compile_load (field_load f) 1; IBitwise 1 1 mask xor;
        ICmp (if neg then CNe else CEq) 1 v]
-  | MSet f neg name elems =>
-      [compile_load (field_load f) 1; ILookup 1 name neg elems]
+  | MConcatSet fields neg name elems =>
+      load_fields (alloc_regs 0 fields) ++
+      [ILookup (map snd (alloc_regs 0 fields)) name neg elems]
   | MTransform f ts neg v =>
       compile_load (field_load f) 1 :: compile_transforms ts ++
       [ICmp (if neg then CNe else CEq) 1 v]
