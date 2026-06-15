@@ -5,12 +5,13 @@
 #   make difftest   compile a ruleset and diff our bytecode against real `nft`
 #   make lib        build the reusable `nftc` library
 #   make example    build+run the standalone library-consumer demo
+#   make semtest    run the extracted semantics+VM on packets (theorem witness)
 #   make clean      remove build artifacts
 
 ROCQBIN ?=
 COQMAKE  = CoqMakefile
 
-.PHONY: all proofs glue lib example difftest corpus validate clean
+.PHONY: all proofs glue lib example semtest difftest corpus validate clean
 
 all: proofs glue
 
@@ -21,6 +22,11 @@ lib: proofs
 # Build and run the standalone library-consumer example.
 example: proofs
 	cd extracted && dune exec ./example.exe
+
+# Build+run the executable witness of compile_chain_correct / optimize_chain_correct:
+# run the extracted DSL semantics, bytecode VM, and compiler on concrete packets.
+semtest: proofs
+	cd extracted && dune exec ./semtest.exe
 
 # Build/check every .v listed in _CoqProject; Extract.v writes extracted/*.ml.
 proofs: $(COQMAKE)

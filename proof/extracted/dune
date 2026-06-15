@@ -5,7 +5,7 @@
 ; machine-generated extraction output.
 (library
  (name nftc)
- (modules (:standard \ glue corpus_test example))
+ (modules (:standard \ glue corpus_test example semtest))
  (wrapped false)
  (flags (:standard -w -a)))
 
@@ -21,3 +21,11 @@
  (name example)
  (modules example)
  (libraries nftc))
+
+; An executable witness of compile_chain_correct / optimize_chain_correct: run
+; the extracted DSL semantics, bytecode VM, and compiler on concrete packets.
+(executable
+ (name semtest)
+ (modules semtest)
+ (libraries nftc)
+ (flags (:standard -w -a)))

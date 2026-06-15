@@ -15,11 +15,14 @@ From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile O
 Extraction Language OCaml.
 Set Extraction Output Directory "extracted".
 
-(* Only the control-plane compiler/optimizer and the field table are needed by
-   the glue; the packet semantics ([eval_chain], with its byte-level bit ops) is
-   not extracted. *)
+(* The control-plane compiler/optimizer and the field table are what the glue
+   needs; we also extract the packet semantics ([eval_chain] and the bytecode VM
+   [run_chain]) so an executable test can witness [compile_chain_correct] on
+   concrete packets (semtest.ml). *)
 Separate Extraction
   compile_chain
   optimize_chain
   field_load
-  all_fields.
+  all_fields
+  eval_chain
+  run_chain.
