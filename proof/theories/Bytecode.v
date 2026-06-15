@@ -45,6 +45,7 @@ Inductive instr : Type :=
 | ILast        (info : string)
 | IDynset      (op name : string) (keyregs : list reg) (datareg : option reg)
 | IExthdrReset (proto : string) (htype : nat)
+| IDup         (devreg addrreg : option reg)
 | ICtDirLoad   (key dir : string) (dst : reg)
 | IXfrmLoad    (dir : string) (spnum : nat) (key : string) (dst : reg)
 | IInnerLoad   (typ hdrsize flags : nat) (innerdesc : string) (width : nat) (dst : reg)

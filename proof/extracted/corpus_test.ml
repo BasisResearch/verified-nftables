@@ -63,6 +63,7 @@ type pinst =
   | PLast    of string                             (* `last` info (count or "never") *)
   | PDynset  of string * string * int * int option (* op, set name, key reg, data reg *)
   | PExthdrReset of string * int                   (* proto, htype *)
+  | PDup     of int option * int option            (* dev reg, addr reg *)
   | PImm     of Verdict.verdict
 
 let rec take_until tok = function
@@ -268,6 +269,14 @@ let parse_line line : pinst =
   | ["dynset"; op; "reg_key"; k; "set"; name; "sreg_data"; d] ->
       PDynset (op, name, int_of_string k, Some (int_of_string d))
   | ["exthdr"; "reset"; proto; h] -> PExthdrReset (proto, int_of_string h)
+  | "dup"::rest ->
+      let rec p dev addr = function
+        | "sreg_dev"::r::t -> p (Some (int_of_string r)) addr t
+        | "sreg_addr"::r::t -> p dev (Some (int_of_string r)) t
+        | [] -> (dev, addr)
+        | _ -> raise (Unsupported "dup:form") in
+      let (dev, addr) = p None None rest in
+      PDup (dev, addr)
   | ["reject"; "type"; t; "code"; c] ->
       PImm (Verdict.Reject (int_of_string t, int_of_string c))
   | "queue"::"num"::spec::flags ->
@@ -361,6 +370,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
                      | PTproxy (fam,ar,pr) ->
                          if more <> [] then raise (Unsupported "trailing-after-tproxy");
                          mk_tproxy matches stmts (List.rev imms) (fam,ar,pr)
+                     | PDup (dev,addr) ->
+                         (* dup is verdict-neutral: the rule continues after it *)
+                         go matches (Syntax.SDup (List.rev imms, dev, addr) :: stmts) more
                      | _ -> raise (Unsupported "imm-not-nat"))
                   | [] -> raise (Unsupported "imm-dangling")
                 in gnat [(r, v)] rest)

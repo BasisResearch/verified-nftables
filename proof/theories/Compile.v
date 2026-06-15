@@ -141,6 +141,8 @@ Definition compile_stmt (s : stmt) : list instr :=
          (match skipn (length keyfs) (map snd pairs) with
           | [] => None | r :: _ => Some r end)]
   | SExthdrReset proto htype => [IExthdrReset proto htype]
+  | SDup imms dev addr =>
+      map (fun rv => IImmediateData (fst rv) (snd rv)) imms ++ [IDup dev addr]
   end.
 
 Definition verdict_tail (v : verdict) : list instr :=

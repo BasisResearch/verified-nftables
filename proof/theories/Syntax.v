@@ -195,8 +195,11 @@ Inductive stmt : Type :=
 | SLast    (info : string)                  (* `last used` accounting; verbatim *)
 | SDynset  (op name : string) (keyfs dataf : list field)
                             (* add/delete [keyfs] (-> [dataf] for a map) to a set *)
-| SExthdrReset (proto : string) (htype : nat).
+| SExthdrReset (proto : string) (htype : nat)
                             (* reset (clear) a TCP option; verdict-neutral *)
+| SDup (imms : list (nat * data)) (devreg addrreg : option nat).
+                            (* duplicate the packet to a device/address loaded by
+                               [imms]; verdict-neutral (the dup is a side effect) *)
                             (* dynamically add/delete the concatenation of [keyfs]
                                to a set; verdict-neutral (the mutation is a side
                                effect outside the single-packet model) *)

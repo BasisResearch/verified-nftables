@@ -242,6 +242,17 @@ Proof.
     rewrite Hr. cbn [app run_rule]. eexists; reflexivity.
 Qed.
 
+(** Operand immediates are verdict-neutral: running them leaves the tail reached
+    from some register file. *)
+Lemma run_imms_through : forall imms rf tail p,
+  exists rf', run_rule rf (map (fun rv => IImmediateData (fst rv) (snd rv)) imms ++ tail) p
+            = run_rule rf' tail p.
+Proof.
+  induction imms as [| [r v] rest IH]; intros rf tail p.
+  - exists rf. reflexivity.
+  - cbn [map fst snd app run_rule]. apply IH.
+Qed.
+
 Lemma run_stmt_exists : forall s rf rest p,
   exists rf', run_rule rf (compile_stmt s ++ rest) p = run_rule rf' rest p.
 Proof.
@@ -259,6 +270,10 @@ Proof.
   - (* SDynset: load the concat key fields, then the verdict-neutral IDynset *)
     cbn [compile_stmt]. rewrite <- app_assoc. rewrite run_load_fields.
     cbn [app run_rule]. eexists; reflexivity.
+  - (* SDup: operand immediates, then the verdict-neutral IDup *)
+    edestruct (run_imms_through imms rf (IDup devreg addrreg :: rest) p) as [rf' Hr].
+    exists rf'. cbn [compile_stmt]. rewrite <- app_assoc. cbn [app].
+    rewrite Hr. cbn [run_rule]. reflexivity.
 Qed.
 
 Lemma run_stmts_exists : forall ss rf tail p,

@@ -252,6 +252,9 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.ILast info -> Printf.sprintf "[ last %s ]" info
   | Bytecode.IExthdrReset (proto,h) ->
       Printf.sprintf "[ exthdr reset %s %d ]" proto h
+  | Bytecode.IDup (dev,addr) ->
+      let opt label = function Some r -> Printf.sprintf " %s %d" label r | None -> "" in
+      Printf.sprintf "[ dup%s%s ]" (opt "sreg_addr" addr) (opt "sreg_dev" dev)
   | Bytecode.IDynset (op,name,krs,dreg) ->
       let r = nreg (match krs with x :: _ -> x | [] -> 1) in
       let dat = (match dreg with Some d -> Printf.sprintf " sreg_data %d" (nreg d) | None -> "") in
