@@ -229,6 +229,8 @@ let render_instr (i : Bytecode.instr) : string = match i with
       Printf.sprintf
         "[ payload write reg %d => %db @ %s header + %d csum_type %d csum_off %d csum_flags 0x%x ]"
         src len (name_of_base b) off ct co cf
+  | Bytecode.ILookupVal (key,name,dreg,_) ->
+      Printf.sprintf "[ lookup reg %d set %s dreg %d ]" (nreg key) name dreg
   | Bytecode.IMetaSet (k,src) ->
       Printf.sprintf "[ meta set %s with reg %d ]" (name_of_meta k) src
   | Bytecode.ICtSet (k,src) ->
@@ -283,6 +285,7 @@ type pinst =
                             (* payload write: src reg, base, off, len, ctype, coff, cflags *)
   | PMetaSet of Packet.meta_key * int
   | PCtSet   of Packet.ct_key * int
+  | PMapVal  of int * string * int               (* key reg, map name, dreg *)
   | PNat     of string * string * int option * int option * int option * int option * int
                             (* kind, family, amin, amax, pmin, pmax, flags *)
   | PImm     of Verdict.verdict
@@ -374,6 +377,7 @@ let parse_line line : pinst =
       (match rest with
        | [] -> PLookup (int_of_string r, name, false)
        | ["dreg"; "0"] -> PVmap (int_of_string r, name)
+       | ["dreg"; d] -> PMapVal (int_of_string r, name, int_of_string d)
        | "dreg"::_ -> raise (Unsupported "lookup:map")
        | [h] when String.length h >= 2 && String.sub h 0 2 = "0x" ->
            PLookup (int_of_string r, name, true)
@@ -565,6 +569,17 @@ let rule_of_block (lines : string list) : Syntax.rule =
                      | PVmap (1, name) when ts = [] ->
                          if more <> [] then raise (Unsupported "trailing-after-vmap");
                          mk_vmap matches stmts [f] name
+                     (* load + map lookup (dreg 1) feeding a set = a map value *)
+                     | PMapVal (1, name, 1) when ts = [] ->
+                         (match more with
+                          | l3 :: more3 ->
+                            (match parse_line l3 with
+                             | PMetaSet (k, 1) ->
+                                 go matches (Syntax.SMetaSet (k, Syntax.VMap (f, name, [])) :: stmts) more3
+                             | PCtSet (k, 1) ->
+                                 go matches (Syntax.SCtSet (k, Syntax.VMap (f, name, [])) :: stmts) more3
+                             | _ -> raise (Unsupported "map-not-set"))
+                          | [] -> raise (Unsupported "map-dangling"))
                      (* load (+ transforms) feeding a set/mangle = a value statement *)
                      | PMetaSet (k, 1) ->
                          go matches (Syntax.SMetaSet (k, Syntax.VField (f, List.rev ts)) :: stmts) more

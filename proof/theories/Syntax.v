@@ -154,7 +154,9 @@ Inductive matchcond : Type :=
     value (optionally transformed) computed into register 1. *)
 Inductive vsrc : Type :=
 | VImm   (v : data)
-| VField (f : field) (ts : list transform).
+| VField (f : field) (ts : list transform)
+| VMap   (f : field) (name : string) (entries : list (data * data)).
+                            (* value looked up by [field] in a named map *)
 
 Inductive stmt : Type :=
 | SCounter (pkts bytes : nat)

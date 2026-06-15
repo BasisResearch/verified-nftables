@@ -33,6 +33,13 @@ Qed.
 Definition data_mem (x : data) (s : list data) : bool :=
   existsb (data_eqb x) s.
 
+(** Map lookup: the data value a key maps to ([] if absent). *)
+Fixpoint map_lookup_data (k : data) (entries : list (data * data)) : data :=
+  match entries with
+  | [] => []
+  | (k', v) :: rest => if data_eqb k k' then v else map_lookup_data k rest
+  end.
+
 (** Bytewise [(a & mask) ^ xor], the operation an nftables [bitwise] expression
     performs (used to model prefix/masked matches such as a /24). *)
 Definition byte_and (a b : byte) : byte := Nat.land a b.

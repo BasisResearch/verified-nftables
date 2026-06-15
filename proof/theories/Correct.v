@@ -220,11 +220,12 @@ Qed.
 Lemma run_vsrc_exists : forall vs rf rest p,
   exists rf', run_rule rf (compile_vsrc vs ++ rest) p = run_rule rf' rest p.
 Proof.
-  destruct vs as [v | f ts]; intros rf rest p.
+  destruct vs as [v | f ts | f name entries]; intros rf rest p.
   - exists (set_reg rf 1 v). reflexivity.
   - edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p)) rest p)
       as [rf' [_ Hr]].
     exists rf'. cbn [compile_vsrc app]. rewrite compile_load_correct. exact Hr.
+  - cbn [compile_vsrc app]. rewrite compile_load_correct. cbn [run_rule]. eexists; reflexivity.
 Qed.
 
 Lemma run_stmt_exists : forall s rf rest p,

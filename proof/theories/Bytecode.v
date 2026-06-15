@@ -54,6 +54,9 @@ Inductive instr : Type :=
                                           (* payload mangle (verdict-neutral) *)
 | IMetaSet     (k : meta_key) (src : reg)   (* meta set (verdict-neutral) *)
 | ICtSet       (k : ct_key) (src : reg)     (* ct set (verdict-neutral) *)
+| ILookupVal   (key : reg) (name : string) (dreg : reg) (entries : list (data * data))
+                                          (* map lookup (lookup .. dreg N>0):
+                                             loads the mapped value into [dreg] *)
 | INat         (kind family : string) (amin amax pmin pmax : option reg)
                (flags : nat)   (* terminal NAT / masquerade / redirect *)
 | ILimit       (spec : limit_spec)       (* rate limit (can break the rule) *)
