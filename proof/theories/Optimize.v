@@ -1,18 +1,25 @@
 (** * Optimize: verified rewrites on the declarative DSL.
 
-    Two semantics-preserving optimizations (the kind a firewall-minimizer such as
+    Four semantics-preserving optimizations (the kind a firewall-minimizer such as
     diekmann's Iptables_Semantics performs), proved correct against the *same*
     [eval_chain] semantics used for the compiler:
 
-      1. [dce] — dead-rule elimination: once a rule matches every packet and is
+      1. [dedup_rule] — remove duplicate match conditions within a rule (a
+         conjunction is idempotent), shrinking the emitted bytecode.
+
+      2. [simplify_rule] — rewrite a singleton range [lo <= x <= lo] to an
+         equality test (a [range] expression becomes a single [cmp]).
+
+      3. [prune_noops] — delete rules that have no matches, no statements, and a
+         [Continue] outcome (they never affect any verdict).
+
+      4. [dce] — dead-rule elimination: once a rule matches every packet and is
          terminal (no match conditions, verdict Accept/Drop), all later rules are
          unreachable and are dropped.
 
-      2. [dedup_rule] — remove duplicate match conditions within a rule (a
-         conjunction is idempotent), shrinking the emitted bytecode.
-
-    [optimize_chain] runs dedup on every rule, then DCE; the top-level theorem
-    [optimize_chain_correct] shows the packet->verdict function is unchanged. *)
+    [optimize_chain] runs dedup+simplify on every rule, prunes no-ops, then DCE;
+    the theorem [optimize_chain_correct] shows the packet->verdict function is
+    unchanged. *)
 
 From Stdlib Require Import List PeanoNat Bool String.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics.
@@ -202,17 +209,61 @@ Proof.
   - apply IH.
 Qed.
 
+(** ** Optimization 4: no-op rule removal.
+
+    A rule with no matches, no statements, a [Continue] verdict, and no
+    map/nat/tproxy outcome contributes nothing to any packet's verdict (it is
+    applied to every packet but always falls through), so it can be deleted
+    outright.  Unlike [dce] (which drops rules *after* an unconditional terminal),
+    this removes the no-op rule itself — useful for cleaning up after other
+    rewrites.  The [stmts] emptiness is required so a counter/log-only rule, whose
+    side effect we must keep, is never pruned. *)
+Definition is_noop (r : rule) : bool :=
+  is_empty (r_matches r) && is_empty (r_stmts r) &&
+  (match r_verdict r with Continue => true | _ => false end) &&
+  (match r_vmap r with None => true | Some _ => false end) &&
+  (match r_nat r with None => true | Some _ => false end) &&
+  (match r_tproxy r with None => true | Some _ => false end).
+
+Definition prune_noops (rs : list rule) : list rule :=
+  filter (fun r => negb (is_noop r)) rs.
+
+Lemma eval_rules_prune_noops : forall rs p,
+  eval_rules (prune_noops rs) p = eval_rules rs p.
+Proof.
+  induction rs as [| r rs IH]; intros p; [reflexivity |].
+  unfold prune_noops in *. cbn [filter]. destruct (is_noop r) eqn:Hn; cbn [negb].
+  - (* r is a no-op: it falls through, so dropping it preserves the result *)
+    rewrite IH. symmetry.
+    unfold is_noop in Hn.
+    apply andb_true_iff in Hn as [Hn Htp].
+    apply andb_true_iff in Hn as [Hn Hnat].
+    apply andb_true_iff in Hn as [Hn Hvm].
+    apply andb_true_iff in Hn as [Hm Hv].
+    cbn [eval_rules]. unfold rule_applies, outcome.
+    destruct (r_matches r) as [| m ms]; [| discriminate].
+    destruct (r_nat r); [discriminate |].
+    destruct (r_tproxy r); [discriminate |].
+    destruct (r_vmap r); [discriminate |].
+    destruct (r_verdict r); cbn in Hv |- *; try discriminate Hv; reflexivity.
+  - cbn [eval_rules]. destruct (rule_applies r p).
+    + destruct (outcome r p) as [v |].
+      * destruct (terminal v); [reflexivity | apply IH].
+      * apply IH.
+    + apply IH.
+Qed.
+
 (** ** The combined pass and its correctness. *)
 
 Definition optimize_chain (c : chain) : chain :=
   {| c_policy := c_policy c;
-     c_rules  := dce (map (fun r => simplify_rule (dedup_rule r)) (c_rules c)) |}.
+     c_rules  := dce (prune_noops (map (fun r => simplify_rule (dedup_rule r)) (c_rules c))) |}.
 
 Theorem optimize_chain_correct : forall c p,
   eval_chain (optimize_chain c) p = eval_chain c p.
 Proof.
   intros c p. unfold eval_chain, optimize_chain. cbn [c_rules c_policy].
-  rewrite eval_rules_dce.
+  rewrite eval_rules_dce, eval_rules_prune_noops.
   rewrite <- (map_map dedup_rule simplify_rule).
   rewrite eval_rules_map_simplify, eval_rules_map_dedup. reflexivity.
 Qed.
