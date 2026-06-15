@@ -134,7 +134,12 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       assoc_verdict (concat (map rf srcs)) entries   (* verdict from the map, or None *)
   | IImmediateData dst v :: rest =>
       run_rule (set_reg rf dst v) rest p
-  | IPayloadWrite _ _ _ _ _ _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)
+  (* Set/mangle: verdict-neutral.  The written value (the operand register) is a
+     packet/meta/ct side effect outside the single-packet verdict model, so it is
+     dropped here.  The proof therefore certifies these statements preserve the
+     verdict; that the emitted bytecode writes the *right* value is covered by the
+     differential corpus, not by Rocq. *)
+  | IPayloadWrite _ _ _ _ _ _ _ :: rest => run_rule rf rest p
   | IMetaSet _ _ :: rest => run_rule rf rest p
   | ICtSet _ _ :: rest => run_rule rf rest p
   | INat _ _ _ _ _ _ _ :: _ => Some Accept   (* terminal *)
