@@ -135,6 +135,7 @@ Definition compile_stmt (s : stmt) : list instr :=
   | SDynset op name keyfs =>
       load_fields (alloc_regs 0 keyfs) ++
       [IDynset op name (map snd (alloc_regs 0 keyfs))]
+  | SExthdrReset proto htype => [IExthdrReset proto htype]
   end.
 
 Definition verdict_tail (v : verdict) : list instr :=

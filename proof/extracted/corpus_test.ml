@@ -62,6 +62,7 @@ type pinst =
   | PSynproxy of int * int                         (* mss, wscale *)
   | PLast    of string                             (* `last` info (count or "never") *)
   | PDynset  of string * string * int              (* op, set name, key reg *)
+  | PExthdrReset of string * int                   (* proto, htype *)
   | PImm     of Verdict.verdict
 
 let rec take_until tok = function
@@ -263,6 +264,7 @@ let parse_line line : pinst =
   | ["synproxy"; "mss"; m; "wscale"; w] -> PSynproxy (int_of_string m, int_of_string w)
   | ["last"; info] -> PLast info
   | ["dynset"; op; "reg_key"; k; "set"; name] -> PDynset (op, name, int_of_string k)
+  | ["exthdr"; "reset"; proto; h] -> PExthdrReset (proto, int_of_string h)
   | ["reject"; "type"; t; "code"; c] ->
       PImm (Verdict.Reject (int_of_string t, int_of_string c))
   | "queue"::"num"::spec::flags ->
@@ -351,6 +353,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
        | PObjref (t,n) -> go matches (Syntax.SObjref (t,n) :: stmts) rest
        | PSynproxy (m,w) -> go matches (Syntax.SSynproxy (m,w) :: stmts) rest
        | PLast info -> go matches (Syntax.SLast info :: stmts) rest
+       | PExthdrReset (p,h) -> go matches (Syntax.SExthdrReset (p,h) :: stmts) rest
        | PLimit spec ->
            if stmts <> [] then raise (Unsupported "limit-after-stmt");
            go (Syntax.MLimit spec :: matches) stmts rest
