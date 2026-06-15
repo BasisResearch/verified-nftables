@@ -189,6 +189,10 @@ let parse_line line : pinst =
       let hton = String.length ftok >= 4 && String.sub ftok 0 4 = "hton" in
       PByteorder (int_of_string dst, only_digits src, hton,
                   only_digits size, only_digits len)
+  | "hash"::"reg"::d::"="::"symhash()"::"%"::"mod"::m::rest ->
+      let off = (match rest with [] -> 0 | ["offset"; o] -> int_of_string o
+                 | _ -> raise (Unsupported "hash:opts")) in
+      PLoad (Printf.sprintf "sym:%s:%d" m off, int_of_string d)
   | "hash"::"reg"::d::"="::jr::s::len::seed::"%"::"mod"::m::rest
     when String.length jr >= 5 && String.sub jr 0 5 = "jhash" ->
       let off = (match rest with [] -> 0 | ["offset"; o] -> int_of_string o

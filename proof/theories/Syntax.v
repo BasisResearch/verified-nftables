@@ -30,6 +30,7 @@ Inductive loaddesc : Type :=
 | LCtDir   (key dir : string)
 | LXfrm    (dir : string) (spnum : nat) (key : string)
 | LTunnel  (key : string)
+| LSymhash (modulus offset : nat)
 | LInner   (typ hdrsize flags : nat) (innerdesc : string) (width : nat)
 | LPayload (b : pbase) (off len : nat).
 
@@ -67,6 +68,7 @@ Inductive field : Type :=
 | FCtDir (key dir : string)
 | FXfrm (dir : string) (spnum : nat) (key : string)
 | FTunnel (key : string)
+| FSymhash (modulus offset : nat)
 | FInner (typ hdrsize flags : nat) (innerdesc : string) (width : nat).
 
 (** The denotation of each field as a load. *)
@@ -109,6 +111,7 @@ Definition field_load (f : field) : loaddesc :=
   | FFib sel res => LFib sel res
   | FCtDir key dir => LCtDir key dir
   | FTunnel key => LTunnel key
+  | FSymhash m o => LSymhash m o
   | FInner t h fl desc w => LInner t h fl desc w
   end.
 
@@ -139,6 +142,7 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
   | LCtDir key dir  => pkt_ctdir p key dir
   | LXfrm dir sp key => pkt_xfrm p dir sp key
   | LTunnel key      => pkt_tunnel p key
+  | LSymhash m o     => pkt_symhash p m o
   | LInner t h fl desc _ => pkt_inner p t h fl desc
   | LPayload b o l  => read_payload b o l p
   end.
