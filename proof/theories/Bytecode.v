@@ -49,6 +49,7 @@ Inductive instr : Type :=
 | IExthdrReset (proto : string) (htype : nat)
 | IDup         (devreg addrreg : option reg)
 | IObjrefMap   (sregs : list reg) (name : string)
+| ICtSetDir    (key dir : string) (src : reg)
 | ICtDirLoad   (key dir : string) (dst : reg)
 | IXfrmLoad    (dir : string) (spnum : nat) (key : string) (dst : reg)
 | ITunnelLoad  (key : string) (dst : reg)

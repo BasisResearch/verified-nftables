@@ -202,6 +202,7 @@ Inductive stmt : Type :=
                                is a side effect outside the model) *)
 | SMetaSet (k : meta_key) (vs : vsrc)   (* meta set <k> with a value *)
 | SCtSet   (k : ct_key) (vs : vsrc)     (* ct set <k> with a value *)
+| SCtSetDir (key dir : string) (vs : vsrc)  (* directional ct set (zone, ...) *)
 | SObjref  (otype : nat) (oname : string)   (* reference a named stateful object *)
 | SSynproxy (mss wscale : nat)              (* SYN-proxy (verdict-neutral here) *)
 | SLast    (info : string)                  (* `last used` accounting; verbatim *)

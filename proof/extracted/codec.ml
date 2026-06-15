@@ -305,6 +305,8 @@ let render_instr (i : Bytecode.instr) : string = match i with
       Printf.sprintf "[ fwd%s%s%s ]" (opt "sreg_dev" dev) (opt "sreg_addr" addr) (opt "nfproto" nfp)
   | Bytecode.IMetaSet (k,src) ->
       Printf.sprintf "[ meta set %s with reg %d ]" (name_of_meta k) src
+  | Bytecode.ICtSetDir (key,dir,src) ->
+      Printf.sprintf "[ ct set %s with reg %d , dir %s ]" key src dir
   | Bytecode.ICtSet (k,src) ->
       Printf.sprintf "[ ct set %s with reg %d ]" (name_of_ct k) src
   | Bytecode.INat (kind,family,amin,amax,pmin,pmax,flags) ->

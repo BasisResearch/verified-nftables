@@ -138,6 +138,7 @@ Definition compile_stmt (s : stmt) : list instr :=
       compile_vsrc vs ++ [IPayloadWrite 1 b off len ct co cf]
   | SMetaSet k vs => compile_vsrc vs ++ [IMetaSet k 1]
   | SCtSet k vs   => compile_vsrc vs ++ [ICtSet k 1]
+  | SCtSetDir key dir vs => compile_vsrc vs ++ [ICtSetDir key dir 1]
   | SObjref o n   => [IObjref o n]
   | SSynproxy m w => [ISynproxy m w]
   | SLast info    => [ILast info]

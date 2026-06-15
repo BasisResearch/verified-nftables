@@ -274,6 +274,9 @@ Proof.
   - (* SCtSet *) edestruct (run_vsrc_exists vs rf (ICtSet k 1 :: rest) p) as [rf' Hr].
     exists rf'. cbn [compile_stmt]. rewrite <- app_assoc. cbn [app].
     rewrite Hr. reflexivity.
+  - (* SCtSetDir *) edestruct (run_vsrc_exists vs rf (ICtSetDir key dir 1 :: rest) p) as [rf' Hr].
+    exists rf'. cbn [compile_stmt]. rewrite <- app_assoc. cbn [app].
+    rewrite Hr. reflexivity.
   - (* SDynset: load the concat key fields, then the verdict-neutral IDynset *)
     cbn [compile_stmt]. rewrite <- app_assoc. rewrite run_load_fields.
     cbn [app run_rule]. eexists; reflexivity.

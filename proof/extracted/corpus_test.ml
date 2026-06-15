@@ -55,6 +55,7 @@ type pinst =
                             (* payload write: src reg, base, off, len, ctype, coff, cflags *)
   | PMetaSet of Packet.meta_key * int
   | PCtSet   of Packet.ct_key * int
+  | PCtSetDir of string * string * int             (* key, dir, src reg *)
   | PMapVal  of int * string * int               (* key reg, map name, dreg *)
   | PNat     of string * string * int option * int option * int option * int option * int
                             (* kind, family, amin, amax, pmin, pmax, flags *)
@@ -231,6 +232,8 @@ let parse_line line : pinst =
       (match meta_of_name name with
        | Some k -> PMetaSet (k, int_of_string r)
        | None -> raise (Unsupported ("metaset:"^name)))
+  | "ct"::"set"::key::"with"::"reg"::r::","::"dir"::dir::[] ->
+      PCtSetDir (key, dir, int_of_string r)
   | "ct"::"set"::name::"with"::"reg"::r::[] ->
       (match ct_of_name name with
        | Some k -> PCtSet (k, int_of_string r)
@@ -377,7 +380,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
            mk_nat body [] (k,f,a,ax,pm,px,fl)
        | PImmData (r, v) ->
            let is_set l = (try (match parse_line l with
-                                | PWrite _ | PMetaSet _ | PCtSet _ -> true | _ -> false)
+                                | PWrite _ | PMetaSet _ | PCtSet _ | PCtSetDir _ -> true | _ -> false)
                            with _ -> false) in
            (match rest with
             | l2 :: more2 when r = 1 && is_set l2 ->   (* immediate + a set/write = mangle *)
@@ -386,6 +389,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                      go (bs body (Syntax.SMangle (Syntax.VImm v, b, off, len, ct, co, cf))) more2
                  | PMetaSet (k, 1) -> go (bs body (Syntax.SMetaSet (k, Syntax.VImm v))) more2
                  | PCtSet (k, 1) -> go (bs body (Syntax.SCtSet (k, Syntax.VImm v))) more2
+                 | PCtSetDir (key, dir, 1) -> go (bs body (Syntax.SCtSetDir (key, dir, Syntax.VImm v))) more2
                  | _ -> raise (Unsupported "set:reg"))
             | _ ->
                 (* otherwise: gather operand immediates, then a nat/tproxy/dup *)
@@ -535,6 +539,8 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          go (bs body (Syntax.SMetaSet (k, Syntax.VField (f, List.rev ts)))) more
                      | PCtSet (k, 1) ->
                          go (bs body (Syntax.SCtSet (k, Syntax.VField (f, List.rev ts)))) more
+                     | PCtSetDir (key, dir, 1) ->
+                         go (bs body (Syntax.SCtSetDir (key, dir, Syntax.VField (f, List.rev ts)))) more
                      | PWrite (1, b, off, len, ct, co, cf) ->
                          go (bs body (Syntax.SMangle (Syntax.VField (f, List.rev ts), b, off, len, ct, co, cf))) more
                      | PRange _ -> raise (Unsupported "range:reg")
