@@ -1,0 +1,47 @@
+* Automated verification framework
+- Input :: An existing application
+- Output :: A verified reimplementation of it with an end-to-end correctness property
+
+** Key steps
+- Set up an efficient development environment that allows for fast iteration
+  - The repo you are in already has the relevant instructions.
+- Research the existing established verification effort, identify ones that are relevant, and clone their repositories for reference
+- Understand the architecture of the project
+- Identify suitable technology and structure for the verification effort.
+  - verification vs extraction?
+  - VST vs F* vs Verus?
+  - It is okay to write untrusted glue code or do small refactoring (in the case of modifying/verifying existing code), but the glue code must be either minimal or thoroughly testable.
+- Identify the correct deployment path
+- Document the development process, reflect on the progress, and be open to significantly refactor or experiment with new approaches when stuck
+
+
+** Tips
+- Constantly assess the verification effort
+  - Is the theorem proven useful?
+  - Can the verification catch any injected bugs?
+  - Is the verification set up in a way that can plausibly achieve feature parity?
+  - Does verification result in something that can be deployed?
+  - What could have been done differently and what are the trade-offs?
+- Incrementally add more and more features instead of packing all features at once. This helps you test things quickly.
+- Make sure the project is amenable for testing. We have an existing application and differential testing is a viable way of ensuring the spec is correctly written.
+- Always search for existing tools before inventing your own
+- Avoid reimplementing a non-trivial amount of logic in unverified code when there's an option to reuse existing unverified code in the upstream implementation. Our own unverified code should be considered less trustworthy than upstream's unverified but battle-tested code.
+- It is okay to temporarily branch out and run small experimentations before re-integrating into the main branch.
+
+* Task specific information
+For this task, I would like you to formally verify nftables using VST. Prioritize on verifying the control plane that corresponds to what the =nft= command does. Keep the same API/ABI so you can reuse existing tooling as you gradually shrink the trusted computing base.
+
+A known issue with VST is that it relies on CompCert's clightgen, which only works on a subset of C programs. That's the one legit place to refactor code and build thin shims around the verified component. The C program being verified should be subject to minimal change other than simple rewriting of features that aren't supported (e.g. =goto=).
+
+** Goal for now
+(no need for VST, just Rocq)
+- Formally specify the declarative nftables DSL (tables, chains, rules).
+- Formally specify the nftables control plane bytecode (at the level of the netlink message that =nft= emits. no need to formalize netlink or any form of serialization/deserialization itself)
+- Write a verified compiler from the declarative compiler from the DSL to the control plane bytecode and show that it's semantic preserving. Both languages can be extracted to OCaml with a thin wrapper that emits netlink messages.
+- Write an optimization pass for the declarative DSL and show that it is correct.
+
+** Future goals
+Don't need to do any of these just yet, but you should keep them in mind.
+- Formally specify the bytecode data plane bytecode interpreter
+- Prove using VST that the bytecode interpreter satisfies the formal spec
+- Gradually verify the external modules. Prioritizing the ones that are most frequently used.

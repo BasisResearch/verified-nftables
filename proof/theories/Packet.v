@@ -1,0 +1,44 @@
+(** * Packet: the object both languages observe.
+
+    nftables matches inspect two kinds of data:
+      - metadata computed by the kernel (e.g. [l4proto], the L4 protocol number),
+        accessed by a [meta] expression keyed by a [meta_key];
+      - raw header bytes, accessed by a [payload] expression as
+        (base, offset, length) where base is the network or transport header.
+
+    We model a packet as a metadata function plus the network/transport header
+    byte strings.  This is faithful to how nft's bytecode reads a packet, and it
+    is the *single* packet representation used by BOTH the declarative semantics
+    and the bytecode VM, so the equivalence theorem is about real behaviour, not
+    an artefact of two different packet models. *)
+
+From Stdlib Require Import List NArith.
+From Nft Require Import Bytes.
+Import ListNotations.
+
+(** Metadata keys.  Start with [l4proto]; more keys (nfproto, iifname, ...) slot
+    in here without touching the proofs. *)
+Inductive meta_key : Type :=
+| MKl4proto.
+
+(** Payload bases: which header a [payload load] reads from. *)
+Inductive pbase : Type :=
+| PNetwork
+| PTransport.
+
+Record packet : Type := {
+  pkt_meta : meta_key -> data;   (* kernel-computed metadata *)
+  pkt_nh   : list byte;          (* network-header bytes (e.g. IPv4 header) *)
+  pkt_th   : list byte;          (* transport-header bytes (e.g. TCP header) *)
+}.
+
+(** Read [len] bytes at [off] from a header byte string. *)
+Definition slice (bs : list byte) (off len : nat) : data :=
+  firstn len (skipn off bs).
+
+(** A payload read, shared by the DSL field semantics and the bytecode VM. *)
+Definition read_payload (b : pbase) (off len : nat) (p : packet) : data :=
+  match b with
+  | PNetwork   => slice (pkt_nh p) off len
+  | PTransport => slice (pkt_th p) off len
+  end.

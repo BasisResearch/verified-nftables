@@ -1,0 +1,12 @@
+-Q theories Nft
+
+theories/Bytes.v
+theories/Packet.v
+theories/Verdict.v
+theories/Syntax.v
+theories/Bytecode.v
+theories/Semantics.v
+theories/Compile.v
+theories/Correct.v
+theories/Optimize.v
+theories/Extract.v
