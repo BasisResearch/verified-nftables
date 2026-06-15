@@ -61,10 +61,14 @@ Fixpoint assoc_verdict (key : data) (entries : list (data * verdict)) : option v
 (** A rule's outcome (when it applies): a [Some v] (verdict reached) or [None]
     (fall through), for a static verdict or a verdict-map lookup. *)
 Definition outcome (r : rule) (p : packet) : option verdict :=
-  match r_vmap r with
-  | Some vm => assoc_verdict (concat (map (fun f => field_value f p) (vm_fields vm)))
-                             (vm_entries vm)
-  | None    => match r_verdict r with Continue => None | v => Some v end
+  match r_nat r with
+  | Some _ => Some Accept   (* NAT is terminal accept (translation is a side effect) *)
+  | None =>
+    match r_vmap r with
+    | Some vm => assoc_verdict (concat (map (fun f => field_value f p) (vm_fields vm)))
+                               (vm_entries vm)
+    | None    => match r_verdict r with Continue => None | v => Some v end
+    end
   end.
 
 (** Evaluate a rule list.  [None] means "fell through every rule"; [Some v]
@@ -128,6 +132,9 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       if xorb neg (data_mem (concat (map rf srcs)) elems) then run_rule rf rest p else None
   | IVmap srcs _ entries :: _ =>
       assoc_verdict (concat (map rf srcs)) entries   (* verdict from the map, or None *)
+  | IImmediateData dst v :: rest =>
+      run_rule (set_reg rf dst v) rest p
+  | INat _ _ _ _ _ _ _ :: _ => Some Accept   (* terminal *)
   | ILimit spec :: rest =>
       if pkt_limit p spec then run_rule rf rest p else None   (* over-limit breaks *)
   | ICounter _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)

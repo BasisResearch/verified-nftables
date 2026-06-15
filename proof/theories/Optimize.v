@@ -57,7 +57,8 @@ Definition is_empty {A} (l : list A) : bool :=
     could be a fall-through). *)
 Definition shadows (r : rule) : bool :=
   is_empty (r_matches r) && terminal (r_verdict r) &&
-  (match r_vmap r with None => true | Some _ => false end).
+  (match r_vmap r with None => true | Some _ => false end) &&
+  (match r_nat r with None => true | Some _ => false end).
 
 Fixpoint dce (rs : list rule) : list rule :=
   match rs with
@@ -71,10 +72,12 @@ Proof.
   - reflexivity.
   - cbn [dce]. destruct (shadows r) eqn:Hs.
     + (* r shadows the rest: matches all, terminal verdict, no vmap *)
-      unfold shadows in Hs. apply andb_true_iff in Hs. destruct Hs as [Hs1 Hvm].
-      apply andb_true_iff in Hs1. destruct Hs1 as [Hm Hv].
+      unfold shadows in Hs. apply andb_true_iff in Hs. destruct Hs as [Hs1 Hnat].
+      apply andb_true_iff in Hs1. destruct Hs1 as [Hs2 Hvm].
+      apply andb_true_iff in Hs2. destruct Hs2 as [Hm Hv].
       cbn [eval_rules]. unfold rule_applies, outcome.
       destruct (r_matches r) as [| m ms] eqn:Em; [| discriminate Hm].
+      destruct (r_nat r) as [n |] eqn:Enat; [discriminate Hnat |].
       destruct (r_vmap r) as [vm |] eqn:Evm; [discriminate Hvm |].
       cbn [forallb]. destruct (r_verdict r) eqn:Ev; cbn in Hv |- *;
         try discriminate Hv; reflexivity.
@@ -92,7 +95,8 @@ Definition dedup_rule (r : rule) : rule :=
   {| r_matches := nodup matchcond_eq_dec (r_matches r);
      r_stmts   := r_stmts r;
      r_verdict := r_verdict r;
-     r_vmap    := r_vmap r |}.
+     r_vmap    := r_vmap r;
+     r_nat     := r_nat r |}.
 
 Lemma forallb_nodup :
   forall (A : Type) (dec : forall x y : A, {x = y} + {x <> y}) f (l : list A),

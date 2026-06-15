@@ -119,10 +119,16 @@ Definition verdict_tail (v : verdict) : list instr :=
 (** A rule ends either with a verdict map lookup (loads of the key fields then a
     [lookup .. dreg 0]) or with the static verdict tail. *)
 Definition compile_end (r : rule) : list instr :=
-  match r_vmap r with
-  | Some vm => load_fields (alloc_regs 0 (vm_fields vm)) ++
-               [IVmap (map snd (alloc_regs 0 (vm_fields vm))) (vm_name vm) (vm_entries vm)]
-  | None    => verdict_tail (r_verdict r)
+  match r_nat r with
+  | Some n => map (fun rv => IImmediateData (fst rv) (snd rv)) (nat_imms n) ++
+              [INat (nat_kind n) (nat_family n) (nat_amin n)
+                    (nat_amax n) (nat_pmin n) (nat_pmax n) (nat_flags n)]
+  | None =>
+    match r_vmap r with
+    | Some vm => load_fields (alloc_regs 0 (vm_fields vm)) ++
+                 [IVmap (map snd (alloc_regs 0 (vm_fields vm))) (vm_name vm) (vm_entries vm)]
+    | None    => verdict_tail (r_verdict r)
+    end
   end.
 
 Definition compile_rule (r : rule) : rule_prog :=

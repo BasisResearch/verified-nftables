@@ -49,6 +49,9 @@ Inductive instr : Type :=
 | IVmap        (srcs : list reg) (name : string) (entries : list (data * verdict))
                                           (* verdict-map lookup (lookup .. dreg 0):
                                              the rule's verdict, or fall-through *)
+| IImmediateData (dst : reg) (v : data)   (* immediate into a data register *)
+| INat         (kind family : string) (amin : reg)
+               (amax pmin pmax : option reg) (flags : nat)   (* terminal NAT *)
 | ILimit       (spec : limit_spec)       (* rate limit (can break the rule) *)
 | ICounter     (pkts bytes : nat)        (* verdict-neutral statements *)
 | INotrack

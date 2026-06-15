@@ -222,6 +222,15 @@ let render_instr (i : Bytecode.instr) : string = match i with
       let vn = (match v with Verdict.Accept->"accept"|Verdict.Drop->"drop"
                             |Verdict.Continue->"continue"|Verdict.Reject _->"reject") in
       Printf.sprintf "[ immediate reg 0 %s ]" vn
+  | Bytecode.IImmediateData (dst,v) ->
+      (* NAT operand registers (1..4) are raw nft numbers, not slot regs *)
+      Printf.sprintf "[ immediate reg %d %s ]" dst (render_value v)
+  | Bytecode.INat (kind,family,amin,amax,pmin,pmax,flags) ->
+      let opt label = function Some r -> Printf.sprintf " %s reg %d" label r | None -> "" in
+      let fl = if flags > 0 then Printf.sprintf " flags 0x%x" flags else "" in
+      Printf.sprintf "[ nat %s %s addr_min reg %d%s%s%s%s ]"
+        kind family amin (opt "addr_max" amax) (opt "proto_min" pmin)
+        (opt "proto_max" pmax) fl
 
 (* ---------- parse one corpus expression line ---------- *)
 (* result of trying to interpret a block: either a reconstructed DSL rule, or a
@@ -254,6 +263,9 @@ type pinst =
   | PNotrack
   | PLimit   of Packet.limit_spec
   | PLog     of int option
+  | PImmData of int * int list                    (* immediate into a data register *)
+  | PNat     of string * string * int * int option * int option * int option * int
+                            (* kind, family, amin, amax, pmin, pmax, flags *)
   | PImm     of Verdict.verdict
 
 let rec take_until tok = function
@@ -347,13 +359,26 @@ let parse_line line : pinst =
        | [h] when String.length h >= 2 && String.sub h 0 2 = "0x" ->
            PLookup (int_of_string r, name, true)
        | _ -> raise (Unsupported "lookup:flags"))
-  | "immediate"::"reg"::r::rest ->
-      if r <> "0" then raise (Unsupported "imm:datareg");
+  | "immediate"::"reg"::"0"::rest ->
       (match rest with
        | ["accept"] -> PImm Verdict.Accept
        | ["drop"]   -> PImm Verdict.Drop
        | v::_       -> raise (Unsupported ("verdict:"^v))
        | []         -> raise (Unsupported "verdict:empty"))
+  | "immediate"::"reg"::r::rest ->  (* immediate into a data register (NAT operand) *)
+      PImmData (int_of_string r, bytes_of_hexwords rest)
+  | "nat"::kind::family::rest when kind = "snat" || kind = "dnat" ->
+      let rec fields amin amax pmin pmax flags = function
+        | "addr_min"::"reg"::a::r -> fields (int_of_string a) amax pmin pmax flags r
+        | "addr_max"::"reg"::a::r -> fields amin (Some (int_of_string a)) pmin pmax flags r
+        | "proto_min"::"reg"::a::r -> fields amin amax (Some (int_of_string a)) pmax flags r
+        | "proto_max"::"reg"::a::r -> fields amin amax pmin (Some (int_of_string a)) flags r
+        | "flags"::f::r -> fields amin amax pmin pmax (int_of_string f) r
+        | [] -> (amin, amax, pmin, pmax, flags)
+        | _ -> raise (Unsupported "nat:field") in
+      let (amin,amax,pmin,pmax,flags) = fields (-1) None None None 0 rest in
+      if amin < 0 then raise (Unsupported "nat:noaddr");
+      PNat (kind, family, amin, amax, pmin, pmax, flags)
   | ["counter"; "pkts"; p; "bytes"; b] -> PCounter (int_of_string p, int_of_string b)
   | ["notrack"] -> PNotrack
   | ["limit"; "rate"; ru; "burst"; b; "type"; t; "flags"; fl] ->
@@ -386,12 +411,18 @@ let parse_line line : pinst =
 (* fold a block into a DSL rule: (load;test)* then verdict-neutral statements
    then a verdict. *)
 let rule_of_block (lines : string list) : Syntax.rule =
-  let mk ?(vmap=None) matches stmts v : Syntax.rule =
+  let mk ?(vmap=None) ?(nat=None) matches stmts v : Syntax.rule =
     { Syntax.r_matches = List.rev matches; r_stmts = List.rev stmts;
-      r_verdict = v; r_vmap = vmap } in
+      r_verdict = v; r_vmap = vmap; r_nat = nat } in
   (* a verdict-map lookup ends the rule: prior matches + a vmap outcome *)
   let mk_vmap matches stmts fields name =
     mk ~vmap:(Some { Syntax.vm_fields = fields; vm_name = name; vm_entries = [] })
+       matches stmts Verdict.Continue in
+  (* a NAT ends the rule: prior matches + operand immediates + the nat statement *)
+  let mk_nat matches stmts imms (kind,family,amin,amax,pmin,pmax,flags) =
+    mk ~nat:(Some { Syntax.nat_imms = imms; nat_kind = kind; nat_family = family;
+                    nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
+                    nat_pmax = pmax; nat_flags = flags })
        matches stmts Verdict.Continue in
   let rec go matches stmts = function
     | [] -> mk matches stmts Verdict.Continue   (* match-only rule: falls through *)
@@ -400,6 +431,21 @@ let rule_of_block (lines : string list) : Syntax.rule =
        | PImm v ->
            if rest <> [] then raise (Unsupported "trailing-after-verdict");
            mk matches stmts v
+       | PNat (k,f,a,ax,pm,px,fl) ->
+           if rest <> [] then raise (Unsupported "trailing-after-nat");
+           mk_nat matches stmts [] (k,f,a,ax,pm,px,fl)
+       | PImmData (r, v) ->
+           (* gather operand immediates, then the nat statement *)
+           let rec gnat imms = function
+             | l :: more ->
+               (match parse_line l with
+                | PImmData (r2, v2) -> gnat ((r2, v2) :: imms) more
+                | PNat (k,f,a,ax,pm,px,fl) ->
+                    if more <> [] then raise (Unsupported "trailing-after-nat");
+                    mk_nat matches stmts (List.rev imms) (k,f,a,ax,pm,px,fl)
+                | _ -> raise (Unsupported "imm-not-nat"))
+             | [] -> raise (Unsupported "imm-dangling")
+           in gnat [(r, v)] rest
        | PCounter (p,b) -> go matches (Syntax.SCounter (p,b) :: stmts) rest
        | PNotrack -> go matches (Syntax.SNotrack :: stmts) rest
        | PLog l -> go matches (Syntax.SLog l :: stmts) rest

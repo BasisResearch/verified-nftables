@@ -164,13 +164,29 @@ Record vmap_spec : Type := {
   vm_entries : list (data * verdict);
 }.
 
-(** A rule: matches, then verdict-neutral statements, then either a static
-    verdict ([r_vmap = None]) or a verdict-map lookup ([r_vmap = Some ...]). *)
+(** A NAT statement (snat/dnat).  The address/port operands are loaded into data
+    registers by the immediates in [nat_imms]; the statement then references those
+    registers.  NAT is terminal (it accepts with a translation); the packet
+    rewrite itself is a side effect outside the single-packet verdict model. *)
+Record nat_spec : Type := {
+  nat_imms   : list (nat * data);   (* immediate operand loads (reg, value) *)
+  nat_kind   : string;              (* "snat" / "dnat" *)
+  nat_family : string;              (* "ip" / "ip6" *)
+  nat_amin   : nat;
+  nat_amax   : option nat;
+  nat_pmin   : option nat;
+  nat_pmax   : option nat;
+  nat_flags  : nat;
+}.
+
+(** A rule: matches, then verdict-neutral statements, then an outcome — a static
+    verdict, a verdict-map lookup ([r_vmap]), or a NAT statement ([r_nat]). *)
 Record rule : Type := {
   r_matches : list matchcond;
   r_stmts   : list stmt;
   r_verdict : verdict;
   r_vmap    : option vmap_spec;
+  r_nat     : option nat_spec;
 }.
 
 (** A base chain: a default policy and an ordered list of rules. *)

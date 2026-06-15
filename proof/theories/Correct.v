@@ -230,6 +230,17 @@ Proof. intros v rf p. destruct v; reflexivity. Qed.
 
 (** A compiled rule runs to its verdict exactly when it applies (the trailing
     verdict-neutral statements never change that). *)
+(** A NAT outcome: the operand immediates pass through and the terminal [INat]
+    accepts. *)
+Lemma run_imms_nat : forall imms rf k fam amin amax pmin pmax fl p,
+  run_rule rf (map (fun rv => IImmediateData (fst rv) (snd rv)) imms
+               ++ [INat k fam amin amax pmin pmax fl]) p = Some Accept.
+Proof.
+  induction imms as [| [r v] rest IH]; intros; cbn [map fst snd app run_rule].
+  - reflexivity.
+  - apply IH.
+Qed.
+
 Lemma run_rule_compile_rule : forall r p,
   run_rule empty_rf (compile_rule r) p =
   if rule_applies r p then outcome r p else None.
@@ -237,11 +248,13 @@ Proof.
   intros r p. unfold compile_rule, rule_applies.
   apply run_compile_matches_const.
   intro rf. rewrite run_stmts_passthrough.
-  unfold compile_end, outcome. destruct (r_vmap r) as [vm |].
-  - rewrite run_load_fields. cbn [run_rule].
-    rewrite map_write_fields by apply alloc_regs_nodup.
-    rewrite map_fst_field, alloc_regs_fst. reflexivity.
-  - destruct (r_verdict r); rewrite run_verdict_tail; reflexivity.
+  unfold compile_end, outcome. destruct (r_nat r) as [n |].
+  - apply run_imms_nat.
+  - destruct (r_vmap r) as [vm |].
+    + rewrite run_load_fields. cbn [run_rule].
+      rewrite map_write_fields by apply alloc_regs_nodup.
+      rewrite map_fst_field, alloc_regs_fst. reflexivity.
+    + destruct (r_verdict r); rewrite run_verdict_tail; reflexivity.
 Qed.
 
 (** Chain level: the compiled program reproduces the rule-list evaluation. *)
