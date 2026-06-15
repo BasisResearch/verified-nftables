@@ -87,6 +87,7 @@ let key_of_load (ld : Syntax.loaddesc) = match ld with
       Printf.sprintf "ng:%b:%d:%d" s.Packet.ng_random s.Packet.ng_mod s.Packet.ng_offset
   | Syntax.LOsf -> "osf:"
   | Syntax.LFib (sel,res) -> Printf.sprintf "fib:%s:%s" sel (name_of_fibres res)
+  | Syntax.LCtDir (key,dir) -> Printf.sprintf "ctd:%s:%s" key dir
   | Syntax.LInner (t,h,fl,desc,w) -> Printf.sprintf "inner:%d:%d:%d:%d:%s" t h fl w desc
   | Syntax.LPayload (b,o,l) -> Printf.sprintf "p:%s:%d:%d" (name_of_base b) o l
 
@@ -120,6 +121,7 @@ let field_of_key_str key : Syntax.field option =
       (match fibres_of_name res with
        | Some r -> Some (Syntax.FFib (sel, r))
        | None -> None)
+  | ["ctd"; key; dir] -> Some (Syntax.FCtDir (key, dir))
   | ["inner"; t; h; fl; w; desc] ->
       Some (Syntax.FInner (int_of_string t, int_of_string h, int_of_string fl,
                            desc, int_of_string w))
@@ -189,6 +191,8 @@ let render_instr (i : Bytecode.instr) : string = match i with
         (name_of_ehproto ep) l h o (if pr then " present" else "") (nreg r)
   | Bytecode.IFibLoad (sel,res,r) ->
       Printf.sprintf "[ fib %s %s => reg %d ]" sel (name_of_fibres res) (nreg r)
+  | Bytecode.ICtDirLoad (key,dir,r) ->
+      Printf.sprintf "[ ct load %s => reg %d , dir %s ]" key (nreg r) dir
   | Bytecode.IInnerLoad (t,h,fl,desc,_,r) ->
       Printf.sprintf "[ inner type %d hdrsize %d flags %x [ %s => reg %d ] ]"
         t h fl desc (nreg r)

@@ -89,6 +89,10 @@ Record packet : Type := {
                                specification (which inputs the lookup uses, e.g.
                                "saddr . iif"); the result selector fixes what the
                                routing table yields. *)
+  pkt_ctdir : string -> string -> data;
+                            (* oracle: a directional conntrack field (e.g. the
+                               original/reply tuple address), keyed by the field
+                               name and the direction ("original"/"reply"). *)
   pkt_inner : nat -> nat -> nat -> string -> data;
                             (* oracle: a field read from the decapsulated inner
                                packet of a tunnel.  Keyed by tunnel (type, hdrsize,

@@ -86,6 +86,9 @@ let parse_line line : pinst =
       (match ct_of_name name with
        | Some k -> PLoad (key_of_load (Syntax.LCt k), int_of_string r)
        | None -> raise (Unsupported ("ct:"^name)))
+  | "ct"::"load"::key::"=>"::"reg"::r::","::"dir"::dir::[] ->
+      (* directional conntrack load (original/reply tuple field) *)
+      PLoad (Printf.sprintf "ctd:%s:%s" key dir, int_of_string r)
   | "rt"::"load"::name::"=>"::"reg"::r::[] ->
       (match rt_of_name name with
        | Some k -> PLoad (key_of_load (Syntax.LRt k), int_of_string r)
@@ -507,6 +510,9 @@ let validate_pairs : (string * string * Syntax.field) list = [
   "inet", "fib daddr . iif type local",   Syntax.FFib ("daddr . iif", Packet.FRtype);
   "inet", "fib saddr . iif oifname \"lo\"", Syntax.FFib ("saddr . iif", Packet.FRoifname);
   "inet", "fib saddr . iif oif != 0",     Syntax.FFib ("saddr . iif", Packet.FRoif);
+  (* directional conntrack: confirm the field-name/direction tokenization vs nft *)
+  "ip", "ct original ip saddr 1.2.3.4",   Syntax.FCtDir ("src_ip", "original");
+  "ip", "ct reply ip daddr 1.2.3.4",      Syntax.FCtDir ("dst_ip", "reply");
 ]
 
 let run_validation () =

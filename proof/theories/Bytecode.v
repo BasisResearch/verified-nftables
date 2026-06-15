@@ -39,6 +39,7 @@ Inductive instr : Type :=
 | IExthdrLoad  (ep : exthdr_proto) (htype off len : nat) (present : bool) (dst : reg)
 | ITproxy      (family : string) (areg preg : option reg)
 | IFibLoad     (sel : string) (res : fib_result) (dst : reg)
+| ICtDirLoad   (key dir : string) (dst : reg)
 | IInnerLoad   (typ hdrsize flags : nat) (innerdesc : string) (width : nat) (dst : reg)
 | IPayloadLoad (b : pbase) (off len : nat) (dst : reg)
 | ICmp         (op : cmpop) (src : reg) (v : data)
