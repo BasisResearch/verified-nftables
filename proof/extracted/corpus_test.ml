@@ -127,6 +127,12 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.IBitwise (d,s,mask,xor) ->
       Printf.sprintf "[ bitwise reg %d = ( reg %d & %s ) ^ %s ]"
         d s (render_value mask) (render_value xor)
+  | Bytecode.IBitShift (d,s,shl,amt) ->
+      Printf.sprintf "[ bitwise reg %d = ( reg %d %s 0x%08x ) ]"
+        d s (if shl then "<<" else ">>") amt
+  | Bytecode.IByteorder (d,s,hton,sz,len) ->
+      Printf.sprintf "[ byteorder reg %d = %s(reg %d, %d, %d) ]"
+        d (if hton then "hton" else "ntoh") s sz len
   | Bytecode.ILookup (s,name,neg,_) ->
       if neg then Printf.sprintf "[ lookup reg %d set %s 0x1 ]" s name
       else Printf.sprintf "[ lookup reg %d set %s ]" s name
@@ -166,6 +172,8 @@ type pinst =
   | PCmp     of bool * int * int list         (* is_eq, src reg, value bytes *)
   | PRange   of bool * int * string list      (* is_eq, src reg, lo++hi hexwords *)
   | PBitwise of int * int * int list * int list  (* dst, src, mask, xor *)
+  | PShift   of int * int * bool * int            (* dst, src, is_left, amount *)
+  | PByteorder of int * int * bool * int * int    (* dst, src, hton, size, len *)
   | PLookup  of int * string * bool              (* src reg, set name, inverted *)
   | PCounter of int * int
   | PNotrack
@@ -176,6 +184,12 @@ let rec take_until tok = function
   | [] -> ([], [])
   | x :: xs -> if x = tok then ([], xs)
                else let (a,b) = take_until tok xs in (x::a, b)
+
+(* int from a token possibly carrying stray punctuation, e.g. "2," or "1)" *)
+let only_digits s =
+  let b = Buffer.create 8 in
+  String.iter (fun c -> if c >= '0' && c <= '9' then Buffer.add_char b c) s;
+  int_of_string (Buffer.contents b)
 
 let parse_line line : pinst =
   match toks_of_line line with
@@ -213,7 +227,14 @@ let parse_line line : pinst =
                    | _ -> raise (Unsupported "bitwise:noxor")) in
       PBitwise (int_of_string dst, int_of_string src,
                 bytes_of_hexwords mask_w, bytes_of_hexwords xor_w)
+  | "bitwise"::"reg"::dst::"="::"("::"reg"::src::op::amt::")"::[]
+    when op = ">>" || op = "<<" ->
+      PShift (int_of_string dst, int_of_string src, op = "<<", int_of_string amt)
   | "bitwise"::_ -> raise (Unsupported "bitwise:form")
+  | "byteorder"::"reg"::dst::"="::ftok::src::size::len::[] ->
+      let hton = String.length ftok >= 4 && String.sub ftok 0 4 = "hton" in
+      PByteorder (int_of_string dst, only_digits src, hton,
+                  only_digits size, only_digits len)
   | "lookup"::"reg"::r::"set"::name::rest ->
       (match rest with
        | [] -> PLookup (int_of_string r, name, false)
@@ -267,43 +288,36 @@ let rule_of_block (lines : string list) : Syntax.rule =
        | PLoad (key, lreg) ->
            if stmts <> [] then raise (Unsupported "load-after-stmt");
            if lreg <> 1 then raise (Unsupported "reg!=1");
-           let field_of key =
-             match field_of_key_str key with Some f -> f
-             | None -> raise (Unsupported ("field:"^key)) in
-           let acc = matches in
-           (match rest with
-            | l2 :: rest2 ->
-              (match parse_line l2 with
-               | PCmp (iseq, creg, v) ->
-                   if creg <> 1 then raise (Unsupported "reg!=1");
-                   let f = field_of key in
-                   let m = if iseq then Syntax.MEq (f, v) else Syntax.MNeq (f, v) in
-                   go (m :: acc) stmts rest2
-               | PRange (iseq, creg, words) ->
-                   if creg <> 1 then raise (Unsupported "reg!=1");
-                   let n = List.length words in
-                   if n land 1 <> 0 then raise (Unsupported "range-odd-words");
-                   let lo = bytes_of_hexwords (List.filteri (fun i _ -> i < n/2) words)
-                   and hi = bytes_of_hexwords (List.filteri (fun i _ -> i >= n/2) words) in
-                   let f = field_of key in
-                   go (Syntax.MRange (f, not iseq, lo, hi) :: acc) stmts rest2
-               | PBitwise (bd, bs, mask, xor) ->
-                   if bd <> 1 || bs <> 1 then raise (Unsupported "reg!=1");
-                   (match rest2 with
-                    | l3 :: rest3 ->
-                      (match parse_line l3 with
-                       | PCmp (iseq, creg, v) ->
-                           if creg <> 1 then raise (Unsupported "reg!=1");
-                           let f = field_of key in
-                           go (Syntax.MMasked (f, not iseq, mask, xor, v) :: acc) stmts rest3
-                       | _ -> raise (Unsupported "bitwise-not-followed-by-cmp"))
-                    | [] -> raise (Unsupported "dangling-bitwise"))
-               | PLookup (lr, name, neg) ->
-                   if lr <> 1 then raise (Unsupported "reg!=1");
-                   let f = field_of key in
-                   go (Syntax.MSet (f, neg, name, []) :: acc) stmts rest2
-               | _ -> raise (Unsupported "load-not-followed-by-cmp"))
-            | [] -> raise (Unsupported "dangling-load"))
+           let f = (match field_of_key_str key with Some f -> f
+                    | None -> raise (Unsupported ("field:"^key))) in
+           (* collect a chain of register transforms, then a tester *)
+           let rec collect ts = function
+             | l :: more ->
+               (match parse_line l with
+                | PBitwise (1,1,mask,xor) -> collect (Syntax.TBitAnd (mask,xor) :: ts) more
+                | PShift (1,1,shl,amt) -> collect (Syntax.TShift (shl,amt) :: ts) more
+                | PByteorder (1,1,h,sz,ln) -> collect (Syntax.TByteorder (h,sz,ln) :: ts) more
+                | PCmp (iseq, 1, v) ->
+                    let tl = List.rev ts in
+                    let m = (match tl with
+                      | [] -> if iseq then Syntax.MEq (f,v) else Syntax.MNeq (f,v)
+                      | _ -> Syntax.MTransform (f, tl, not iseq, v)) in
+                    go (m :: matches) stmts more
+                | PRange (iseq, 1, words) when ts = [] ->
+                    let n = List.length words in
+                    if n land 1 <> 0 then raise (Unsupported "range-odd-words");
+                    let lo = bytes_of_hexwords (List.filteri (fun i _ -> i < n/2) words)
+                    and hi = bytes_of_hexwords (List.filteri (fun i _ -> i >= n/2) words) in
+                    go (Syntax.MRange (f, not iseq, lo, hi) :: matches) stmts more
+                | PLookup (1, name, neg) when ts = [] ->
+                    go (Syntax.MSet (f, neg, name, []) :: matches) stmts more
+                | PRange _ -> raise (Unsupported "transform-then-range")
+                | PLookup _ -> raise (Unsupported "transform-then-lookup")
+                | PBitwise _ | PShift _ | PByteorder _ | PCmp _ ->
+                    raise (Unsupported "reg!=1")
+                | _ -> raise (Unsupported "load-not-followed-by-test"))
+             | [] -> raise (Unsupported "dangling-load")
+           in collect [] rest
        | _ -> raise (Unsupported "test-without-load"))
   in go [] [] lines
 

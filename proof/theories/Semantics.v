@@ -10,6 +10,16 @@ Import ListNotations.
 
 (** ** Declarative semantics. *)
 
+Definition apply_transform (t : transform) (d : data) : data :=
+  match t with
+  | TBitAnd mask xor    => data_bitops d mask xor
+  | TShift shl amt     => data_shift shl amt d
+  | TByteorder h sz len => data_byteorder h sz len d
+  end.
+
+Definition apply_transforms (ts : list transform) (d : data) : data :=
+  fold_left (fun acc t => apply_transform t acc) ts d.
+
 Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
   match m with
   | MEq  f v => data_eqb (field_value f p) v
@@ -20,6 +30,8 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
       eval_cmp (if neg then CNe else CEq) (data_bitops (field_value f p) mask xor) v
   | MSet f neg _ elems =>
       xorb neg (data_mem (field_value f p) elems)
+  | MTransform f ts neg v =>
+      eval_cmp (if neg then CNe else CEq) (apply_transforms ts (field_value f p)) v
   end.
 
 (** A rule applies when all its match conditions hold (empty = matches all). *)
@@ -69,6 +81,10 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       if eval_range op (rf src) lo hi then run_rule rf rest p else None
   | IBitwise dst src mask xor :: rest =>
       run_rule (set_reg rf dst (data_bitops (rf src) mask xor)) rest p
+  | IBitShift dst src shl amt :: rest =>
+      run_rule (set_reg rf dst (data_shift shl amt (rf src))) rest p
+  | IByteorder dst src h sz len :: rest =>
+      run_rule (set_reg rf dst (data_byteorder h sz len (rf src))) rest p
   | ILookup src _ neg elems :: rest =>
       if xorb neg (data_mem (rf src) elems) then run_rule rf rest p else None
   | ICounter _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)

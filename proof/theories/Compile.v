@@ -17,6 +17,19 @@ Definition compile_load (ld : loaddesc) (dst : reg) : instr :=
   | LPayload b o l => IPayloadLoad b o l dst
   end.
 
+Definition compile_transform (t : transform) : instr :=
+  match t with
+  | TBitAnd mask xor    => IBitwise 1 1 mask xor
+  | TShift shl amt     => IBitShift 1 1 shl amt
+  | TByteorder h sz len => IByteorder 1 1 h sz len
+  end.
+
+Fixpoint compile_transforms (ts : list transform) : list instr :=
+  match ts with
+  | []        => []
+  | t :: ts'  => compile_transform t :: compile_transforms ts'
+  end.
+
 Definition compile_match (m : matchcond) : list instr :=
   match m with
   | MEq  f v => [compile_load (field_load f) 1; ICmp CEq 1 v]
@@ -28,6 +41,9 @@ Definition compile_match (m : matchcond) : list instr :=
        ICmp (if neg then CNe else CEq) 1 v]
   | MSet f neg name elems =>
       [compile_load (field_load f) 1; ILookup 1 name neg elems]
+  | MTransform f ts neg v =>
+      compile_load (field_load f) 1 :: compile_transforms ts ++
+      [ICmp (if neg then CNe else CEq) 1 v]
   end.
 
 (** A [Continue] (fall-through) rule emits no verdict expression, exactly as

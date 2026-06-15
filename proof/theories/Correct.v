@@ -19,6 +19,24 @@ Proof.
   destruct (field_load f) eqn:E; simpl; reflexivity.
 Qed.
 
+(** Running a compiled transform chain then a [cmp]: the chain leaves register 1
+    holding [apply_transforms ts (rf 1)] (other registers unchanged, so the
+    resulting file is left existential — the trailing program reads only reg 1). *)
+Lemma run_transforms_cmp : forall ts rf op v cont p,
+  exists rf',
+    run_rule rf (compile_transforms ts ++ ICmp op 1 v :: cont) p =
+    (if eval_cmp op (apply_transforms ts (rf 1)) v
+     then run_rule rf' cont p else None).
+Proof.
+  induction ts as [| t ts IH]; intros rf op v cont p.
+  - exists rf. cbn [compile_transforms app run_rule]. reflexivity.
+  - destruct t; cbn [compile_transforms compile_transform app run_rule];
+      [ edestruct (IH (set_reg rf 1 (data_bitops (rf 1) mask xor))) as [rf' Hr]
+      | edestruct (IH (set_reg rf 1 (data_shift shl amt (rf 1)))) as [rf' Hr]
+      | edestruct (IH (set_reg rf 1 (data_byteorder hton size len (rf 1)))) as [rf' Hr] ];
+      exists rf'; rewrite Hr; rewrite set_reg_same; reflexivity.
+Qed.
+
 (** The heart of the proof, generalized over the trailing program [tail]: as
     long as [tail] runs to a constant [res] from any register file (true for the
     verdict tail — an immediate / reject / empty — composed after the
@@ -31,7 +49,8 @@ Lemma run_compile_matches_const : forall ms tail res p,
 Proof.
   induction ms as [| m ms IH]; intros tail res p Hc rf.
   - cbn [flat_map app forallb]. apply Hc.
-  - destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0 | f neg nm elems];
+  - destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0 | f neg nm elems
+                  | f ts neg v0];
       cbn [flat_map compile_match app]; rewrite compile_load_correct.
     + cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond]. unfold eval_cmp.
       destruct (data_eqb (field_value f p) v0); cbn [andb negb];
@@ -48,6 +67,13 @@ Proof.
         cbn [andb]; [apply IH; exact Hc | reflexivity].
     + cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond].
       destruct (xorb neg (data_mem (field_value f p) elems));
+        cbn [andb]; [apply IH; exact Hc | reflexivity].
+    + (* MTransform *)
+      rewrite <- !app_assoc. cbn [app].
+      edestruct run_transforms_cmp as [rf' Hr]. rewrite Hr. rewrite set_reg_same.
+      cbn [forallb eval_matchcond].
+      destruct (eval_cmp (if neg then CNe else CEq)
+                 (apply_transforms ts (field_value f p)) v0);
         cbn [andb]; [apply IH; exact Hc | reflexivity].
 Qed.
 

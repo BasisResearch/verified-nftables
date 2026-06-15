@@ -107,12 +107,19 @@ Definition field_value (f : field) (p : packet) : data :=
 
 (** A match condition: equality / inequality against an immediate, or a
     (possibly negated) range membership [lo <= field <= hi]. *)
+(** A register transform applied between a load and a comparison. *)
+Inductive transform : Type :=
+| TBitAnd    (mask xor : data)
+| TShift     (shl : bool) (amt : nat)
+| TByteorder (hton : bool) (size len : nat).
+
 Inductive matchcond : Type :=
 | MEq     (f : field) (v : data)
 | MNeq    (f : field) (v : data)
 | MRange  (f : field) (neg : bool) (lo hi : data)
 | MMasked (f : field) (neg : bool) (mask xor v : data)   (* (field & mask) ^ xor cmp v *)
-| MSet    (f : field) (neg : bool) (name : string) (elems : list data). (* field [!]in set *)
+| MSet    (f : field) (neg : bool) (name : string) (elems : list data) (* field [!]in set *)
+| MTransform (f : field) (ts : list transform) (neg : bool) (v : data). (* cmp after transforms *)
 
 (** Verdict-neutral statements: they emit bytecode but do not change the packet's
     verdict (counter accounts; notrack disables conntrack). *)

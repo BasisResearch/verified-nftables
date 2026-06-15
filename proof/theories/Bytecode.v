@@ -33,6 +33,8 @@ Inductive instr : Type :=
 | ICmp         (op : cmpop) (src : reg) (v : data)
 | IRange       (op : cmpop) (src : reg) (lo hi : data)   (* range eq/neq *)
 | IBitwise     (dst src : reg) (mask xor : data)         (* dst = (src & mask) ^ xor *)
+| IBitShift    (dst src : reg) (shl : bool) (amt : nat) (* dst = src >>/<< amt *)
+| IByteorder   (dst src : reg) (hton : bool) (size len : nat)
 | ILookup      (src : reg) (name : string) (neg : bool) (elems : list data)
                                           (* set membership; [elems] is the set's
                                              contents, carried for semantics and

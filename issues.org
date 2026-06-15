@@ -1,0 +1,4 @@
+This document lists the issues with the current methodology.
+* Not enough code review and self-reflection
+* Too content with small features
+* Not transparent enough about what tests are being run
