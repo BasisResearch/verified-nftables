@@ -39,3 +39,28 @@ The deepest failure: I let the *test corpus* define "done" instead of the
 
 See instructions.org "Faithfulness and theorem strength" for the generalised
 lessons, and DEVELOPMENT.md "Known semantic gaps" for the concrete hole list.
+
+* Resolution status (C → A → B → D), 2026-06
+The gap audit was turned into a fix order. All four *cores* now carry axiom-free
+theorems (Print Assumptions: "Closed under the global context"); corpus stays
+2532/2532 byte-identical throughout.
+
+- **C — control flow: FIXED (core).** jump/goto/return + user-defined chains;
+  `compile_table_correct` for every fuel. Open: hooks, chain priorities,
+  multiple tables/families.
+- **A — named state: FIXED (core).** set/map contents read from a runtime-mutable
+  env (`pkt_env`), not inlined; theorem quantified over all states (non-vacuous).
+  Open: fib/ct/stateful objects as real tables, not packet oracles.
+- **B — mutation: FIXED (core).** `compile_chain_mut_correct`: a `meta/ct set` is
+  proven visible to later rules on DSL and VM, for rules with simple
+  (immediate/field) set-operands and no post-outcome statements. The witness
+  `meta mark set 0x1; meta mark 0x1 accept` now ACCEPTS (was the cited vacuity
+  bug). Open: value-correctness for map/hash/or operands and mixed statements.
+- **D — data infidelities: PARTIAL.** operand value-correctness proven for
+  immediate/field operands (`eval_vsrc vs p = reg 1 after compile_vsrc`). Open:
+  concat-key padding, interval/prefix (CIDR) sets vs exact membership, wildcard
+  interface names.
+
+The deepest lesson held: each fix was checked by an *adversarial* witness (a
+packet/ruleset where the old model gave the wrong answer) and by quantifying the
+theorem over the previously-hidden state — not by a corpus bucket.
