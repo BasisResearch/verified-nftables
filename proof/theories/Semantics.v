@@ -572,3 +572,34 @@ Definition run_table (fuel : nat) (cs : list (String.string * program))
   | Some v => v
   | None   => policy
   end.
+
+(** ** Multi-table / multi-hook dispatch (netfilter verdict combination).
+
+    At one hook the registered base chains across all tables run in priority
+    order.  Selecting and ordering the base chains for a hook is the control
+    plane's job; here we model the *data-plane* traversal over an already
+    (hook,priority)-ordered list of (chain-env, base-chain) pairs: a base chain
+    that ACCEPTs (or falls through to an accept policy) lets the packet proceed to
+    the NEXT base chain, while DROP/REJECT/QUEUE is terminal — exactly how
+    netfilter propagates a verdict across the chains at a hook.  If every base
+    chain accepts, the packet is accepted. *)
+Definition base_continues (v : verdict) : bool :=
+  match v with Accept | Continue => true | _ => false end.
+
+Fixpoint eval_ruleset (fuel : nat)
+    (bases : list (list (String.string * chain) * chain)) (p : packet) : verdict :=
+  match bases with
+  | [] => Accept
+  | (cs, base) :: rest =>
+      let v := eval_table fuel cs base p in
+      if base_continues v then eval_ruleset fuel rest p else v
+  end.
+
+Fixpoint run_ruleset (fuel : nat)
+    (bases : list (list (String.string * program) * (program * verdict))) (p : packet) : verdict :=
+  match bases with
+  | [] => Accept
+  | (cs, (base, policy)) :: rest =>
+      let v := run_table fuel cs base policy p in
+      if base_continues v then run_ruleset fuel rest p else v
+  end.

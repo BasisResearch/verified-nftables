@@ -87,7 +87,16 @@ that doesn't change *this* rule's verdict still mutates state later rules read:
   operands remain out of scope; rules mixing other (non-set) statements widen scope
   further.
 
-**C. Control flow** *(jump/goto/return + user chains: FIXED, 2026-06)*:
+**C. Control flow** *(jump/goto/return + user chains, AND multi-table dispatch: FIXED, 2026-06)*:
+- ✅ **Multi-table / multi-hook dispatch**: `eval_ruleset`/`run_ruleset` traverse a
+  hook's base chains (across tables) in order with netfilter verdict combination —
+  an ACCEPT (or accept-policy fall-through) lets the packet proceed to the next base
+  chain, DROP/REJECT/QUEUE is terminal. **`compile_ruleset_correct`** (axiom-free)
+  proves the compiled dispatch reproduces the DSL one; semtest (4b) witnesses two
+  base chains where the second drops. (Selecting/priority-ordering the base chains
+  for a hook is the control plane's job — modelled as the caller-supplied ordered
+  base-chain list; adding `hook`/`priority` fields to the `chain` AST so the engine
+  itself filters/sorts is the remaining refinement.)
 - ✅ `jump` / `goto` / `return` and **user-defined chains** are now modelled:
   `verdict` carries Jump/Goto/Return; `eval_rules_j`/`eval_table` (DSL) and
   `run_rules_j`/`run_table` (VM) are fuel-bounded interpreters over a named chain

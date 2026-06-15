@@ -30,4 +30,6 @@ Separate Extraction
   eval_table
   run_table
   eval_chain_mut
-  run_chain_mut.
+  run_chain_mut
+  eval_ruleset
+  run_ruleset.

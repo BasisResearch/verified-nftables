@@ -1215,3 +1215,22 @@ Proof.
   intros fuel cs base p. unfold run_table, eval_table, compile_chain.
   rewrite run_eval_rules_j. reflexivity.
 Qed.
+
+(** ** Ruleset-level preservation: multi-table / multi-hook dispatch.
+
+    Compiling each base chain (and its jump-target environment) and running the
+    netfilter dispatch over the compiled bases reproduces the DSL dispatch — so
+    the compiler preserves the verdict of a whole hook's worth of base chains
+    across tables, not just one chain or one table. *)
+Definition compile_base (cb : list (String.string * chain) * chain)
+  : list (String.string * program) * (program * verdict) :=
+  (compile_env (fst cb), (compile_chain (snd cb), c_policy (snd cb))).
+
+Theorem compile_ruleset_correct : forall fuel bases p,
+  run_ruleset fuel (map compile_base bases) p = eval_ruleset fuel bases p.
+Proof.
+  induction bases as [| [cs base] rest IH]; intros p; [reflexivity|].
+  cbn [map compile_base eval_ruleset run_ruleset fst snd].
+  rewrite compile_table_correct.
+  destruct (base_continues (eval_table fuel cs base p)); [apply IH | reflexivity].
+Qed.

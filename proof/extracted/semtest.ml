@@ -179,6 +179,27 @@ let () =
       "tcp dport 80 (jump->fallthru->drop)", mk_pkt ~th:(th ~dport:[0; 80]) ();
       "udp (rule skipped -> policy drop)",   mk_pkt ~l4proto:[17] ~th:(th ~dport:[0; 22]) () ];
   Printf.printf "\n";
+  (* (4b) MULTI-TABLE dispatch (compile_ruleset_correct): two base chains at a
+     hook run in order with netfilter verdict combination — base1 (policy accept)
+     lets the packet continue; base2 drops tcp dport 22.  So a dport-22 packet is
+     DROPPED (by base2) while a dport-80 packet is ACCEPTED (both fall through).
+     The single-chain corpus cannot exercise cross-table dispatch. *)
+  let base1 = chain Verdict.Accept [] in
+  let base2 = chain Verdict.Accept [ rule [ l4_tcp; meq Syntax.FThDport [0; 22] ] Verdict.Drop ] in
+  let bases = [ ([], base1); ([], base2) ] in
+  let cbases = Stdlib.List.map
+      (fun (cs, b) -> (Compile.compile_env cs, (Compile.compile_chain b, b.Syntax.c_policy))) bases in
+  Printf.printf "=== two base chains at a hook (compile_ruleset_correct, netfilter combine) ===\n";
+  Stdlib.List.iter (fun (name, p) ->
+    let dsl = Semantics.eval_ruleset fuel bases p in
+    let vm  = Semantics.run_ruleset  fuel cbases p in
+    let ok = dsl = vm in
+    Printf.printf "  %-32s DSL=%-8s VM=%-8s %s\n"
+      name (string_of_verdict dsl) (string_of_verdict vm) (if ok then "ok" else "MISMATCH");
+    if not ok then incr fails)
+    [ "tcp dport 22 (base2 drops)",   mk_pkt ~th:(th ~dport:[0; 22]) ();
+      "tcp dport 80 (both accept)",   mk_pkt ~th:(th ~dport:[0; 80]) () ];
+  Printf.printf "\n";
   (* (5) Phase B: in-traversal mutation.  Rule 1 sets meta mark; rule 2 matches
      it.  Under the mutation-aware semantics (eval/run_chain_mut) the second rule
      observes the write and the packet is ACCEPTED; the old verdict-only eval_chain
