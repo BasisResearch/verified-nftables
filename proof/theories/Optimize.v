@@ -136,15 +136,73 @@ Proof.
     + apply IH.
 Qed.
 
+(** ** Optimization 3: singleton-range simplification.
+
+    A range test whose bounds coincide ([lo <= x <= lo]) is exactly an equality
+    test, which nft lowers to a single [cmp] instead of a [range] expression.
+    Rewriting it shrinks the emitted bytecode while preserving the match. *)
+Definition simplify_match (m : matchcond) : matchcond :=
+  match m with
+  | MRange f neg lo hi =>
+      if data_eqb lo hi
+      then (if neg then MNeq f lo else MEq f lo)
+      else m
+  | _ => m
+  end.
+
+Lemma simplify_match_correct : forall m p,
+  eval_matchcond (simplify_match m) p = eval_matchcond m p.
+Proof.
+  intros m p. destruct m; try reflexivity.
+  cbn [simplify_match]. destruct (data_eqb lo hi) eqn:E; [| reflexivity].
+  apply data_eqb_true_iff in E; subst hi.
+  destruct neg; cbn [eval_matchcond eval_range].
+  - (* MNeq: complement of the singleton range *)
+    rewrite Bool.andb_comm, data_le_antisym. reflexivity.
+  - (* MEq: the singleton range itself *)
+    rewrite Bool.andb_comm, data_le_antisym. reflexivity.
+Qed.
+
+Definition simplify_rule (r : rule) : rule :=
+  {| r_matches := map simplify_match (r_matches r);
+     r_stmts   := r_stmts r;
+     r_verdict := r_verdict r;
+     r_vmap    := r_vmap r;
+     r_nat     := r_nat r |}.
+
+Lemma rule_applies_simplify : forall r p,
+  rule_applies (simplify_rule r) p = rule_applies r p.
+Proof.
+  intros r p. unfold rule_applies, simplify_rule. cbn [r_matches].
+  induction (r_matches r) as [| m ms IH]; [reflexivity |].
+  cbn [map forallb]. rewrite simplify_match_correct, IH. reflexivity.
+Qed.
+
+Lemma eval_rules_map_simplify : forall rs p,
+  eval_rules (map simplify_rule rs) p = eval_rules rs p.
+Proof.
+  induction rs as [| r rs IH]; intros p; [reflexivity |].
+  cbn [map eval_rules]. rewrite rule_applies_simplify.
+  replace (outcome (simplify_rule r) p) with (outcome r p)
+    by (unfold outcome, simplify_rule; reflexivity).
+  destruct (rule_applies r p).
+  - destruct (outcome r p) as [v |].
+    + destruct (terminal v); [reflexivity | apply IH].
+    + apply IH.
+  - apply IH.
+Qed.
+
 (** ** The combined pass and its correctness. *)
 
 Definition optimize_chain (c : chain) : chain :=
   {| c_policy := c_policy c;
-     c_rules  := dce (map dedup_rule (c_rules c)) |}.
+     c_rules  := dce (map (fun r => simplify_rule (dedup_rule r)) (c_rules c)) |}.
 
 Theorem optimize_chain_correct : forall c p,
   eval_chain (optimize_chain c) p = eval_chain c p.
 Proof.
   intros c p. unfold eval_chain, optimize_chain. cbn [c_rules c_policy].
-  rewrite eval_rules_dce, eval_rules_map_dedup. reflexivity.
+  rewrite eval_rules_dce.
+  rewrite <- (map_map dedup_rule simplify_rule).
+  rewrite eval_rules_map_simplify, eval_rules_map_dedup. reflexivity.
 Qed.

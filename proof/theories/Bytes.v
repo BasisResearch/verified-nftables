@@ -105,6 +105,33 @@ Fixpoint data_le (a b : data) : bool :=
   | x :: xs, y :: ys => if Nat.eqb x y then data_le xs ys else Nat.leb x y
   end.
 
+(** Antisymmetry: [a <= b] and [b <= a] together are exactly equality.  Used to
+    prove that a singleton range [lo <= x <= lo] is the same test as [x = lo]. *)
+Lemma data_le_antisym : forall a b, andb (data_le a b) (data_le b a) = data_eqb a b.
+Proof.
+  induction a as [| x xs IH]; intros [| y ys].
+  - reflexivity.
+  - reflexivity.
+  - cbn [data_le andb]. symmetry.
+    destruct (data_eqb (x::xs) nil) eqn:E;
+      [apply data_eqb_true_iff in E; discriminate | reflexivity].
+  - cbn [data_le]. rewrite (Nat.eqb_sym y x).
+    destruct (Nat.eqb x y) eqn:Exy.
+    + apply Nat.eqb_eq in Exy; subst y. rewrite IH.
+      destruct (data_eqb xs ys) eqn:E.
+      * apply data_eqb_true_iff in E; subst ys. symmetry. apply data_eqb_refl.
+      * symmetry. apply Bool.not_true_is_false.
+        rewrite data_eqb_true_iff. intro Hc. inversion Hc; subst ys.
+        rewrite data_eqb_refl in E; discriminate.
+    + apply Nat.eqb_neq in Exy.
+      assert (data_eqb (x::xs) (y::ys) = false) as ->.
+      { apply Bool.not_true_is_false. rewrite data_eqb_true_iff.
+        intro Hc; inversion Hc; congruence. }
+      destruct (Nat.leb x y) eqn:Lxy, (Nat.leb y x) eqn:Lyx; cbn; try reflexivity.
+      apply Nat.leb_le in Lxy, Lyx.
+      exfalso. apply Exy. apply Nat.le_antisymm; assumption.
+Qed.
+
 Lemma data_eqb_sym : forall a b, data_eqb a b = data_eqb b a.
 Proof.
   intros a b. unfold data_eqb.

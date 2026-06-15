@@ -12,6 +12,7 @@
 (* ---- DSL builders (just record/constructor sugar) ---- *)
 
 let meq f v   : Syntax.matchcond = Syntax.MEq (f, v)
+let mrange f lo hi : Syntax.matchcond = Syntax.MRange (f, false, lo, hi)
 let rule ms v : Syntax.rule =
   { Syntax.r_matches = ms; r_stmts = []; r_verdict = v; r_vmap = None; r_nat = None }
 let chain pol rs : Syntax.chain = { Syntax.c_policy = pol; Syntax.c_rules = rs }
@@ -31,6 +32,10 @@ let meta_name = function
 let cmpop_name = function
   | Bytecode.CEq -> "eq"
   | Bytecode.CNe -> "neq"
+  | Bytecode.CLt -> "lt"
+  | Bytecode.CGt -> "gt"
+  | Bytecode.CLe -> "lte"
+  | Bytecode.CGe -> "gte"
 
 let verdict_name = function
   | Verdict.Accept   -> "accept"
@@ -65,8 +70,12 @@ let render_instr (i : Bytecode.instr) : string =
         len (base_name b) off dst
   | Bytecode.ICmp (op, src, v) ->
       Printf.sprintf "  [ cmp %s reg %d %s ]" (cmpop_name op) src (render_data v)
+  | Bytecode.IRange (op, src, lo, hi) ->
+      Printf.sprintf "  [ range %s reg %d %s %s ]"
+        (cmpop_name op) src (render_data lo) (render_data hi)
   | Bytecode.IImmediate v ->
       Printf.sprintf "  [ immediate reg 0 %s ]" (verdict_name v)
+  | _ -> "  [ <instr> ]"
 
 (* family/table/chain header line nft prints before each rule's expressions. *)
 let render_program ?(hdr = "ip filter input") (prog : Bytecode.program) : string =
@@ -108,6 +117,8 @@ let () =
         chain Verdict.Drop [
           rule [ dep_tcp; meq Syntax.FThDport [0; 22];
                  dep_tcp; meq Syntax.FThDport [0; 22] ] Verdict.Accept;
+          (* singleton range 22..22 -> simplify_match rewrites it to `cmp eq` *)
+          rule [ dep_tcp; mrange Syntax.FThDport [0; 22] [0; 22] ] Verdict.Accept;
           rule [] Verdict.Accept;                       (* accept-all, terminal *)
           rule [ meq Syntax.FIp4Saddr [10; 1; 2; 3] ] Verdict.Drop;   (* dead *)
           rule [ meq Syntax.FIp4Daddr [192; 168; 1; 1] ] Verdict.Drop (* dead *)
