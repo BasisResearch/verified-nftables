@@ -428,6 +428,18 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          go (bs body (Syntax.SDynset (op, name, keys, data))) more
                      | PObjrefMap (_, name) ->
                          go (bs body (Syntax.SObjrefMap (List.rev facc, name))) more
+                     (* jhash of the concatenation, feeding a set = a hashed value *)
+                     | PJhash (_, _, len, seed, m, o) ->
+                         let fields = List.rev facc in
+                         (match more with
+                          | l3 :: more3 ->
+                            (match parse_line l3 with
+                             | PMetaSet (k, 1) ->
+                                 go (bs body (Syntax.SMetaSet (k, Syntax.VHash (fields, len, seed, m, o)))) more3
+                             | PCtSet (k, 1) ->
+                                 go (bs body (Syntax.SCtSet (k, Syntax.VHash (fields, len, seed, m, o)))) more3
+                             | _ -> raise (Unsupported "hash-not-set"))
+                          | [] -> raise (Unsupported "hash-dangling"))
                      | PMapVal (_, name, 1) ->
                          let fields = List.rev facc in
                          (match more with

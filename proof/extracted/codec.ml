@@ -238,7 +238,7 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.IJhash (d,s,len,seed,m,o) ->
       let off = if o > 0 then Printf.sprintf " offset %d" o else "" in
       Printf.sprintf "[ hash reg %d = jhash(reg %d, %d, 0x%x) %% mod %d%s ]"
-        d s len seed m off
+        (nreg d) (nreg s) len seed m off
   | Bytecode.ILookup (srcs,name,neg,_) ->
       let r = nreg (match srcs with x :: _ -> x | [] -> 1) in
       if neg then Printf.sprintf "[ lookup reg %d set %s 0x1 ]" r name

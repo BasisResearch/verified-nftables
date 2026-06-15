@@ -121,6 +121,12 @@ Definition compile_vsrc (vs : vsrc) : list instr :=
   | VMap fields ts name entries =>
       load_fields (alloc_regs 0 fields) ++ compile_transforms ts ++
       [ILookupVal (map snd (alloc_regs 0 fields)) name 1 entries]
+  | VHash fields len seed modulus offset =>
+      (* nft allocates the jhash output in reg 1 and the concatenated source from
+         the next 128-bit register (slot 4); the hash reads it into reg 1 *)
+      load_fields (alloc_regs 4 fields) ++
+      [IJhash 1 (match map snd (alloc_regs 4 fields) with r :: _ => r | [] => 1 end)
+              len seed modulus offset]
   end.
 
 Definition compile_stmt (s : stmt) : list instr :=
