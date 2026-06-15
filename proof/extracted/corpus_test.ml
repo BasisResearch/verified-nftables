@@ -145,7 +145,10 @@ let render_value (d : int list) : string =
    instead displays a 16-byte-aligned slot using the 128-bit register alias
    (reg 1..4) rather than the 32-bit number. This presentation map (untrusted,
    validated byte-identically by the corpus) translates our register to nft's
-   displayed number. slot of our reg r: r<=1 -> r itself (slot 0); else r-8. *)
+   displayed number. slot of our reg r: r<=1 -> r itself (slot 0); else r-8.
+   This is injective on nft's valid domain (slots < 16, i.e. <= 64-byte keys);
+   nft itself BUG()s on larger keys, so the collisions past slot 32 are
+   unreachable and cannot hide a divergence. *)
 let nreg r =
   if r <= 1 then r
   else let slot = r - 8 in

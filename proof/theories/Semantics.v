@@ -30,6 +30,13 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
   | MMasked f neg mask xor v =>
       eval_cmp (if neg then CNe else CEq) (data_bitops (field_value f p) mask xor) v
   | MConcatSet fields neg _ elems =>
+      (* The lookup key is the concatenation of the field values.  NOTE: the
+         kernel pads each concatenated field up to its 4-byte register slot, so
+         for sub-4-byte fields the real set key has inter-field padding this
+         model omits.  This affects only the runtime membership result when
+         [elems] is populated; the control-plane round-trip never populates
+         [elems] (the set contents live in a separate NEWSET object), so the
+         compiler theorem is unaffected.  Faithful for 4-byte-aligned fields. *)
       xorb neg (data_mem (concat (map (fun f => field_value f p) fields)) elems)
   | MTransform f ts neg v =>
       eval_cmp (if neg then CNe else CEq) (apply_transforms ts (field_value f p)) v
