@@ -104,6 +104,16 @@ Record env : Type := {
                                                 against the same (mutable) table. *)
   e_rt   : rt_key -> data;                   (* routing-state (rt) keys, likewise
                                                 shared external routing state. *)
+  e_limit : limit_spec -> nat;               (* a rate limiter's REMAINING tokens;
+                                                a `limit` match passes (rule
+                                                continues) iff [0 < remaining]. *)
+  e_quota : quota_spec -> nat;               (* a quota's remaining bytes. *)
+  e_connlimit : connlimit_spec -> nat;       (* a connlimit's remaining slots.
+                                                These are shared, mutable limiter
+                                                state, threaded across packets by
+                                                [eval_seq] (see Semantics) — so the
+                                                accumulation that a per-packet
+                                                oracle hid is now expressible. *)
 }.
 
 Record packet : Type := {
@@ -119,9 +129,6 @@ Record packet : Type := {
   pkt_th   : list byte;          (* transport-header bytes (e.g. TCP/UDP) *)
   pkt_ih   : list byte;          (* inner-header bytes (tunnelled packet) *)
   pkt_tnl  : list byte;          (* tunnel-header bytes *)
-  pkt_limit : limit_spec -> bool; (* oracle: does this packet pass a given limiter? *)
-  pkt_quota : quota_spec -> bool; (* oracle: does this packet pass a given quota? *)
-  pkt_connlimit : connlimit_spec -> bool;  (* oracle: under the connection limit? *)
   pkt_numgen : numgen_spec -> data;  (* oracle: numgen output (per-packet abstraction
                                         of a global counter; cannot distinguish two
                                         firings of one packet — see DEVELOPMENT.md) *)

@@ -281,15 +281,15 @@ Proof.
         cbn [andb]; [apply IH; exact Hc | reflexivity].
     + (* MLimit: no load, a stateful break *)
       cbn [run_rule forallb eval_matchcond].
-      destruct (pkt_limit p spec); cbn [andb];
+      destruct (Nat.ltb 0 (e_limit (pkt_env p) spec)); cbn [andb];
         [apply IH; exact Hc | reflexivity].
     + (* MQuota: no load, a stateful break *)
       cbn [run_rule forallb eval_matchcond].
-      destruct (pkt_quota p qspec); cbn [andb];
+      destruct (Nat.ltb 0 (e_quota (pkt_env p) qspec)); cbn [andb];
         [apply IH; exact Hc | reflexivity].
     + (* MConnlimit: no load, a stateful break *)
       cbn [run_rule forallb eval_matchcond].
-      destruct (pkt_connlimit p clspec); cbn [andb];
+      destruct (Nat.ltb 0 (e_connlimit (pkt_env p) clspec)); cbn [andb];
         [apply IH; exact Hc | reflexivity].
     + (* MConcatSetT: transformed multi-register key, distinct registers per element *)
       rewrite <- !app_assoc. cbn [app].
@@ -422,9 +422,9 @@ Proof.
   all: try (destruct (eval_cmp _ _ _); [apply IH; exact Hno | reflexivity]).
   all: try (destruct (eval_range _ _ _ _); [apply IH; exact Hno | reflexivity]).
   all: try (destruct (xorb _ _); [apply IH; exact Hno | reflexivity]).
-  all: try (destruct (pkt_limit _ _); [apply IH; exact Hno | reflexivity]).
-  all: try (destruct (pkt_quota _ _); [apply IH; exact Hno | reflexivity]).
-  all: try (destruct (pkt_connlimit _ _); [apply IH; exact Hno | reflexivity]).
+  all: try (destruct (Nat.ltb 0 (e_limit _ _)); [apply IH; exact Hno | reflexivity]).
+  all: try (destruct (Nat.ltb 0 (e_quota _ _)); [apply IH; exact Hno | reflexivity]).
+  all: try (destruct (Nat.ltb 0 (e_connlimit _ _)); [apply IH; exact Hno | reflexivity]).
   all: try (destruct (assoc_verdict _ _); [reflexivity | apply IH; exact Hno]).
 Qed.
 
@@ -688,11 +688,11 @@ Proof.
     destruct (eval_range (if neg then CNe else CEq) (apply_transforms ts (field_value f p)) lo hi);
       [apply Hc | reflexivity].
   - (* MLimit *) cbn [run_rule_writes eval_matchcond].
-    destruct (pkt_limit p spec); [apply Hc | reflexivity].
+    destruct (Nat.ltb 0 (e_limit (pkt_env p) spec)); [apply Hc | reflexivity].
   - (* MQuota *) cbn [run_rule_writes eval_matchcond].
-    destruct (pkt_quota p qspec); [apply Hc | reflexivity].
+    destruct (Nat.ltb 0 (e_quota (pkt_env p) qspec)); [apply Hc | reflexivity].
   - (* MConnlimit *) cbn [run_rule_writes eval_matchcond].
-    destruct (pkt_connlimit p clspec); [apply Hc | reflexivity].
+    destruct (Nat.ltb 0 (e_connlimit (pkt_env p) clspec)); [apply Hc | reflexivity].
   - (* MConcatSetT *) rewrite <- !app_assoc. cbn [app].
     edestruct (run_load_fields_t_writes celems 0 rf
                 (ILookup (map snd (alloc_regs 0 (map fst celems))) nm neg :: X) p)
@@ -1243,4 +1243,28 @@ Theorem compile_hook_correct : forall fuel rs h p,
   run_ruleset fuel (map compile_base (select_hook rs h)) p = eval_hook fuel rs h p.
 Proof.
   intros fuel rs h p. unfold eval_hook. apply compile_ruleset_correct.
+Qed.
+
+(** [seq_eval] is congruent in the per-packet evaluator: pointwise-equal
+    evaluators (and the same [step]) yield identical verdict sequences. *)
+Lemma seq_eval_ext : forall ev1 ev2 step,
+  (forall e' p, ev1 e' p = ev2 e' p) ->
+  forall e packets, seq_eval ev1 step e packets = seq_eval ev2 step e packets.
+Proof.
+  intros ev1 ev2 step Hext e packets. revert e.
+  induction packets as [| p ps IH]; intros e; cbn [seq_eval]; [reflexivity |].
+  rewrite !(Hext e p). f_equal. apply IH.
+Qed.
+
+(** Stateful preservation: running a packet sequence with the compiled hook
+    dispatch — threading a shared environment that [step] mutates between packets
+    (rate limiters / quotas / conntrack counts) — reproduces the DSL run.  So the
+    compiler preserves verdicts even when a packet's verdict depends on state
+    *accumulated from earlier packets*. *)
+Theorem compile_seq_correct : forall fuel rs h step e packets,
+  seq_eval (fun e' p => run_ruleset fuel (map compile_base (select_hook rs h)) (set_env p e'))
+           step e packets
+  = seq_eval (fun e' p => eval_hook fuel rs h (set_env p e')) step e packets.
+Proof.
+  intros. apply seq_eval_ext. intros e' p. apply compile_hook_correct.
 Qed.

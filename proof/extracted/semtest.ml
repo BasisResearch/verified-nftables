@@ -32,7 +32,11 @@ let rule_b body v : Syntax.rule =
 (* ---- the runtime environment (named set/map state the lookups read) ---- *)
 let empty_env : Packet.env =
   { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
-    e_fib = (fun _ _ -> []); e_rt = (fun _ -> []) }
+    e_fib = (fun _ _ -> []); e_rt = (fun _ -> []);
+    (* limiters default to 1 remaining token (0 < 1 -> the match passes) *)
+    e_limit = (fun _ -> 1); e_quota = (fun _ -> 1); e_connlimit = (fun _ -> 1) }
+(* an environment whose rate-limiter "lim" has [n] remaining tokens *)
+let env_limit n : Packet.env = { empty_env with Packet.e_limit = (fun _ -> n) }
 (* an environment where the set/vmap [name] has the given contents *)
 (* exact elements wrap as degenerate intervals (x,x) *)
 let env_set name elems : Packet.env =
@@ -50,8 +54,6 @@ let mk_pkt ?(env = empty_env) ?(l4proto = [6]) ?(nh = []) ?(th = []) () : Packet
     pkt_ct = dummy0; pkt_sock = dummy0;
     pkt_eh = (fun _ _ _ _ _ -> []);
     pkt_lh = []; pkt_nh = nh; pkt_th = th; pkt_ih = []; pkt_tnl = [];
-    pkt_limit = (fun _ -> true); pkt_quota = (fun _ -> true);
-    pkt_connlimit = (fun _ -> true);
     pkt_numgen = dummy0; pkt_osf = [];
     pkt_tunnel = (fun _ -> []);
     pkt_symhash = (fun _ _ -> []); pkt_xfrm = (fun _ _ _ -> []);
@@ -200,6 +202,31 @@ let () =
     [ "tcp dport 22 (base2 drops)",   mk_pkt ~th:(th ~dport:[0; 22]) ();
       "tcp dport 80 (both accept)",   mk_pkt ~th:(th ~dport:[0; 80]) () ];
   Printf.printf "\n";
+  (* (4c) STATEFUL ACCUMULATION (compile_seq_correct): a rate limiter shared
+     across a packet sequence.  `tcp limit accept` (policy drop) accepts iff the
+     limiter has tokens; each accept consumes one.  From 2 tokens, three tcp
+     packets give [accept; accept; drop] — the third sees the depleted limiter,
+     which a per-packet oracle could not express.  VM run = DSL run, packetwise. *)
+  let lim_spec : Packet.limit_spec =
+    { Packet.ls_rate = 2; ls_unit = 0; ls_burst = 0; ls_bytes = false; ls_flags = 0 } in
+  let lim_chain = chain Verdict.Drop [ rule [ l4_tcp; Syntax.MLimit lim_spec ] Verdict.Accept ] in
+  let lim_prog = Compile.compile_chain lim_chain in
+  let step v (e : Packet.env) : Packet.env =
+    match v with
+    | Verdict.Accept -> { e with Packet.e_limit = (fun s -> (e.Packet.e_limit s) - 1) }
+    | _ -> e in
+  let ev_dsl e p = Semantics.eval_chain lim_chain (Semantics.set_env p e) in
+  let ev_vm  e p = Semantics.run_chain lim_prog lim_chain.Syntax.c_policy (Semantics.set_env p e) in
+  let pkts = [ mk_pkt ~th:(th ~dport:[0; 22]) (); mk_pkt ~th:(th ~dport:[0; 22]) ();
+               mk_pkt ~th:(th ~dport:[0; 22]) () ] in
+  let dsl_seq = Semantics.seq_eval ev_dsl step (env_limit 2) pkts in
+  let vm_seq  = Semantics.seq_eval ev_vm  step (env_limit 2) pkts in
+  Printf.printf "=== rate limiter shared across 3 packets (compile_seq_correct, 2 tokens) ===\n";
+  Printf.printf "  DSL=[%s]  VM=[%s]  %s\n\n"
+    (Stdlib.String.concat "; " (Stdlib.List.map string_of_verdict dsl_seq))
+    (Stdlib.String.concat "; " (Stdlib.List.map string_of_verdict vm_seq))
+    (if dsl_seq = vm_seq then "ok" else "MISMATCH");
+  if dsl_seq <> vm_seq then incr fails;
   (* (5) Phase B: in-traversal mutation.  Rule 1 sets meta mark; rule 2 matches
      it.  Under the mutation-aware semantics (eval/run_chain_mut) the second rule
      observes the write and the packet is ACCEPTED; the old verdict-only eval_chain

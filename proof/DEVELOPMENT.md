@@ -50,9 +50,19 @@ theorem is stated against is **not** faithful in these areas. Grouped by kind:
   addresses, which remains future work.
 - **Conntrack table (`ct …`)**: `pkt_ct` is a per-packet oracle; really the ct
   table is keyed by flow and accumulates across packets (`ct count`, `ct state`).
-- **Stateful named objects**: `counter`/`quota`/`limit`/`ct helper`/`ct timeout`/
-  `synproxy`/`secmark` objects are named & mutable; counters are no-op'd, quota/
-  limit are per-packet oracles (so accumulation across packets is invisible).
+- ✅ **Stateful limiters `limit`/`quota`/`connlimit`** *(FIXED 2026-06)*: relocated
+  from per-packet bool oracles into the shared `env` as **remaining-resource counts**
+  (`e_limit`/`e_quota`/`e_connlimit : spec -> nat`); the match passes iff
+  `0 < remaining`. A packet-sequence evaluator `seq_eval ev step e packets` threads
+  the shared `env` across packets, `step` mutating it from each verdict (e.g.
+  decrement a limiter's tokens on accept), so a later packet observes the
+  accumulated state. **`compile_seq_correct`** (axiom-free) proves the compiled
+  sequence run equals the DSL one — accumulation across packets is now both
+  *expressible* and *compiler-preserved*. semtest (4c): 2 tokens, three packets →
+  `[accept;accept;drop]`, VM=DSL. (`step` is keyed on the verdict — a single
+  limiter per ruleset; per-rule attribution of which limiter consumed is the
+  refinement. `counter`/`ct helper`/`synproxy`/`secmark` objects still verdict-
+  neutral.)
 - **Dynamic sets / meters (`dynset`, `update`, `meter`)**: their entire purpose is
   to mutate set state at runtime so later lookups see it (per-key rate limiting);
   modelled as verdict-neutral, so the feedback loop is absent.

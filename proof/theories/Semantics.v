@@ -47,9 +47,9 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
                          (e_set (pkt_env p) name))
   | MRangeT f ts neg lo hi =>
       eval_range (if neg then CNe else CEq) (apply_transforms ts (field_value f p)) lo hi
-  | MLimit spec => pkt_limit p spec
-  | MQuota spec => pkt_quota p spec
-  | MConnlimit spec => pkt_connlimit p spec
+  | MLimit spec => Nat.ltb 0 (e_limit (pkt_env p) spec)
+  | MQuota spec => Nat.ltb 0 (e_quota (pkt_env p) spec)
+  | MConnlimit spec => Nat.ltb 0 (e_connlimit (pkt_env p) spec)
   | MConcatSetT elems neg name =>
       (* like [MConcatSet] but each element is transformed before concatenation;
          contents read from the named set in [pkt_env p] *)
@@ -252,11 +252,11 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | IFwd _ _ _ :: _ => Some Accept           (* terminal forward *)
   | IQueueSreg _ _ _ :: _ => Some Accept     (* terminal queue *)
   | ILimit spec :: rest =>
-      if pkt_limit p spec then run_rule rf rest p else None   (* over-limit breaks *)
+      if Nat.ltb 0 (e_limit (pkt_env p) spec) then run_rule rf rest p else None   (* over-limit breaks *)
   | IQuota spec :: rest =>
-      if pkt_quota p spec then run_rule rf rest p else None   (* over-quota breaks *)
+      if Nat.ltb 0 (e_quota (pkt_env p) spec) then run_rule rf rest p else None   (* over-quota breaks *)
   | IConnlimit spec :: rest =>
-      if pkt_connlimit p spec then run_rule rf rest p else None   (* over-limit breaks *)
+      if Nat.ltb 0 (e_connlimit (pkt_env p) spec) then run_rule rf rest p else None   (* over-limit breaks *)
   | ICounter _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)
   | INotrack :: rest      => run_rule rf rest p
   | ILog _ :: rest        => run_rule rf rest p
@@ -315,9 +315,7 @@ Definition set_meta (p : packet) (k : meta_key) (v : data) : packet :=
      pkt_meta := (fun k' => if meta_eqb k k' then v else pkt_meta p k');
      pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_limit := pkt_limit p;
-     pkt_quota := pkt_quota p; pkt_connlimit := pkt_connlimit p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p;     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
 Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
@@ -325,9 +323,7 @@ Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
      pkt_ct := (fun k' => if ct_eqb k k' then v else pkt_ct p k');
      pkt_sock := pkt_sock p;
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_limit := pkt_limit p;
-     pkt_quota := pkt_quota p; pkt_connlimit := pkt_connlimit p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p;     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
 
@@ -381,9 +377,9 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
   | ITproxy _ _ _ :: _ => p
   | IFwd _ _ _ :: _ => p
   | IQueueSreg _ _ _ :: _ => p
-  | ILimit spec :: rest => if pkt_limit p spec then run_rule_writes rf rest p else p
-  | IQuota spec :: rest => if pkt_quota p spec then run_rule_writes rf rest p else p
-  | IConnlimit spec :: rest => if pkt_connlimit p spec then run_rule_writes rf rest p else p
+  | ILimit spec :: rest => if Nat.ltb 0 (e_limit (pkt_env p) spec) then run_rule_writes rf rest p else p
+  | IQuota spec :: rest => if Nat.ltb 0 (e_quota (pkt_env p) spec) then run_rule_writes rf rest p else p
+  | IConnlimit spec :: rest => if Nat.ltb 0 (e_connlimit (pkt_env p) spec) then run_rule_writes rf rest p else p
   | ICounter _ _ :: rest => run_rule_writes rf rest p
   | INotrack :: rest => run_rule_writes rf rest p
   | ILog _ :: rest => run_rule_writes rf rest p
@@ -642,3 +638,28 @@ Definition select_hook (rs : list hooked_chain) (h : hook_id)
 (** Full ruleset evaluation at a hook: select+order the base chains, then dispatch. *)
 Definition eval_hook (fuel : nat) (rs : list hooked_chain) (h : hook_id) (p : packet) : verdict :=
   eval_ruleset fuel (select_hook rs h) p.
+
+(** ** Stateful accumulation across a packet sequence.
+
+    Evaluate a packet against a *given* shared environment, overriding the
+    packet's own [pkt_env] (limiter/quota/conntrack/set state is shared, not
+    per-packet). *)
+Definition set_env (p : packet) (e : env) : packet :=
+  {| pkt_env := e; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
+     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_numgen := pkt_numgen p;
+     pkt_osf := pkt_osf p; pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p;
+     pkt_xfrm := pkt_xfrm p; pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
+
+(** Run a sequence of packets against a shared, evolving environment [e]: each
+    packet is evaluated by [ev] against the current [e], then [step] updates [e]
+    from the verdict (e.g. decrement a rate limiter's remaining tokens on accept).
+    So a later packet observes the accumulated state — the cross-packet behaviour
+    a per-packet oracle could not express.  Generic in [ev] so the DSL and the VM
+    share it (only the per-packet evaluator differs). *)
+Fixpoint seq_eval (ev : env -> packet -> verdict) (step : verdict -> env -> env)
+    (e : env) (packets : list packet) : list verdict :=
+  match packets with
+  | [] => []
+  | p :: ps => let v := ev e p in v :: seq_eval ev step (step v e) ps
+  end.
