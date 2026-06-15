@@ -381,6 +381,18 @@ Proof.
   rewrite Hr. cbn [app run_rule]. reflexivity.
 Qed.
 
+(** A field-sourced NAT operand: load the field (+ transforms), then the terminal
+    [INat] accepts. *)
+Lemma run_field_nat : forall f ts tail rf k fam amin amax pmin pmax fl p,
+  run_rule rf ((compile_load (field_load f) 1 :: compile_transforms ts)
+               ++ INat k fam amin amax pmin pmax fl :: tail) p = Some Accept.
+Proof.
+  intros. cbn [app]. rewrite compile_load_correct.
+  edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
+              (INat k fam amin amax pmin pmax fl :: tail) p) as [rf' [_ Hr]].
+  rewrite Hr. cbn [run_rule]. reflexivity.
+Qed.
+
 (** Running verdict-neutral statements alone falls through to [None]. *)
 Lemma run_stmts_none : forall ss rf p,
   run_rule rf (flat_map compile_stmt ss) p = None.
@@ -432,8 +444,9 @@ Proof.
   (* the trailing tail is the outcome instrs then the post-outcome statements;
      a terminal outcome ignores them, a Continue tail runs them to None *)
   intro rf. unfold compile_end, outcome. destruct (r_nat r) as [n |].
-  - rewrite <- app_assoc. destruct (nat_map n) as [[[fields ts] name] |];
-      [apply run_map_nat | apply run_imms_nat].
+  - rewrite <- app_assoc. destruct (nat_map n) as [[[fields ts] name] |].
+    + apply run_map_nat.
+    + destruct (nat_field n) as [[f ts] |]; [apply run_field_nat | apply run_imms_nat].
   - destruct (r_tproxy r) as [t |].
     + rewrite <- app_assoc. apply run_imms_tproxy.
     + destruct (r_fwd r) as [w |].

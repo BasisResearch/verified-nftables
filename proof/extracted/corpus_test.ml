@@ -364,12 +364,17 @@ let rule_of_block (lines : string list) : Syntax.rule =
     mk ~after ~vmap:(Some { Syntax.vm_fields = [f]; vm_keyf = Some (f, ts);
                      vm_name = name; vm_entries = [] }) body Verdict.Continue in
   let mk_nat body imms (kind,family,amin,amax,pmin,pmax,flags) =
-    mk ~nat:(Some { Syntax.nat_imms = imms; nat_map = None;
+    mk ~nat:(Some { Syntax.nat_imms = imms; nat_field = None; nat_map = None;
                     nat_kind = kind; nat_family = family;
                     nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
                     nat_pmax = pmax; nat_flags = flags }) body Verdict.Continue in
   let mk_nat_map body (fields,ts,name) (kind,family,amin,amax,pmin,pmax,flags) =
-    mk ~nat:(Some { Syntax.nat_imms = []; nat_map = Some ((fields, ts), name);
+    mk ~nat:(Some { Syntax.nat_imms = []; nat_field = None; nat_map = Some ((fields, ts), name);
+                    nat_kind = kind; nat_family = family;
+                    nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
+                    nat_pmax = pmax; nat_flags = flags }) body Verdict.Continue in
+  let mk_nat_field body (f,ts) (kind,family,amin,amax,pmin,pmax,flags) =
+    mk ~nat:(Some { Syntax.nat_imms = []; nat_field = Some (f, ts); nat_map = None;
                     nat_kind = kind; nat_family = family;
                     nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
                     nat_pmax = pmax; nat_flags = flags }) body Verdict.Continue in
@@ -559,6 +564,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          if more <> [] then raise (Unsupported "trailing-after-queue");
                          mk_queue ~src:(Some (Syntax.VField (f, List.rev ts))) body []
                            (sreg, bypass, fanout)
+                     | PNat (kind,fam,a,ax,pm,px,fl) ->
+                         if more <> [] then raise (Unsupported "trailing-after-nat");
+                         mk_nat_field body (f, List.rev ts) (kind,fam,a,ax,pm,px,fl)
                      | PMetaSet (k, 1) ->
                          go (bs body (Syntax.SMetaSet (k, Syntax.VField (f, List.rev ts)))) more
                      | PCtSet (k, 1) ->
