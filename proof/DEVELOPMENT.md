@@ -148,25 +148,26 @@ by the differential corpus, not Rocq.
 - **Deployable?** `compile_chain`/`optimize_chain` extract to OCaml and already
   emit nft's exact text; the remaining step is a libnftnl netlink emitter shim.
 
-## What's unsupported, and why (the remaining ~1.7%, 43/2532 blocks)
+## What's unsupported, and why (the remaining ~1.3%, 32/2532 blocks)
 
 Each remaining bucket is a distinct structured feature (counts approximate):
 - **per-field transforms inside a concat key** (`ip saddr & /24 . ip daddr` in a
   set, ~4): `MConcatSet` would need a transform chain per field.
 - **dynset with immediate-sourced map data** (~6): the data operand is a constant
-  (immediate registers) rather than a loaded field.
-- **`fwd`** (~3): a fifth terminal outcome (like nat/tproxy) with device/address
-  register operands.
-- **register-sourced `queue`** (`queue sreg_qnum`, ~4): the queue number comes
-  from a register, not a literal.
+  (immediate registers, nft-specific allocation) rather than a loaded field.
 - **a verdict map then a terminal `masq`/`redir`** (~4): two terminal outcomes in
-  one rule (`r_after` holds only verdict-neutral statements).
-- a long tail (~22): NAT operand straight from a loaded field, directional `ct
-  set`, `exthdr` writes, bridge-family `meta set`, byteorder over a concat, etc.
+  one rule — the single-outcome model cannot carry both (`r_after` holds only
+  verdict-neutral statements).
+- **diverse map-value consumers** (~5): a `lookup … dreg 1` value feeding
+  redir/queue/fwd/dup/immediate rather than a meta/ct set.
+- a scattered tail (~13): byteorder over a concat, a register-register bitwise OR,
+  a `reg != 1` load ordering, etc.
 
-The technique for the multi-register concat-transform cases is proven out by
-`VHash` (jhash over a concatenation, byte-identical via `alloc_regs 4` + `nreg`);
-the remaining concat-transform variants follow the same shape.
+Six terminal outcomes (nat/tproxy/fwd/queue + vmap + static verdict), the ordered
+match|statement body, post-outcome statements, and multi-register concat-transforms
+(`VHash`, byte-identical via `alloc_regs 4` + `nreg`) are all done and verified;
+the remaining cases are variants/combinations of these that each need a focused
+structural addition.
 
 ## (historical) What's unsupported, and why
 
