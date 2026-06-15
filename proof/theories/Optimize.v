@@ -141,7 +141,8 @@ Definition dedup_rule (r : rule) : rule :=
      r_verdict := r_verdict r;
      r_vmap    := r_vmap r;
      r_nat     := r_nat r;
-     r_tproxy  := r_tproxy r |}.
+     r_tproxy  := r_tproxy r;
+     r_after   := r_after r |}.
 
 Lemma forallb_nodup :
   forall (A : Type) (dec : forall x y : A, {x = y} + {x <> y}) f (l : list A),
@@ -216,7 +217,8 @@ Definition simplify_rule (r : rule) : rule :=
      r_verdict := r_verdict r;
      r_vmap    := r_vmap r;
      r_nat     := r_nat r;
-     r_tproxy  := r_tproxy r |}.
+     r_tproxy  := r_tproxy r;
+     r_after   := r_after r |}.
 
 Lemma body_matches_simplify : forall b,
   body_matches (map simplify_item b) = map simplify_match (body_matches b).
@@ -258,7 +260,7 @@ Qed.
     rewrites.  Requiring the whole body empty (not just the matches) keeps a
     counter/log-only rule, whose side effect we must preserve. *)
 Definition is_noop (r : rule) : bool :=
-  is_empty (r_body r) &&
+  is_empty (r_body r) && is_empty (r_after r) &&
   (match r_verdict r with Continue => true | _ => false end) &&
   (match r_vmap r with None => true | Some _ => false end) &&
   (match r_nat r with None => true | Some _ => false end) &&
@@ -278,7 +280,8 @@ Proof.
     apply andb_true_iff in Hn as [Hn Htp].
     apply andb_true_iff in Hn as [Hn Hnat].
     apply andb_true_iff in Hn as [Hn Hvm].
-    apply andb_true_iff in Hn as [Hb Hv].
+    apply andb_true_iff in Hn as [Hba Hv].
+    apply andb_true_iff in Hba as [Hb _].
     cbn [eval_rules]. unfold rule_applies, outcome.
     destruct (r_body r) as [| it b] eqn:Eb; [| discriminate Hb].
     cbn [body_matches flat_map forallb].

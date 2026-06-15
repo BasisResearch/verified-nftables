@@ -195,7 +195,8 @@ Definition compile_body_item (it : body_item) : list instr :=
 
 Definition compile_rule (r : rule) : rule_prog :=
   flat_map compile_body_item (r_body r) ++
-  compile_end r.
+  compile_end r ++
+  flat_map compile_stmt (r_after r).
 
 Definition compile_chain (c : chain) : program :=
   map compile_rule (c_rules c).

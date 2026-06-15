@@ -269,6 +269,11 @@ Record rule : Type := {
   r_vmap    : option vmap_spec;
   r_nat     : option nat_spec;
   r_tproxy  : option tproxy_spec;
+  r_after   : list stmt;
+                            (* verdict-neutral statements emitted *after* the
+                               outcome (e.g. a counter after a verdict map); they
+                               run for their side effect but cannot change the
+                               verdict, which the terminal outcome already fixed *)
 }.
 
 (** A base chain: a default policy and an ordered list of rules. *)

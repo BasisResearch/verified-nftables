@@ -15,7 +15,7 @@ let meq f v   : Syntax.matchcond = Syntax.MEq (f, v)
 let mrange f lo hi : Syntax.matchcond = Syntax.MRange (f, false, lo, hi)
 let rule ms v : Syntax.rule =
   { Syntax.r_body = Stdlib.List.map (fun m -> Syntax.BMatch m) ms;
-    r_verdict = v; r_vmap = None; r_nat = None; r_tproxy = None }
+    r_verdict = v; r_vmap = None; r_nat = None; r_tproxy = None; r_after = [] }
 let chain pol rs : Syntax.chain = { Syntax.c_policy = pol; Syntax.c_rules = rs }
 
 (* l4proto dependency nft auto-inserts before an L4 (tcp/udp) match. *)

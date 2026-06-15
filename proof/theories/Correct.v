@@ -301,9 +301,9 @@ Proof. intros v rf p. destruct v; reflexivity. Qed.
     verdict-neutral statements never change that). *)
 (** A NAT outcome: the operand immediates pass through and the terminal [INat]
     accepts. *)
-Lemma run_imms_nat : forall imms rf k fam amin amax pmin pmax fl p,
+Lemma run_imms_nat : forall imms tail rf k fam amin amax pmin pmax fl p,
   run_rule rf (map (fun rv => IImmediateData (fst rv) (snd rv)) imms
-               ++ [INat k fam amin amax pmin pmax fl]) p = Some Accept.
+               ++ INat k fam amin amax pmin pmax fl :: tail) p = Some Accept.
 Proof.
   induction imms as [| [r v] rest IH]; intros; cbn [map fst snd app run_rule].
   - reflexivity.
@@ -311,10 +311,10 @@ Proof.
 Qed.
 
 (** A tproxy outcome: the operand immediates pass through and the terminal
-    [ITproxy] accepts. *)
-Lemma run_imms_tproxy : forall imms rf fam areg preg p,
+    [ITproxy] accepts (ignoring anything after it). *)
+Lemma run_imms_tproxy : forall imms tail rf fam areg preg p,
   run_rule rf (map (fun rv => IImmediateData (fst rv) (snd rv)) imms
-               ++ [ITproxy fam areg preg]) p = Some Accept.
+               ++ ITproxy fam areg preg :: tail) p = Some Accept.
 Proof.
   induction imms as [| [r v] rest IH]; intros; cbn [map fst snd app run_rule].
   - reflexivity.
@@ -324,17 +324,32 @@ Qed.
 (** A map-sourced NAT operand: load the key (+ transforms), look it up in the map
     (into reg 1), then the terminal [INat] accepts — all verdict-neutral until
     [INat]. *)
-Lemma run_map_nat : forall f ts name rf k fam amin amax pmin pmax fl p,
+Lemma run_map_nat : forall f ts name tail rf k fam amin amax pmin pmax fl p,
   run_rule rf
     ((compile_load (field_load f) 1 :: compile_transforms ts ++ [ILookupVal [1] name 1 []])
-     ++ [INat k fam amin amax pmin pmax fl]) p = Some Accept.
+     ++ INat k fam amin amax pmin pmax fl :: tail) p = Some Accept.
 Proof.
   intros. cbn [app]. rewrite compile_load_correct. rewrite <- app_assoc.
   edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
-              ([ILookupVal [1] name 1 []] ++ [INat k fam amin amax pmin pmax fl]) p)
+              ([ILookupVal [1] name 1 []] ++ INat k fam amin amax pmin pmax fl :: tail) p)
     as [rf' [_ Hr]].
   rewrite Hr. cbn [app run_rule]. reflexivity.
 Qed.
+
+(** Running verdict-neutral statements alone falls through to [None]. *)
+Lemma run_stmts_none : forall ss rf p,
+  run_rule rf (flat_map compile_stmt ss) p = None.
+Proof.
+  intros ss rf p. edestruct (run_stmts_exists ss rf [] p) as [rf' H].
+  rewrite app_nil_r in H. rewrite H. reflexivity.
+Qed.
+
+(** A static verdict tail followed by trailing statements: a terminal verdict
+    ignores them; a [Continue] tail runs them (verdict-neutrally) to [None]. *)
+Lemma run_verdict_tail_after : forall v tail rf p,
+  run_rule rf (verdict_tail v ++ tail) p =
+    match v with Continue => run_rule rf tail p | _ => verdict_result v end.
+Proof. destruct v; cbn [verdict_tail app run_rule]; reflexivity. Qed.
 
 (** The body version: an ordered list of matches and verdict-neutral statements.
     A [BMatch] is the single-match step (reusing [run_compile_matches_const] at a
@@ -369,22 +384,29 @@ Lemma run_rule_compile_rule : forall r p,
 Proof.
   intros r p. unfold compile_rule, rule_applies.
   apply run_compile_body.
+  (* the trailing tail is the outcome instrs then the post-outcome statements;
+     a terminal outcome ignores them, a Continue tail runs them to None *)
   intro rf. unfold compile_end, outcome. destruct (r_nat r) as [n |].
-  - destruct (nat_map n) as [[[f ts] name] |]; [apply run_map_nat | apply run_imms_nat].
-  - destruct (r_tproxy r) as [t |]; [apply run_imms_tproxy |].
-    destruct (r_vmap r) as [vm |].
-    + destruct (vm_keyf vm) as [[f ts] |].
-      * (* transformed single-field key: load f, transform reg 1, IVmap reads it *)
-        rewrite compile_load_correct.
-        edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
-                    [IVmap [1] (vm_name vm) (vm_entries vm)] p) as [rf' [Hr1 Hr2]].
-        rewrite Hr2. cbn [run_rule concat map]. rewrite app_nil_r, Hr1, set_reg_same.
-        reflexivity.
-      * (* concat key *)
-        rewrite run_load_fields. cbn [run_rule].
-        rewrite map_write_fields by apply alloc_regs_nodup.
-        rewrite map_fst_field, alloc_regs_fst. reflexivity.
-    + destruct (r_verdict r); rewrite run_verdict_tail; reflexivity.
+  - rewrite <- app_assoc. destruct (nat_map n) as [[[f ts] name] |];
+      [apply run_map_nat | apply run_imms_nat].
+  - destruct (r_tproxy r) as [t |].
+    + rewrite <- app_assoc. apply run_imms_tproxy.
+    + destruct (r_vmap r) as [vm |].
+      * destruct (vm_keyf vm) as [[f ts] |].
+        -- (* transformed single-field key *)
+           cbn [app]. rewrite compile_load_correct. rewrite <- app_assoc.
+           edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
+                       ([IVmap [1] (vm_name vm) (vm_entries vm)]
+                          ++ flat_map compile_stmt (r_after r)) p) as [rf' [Hr1 Hr2]].
+           rewrite Hr2. cbn [app run_rule concat map].
+           rewrite app_nil_r, Hr1, set_reg_same. reflexivity.
+        -- (* concat key: IVmap reads the loaded concatenation, ignores the tail *)
+           rewrite <- app_assoc. rewrite run_load_fields. cbn [app run_rule].
+           rewrite map_write_fields by apply alloc_regs_nodup.
+           rewrite map_fst_field, alloc_regs_fst. reflexivity.
+      * (* static verdict, then the post-outcome statements *)
+        rewrite run_verdict_tail_after.
+        destruct (r_verdict r); solve [ reflexivity | apply run_stmts_none ].
 Qed.
 
 (** Chain level: the compiled program reproduces the rule-list evaluation. *)

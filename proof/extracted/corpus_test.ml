@@ -307,16 +307,27 @@ let parse_line line : pinst =
 (* fold a block into a DSL rule: (load;test)* then verdict-neutral statements
    then a verdict. *)
 let rule_of_block (lines : string list) : Syntax.rule =
-  let mk ?(vmap=None) ?(nat=None) ?(tproxy=None) body v : Syntax.rule =
+  let mk ?(vmap=None) ?(nat=None) ?(tproxy=None) ?(after=[]) body v : Syntax.rule =
     { Syntax.r_body = List.rev body;
-      r_verdict = v; r_vmap = vmap; r_nat = nat; r_tproxy = tproxy } in
+      r_verdict = v; r_vmap = vmap; r_nat = nat; r_tproxy = tproxy; r_after = after } in
   let bm body m = Syntax.BMatch m :: body in      (* prepend a match in order *)
   let bs body s = Syntax.BStmt s :: body in       (* prepend a statement in order *)
-  let mk_vmap body fields name =
-    mk ~vmap:(Some { Syntax.vm_fields = fields; vm_keyf = None;
+  (* verdict-neutral statements emitted after a terminal outcome (e.g. a counter
+     after a verdict map); anything else there is genuinely unsupported *)
+  let rec parse_after = function
+    | [] -> []
+    | l :: more ->
+      (match parse_line l with
+       | PCounter (pk,b) -> Syntax.SCounter (pk,b) :: parse_after more
+       | PNotrack -> Syntax.SNotrack :: parse_after more
+       | PLog s -> Syntax.SLog s :: parse_after more
+       | PObjref (t,n) -> Syntax.SObjref (t,n) :: parse_after more
+       | _ -> raise (Unsupported "trailing-after-vmap")) in
+  let mk_vmap ?(after=[]) body fields name =
+    mk ~after ~vmap:(Some { Syntax.vm_fields = fields; vm_keyf = None;
                      vm_name = name; vm_entries = [] }) body Verdict.Continue in
-  let mk_vmap_t body f ts name =
-    mk ~vmap:(Some { Syntax.vm_fields = [f]; vm_keyf = Some (f, ts);
+  let mk_vmap_t ?(after=[]) body f ts name =
+    mk ~after ~vmap:(Some { Syntax.vm_fields = [f]; vm_keyf = Some (f, ts);
                      vm_name = name; vm_entries = [] }) body Verdict.Continue in
   let mk_nat body imms (kind,family,amin,amax,pmin,pmax,flags) =
     mk ~nat:(Some { Syntax.nat_imms = imms; nat_map = None;
@@ -398,8 +409,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                      | PLookup (_, name, neg) ->
                          go (bm body (Syntax.MConcatSet (List.rev facc, neg, name, []))) more
                      | PVmap (_, name) ->
-                         if more <> [] then raise (Unsupported "trailing-after-vmap");
-                         mk_vmap body (List.rev facc) name
+                         mk_vmap ~after:(parse_after more) body (List.rev facc) name
                      | PDynset (op, name, _, dopt) ->
                          let fields = List.rev facc in
                          let (keys, data) = (match dopt with
@@ -459,10 +469,10 @@ let rule_of_block (lines : string list) : Syntax.rule =
                            | tl -> Syntax.MSetT (f, tl, neg, name, [])) in
                          go (bm body m) more
                      | PVmap (1, name) ->
-                         if more <> [] then raise (Unsupported "trailing-after-vmap");
+                         let after = parse_after more in
                          (match List.rev ts with
-                          | [] -> mk_vmap body [f] name
-                          | tl -> mk_vmap_t body f tl name)
+                          | [] -> mk_vmap ~after body [f] name
+                          | tl -> mk_vmap_t ~after body f tl name)
                      | PMapVal (1, name, 1) ->
                          (match more with
                           | l3 :: more3 ->
