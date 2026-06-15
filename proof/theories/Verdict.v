@@ -14,17 +14,23 @@
     adding them extends this type and the chain semantics without disturbing the
     register/cmp machinery the compiler proof is about. *)
 
-From Stdlib Require Import PeanoNat.
+From Stdlib Require Import PeanoNat String.
 
 Inductive verdict : Type :=
 | Accept
 | Drop
 | Continue
 | Reject (typ code : nat)              (* reject with ICMP type/code *)
-| Queue (lo hi : nat) (bypass fanout : bool).
+| Queue (lo hi : nat) (bypass fanout : bool)
+| Jump (target : string)               (* call a user chain; resume here on return/fall-through *)
+| Goto (target : string)               (* tail-call a user chain; do NOT resume here *)
+| Return.                              (* pop back to the caller chain *)
 
+(** A *terminal* verdict stops all chain traversal with that decision.  Continue
+    falls through to the next rule; Jump/Goto/Return are control flow handled by
+    the chain interpreter — none of these is terminal. *)
 Definition terminal (v : verdict) : bool :=
   match v with
-  | Continue => false
-  | _        => true
+  | Accept | Drop | Reject _ _ | Queue _ _ _ _ => true
+  | Continue | Jump _ | Goto _ | Return => false
   end.

@@ -222,6 +222,7 @@ Definition verdict_tail (v : verdict) : list instr :=
   | Drop            => [IImmediate Drop]
   | Reject t c      => [IReject t c]
   | Queue lo hi b f => [IQueue lo hi b f]
+  | Jump _ | Goto _ | Return => [IImmediate v]  (* jump/goto/return -> verdict-register immediate *)
   end.
 
 (** The verdict-map prefix of a rule, if any: load the key, then [IVmap] (which
@@ -306,3 +307,8 @@ Definition compile_rule (r : rule) : rule_prog :=
 
 Definition compile_chain (c : chain) : program :=
   map compile_rule (c_rules c).
+
+(** Compile a chain environment (user-defined chains) name-by-name; the jump/goto
+    targets in the bytecode are the same names, so lookups line up. *)
+Definition compile_env (cs : list (String.string * chain)) : list (String.string * program) :=
+  map (fun nc => (fst nc, compile_chain (snd nc))) cs.

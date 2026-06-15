@@ -7,6 +7,8 @@
 From Stdlib Require Import List NArith Bool.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode.
 Import ListNotations.
+(* [String] is left UNimported (it shadows List's [concat]/[length]); the chain
+   environment uses the qualified [String.string] / [String.eqb]. *)
 
 (** ** Declarative semantics. *)
 
@@ -38,7 +40,7 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
          [elems] is populated; the control-plane round-trip never populates
          [elems] (the set contents live in a separate NEWSET object), so the
          compiler theorem is unaffected.  Faithful for 4-byte-aligned fields. *)
-      xorb neg (data_mem (concat (map (fun f => field_value f p) fields)) elems)
+      xorb neg (data_mem (List.concat (map (fun f => field_value f p) fields)) elems)
   | MTransform f ts op v =>
       eval_cmp op (apply_transforms ts (field_value f p)) v
   | MSetT f ts neg _ elems =>
@@ -53,7 +55,7 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
          same 4-byte-slot padding caveat (irrelevant for the round-trip, where
          [datas] is empty — the set contents live in a separate NEWSET object) *)
       xorb neg (data_mem
-        (concat (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) elems))
+        (List.concat (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) elems))
         datas)
   end.
 
@@ -99,7 +101,7 @@ Definition outcome (r : rule) (p : packet) : option verdict :=
   | Some vm =>
       let key := match vm_keyf vm with
                  | Some (f, ts) => apply_transforms ts (field_value f p)
-                 | None => concat (map (fun f => field_value f p) (vm_fields vm))
+                 | None => List.concat (map (fun f => field_value f p) (vm_fields vm))
                  end in
       match assoc_verdict key (vm_entries vm) with
       | Some v => Some v
@@ -180,11 +182,11 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | IJhash dst src l s m o :: rest =>
       run_rule (set_reg rf dst (data_jhash l s m o (rf src))) rest p
   | ILookup srcs _ neg elems :: rest =>
-      if xorb neg (data_mem (concat (map rf srcs)) elems) then run_rule rf rest p else None
+      if xorb neg (data_mem (List.concat (map rf srcs)) elems) then run_rule rf rest p else None
   | IVmap srcs _ entries :: rest =>
       (* a verdict map: a hit terminates with that verdict; a miss falls through
          to the rest (e.g. a trailing redirect/masquerade), exactly as nft does *)
-      match assoc_verdict (concat (map rf srcs)) entries with
+      match assoc_verdict (List.concat (map rf srcs)) entries with
       | Some v => Some v
       | None   => run_rule rf rest p
       end
@@ -199,7 +201,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | IMetaSet _ _ :: rest => run_rule rf rest p
   | ICtSet _ _ :: rest => run_rule rf rest p
   | ILookupVal keys _ dreg entries :: rest =>
-      run_rule (set_reg rf dreg (map_lookup_data (concat (map rf keys)) entries)) rest p
+      run_rule (set_reg rf dreg (map_lookup_data (List.concat (map rf keys)) entries)) rest p
   | INat _ _ _ _ _ _ _ :: _ => Some Accept   (* terminal *)
   | ITproxy _ _ _ :: _ => Some Accept        (* terminal redirect *)
   | IFwd _ _ _ :: _ => Some Accept           (* terminal forward *)
@@ -241,6 +243,105 @@ Fixpoint run_program (prog : program) (p : packet) : option verdict :=
 
 Definition run_chain (prog : program) (policy : verdict) (p : packet) : verdict :=
   match run_program prog p with
+  | Some v => v
+  | None   => policy
+  end.
+
+(** ** Multi-chain control flow: jump / goto / return + user-defined chains.
+
+    A [jump n] calls chain [n] and *resumes* the caller after it (on the callee's
+    fall-through or a [return]); a [goto n] tail-calls [n] and does NOT resume; a
+    [return] pops to the caller.  A terminal verdict (accept/drop/reject/queue)
+    reached anywhere stops the whole traversal.  Recursion through the named chain
+    environment is not structurally terminating (nft rejects jump loops), so the
+    interpreters are *fuel-bounded*; the correctness theorem holds for every fuel. *)
+
+Fixpoint chain_lookup (cs : list (String.string * chain)) (n : String.string) : option chain :=
+  match cs with
+  | [] => None
+  | (m, ch) :: rest => if String.eqb n m then Some ch else chain_lookup rest n
+  end.
+
+Fixpoint prog_lookup (cs : list (String.string * program)) (n : String.string) : option program :=
+  match cs with
+  | [] => None
+  | (m, prg) :: rest => if String.eqb n m then Some prg else prog_lookup rest n
+  end.
+
+(** DSL semantics under a chain environment [cs] (the user-defined chains). *)
+Fixpoint eval_rules_j (fuel : nat) (cs : list (String.string * chain))
+                      (rs : list rule) (p : packet) : option verdict :=
+  match fuel with
+  | O => None
+  | S fuel' =>
+    match rs with
+    | [] => None
+    | r :: rest =>
+      if rule_applies r p then
+        match outcome r p with
+        | None => eval_rules_j fuel' cs rest p
+        | Some Return => None
+        | Some (Jump n) =>
+            match chain_lookup cs n with
+            | Some ch => match eval_rules_j fuel' cs (c_rules ch) p with
+                         | Some v => Some v
+                         | None   => eval_rules_j fuel' cs rest p
+                         end
+            | None => eval_rules_j fuel' cs rest p
+            end
+        | Some (Goto n) =>
+            match chain_lookup cs n with
+            | Some ch => eval_rules_j fuel' cs (c_rules ch) p
+            | None    => None
+            end
+        | Some Continue => eval_rules_j fuel' cs rest p
+        | Some v => Some v
+        end
+      else eval_rules_j fuel' cs rest p
+    end
+  end.
+
+Definition eval_table (fuel : nat) (cs : list (String.string * chain))
+                      (base : chain) (p : packet) : verdict :=
+  match eval_rules_j fuel cs (c_rules base) p with
+  | Some v => v
+  | None   => c_policy base
+  end.
+
+(** Bytecode VM under a compiled chain environment [cs]; mirrors [eval_rules_j]. *)
+Fixpoint run_rules_j (fuel : nat) (cs : list (String.string * program))
+                     (prog : program) (p : packet) : option verdict :=
+  match fuel with
+  | O => None
+  | S fuel' =>
+    match prog with
+    | [] => None
+    | rp :: rest =>
+      match run_rule empty_rf rp p with
+      | None => run_rules_j fuel' cs rest p
+      | Some Return => None
+      | Some (Jump n) =>
+          match prog_lookup cs n with
+          | Some prg => match run_rules_j fuel' cs prg p with
+                        | Some v => Some v
+                        | None   => run_rules_j fuel' cs rest p
+                        end
+          | None => run_rules_j fuel' cs rest p
+          end
+      | Some (Goto n) =>
+          match prog_lookup cs n with
+          | Some prg => run_rules_j fuel' cs prg p
+          | None     => None
+          end
+      | Some Continue => run_rules_j fuel' cs rest p
+      | Some v => Some v
+      end
+    end
+  end.
+
+Definition run_table (fuel : nat) (cs : list (String.string * program))
+                     (base : program) (policy : verdict) (p : packet) : verdict :=
+  match run_rules_j fuel cs base p with
   | Some v => v
   | None   => policy
   end.

@@ -680,3 +680,45 @@ Proof.
   intros c p. unfold run_chain, eval_chain, compile_chain.
   rewrite run_program_compile_chain. reflexivity.
 Qed.
+
+(** ** Multi-chain semantic preservation (jump / goto / return + user chains).
+
+    The compiled jump-aware VM agrees with the DSL interpreter for *every* fuel
+    and *every* chain environment — so the compiler preserves the packet verdict
+    of a whole ruleset, not just one base chain. *)
+
+Lemma prog_lookup_compile_env : forall cs n,
+  prog_lookup (compile_env cs) n = option_map compile_chain (chain_lookup cs n).
+Proof.
+  induction cs as [| [m ch] cs IH]; intros n;
+    cbn [compile_env map prog_lookup chain_lookup fst snd]; [reflexivity |].
+  destruct (String.eqb n m); [reflexivity | apply IH].
+Qed.
+
+Lemma run_eval_rules_j : forall fuel cs rs p,
+  run_rules_j fuel (compile_env cs) (map compile_rule rs) p = eval_rules_j fuel cs rs p.
+Proof.
+  induction fuel as [| fuel IH]; intros cs rs p; [reflexivity |].
+  destruct rs as [| r rest]; [reflexivity |].
+  cbn [run_rules_j eval_rules_j map]. rewrite run_rule_compile_rule.
+  destruct (rule_applies r p); [| apply IH].
+  destruct (outcome r p) as [v |]; [| apply IH].
+  destruct v as [ | | | tt cc | lo hi bb ff | n | n | ]; try reflexivity.
+  - apply IH.                                  (* Continue (dead: outcome maps it to None) *)
+  - (* Jump n: run the callee, then resume the caller on fall-through *)
+    rewrite prog_lookup_compile_env. unfold compile_chain.
+    destruct (chain_lookup cs n) as [ch |]; cbn [option_map].
+    + rewrite IH. destruct (eval_rules_j fuel cs (c_rules ch) p); [reflexivity | apply IH].
+    + apply IH.
+  - (* Goto n: tail-call the callee, do not resume *)
+    rewrite prog_lookup_compile_env. unfold compile_chain.
+    destruct (chain_lookup cs n) as [ch |]; cbn [option_map]; [apply IH | reflexivity].
+Qed.
+
+Theorem compile_table_correct : forall fuel cs base p,
+  run_table fuel (compile_env cs) (compile_chain base) (c_policy base) p
+  = eval_table fuel cs base p.
+Proof.
+  intros fuel cs base p. unfold run_table, eval_table, compile_chain.
+  rewrite run_eval_rules_j. reflexivity.
+Qed.
