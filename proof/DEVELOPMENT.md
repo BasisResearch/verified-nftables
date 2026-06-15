@@ -110,7 +110,17 @@ that doesn't change *this* rule's verdict still mutates state later rules read:
   element is `[x,x]` (reduces to equality via `data_le_antisym`), so exact sets are
   unchanged while CIDR/range sets (`ip saddr {10.0.0.0/8}`, `tcp dport {1024-65535}`)
   are faithfully expressible. semtest (3b) witnesses in-range-accept/out-drop, DSL=VM.
-  Still open: **wildcard interface names** (`iifname "eth*"`).
+- ⛔ **Wildcard interface names** (`iifname "eth*"`) — still open, with a known
+  obstruction. The kernel emits a wildcard as a *short* `cmp eq` (e.g. `cmp eq reg 1
+  0x64756d6d 0x79` = the 5-byte prefix "dummy"), i.e. a prefix comparison of only
+  `length value` bytes (vs the escaped-literal `dummy\*`, which is a full 16-byte
+  compare). Modelling this faithfully means `eval_cmp CEq` compares
+  `firstn (length b) a` — but that breaks `optimize_chain`'s verified
+  singleton-range↔equality rewrite (a singleton range is full-width equality, which
+  diverges from a prefix `MEq` when the value is shorter than the field). The clean
+  fix is a *distinct* prefix-match matchcond constructor (so exact `MEq` stays exact
+  and the optimizer is untouched) plus codec support to reconstruct short cmps as
+  prefix matches — deferred.
 - **Operand *value* semantics** *(largely FIXED 2026-06; see B)*: `eval_vsrc` is now
   proved equal to the register the compiled operand leaves for immediate, field,
   value-map, transformed-concat-map, jhash(-map), and OR-fold operands — the value
