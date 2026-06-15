@@ -206,6 +206,10 @@ Inductive stmt : Type :=
     empty in the control-plane round-trip). *)
 Record vmap_spec : Type := {
   vm_fields  : list field;
+  vm_keyf    : option (field * list transform);
+                            (* if [Some (f, ts)] the lookup key is the single
+                               transformed field value [apply_transforms ts f]
+                               instead of the concatenation of [vm_fields] *)
   vm_name    : string;
   vm_entries : list (data * verdict);
 }.

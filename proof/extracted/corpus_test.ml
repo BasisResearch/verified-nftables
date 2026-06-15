@@ -300,7 +300,13 @@ let rule_of_block (lines : string list) : Syntax.rule =
       r_verdict = v; r_vmap = vmap; r_nat = nat; r_tproxy = tproxy } in
   (* a verdict-map lookup ends the rule: prior matches + a vmap outcome *)
   let mk_vmap matches stmts fields name =
-    mk ~vmap:(Some { Syntax.vm_fields = fields; vm_name = name; vm_entries = [] })
+    mk ~vmap:(Some { Syntax.vm_fields = fields; vm_keyf = None;
+                     vm_name = name; vm_entries = [] })
+       matches stmts Verdict.Continue in
+  (* a verdict map keyed by a single transformed field value *)
+  let mk_vmap_t matches stmts f ts name =
+    mk ~vmap:(Some { Syntax.vm_fields = [f]; vm_keyf = Some (f, ts);
+                     vm_name = name; vm_entries = [] })
        matches stmts Verdict.Continue in
   (* a NAT ends the rule: prior matches + operand immediates + the nat statement *)
   let mk_nat matches stmts imms (kind,family,amin,amax,pmin,pmax,flags) =
@@ -459,9 +465,11 @@ let rule_of_block (lines : string list) : Syntax.rule =
                            | [] -> Syntax.MConcatSet ([f], neg, name, [])
                            | tl -> Syntax.MSetT (f, tl, neg, name, [])) in
                          go (m :: matches) stmts more
-                     | PVmap (1, name) when ts = [] ->
+                     | PVmap (1, name) ->
                          if more <> [] then raise (Unsupported "trailing-after-vmap");
-                         mk_vmap matches stmts [f] name
+                         (match List.rev ts with
+                          | [] -> mk_vmap matches stmts [f] name
+                          | tl -> mk_vmap_t matches stmts f tl name)
                      (* load (+ transforms) + map lookup (dreg 1) feeding a set/NAT *)
                      | PMapVal (1, name, 1) ->
                          (match more with

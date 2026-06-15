@@ -329,9 +329,17 @@ Proof.
   - destruct (nat_map n) as [[[f ts] name] |]; [apply run_map_nat | apply run_imms_nat].
   - destruct (r_tproxy r) as [t |]; [apply run_imms_tproxy |].
     destruct (r_vmap r) as [vm |].
-    + rewrite run_load_fields. cbn [run_rule].
-      rewrite map_write_fields by apply alloc_regs_nodup.
-      rewrite map_fst_field, alloc_regs_fst. reflexivity.
+    + destruct (vm_keyf vm) as [[f ts] |].
+      * (* transformed single-field key: load f, transform reg 1, IVmap reads it *)
+        rewrite compile_load_correct.
+        edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
+                    [IVmap [1] (vm_name vm) (vm_entries vm)] p) as [rf' [Hr1 Hr2]].
+        rewrite Hr2. cbn [run_rule concat map]. rewrite app_nil_r, Hr1, set_reg_same.
+        reflexivity.
+      * (* concat key *)
+        rewrite run_load_fields. cbn [run_rule].
+        rewrite map_write_fields by apply alloc_regs_nodup.
+        rewrite map_fst_field, alloc_regs_fst. reflexivity.
     + destruct (r_verdict r); rewrite run_verdict_tail; reflexivity.
 Qed.
 

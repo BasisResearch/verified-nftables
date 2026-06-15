@@ -170,8 +170,15 @@ Definition compile_end (r : rule) : list instr :=
               [ITproxy (tp_family t) (tp_areg t) (tp_preg t)]
   | None =>
     match r_vmap r with
-    | Some vm => load_fields (alloc_regs 0 (vm_fields vm)) ++
-                 [IVmap (map snd (alloc_regs 0 (vm_fields vm))) (vm_name vm) (vm_entries vm)]
+    | Some vm =>
+        match vm_keyf vm with
+        | Some (f, ts) =>
+            compile_load (field_load f) 1 :: compile_transforms ts ++
+            [IVmap [1] (vm_name vm) (vm_entries vm)]
+        | None =>
+            load_fields (alloc_regs 0 (vm_fields vm)) ++
+            [IVmap (map snd (alloc_regs 0 (vm_fields vm))) (vm_name vm) (vm_entries vm)]
+        end
     | None    => verdict_tail (r_verdict r)
     end
   end

@@ -70,8 +70,12 @@ Definition outcome (r : rule) (p : packet) : option verdict :=
   | Some _ => Some Accept   (* tproxy is terminal accept (redirect is a side effect) *)
   | None =>
     match r_vmap r with
-    | Some vm => assoc_verdict (concat (map (fun f => field_value f p) (vm_fields vm)))
-                               (vm_entries vm)
+    | Some vm =>
+        let key := match vm_keyf vm with
+                   | Some (f, ts) => apply_transforms ts (field_value f p)
+                   | None => concat (map (fun f => field_value f p) (vm_fields vm))
+                   end in
+        assoc_verdict key (vm_entries vm)
     | None    => match r_verdict r with Continue => None | v => Some v end
     end
   end
