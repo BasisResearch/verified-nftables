@@ -14,5 +14,9 @@ extracted/*.ml
 extracted/*.mli
 !extracted/glue.ml
 !extracted/corpus_test.ml
+!extracted/codec.ml
+!extracted/nftc.ml
+!extracted/nftc.mli
+!extracted/example.ml
 extracted/_build/
 .CoqMakefile.d
