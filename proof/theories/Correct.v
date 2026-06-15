@@ -398,6 +398,36 @@ Proof.
   cbn [eval_vsrc]. rewrite H1, set_reg_same. reflexivity.
 Qed.
 
+(** ** Phase B: mutation-correctness scaffolding.
+
+    [run_rule_writes] is packet-neutral on any instruction list containing no
+    [IMetaSet]/[ICtSet]: a rule that does not set meta/ct mutates nothing, so the
+    mutation-aware run threads the packet unchanged.  Hence on the whole verified
+    fragment without meta/ct set, [run_program_mut] coincides with [run_program]
+    and the mutation semantics conservatively extends [compile_chain_correct]. *)
+Definition writes_instr (i : instr) : bool :=
+  match i with IMetaSet _ _ | ICtSet _ _ => true | _ => false end.
+Definition no_writes (is : list instr) : bool :=
+  forallb (fun i => negb (writes_instr i)) is.
+
+Lemma run_rule_writes_neutral : forall is rf p,
+  no_writes is = true -> run_rule_writes rf is p = p.
+Proof.
+  induction is as [| i is IH]; intros rf p Hno; [reflexivity|].
+  cbn [no_writes forallb] in Hno. apply Bool.andb_true_iff in Hno. destruct Hno as [Hi Hno].
+  destruct i; cbn [run_rule_writes] in *;
+    try (apply IH; exact Hno);
+    try reflexivity;
+    try (cbn [writes_instr negb] in Hi; discriminate Hi).
+  all: try (destruct (eval_cmp _ _ _); [apply IH; exact Hno | reflexivity]).
+  all: try (destruct (eval_range _ _ _ _); [apply IH; exact Hno | reflexivity]).
+  all: try (destruct (xorb _ _); [apply IH; exact Hno | reflexivity]).
+  all: try (destruct (pkt_limit _ _); [apply IH; exact Hno | reflexivity]).
+  all: try (destruct (pkt_quota _ _); [apply IH; exact Hno | reflexivity]).
+  all: try (destruct (pkt_connlimit _ _); [apply IH; exact Hno | reflexivity]).
+  all: try (destruct (assoc_verdict _ _); [reflexivity | apply IH; exact Hno]).
+Qed.
+
 (** Operand immediates are verdict-neutral: running them leaves the tail reached
     from some register file. *)
 Lemma run_imms_through : forall imms rf tail p,
