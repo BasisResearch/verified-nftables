@@ -200,6 +200,7 @@ let render_instr (i : Bytecode.instr) : string = match i with
       if neg then Printf.sprintf "[ lookup reg %d set %s 0x1 ]" r name
       else Printf.sprintf "[ lookup reg %d set %s ]" r name
   | Bytecode.IVmap (srcs,name,_) ->
+      (* entries live in NEWSET, not the rule bytecode; render from the base reg *)
       let r = nreg (match srcs with x :: _ -> x | [] -> 1) in
       Printf.sprintf "[ lookup reg %d set %s dreg 0 ]" r name
   | Bytecode.ILimit s ->
