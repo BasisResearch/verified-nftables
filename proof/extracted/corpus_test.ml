@@ -81,6 +81,9 @@ let key_of_load (ld : Syntax.loaddesc) = match ld with
   | Syntax.LSocket k -> "s:" ^ name_of_sock k
   | Syntax.LExthdr (ep,h,o,l) ->
       Printf.sprintf "x:%s:%d:%d:%d" (name_of_ehproto ep) h o l
+  | Syntax.LNumgen s ->
+      Printf.sprintf "ng:%b:%d:%d" s.Packet.ng_random s.Packet.ng_mod s.Packet.ng_offset
+  | Syntax.LOsf -> "osf:"
   | Syntax.LPayload (b,o,l) -> Printf.sprintf "p:%s:%d:%d" (name_of_base b) o l
 
 (* reverse map: descriptor key -> field, built from the verified field table *)
@@ -105,6 +108,10 @@ let field_of_key_str key : Syntax.field option =
   | ["m"; n] -> (match meta_of_name n with Some k -> Some (Syntax.FMetaGen k) | None -> None)
   | ["r"; n] -> (match rt_of_name n with Some k -> Some (Syntax.FRtGen k) | None -> None)
   | ["s"; n] -> (match sock_of_name n with Some k -> Some (Syntax.FSocketGen k) | None -> None)
+  | ["ng"; rnd; m; off] ->
+      Some (Syntax.FNumgen { Packet.ng_random = bool_of_string rnd;
+                             ng_mod = int_of_string m; ng_offset = int_of_string off })
+  | ["osf"; ""] -> Some Syntax.FOsf
   | _ -> (try Some (Hashtbl.find field_of_key key) with Not_found -> None)
 
 (* ---------- corpus value <-> bytes ---------- *)
@@ -146,6 +153,11 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.IExthdrLoad (ep,h,o,l,r) ->
       Printf.sprintf "[ exthdr load %s %db @ %d + %d => reg %d ]"
         (name_of_ehproto ep) l h o r
+  | Bytecode.INumgen (s,r) ->
+      let off = if s.Packet.ng_offset > 0 then Printf.sprintf " offset %d" s.Packet.ng_offset else "" in
+      Printf.sprintf "[ numgen reg %d = %s mod %d%s ]"
+        r (if s.Packet.ng_random then "random" else "inc") s.Packet.ng_mod off
+  | Bytecode.IOsf r -> Printf.sprintf "[ osf dreg %d ]" r
   | Bytecode.IPayloadLoad (b,o,l,r) ->
       Printf.sprintf "[ payload load %db @ %s header + %d => reg %d ]"
         l (name_of_base b) o r
@@ -253,6 +265,13 @@ let parse_line line : pinst =
       (match sock_of_name name with
        | Some k -> PLoad (key_of_load (Syntax.LSocket k), int_of_string r)
        | None -> raise (Unsupported ("socket:"^name)))
+  | "numgen"::"reg"::n::"="::mode::"mod"::m::rest ->
+      let off = (match rest with [] -> 0 | ["offset"; o] -> int_of_string o
+                 | _ -> raise (Unsupported "numgen:opts")) in
+      PLoad (key_of_load (Syntax.LNumgen
+        { Packet.ng_random = (mode = "random"); ng_mod = int_of_string m;
+          ng_offset = off }), int_of_string n)
+  | "osf"::"dreg"::n::[] -> PLoad (key_of_load Syntax.LOsf, int_of_string n)
   | "exthdr"::"load"::proto::lb::"@"::htype::"+"::off::"=>"::"reg"::r::[] ->
       let len = int_of_string (String.sub lb 0 (String.length lb - 1)) in
       (match ehproto_of_name proto with

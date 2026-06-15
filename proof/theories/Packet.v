@@ -47,6 +47,11 @@ Record limit_spec : Type := {
   ls_rate : nat; ls_unit : nat; ls_burst : nat; ls_bytes : bool; ls_flags : nat
 }.
 
+(** A number generator (`numgen`): [ng_random] inc-vs-random, modulus, offset. *)
+Record numgen_spec : Type := {
+  ng_random : bool; ng_mod : nat; ng_offset : nat
+}.
+
 (** Payload bases: which header a [payload load] reads from. *)
 Inductive pbase : Type :=
 | PLink
@@ -67,6 +72,8 @@ Record packet : Type := {
   pkt_ih   : list byte;          (* inner-header bytes (tunnelled packet) *)
   pkt_tnl  : list byte;          (* tunnel-header bytes *)
   pkt_limit : limit_spec -> bool; (* oracle: does this packet pass a given limiter? *)
+  pkt_numgen : numgen_spec -> data;  (* oracle: numgen output for this packet *)
+  pkt_osf  : data;                   (* oracle: OS-fingerprint value *)
 }.
 
 (** Read [len] bytes at [off] from a header byte string. *)

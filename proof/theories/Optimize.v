@@ -21,7 +21,10 @@ Import ListNotations.
 (** ** Decidable equality for match conditions (needed by [nodup]). *)
 
 Definition field_eq_dec (a b : field) : {a = b} + {a <> b}.
-Proof. decide equality; (apply Nat.eq_dec || decide equality). Defined.
+Proof.
+  decide equality;
+    repeat (apply Nat.eq_dec || apply Bool.bool_dec || decide equality).
+Defined.
 Definition transform_eq_dec (a b : transform) : {a = b} + {a <> b}.
 Proof.
   decide equality;

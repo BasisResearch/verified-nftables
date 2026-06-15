@@ -30,6 +30,8 @@ Inductive instr : Type :=
 | ICtLoad      (k : ct_key) (dst : reg)
 | IRtLoad      (k : rt_key) (dst : reg)
 | ISocketLoad  (k : socket_key) (dst : reg)
+| INumgen      (spec : numgen_spec) (dst : reg)
+| IOsf         (dst : reg)
 | IExthdrLoad  (ep : exthdr_proto) (htype off len : nat) (dst : reg)
 | IPayloadLoad (b : pbase) (off len : nat) (dst : reg)
 | ICmp         (op : cmpop) (src : reg) (v : data)

@@ -23,6 +23,8 @@ Inductive loaddesc : Type :=
 | LCt      (k : ct_key)
 | LRt      (k : rt_key)
 | LSocket  (k : socket_key)
+| LNumgen  (spec : numgen_spec)
+| LOsf
 | LExthdr  (ep : exthdr_proto) (htype off len : nat)
 | LPayload (b : pbase) (off len : nat).
 
@@ -52,7 +54,9 @@ Inductive field : Type :=
 (* typed oracle-keyed fields: any meta key, routing key, socket key *)
 | FMetaGen (k : meta_key)
 | FRtGen (k : rt_key)
-| FSocketGen (k : socket_key).
+| FSocketGen (k : socket_key)
+| FNumgen (spec : numgen_spec)
+| FOsf.
 
 (** The denotation of each field as a load. *)
 Definition field_load (f : field) : loaddesc :=
@@ -87,6 +91,8 @@ Definition field_load (f : field) : loaddesc :=
   | FMetaGen k => LMeta k
   | FRtGen k => LRt k
   | FSocketGen k => LSocket k
+  | FNumgen spec => LNumgen spec
+  | FOsf => LOsf
   end.
 
 (** Enumeration of every field, for the glue's load->field reverse map. *)
@@ -109,6 +115,8 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
   | LCt k           => pkt_ct p k
   | LRt k           => pkt_rt p k
   | LSocket k       => pkt_sock p k
+  | LNumgen spec    => pkt_numgen p spec
+  | LOsf            => pkt_osf p
   | LExthdr ep h o l => pkt_eh p ep h o l
   | LPayload b o l  => read_payload b o l p
   end.
