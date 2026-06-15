@@ -25,7 +25,7 @@ the model against a real corpus rather than hand-written examples.
 | `theories/Semantics.v` | packet→verdict semantics for *both* languages |
 | `theories/Compile.v` | the compiler `compile_chain : chain -> program` |
 | `theories/Correct.v` | **`compile_chain_correct`** — semantic preservation |
-| `theories/Optimize.v` | DSL optimizer (DCE + match-dedup) + **`optimize_chain_correct`** |
+| `theories/Optimize.v` | DSL optimizer (dedup + range-simplify + no-op-prune + DCE) + **`optimize_chain_correct`** |
 | `theories/Extract.v` | extraction to `extracted/*.ml` |
 | `extracted/glue.ml` | *untrusted* glue: builds chains, renders nft-format bytecode (forward test) |
 | `extracted/corpus_test.ml` | *untrusted* harness: round-trips the upstream corpus through the verified compiler |
@@ -91,7 +91,7 @@ so a self-consistent-but-wrong entry would round-trip cleanly (a code review
 proved this: permuting `iif`/`oif`, or corrupting an offset, was invisible).
 That gap is closed separately by **`make validate`**, which feeds each named
 field / meta-ct key to **live `nft`** (an independent oracle we don't control)
-and checks our `field_load` descriptor appears in nft's lowering — 26/26 pass.
+and checks our `field_load` descriptor appears in nft's lowering — 28/28 pass.
 A wrong offset or name fails there.
 
 ## Trust story (TCB)
