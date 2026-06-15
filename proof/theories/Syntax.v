@@ -8,9 +8,10 @@
     Each high-level [field] (e.g. "tcp dport") *denotes* a concrete way to read
     the packet, given by [field_load].  This denotation is the single source of
     truth shared by the semantics (which reads the field from the packet) and
-    the compiler (which emits a load instruction for it).  A bug in an offset
-    would therefore show up either in the equivalence proof or — against the
-    real kernel — in differential testing; it cannot hide. *)
+    the compiler (which emits a load instruction for it).  The offsets here are
+    checked against live [nft] by `make validate` (an INDEPENDENT oracle — see
+    [run_validation] in extracted/corpus_test.ml); the corpus round-trip alone
+    cannot check them because its parser and renderer share these tables. *)
 
 From Stdlib Require Import List NArith String.
 From Nft Require Import Bytes Packet Verdict.

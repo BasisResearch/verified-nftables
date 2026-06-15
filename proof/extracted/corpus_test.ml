@@ -391,8 +391,74 @@ let blocks_of_file path : string list list =
    done with End_of_file -> ());
   flush (); close_in ic; List.rev !blocks
 
+(* ---------- independent validation of field_load against LIVE nft ----------
+   The corpus round-trip cannot validate the name tables or named-field offsets
+   (parse and render share them). Here we use live `nft --debug=netlink` as an
+   INDEPENDENT oracle: for each named field we emit the corresponding nft rule,
+   let the real nft lower it, and check that our field_load descriptor appears
+   among the loads nft emitted. A wrong offset/name in field_load fails this. *)
+let run_nft input =
+  let tf = Filename.temp_file "nftv" ".nft" in
+  let oc = open_out tf in output_string oc input; close_out oc;
+  let ic = Unix.open_process_in
+    (Printf.sprintf "unshare -rn nft --debug=netlink -f %s 2>/dev/null" (Filename.quote tf)) in
+  let acc = ref [] in
+  (try while true do acc := input_line ic :: !acc done with End_of_file -> ());
+  ignore (Unix.close_process_in ic); (try Sys.remove tf with _ -> ());
+  List.rev !acc
+
+let load_keys_of lines =
+  List.filter_map (fun l ->
+    let t = String.trim l in
+    if String.length t >= 1 && t.[0] = '[' then
+      (try (match parse_line l with PLoad (key,_) -> Some key | _ -> None) with _ -> None)
+    else None) lines
+
+(* (family, nft match text, expected field) — exercises field_load offsets/names *)
+let validate_pairs : (string * string * Syntax.field) list = [
+  "ip",  "ip saddr 1.2.3.4",       Syntax.FIp4Saddr;
+  "ip",  "ip daddr 1.2.3.4",       Syntax.FIp4Daddr;
+  "ip",  "ip protocol tcp",        Syntax.FIp4Protocol;
+  "ip",  "ip ttl 1",               Syntax.FIp4Ttl;
+  "ip",  "ip length 100",          Syntax.FIp4Totlen;
+  "ip",  "ip id 1",                Syntax.FIp4Id;
+  "ip",  "tcp sport 80",           Syntax.FThSport;
+  "ip",  "tcp dport 80",           Syntax.FThDport;
+  "ip",  "tcp sequence 1",         Syntax.FTcpSeq;
+  "ip",  "tcp flags syn",          Syntax.FTcpFlags;
+  "ip",  "udp length 8",           Syntax.FUdpLen;
+  "ip",  "icmp type echo-request", Syntax.FIcmpType;
+  "ip",  "icmp code 0",            Syntax.FIcmpCode;
+  "ip6", "ip6 saddr ::1",          Syntax.FIp6Saddr;
+  "ip6", "ip6 daddr ::1",          Syntax.FIp6Daddr;
+  "ip",  "meta mark 1",            Syntax.FMetaGen Packet.MKmark;
+  "ip",  "meta l4proto tcp",       Syntax.FMetaGen Packet.MKl4proto;
+  "inet", "meta nfproto ipv4",     Syntax.FMetaGen Packet.MKnfproto;
+  "ip",  "meta length 100",        Syntax.FMetaGen Packet.MKlen;
+  "ip",  "meta skuid 0",           Syntax.FMetaGen Packet.MKskuid;
+  "ip",  "meta priority 0",        Syntax.FMetaGen Packet.MKpriority;
+  "ip",  "ct state new",           Syntax.FCtState;
+  "ip",  "ct mark 1",              Syntax.FCtMark;
+]
+
+let run_validation () =
+  let pass = ref 0 and fail = ref 0 in
+  List.iter (fun (fam, text, field) ->
+    let input = Printf.sprintf
+      "table %s validate {\n chain c {\n type filter hook input priority 0;\n %s\n }\n}\n"
+      fam text in
+    let keys = load_keys_of (run_nft input) in
+    let want = key_of_load (Syntax.field_load field) in
+    if List.mem want keys then incr pass
+    else (incr fail;
+      Printf.printf "FAIL: %-26s want %-16s got [%s]\n" text want (String.concat "; " keys)))
+    validate_pairs;
+  Printf.printf "\n=== field_load vs live nft: %d/%d validated ===\n"
+    !pass (!pass + !fail);
+  if !fail > 0 then exit 1 else exit 0
+
 (* ---------- main ---------- *)
-let () =
+let run_corpus () =
   let files = Array.to_list Sys.argv |> List.tl in
   let total = ref 0 and pass = ref 0 in
   let cats : (string,int) Hashtbl.t = Hashtbl.create 64 in
@@ -429,3 +495,8 @@ let () =
   let mm = try Hashtbl.find cats "MISMATCH" with Not_found -> 0 in
   if mm > 0 then (Printf.printf "\nFAIL: %d mismatch(es)\n" mm; exit 1)
   else Printf.printf "\nOK: %d/%d round-tripped, 0 mismatches\n" !pass !total
+
+let () =
+  match Array.to_list Sys.argv with
+  | _ :: "validate" :: _ -> run_validation ()
+  | _ -> run_corpus ()

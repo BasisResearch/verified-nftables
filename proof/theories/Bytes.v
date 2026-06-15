@@ -60,8 +60,23 @@ Definition data_shift (shl : bool) (amt : nat) (d : data) : data :=
     (if shl then N.shiftl (data_to_N d) (N.of_nat amt)
              else N.shiftr (data_to_N d) (N.of_nat amt)).
 
-(** Byte-order conversion (ntoh/hton); modelled as reversing the byte string. *)
-Definition data_byteorder (hton : bool) (size len : nat) (d : data) : data := rev d.
+(** Byte-order conversion (ntoh/hton).  nftables' byteorder expression swaps the
+    bytes *within each [len]-byte element* across the [size]-byte value (ntoh and
+    hton are the same byte reversal for a single conversion).  We therefore
+    reverse each [len]-byte chunk of the register value.  [fuel] (= [length d])
+    bounds the recursion so it is structural even when [len = 0]. *)
+Fixpoint byteorder_chunks (fuel len : nat) (d : data) : data :=
+  match fuel with
+  | 0 => d
+  | S f =>
+      match d with
+      | [] => []
+      | _ :: _ => rev (firstn len d) ++ byteorder_chunks f len (skipn len d)
+      end
+  end.
+
+Definition data_byteorder (hton : bool) (size len : nat) (d : data) : data :=
+  byteorder_chunks (length d) len d.
 
 (** Big-endian (most-significant-byte-first) lexicographic order on byte
     strings; for equal-length network-order values this is numeric order.

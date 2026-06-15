@@ -2,5 +2,6 @@
 ; -w -a silences warnings in machine-generated extraction output.
 (executables
  (names glue corpus_test)
+ (libraries unix)
  (modules :standard)
  (flags (:standard -w -a)))

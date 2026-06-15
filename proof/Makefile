@@ -8,7 +8,7 @@
 ROCQBIN ?=
 COQMAKE  = CoqMakefile
 
-.PHONY: all proofs glue difftest corpus clean
+.PHONY: all proofs glue difftest corpus validate clean
 
 all: proofs glue
 
@@ -30,6 +30,12 @@ difftest: glue
 # report measured coverage (fails on any mismatch).
 corpus: proofs
 	./corpus.sh
+
+# Independently validate field_load offsets / meta-ct names against live `nft`
+# (the corpus round-trip shares its tables between parse and render, so it can't
+# check these; this uses nft as an external oracle).
+validate: glue
+	./extracted/_build/default/corpus_test.exe validate
 
 clean:
 	-[ -f $(COQMAKE) ] && $(MAKE) -f $(COQMAKE) clean || true

@@ -71,9 +71,22 @@ Coverage grew as the verified core grew (each step kept both theorems axiom-free
 | + conntrack & fields | `ct load`, 46 named fields | 979 (38.7%) |
 | + extension headers | parametric `exthdr load` (IPv6 ext / TCP opts) | **1272 (50.2%)** |
 
-**Zero mismatches throughout** — every block we claim to support compiles to
-exactly nft's bytecode. The remaining ~50% is a deliberate plateau: it needs
-*new subsystems*, not more match expressions (see below).
+Coverage has since grown past the table (range, prefix, sets, ct/exthdr,
+transform chains, statements counter/notrack/log, reject/queue verdicts,
+stateful `limit` via an oracle, all meta keys, rt/socket loads): **1664/2532
+(65.7%) at commit 0d104df**, still zero mismatches.
+
+**What the round-trip does and does NOT validate (honest scope).** It validates
+the *structural lowering*: that each match becomes the right load + test + the
+verdict/statement instructions in the right order, value byte-grouping, range
+lo/hi split, set-name pass-through, etc. It does **not** by itself validate the
+name tables or `field_load` offsets — its parser and renderer share those tables,
+so a self-consistent-but-wrong entry would round-trip cleanly (a code review
+proved this: permuting `iif`/`oif`, or corrupting an offset, was invisible).
+That gap is closed separately by **`make validate`**, which feeds each named
+field / meta-ct key to **live `nft`** (an independent oracle we don't control)
+and checks our `field_load` descriptor appears in nft's lowering — 23/23 pass.
+A wrong offset or name fails there.
 
 ## Trust story (TCB)
 
@@ -82,17 +95,35 @@ Trusted: the Rocq kernel; the `.v` *specifications* (`Semantics.v` defines what
 (proved); the OCaml glue (`glue.ml`, `corpus_test.ml`), which only builds inputs
 and renders/parses text and is itself checked against the corpus and the live
 `nft`. The glue is minimal and differentially tested rather than reimplementing
-nft logic; the heavy lifting stays in the verified core. Note the bitwise/set
-*semantics* are not extracted (the glue never runs the packet semantics), so the
-byte-level `Nat.land`/membership functions are trusted only inside the proof.
+nft logic; the heavy lifting stays in the verified core.
+
+**Eyeball-trusted, never-differentially-tested semantics.** The corpus checks
+*structure*, not the data-plane *meaning* of register operations. The byte-level
+functions `data_bitops`, `data_le`, `data_mem`, `data_shift`, `data_byteorder`
+are not extracted (the glue never runs the packet semantics) and have no external
+oracle; their faithfulness rests on inspection of the `.v` definitions. They are
+written to match nft: `data_byteorder` reverses each `len`-byte element (matching
+nft's byteorder, not a whole-string `rev` stub); `data_shift` shifts via a
+big-endian `N` of the loaded width. A small data-plane differential test for
+these is future work.
+
+**Known abstractions** (each faithful or documented, none a silent no-op):
+`reject`/`queue` model only their control-flow (stop traversal), not the emitted
+ICMP / userspace hand-off; sets carry their elements inside the `lookup`
+instruction (the real set lives in a separate NEWSET object; dynamic set mutation
+is out of scope); `notrack`/`ct set` are verdict-neutral here (their conntrack
+side effects are outside the single-packet model); the compiler targets register
+1 only, which is what *prevents* concatenation/maps (multi-register) — see the
+plateau. Field count: `all_fields` lists 48 named fields plus the parametric/
+oracle constructors.
 
 ## Assessment (the instructions' checklist, with numbers)
 
 - **Theorem useful?** Yes — end-to-end: DSL meaning ≡ installed bytecode behaviour.
 - **Catches injected bugs?** Yes (mutation-tested: flipping `cmp eq`→`neq` breaks
-  `Correct.v`); and the corpus catches *spec*-vs-*reality* drift (a wrong offset
-  would mismatch against nft).
-- **Measured coverage:** 1272/2532 (50.2%) of upstream corpus blocks, 0 mismatches.
+  `Correct.v`). Spec-vs-reality drift in *offsets/names* is caught by `make
+  validate` against live `nft` (not by the corpus round-trip alone — see above).
+- **Measured coverage:** 1664/2532 (65.7%) of upstream corpus blocks, 0 mismatches.
 - **Deployable?** `compile_chain`/`optimize_chain` extract to OCaml and already
   emit nft's exact text; the remaining step is a libnftnl netlink emitter shim.
 
