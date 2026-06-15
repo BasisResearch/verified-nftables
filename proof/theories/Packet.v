@@ -65,7 +65,9 @@ Record packet : Type := {
   pkt_ct   : ct_key -> data;     (* conntrack state *)
   pkt_rt   : rt_key -> data;     (* routing-state oracle *)
   pkt_sock : socket_key -> data; (* socket-state oracle *)
-  pkt_eh   : exthdr_proto -> nat -> nat -> nat -> data;  (* exthdr: proto htype off len *)
+  pkt_eh   : exthdr_proto -> nat -> nat -> nat -> bool -> data;
+                            (* exthdr: proto htype off len present?  present=true
+                               reads the existence flag, false the header bytes *)
   pkt_lh   : list byte;          (* link-header bytes (e.g. Ethernet) *)
   pkt_nh   : list byte;          (* network-header bytes (e.g. IPv4/IPv6) *)
   pkt_th   : list byte;          (* transport-header bytes (e.g. TCP/UDP) *)

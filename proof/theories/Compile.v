@@ -17,7 +17,7 @@ Definition compile_load (ld : loaddesc) (dst : reg) : instr :=
   | LSocket k      => ISocketLoad k dst
   | LNumgen spec   => INumgen spec dst
   | LOsf           => IOsf dst
-  | LExthdr ep h o l => IExthdrLoad ep h o l dst
+  | LExthdr ep h o l pr => IExthdrLoad ep h o l pr dst
   | LPayload b o l => IPayloadLoad b o l dst
   end.
 
@@ -45,7 +45,7 @@ Fixpoint compile_transforms (ts : list transform) : list instr :=
 Definition load_width (ld : loaddesc) : nat :=
   match ld with
   | LPayload _ _ len   => len
-  | LExthdr _ _ _ len  => len
+  | LExthdr _ _ _ len _ => len
   | _                  => 4
   end.
 

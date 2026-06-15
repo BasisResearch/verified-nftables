@@ -32,7 +32,7 @@ Inductive instr : Type :=
 | ISocketLoad  (k : socket_key) (dst : reg)
 | INumgen      (spec : numgen_spec) (dst : reg)
 | IOsf         (dst : reg)
-| IExthdrLoad  (ep : exthdr_proto) (htype off len : nat) (dst : reg)
+| IExthdrLoad  (ep : exthdr_proto) (htype off len : nat) (present : bool) (dst : reg)
 | IPayloadLoad (b : pbase) (off len : nat) (dst : reg)
 | ICmp         (op : cmpop) (src : reg) (v : data)
 | IRange       (op : cmpop) (src : reg) (lo hi : data)   (* range eq/neq *)

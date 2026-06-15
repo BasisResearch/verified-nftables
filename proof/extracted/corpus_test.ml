@@ -79,8 +79,8 @@ let key_of_load (ld : Syntax.loaddesc) = match ld with
   | Syntax.LCt k -> "c:" ^ name_of_ct k
   | Syntax.LRt k -> "r:" ^ name_of_rt k
   | Syntax.LSocket k -> "s:" ^ name_of_sock k
-  | Syntax.LExthdr (ep,h,o,l) ->
-      Printf.sprintf "x:%s:%d:%d:%d" (name_of_ehproto ep) h o l
+  | Syntax.LExthdr (ep,h,o,l,pr) ->
+      Printf.sprintf "x:%s:%d:%d:%d:%b" (name_of_ehproto ep) h o l pr
   | Syntax.LNumgen s ->
       Printf.sprintf "ng:%b:%d:%d" s.Packet.ng_random s.Packet.ng_mod s.Packet.ng_offset
   | Syntax.LOsf -> "osf:"
@@ -96,10 +96,10 @@ let () = List.iter
    directly; everything else is a fixed named field from the reverse map. *)
 let field_of_key_str key : Syntax.field option =
   match String.split_on_char ':' key with
-  | ["x"; proto; h; o; l] ->
+  | ["x"; proto; h; o; l; pr] ->
       (match ehproto_of_name proto with
-       | Some ep -> Some (Syntax.FExthdr (ep, int_of_string h,
-                                          int_of_string o, int_of_string l))
+       | Some ep -> Some (Syntax.FExthdr (ep, int_of_string h, int_of_string o,
+                                          int_of_string l, bool_of_string pr))
        | None -> None)
   | ["p"; base; o; l] ->
       (match base_of_name base with
@@ -164,9 +164,9 @@ let render_instr (i : Bytecode.instr) : string = match i with
       Printf.sprintf "[ rt load %s => reg %d ]" (name_of_rt k) (nreg r)
   | Bytecode.ISocketLoad (k,r) ->
       Printf.sprintf "[ socket load %s => reg %d ]" (name_of_sock k) (nreg r)
-  | Bytecode.IExthdrLoad (ep,h,o,l,r) ->
-      Printf.sprintf "[ exthdr load %s %db @ %d + %d => reg %d ]"
-        (name_of_ehproto ep) l h o (nreg r)
+  | Bytecode.IExthdrLoad (ep,h,o,l,pr,r) ->
+      Printf.sprintf "[ exthdr load %s %db @ %d + %d%s => reg %d ]"
+        (name_of_ehproto ep) l h o (if pr then " present" else "") (nreg r)
   | Bytecode.INumgen (s,r) ->
       (* mirror upstream nft: it omits "offset" when 0, never emits "offset 0" *)
       let off = if s.Packet.ng_offset > 0 then Printf.sprintf " offset %d" s.Packet.ng_offset else "" in
@@ -293,12 +293,16 @@ let parse_line line : pinst =
         { Packet.ng_random = (mode = "random"); ng_mod = int_of_string m;
           ng_offset = off }), int_of_string n)
   | "osf"::"dreg"::n::[] -> PLoad (key_of_load Syntax.LOsf, int_of_string n)
-  | "exthdr"::"load"::proto::lb::"@"::htype::"+"::off::"=>"::"reg"::r::[] ->
+  | "exthdr"::"load"::proto::lb::"@"::htype::"+"::off::rest
+    when ehproto_of_name proto <> None ->
       let len = int_of_string (String.sub lb 0 (String.length lb - 1)) in
-      (match ehproto_of_name proto with
-       | Some _ -> PLoad (Printf.sprintf "x:%s:%s:%s:%d" proto htype off len,
-                          int_of_string r)
-       | None -> raise (Unsupported ("exthdrproto:"^proto)))
+      let (present, rest2) = (match rest with
+        | "present" :: r -> (true, r) | r -> (false, r)) in
+      (match rest2 with
+       | "=>"::"reg"::r::[] ->
+           PLoad (Printf.sprintf "x:%s:%s:%s:%d:%b" proto htype off len present,
+                  int_of_string r)
+       | _ -> raise (Unsupported "exthdr:form"))
   | "cmp"::op::"reg"::r::rest ->
       let iseq = match op with "eq"->true | "neq"->false
                  | _ -> raise (Unsupported ("cmpop:"^op)) in
@@ -443,7 +447,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                            | [] -> Syntax.MConcatSet ([f], neg, name, [])
                            | tl -> Syntax.MSetT (f, tl, neg, name, [])) in
                          go (m :: matches) stmts more
-                     | PRange _ -> raise (Unsupported "transform-then-range")
+                     | PRange _ -> raise (Unsupported "range:reg")
                      | PLookup _ -> raise (Unsupported "lookup:reg")
                      | PBitwise _ | PShift _ | PByteorder _ | PJhash _ | PCmp _ ->
                          raise (Unsupported "reg!=1")
