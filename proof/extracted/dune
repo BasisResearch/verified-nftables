@@ -1,7 +1,23 @@
-; Build the verified-extracted modules + untrusted glue into one executable.
-; -w -a silences warnings in machine-generated extraction output.
+; The verified-extracted compiler/optimizer (Compile, Optimize, Syntax, ...),
+; the untrusted Codec (rendering), and the public Nftc facade, built as a
+; reusable library. (wrapped false) keeps the extracted module names global so
+; the glue can reference them unqualified. -w -a silences warnings in the
+; machine-generated extraction output.
+(library
+ (name nftc)
+ (modules (:standard \ glue corpus_test example))
+ (wrapped false)
+ (flags (:standard -w -a)))
+
+; The untrusted glue: a forward demo (glue) and the corpus differential test.
 (executables
  (names glue corpus_test)
- (libraries unix)
- (modules :standard)
+ (modules glue corpus_test)
+ (libraries nftc unix)
  (flags (:standard -w -a)))
+
+; A standalone consumer of the library (public API demo).
+(executable
+ (name example)
+ (modules example)
+ (libraries nftc))

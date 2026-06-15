@@ -3,14 +3,24 @@
 #   make            build + check all proofs (incl. extraction to extracted/)
 #   make glue       build the untrusted OCaml glue around the extracted compiler
 #   make difftest   compile a ruleset and diff our bytecode against real `nft`
+#   make lib        build the reusable `nftc` library
+#   make example    build+run the standalone library-consumer demo
 #   make clean      remove build artifacts
 
 ROCQBIN ?=
 COQMAKE  = CoqMakefile
 
-.PHONY: all proofs glue difftest corpus validate clean
+.PHONY: all proofs glue lib example difftest corpus validate clean
 
 all: proofs glue
+
+# Build the reusable verified-compiler library (Compile/Optimize + Nftc facade).
+lib: proofs
+	cd extracted && dune build
+
+# Build and run the standalone library-consumer example.
+example: proofs
+	cd extracted && dune exec ./example.exe
 
 # Build/check every .v listed in _CoqProject; Extract.v writes extracted/*.ml.
 proofs: $(COQMAKE)
