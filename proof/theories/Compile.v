@@ -105,6 +105,8 @@ Definition compile_stmt (s : stmt) : list instr :=
   | SCounter p b => [ICounter p b]
   | SNotrack     => [INotrack]
   | SLog level   => [ILog level]
+  | SMangle v b off len ct co cf =>
+      [IImmediateData 1 v; IPayloadWrite 1 b off len ct co cf]
   end.
 
 Definition verdict_tail (v : verdict) : list instr :=

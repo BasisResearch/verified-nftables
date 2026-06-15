@@ -50,6 +50,8 @@ Inductive instr : Type :=
                                           (* verdict-map lookup (lookup .. dreg 0):
                                              the rule's verdict, or fall-through *)
 | IImmediateData (dst : reg) (v : data)   (* immediate into a data register *)
+| IPayloadWrite (src : reg) (b : pbase) (off len : nat) (ctype coff cflags : nat)
+                                          (* payload mangle (verdict-neutral) *)
 | INat         (kind family : string) (amin amax pmin pmax : option reg)
                (flags : nat)   (* terminal NAT / masquerade / redirect *)
 | ILimit       (spec : limit_spec)       (* rate limit (can break the rule) *)

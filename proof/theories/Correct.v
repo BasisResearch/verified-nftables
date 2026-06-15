@@ -212,13 +212,23 @@ Proof.
         [apply IH; exact Hc | reflexivity].
 Qed.
 
-(** Verdict-neutral statements pass through unchanged. *)
-Lemma run_stmts_passthrough : forall ss rf tail p,
-  run_rule rf (flat_map compile_stmt ss ++ tail) p = run_rule rf tail p.
+(** The register file after running a statement list.  Most statements are
+    register-neutral; a payload-mangle (`SMangle`) loads its immediate into
+    register 1.  Statements never produce a verdict, so they thread the register
+    file through to the rule's verdict tail. *)
+Fixpoint apply_stmts (rf : regfile) (ss : list stmt) (p : packet) : regfile :=
+  match ss with
+  | []                       => rf
+  | SMangle v _ _ _ _ _ _ :: rest => apply_stmts (set_reg rf 1 v) rest p
+  | _ :: rest                => apply_stmts rf rest p
+  end.
+
+Lemma run_stmts_thread : forall ss rf tail p,
+  run_rule rf (flat_map compile_stmt ss ++ tail) p = run_rule (apply_stmts rf ss p) tail p.
 Proof.
   induction ss as [| s ss IH]; intros rf tail p.
   - reflexivity.
-  - destruct s; cbn [flat_map compile_stmt app run_rule]; apply IH.
+  - destruct s; cbn [flat_map compile_stmt app run_rule apply_stmts]; apply IH.
 Qed.
 
 Definition verdict_result (v : verdict) : option verdict :=
@@ -247,7 +257,8 @@ Lemma run_rule_compile_rule : forall r p,
 Proof.
   intros r p. unfold compile_rule, rule_applies.
   apply run_compile_matches_const.
-  intro rf. rewrite run_stmts_passthrough.
+  intro rf. rewrite run_stmts_thread.
+  generalize (apply_stmts rf (r_stmts r) p); clear rf; intro rf.
   unfold compile_end, outcome. destruct (r_nat r) as [n |].
   - apply run_imms_nat.
   - destruct (r_vmap r) as [vm |].

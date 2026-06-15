@@ -153,7 +153,10 @@ Inductive matchcond : Type :=
 Inductive stmt : Type :=
 | SCounter (pkts bytes : nat)
 | SNotrack
-| SLog (level : option nat).
+| SLog (level : option nat)
+| SMangle (v : data) (b : pbase) (off len : nat) (ctype coff cflags : nat).
+                            (* payload write of an immediate value (verdict-neutral;
+                               the packet rewrite is a side effect of the model) *)
 
 (** A verdict map: the rule's verdict comes from looking up the concatenation of
     [vm_fields] in the named map (entries live in NEWSET; carried for semantics,

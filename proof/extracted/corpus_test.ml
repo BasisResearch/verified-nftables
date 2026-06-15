@@ -225,6 +225,10 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.IImmediateData (dst,v) ->
       (* NAT operand registers (1..4) are raw nft numbers, not slot regs *)
       Printf.sprintf "[ immediate reg %d %s ]" dst (render_value v)
+  | Bytecode.IPayloadWrite (src,b,off,len,ct,co,cf) ->
+      Printf.sprintf
+        "[ payload write reg %d => %db @ %s header + %d csum_type %d csum_off %d csum_flags 0x%x ]"
+        src len (name_of_base b) off ct co cf
   | Bytecode.INat (kind,family,amin,amax,pmin,pmax,flags) ->
       let opt label = function Some r -> Printf.sprintf " %s reg %d" label r | None -> "" in
       let fl = if flags > 0 then Printf.sprintf " flags 0x%x" flags else "" in
@@ -271,6 +275,8 @@ type pinst =
   | PLimit   of Packet.limit_spec
   | PLog     of int option
   | PImmData of int * int list                    (* immediate into a data register *)
+  | PWrite   of int * Packet.pbase * int * int * int * int * int
+                            (* payload write: src reg, base, off, len, ctype, coff, cflags *)
   | PNat     of string * string * int option * int option * int option * int option * int
                             (* kind, family, amin, amax, pmin, pmax, flags *)
   | PImm     of Verdict.verdict
@@ -372,8 +378,15 @@ let parse_line line : pinst =
        | ["drop"]   -> PImm Verdict.Drop
        | v::_       -> raise (Unsupported ("verdict:"^v))
        | []         -> raise (Unsupported "verdict:empty"))
-  | "immediate"::"reg"::r::rest ->  (* immediate into a data register (NAT operand) *)
+  | "immediate"::"reg"::r::rest ->  (* immediate into a data register (NAT/mangle operand) *)
       PImmData (int_of_string r, bytes_of_hexwords rest)
+  | "payload"::"write"::"reg"::r::"=>"::lb::"@"::base::"header"::"+"::off::rest ->
+      (match base_of_name base, rest with
+       | Some b, ["csum_type"; ct; "csum_off"; co; "csum_flags"; cf] ->
+           let len = int_of_string (String.sub lb 0 (String.length lb - 1)) in
+           PWrite (int_of_string r, b, int_of_string off, len,
+                   int_of_string ct, int_of_string co, int_of_string cf)
+       | _ -> raise (Unsupported "payload:write:form"))
   | "nat"::kind::family::rest when kind = "snat" || kind = "dnat" ->
       let rec fields amin amax pmin pmax flags = function
         | "addr_min"::"reg"::a::r -> fields (Some (int_of_string a)) amax pmin pmax flags r
@@ -451,17 +464,26 @@ let rule_of_block (lines : string list) : Syntax.rule =
            if rest <> [] then raise (Unsupported "trailing-after-nat");
            mk_nat matches stmts [] (k,f,a,ax,pm,px,fl)
        | PImmData (r, v) ->
-           (* gather operand immediates, then the nat statement *)
-           let rec gnat imms = function
-             | l :: more ->
-               (match parse_line l with
-                | PImmData (r2, v2) -> gnat ((r2, v2) :: imms) more
-                | PNat (k,f,a,ax,pm,px,fl) ->
-                    if more <> [] then raise (Unsupported "trailing-after-nat");
-                    mk_nat matches stmts (List.rev imms) (k,f,a,ax,pm,px,fl)
-                | _ -> raise (Unsupported "imm-not-nat"))
-             | [] -> raise (Unsupported "imm-dangling")
-           in gnat [(r, v)] rest
+           let is_write l = (try (match parse_line l with PWrite _ -> true | _ -> false)
+                             with _ -> false) in
+           (match rest with
+            | l2 :: more2 when is_write l2 ->   (* immediate + payload write = mangle *)
+                (match parse_line l2 with
+                 | PWrite (r2, b, off, len, ct, co, cf) when r = 1 && r2 = 1 ->
+                     go matches (Syntax.SMangle (v, b, off, len, ct, co, cf) :: stmts) more2
+                 | _ -> raise (Unsupported "mangle:reg"))
+            | _ ->
+                (* otherwise: gather operand immediates, then a nat statement *)
+                let rec gnat imms = function
+                  | l :: more ->
+                    (match parse_line l with
+                     | PImmData (r2, v2) -> gnat ((r2, v2) :: imms) more
+                     | PNat (k,f,a,ax,pm,px,fl) ->
+                         if more <> [] then raise (Unsupported "trailing-after-nat");
+                         mk_nat matches stmts (List.rev imms) (k,f,a,ax,pm,px,fl)
+                     | _ -> raise (Unsupported "imm-not-nat"))
+                  | [] -> raise (Unsupported "imm-dangling")
+                in gnat [(r, v)] rest)
        | PCounter (p,b) -> go matches (Syntax.SCounter (p,b) :: stmts) rest
        | PNotrack -> go matches (Syntax.SNotrack :: stmts) rest
        | PLog l -> go matches (Syntax.SLog l :: stmts) rest
