@@ -98,6 +98,9 @@ Record packet : Type := {
                                specification (which inputs the lookup uses, e.g.
                                "saddr . iif"); the result selector fixes what the
                                routing table yields. *)
+  pkt_xfrm : string -> nat -> string -> data;
+                            (* oracle: an IPsec xfrm-state field, keyed by
+                               direction ("in"/"out"), SA spnum, and field name. *)
   pkt_ctdir : string -> string -> data;
                             (* oracle: a directional conntrack field (e.g. the
                                original/reply tuple address), keyed by the field

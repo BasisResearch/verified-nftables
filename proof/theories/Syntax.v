@@ -28,6 +28,7 @@ Inductive loaddesc : Type :=
 | LExthdr  (ep : exthdr_proto) (htype off len : nat) (present : bool)
 | LFib     (sel : string) (res : fib_result)
 | LCtDir   (key dir : string)
+| LXfrm    (dir : string) (spnum : nat) (key : string)
 | LInner   (typ hdrsize flags : nat) (innerdesc : string) (width : nat)
 | LPayload (b : pbase) (off len : nat).
 
@@ -63,6 +64,7 @@ Inductive field : Type :=
 | FOsf
 | FFib (sel : string) (res : fib_result)
 | FCtDir (key dir : string)
+| FXfrm (dir : string) (spnum : nat) (key : string)
 | FInner (typ hdrsize flags : nat) (innerdesc : string) (width : nat).
 
 (** The denotation of each field as a load. *)
@@ -97,6 +99,7 @@ Definition field_load (f : field) : loaddesc :=
   | FExthdr ep htype off len present => LExthdr ep htype off len present
   | FMetaGen k => LMeta k
   | FCtGen k => LCt k
+  | FXfrm dir sp key => LXfrm dir sp key
   | FRtGen k => LRt k
   | FSocketGen k => LSocket k
   | FNumgen spec => LNumgen spec
@@ -131,6 +134,7 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
   | LExthdr ep h o l pr => pkt_eh p ep h o l pr
   | LFib sel res    => pkt_fib p sel res
   | LCtDir key dir  => pkt_ctdir p key dir
+  | LXfrm dir sp key => pkt_xfrm p dir sp key
   | LInner t h fl desc _ => pkt_inner p t h fl desc
   | LPayload b o l  => read_payload b o l p
   end.
