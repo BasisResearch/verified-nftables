@@ -407,7 +407,13 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
     rules whose set-statement operands are simple — the common `meta mark set
     <const>` / `ct mark set <field>` shapes, incl. the set-then-match bug. *)
 Definition simple_vsrc (vs : vsrc) : bool :=
-  match vs with VImm _ | VField _ _ => true | _ => false end.
+  match vs with
+  | VImm _ | VField _ _ => true
+  | VMap (_ :: _) [] _ => true              (* nonempty-key value map, no key transform *)
+  | VMapT _ _ => true                       (* transformed-concat value map *)
+  | _ => false   (* key-transformed/jhash/or operands and empty-field maps:
+                    value-correctness not yet proven (reg-1 split / fold) *)
+  end.
 (** A body is "simple" for the mutation theorem when every statement is a meta/ct
     set with a simple operand (matches are unrestricted).  Other statements in the
     same rule are out of scope (their value semantics are not modelled). *)

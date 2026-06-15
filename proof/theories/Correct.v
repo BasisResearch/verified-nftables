@@ -465,30 +465,17 @@ Lemma run_compile_transform_writes : forall t rf rest p,
 Proof. intros t rf rest p. destruct t; reflexivity. Qed.
 
 Lemma run_transforms_prefix_writes : forall ts rf rest p,
-  exists rf', rf' 1 = apply_transforms ts (rf 1) /\
-    run_rule_writes rf (compile_transforms ts ++ rest) p = run_rule_writes rf' rest p.
+  exists rf', rf' 1 = apply_transforms ts (rf 1)
+    /\ (forall r, r <> 1 -> rf' r = rf r)
+    /\ run_rule_writes rf (compile_transforms ts ++ rest) p = run_rule_writes rf' rest p.
 Proof.
   induction ts as [| t ts IH]; intros rf rest p.
-  - exists rf. split; reflexivity.
+  - exists rf. repeat split; reflexivity.
   - cbn [compile_transforms app]. rewrite run_compile_transform_writes.
-    edestruct (IH (set_reg rf 1 (apply_transform t (rf 1)))) as [rf' [H1 H2]].
-    exists rf'. rewrite set_reg_same in H1. split; [exact H1 | exact H2].
-Qed.
-
-(** A simple operand leaves [eval_vsrc vs p] in register 1 under [run_rule_writes]
-    too (the operand is packet-neutral; it only loads/transforms registers). *)
-Lemma writes_vsrc_simple : forall vs rf rest p,
-  simple_vsrc vs = true ->
-  exists rf', run_rule_writes rf (compile_vsrc vs ++ rest) p = run_rule_writes rf' rest p
-              /\ rf' 1 = eval_vsrc vs p.
-Proof.
-  intros vs rf rest p Hs.
-  destruct vs as [v | f ts | | | | | ]; cbn [simple_vsrc] in Hs; try discriminate.
-  - (* VImm *) exists (set_reg rf 1 v). cbn [compile_vsrc app run_rule_writes].
-    split; [reflexivity | apply set_reg_same].
-  - (* VField *) cbn [compile_vsrc app]. rewrite compile_load_writes.
-    edestruct (run_transforms_prefix_writes ts (set_reg rf 1 (field_value f p)) rest p) as [rf' [H1 H2]].
-    exists rf'. split; [exact H2 |]. cbn [eval_vsrc]. rewrite H1, set_reg_same. reflexivity.
+    edestruct (IH (set_reg rf 1 (apply_transform t (rf 1)))) as [rf' [H1 [Hfr H2]]].
+    exists rf'. rewrite set_reg_same in H1. split; [exact H1 | split; [| exact H2]].
+    intros r Hr. rewrite (Hfr r Hr). apply set_reg_other.
+    intro Heq; apply Hr; symmetry; exact Heq.
 Qed.
 
 Lemma run_transforms_at_prefix_writes : forall ts r rf rest p,
@@ -535,6 +522,42 @@ Proof.
       rewrite compile_load_writes, Ht3, Hr3. reflexivity.
 Qed.
 
+(** A simple operand leaves exactly [eval_vsrc vs p] in register 1 under
+    [run_rule_writes] (the operand is packet-neutral; it only loads/transforms/
+    looks-up registers).  Covers immediate, field, nonempty-key value map, and
+    transformed-concat value map operands. *)
+Lemma writes_vsrc_simple : forall vs rf rest p,
+  simple_vsrc vs = true ->
+  exists rf', run_rule_writes rf (compile_vsrc vs ++ rest) p = run_rule_writes rf' rest p
+              /\ rf' 1 = eval_vsrc vs p.
+Proof.
+  intros vs rf rest p Hs.
+  destruct vs as [v | f ts | fields ts nm | | | elems nm | ];
+    cbn [simple_vsrc] in Hs; try discriminate.
+  - (* VImm *) exists (set_reg rf 1 v). cbn [compile_vsrc app run_rule_writes].
+    split; [reflexivity | apply set_reg_same].
+  - (* VField *) cbn [compile_vsrc app]. rewrite compile_load_writes.
+    edestruct (run_transforms_prefix_writes ts (set_reg rf 1 (field_value f p)) rest p)
+      as [rf' [H1 [_ H2]]].
+    exists rf'. split; [exact H2 |]. cbn [eval_vsrc]. rewrite H1, set_reg_same. reflexivity.
+  - (* VMap (f0 :: fr) [] nm : load key fields (no key transform), lookup *)
+    destruct fields as [| f0 fr]; [discriminate Hs |].
+    destruct ts as [| t ts]; [| discriminate Hs].
+    cbn [compile_vsrc compile_transforms]. rewrite <- !app_assoc. cbn [app].
+    rewrite run_load_fields_writes. cbn [run_rule_writes].
+    eexists. split; [reflexivity |]. rewrite set_reg_same.
+    cbn [eval_vsrc apply_transforms].
+    rewrite map_write_fields by apply alloc_regs_nodup.
+    rewrite map_fst_field, alloc_regs_fst. reflexivity.
+  - (* VMapT elems nm : transformed-concat key, then lookup *)
+    cbn [compile_vsrc]. rewrite <- app_assoc.
+    edestruct (run_load_fields_t_writes elems 0 rf
+                ([ILookupVal (map snd (alloc_regs 0 (map fst elems))) nm 1] ++ rest) p)
+      as [rf' [Hrb [_ Hr]]].
+    rewrite Hr. cbn [app run_rule_writes].
+    eexists. split; [reflexivity |]. rewrite set_reg_same, Hrb. reflexivity.
+Qed.
+
 (** Single-match gating under [run_rule_writes]: a match passes (continue to the
     [run_rule_writes]-constant tail result [R]) or breaks (return the packet
     unchanged), exactly tracking [eval_matchcond].  Mirrors the per-match cases of
@@ -574,19 +597,19 @@ Proof.
       [apply Hc | reflexivity].
   - (* MTransform *) rewrite compile_load_writes. rewrite <- !app_assoc. cbn [app].
     edestruct (run_transforms_prefix_writes ts (set_reg rf 1 (field_value f p))
-                (ICmp op 1 v0 :: X) p) as [rf' [H1 H2]].
+                (ICmp op 1 v0 :: X) p) as [rf' [H1 [_ H2]]].
     rewrite H2. cbn [run_rule_writes]. rewrite H1, set_reg_same. cbn [eval_matchcond].
     destruct (eval_cmp op (apply_transforms ts (field_value f p)) v0); [apply Hc | reflexivity].
   - (* MSetT *) rewrite compile_load_writes. rewrite <- !app_assoc. cbn [app].
     edestruct (run_transforms_prefix_writes ts (set_reg rf 1 (field_value f p))
-                (ILookup [1] nm neg :: X) p) as [rf' [H1 H2]].
+                (ILookup [1] nm neg :: X) p) as [rf' [H1 [_ H2]]].
     rewrite H2. cbn [run_rule_writes concat map]. rewrite app_nil_r, H1, set_reg_same.
     cbn [eval_matchcond].
     destruct (xorb neg (data_mem (apply_transforms ts (field_value f p)) (e_set (pkt_env p) nm)));
       [apply Hc | reflexivity].
   - (* MRangeT *) rewrite compile_load_writes. rewrite <- !app_assoc. cbn [app].
     edestruct (run_transforms_prefix_writes ts (set_reg rf 1 (field_value f p))
-                (IRange (if neg then CNe else CEq) 1 lo hi :: X) p) as [rf' [H1 H2]].
+                (IRange (if neg then CNe else CEq) 1 lo hi :: X) p) as [rf' [H1 [_ H2]]].
     rewrite H2. cbn [run_rule_writes]. rewrite H1, set_reg_same. cbn [eval_matchcond].
     destruct (eval_range (if neg then CNe else CEq) (apply_transforms ts (field_value f p)) lo hi);
       [apply Hc | reflexivity].
