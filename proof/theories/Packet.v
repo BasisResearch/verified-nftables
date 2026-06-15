@@ -90,7 +90,9 @@ Inductive pbase : Type :=
     environment; making it a standalone parameter is a cosmetic refactor that
     does not change the theorem.) *)
 Record env : Type := {
-  e_set  : string -> list data;             (* a named set's elements (membership) *)
+  e_set  : string -> list (data * data);    (* a named set's elements as closed
+                                               intervals [lo,hi] (exact = [x,x],
+                                               CIDR/range = [lo,hi]); see [set_mem] *)
   e_vmap : string -> list (data * verdict);  (* a named verdict map's entries *)
   e_map  : string -> list (data * data);     (* a named value map's entries *)
   e_fib  : string -> fib_result -> data;     (* the routing table a `fib` lookup

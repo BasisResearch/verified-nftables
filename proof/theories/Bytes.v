@@ -142,6 +142,16 @@ Proof.
       exfalso. apply Exy. apply Nat.le_antisymm; assumption.
 Qed.
 
+(** Set membership over an *interval* set: each element is a closed range
+    [lo, hi] (an exact element is the degenerate [x, x]; a prefix/CIDR like
+    10.0.0.0/8 is [10.0.0.0, 10.255.255.255]).  Membership is [lo <= x <= hi]
+    by big-endian order — so a point set reduces to equality ([data_le_antisym])
+    while interval/prefix sets are faithfully expressible. *)
+Definition data_in_iv (x : data) (iv : data * data) : bool :=
+  andb (data_le (fst iv) x) (data_le x (snd iv)).
+Definition set_mem (x : data) (s : list (data * data)) : bool :=
+  existsb (data_in_iv x) s.
+
 Lemma data_eqb_sym : forall a b, data_eqb a b = data_eqb b a.
 Proof.
   intros a b. unfold data_eqb.

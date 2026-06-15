@@ -249,7 +249,7 @@ Proof.
       rewrite map_fst_field, alloc_regs_fst.
       cbn [forallb eval_matchcond].
       destruct (xorb neg
-                 (data_mem (concat (map (fun f => field_value f p) fields))
+                 (set_mem (concat (map (fun f => field_value f p) fields))
                            (e_set (pkt_env p) nm)));
         cbn [andb]; [apply IH; exact Hc | reflexivity].
     + (* MTransform *) rewrite compile_load_correct.
@@ -266,7 +266,7 @@ Proof.
         as [rf' [H1 H2]].
       rewrite H2. cbn [run_rule concat map]. rewrite app_nil_r, H1, set_reg_same.
       cbn [forallb eval_matchcond].
-      destruct (xorb neg (data_mem (apply_transforms ts (field_value f p))
+      destruct (xorb neg (set_mem (apply_transforms ts (field_value f p))
                                    (e_set (pkt_env p) nm)));
         cbn [andb]; [apply IH; exact Hc | reflexivity].
     + (* MRangeT: range of a transformed value *)
@@ -298,7 +298,7 @@ Proof.
                    :: (flat_map compile_match ms ++ tail)) p) as [rf' [Hrb [_ Hrun]]].
       rewrite Hrun. cbn [run_rule]. rewrite Hrb.
       cbn [forallb eval_matchcond].
-      destruct (xorb neg (data_mem
+      destruct (xorb neg (set_mem
                  (concat (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) celems))
                  (e_set (pkt_env p) nm)));
         cbn [andb]; [apply IH; exact Hc | reflexivity].
@@ -666,7 +666,7 @@ Proof.
     rewrite run_load_fields_writes. cbn [run_rule_writes].
     rewrite map_write_fields by apply alloc_regs_nodup.
     rewrite map_fst_field, alloc_regs_fst. cbn [eval_matchcond].
-    destruct (xorb neg (data_mem (concat (map (fun f => field_value f p) fields))
+    destruct (xorb neg (set_mem (concat (map (fun f => field_value f p) fields))
                                  (e_set (pkt_env p) nm)));
       [apply Hc | reflexivity].
   - (* MTransform *) rewrite compile_load_writes. rewrite <- !app_assoc. cbn [app].
@@ -679,7 +679,7 @@ Proof.
                 (ILookup [1] nm neg :: X) p) as [rf' [H1 [_ H2]]].
     rewrite H2. cbn [run_rule_writes concat map]. rewrite app_nil_r, H1, set_reg_same.
     cbn [eval_matchcond].
-    destruct (xorb neg (data_mem (apply_transforms ts (field_value f p)) (e_set (pkt_env p) nm)));
+    destruct (xorb neg (set_mem (apply_transforms ts (field_value f p)) (e_set (pkt_env p) nm)));
       [apply Hc | reflexivity].
   - (* MRangeT *) rewrite compile_load_writes. rewrite <- !app_assoc. cbn [app].
     edestruct (run_transforms_prefix_writes ts (set_reg rf 1 (field_value f p))
@@ -698,7 +698,7 @@ Proof.
                 (ILookup (map snd (alloc_regs 0 (map fst celems))) nm neg :: X) p)
       as [rf' [Hrb [_ Hrun]]].
     rewrite Hrun. cbn [run_rule_writes]. rewrite Hrb. cbn [eval_matchcond].
-    destruct (xorb neg (data_mem
+    destruct (xorb neg (set_mem
                (concat (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) celems))
                (e_set (pkt_env p) nm)));
       [apply Hc | reflexivity].

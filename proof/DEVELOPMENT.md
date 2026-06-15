@@ -104,13 +104,19 @@ that doesn't change *this* rule's verdict still mutates state later rules read:
 - **Concat-key padding**: the kernel pads each concatenated set-key field to its
   4-byte register slot; we omit it, so membership is wrong for sub-4-byte
   concatenated fields (flagged in `Semantics.v`).
-- **Interval/prefix sets** (`flags interval`) and **wildcard interface names**
-  (`iifname "eth*"`) are not modelled (membership is exact-match only).
-- **Operand *value* semantics delegated to "the corpus"** but never actually
-  checked: the proofs only establish *verdict-neutrality* of set/mangle operands;
-  the corpus only checks *bytecode bytes*. So the runtime value of `jhash`,
-  `data_or` (which even truncates to the shorter operand), byteorder, etc. is
-  constrained by neither — an independent ground truth is missing.
+- ✅ **Interval/prefix sets** (`flags interval`) *(FIXED 2026-06)*: a named set's
+  contents are now closed intervals `[lo,hi]` (`e_set : string -> list (data*data)`)
+  and membership is `set_mem x = ∃[lo,hi], lo ≤ x ≤ hi` (big-endian order). An exact
+  element is `[x,x]` (reduces to equality via `data_le_antisym`), so exact sets are
+  unchanged while CIDR/range sets (`ip saddr {10.0.0.0/8}`, `tcp dport {1024-65535}`)
+  are faithfully expressible. semtest (3b) witnesses in-range-accept/out-drop, DSL=VM.
+  Still open: **wildcard interface names** (`iifname "eth*"`).
+- **Operand *value* semantics** *(largely FIXED 2026-06; see B)*: `eval_vsrc` is now
+  proved equal to the register the compiled operand leaves for immediate, field,
+  value-map, transformed-concat-map, jhash(-map), and OR-fold operands — the value
+  the verdict proof had delegated to the corpus. (`data_or`'s truncation is now a
+  *modelled* choice both sides share, not an unchecked one.) Open: key-transformed
+  value maps and the empty-field degenerate operands.
 
 **What the theorem *does* still give** (honestly): the compiler and optimizer are
 *internally consistent* w.r.t. this semantics — the compiler introduces no bug

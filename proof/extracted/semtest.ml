@@ -34,7 +34,12 @@ let empty_env : Packet.env =
   { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
     e_fib = (fun _ _ -> []); e_rt = (fun _ -> []) }
 (* an environment where the set/vmap [name] has the given contents *)
-let env_set name elems : Packet.env = { empty_env with Packet.e_set = (fun n -> if n = name then elems else []) }
+(* exact elements wrap as degenerate intervals (x,x) *)
+let env_set name elems : Packet.env =
+  { empty_env with Packet.e_set = (fun n -> if n = name then Stdlib.List.map (fun x -> (x, x)) elems else []) }
+(* an interval/CIDR set: contents are [lo,hi] ranges *)
+let env_set_iv name ivs : Packet.env =
+  { empty_env with Packet.e_set = (fun n -> if n = name then ivs else []) }
 let env_vmap name ents : Packet.env = { empty_env with Packet.e_vmap = (fun n -> if n = name then ents else []) }
 
 (* ---- concrete packet construction ---- *)
@@ -144,6 +149,16 @@ let () =
       "tcp dport 80 (in set)",  mk_pkt ~env:set_env ~th:(th ~dport:[0; 80]) ();
       "tcp dport 443 (not in)", mk_pkt ~env:set_env ~th:(th ~dport:[1; 187]) ();
       "tcp dport 22 but EMPTY set (drop)", mk_pkt ~th:(th ~dport:[0; 22]) () ];
+  (* (3b) INTERVAL set `tcp dport @r` where @r = {1024-65535} is a single range
+     (a degenerate exact set would need 64512 elements) — exercises set_mem's
+     interval membership that exact list membership cannot represent. *)
+  let iv_env = env_set_iv "set" [ ([4; 0], [255; 255]) ] in
+  run_battery fails
+    "interval set tcp dport @r (range 1024-65535 in the ENV)"
+    (chain Verdict.Drop [ rule [ l4_tcp; mset Syntax.FThDport ] Verdict.Accept ])
+    [ "dport 1024 (low edge, in)",  mk_pkt ~env:iv_env ~th:(th ~dport:[4; 0]) ();
+      "dport 8080 (mid, in)",       mk_pkt ~env:iv_env ~th:(th ~dport:[31; 144]) ();
+      "dport 80 (below range, out)", mk_pkt ~env:iv_env ~th:(th ~dport:[0; 80]) () ];
   (* (4) control flow: a base chain that JUMPs to a user chain "tcp_in" — tests
      compile_table_correct (jump -> callee accept, or fall-through -> resume base
      -> policy drop). The single-base-chain corpus cannot exercise this. *)

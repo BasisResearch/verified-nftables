@@ -38,12 +38,12 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
          NOTE: the kernel pads each concatenated field to its 4-byte register
          slot; this model omits that inter-field padding (faithful for
          4-byte-aligned fields). *)
-      xorb neg (data_mem (List.concat (map (fun f => field_value f p) fields))
+      xorb neg (set_mem (List.concat (map (fun f => field_value f p) fields))
                          (e_set (pkt_env p) name))
   | MTransform f ts op v =>
       eval_cmp op (apply_transforms ts (field_value f p)) v
   | MSetT f ts neg name =>
-      xorb neg (data_mem (apply_transforms ts (field_value f p))
+      xorb neg (set_mem (apply_transforms ts (field_value f p))
                          (e_set (pkt_env p) name))
   | MRangeT f ts neg lo hi =>
       eval_range (if neg then CNe else CEq) (apply_transforms ts (field_value f p)) lo hi
@@ -53,7 +53,7 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
   | MConcatSetT elems neg name =>
       (* like [MConcatSet] but each element is transformed before concatenation;
          contents read from the named set in [pkt_env p] *)
-      xorb neg (data_mem
+      xorb neg (set_mem
         (List.concat (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) elems))
         (e_set (pkt_env p) name))
   end.
@@ -224,7 +224,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       run_rule (set_reg rf dst (data_jhash l s m o (rf src))) rest p
   | ILookup srcs name neg :: rest =>
       (* set membership: contents read from the named set in [pkt_env p] *)
-      if xorb neg (data_mem (List.concat (map rf srcs)) (e_set (pkt_env p) name))
+      if xorb neg (set_mem (List.concat (map rf srcs)) (e_set (pkt_env p) name))
       then run_rule rf rest p else None
   | IVmap srcs name :: rest =>
       (* a verdict map: a hit terminates with that verdict; a miss falls through
@@ -363,7 +363,7 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
   | IByteorder dst src h sz len :: rest => run_rule_writes (set_reg rf dst (data_byteorder h sz len (rf src))) rest p
   | IJhash dst src l s m o :: rest => run_rule_writes (set_reg rf dst (data_jhash l s m o (rf src))) rest p
   | ILookup srcs name neg :: rest =>
-      if xorb neg (data_mem (List.concat (map rf srcs)) (e_set (pkt_env p) name))
+      if xorb neg (set_mem (List.concat (map rf srcs)) (e_set (pkt_env p) name))
       then run_rule_writes rf rest p else p
   | IVmap srcs name :: rest =>
       match assoc_verdict (List.concat (map rf srcs)) (e_vmap (pkt_env p) name) with
