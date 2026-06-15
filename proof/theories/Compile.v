@@ -12,6 +12,8 @@ Import ListNotations.
 Definition compile_load (ld : loaddesc) (dst : reg) : instr :=
   match ld with
   | LMeta k        => IMetaLoad k dst
+  | LCt k          => ICtLoad k dst
+  | LExthdr ep h o l => IExthdrLoad ep h o l dst
   | LPayload b o l => IPayloadLoad b o l dst
   end.
 
@@ -19,10 +21,24 @@ Definition compile_match (m : matchcond) : list instr :=
   match m with
   | MEq  f v => [compile_load (field_load f) 1; ICmp CEq 1 v]
   | MNeq f v => [compile_load (field_load f) 1; ICmp CNe 1 v]
+  | MRange f neg lo hi =>
+      [compile_load (field_load f) 1; IRange (if neg then CNe else CEq) 1 lo hi]
+  | MMasked f neg mask xor v =>
+      [compile_load (field_load f) 1; IBitwise 1 1 mask xor;
+       ICmp (if neg then CNe else CEq) 1 v]
+  | MSet f neg name elems =>
+      [compile_load (field_load f) 1; ILookup 1 name neg elems]
   end.
 
+(** A [Continue] (fall-through) rule emits no verdict expression, exactly as
+    [nft] does for a rule that only narrows; a terminal verdict emits an
+    [immediate] into the verdict register. *)
 Definition compile_rule (r : rule) : rule_prog :=
-  flat_map compile_match (r_matches r) ++ [IImmediate (r_verdict r)].
+  flat_map compile_match (r_matches r) ++
+  match r_verdict r with
+  | Continue => []
+  | v        => [IImmediate v]
+  end.
 
 Definition compile_chain (c : chain) : program :=
   map compile_rule (c_rules c).

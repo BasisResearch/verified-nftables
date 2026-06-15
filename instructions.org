@@ -6,6 +6,7 @@
 - Set up an efficient development environment that allows for fast iteration
   - The repo you are in already has the relevant instructions.
 - Research the existing established verification effort, identify ones that are relevant, and clone their repositories for reference
+- Before writing any spec, research and inventory the existing *test corpora and differential oracles* for the target: upstream conformance/test suites, third-party simulators, fuzzing corpora. Search the web AND the package/source ecosystem, not just academic prior art. Choose the largest real-world corpus you can actually run, and make it your differential oracle. Examples you author yourself are for bootstrapping only and never count as evidence of correctness.
 - Understand the architecture of the project
 - Identify suitable technology and structure for the verification effort.
   - verification vs extraction?
@@ -14,16 +15,33 @@
 - Identify the correct deployment path
 - Document the development process, reflect on the progress, and be open to significantly refactor or experiment with new approaches when stuck
 
+** Definition of done
+The effort is a *prototype*, not a deliverable, until it runs against the chosen
+external corpus and you report measured coverage (N of M cases passing) plus a
+categorized list of what is unsupported and why. "Works on my hand-written
+examples" is a prototype, not evidence. Aim for parity on the corpus; where you
+stop, the stopping point must be a *measured plateau or a named blocker*, not
+"a milestone was reached." Before reporting done, answer honestly: would a
+skeptic call this a toy? If yes, keep going.
 
 ** Tips
 - Constantly assess the verification effort
   - Is the theorem proven useful?
   - Can the verification catch any injected bugs?
-  - Is the verification set up in a way that can plausibly achieve feature parity?
+  - What is the *measured* coverage against the corpus right now, and which
+    specific features are the next batch to add to raise it? (Do not answer
+    "plausibly" — report numbers.)
   - Does verification result in something that can be deployed?
   - What could have been done differently and what are the trade-offs?
-- Incrementally add more and more features instead of packing all features at once. This helps you test things quickly.
-- Make sure the project is amenable for testing. We have an existing application and differential testing is a viable way of ensuring the spec is correctly written.
+- Incremental means: land a thin vertical slice end-to-end first, then keep
+  widening coverage against the corpus. It does NOT license stopping at the
+  first slice. Continue until corpus coverage plateaus (easy gains exhausted) or
+  you hit a genuine blocker — then surface the coverage numbers and the blocker
+  instead of declaring success.
+- Differential testing against the upstream implementation is REQUIRED, not
+  optional, and must run over a real external corpus (see Key steps). Report
+  concrete coverage every time you assess progress. A handful of hand-written
+  rules is not acceptable evidence that the spec is correct or has parity.
 - Always search for existing tools before inventing your own
 - Avoid reimplementing a non-trivial amount of logic in unverified code when there's an option to reuse existing unverified code in the upstream implementation. Our own unverified code should be considered less trustworthy than upstream's unverified but battle-tested code.
 - It is okay to temporarily branch out and run small experimentations before re-integrating into the main branch.

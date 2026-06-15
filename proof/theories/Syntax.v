@@ -19,32 +19,83 @@ Import ListNotations.
 (** How to read a field's value out of a packet. *)
 Inductive loaddesc : Type :=
 | LMeta    (k : meta_key)
+| LCt      (k : ct_key)
+| LExthdr  (ep : exthdr_proto) (htype off len : nat)
 | LPayload (b : pbase) (off len : nat).
 
-(** The high-level header/metadata fields the DSL can match on. *)
+(** The high-level header/metadata fields the DSL can match on.  Offsets/lengths
+    mirror the layouts [nft] itself uses; they are validated against the upstream
+    [tests/py/*.t.payload] corpus by the round-trip differential test. *)
 Inductive field : Type :=
-| FMetaL4proto          (* meta l4proto *)
-| FIpSaddr              (* ip saddr   : network header, offset 12, 4 bytes *)
-| FIpDaddr              (* ip daddr   : network header, offset 16, 4 bytes *)
-| FTcpSport             (* tcp sport  : transport header, offset 0, 2 bytes *)
-| FTcpDport.            (* tcp dport  : transport header, offset 2, 2 bytes *)
+(* metadata *)
+| FMetaL4proto | FMetaNfproto | FMetaProtocol | FMetaMark
+| FMetaIif | FMetaOif | FMetaIiftype | FMetaOiftype | FMetaIifname | FMetaOifname
+| FMetaLen | FMetaPkttype | FMetaCpu | FMetaSkuid | FMetaSkgid | FMetaPriority
+(* conntrack *)
+| FCtState | FCtStatus | FCtMark | FCtDirection | FCtExpiration | FCtId
+(* link header (Ethernet) *)
+| FEtherDaddr | FEtherSaddr | FEtherType | FLinkVlan
+(* network header (IPv4) *)
+| FIp4VerHdrlen | FIp4Word0 | FIp4Tos | FIp4Totlen | FIp4Id | FIp4FragOff
+| FIp4Ttl | FIp4Protocol | FIp4Csum | FIp4Saddr | FIp4Daddr
+(* network header (IPv6) *)
+| FIp6Saddr | FIp6Daddr
+(* transport header (TCP/UDP/ICMP) *)
+| FThSport | FThDport | FTcpSeq | FTcpAck | FTcpFlags
+| FUdpLen | FUdpCsum | FIcmpType | FIcmpCode
+(* parametric extension-header / TCP-option field *)
+| FExthdr (ep : exthdr_proto) (htype off len : nat).
 
-(** The denotation of each field as a load.  These offsets/lengths mirror the
-    IPv4 and TCP header layouts that [nft] itself uses (validated against
-    [nft --debug=netlink]). *)
+(** The denotation of each field as a load. *)
 Definition field_load (f : field) : loaddesc :=
   match f with
-  | FMetaL4proto => LMeta MKl4proto
-  | FIpSaddr     => LPayload PNetwork 12 4
-  | FIpDaddr     => LPayload PNetwork 16 4
-  | FTcpSport    => LPayload PTransport 0 2
-  | FTcpDport    => LPayload PTransport 2 2
+  | FMetaL4proto  => LMeta MKl4proto   | FMetaNfproto  => LMeta MKnfproto
+  | FMetaProtocol => LMeta MKprotocol  | FMetaMark     => LMeta MKmark
+  | FMetaIif      => LMeta MKiif       | FMetaOif      => LMeta MKoif
+  | FMetaIiftype  => LMeta MKiiftype   | FMetaOiftype  => LMeta MKoiftype
+  | FMetaLen      => LMeta MKlen       | FMetaPkttype  => LMeta MKpkttype
+  | FMetaCpu      => LMeta MKcpu       | FMetaSkuid    => LMeta MKskuid
+  | FMetaSkgid    => LMeta MKskgid     | FMetaPriority => LMeta MKpriority
+  | FMetaIifname  => LMeta MKiifname   | FMetaOifname  => LMeta MKoifname
+  | FCtState      => LCt CKstate       | FCtStatus     => LCt CKstatus
+  | FCtMark       => LCt CKmark        | FCtDirection  => LCt CKdirection
+  | FCtExpiration => LCt CKexpiration  | FCtId         => LCt CKid
+  | FEtherDaddr   => LPayload PLink 0 6   | FEtherSaddr => LPayload PLink 6 6
+  | FEtherType    => LPayload PLink 12 2  | FLinkVlan   => LPayload PLink 14 2
+  | FIp4VerHdrlen => LPayload PNetwork 0 1  | FIp4Word0   => LPayload PNetwork 0 2
+  | FIp4Tos       => LPayload PNetwork 1 1  | FIp4Totlen  => LPayload PNetwork 2 2
+  | FIp4Id        => LPayload PNetwork 4 2  | FIp4FragOff => LPayload PNetwork 6 2
+  | FIp4Ttl       => LPayload PNetwork 8 1  | FIp4Protocol=> LPayload PNetwork 9 1
+  | FIp4Csum      => LPayload PNetwork 10 2 | FIp4Saddr   => LPayload PNetwork 12 4
+  | FIp4Daddr     => LPayload PNetwork 16 4
+  | FIp6Saddr     => LPayload PNetwork 8 16 | FIp6Daddr   => LPayload PNetwork 24 16
+  | FThSport      => LPayload PTransport 0 2 | FThDport   => LPayload PTransport 2 2
+  | FTcpSeq       => LPayload PTransport 4 4 | FTcpAck    => LPayload PTransport 8 4
+  | FTcpFlags     => LPayload PTransport 13 1
+  | FUdpLen       => LPayload PTransport 4 2 | FUdpCsum   => LPayload PTransport 6 2
+  | FIcmpType     => LPayload PTransport 0 1 | FIcmpCode  => LPayload PTransport 1 1
+  | FExthdr ep htype off len => LExthdr ep htype off len
   end.
+
+(** Enumeration of every field, for the glue's load->field reverse map. *)
+Definition all_fields : list field :=
+  [ FMetaL4proto; FMetaNfproto; FMetaProtocol; FMetaMark; FMetaIif; FMetaOif;
+    FMetaIiftype; FMetaOiftype; FMetaIifname; FMetaOifname;
+    FMetaLen; FMetaPkttype; FMetaCpu; FMetaSkuid; FMetaSkgid; FMetaPriority;
+    FCtState; FCtStatus; FCtMark; FCtDirection; FCtExpiration; FCtId;
+    FEtherDaddr; FEtherSaddr; FEtherType; FLinkVlan;
+    FIp4VerHdrlen; FIp4Word0; FIp4Tos; FIp4Totlen; FIp4Id; FIp4FragOff;
+    FIp4Ttl; FIp4Protocol; FIp4Csum; FIp4Saddr; FIp4Daddr;
+    FIp6Saddr; FIp6Daddr;
+    FThSport; FThDport; FTcpSeq; FTcpAck; FTcpFlags;
+    FUdpLen; FUdpCsum; FIcmpType; FIcmpCode ].
 
 (** Evaluate a load against a packet. *)
 Definition do_load (ld : loaddesc) (p : packet) : data :=
   match ld with
   | LMeta k         => pkt_meta p k
+  | LCt k           => pkt_ct p k
+  | LExthdr ep h o l => pkt_eh p ep h o l
   | LPayload b o l  => read_payload b o l p
   end.
 
@@ -52,10 +103,14 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
 Definition field_value (f : field) (p : packet) : data :=
   do_load (field_load f) p.
 
-(** A match condition: equality / inequality of a field against an immediate. *)
+(** A match condition: equality / inequality against an immediate, or a
+    (possibly negated) range membership [lo <= field <= hi]. *)
 Inductive matchcond : Type :=
-| MEq  (f : field) (v : data)
-| MNeq (f : field) (v : data).
+| MEq     (f : field) (v : data)
+| MNeq    (f : field) (v : data)
+| MRange  (f : field) (neg : bool) (lo hi : data)
+| MMasked (f : field) (neg : bool) (mask xor v : data)   (* (field & mask) ^ xor cmp v *)
+| MSet    (f : field) (neg : bool) (name : string) (elems : list data). (* field [!]in set *)
 
 (** A rule: a conjunction of match conditions and a verdict. *)
 Record rule : Type := {

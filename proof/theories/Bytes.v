@@ -28,6 +28,32 @@ Proof.
   intros a b. unfold data_eqb. destruct (list_eq_dec Nat.eq_dec a b); split; congruence.
 Qed.
 
+(** Membership of a byte string in a set (the semantics of an nftables set
+    lookup). *)
+Definition data_mem (x : data) (s : list data) : bool :=
+  existsb (data_eqb x) s.
+
+(** Bytewise [(a & mask) ^ xor], the operation an nftables [bitwise] expression
+    performs (used to model prefix/masked matches such as a /24). *)
+Definition byte_and (a b : byte) : byte := Nat.land a b.
+Definition byte_xor (a b : byte) : byte := Nat.lxor a b.
+
+Fixpoint data_bitops (a mask xor : data) : data :=
+  match a, mask, xor with
+  | x :: xs, m :: ms, e :: es => byte_xor (byte_and x m) e :: data_bitops xs ms es
+  | _, _, _ => []
+  end.
+
+(** Big-endian (most-significant-byte-first) lexicographic order on byte
+    strings; for equal-length network-order values this is numeric order.
+    Used by range matches. *)
+Fixpoint data_le (a b : data) : bool :=
+  match a, b with
+  | [], _ => true
+  | _ :: _, [] => false
+  | x :: xs, y :: ys => if Nat.eqb x y then data_le xs ys else Nat.leb x y
+  end.
+
 Lemma data_eqb_sym : forall a b, data_eqb a b = data_eqb b a.
 Proof.
   intros a b. unfold data_eqb.

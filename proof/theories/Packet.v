@@ -16,20 +16,34 @@ From Stdlib Require Import List NArith.
 From Nft Require Import Bytes.
 Import ListNotations.
 
-(** Metadata keys.  Start with [l4proto]; more keys (nfproto, iifname, ...) slot
-    in here without touching the proofs. *)
+(** Metadata keys (numeric kernel metadata).  Adding a key is just a new
+    constructor — the compiler proof is generic over [meta_key]. *)
 Inductive meta_key : Type :=
-| MKl4proto.
+| MKl4proto | MKnfproto | MKprotocol | MKmark
+| MKiif | MKoif | MKiiftype | MKoiftype | MKiifname | MKoifname
+| MKlen | MKpkttype | MKcpu | MKskuid | MKskgid | MKpriority.
+
+(** Conntrack keys (read by a [ct load] expression). *)
+Inductive ct_key : Type :=
+| CKstate | CKstatus | CKmark | CKdirection | CKexpiration | CKid.
+
+(** Protocol an [exthdr load] reads from (IPv6 extension headers / TCP options). *)
+Inductive exthdr_proto : Type :=
+| EPipv6 | EPtcpopt.
 
 (** Payload bases: which header a [payload load] reads from. *)
 Inductive pbase : Type :=
+| PLink
 | PNetwork
 | PTransport.
 
 Record packet : Type := {
   pkt_meta : meta_key -> data;   (* kernel-computed metadata *)
-  pkt_nh   : list byte;          (* network-header bytes (e.g. IPv4 header) *)
-  pkt_th   : list byte;          (* transport-header bytes (e.g. TCP header) *)
+  pkt_ct   : ct_key -> data;     (* conntrack state *)
+  pkt_eh   : exthdr_proto -> nat -> nat -> nat -> data;  (* exthdr: proto htype off len *)
+  pkt_lh   : list byte;          (* link-header bytes (e.g. Ethernet) *)
+  pkt_nh   : list byte;          (* network-header bytes (e.g. IPv4/IPv6) *)
+  pkt_th   : list byte;          (* transport-header bytes (e.g. TCP/UDP) *)
 }.
 
 (** Read [len] bytes at [off] from a header byte string. *)
@@ -39,6 +53,7 @@ Definition slice (bs : list byte) (off len : nat) : data :=
 (** A payload read, shared by the DSL field semantics and the bytecode VM. *)
 Definition read_payload (b : pbase) (off len : nat) (p : packet) : data :=
   match b with
+  | PLink      => slice (pkt_lh p) off len
   | PNetwork   => slice (pkt_nh p) off len
   | PTransport => slice (pkt_th p) off len
   end.

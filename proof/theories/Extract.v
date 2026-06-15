@@ -9,12 +9,17 @@
 From Stdlib Require Import Extraction.
 From Stdlib Require Import ExtrOcamlBasic.
 From Stdlib Require Import ExtrOcamlNatInt.
+From Stdlib Require Import ExtrOcamlNativeString.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile Optimize.
 
 Extraction Language OCaml.
 Set Extraction Output Directory "extracted".
 
+(* Only the control-plane compiler/optimizer and the field table are needed by
+   the glue; the packet semantics ([eval_chain], with its byte-level bit ops) is
+   not extracted. *)
 Separate Extraction
   compile_chain
   optimize_chain
-  eval_chain.
+  field_load
+  all_fields.

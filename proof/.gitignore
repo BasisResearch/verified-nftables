@@ -13,5 +13,6 @@ CoqMakefile.conf
 extracted/*.ml
 extracted/*.mli
 !extracted/glue.ml
+!extracted/corpus_test.ml
 extracted/_build/
 .CoqMakefile.d

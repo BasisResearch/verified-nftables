@@ -8,7 +8,7 @@
 ROCQBIN ?=
 COQMAKE  = CoqMakefile
 
-.PHONY: all proofs glue difftest clean
+.PHONY: all proofs glue difftest corpus clean
 
 all: proofs glue
 
@@ -20,10 +20,16 @@ $(COQMAKE): _CoqProject
 	coq_makefile -f _CoqProject -o $(COQMAKE)
 
 glue: proofs
-	cd extracted && dune build ./glue.exe
+	cd extracted && dune build ./glue.exe corpus_test.exe
 
+# Byte-identical forward check on a hand-written ruleset vs the local `nft`.
 difftest: glue
 	./difftest.sh
+
+# Round-trip the upstream nftables corpus through the verified compiler and
+# report measured coverage (fails on any mismatch).
+corpus: proofs
+	./corpus.sh
 
 clean:
 	-[ -f $(COQMAKE) ] && $(MAKE) -f $(COQMAKE) clean || true

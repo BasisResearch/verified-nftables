@@ -5,8 +5,9 @@ Formally verifying nftables. Two layers live here:
 - **`proof/`** — the verification effort itself: a **Rocq-verified, semantics-preserving
   compiler** from the declarative nftables DSL to the control-plane (netlink) bytecode
   `nft` emits, plus a verified DSL optimizer. Extracted to OCaml and differential-tested
-  byte-for-byte against the real `nft`. Start at [proof/DEVELOPMENT.md](proof/DEVELOPMENT.md);
-  build with `cd proof && make difftest`.
+  against the **upstream nftables test corpus** — it reproduces the real tool's bytecode
+  on 50% of the corpus's rule-blocks with zero mismatches. Start at
+  [proof/DEVELOPMENT.md](proof/DEVELOPMENT.md); build with `cd proof && make corpus`.
 - **kernel-dev environment** (below) — the reproducible VM/kernel sandbox for the later
   data-plane (VST) work described in `instructions.org`.
 

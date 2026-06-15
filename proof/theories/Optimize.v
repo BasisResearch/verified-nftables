@@ -14,19 +14,22 @@
     [optimize_chain] runs dedup on every rule, then DCE; the top-level theorem
     [optimize_chain_correct] shows the packet->verdict function is unchanged. *)
 
-From Stdlib Require Import List PeanoNat Bool.
+From Stdlib Require Import List PeanoNat Bool String.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics.
 Import ListNotations.
 
 (** ** Decidable equality for match conditions (needed by [nodup]). *)
 
 Definition field_eq_dec (a b : field) : {a = b} + {a <> b}.
-Proof. decide equality. Defined.
+Proof. decide equality; (apply Nat.eq_dec || decide equality). Defined.
 Definition matchcond_eq_dec (a b : matchcond) : {a = b} + {a <> b}.
 Proof.
   decide equality;
     try (apply list_eq_dec; apply Nat.eq_dec);
-    try (apply field_eq_dec).
+    try (apply list_eq_dec; apply list_eq_dec; apply Nat.eq_dec);
+    try apply field_eq_dec;
+    try apply Bool.bool_dec;
+    try apply string_dec.
 Defined.
 
 (** ** Optimization 1: dead-rule elimination. *)

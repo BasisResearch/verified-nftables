@@ -1,6 +1,6 @@
 ; Build the verified-extracted modules + untrusted glue into one executable.
 ; -w -a silences warnings in machine-generated extraction output.
-(executable
- (name glue)
+(executables
+ (names glue corpus_test)
  (modules :standard)
  (flags (:standard -w -a)))

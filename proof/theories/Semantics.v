@@ -14,6 +14,12 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
   match m with
   | MEq  f v => data_eqb (field_value f p) v
   | MNeq f v => negb (data_eqb (field_value f p) v)
+  | MRange f neg lo hi =>
+      eval_range (if neg then CNe else CEq) (field_value f p) lo hi
+  | MMasked f neg mask xor v =>
+      eval_cmp (if neg then CNe else CEq) (data_bitops (field_value f p) mask xor) v
+  | MSet f neg _ elems =>
+      xorb neg (data_mem (field_value f p) elems)
   end.
 
 (** A rule applies when all its match conditions hold (empty = matches all). *)
@@ -51,10 +57,20 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | [] => None
   | IMetaLoad k dst :: rest =>
       run_rule (set_reg rf dst (pkt_meta p k)) rest p
+  | ICtLoad k dst :: rest =>
+      run_rule (set_reg rf dst (pkt_ct p k)) rest p
+  | IExthdrLoad ep h o l dst :: rest =>
+      run_rule (set_reg rf dst (pkt_eh p ep h o l)) rest p
   | IPayloadLoad b o l dst :: rest =>
       run_rule (set_reg rf dst (read_payload b o l p)) rest p
   | ICmp op src v :: rest =>
       if eval_cmp op (rf src) v then run_rule rf rest p else None
+  | IRange op src lo hi :: rest =>
+      if eval_range op (rf src) lo hi then run_rule rf rest p else None
+  | IBitwise dst src mask xor :: rest =>
+      run_rule (set_reg rf dst (data_bitops (rf src) mask xor)) rest p
+  | ILookup src _ neg elems :: rest =>
+      if xorb neg (data_mem (rf src) elems) then run_rule rf rest p else None
   | IImmediate v :: _ => Some v
   end.
 

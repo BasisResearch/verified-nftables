@@ -89,11 +89,11 @@ let () =
   (* Mirrors proof/difftest.sh's nft input, in nft's expression-emission order. *)
   let c =
     chain Verdict.Drop [
-      rule [ dep_tcp; meq Syntax.FTcpDport [0; 22] ] Verdict.Accept;
-      rule [ meq Syntax.FIpSaddr [10; 1; 2; 3] ] Verdict.Drop;
-      rule [ dep_tcp; meq Syntax.FTcpSport [0; 80] ] Verdict.Accept;
-      rule [ meq Syntax.FIpDaddr [192; 168; 1; 1];
-             dep_tcp; meq Syntax.FTcpDport [1; 187] ] Verdict.Accept;
+      rule [ dep_tcp; meq Syntax.FThDport [0; 22] ] Verdict.Accept;
+      rule [ meq Syntax.FIp4Saddr [10; 1; 2; 3] ] Verdict.Drop;
+      rule [ dep_tcp; meq Syntax.FThSport [0; 80] ] Verdict.Accept;
+      rule [ meq Syntax.FIp4Daddr [192; 168; 1; 1];
+             dep_tcp; meq Syntax.FThDport [1; 187] ] Verdict.Accept;
     ]
   in
   match mode with
@@ -105,11 +105,11 @@ let () =
            below it are dead (DCE drops them). *)
       let d =
         chain Verdict.Drop [
-          rule [ dep_tcp; meq Syntax.FTcpDport [0; 22];
-                 dep_tcp; meq Syntax.FTcpDport [0; 22] ] Verdict.Accept;
+          rule [ dep_tcp; meq Syntax.FThDport [0; 22];
+                 dep_tcp; meq Syntax.FThDport [0; 22] ] Verdict.Accept;
           rule [] Verdict.Accept;                       (* accept-all, terminal *)
-          rule [ meq Syntax.FIpSaddr [10; 1; 2; 3] ] Verdict.Drop;   (* dead *)
-          rule [ meq Syntax.FIpDaddr [192; 168; 1; 1] ] Verdict.Drop (* dead *)
+          rule [ meq Syntax.FIp4Saddr [10; 1; 2; 3] ] Verdict.Drop;   (* dead *)
+          rule [ meq Syntax.FIp4Daddr [192; 168; 1; 1] ] Verdict.Drop (* dead *)
         ]
       in
       print_string "--- before optimization ---\n";

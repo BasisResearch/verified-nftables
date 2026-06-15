@@ -14,7 +14,7 @@
     which is one [rule_prog] of three [instr]s.  A whole base chain is a
     [program]: an ordered list of such per-rule programs (one NEWRULE each). *)
 
-From Stdlib Require Import List NArith PeanoNat.
+From Stdlib Require Import List NArith PeanoNat String.
 From Nft Require Import Bytes Packet Verdict.
 Import ListNotations.
 
@@ -27,8 +27,16 @@ Definition reg := nat.   (* register index; reg 0 is the verdict register *)
 
 Inductive instr : Type :=
 | IMetaLoad    (k : meta_key) (dst : reg)
+| ICtLoad      (k : ct_key) (dst : reg)
+| IExthdrLoad  (ep : exthdr_proto) (htype off len : nat) (dst : reg)
 | IPayloadLoad (b : pbase) (off len : nat) (dst : reg)
 | ICmp         (op : cmpop) (src : reg) (v : data)
+| IRange       (op : cmpop) (src : reg) (lo hi : data)   (* range eq/neq *)
+| IBitwise     (dst src : reg) (mask xor : data)         (* dst = (src & mask) ^ xor *)
+| ILookup      (src : reg) (name : string) (neg : bool) (elems : list data)
+                                          (* set membership; [elems] is the set's
+                                             contents, carried for semantics and
+                                             not rendered (it lives in NEWSET) *)
 | IImmediate   (v : verdict).            (* immediate reg 0 <verdict> *)
 
 (** Expressions of one rule (one NEWRULE message). *)
@@ -50,4 +58,12 @@ Definition eval_cmp (op : cmpop) (a b : data) : bool :=
   match op with
   | CEq => data_eqb a b
   | CNe => negb (data_eqb a b)
+  end.
+
+(** range eq: [lo <= x <= hi]; range neq: the complement. *)
+Definition eval_range (op : cmpop) (x lo hi : data) : bool :=
+  let inr := andb (data_le lo x) (data_le x hi) in
+  match op with
+  | CEq => inr
+  | CNe => negb inr
   end.
