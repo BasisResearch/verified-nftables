@@ -252,9 +252,10 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.ILast info -> Printf.sprintf "[ last %s ]" info
   | Bytecode.IExthdrReset (proto,h) ->
       Printf.sprintf "[ exthdr reset %s %d ]" proto h
-  | Bytecode.IDynset (op,name,krs) ->
+  | Bytecode.IDynset (op,name,krs,dreg) ->
       let r = nreg (match krs with x :: _ -> x | [] -> 1) in
-      Printf.sprintf "[ dynset %s reg_key %d set %s ]" op r name
+      let dat = (match dreg with Some d -> Printf.sprintf " sreg_data %d" (nreg d) | None -> "") in
+      Printf.sprintf "[ dynset %s reg_key %d set %s%s ]" op r name dat
   | Bytecode.ICounter (p,b) -> Printf.sprintf "[ counter pkts %d bytes %d ]" p b
   | Bytecode.INotrack -> "[ notrack ]"
   | Bytecode.ILog opts ->

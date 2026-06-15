@@ -191,7 +191,8 @@ Inductive stmt : Type :=
 | SObjref  (otype : nat) (oname : string)   (* reference a named stateful object *)
 | SSynproxy (mss wscale : nat)              (* SYN-proxy (verdict-neutral here) *)
 | SLast    (info : string)                  (* `last used` accounting; verbatim *)
-| SDynset  (op name : string) (keyfs : list field)
+| SDynset  (op name : string) (keyfs dataf : list field)
+                            (* add/delete [keyfs] (-> [dataf] for a map) to a set *)
 | SExthdrReset (proto : string) (htype : nat).
                             (* reset (clear) a TCP option; verdict-neutral *)
                             (* dynamically add/delete the concatenation of [keyfs]

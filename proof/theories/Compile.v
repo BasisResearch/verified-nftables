@@ -132,9 +132,14 @@ Definition compile_stmt (s : stmt) : list instr :=
   | SObjref o n   => [IObjref o n]
   | SSynproxy m w => [ISynproxy m w]
   | SLast info    => [ILast info]
-  | SDynset op name keyfs =>
-      load_fields (alloc_regs 0 keyfs) ++
-      [IDynset op name (map snd (alloc_regs 0 keyfs))]
+  | SDynset op name keyfs dataf =>
+      (* keys then data, allocated contiguously: the data register follows the
+         key registers exactly as nft places sreg_data after reg_key *)
+      let pairs := alloc_regs 0 (keyfs ++ dataf) in
+      load_fields pairs ++
+      [IDynset op name (map snd pairs)
+         (match skipn (length keyfs) (map snd pairs) with
+          | [] => None | r :: _ => Some r end)]
   | SExthdrReset proto htype => [IExthdrReset proto htype]
   end.
 

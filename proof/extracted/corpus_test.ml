@@ -61,7 +61,7 @@ type pinst =
   | PObjref  of int * string                       (* object type, object name *)
   | PSynproxy of int * int                         (* mss, wscale *)
   | PLast    of string                             (* `last` info (count or "never") *)
-  | PDynset  of string * string * int              (* op, set name, key reg *)
+  | PDynset  of string * string * int * int option (* op, set name, key reg, data reg *)
   | PExthdrReset of string * int                   (* proto, htype *)
   | PImm     of Verdict.verdict
 
@@ -263,7 +263,10 @@ let parse_line line : pinst =
   | ["objref"; "type"; t; "name"; n] -> PObjref (int_of_string t, n)
   | ["synproxy"; "mss"; m; "wscale"; w] -> PSynproxy (int_of_string m, int_of_string w)
   | ["last"; info] -> PLast info
-  | ["dynset"; op; "reg_key"; k; "set"; name] -> PDynset (op, name, int_of_string k)
+  | ["dynset"; op; "reg_key"; k; "set"; name] ->
+      PDynset (op, name, int_of_string k, None)
+  | ["dynset"; op; "reg_key"; k; "set"; name; "sreg_data"; d] ->
+      PDynset (op, name, int_of_string k, Some (int_of_string d))
   | ["exthdr"; "reset"; proto; h] -> PExthdrReset (proto, int_of_string h)
   | ["reject"; "type"; t; "code"; c] ->
       PImm (Verdict.Reject (int_of_string t, int_of_string c))
@@ -387,9 +390,17 @@ let rule_of_block (lines : string list) : Syntax.rule =
                      | PVmap (_, name) ->
                          if more <> [] then raise (Unsupported "trailing-after-vmap");
                          mk_vmap matches stmts (List.rev facc) name
-                     (* concat key added/deleted to a set = a dynset statement *)
-                     | PDynset (op, name, _) ->
-                         go matches (Syntax.SDynset (op, name, List.rev facc) :: stmts) more
+                     (* concat key added/deleted to a set/map = a dynset statement;
+                        for a map the last gathered load is the data, the rest the key *)
+                     | PDynset (op, name, _, dopt) ->
+                         let fields = List.rev facc in
+                         let (keys, data) = (match dopt with
+                           | None -> (fields, [])
+                           | Some _ ->
+                               let n = List.length fields in
+                               (List.filteri (fun i _ -> i < n-1) fields,
+                                List.filteri (fun i _ -> i = n-1) fields)) in
+                         go matches (Syntax.SDynset (op, name, keys, data) :: stmts) more
                      (* concat key looked up in a map for a value (dreg 1) feeding a set *)
                      | PMapVal (_, name, 1) ->
                          let fields = List.rev facc in
@@ -455,8 +466,8 @@ let rule_of_block (lines : string list) : Syntax.rule =
                              | _ -> raise (Unsupported "map-not-set"))
                           | [] -> raise (Unsupported "map-dangling"))
                      (* load (+ transforms) feeding a set/mangle = a value statement *)
-                     | PDynset (op, name, 1) when ts = [] ->
-                         go matches (Syntax.SDynset (op, name, [f]) :: stmts) more
+                     | PDynset (op, name, 1, None) when ts = [] ->
+                         go matches (Syntax.SDynset (op, name, [f], []) :: stmts) more
                      | PMetaSet (k, 1) ->
                          go matches (Syntax.SMetaSet (k, Syntax.VField (f, List.rev ts)) :: stmts) more
                      | PCtSet (k, 1) ->

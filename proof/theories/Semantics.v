@@ -170,7 +170,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | IObjref _ _ :: rest   => run_rule rf rest p   (* verdict-neutral *)
   | ISynproxy _ _ :: rest => run_rule rf rest p
   | ILast _ :: rest       => run_rule rf rest p
-  | IDynset _ _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)
+  | IDynset _ _ _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)
   | IExthdrReset _ _ :: rest => run_rule rf rest p (* verdict-neutral *)
   | IReject t c :: _ => Some (Reject t c)
   | IQueue lo hi b f :: _ => Some (Queue lo hi b f)

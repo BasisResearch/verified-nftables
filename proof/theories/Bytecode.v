@@ -43,7 +43,7 @@ Inductive instr : Type :=
 | IObjref      (otype : nat) (oname : string)
 | ISynproxy    (mss wscale : nat)
 | ILast        (info : string)
-| IDynset      (op name : string) (keyregs : list reg)
+| IDynset      (op name : string) (keyregs : list reg) (datareg : option reg)
 | IExthdrReset (proto : string) (htype : nat)
 | ICtDirLoad   (key dir : string) (dst : reg)
 | IXfrmLoad    (dir : string) (spnum : nat) (key : string) (dst : reg)
