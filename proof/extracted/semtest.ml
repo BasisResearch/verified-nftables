@@ -154,6 +154,21 @@ let () =
       "tcp dport 80 (in set)",  mk_pkt ~env:set_env ~th:(th ~dport:[0; 80]) ();
       "tcp dport 443 (not in)", mk_pkt ~env:set_env ~th:(th ~dport:[1; 187]) ();
       "tcp dport 22 but EMPTY set (drop)", mk_pkt ~th:(th ~dport:[0; 22]) () ];
+  (* (3c) sets/maps as DECLARED OBJECTS (compile_chain_sets_correct): the set
+     "set" is a table declaration with concrete elements; `lookup @set` reads
+     exactly the DECLARED elements (e_set_declared).  Declaring {22,80} accepts
+     dport 22; re-declaring the SAME-named set as {443} drops it — the verdict
+     follows the declaration, not the rule. *)
+  let decls elems : Semantics.set_decls =
+    { Semantics.sd_sets = [ ("set", Stdlib.List.map (fun x -> (x, x)) elems) ];
+      sd_vmaps = []; sd_maps = [] } in
+  let env_decl elems = Semantics.env_with_sets empty_env (decls elems) in
+  run_battery fails
+    "set @set DECLARED {22,80} — lookup reads the declared elements"
+    (chain Verdict.Drop [ rule [ l4_tcp; mset Syntax.FThDport ] Verdict.Accept ])
+    [ "dport 22, @set={22,80} (accept)",  mk_pkt ~env:(env_decl [[0;22];[0;80]]) ~th:(th ~dport:[0; 22]) ();
+      "dport 22, @set={443} (drop)",      mk_pkt ~env:(env_decl [[1;187]]) ~th:(th ~dport:[0; 22]) ();
+      "dport 443, @set={443} (accept)",   mk_pkt ~env:(env_decl [[1;187]]) ~th:(th ~dport:[1; 187]) () ];
   (* (3b) INTERVAL set `tcp dport @r` where @r = {1024-65535} is a single range
      (a degenerate exact set would need 64512 elements) — exercises set_mem's
      interval membership that exact list membership cannot represent. *)

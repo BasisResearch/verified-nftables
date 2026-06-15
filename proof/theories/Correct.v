@@ -1144,6 +1144,17 @@ Proof.
   rewrite run_program_compile_chain. reflexivity.
 Qed.
 
+(** Sets/maps as declared objects: evaluating a chain against the environment
+    BUILT FROM a table's set/map declarations ([env_with_sets base d]), the
+    compiled VM agrees with the DSL — and every `lookup @s` reads exactly the
+    elements declared for [s] ([e_set_declared]).  So the membership semantics is
+    tied to the declared set object, not to an inlined copy or a disconnected
+    oracle.  (Corollary of [compile_chain_correct], which holds for every env.) *)
+Theorem compile_chain_sets_correct : forall c base d p,
+  run_chain (compile_chain c) (c_policy c) (set_env p (env_with_sets base d))
+  = eval_chain c (set_env p (env_with_sets base d)).
+Proof. intros. apply compile_chain_correct. Qed.
+
 (** ** Phase B main theorem: the compiler preserves in-traversal mutation.
 
     For a plain rule whose set statements use simple (immediate/field) operands,

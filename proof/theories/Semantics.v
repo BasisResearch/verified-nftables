@@ -63,6 +63,40 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
 Definition rule_applies (r : rule) (p : packet) : bool :=
   forallb (fun m => eval_matchcond m p) (body_matches (r_body r)).
 
+(** ** Named sets and maps as DECLARED objects.
+
+    A set/map is not just a name with abstract contents: it is a *declaration* —
+    a named list of elements.  A set's elements are intervals [lo,hi] (exact =
+    [x,x], CIDR = [lo,hi]); a verdict map's are key->verdict; a value map's are
+    key->value.  [set_decls] is what a table declares; [env_with_sets] turns those
+    declarations into the evaluation environment the rule lookups read, so
+    `lookup @s` reads exactly the elements DECLARED for [s].  This ties the
+    membership semantics to the declared object: change the declaration and the
+    lookup sees the change (witnessed in semtest). *)
+Record set_decls : Type := {
+  sd_sets  : list (String.string * list (data * data));     (* set name -> interval elements *)
+  sd_vmaps : list (String.string * list (data * verdict));  (* verdict-map name -> entries *)
+  sd_maps  : list (String.string * list (data * data));     (* value-map name -> entries *)
+}.
+Fixpoint assoc_str {A} (n : String.string) (l : list (String.string * A)) (d : A) : A :=
+  match l with
+  | [] => d
+  | (k, v) :: r => if String.eqb n k then v else assoc_str n r d
+  end.
+(** Build the lookup environment from a table's set/map declarations (the other
+    state — routes, limiters — is carried from a base environment). *)
+Definition env_with_sets (base : env) (d : set_decls) : env :=
+  {| e_set  := fun n => assoc_str n (sd_sets d)  (e_set base n);
+     e_vmap := fun n => assoc_str n (sd_vmaps d) (e_vmap base n);
+     e_map  := fun n => assoc_str n (sd_maps d)  (e_map base n);
+     e_routes := e_routes base; e_rt := e_rt base;
+     e_limit := e_limit base; e_quota := e_quota base; e_connlimit := e_connlimit base |}.
+
+(** A declared set's elements are exactly what `lookup @n` reads. *)
+Lemma e_set_declared : forall base d n,
+  e_set (env_with_sets base d) n = assoc_str n (sd_sets d) (e_set base n).
+Proof. reflexivity. Qed.
+
 (** The *value* a value-source computes into register 1 — the operand of a
     set/mangle/NAT statement.  This is the value-level meaning the verdict proof
     previously delegated to the corpus; [run_vsrc_value] (in Correct) proves the
