@@ -292,6 +292,168 @@ Definition run_chain (prog : program) (policy : verdict) (p : packet) : verdict 
   | None   => policy
   end.
 
+(** ** Phase B: in-traversal mutation (meta/ct set visible to later rules).
+
+    A `meta mark set X` does not change *this* rule's verdict, but it mutates the
+    packet's metadata that a *later* rule reads.  Modelling this requires threading
+    a mutated packet across rules.  We do so additively, leaving the verdict-only
+    semantics above intact: [run_rule_writes] is the VM's meta/ct effect over a
+    rule's bytecode (mirrors [run_rule] but returns the mutated packet), [dsl_writes]
+    is the declarative effect, and [eval_chain_mut]/[run_chain_mut] thread them. *)
+
+Definition meta_eq_dec : forall a b : meta_key, {a = b} + {a <> b}.
+Proof. decide equality. Defined.
+Definition ct_eq_dec : forall a b : ct_key, {a = b} + {a <> b}.
+Proof. decide equality. Defined.
+Definition meta_eqb (a b : meta_key) : bool := if meta_eq_dec a b then true else false.
+Definition ct_eqb (a b : ct_key) : bool := if ct_eq_dec a b then true else false.
+
+(** Update one metadata / conntrack key, leaving every other field of the packet
+    (incl. the named-set environment) unchanged. *)
+Definition set_meta (p : packet) (k : meta_key) (v : data) : packet :=
+  {| pkt_env := pkt_env p;
+     pkt_meta := (fun k' => if meta_eqb k k' then v else pkt_meta p k');
+     pkt_ct := pkt_ct p; pkt_rt := pkt_rt p; pkt_sock := pkt_sock p;
+     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_limit := pkt_limit p;
+     pkt_quota := pkt_quota p; pkt_connlimit := pkt_connlimit p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p; pkt_fib := pkt_fib p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
+Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
+  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p;
+     pkt_ct := (fun k' => if ct_eqb k k' then v else pkt_ct p k');
+     pkt_rt := pkt_rt p; pkt_sock := pkt_sock p;
+     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_limit := pkt_limit p;
+     pkt_quota := pkt_quota p; pkt_connlimit := pkt_connlimit p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p; pkt_fib := pkt_fib p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
+
+(** The VM's meta/ct effect of running one rule's bytecode: mirrors [run_rule]'s
+    register threading, but instead of a verdict it returns the packet with the
+    [IMetaSet]/[ICtSet] writes applied (in execution order; a write only happens
+    once the matches before it have passed — a failed cmp/lookup/limit returns the
+    packet unchanged, exactly as the verdict run breaks). *)
+Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet :=
+  match is with
+  | [] => p
+  | IMetaLoad k dst :: rest => run_rule_writes (set_reg rf dst (pkt_meta p k)) rest p
+  | ICtLoad k dst :: rest => run_rule_writes (set_reg rf dst (pkt_ct p k)) rest p
+  | IRtLoad k dst :: rest => run_rule_writes (set_reg rf dst (pkt_rt p k)) rest p
+  | ISocketLoad k dst :: rest => run_rule_writes (set_reg rf dst (pkt_sock p k)) rest p
+  | INumgen spec dst :: rest => run_rule_writes (set_reg rf dst (pkt_numgen p spec)) rest p
+  | IOsf dst :: rest => run_rule_writes (set_reg rf dst (pkt_osf p)) rest p
+  | IExthdrLoad ep h o l pr dst :: rest =>
+      run_rule_writes (set_reg rf dst (pkt_eh p ep h o l pr)) rest p
+  | IFibLoad sel res dst :: rest => run_rule_writes (set_reg rf dst (pkt_fib p sel res)) rest p
+  | ICtDirLoad key dir dst :: rest => run_rule_writes (set_reg rf dst (pkt_ctdir p key dir)) rest p
+  | IXfrmLoad dir sp key dst :: rest => run_rule_writes (set_reg rf dst (pkt_xfrm p dir sp key)) rest p
+  | ITunnelLoad key dst :: rest => run_rule_writes (set_reg rf dst (pkt_tunnel p key)) rest p
+  | ISymhash m o dst :: rest => run_rule_writes (set_reg rf dst (pkt_symhash p m o)) rest p
+  | IInnerLoad t h fl desc _ dst :: rest =>
+      run_rule_writes (set_reg rf dst (pkt_inner p t h fl desc)) rest p
+  | IPayloadLoad b o l dst :: rest => run_rule_writes (set_reg rf dst (read_payload b o l p)) rest p
+  | ICmp op src v :: rest => if eval_cmp op (rf src) v then run_rule_writes rf rest p else p
+  | IRange op src lo hi :: rest => if eval_range op (rf src) lo hi then run_rule_writes rf rest p else p
+  | IBitwise dst src mask xor :: rest => run_rule_writes (set_reg rf dst (data_bitops (rf src) mask xor)) rest p
+  | IBitwiseOr dst src1 src2 :: rest => run_rule_writes (set_reg rf dst (data_or (rf src1) (rf src2))) rest p
+  | IBitShift dst src shl amt :: rest => run_rule_writes (set_reg rf dst (data_shift shl amt (rf src))) rest p
+  | IByteorder dst src h sz len :: rest => run_rule_writes (set_reg rf dst (data_byteorder h sz len (rf src))) rest p
+  | IJhash dst src l s m o :: rest => run_rule_writes (set_reg rf dst (data_jhash l s m o (rf src))) rest p
+  | ILookup srcs name neg :: rest =>
+      if xorb neg (data_mem (List.concat (map rf srcs)) (e_set (pkt_env p) name))
+      then run_rule_writes rf rest p else p
+  | IVmap srcs name :: rest =>
+      match assoc_verdict (List.concat (map rf srcs)) (e_vmap (pkt_env p) name) with
+      | Some _ => p   (* terminal verdict: traversal stops, no later-rule effect *)
+      | None   => run_rule_writes rf rest p
+      end
+  | IImmediateData dst v :: rest => run_rule_writes (set_reg rf dst v) rest p
+  | IPayloadWrite _ _ _ _ _ _ _ :: rest => run_rule_writes rf rest p
+  | IMetaSet k src :: rest => run_rule_writes rf rest (set_meta p k (rf src))
+  | ICtSet k src :: rest => run_rule_writes rf rest (set_ct p k (rf src))
+  | ILookupVal keys name dreg :: rest =>
+      run_rule_writes (set_reg rf dreg (map_lookup_data (List.concat (map rf keys))
+                                                        (e_map (pkt_env p) name))) rest p
+  | INat _ _ _ _ _ _ _ :: _ => p
+  | ITproxy _ _ _ :: _ => p
+  | IFwd _ _ _ :: _ => p
+  | IQueueSreg _ _ _ :: _ => p
+  | ILimit spec :: rest => if pkt_limit p spec then run_rule_writes rf rest p else p
+  | IQuota spec :: rest => if pkt_quota p spec then run_rule_writes rf rest p else p
+  | IConnlimit spec :: rest => if pkt_connlimit p spec then run_rule_writes rf rest p else p
+  | ICounter _ _ :: rest => run_rule_writes rf rest p
+  | INotrack :: rest => run_rule_writes rf rest p
+  | ILog _ :: rest => run_rule_writes rf rest p
+  | IObjref _ _ :: rest => run_rule_writes rf rest p
+  | ISynproxy _ _ :: rest => run_rule_writes rf rest p
+  | ILast _ :: rest => run_rule_writes rf rest p
+  | IDynset _ _ _ _ :: rest => run_rule_writes rf rest p
+  | IExthdrReset _ _ :: rest => run_rule_writes rf rest p
+  | IDup _ _ :: rest => run_rule_writes rf rest p
+  | IObjrefMap _ _ :: rest => run_rule_writes rf rest p
+  | ICtSetDir _ _ _ :: rest => run_rule_writes rf rest p
+  | IExthdrWrite _ _ _ _ _ :: rest => run_rule_writes rf rest p
+  | IReject _ _ :: _ => p
+  | IQueue _ _ _ _ :: _ => p
+  | IImmediate _ :: _ => p
+  end.
+
+(** Is a value-source "simple" (immediate or field)?  These are exactly the
+    operands for which the proof establishes value-correctness ([eval_vsrc] =
+    the register the bytecode leaves), so the mutation theorem is stated for
+    rules whose set-statement operands are simple — the common `meta mark set
+    <const>` / `ct mark set <field>` shapes, incl. the set-then-match bug. *)
+Definition simple_vsrc (vs : vsrc) : bool :=
+  match vs with VImm _ | VField _ _ => true | _ => false end.
+Definition simple_writes (r : rule) : bool :=
+  forallb (fun it => match it with
+                     | BStmt (SMetaSet _ vs) | BStmt (SCtSet _ vs) => simple_vsrc vs
+                     | _ => true end) (r_body r).
+
+(** The declarative meta/ct effect of one rule: when it applies, fold its set
+    statements (in body order, later overrides earlier) writing [eval_vsrc vs];
+    the operand is evaluated against the packet mutated so far, matching the VM
+    (whose operand loads read the already-mutated packet). *)
+Definition dsl_writes (r : rule) (p : packet) : packet :=
+  if rule_applies r p then
+    fold_left (fun acc it => match it with
+                             | BStmt (SMetaSet k vs) => set_meta acc k (eval_vsrc vs acc)
+                             | BStmt (SCtSet k vs)   => set_ct acc k (eval_vsrc vs acc)
+                             | _ => acc end) (r_body r) p
+  else p.
+
+(** Mutation-aware rule-list evaluation: a non-terminal applicable rule threads
+    its writes to the rest, so a later rule observes an earlier `set`. *)
+Fixpoint eval_rules_mut (rs : list rule) (p : packet) : option verdict :=
+  match rs with
+  | [] => None
+  | r :: rest =>
+      if rule_applies r p then
+        match outcome r p with
+        | Some v => if terminal v then Some v else eval_rules_mut rest (dsl_writes r p)
+        | None   => eval_rules_mut rest (dsl_writes r p)
+        end
+      else eval_rules_mut rest p
+  end.
+
+Fixpoint run_program_mut (prog : program) (p : packet) : option verdict :=
+  match prog with
+  | [] => None
+  | rp :: rest =>
+      match run_rule empty_rf rp p with
+      | Some v => if terminal v then Some v else run_program_mut rest (run_rule_writes empty_rf rp p)
+      | None   => run_program_mut rest (run_rule_writes empty_rf rp p)
+      end
+  end.
+
+Definition eval_chain_mut (c : chain) (p : packet) : verdict :=
+  match eval_rules_mut (c_rules c) p with Some v => v | None => c_policy c end.
+Definition run_chain_mut (prog : program) (policy : verdict) (p : packet) : verdict :=
+  match run_program_mut prog p with Some v => v | None => policy end.
+
 (** ** Multi-chain control flow: jump / goto / return + user-defined chains.
 
     A [jump n] calls chain [n] and *resumes* the caller after it (on the callee's
