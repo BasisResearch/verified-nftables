@@ -5,7 +5,7 @@ A formally verified compiler from the declarative **nftables DSL** to the
 proved semantics-preserving in **Rocq**, plus a verified DSL optimizer.
 Extracted to OCaml and **differential-tested against the upstream nftables test
 corpus**: the verified compiler reproduces the real tool's bytecode on
-**2409 / 2532 (95.1%)** of the corpus's rule-blocks, with **zero mismatches** on
+**2420 / 2532 (95.6%)** of the corpus's rule-blocks, with **zero mismatches** on
 the supported subset.
 
 This implements the *"Goal for now"* in `../instructions.org` (Rocq only, no VST
@@ -71,7 +71,7 @@ Coverage grew as the verified core grew (each step kept both theorems axiom-free
 | + conntrack & fields | `ct load`, 46 named fields | 979 (38.7%) |
 | + extension headers | parametric `exthdr load` (IPv6 ext / TCP opts) | **1272 (50.2%)** |
 
-Coverage has since grown well past the table — **2409/2532 (95.1%)**, still
+Coverage has since grown well past the table — **2420/2532 (95.6%)**, still
 zero mismatches. Beyond the table: ranges, prefixes, sets, ct/exthdr (incl. the
 `present` existence test), transform chains (bitwise shift, byteorder, jhash),
 statements (counter/notrack/log), reject/queue verdicts, stateful `limit` via an
@@ -144,13 +144,13 @@ by the differential corpus, not Rocq.
 - **Catches injected bugs?** Yes (mutation-tested: flipping `cmp eq`→`neq` breaks
   `Correct.v`). Spec-vs-reality drift in *offsets/names* is caught by `make
   validate` against live `nft` (not by the corpus round-trip alone — see above).
-- **Measured coverage:** 2409/2532 (95.1%) of upstream corpus blocks, 0 mismatches.
+- **Measured coverage:** 2420/2532 (95.6%) of upstream corpus blocks, 0 mismatches.
 - **Deployable?** `compile_chain`/`optimize_chain` extract to OCaml and already
   emit nft's exact text; the remaining step is a libnftnl netlink emitter shim.
 
 ## What's unsupported, and why (the remaining ~5%)
 
-Coverage is now 2409/2532 (95.1%).  The remaining buckets each need a *structural*
+Coverage is now 2420/2532 (95.6%).  The remaining buckets each need a *structural*
 addition, not more vocabulary:
 
 - **interleaved match/statement bodies** (`load-after-stmt`, ~17): nft can emit a

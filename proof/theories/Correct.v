@@ -299,6 +299,21 @@ Proof.
   - apply IH.
 Qed.
 
+(** A map-sourced NAT operand: load the key (+ transforms), look it up in the map
+    (into reg 1), then the terminal [INat] accepts — all verdict-neutral until
+    [INat]. *)
+Lemma run_map_nat : forall f ts name rf k fam amin amax pmin pmax fl p,
+  run_rule rf
+    ((compile_load (field_load f) 1 :: compile_transforms ts ++ [ILookupVal [1] name 1 []])
+     ++ [INat k fam amin amax pmin pmax fl]) p = Some Accept.
+Proof.
+  intros. cbn [app]. rewrite compile_load_correct. rewrite <- app_assoc.
+  edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
+              ([ILookupVal [1] name 1 []] ++ [INat k fam amin amax pmin pmax fl]) p)
+    as [rf' [_ Hr]].
+  rewrite Hr. cbn [app run_rule]. reflexivity.
+Qed.
+
 Lemma run_rule_compile_rule : forall r p,
   run_rule empty_rf (compile_rule r) p =
   if rule_applies r p then outcome r p else None.
@@ -308,7 +323,7 @@ Proof.
   intro rf. edestruct (run_stmts_exists (r_stmts r) rf (compile_end r) p) as [rf' H].
   rewrite H. clear H rf. rename rf' into rf.
   unfold compile_end, outcome. destruct (r_nat r) as [n |].
-  - apply run_imms_nat.
+  - destruct (nat_map n) as [[[f ts] name] |]; [apply run_map_nat | apply run_imms_nat].
   - destruct (r_tproxy r) as [t |]; [apply run_imms_tproxy |].
     destruct (r_vmap r) as [vm |].
     + rewrite run_load_fields. cbn [run_rule].

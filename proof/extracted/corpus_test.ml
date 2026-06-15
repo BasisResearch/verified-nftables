@@ -304,7 +304,15 @@ let rule_of_block (lines : string list) : Syntax.rule =
        matches stmts Verdict.Continue in
   (* a NAT ends the rule: prior matches + operand immediates + the nat statement *)
   let mk_nat matches stmts imms (kind,family,amin,amax,pmin,pmax,flags) =
-    mk ~nat:(Some { Syntax.nat_imms = imms; nat_kind = kind; nat_family = family;
+    mk ~nat:(Some { Syntax.nat_imms = imms; nat_map = None;
+                    nat_kind = kind; nat_family = family;
+                    nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
+                    nat_pmax = pmax; nat_flags = flags })
+       matches stmts Verdict.Continue in
+  (* a NAT whose operand comes from a map lookup of a (transformed) field *)
+  let mk_nat_map matches stmts (f,ts,name) (kind,family,amin,amax,pmin,pmax,flags) =
+    mk ~nat:(Some { Syntax.nat_imms = []; nat_map = Some ((f, ts), name);
+                    nat_kind = kind; nat_family = family;
                     nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
                     nat_pmax = pmax; nat_flags = flags })
        matches stmts Verdict.Continue in
@@ -454,15 +462,18 @@ let rule_of_block (lines : string list) : Syntax.rule =
                      | PVmap (1, name) when ts = [] ->
                          if more <> [] then raise (Unsupported "trailing-after-vmap");
                          mk_vmap matches stmts [f] name
-                     (* load + map lookup (dreg 1) feeding a set = a map value *)
-                     | PMapVal (1, name, 1) when ts = [] ->
+                     (* load (+ transforms) + map lookup (dreg 1) feeding a set/NAT *)
+                     | PMapVal (1, name, 1) ->
                          (match more with
                           | l3 :: more3 ->
                             (match parse_line l3 with
-                             | PMetaSet (k, 1) ->
+                             | PMetaSet (k, 1) when ts = [] ->
                                  go matches (Syntax.SMetaSet (k, Syntax.VMap ([f], name, [])) :: stmts) more3
-                             | PCtSet (k, 1) ->
+                             | PCtSet (k, 1) when ts = [] ->
                                  go matches (Syntax.SCtSet (k, Syntax.VMap ([f], name, [])) :: stmts) more3
+                             | PNat (kind,fam,a,ax,pm,px,fl) ->
+                                 if more3 <> [] then raise (Unsupported "trailing-after-nat");
+                                 mk_nat_map matches stmts (f, List.rev ts, name) (kind,fam,a,ax,pm,px,fl)
                              | _ -> raise (Unsupported "map-not-set"))
                           | [] -> raise (Unsupported "map-dangling"))
                      (* load (+ transforms) feeding a set/mangle = a value statement *)

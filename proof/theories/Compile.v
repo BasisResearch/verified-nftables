@@ -156,7 +156,12 @@ Definition verdict_tail (v : verdict) : list instr :=
     [lookup .. dreg 0]) or with the static verdict tail. *)
 Definition compile_end (r : rule) : list instr :=
   match r_nat r with
-  | Some n => map (fun rv => IImmediateData (fst rv) (snd rv)) (nat_imms n) ++
+  | Some n => (match nat_map n with
+               | Some (f, ts, name) =>
+                   compile_load (field_load f) 1 :: compile_transforms ts ++
+                   [ILookupVal [1] name 1 []]
+               | None => map (fun rv => IImmediateData (fst rv) (snd rv)) (nat_imms n)
+               end) ++
               [INat (nat_kind n) (nat_family n) (nat_amin n)
                     (nat_amax n) (nat_pmin n) (nat_pmax n) (nat_flags n)]
   | None =>
