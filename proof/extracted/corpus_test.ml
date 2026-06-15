@@ -485,9 +485,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
             | l2 :: more2 when r = 1 && is_set l2 ->   (* immediate + a set/write = mangle *)
                 (match parse_line l2 with
                  | PWrite (1, b, off, len, ct, co, cf) ->
-                     go matches (Syntax.SMangle (v, b, off, len, ct, co, cf) :: stmts) more2
-                 | PMetaSet (k, 1) -> go matches (Syntax.SMetaSet (k, v) :: stmts) more2
-                 | PCtSet (k, 1) -> go matches (Syntax.SCtSet (k, v) :: stmts) more2
+                     go matches (Syntax.SMangle (Syntax.VImm v, b, off, len, ct, co, cf) :: stmts) more2
+                 | PMetaSet (k, 1) -> go matches (Syntax.SMetaSet (k, Syntax.VImm v) :: stmts) more2
+                 | PCtSet (k, 1) -> go matches (Syntax.SCtSet (k, Syntax.VImm v) :: stmts) more2
                  | _ -> raise (Unsupported "set:reg"))
             | _ ->
                 (* otherwise: gather operand immediates, then a nat statement *)
@@ -565,6 +565,13 @@ let rule_of_block (lines : string list) : Syntax.rule =
                      | PVmap (1, name) when ts = [] ->
                          if more <> [] then raise (Unsupported "trailing-after-vmap");
                          mk_vmap matches stmts [f] name
+                     (* load (+ transforms) feeding a set/mangle = a value statement *)
+                     | PMetaSet (k, 1) ->
+                         go matches (Syntax.SMetaSet (k, Syntax.VField (f, List.rev ts)) :: stmts) more
+                     | PCtSet (k, 1) ->
+                         go matches (Syntax.SCtSet (k, Syntax.VField (f, List.rev ts)) :: stmts) more
+                     | PWrite (1, b, off, len, ct, co, cf) ->
+                         go matches (Syntax.SMangle (Syntax.VField (f, List.rev ts), b, off, len, ct, co, cf) :: stmts) more
                      | PRange _ -> raise (Unsupported "range:reg")
                      | PLookup _ -> raise (Unsupported "lookup:reg")
                      | PBitwise _ | PShift _ | PByteorder _ | PJhash _ | PCmp _ ->

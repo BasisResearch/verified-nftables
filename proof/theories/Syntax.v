@@ -150,15 +150,21 @@ Inductive matchcond : Type :=
 
 (** Verdict-neutral statements: they emit bytecode but do not change the packet's
     verdict (counter accounts; notrack disables conntrack). *)
+(** The value written by a set/mangle statement: either an immediate, or a field
+    value (optionally transformed) computed into register 1. *)
+Inductive vsrc : Type :=
+| VImm   (v : data)
+| VField (f : field) (ts : list transform).
+
 Inductive stmt : Type :=
 | SCounter (pkts bytes : nat)
 | SNotrack
 | SLog (level : option nat)
-| SMangle (v : data) (b : pbase) (off len : nat) (ctype coff cflags : nat)
-                            (* payload write of an immediate value (verdict-neutral;
-                               the packet rewrite is a side effect of the model) *)
-| SMetaSet (k : meta_key) (v : data)   (* meta set <k> with an immediate value *)
-| SCtSet   (k : ct_key) (v : data).    (* ct set <k> with an immediate value *)
+| SMangle (vs : vsrc) (b : pbase) (off len : nat) (ctype coff cflags : nat)
+                            (* payload write (verdict-neutral; the packet rewrite
+                               is a side effect outside the model) *)
+| SMetaSet (k : meta_key) (vs : vsrc)   (* meta set <k> with a value *)
+| SCtSet   (k : ct_key) (vs : vsrc).    (* ct set <k> with a value *)
 
 (** A verdict map: the rule's verdict comes from looking up the concatenation of
     [vm_fields] in the named map (entries live in NEWSET; carried for semantics,

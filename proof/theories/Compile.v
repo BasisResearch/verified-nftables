@@ -100,15 +100,22 @@ Definition compile_match (m : matchcond) : list instr :=
 (** A [Continue] (fall-through) rule emits no verdict expression, exactly as
     [nft] does for a rule that only narrows; a terminal verdict emits an
     [immediate] into the verdict register. *)
+(** Compile a value source into register 1 (immediate, or load + transforms). *)
+Definition compile_vsrc (vs : vsrc) : list instr :=
+  match vs with
+  | VImm v      => [IImmediateData 1 v]
+  | VField f ts => compile_load (field_load f) 1 :: compile_transforms ts
+  end.
+
 Definition compile_stmt (s : stmt) : list instr :=
   match s with
   | SCounter p b => [ICounter p b]
   | SNotrack     => [INotrack]
   | SLog level   => [ILog level]
-  | SMangle v b off len ct co cf =>
-      [IImmediateData 1 v; IPayloadWrite 1 b off len ct co cf]
-  | SMetaSet k v => [IImmediateData 1 v; IMetaSet k 1]
-  | SCtSet k v   => [IImmediateData 1 v; ICtSet k 1]
+  | SMangle vs b off len ct co cf =>
+      compile_vsrc vs ++ [IPayloadWrite 1 b off len ct co cf]
+  | SMetaSet k vs => compile_vsrc vs ++ [IMetaSet k 1]
+  | SCtSet k vs   => compile_vsrc vs ++ [ICtSet k 1]
   end.
 
 Definition verdict_tail (v : verdict) : list instr :=

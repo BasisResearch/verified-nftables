@@ -212,25 +212,45 @@ Proof.
         [apply IH; exact Hc | reflexivity].
 Qed.
 
-(** The register file after running a statement list.  Most statements are
-    register-neutral; a payload-mangle (`SMangle`) loads its immediate into
-    register 1.  Statements never produce a verdict, so they thread the register
-    file through to the rule's verdict tail. *)
-Fixpoint apply_stmts (rf : regfile) (ss : list stmt) (p : packet) : regfile :=
-  match ss with
-  | []                       => rf
-  | SMangle v _ _ _ _ _ _ :: rest => apply_stmts (set_reg rf 1 v) rest p
-  | SMetaSet _ v :: rest     => apply_stmts (set_reg rf 1 v) rest p
-  | SCtSet _ v :: rest       => apply_stmts (set_reg rf 1 v) rest p
-  | _ :: rest                => apply_stmts rf rest p
-  end.
+(** Statements never produce a verdict; they leave the register file in *some*
+    state (a value-source may load register 1 via a load + transform chain, which
+    yields an existential register file) and fall through to the verdict tail.
+    Because every verdict tail is register-independent, this existential is all
+    the rule-correctness proof needs. *)
+Lemma run_vsrc_exists : forall vs rf rest p,
+  exists rf', run_rule rf (compile_vsrc vs ++ rest) p = run_rule rf' rest p.
+Proof.
+  destruct vs as [v | f ts]; intros rf rest p.
+  - exists (set_reg rf 1 v). reflexivity.
+  - edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p)) rest p)
+      as [rf' [_ Hr]].
+    exists rf'. cbn [compile_vsrc app]. rewrite compile_load_correct. exact Hr.
+Qed.
 
-Lemma run_stmts_thread : forall ss rf tail p,
-  run_rule rf (flat_map compile_stmt ss ++ tail) p = run_rule (apply_stmts rf ss p) tail p.
+Lemma run_stmt_exists : forall s rf rest p,
+  exists rf', run_rule rf (compile_stmt s ++ rest) p = run_rule rf' rest p.
+Proof.
+  destruct s; intros rf rest p; try (exists rf; reflexivity).
+  - (* SMangle *) edestruct (run_vsrc_exists vs rf
+      (IPayloadWrite 1 b off len ctype coff cflags :: rest) p) as [rf' Hr].
+    exists rf'. cbn [compile_stmt]. rewrite <- app_assoc. cbn [app].
+    rewrite Hr. reflexivity.
+  - (* SMetaSet *) edestruct (run_vsrc_exists vs rf (IMetaSet k 1 :: rest) p) as [rf' Hr].
+    exists rf'. cbn [compile_stmt]. rewrite <- app_assoc. cbn [app].
+    rewrite Hr. reflexivity.
+  - (* SCtSet *) edestruct (run_vsrc_exists vs rf (ICtSet k 1 :: rest) p) as [rf' Hr].
+    exists rf'. cbn [compile_stmt]. rewrite <- app_assoc. cbn [app].
+    rewrite Hr. reflexivity.
+Qed.
+
+Lemma run_stmts_exists : forall ss rf tail p,
+  exists rf', run_rule rf (flat_map compile_stmt ss ++ tail) p = run_rule rf' tail p.
 Proof.
   induction ss as [| s ss IH]; intros rf tail p.
-  - reflexivity.
-  - destruct s; cbn [flat_map compile_stmt app run_rule apply_stmts]; apply IH.
+  - exists rf. reflexivity.
+  - cbn [flat_map]. rewrite <- app_assoc.
+    edestruct (run_stmt_exists s rf (flat_map compile_stmt ss ++ tail) p) as [rf1 H1].
+    rewrite H1. edestruct (IH rf1 tail p) as [rf2 H2]. exists rf2. rewrite H2. reflexivity.
 Qed.
 
 Definition verdict_result (v : verdict) : option verdict :=
@@ -259,8 +279,8 @@ Lemma run_rule_compile_rule : forall r p,
 Proof.
   intros r p. unfold compile_rule, rule_applies.
   apply run_compile_matches_const.
-  intro rf. rewrite run_stmts_thread.
-  generalize (apply_stmts rf (r_stmts r) p); clear rf; intro rf.
+  intro rf. edestruct (run_stmts_exists (r_stmts r) rf (compile_end r) p) as [rf' H].
+  rewrite H. clear H rf. rename rf' into rf.
   unfold compile_end, outcome. destruct (r_nat r) as [n |].
   - apply run_imms_nat.
   - destruct (r_vmap r) as [vm |].
