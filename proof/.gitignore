@@ -18,5 +18,6 @@ extracted/*.mli
 !extracted/nftc.ml
 !extracted/nftc.mli
 !extracted/example.ml
+!extracted/semtest.ml
 extracted/_build/
 .CoqMakefile.d
