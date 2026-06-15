@@ -59,6 +59,8 @@ type pinst =
                             (* kind, family, amin, amax, pmin, pmax, flags *)
   | PTproxy  of string * int option * int option   (* family, addr reg, port reg *)
   | PObjref  of int * string                       (* object type, object name *)
+  | PSynproxy of int * int                         (* mss, wscale *)
+  | PLast    of string                             (* `last` info (count or "never") *)
   | PImm     of Verdict.verdict
 
 let rec take_until tok = function
@@ -255,6 +257,8 @@ let parse_line line : pinst =
                q_flags = int_of_string fl }
   | "log"::rest -> PLog (String.concat " " rest)
   | ["objref"; "type"; t; "name"; n] -> PObjref (int_of_string t, n)
+  | ["synproxy"; "mss"; m; "wscale"; w] -> PSynproxy (int_of_string m, int_of_string w)
+  | ["last"; info] -> PLast info
   | ["reject"; "type"; t; "code"; c] ->
       PImm (Verdict.Reject (int_of_string t, int_of_string c))
   | "queue"::"num"::spec::flags ->
@@ -341,6 +345,8 @@ let rule_of_block (lines : string list) : Syntax.rule =
        | PNotrack -> go matches (Syntax.SNotrack :: stmts) rest
        | PLog l -> go matches (Syntax.SLog l :: stmts) rest
        | PObjref (t,n) -> go matches (Syntax.SObjref (t,n) :: stmts) rest
+       | PSynproxy (m,w) -> go matches (Syntax.SSynproxy (m,w) :: stmts) rest
+       | PLast info -> go matches (Syntax.SLast info :: stmts) rest
        | PLimit spec ->
            if stmts <> [] then raise (Unsupported "limit-after-stmt");
            go (Syntax.MLimit spec :: matches) stmts rest

@@ -244,6 +244,8 @@ let render_instr (i : Bytecode.instr) : string = match i with
       Printf.sprintf "[ quota bytes %d consumed %d flags %d ]"
         s.Packet.q_bytes s.Packet.q_consumed s.Packet.q_flags
   | Bytecode.IObjref (t,n) -> Printf.sprintf "[ objref type %d name %s ]" t n
+  | Bytecode.ISynproxy (m,w) -> Printf.sprintf "[ synproxy mss %d wscale %d ]" m w
+  | Bytecode.ILast info -> Printf.sprintf "[ last %s ]" info
   | Bytecode.ICounter (p,b) -> Printf.sprintf "[ counter pkts %d bytes %d ]" p b
   | Bytecode.INotrack -> "[ notrack ]"
   | Bytecode.ILog opts ->

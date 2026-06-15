@@ -129,6 +129,8 @@ Definition compile_stmt (s : stmt) : list instr :=
   | SMetaSet k vs => compile_vsrc vs ++ [IMetaSet k 1]
   | SCtSet k vs   => compile_vsrc vs ++ [ICtSet k 1]
   | SObjref o n   => [IObjref o n]
+  | SSynproxy m w => [ISynproxy m w]
+  | SLast info    => [ILast info]
   end.
 
 Definition verdict_tail (v : verdict) : list instr :=

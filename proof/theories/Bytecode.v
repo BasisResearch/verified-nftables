@@ -41,6 +41,8 @@ Inductive instr : Type :=
 | IFibLoad     (sel : string) (res : fib_result) (dst : reg)
 | IQuota       (spec : quota_spec)
 | IObjref      (otype : nat) (oname : string)
+| ISynproxy    (mss wscale : nat)
+| ILast        (info : string)
 | ICtDirLoad   (key dir : string) (dst : reg)
 | IInnerLoad   (typ hdrsize flags : nat) (innerdesc : string) (width : nat) (dst : reg)
 | IPayloadLoad (b : pbase) (off len : nat) (dst : reg)
