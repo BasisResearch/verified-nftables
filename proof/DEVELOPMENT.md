@@ -148,26 +148,34 @@ by the differential corpus, not Rocq.
 - **Deployable?** `compile_chain`/`optimize_chain` extract to OCaml and already
   emit nft's exact text; the remaining step is a libnftnl netlink emitter shim.
 
-## What's unsupported, and why (the remaining ~29%)
+## What's unsupported, and why (the remaining ~5%)
 
-The largest remaining buckets each need a structural addition, not more match
-expressions:
+Coverage is now 2409/2532 (95.1%).  The remaining buckets each need a *structural*
+addition, not more vocabulary:
 
-- **from-register statements** — NAT/redirect/masquerade and payload-mangle
-  (`nat snat … reg N`, `payload write … reg N`, `imm:datareg`, ~250 blocks):
-  addresses/ports are loaded into data registers (`immediate reg N …`, into the
-  128-bit regs 1–4) and then consumed by a terminal statement. Needs
-  immediates-into-data-registers, a third rule outcome (`r_nat`, terminal), and
-  the statement's register references — the next major refactor.
-- **maps with `dreg N>0`** (`lookup … dreg 1`): the lookup loads a value into a
-  register for a following statement (e.g. `meta mark set … map`) — multi-register
-  value flow, related to the NAT tier.
-- a long tail: directional/object `ct` loads and `ct set`, `dynset`, `objref`,
-  `tproxy`, `synproxy`, `quota`, `xfrm`, `dup`/`fwd`, etc. — each a small
-  structured feature.
+- **interleaved match/statement bodies** (`load-after-stmt`, ~17): nft can emit a
+  statement and then another match-load; our rule splits cleanly into
+  `r_matches` then `r_stmts`, so re-rendering would reorder them. Faithfully
+  supporting this needs an ordered `match | stmt` rule body (the next refactor).
+- **transformed values into maps** (part of `load-not-followed`, ~23): a field is
+  transformed (bitwise/shift/jhash) and then looked up in a verdict-map or value
+  map; `vmap_spec`/`VMap` would need to carry the transform chain.
+- **NAT/redirect from a map** (part of `map-not-set`, ~15): a map lookup produces
+  the translation address/port consumed by a terminal `nat`/`redir` — `r_nat`
+  would need a map-sourced operand prelude in addition to immediates.
+- **hash/bitwise over a concatenation** (part of `concat-not-lookup`, ~17): jhash
+  of `ip saddr . ip daddr` reads bytes spanning several registers — needs a
+  multi-register read like `ILookup` already has.
+- a small tail: `dup`/`fwd` (register-operand statements), `tunnel`, `connlimit`,
+  immediate-sourced `dynset`, the `exthdr write` mangle.
 
-The verdict-map (`dreg 0`), map-valued set, `fib`, `inner`, and ordered-comparison
-cases are **done** (see above).
+**Done** (verified, byte-identical): all named/parametric loads incl. fib, inner
+(tunnel decap), xfrm, directional & full conntrack, sctp exthdr; eq/neq/ordered
+ranges & comparisons; bitwise/shift/byteorder/jhash transforms; set membership and
+verdict maps (incl. concatenated keys); map-valued and field-/immediate-valued
+set/mangle; NAT/masq/redir and tproxy terminals; quota/limit stateful breaks;
+counter/notrack/log/objref/synproxy/last/dynset(add,delete,map)/exthdr-reset
+statements; reject/queue verdicts.
 
 ## Next steps (toward the broader instructions.org goals)
 
