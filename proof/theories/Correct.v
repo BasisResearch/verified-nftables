@@ -575,15 +575,14 @@ Proof.
       rewrite Hr. apply IH; exact Hc.
 Qed.
 
-Lemma run_rule_compile_rule : forall r p,
-  run_rule empty_rf (compile_rule r) p =
-  if rule_applies r p then outcome r p else None.
+(** The terminal of a rule (nat/tproxy/fwd/queue/verdict) runs, from any register
+    file, to its [terminal_outcome] — ignoring the post-outcome statements after a
+    side-effect terminal, running them to [None] after a [Continue]. *)
+Lemma run_terminal : forall r rf p,
+  run_rule rf (compile_terminal r ++ flat_map compile_stmt (r_after r)) p
+  = terminal_outcome r p.
 Proof.
-  intros r p. unfold compile_rule, rule_applies.
-  apply run_compile_body.
-  (* the trailing tail is the outcome instrs then the post-outcome statements;
-     a terminal outcome ignores them, a Continue tail runs them to None *)
-  intro rf. unfold compile_end, outcome. destruct (r_nat r) as [n |].
+  intros r rf p. unfold compile_terminal, terminal_outcome. destruct (r_nat r) as [n |].
   - rewrite <- app_assoc. destruct (nat_map n) as [[[fields ts] name] |].
     + apply run_map_nat.
     + destruct (nat_field n) as [[f ts] |]; [apply run_field_nat | apply run_imms_nat].
@@ -595,22 +594,40 @@ Proof.
       * destruct (r_queue r) as [q |].
         -- rewrite <- app_assoc. destruct (q_src q) as [vs |];
              [apply run_vsrc_queue | apply run_imms_queue].
-        -- destruct (r_vmap r) as [vm |].
-           ++ destruct (vm_keyf vm) as [[f ts] |].
-              ** (* transformed single-field key *)
-                 cbn [app]. rewrite compile_load_correct. rewrite <- app_assoc.
-                 edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
-                             ([IVmap [1] (vm_name vm) (vm_entries vm)]
-                                ++ flat_map compile_stmt (r_after r)) p) as [rf' [Hr1 Hr2]].
-                 rewrite Hr2. cbn [app run_rule concat map].
-                 rewrite app_nil_r, Hr1, set_reg_same. reflexivity.
-              ** (* concat key: IVmap reads the loaded concatenation, ignores the tail *)
-                 rewrite <- app_assoc. rewrite run_load_fields. cbn [app run_rule].
-                 rewrite map_write_fields by apply alloc_regs_nodup.
-                 rewrite map_fst_field, alloc_regs_fst. reflexivity.
-           ++ (* static verdict, then the post-outcome statements *)
-              rewrite run_verdict_tail_after.
-              destruct (r_verdict r); solve [ reflexivity | apply run_stmts_none ].
+        -- rewrite run_verdict_tail_after.
+           destruct (r_verdict r); solve [ reflexivity | apply run_stmts_none ].
+Qed.
+
+Lemma run_rule_compile_rule : forall r p,
+  run_rule empty_rf (compile_rule r) p =
+  if rule_applies r p then outcome r p else None.
+Proof.
+  intros r p. unfold compile_rule, rule_applies.
+  apply run_compile_body.
+  (* the trailing tail is the vmap prefix, then the terminal, then the
+     post-outcome statements; a vmap hit wins, a miss falls to the terminal *)
+  intro rf. unfold compile_end, compile_vmap, outcome. destruct (r_vmap r) as [vm |].
+  - (* verdict map first: load the key, IVmap hits -> verdict, misses -> terminal *)
+    rewrite <- app_assoc. destruct (vm_keyf vm) as [[f ts] |].
+    + (* transformed single-field key *)
+      cbn [app]. rewrite compile_load_correct. rewrite <- app_assoc.
+      edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
+                  ([IVmap [1] (vm_name vm) (vm_entries vm)]
+                     ++ compile_terminal r ++ flat_map compile_stmt (r_after r)) p)
+        as [rf' [Hr1 Hr2]].
+      rewrite Hr2. cbn [app run_rule concat map].
+      rewrite app_nil_r, Hr1, set_reg_same.
+      destruct (assoc_verdict (apply_transforms ts (field_value f p)) (vm_entries vm));
+        [reflexivity | apply run_terminal].
+    + (* concat key: IVmap reads the loaded concatenation *)
+      rewrite <- app_assoc. rewrite run_load_fields. cbn [app run_rule].
+      rewrite map_write_fields by apply alloc_regs_nodup.
+      rewrite map_fst_field, alloc_regs_fst.
+      destruct (assoc_verdict (concat (map (fun f => field_value f p) (vm_fields vm)))
+                              (vm_entries vm));
+        [reflexivity | apply run_terminal].
+  - (* no verdict map: just the terminal *)
+    cbn [app]. apply run_terminal.
 Qed.
 
 (** Chain level: the compiled program reproduces the rule-list evaluation. *)

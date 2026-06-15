@@ -219,9 +219,25 @@ Definition verdict_tail (v : verdict) : list instr :=
   | Queue lo hi b f => [IQueue lo hi b f]
   end.
 
-(** A rule ends either with a verdict map lookup (loads of the key fields then a
-    [lookup .. dreg 0]) or with the static verdict tail. *)
-Definition compile_end (r : rule) : list instr :=
+(** The verdict-map prefix of a rule, if any: load the key, then [IVmap] (which
+    on a miss falls through to the terminal below). *)
+Definition compile_vmap (r : rule) : list instr :=
+  match r_vmap r with
+  | Some vm =>
+      match vm_keyf vm with
+      | Some (f, ts) =>
+          compile_load (field_load f) 1 :: compile_transforms ts ++
+          [IVmap [1] (vm_name vm) (vm_entries vm)]
+      | None =>
+          load_fields (alloc_regs 0 (vm_fields vm)) ++
+          [IVmap (map snd (alloc_regs 0 (vm_fields vm))) (vm_name vm) (vm_entries vm)]
+      end
+  | None => []
+  end.
+
+(** The terminal of a rule: a nat/tproxy/fwd/queue side effect, else the static
+    verdict tail. *)
+Definition compile_terminal (r : rule) : list instr :=
   match r_nat r with
   | Some n => (match nat_map n with
                | Some (fields, ts, name) =>
@@ -253,23 +269,15 @@ Definition compile_end (r : rule) : list instr :=
                | None => map (fun rv => IImmediateData (fst rv) (snd rv)) (q_imms q)
                end) ++
               [IQueueSreg (q_sreg q) (q_bypass q) (q_fanout q)]
-  | None =>
-    match r_vmap r with
-    | Some vm =>
-        match vm_keyf vm with
-        | Some (f, ts) =>
-            compile_load (field_load f) 1 :: compile_transforms ts ++
-            [IVmap [1] (vm_name vm) (vm_entries vm)]
-        | None =>
-            load_fields (alloc_regs 0 (vm_fields vm)) ++
-            [IVmap (map snd (alloc_regs 0 (vm_fields vm))) (vm_name vm) (vm_entries vm)]
-        end
-    | None    => verdict_tail (r_verdict r)
-    end
+  | None => verdict_tail (r_verdict r)
   end
   end
   end
   end.
+
+(** A rule ends with its verdict-map prefix (if any) followed by its terminal. *)
+Definition compile_end (r : rule) : list instr :=
+  compile_vmap r ++ compile_terminal r.
 
 Definition compile_body_item (it : body_item) : list instr :=
   match it with

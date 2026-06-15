@@ -69,9 +69,10 @@ Fixpoint assoc_verdict (key : data) (entries : list (data * verdict)) : option v
   | (k, v) :: rest => if data_eqb key k then Some v else assoc_verdict key rest
   end.
 
-(** A rule's outcome (when it applies): a [Some v] (verdict reached) or [None]
-    (fall through), for a static verdict or a verdict-map lookup. *)
-Definition outcome (r : rule) (p : packet) : option verdict :=
+(** The terminal outcome of a rule once any verdict map has fallen through: a
+    [nat]/[tproxy]/[fwd]/[queue] side effect accepts, otherwise the static
+    verdict ([Continue] = fall through). *)
+Definition terminal_outcome (r : rule) (p : packet) : option verdict :=
   match r_nat r with
   | Some _ => Some Accept   (* NAT is terminal accept (translation is a side effect) *)
   | None =>
@@ -83,19 +84,28 @@ Definition outcome (r : rule) (p : packet) : option verdict :=
   | None =>
   match r_queue r with
   | Some _ => Some Accept   (* queue is terminal accept (hand-off is a side effect) *)
-  | None =>
-    match r_vmap r with
-    | Some vm =>
-        let key := match vm_keyf vm with
-                   | Some (f, ts) => apply_transforms ts (field_value f p)
-                   | None => concat (map (fun f => field_value f p) (vm_fields vm))
-                   end in
-        assoc_verdict key (vm_entries vm)
-    | None    => match r_verdict r with Continue => None | v => Some v end
-    end
+  | None => match r_verdict r with Continue => None | v => Some v end
   end
   end
   end
+  end.
+
+(** A rule's outcome (when it applies): a [Some v] (verdict reached) or [None]
+    (fall through).  A verdict map is evaluated first: a hit gives its verdict, a
+    miss falls through to the terminal outcome (so a rule may carry both a vmap
+    and a trailing redirect/masquerade). *)
+Definition outcome (r : rule) (p : packet) : option verdict :=
+  match r_vmap r with
+  | Some vm =>
+      let key := match vm_keyf vm with
+                 | Some (f, ts) => apply_transforms ts (field_value f p)
+                 | None => concat (map (fun f => field_value f p) (vm_fields vm))
+                 end in
+      match assoc_verdict key (vm_entries vm) with
+      | Some v => Some v
+      | None   => terminal_outcome r p
+      end
+  | None => terminal_outcome r p
   end.
 
 (** Evaluate a rule list.  [None] means "fell through every rule"; [Some v]
@@ -171,8 +181,13 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       run_rule (set_reg rf dst (data_jhash l s m o (rf src))) rest p
   | ILookup srcs _ neg elems :: rest =>
       if xorb neg (data_mem (concat (map rf srcs)) elems) then run_rule rf rest p else None
-  | IVmap srcs _ entries :: _ =>
-      assoc_verdict (concat (map rf srcs)) entries   (* verdict from the map, or None *)
+  | IVmap srcs _ entries :: rest =>
+      (* a verdict map: a hit terminates with that verdict; a miss falls through
+         to the rest (e.g. a trailing redirect/masquerade), exactly as nft does *)
+      match assoc_verdict (concat (map rf srcs)) entries with
+      | Some v => Some v
+      | None   => run_rule rf rest p
+      end
   | IImmediateData dst v :: rest =>
       run_rule (set_reg rf dst v) rest p
   (* Set/mangle: verdict-neutral.  The written value (the operand register) is a

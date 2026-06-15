@@ -121,13 +121,13 @@ Proof.
       apply andb_true_iff in Hs3. destruct Hs3 as [Hs4 Hnat].
       apply andb_true_iff in Hs4. destruct Hs4 as [Hs5 Hvm].
       apply andb_true_iff in Hs5. destruct Hs5 as [Hm Hv].
-      cbn [eval_rules]. unfold rule_applies, outcome.
+      cbn [eval_rules]. unfold rule_applies, outcome, terminal_outcome.
       destruct (body_matches (r_body r)) as [| m ms] eqn:Em; [| discriminate Hm].
+      destruct (r_vmap r) as [vm |] eqn:Evm; [discriminate Hvm |].
       destruct (r_nat r) as [n |] eqn:Enat; [discriminate Hnat |].
       destruct (r_tproxy r) as [t |] eqn:Etp; [discriminate Htp |].
       destruct (r_fwd r) as [w |] eqn:Efwd; [discriminate Hfwd |].
       destruct (r_queue r) as [q |] eqn:Eq; [discriminate Hq |].
-      destruct (r_vmap r) as [vm |] eqn:Evm; [discriminate Hvm |].
       cbn [forallb]. destruct (r_verdict r) eqn:Ev; cbn in Hv |- *;
         try discriminate Hv; reflexivity.
     + (* keep r, recurse *)
@@ -298,14 +298,14 @@ Proof.
     apply andb_true_iff in Hn as [Hn Hvm].
     apply andb_true_iff in Hn as [Hba Hv].
     apply andb_true_iff in Hba as [Hb _].
-    cbn [eval_rules]. unfold rule_applies, outcome.
+    cbn [eval_rules]. unfold rule_applies, outcome, terminal_outcome.
     destruct (r_body r) as [| it b] eqn:Eb; [| discriminate Hb].
     cbn [body_matches flat_map forallb].
+    destruct (r_vmap r); [discriminate |].
     destruct (r_nat r); [discriminate |].
     destruct (r_tproxy r); [discriminate |].
     destruct (r_fwd r); [discriminate |].
     destruct (r_queue r); [discriminate |].
-    destruct (r_vmap r); [discriminate |].
     destruct (r_verdict r); cbn in Hv |- *; try discriminate Hv; reflexivity.
   - cbn [eval_rules]. destruct (rule_applies r p).
     + destruct (outcome r p) as [v |].

@@ -360,12 +360,16 @@ let rule_of_block (lines : string list) : Syntax.rule =
        | PLog s -> Syntax.SLog s :: parse_after more
        | PObjref (t,n) -> Syntax.SObjref (t,n) :: parse_after more
        | _ -> raise (Unsupported "trailing-after-vmap")) in
-  let mk_vmap ?(after=[]) body fields name =
-    mk ~after ~vmap:(Some { Syntax.vm_fields = fields; vm_keyf = None;
+  let mk_vmap ?(after=[]) ?(nat=None) body fields name =
+    mk ~after ~nat ~vmap:(Some { Syntax.vm_fields = fields; vm_keyf = None;
                      vm_name = name; vm_entries = [] }) body Verdict.Continue in
-  let mk_vmap_t ?(after=[]) body f ts name =
-    mk ~after ~vmap:(Some { Syntax.vm_fields = [f]; vm_keyf = Some (f, ts);
+  let mk_vmap_t ?(after=[]) ?(nat=None) body f ts name =
+    mk ~after ~nat ~vmap:(Some { Syntax.vm_fields = [f]; vm_keyf = Some (f, ts);
                      vm_name = name; vm_entries = [] }) body Verdict.Continue in
+  let nat_spec_of imms (kind,family,amin,amax,pmin,pmax,flags) : Syntax.nat_spec =
+    { Syntax.nat_imms = imms; nat_field = None; nat_map = None;
+      nat_kind = kind; nat_family = family; nat_amin = amin; nat_amax = amax;
+      nat_pmin = pmin; nat_pmax = pmax; nat_flags = flags } in
   let mk_nat body imms (kind,family,amin,amax,pmin,pmax,flags) =
     mk ~nat:(Some { Syntax.nat_imms = imms; nat_field = None; nat_map = None;
                     nat_kind = kind; nat_family = family;
@@ -613,10 +617,24 @@ let rule_of_block (lines : string list) : Syntax.rule =
                            | tl -> Syntax.MSetT (f, tl, neg, name, [])) in
                          go (bm body m) more
                      | PVmap (1, name) ->
-                         let after = parse_after more in
-                         (match List.rev ts with
-                          | [] -> mk_vmap ~after body [f] name
-                          | tl -> mk_vmap_t ~after body f tl name)
+                         (* a vmap may be followed by a terminal redirect/masquerade
+                            that applies on a map miss (vmap + nat in one rule) *)
+                         (match more with
+                          | l :: more2 when (match (try Some (parse_line l) with _ -> None) with
+                                             | Some (PNat (_,_,_,_,_,_,_)) -> true | _ -> false) ->
+                              let nat = (match parse_line l with
+                                         | PNat (k,fa,a,ax,pm,px,fl) ->
+                                             Some (nat_spec_of [] (k,fa,a,ax,pm,px,fl))
+                                         | _ -> assert false) in
+                              let after = parse_after more2 in
+                              (match List.rev ts with
+                               | [] -> mk_vmap ~after ~nat body [f] name
+                               | tl -> mk_vmap_t ~after ~nat body f tl name)
+                          | _ ->
+                              let after = parse_after more in
+                              (match List.rev ts with
+                               | [] -> mk_vmap ~after body [f] name
+                               | tl -> mk_vmap_t ~after body f tl name))
                      | PMapVal (1, name, 1) ->
                          (match more with
                           | l3 :: more3 ->
