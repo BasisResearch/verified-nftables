@@ -131,7 +131,8 @@ Definition field_value (f : field) (p : packet) : data :=
 Inductive transform : Type :=
 | TBitAnd    (mask xor : data)
 | TShift     (shl : bool) (amt : nat)
-| TByteorder (hton : bool) (size len : nat).
+| TByteorder (hton : bool) (size len : nat)
+| TJhash     (len seed modulus offset : nat).
 
 Inductive matchcond : Type :=
 | MEq     (f : field) (v : data)

@@ -60,6 +60,16 @@ Definition data_shift (shl : bool) (amt : nat) (d : data) : data :=
     (if shl then N.shiftl (data_to_N d) (N.of_nat amt)
              else N.shiftr (data_to_N d) (N.of_nat amt)).
 
+(** Jenkins-hash transform ([hash ... = jhash(reg, len, seed) % mod offset]).
+    The real jhash is a specific mixing function; we model it as a deterministic
+    function of the input bytes, seed, modulus and offset, bounded into
+    [offset, offset+modulus) — faithful in *structure* (deterministic, input- and
+    seed-dependent, mod-bounded), an abstraction of the exact mixing. *)
+Definition data_jhash (len seed modulus offset : nat) (d : data) : data :=
+  N_to_data 4
+    (N.of_nat offset +
+     N.modulo (data_to_N d + N.of_nat seed) (N.of_nat (S modulus))).
+
 (** Byte-order conversion (ntoh/hton).  nftables' byteorder expression swaps the
     bytes *within each [len]-byte element* across the [size]-byte value (ntoh and
     hton are the same byte reversal for a single conversion).  We therefore

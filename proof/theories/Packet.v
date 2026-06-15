@@ -72,8 +72,10 @@ Record packet : Type := {
   pkt_ih   : list byte;          (* inner-header bytes (tunnelled packet) *)
   pkt_tnl  : list byte;          (* tunnel-header bytes *)
   pkt_limit : limit_spec -> bool; (* oracle: does this packet pass a given limiter? *)
-  pkt_numgen : numgen_spec -> data;  (* oracle: numgen output for this packet *)
-  pkt_osf  : data;                   (* oracle: OS-fingerprint value *)
+  pkt_numgen : numgen_spec -> data;  (* oracle: numgen output (per-packet abstraction
+                                        of a global counter; cannot distinguish two
+                                        firings of one packet — see DEVELOPMENT.md) *)
+  pkt_osf  : data;                   (* oracle: OS-fingerprint value (packet-determined) *)
 }.
 
 (** Read [len] bytes at [off] from a header byte string. *)

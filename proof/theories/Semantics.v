@@ -15,6 +15,7 @@ Definition apply_transform (t : transform) (d : data) : data :=
   | TBitAnd mask xor    => data_bitops d mask xor
   | TShift shl amt     => data_shift shl amt d
   | TByteorder h sz len => data_byteorder h sz len d
+  | TJhash l s m o      => data_jhash l s m o d
   end.
 
 Definition apply_transforms (ts : list transform) (d : data) : data :=
@@ -94,6 +95,8 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       run_rule (set_reg rf dst (data_shift shl amt (rf src))) rest p
   | IByteorder dst src h sz len :: rest =>
       run_rule (set_reg rf dst (data_byteorder h sz len (rf src))) rest p
+  | IJhash dst src l s m o :: rest =>
+      run_rule (set_reg rf dst (data_jhash l s m o (rf src))) rest p
   | ILookup src _ neg elems :: rest =>
       if xorb neg (data_mem (rf src) elems) then run_rule rf rest p else None
   | ILimit spec :: rest =>

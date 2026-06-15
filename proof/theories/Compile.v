@@ -26,6 +26,7 @@ Definition compile_transform (t : transform) : instr :=
   | TBitAnd mask xor    => IBitwise 1 1 mask xor
   | TShift shl amt     => IBitShift 1 1 shl amt
   | TByteorder h sz len => IByteorder 1 1 h sz len
+  | TJhash l s m o      => IJhash 1 1 l s m o
   end.
 
 Fixpoint compile_transforms (ts : list transform) : list instr :=

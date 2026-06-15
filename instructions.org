@@ -42,6 +42,13 @@ skeptic call this a toy? If yes, keep going.
   optional, and must run over a real external corpus (see Key steps). Report
   concrete coverage every time you assess progress. A handful of hand-written
   rules is not acceptable evidence that the spec is correct or has parity.
+- Prioritize the HARD but central/common features over easy or niche ones. Do
+  not cherry-pick the simple additive cases and defer the structurally hard ones
+  (e.g. multi-register dataflow / concatenations / maps, routing lookups like
+  fib) to "later" — those are usually the most common and most valuable, and
+  their proofs are the interesting ones. Go straight at the challenging proof;
+  if a feature needs a deeper model (e.g. a byte-addressable register file), do
+  that refactor rather than working around it. Easy long-tail features can wait.
 - Faithfulness of the specification takes priority over coverage speed. Always
   choose the most faithful representation of the source's semantics, even when a
   generic or opaque shortcut would cover more cases faster:

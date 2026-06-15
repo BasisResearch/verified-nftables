@@ -33,7 +33,8 @@ Proof.
   - destruct t; cbn [compile_transforms compile_transform app run_rule];
       [ edestruct (IH (set_reg rf 1 (data_bitops (rf 1) mask xor))) as [rf' Hr]
       | edestruct (IH (set_reg rf 1 (data_shift shl amt (rf 1)))) as [rf' Hr]
-      | edestruct (IH (set_reg rf 1 (data_byteorder hton size len (rf 1)))) as [rf' Hr] ];
+      | edestruct (IH (set_reg rf 1 (data_byteorder hton size len (rf 1)))) as [rf' Hr]
+      | edestruct (IH (set_reg rf 1 (data_jhash len seed modulus offset (rf 1)))) as [rf' Hr] ];
       exists rf'; rewrite Hr; rewrite set_reg_same; reflexivity.
 Qed.
 

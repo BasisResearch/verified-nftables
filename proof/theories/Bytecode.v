@@ -39,6 +39,7 @@ Inductive instr : Type :=
 | IBitwise     (dst src : reg) (mask xor : data)         (* dst = (src & mask) ^ xor *)
 | IBitShift    (dst src : reg) (shl : bool) (amt : nat) (* dst = src >>/<< amt *)
 | IByteorder   (dst src : reg) (hton : bool) (size len : nat)
+| IJhash       (dst src : reg) (len seed modulus offset : nat)
 | ILookup      (src : reg) (name : string) (neg : bool) (elems : list data)
                                           (* set membership; [elems] is the set's
                                              contents, carried for semantics and

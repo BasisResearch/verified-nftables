@@ -154,6 +154,7 @@ let render_instr (i : Bytecode.instr) : string = match i with
       Printf.sprintf "[ exthdr load %s %db @ %d + %d => reg %d ]"
         (name_of_ehproto ep) l h o r
   | Bytecode.INumgen (s,r) ->
+      (* mirror upstream nft: it omits "offset" when 0, never emits "offset 0" *)
       let off = if s.Packet.ng_offset > 0 then Printf.sprintf " offset %d" s.Packet.ng_offset else "" in
       Printf.sprintf "[ numgen reg %d = %s mod %d%s ]"
         r (if s.Packet.ng_random then "random" else "inc") s.Packet.ng_mod off
@@ -176,6 +177,10 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.IByteorder (d,s,hton,sz,len) ->
       Printf.sprintf "[ byteorder reg %d = %s(reg %d, %d, %d) ]"
         d (if hton then "hton" else "ntoh") s sz len
+  | Bytecode.IJhash (d,s,len,seed,m,o) ->
+      let off = if o > 0 then Printf.sprintf " offset %d" o else "" in
+      Printf.sprintf "[ hash reg %d = jhash(reg %d, %d, 0x%x) %% mod %d%s ]"
+        d s len seed m off
   | Bytecode.ILookup (s,name,neg,_) ->
       if neg then Printf.sprintf "[ lookup reg %d set %s 0x1 ]" s name
       else Printf.sprintf "[ lookup reg %d set %s ]" s name
@@ -223,6 +228,7 @@ type pinst =
   | PBitwise of int * int * int list * int list  (* dst, src, mask, xor *)
   | PShift   of int * int * bool * int            (* dst, src, is_left, amount *)
   | PByteorder of int * int * bool * int * int    (* dst, src, hton, size, len *)
+  | PJhash   of int * int * int * int * int * int (* dst, src, len, seed, mod, offset *)
   | PLookup  of int * string * bool              (* src reg, set name, inverted *)
   | PCounter of int * int
   | PNotrack
@@ -300,6 +306,15 @@ let parse_line line : pinst =
       let hton = String.length ftok >= 4 && String.sub ftok 0 4 = "hton" in
       PByteorder (int_of_string dst, only_digits src, hton,
                   only_digits size, only_digits len)
+  | "hash"::"reg"::d::"="::jr::s::len::seed::"%"::"mod"::m::rest
+    when String.length jr >= 5 && String.sub jr 0 5 = "jhash" ->
+      let off = (match rest with [] -> 0 | ["offset"; o] -> int_of_string o
+                 | _ -> raise (Unsupported "hash:opts")) in
+      let strip_paren x =
+        if String.length x > 0 && x.[String.length x - 1] = ')'
+        then String.sub x 0 (String.length x - 1) else x in
+      PJhash (int_of_string d, only_digits s, only_digits len,
+              int_of_string (strip_paren seed), int_of_string m, off)
   | "lookup"::"reg"::r::"set"::name::rest ->
       (match rest with
        | [] -> PLookup (int_of_string r, name, false)
@@ -373,6 +388,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                 | PBitwise (1,1,mask,xor) -> collect (Syntax.TBitAnd (mask,xor) :: ts) more
                 | PShift (1,1,shl,amt) -> collect (Syntax.TShift (shl,amt) :: ts) more
                 | PByteorder (1,1,h,sz,ln) -> collect (Syntax.TByteorder (h,sz,ln) :: ts) more
+                | PJhash (1,1,len,seed,m,o) -> collect (Syntax.TJhash (len,seed,m,o) :: ts) more
                 | PCmp (iseq, 1, v) ->
                     let tl = List.rev ts in
                     let m = (match tl with
@@ -389,7 +405,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                     go (Syntax.MSet (f, neg, name, []) :: matches) stmts more
                 | PRange _ -> raise (Unsupported "transform-then-range")
                 | PLookup _ -> raise (Unsupported "transform-then-lookup")
-                | PBitwise _ | PShift _ | PByteorder _ | PCmp _ ->
+                | PBitwise _ | PShift _ | PByteorder _ | PJhash _ | PCmp _ ->
                     raise (Unsupported "reg!=1")
                 | _ -> raise (Unsupported "load-not-followed-by-test"))
              | [] -> raise (Unsupported "dangling-load")
