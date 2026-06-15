@@ -71,10 +71,14 @@ Coverage grew as the verified core grew (each step kept both theorems axiom-free
 | + conntrack & fields | `ct load`, 46 named fields | 979 (38.7%) |
 | + extension headers | parametric `exthdr load` (IPv6 ext / TCP opts) | **1272 (50.2%)** |
 
-Coverage has since grown past the table (range, prefix, sets, ct/exthdr,
-transform chains, statements counter/notrack/log, reject/queue verdicts,
-stateful `limit` via an oracle, all meta keys, rt/socket loads): **1664/2532
-(65.7%) at commit 0d104df**, still zero mismatches.
+Coverage has since grown well past the table — **1792/2532 (70.8%)**, still
+zero mismatches. Beyond the table: ranges, prefixes, sets, ct/exthdr (incl. the
+`present` existence test), transform chains (bitwise shift, byteorder, jhash),
+statements (counter/notrack/log), reject/queue verdicts, stateful `limit` via an
+oracle, all meta keys, rt/socket/numgen/osf oracle loads, **verified
+multi-register concatenation** (a real register-allocation proof: distinct
+registers via `NoDup`, non-clobbering loads, concat lookup), and **sets/ranges
+over transformed values** (`MSetT`/`MRangeT`).
 
 **What the round-trip does and does NOT validate (honest scope).** It validates
 the *structural lowering*: that each match becomes the right load + test + the
@@ -111,11 +115,13 @@ these is future work.
 `reject`/`queue` model only their control-flow (stop traversal), not the emitted
 ICMP / userspace hand-off; sets carry their elements inside the `lookup`
 instruction (the real set lives in a separate NEWSET object; dynamic set mutation
-is out of scope); `notrack`/`ct set` are verdict-neutral here (their conntrack
-side effects are outside the single-packet model); the compiler targets register
-1 only, which is what *prevents* concatenation/maps (multi-register) — see the
-plateau. Field count: `all_fields` lists 48 named fields plus the parametric/
-oracle constructors.
+is out of scope); `notrack` is verdict-neutral here (its conntrack side effect is
+outside the single-packet model). Concatenation now uses multiple registers with
+a verified distinct-register allocation; nft's debug register *numbering* (the
+128-bit alias for 16-byte-aligned slots) is a tested-glue presentation map
+(`nreg`), validated byte-identically — the dataflow correctness is verified.
+Field count: `all_fields` lists 48 named fields plus the parametric/oracle
+constructors.
 
 ## Assessment (the instructions' checklist, with numbers)
 
@@ -123,24 +129,27 @@ oracle constructors.
 - **Catches injected bugs?** Yes (mutation-tested: flipping `cmp eq`→`neq` breaks
   `Correct.v`). Spec-vs-reality drift in *offsets/names* is caught by `make
   validate` against live `nft` (not by the corpus round-trip alone — see above).
-- **Measured coverage:** 1664/2532 (65.7%) of upstream corpus blocks, 0 mismatches.
+- **Measured coverage:** 1792/2532 (70.8%) of upstream corpus blocks, 0 mismatches.
 - **Deployable?** `compile_chain`/`optimize_chain` extract to OCaml and already
   emit nft's exact text; the remaining step is a libnftnl netlink emitter shim.
 
-## What's unsupported, and why (the named plateau)
+## What's unsupported, and why (the remaining ~29%)
 
-The remaining corpus blocks need subsystems beyond match-expression lowering:
+The largest remaining buckets each need a structural addition, not more match
+expressions:
 
-- **statements** (`reject`, `counter`, `limit`, `log`, `nat`/`masq`/`redir`,
-  `queue`, …): non-verdict rule statements — needs a statement model.
-- **maps / vmaps** (`lookup … dreg N`) and **concatenations** (multi-register
-  loads then a combined lookup; `imm:datareg`): multi-register data flow.
-- **byteorder** (`ntoh`/`hton`) and a few **parametric payloads** (odd byte
-  slots) and **inner/tunnel** headers.
-
-Cheap remaining wins (no proof cost): more meta keys (`hour`, `day`, `time`,
-`iifgroup`/`oifgroup`, …) and a handful more byte-slot fields — each a constructor
-plus a glue table entry.
+- **vmaps / maps** (`lookup … dreg N`, ~200 blocks): the rule's verdict (or a
+  value for a following statement) comes *from* a lookup. Needs the rule outcome
+  to be "look up the key and use the result" — a rule-record extension and a
+  proof that the compiled `lookup dreg` reproduces it.
+- **from-register statements** — NAT/redirect/masquerade and payload-mangle
+  (`nat snat … reg N`, `payload write … reg N`, `imm:datareg`, ~250 blocks):
+  values (addresses/ports) are loaded into data registers and then consumed by a
+  statement. Needs immediates-into-data-registers and statements that reference
+  registers.
+- a long tail: `inner`/`tunnel` wrapper expressions, `ct set`/directional `ct`
+  loads, `dynset`, `objref`, `tproxy`, `synproxy`, `osf`-with-ttl, etc. — each a
+  small structured feature.
 
 ## Next steps (toward the broader instructions.org goals)
 
