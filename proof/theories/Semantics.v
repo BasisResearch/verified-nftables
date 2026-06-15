@@ -415,7 +415,7 @@ Definition simple_vsrc (vs : vsrc) : bool :=
   | VHashMap (_ :: _) _ _ _ _ _ => true     (* jhash then value-map lookup *)
   | VOr (_ :: _) _ => true                  (* OR-fold of (nonempty) sources *)
   | _ => false   (* key-transformed value maps and empty-field operands: value-
-                    correctness not yet proven (reg-1 split / incoming register) *)
+                    correctness not yet proven (reg-1 readback split) *)
   end.
 (** A body is "simple" for the mutation theorem when every statement is a meta/ct
     set with a simple operand (matches are unrestricted).  Other statements in the

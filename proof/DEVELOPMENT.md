@@ -77,12 +77,15 @@ that doesn't change *this* rule's verdict still mutates state later rules read:
   thread the writes so a later rule observes an earlier `set`. The theorem
   **`compile_chain_mut_correct`** (axiom-free) proves
   `run_chain_mut (compile_chain c) policy = eval_chain_mut c` for every rule whose
-  set-statement operands are simple (immediate/field) and which has no
-  post-outcome statements (`plain_simple`) — the cited `meta mark set 0x1 ; meta
-  mark 0x1 accept` bug now ACCEPTS on both DSL and VM (semtest witness). Built on
-  the operand value-correctness `eval_vsrc vs p = (regfile after compile_vsrc vs) 1`
-  (proved for immediate/field operands; extending it to map/hash/or operands and
-  to mixed/other statements widens the theorem's scope).
+  set-statement operands are `simple_vsrc` and which has no post-outcome statements
+  (`plain_simple`) — the cited `meta mark set 0x1 ; meta mark 0x1 accept` bug now
+  ACCEPTS on both DSL and VM (semtest witness). Built on the operand value-correctness
+  `eval_vsrc vs p = (regfile after compile_vsrc vs) 1`, now proved for essentially
+  every operand kind: immediate, field(+transforms), value map (no key transform),
+  transformed-concat map (`VMapT`), jhash, jhash-then-map, and OR-fold. Only
+  key-transformed value maps (the reg-1 readback split) and degenerate empty-field
+  operands remain out of scope; rules mixing other (non-set) statements widen scope
+  further.
 
 **C. Control flow** *(jump/goto/return + user chains: FIXED, 2026-06)*:
 - ✅ `jump` / `goto` / `return` and **user-defined chains** are now modelled:
