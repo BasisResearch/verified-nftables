@@ -175,9 +175,11 @@ Inductive matchcond : Type :=
 Inductive vsrc : Type :=
 | VImm   (v : data)
 | VField (f : field) (ts : list transform)
-| VMap   (fields : list field) (name : string) (entries : list (data * data)).
-                            (* value looked up by the concatenation of [fields] in
-                               a named map *)
+| VMap   (fields : list field) (ts : list transform) (name : string)
+         (entries : list (data * data)).
+                            (* value looked up by the concatenation of [fields]
+                               (each, if a single field, optionally transformed by
+                               [ts]) in a named map *)
 
 Inductive stmt : Type :=
 | SCounter (pkts bytes : nat)

@@ -416,9 +416,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
                           | l3 :: more3 ->
                             (match parse_line l3 with
                              | PMetaSet (k, 1) ->
-                                 go matches (Syntax.SMetaSet (k, Syntax.VMap (fields, name, [])) :: stmts) more3
+                                 go matches (Syntax.SMetaSet (k, Syntax.VMap (fields, [], name, [])) :: stmts) more3
                              | PCtSet (k, 1) ->
-                                 go matches (Syntax.SCtSet (k, Syntax.VMap (fields, name, [])) :: stmts) more3
+                                 go matches (Syntax.SCtSet (k, Syntax.VMap (fields, [], name, [])) :: stmts) more3
                              | _ -> raise (Unsupported "map-not-set"))
                           | [] -> raise (Unsupported "map-dangling"))
                      | _ -> raise (Unsupported "concat-not-lookup"))
@@ -467,10 +467,10 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          (match more with
                           | l3 :: more3 ->
                             (match parse_line l3 with
-                             | PMetaSet (k, 1) when ts = [] ->
-                                 go matches (Syntax.SMetaSet (k, Syntax.VMap ([f], name, [])) :: stmts) more3
-                             | PCtSet (k, 1) when ts = [] ->
-                                 go matches (Syntax.SCtSet (k, Syntax.VMap ([f], name, [])) :: stmts) more3
+                             | PMetaSet (k, 1) ->
+                                 go matches (Syntax.SMetaSet (k, Syntax.VMap ([f], List.rev ts, name, [])) :: stmts) more3
+                             | PCtSet (k, 1) ->
+                                 go matches (Syntax.SCtSet (k, Syntax.VMap ([f], List.rev ts, name, [])) :: stmts) more3
                              | PNat (kind,fam,a,ax,pm,px,fl) ->
                                  if more3 <> [] then raise (Unsupported "trailing-after-nat");
                                  mk_nat_map matches stmts (f, List.rev ts, name) (kind,fam,a,ax,pm,px,fl)

@@ -228,15 +228,18 @@ Qed.
 Lemma run_vsrc_exists : forall vs rf rest p,
   exists rf', run_rule rf (compile_vsrc vs ++ rest) p = run_rule rf' rest p.
 Proof.
-  destruct vs as [v | f ts | fields name entries]; intros rf rest p.
+  destruct vs as [v | f ts | fields vts name entries]; intros rf rest p.
   - exists (set_reg rf 1 v). reflexivity.
   - edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p)) rest p)
       as [rf' [_ Hr]].
     exists rf'. cbn [compile_vsrc app]. rewrite compile_load_correct. exact Hr.
-  - (* VMap: multi-register concat key loaded, then ILookupVal writes dreg;
-       all verdict-neutral, so the verdict tail is reached from some regfile. *)
-    cbn [compile_vsrc]. rewrite <- app_assoc. rewrite run_load_fields.
-    cbn [app run_rule]. eexists; reflexivity.
+  - (* VMap: concat key loaded, optionally transformed, then ILookupVal writes
+       dreg; all verdict-neutral, so the verdict tail is reached from some rf. *)
+    cbn [compile_vsrc]. rewrite <- !app_assoc. rewrite run_load_fields.
+    edestruct (run_transforms_prefix vts (write_fields rf (alloc_regs 0 fields) p)
+                ([ILookupVal (map snd (alloc_regs 0 fields)) name 1 entries] ++ rest) p)
+      as [rf' [_ Hr]].
+    rewrite Hr. cbn [app run_rule]. eexists; reflexivity.
 Qed.
 
 Lemma run_stmt_exists : forall s rf rest p,

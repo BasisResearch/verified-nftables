@@ -115,8 +115,8 @@ Definition compile_vsrc (vs : vsrc) : list instr :=
   match vs with
   | VImm v      => [IImmediateData 1 v]
   | VField f ts => compile_load (field_load f) 1 :: compile_transforms ts
-  | VMap fields name entries =>
-      load_fields (alloc_regs 0 fields) ++
+  | VMap fields ts name entries =>
+      load_fields (alloc_regs 0 fields) ++ compile_transforms ts ++
       [ILookupVal (map snd (alloc_regs 0 fields)) name 1 entries]
   end.
 
