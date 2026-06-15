@@ -159,7 +159,7 @@ that doesn't change *this* rule's verdict still mutates state later rules read:
   values, a prefix match for a short (wildcard) value. The conflicting
   singleton-range→equality optimisation (a full-width range-eq diverges from a
   prefix `MEq`) is dropped (`simplify_match` is now the identity) — only a minor
-  bytecode-shrinking pass is foregone; all seven theorems and corpus 2532/2532 are
+  bytecode-shrinking pass is foregone; all eight theorems and corpus 2532/2532 are
   unaffected. semtest (4e): `iifname "eth"` accepts eth0/eth1, drops wlan0, VM=DSL.
 - **Operand *value* semantics** *(largely FIXED 2026-06; see B)*: `eval_vsrc` is now
   proved equal to the register the compiled operand leaves for immediate, field,
@@ -173,10 +173,32 @@ that doesn't change *this* rule's verdict still mutates state later rules read:
 relative to `eval_chain`, and `optimize_chain` preserves `eval_chain` exactly.
 That is real and useful (especially for the optimizer). It is weaker than "the
 emitted bytecode means what nftables means," which requires closing the gaps
-above. Priority order to close them: (1) thread external named state for
-sets/maps [in progress], (2) jump/goto/return + user chains (fuel-bounded), (3)
-model mutation (mark/ct/NAT) as state threaded across rules, (4) fib/ct as
-explicit tables, (5) interval sets + concat padding.
+above.
+
+The gap-closing program was tracked as C→A→B→D. Status as of 2026-06:
+- ✅ **(1) Named/external state** (A): sets/maps as declared objects threaded
+  through the env (`compile_chain_sets_correct`); FIB as an `lpm_fib` routing
+  table; stateful limiters accumulated across a packet sequence
+  (`compile_seq_correct`).
+- ✅ **(2) Control flow** (C): `jump`/`goto`/`return` + user chains
+  (`compile_table_correct`); multi-table/hook/priority dispatch
+  (`compile_ruleset_correct`, `compile_hook_correct`).
+- 🔶 **(3) In-traversal mutation** (B): DONE for the common fragment —
+  `meta`/`ct` `set` is threaded across rules (`compile_chain_mut_correct`).
+  **STILL OPEN:** payload-mangle, NAT address/port rewrite, and `dynset`
+  set-feedback mutations are threaded only as meta/ct-*neutral* (their own writes
+  are not yet visible to later rules).
+- 🔶 **(4) Explicit tables** (D-ish): FIB done (`lpm_fib`); **STILL OPEN:** the
+  conntrack table is still a per-packet oracle, not a flow-keyed table that
+  accumulates across packets (`ct count`, `ct state`).
+- 🔶 **(5) Data fidelity** (D): interval/prefix sets and wildcard ifnames done;
+  **STILL OPEN:** concat-key sub-4-byte register-slot padding.
+
+So the headline honest gaps remaining are: **payload/NAT/dynset mutation
+threading**, the **flow-keyed conntrack table**, and **concat-key padding** —
+plus the standing framing caveat that this is internal consistency against a
+self-authored semantics, with kernel fidelity resting on `make validate` (28/28)
+rather than the corpus round-trip.
 
 ## What exists
 
@@ -200,7 +222,9 @@ explicit tables, (5) interval sets + concat padding.
 Build & check proofs: `make proofs`. Forward test: `make difftest`. Corpus
 coverage: `make corpus` (clones nftables' `tests/py` once into a cache dir).
 
-## The two theorems (both `Closed under the global context` — no axioms)
+## The theorems (all eight `Closed under the global context` — no axioms)
+
+The two headline statements:
 
 ```coq
 Theorem compile_chain_correct : forall c p,
@@ -214,6 +238,24 @@ Theorem optimize_chain_correct : forall c p,
 with a default policy); `run_chain` runs the compiled register-machine bytecode.
 The first says the netlink ruleset we would install filters every packet exactly
 as the DSL specifies; the second says the optimizer never changes a verdict.
+
+The verified core has grown well past those two. The full set of top-level
+theorems in `Correct.v`/`Optimize.v`, each verified axiom-free by
+`Print Assumptions` (8 × "Closed under the global context"):
+
+| theorem | what it preserves |
+|---|---|
+| `compile_chain_correct` | a single base chain's per-packet verdict |
+| `optimize_chain_correct` | the optimizer changes no verdict |
+| `compile_chain_sets_correct` | a `lookup @s` reads the elements *declared* for `s` (named state as a declared object) |
+| `compile_chain_mut_correct` | in-traversal **mutation** (meta/ct `set`) is visible to later rules; holds for *every* rule under `mut_wf` well-formedness |
+| `compile_table_correct` | **control flow**: `jump`/`goto`/`return` + user chains (fuel-bounded) |
+| `compile_ruleset_correct` | multi-table/multi-hook dispatch with netfilter verdict combination |
+| `compile_hook_correct` | hook → priority-ordered base-chain selection |
+| `compile_seq_correct` | **stateful accumulation** across a packet sequence (limiters threaded between packets) |
+
+Re-check anytime with `Print Assumptions <name>` (see the probe in the git
+history) — every one must print "Closed under the global context".
 
 ## Differential testing against the upstream corpus
 
