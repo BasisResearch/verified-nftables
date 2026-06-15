@@ -138,6 +138,72 @@ Proof.
     exists rf'. rewrite set_reg_same in H1. split; [exact H1 | exact H2].
 Qed.
 
+(** The slot register of one concatenation element is strictly below every
+    register allocated to the later elements, so it never collides with them. *)
+Lemma reg_head_not_in : forall f fields slot,
+  ~ In (reg_of_slot slot) (map snd (alloc_regs (slot + field_slots f) fields)).
+Proof.
+  intros f fields slot Hin. apply alloc_regs_lb in Hin.
+  pose proof (field_slots_pos f).
+  assert (slot < slot + field_slots f) as Hlt by lia.
+  apply reg_of_slot_mono in Hlt. lia.
+Qed.
+
+(** A transform chain applied *in place at register [r]*: it leaves [r] holding
+    the transformed value, every other register untouched, and runs transparently
+    to the trailing program. *)
+Lemma run_transforms_at_prefix : forall ts r rf rest p,
+  exists rf',
+    rf' r = apply_transforms ts (rf r)
+    /\ (forall r0, r0 <> r -> rf' r0 = rf r0)
+    /\ run_rule rf (compile_transforms_at r ts ++ rest) p = run_rule rf' rest p.
+Proof.
+  induction ts as [| t ts IH]; intros r rf rest p.
+  - exists rf. cbn [compile_transforms_at map app]. repeat split; reflexivity.
+  - edestruct (IH r (set_reg rf r (apply_transform t (rf r))) rest p) as [rf' [H1 [H2 H3]]].
+    exists rf'. split; [| split].
+    + rewrite H1, set_reg_same. reflexivity.
+    + intros r0 Hne. rewrite (H2 r0 Hne). apply set_reg_other.
+      intro Heq; apply Hne; symmetry; exact Heq.
+    + cbn [compile_transforms_at map app]. destruct t;
+        cbn [compile_transform_at run_rule]; exact H3.
+Qed.
+
+(** Loading a transformed concatenation key: the resulting register file reads
+    each slot register as the corresponding transformed field value (distinct
+    slots never clobber one another), is unchanged outside those slots, and runs
+    transparently to the trailing program. *)
+Lemma run_load_fields_t : forall elems slot rf tail p,
+  exists rf',
+    map rf' (map snd (alloc_regs slot (map fst elems)))
+      = map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) elems
+    /\ (forall r0, ~ In r0 (map snd (alloc_regs slot (map fst elems))) -> rf' r0 = rf r0)
+    /\ run_rule rf (load_fields_t slot elems ++ tail) p = run_rule rf' tail p.
+Proof.
+  induction elems as [| [f ts] rest IH]; intros slot rf tail p.
+  - exists rf. cbn [load_fields_t map alloc_regs app]. repeat split; reflexivity.
+  - cbn [load_fields_t map fst snd alloc_regs].
+    edestruct (run_transforms_at_prefix ts (reg_of_slot slot)
+                (set_reg rf (reg_of_slot slot) (field_value f p))
+                (load_fields_t (slot + field_slots f) rest ++ tail) p) as [rf1 [Ht1 [Ht2 Ht3]]].
+    edestruct (IH (slot + field_slots f) rf1 tail p) as [rf' [Hr1 [Hr2 Hr3]]].
+    exists rf'. split; [| split].
+    + (* readback of the slot register, then of the later elements *)
+      cbn [map]. f_equal.
+      * rewrite (Hr2 (reg_of_slot slot) (reg_head_not_in f (map fst rest) slot)).
+        rewrite Ht1, set_reg_same. reflexivity.
+      * exact Hr1.
+    + (* frame: anything outside this key's registers is untouched *)
+      intros r0 Hni. cbn [map] in Hni.
+      assert (r0 <> reg_of_slot slot) as Hne by (intro; apply Hni; left; symmetry; assumption).
+      rewrite (Hr2 r0 (fun H => Hni (or_intror H))).
+      rewrite (Ht2 r0 Hne). apply set_reg_other.
+      intro Heq; apply Hne; symmetry; exact Heq.
+    + (* verdict-transparency *)
+      rewrite <- app_assoc. cbn [app].
+      rewrite compile_load_correct, Ht3, Hr3. reflexivity.
+Qed.
+
 (** The heart of the proof, generalized over the trailing program [tail]: as
     long as [tail] runs to a constant [res] from any register file (true for the
     verdict tail — an immediate / reject / empty — composed after the
@@ -152,7 +218,8 @@ Proof.
   - cbn [flat_map app forallb]. apply Hc.
   - destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0 | f op v0
                   | fields neg nm elems | f ts op v0 | f ts neg nm elems
-                  | f ts neg lo hi | spec | qspec | clspec];
+                  | f ts neg lo hi | spec | qspec | clspec
+                  | celems neg nm datas];
       cbn [flat_map compile_match app].
     + (* MEq *) rewrite compile_load_correct.
       cbn [run_rule]. rewrite set_reg_same. cbn [forallb eval_matchcond]. unfold eval_cmp.
@@ -222,6 +289,17 @@ Proof.
       cbn [run_rule forallb eval_matchcond].
       destruct (pkt_connlimit p clspec); cbn [andb];
         [apply IH; exact Hc | reflexivity].
+    + (* MConcatSetT: transformed multi-register key, distinct registers per element *)
+      rewrite <- !app_assoc. cbn [app].
+      edestruct (run_load_fields_t celems 0 rf
+                  (ILookup (map snd (alloc_regs 0 (map fst celems))) nm neg datas
+                   :: (flat_map compile_match ms ++ tail)) p) as [rf' [Hrb [_ Hrun]]].
+      rewrite Hrun. cbn [run_rule]. rewrite Hrb.
+      cbn [forallb eval_matchcond].
+      destruct (xorb neg (data_mem
+                 (concat (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) celems))
+                 datas));
+        cbn [andb]; [apply IH; exact Hc | reflexivity].
 Qed.
 
 (** Statements never produce a verdict; they leave the register file in *some*

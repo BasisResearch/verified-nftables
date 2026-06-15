@@ -41,6 +41,20 @@ Fixpoint compile_transforms (ts : list transform) : list instr :=
   | t :: ts'  => compile_transform t :: compile_transforms ts'
   end.
 
+(** A transform applied in place on an arbitrary register [r] (read [r], write
+    [r]).  Used for concatenated lookup keys whose individual elements are
+    transformed in their own slot register (not necessarily register 1). *)
+Definition compile_transform_at (r : reg) (t : transform) : instr :=
+  match t with
+  | TBitAnd mask xor    => IBitwise r r mask xor
+  | TShift shl amt      => IBitShift r r shl amt
+  | TByteorder h sz len => IByteorder r r h sz len
+  | TJhash l s m o      => IJhash r r l s m o
+  end.
+
+Definition compile_transforms_at (r : reg) (ts : list transform) : list instr :=
+  map (compile_transform_at r) ts.
+
 (** ** Register allocation for concatenated lookup keys.
 
     nftables loads each concatenated field into its own 4-byte-aligned register
@@ -83,6 +97,18 @@ Fixpoint alloc_regs (slot : nat) (fields : list field) : list (field * reg) :=
 Definition load_fields (pairs : list (field * reg)) : list instr :=
   map (fun fr => compile_load (field_load (fst fr)) (snd fr)) pairs.
 
+(** Load a concatenation key whose elements may carry their own transform chain:
+    each element [f] is loaded into its slot register [r] and then transformed in
+    place by [ts] at [r], before moving on to the next slot. *)
+Fixpoint load_fields_t (slot : nat) (elems : list (field * list transform)) : list instr :=
+  match elems with
+  | []            => []
+  | (f, ts) :: rest =>
+      let r := reg_of_slot slot in
+      (compile_load (field_load f) r :: compile_transforms_at r ts)
+        ++ load_fields_t (slot + field_slots f) rest
+  end.
+
 Definition compile_match (m : matchcond) : list instr :=
   match m with
   | MEq  f v => [compile_load (field_load f) 1; ICmp CEq 1 v]
@@ -108,6 +134,9 @@ Definition compile_match (m : matchcond) : list instr :=
   | MLimit spec => [ILimit spec]
   | MQuota spec => [IQuota spec]
   | MConnlimit spec => [IConnlimit spec]
+  | MConcatSetT elems neg name datas =>
+      load_fields_t 0 elems ++
+      [ILookup (map snd (alloc_regs 0 (map fst elems))) name neg datas]
   end.
 
 (** A [Continue] (fall-through) rule emits no verdict expression, exactly as

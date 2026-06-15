@@ -448,19 +448,42 @@ let rule_of_block (lines : string list) : Syntax.rule =
            let f = field_of key in
            let is_load l = (try (match parse_line l with PLoad _ -> true | _ -> false)
                             with _ -> false) in
-           (match rest with
+           (* a concat element may be transformed in place at its own register
+              (e.g. `payload .. => reg 9` then `bitwise reg 9 = ..`); gather those
+              transforms before the next element's load. *)
+           let rec etrans lr tacc lines =
+             match lines with
+             | (l :: more) as ll ->
+                 (match (try Some (parse_line l) with _ -> None) with
+                  | Some (PBitwise (d,s,mask,xor)) when d=lr && s=lr ->
+                      etrans lr (Syntax.TBitAnd (mask,xor) :: tacc) more
+                  | Some (PShift (d,s,shl,amt)) when d=lr && s=lr ->
+                      etrans lr (Syntax.TShift (shl,amt) :: tacc) more
+                  | Some (PByteorder (d,s,h,sz,ln)) when d=lr && s=lr ->
+                      etrans lr (Syntax.TByteorder (h,sz,ln) :: tacc) more
+                  | _ -> (List.rev tacc, ll))
+             | [] -> (List.rev tacc, [])
+           in
+           let (ts0, rest0) = etrans lreg [] rest in
+           (match rest0 with
             | l2 :: _ when is_load l2 ->
-                (* concatenation key: gather consecutive loads, then a lookup/use *)
-                let rec gather facc = function
+                (* concatenation key (elements may carry an in-place transform) *)
+                let nott eacc =          (* fields only; non-lookup uses need them untransformed *)
+                  if List.exists (fun (_,t) -> t <> []) eacc
+                  then raise (Unsupported "concat-transform-term");
+                  List.rev_map fst eacc in
+                let rec gather eacc = function
                   | l :: more ->
                     (match parse_line l with
-                     | PLoad (k, _) -> gather (field_of k :: facc) more
+                     | PLoad (k, lr) ->
+                         let (ts, rest') = etrans lr [] more in
+                         gather ((field_of k, ts) :: eacc) rest'
                      | PLookup (_, name, neg) ->
-                         go (bm body (Syntax.MConcatSet (List.rev facc, neg, name, []))) more
+                         go (bm body (Syntax.MConcatSetT (List.rev eacc, neg, name, []))) more
                      | PVmap (_, name) ->
-                         mk_vmap ~after:(parse_after more) body (List.rev facc) name
+                         mk_vmap ~after:(parse_after more) body (nott eacc) name
                      | PDynset (op, name, _, dopt) ->
-                         let fields = List.rev facc in
+                         let fields = nott eacc in
                          let (keys, data) = (match dopt with
                            | None -> (fields, [])
                            | Some _ ->
@@ -469,12 +492,12 @@ let rule_of_block (lines : string list) : Syntax.rule =
                                 List.filteri (fun i _ -> i = n-1) fields)) in
                          go (bs body (Syntax.SDynset (op, name, keys, data))) more
                      | PObjrefMap (_, name) ->
-                         go (bs body (Syntax.SObjrefMap (List.rev facc, name))) more
+                         go (bs body (Syntax.SObjrefMap (nott eacc, name))) more
                      (* dynset whose map data is immediate constants: the concat
                         key is loaded, then the data words are [immediate]'d into
                         their own registers, then a dynset references them. *)
                      | PImmData (r, v) ->
-                         let keyfs = List.rev facc in
+                         let keyfs = nott eacc in
                          let rec gimm iacc = function
                            | l3 :: more3 ->
                              (match parse_line l3 with
@@ -487,7 +510,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          in gimm [(r, v)] more
                      (* jhash of the concatenation, feeding a set = a hashed value *)
                      | PJhash (_, _, len, seed, m, o) ->
-                         let fields = List.rev facc in
+                         let fields = nott eacc in
                          (match more with
                           | l3 :: more3 ->
                             (match parse_line l3 with
@@ -502,7 +525,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                              | _ -> raise (Unsupported "hash-not-set"))
                           | [] -> raise (Unsupported "hash-dangling"))
                      | PMapVal (_, name, 1) ->
-                         let fields = List.rev facc in
+                         let fields = nott eacc in
                          (match more with
                           | l3 :: more3 ->
                             (match parse_line l3 with
@@ -517,7 +540,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                           | [] -> raise (Unsupported "map-dangling"))
                      | _ -> raise (Unsupported "concat-not-lookup"))
                   | [] -> raise (Unsupported "concat-dangling")
-                in gather [f] rest
+                in gather [(f, ts0)] rest0
             | _ ->
                 if lreg <> 1 then raise (Unsupported "reg!=1");
                 (* single field: collect a transform chain, then a tester *)
@@ -616,6 +639,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          go (bs body (Syntax.SCtSetDir (key, dir, Syntax.VField (f, List.rev ts)))) more
                      | PWrite (1, b, off, len, ct, co, cf) ->
                          go (bs body (Syntax.SMangle (Syntax.VField (f, List.rev ts), b, off, len, ct, co, cf))) more
+                     | PExthdrWrite (proto, 1, htype, off, len) ->
+                         go (bs body (Syntax.SExthdrWrite
+                               (Syntax.VField (f, List.rev ts), proto, htype, off, len))) more
                      | PRange _ -> raise (Unsupported "range:reg")
                      | PLookup _ -> raise (Unsupported "lookup:reg")
                      | PBitwise _ | PShift _ | PByteorder _ | PJhash _ | PCmp _ ->

@@ -48,6 +48,13 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
   | MLimit spec => pkt_limit p spec
   | MQuota spec => pkt_quota p spec
   | MConnlimit spec => pkt_connlimit p spec
+  | MConcatSetT elems neg _ datas =>
+      (* like [MConcatSet] but each element is transformed before concatenation;
+         same 4-byte-slot padding caveat (irrelevant for the round-trip, where
+         [datas] is empty — the set contents live in a separate NEWSET object) *)
+      xorb neg (data_mem
+        (concat (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) elems))
+        datas)
   end.
 
 (** A rule applies when all its match conditions hold (empty = matches all).
