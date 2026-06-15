@@ -144,7 +144,7 @@ by the differential corpus, not Rocq.
 - **Catches injected bugs?** Yes (mutation-tested: flipping `cmp eq`→`neq` breaks
   `Correct.v`). Spec-vs-reality drift in *offsets/names* is caught by `make
   validate` against live `nft` (not by the corpus round-trip alone — see above).
-- **Measured coverage:** 2246/2532 (88.7%) of upstream corpus blocks, 0 mismatches.
+- **Measured coverage:** 2277/2532 (89.9%) of upstream corpus blocks, 0 mismatches.
 - **Deployable?** `compile_chain`/`optimize_chain` extract to OCaml and already
   emit nft's exact text; the remaining step is a libnftnl netlink emitter shim.
 

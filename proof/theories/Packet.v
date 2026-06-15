@@ -39,7 +39,7 @@ Inductive socket_key : Type :=
 
 (** Protocol an [exthdr load] reads from (IPv6 extension headers / TCP options). *)
 Inductive exthdr_proto : Type :=
-| EPipv6 | EPtcpopt.
+| EPipv6 | EPtcpopt | EPsctp.
 
 (** The result selector of a `fib` route lookup, which fixes the value width:
     [FRoif]/[FRtype] are 4-byte words, [FRoifname] a 16-byte interface name,

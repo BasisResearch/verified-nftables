@@ -60,9 +60,11 @@ let name_of_ct k =
   let r = ref "?" in List.iter (fun (n,k') -> if k'=k then r:=n) cts; !r
 
 let ehproto_of_name = function
-  | "ipv6" -> Some Packet.EPipv6 | "tcpopt" -> Some Packet.EPtcpopt | _ -> None
+  | "ipv6" -> Some Packet.EPipv6 | "tcpopt" -> Some Packet.EPtcpopt
+  | "sctp" -> Some Packet.EPsctp | _ -> None
 let name_of_ehproto = function
   | Packet.EPipv6 -> "ipv6" | Packet.EPtcpopt -> "tcpopt"
+  | Packet.EPsctp -> "sctp"
 
 let base_of_name = function
   | "link" -> Some Packet.PLink | "network" -> Some Packet.PNetwork
@@ -186,6 +188,10 @@ let render_instr (i : Bytecode.instr) : string = match i with
       Printf.sprintf "[ rt load %s => reg %d ]" (name_of_rt k) (nreg r)
   | Bytecode.ISocketLoad (k,r) ->
       Printf.sprintf "[ socket load %s => reg %d ]" (name_of_sock k) (nreg r)
+  | Bytecode.IExthdrLoad (Packet.EPsctp,h,o,l,pr,r) ->
+      (* sctp-chunk exthdr: nft prints no protocol word *)
+      Printf.sprintf "[ exthdr load %db @ %d + %d%s => reg %d ]"
+        l h o (if pr then " present" else "") (nreg r)
   | Bytecode.IExthdrLoad (ep,h,o,l,pr,r) ->
       Printf.sprintf "[ exthdr load %s %db @ %d + %d%s => reg %d ]"
         (name_of_ehproto ep) l h o (if pr then " present" else "") (nreg r)
@@ -389,6 +395,17 @@ let parse_line line : pinst =
       (match rest2 with
        | "=>"::"reg"::r::[] ->
            PLoad (Printf.sprintf "x:%s:%s:%s:%d:%b" proto htype off len present,
+                  int_of_string r)
+       | _ -> raise (Unsupported "exthdr:form"))
+  | "exthdr"::"load"::lb::"@"::htype::"+"::off::rest
+    when String.length lb >= 1 && lb.[String.length lb - 1] = 'b' ->
+      (* sctp-chunk exthdr: no protocol word *)
+      let len = int_of_string (String.sub lb 0 (String.length lb - 1)) in
+      let (present, rest2) = (match rest with
+        | "present" :: r -> (true, r) | r -> (false, r)) in
+      (match rest2 with
+       | "=>"::"reg"::r::[] ->
+           PLoad (Printf.sprintf "x:sctp:%s:%s:%d:%b" htype off len present,
                   int_of_string r)
        | _ -> raise (Unsupported "exthdr:form"))
   | "cmp"::op::"reg"::r::rest ->
@@ -648,7 +665,10 @@ let rule_of_block (lines : string list) : Syntax.rule =
                      | PLookup _ -> raise (Unsupported "lookup:reg")
                      | PBitwise _ | PShift _ | PByteorder _ | PJhash _ | PCmp _ ->
                          raise (Unsupported "reg!=1")
-                     | _ -> raise (Unsupported "load-not-followed-by-test"))
+                     | _ ->
+                         (if Sys.getenv_opt "DBG" <> None then
+                            Printf.eprintf "LNFT[ts=%d]: %s\n" (List.length ts) l);
+                         raise (Unsupported "load-not-followed-by-test"))
                   | [] -> raise (Unsupported "dangling-load")
                 in collect [] rest)
        | _ -> raise (Unsupported "test-without-load"))
