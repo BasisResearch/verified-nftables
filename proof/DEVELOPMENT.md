@@ -254,6 +254,7 @@ consistency against a self-authored semantics, with kernel fidelity resting on
 | `theories/Compile.v` | the compiler `compile_chain : chain -> program` |
 | `theories/Correct.v` | **`compile_chain_correct`** — semantic preservation |
 | `theories/Optimize.v` | DSL optimizer (dedup + range-simplify + no-op-prune + DCE) + **`optimize_chain_correct`** |
+| `theories/Example_Ruleset.v` | worked example: `../ruleset.nft` hand-translated to the AST + 9 axiom-free packet-property proofs (the user-facing use case; the baseline a parser should reproduce — see TODO 9) |
 | `theories/Extract.v` | extraction to `extracted/*.ml` |
 | `extracted/glue.ml` | *untrusted* glue: builds chains, renders nft-format bytecode (forward test) |
 | `extracted/corpus_test.ml` | *untrusted* harness: round-trips the upstream corpus through the verified compiler |
@@ -660,3 +661,94 @@ tested, like `glue.ml`.
 A data-plane bytecode *interpreter* spec (what the C engine does to a packet) and
 VST proofs that the C interpreter meets it (CompCert/clightgen). This is the
 "end-to-end verified implementation" north star beyond the control-plane compiler.
+
+### TODO 9 — Menhir frontend: `.nft` text → DSL AST  (HIGH value for the user-facing use case)
+**Missing.** There is no parser from nftables DSL *text* to the extracted
+`Syntax` AST (`chain`/`table`/`ruleset` + the `env`/`set_decls` the lookups read).
+Today a user with a real ruleset must hand-translate it — see
+`theories/Example_Ruleset.v`, which encodes `../ruleset.nft` by hand and proves
+properties against `eval_table`. That manual step is the one *unverified* link:
+the proofs check AST→verdict soundness, but "the AST mirrors the `.nft` text" is
+eyeballed. A differentially-tested parser closes that gap and lets users prove
+properties about their own rulesets directly (the use case in the project brief).
+
+**Why it matters.** It turns the verified core into a usable tool: feed a `.nft`
+file, get an AST you can state theorems about (and, via `compile_table_correct`,
+have them hold of the installed bytecode). It also makes `Example_Ruleset.v`'s
+hand-translation reproducible/checkable instead of trusted.
+
+**Trust story (unchanged TCB).** The parser is **untrusted glue**, like
+`glue.ml`/`corpus_test.ml`: it builds inputs out of the trusted `Syntax`
+constructors. It earns trust the same way the rest of the glue does — a
+**round-trip differential test against live `nft`** (see Validate). Nothing about
+the parser enters the proof TCB.
+
+**Architecture decision to make FIRST (do not skip).** Two routes; weigh before
+coding:
+  - **(A) Surface-syntax parser (what "Menhir" implies).** `ocamllex` + Menhir
+    over the nft DSL grammar directly. Most user-friendly (parses the file the
+    user already has) but you must **re-implement nft's frontend logic** —
+    implicit protocol dependencies, anonymous-set anonymisation, `define`/include
+    expansion — in untrusted code, with divergence risk.
+  - **(B) Parse `nft --json` / `nft --debug=netlink` output.** Let real `nft` do
+    the lowering; parse its *structured* output into the AST. Far less parser
+    logic and more faithful (nft is the oracle), at the cost of requiring `nft` at
+    parse time. `corpus_test.ml` already parses the netlink `.t.payload` format, so
+    there is precedent and reusable code.
+  The user asked for Menhir (A); **start there**, but lift the dependency-inference
+  and set-anonymisation passes from nft's behaviour and lean hard on the
+  differential test. If (A)'s frontend logic balloons, (B) is the escape hatch.
+
+**Plan (incremental, each milestone gated by the round-trip difftest).**
+1. **M1 — minimal grammar = the `ruleset.nft` example.** `extracted/lexer.mll` +
+   `extracted/parser.mly` for: `table`/`chain` blocks, base-chain metadata
+   (`type filter hook input priority N; policy P;` → `hooked_chain`'s
+   hook/prio/policy), `accept`/`drop`/`jump`/`goto`/`return`, simple matches
+   (`iifname`, `meta protocol`, `ct state`, `tcp dport`), inline sets `{a,b,c}`
+   and vmaps `{ k : verdict }`. Build a `chain` + the `env` (sets/vmaps). **Acceptance:
+   parse `../ruleset.nft` and check the resulting `inbound` AST/verdicts agree with
+   the hand-written `Example_Ruleset.v`** (a concrete first oracle, independent of nft).
+2. **M2 — anonymous set/map allocation.** Inline `{…}` must become a named
+   `MConcatSet … "name"` + an `env`/`set_decls` entry, with names matching what
+   `Compile`/`codec.ml` expect (see how `corpus_test.ml` reconstructs `__setN`).
+3. **M3 — implicit dependencies (the faithfulness crux).** `tcp dport` inserts
+   `meta l4proto tcp`; `udp`/`icmp`/`icmpv6`/`ip`/`ip6` likewise; payload matches
+   add their network/transport-header deps. Replicate nft's insertion order
+   exactly — this is where surface parsing most easily diverges; the difftest is
+   the only real check.
+4. **M4 — the corpus match/stmt vocabulary.** Ranges, CIDR prefixes (`/24` →
+   `MMasked`/interval), masks, concatenations, transforms (bitwise/shift/
+   byteorder/jhash), counters/log/limit, NAT/redirect, named-set/map *declarations*
+   (`set s { type … ; elements = … }` → `set_decls`). Grow against the difftest.
+5. **M5 — whole-file structure.** Multiple tables, user chains, `define`
+   variables, `include`, `flush ruleset`; assemble a `ruleset`/`hooked_chain` list
+   (hooks + priorities) for `eval_hook`/`compile_hook`.
+6. **M6 — facade + CLI.** `parse_file : string -> ruleset` in `nftc.ml{,i}`; a
+   `dune exec` CLI that parses, optimises, and renders. Wire `lexer.mll`/`parser.mly`
+   into `dune` (menhir + ocamllex stanzas).
+
+**Risks.** (1) Re-implementing nft's dependency inference / set anonymisation in
+untrusted code is the main divergence risk — mitigate with the difftest and by
+**failing loudly** on any construct outside the supported subset (never silently
+mis-parse; raise `Unsupported "<construct>"`). (2) The surface grammar is large
+and partly underspecified — target the corpus subset, error otherwise. (3)
+`define`/`include`/arithmetic: decide whether to expand them in the parser or
+pre-process with `nft --check` first.
+
+**Validate (reuses existing infrastructure — the key enabler).** The forward
+pipeline already renders AST→netlink text and diffs it against live `nft`
+(`make difftest`, `difftest.sh`). So a parse is faithful iff
+`parse(file) |> compile_optimized |> to_netlink_text` is **byte-identical** to
+`nft --debug=netlink -f file`. Add a `make parse-test` target that runs this over
+a corpus of real `.nft` files (start with `../ruleset.nft`; then nftables'
+`files/examples/*.nft` and `doc/` rulesets). Same honest scope as the existing
+round-trip: it checks structural lowering, not the byte-level data-plane meaning.
+
+**Files / build notes.** New hand-written `extracted/lexer.mll`,
+`extracted/parser.mly`, and a builder `extracted/nft_parse.ml` (text → `Syntax`
+AST + `env`); extend `nftc.ml{,i}`. Remember `proof/.gitignore` ignores
+`extracted/*.ml{,i}` — hand-written sources are force-added (`git add -f`); add
+`.mll`/`.mly` to the ignore-exceptions too. In hand-written `.ml`, qualify
+`Stdlib.List`/`Stdlib.String` (the extracted `List`/`String` shadow them). Use
+the extracted constructors directly (the same ones `Example_Ruleset.v` uses:
+`MEq`/`MConcatSet`/`vmap_spec`/`Jump`/…).
