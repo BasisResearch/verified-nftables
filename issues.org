@@ -41,12 +41,13 @@ See instructions.org "Faithfulness and theorem strength" for the generalised
 lessons, and DEVELOPMENT.md "Known semantic gaps" for the concrete hole list.
 
 * Resolution status (C → A → B → D), 2026-06
-The gap audit was turned into a fix order. All four categories are now
-comprehensively fixed, carried by SEVEN axiom-free theorems (Print Assumptions:
-"Closed under the global context" for compile_chain_correct,
-optimize_chain_correct, compile_table_correct, compile_ruleset_correct,
-compile_hook_correct, compile_chain_mut_correct, compile_seq_correct); corpus
-stays 2532/2532 byte-identical, validate 28/28, difftest byte-identical throughout.
+The gap audit was turned into a fix order. The four categories are carried by TEN
+axiom-free theorems (Print Assumptions: "Closed under the global context" for
+compile_chain_correct, optimize_chain_correct, compile_chain_sets_correct,
+compile_table_correct, compile_ruleset_correct, compile_hook_correct,
+compile_chain_mut_correct, compile_chain_mut_env_correct, compile_seq_correct,
+compile_seq_mut_correct); corpus stays 2532/2532 byte-identical, validate 28/28,
+difftest byte-identical throughout.
 
 - **C — control flow: DONE.** jump/goto/return + user-defined chains
   (`compile_table_correct`); multi-table dispatch with netfilter verdict combine
@@ -58,16 +59,23 @@ stays 2532/2532 byte-identical, validate 28/28, difftest byte-identical througho
   limiters (`limit`/`quota`/`connlimit`) relocated to env as remaining-resource
   counts, and `seq_eval` threads the shared env across a packet SEQUENCE so
   accumulation across packets is expressible+proven (`compile_seq_correct`).
-- **B — mutation: DONE.** `compile_chain_mut_correct`: a `meta/ct set` is proven
-  visible to later rules on DSL and VM, for EVERY operand kind (immediate, field,
-  value-map incl. key-transformed, jhash, jhash-map, OR-fold). The cited
-  `meta mark set 0x1; meta mark 0x1 accept` now ACCEPTS.
-- **D — data infidelities: DONE.** operand value-correctness for all operands;
-  interval/prefix (CIDR) sets (`set_mem`); wildcard interface names (prefix-aware
-  `eval_cmp`). Remaining: concat-key 4-byte padding (DSL=VM holds — a raw-concat
-  convention, unvalidatable without a set-membership oracle).
+- **B — mutation: DONE for the common fragment.** `compile_chain_mut_correct`: a
+  `meta/ct set` (EVERY operand kind), a SET dynset (`add/update/delete @s {key}`),
+  AND a field-data MAP dynset (`add @m {key : field}`) are proven visible to later
+  rules on DSL and VM. The cited `meta mark set 0x1; meta mark 0x1 accept` ACCEPTS,
+  and `add @learn {ip saddr}; ip saddr @learn accept` flips DROP→ACCEPT. The learned
+  env also persists ACROSS packets (`compile_chain_mut_env_correct` +
+  `compile_seq_mut_correct`). STILL OPEN (see DEVELOPMENT.md "Remaining work"):
+  payload/NAT rewrite threading, immediate-data dynsets, flow-keyed conntrack.
+- **D — data infidelities: DONE except padding.** operand value-correctness for all
+  operands; interval/prefix (CIDR) sets (`set_mem`); wildcard interface names
+  (prefix-aware `eval_cmp`). STILL OPEN: concat-key 4-byte padding — DSL=VM holds (a
+  raw-concat convention), but it is **unvalidatable** without a data-plane
+  set-membership oracle, so it is documented (TODO 4) rather than faked.
 
 The deepest lesson held: each fix was checked by an *adversarial* witness (a
-packet/ruleset where the old model gave the wrong answer — see semtest's ten
-batteries) and by quantifying the theorem over the previously-hidden state — not
-by a corpus bucket.
+packet/ruleset where the old model gave the wrong answer — see semtest's batteries
+(5b)/(5c)/(5d) for the dynset/cross-packet feedback) and by quantifying the theorem
+over the previously-hidden state — not by a corpus bucket. The honest remaining-work
+list with concrete plans is in proof/DEVELOPMENT.md "Remaining work (TODOs for a
+fresh session)".

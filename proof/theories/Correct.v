@@ -406,7 +406,10 @@ Qed.
     fragment without meta/ct set, [run_program_mut] coincides with [run_program]
     and the mutation semantics conservatively extends [compile_chain_correct]. *)
 Definition writes_instr (i : instr) : bool :=
-  match i with IMetaSet _ _ | ICtSet _ _ => true | _ => false end.
+  match i with
+  | IMetaSet _ _ | ICtSet _ _
+  | IDynset _ _ _ None _ | IDynset _ _ _ (Some _) true => true
+  | _ => false end.
 Definition no_writes (is : list instr) : bool :=
   forallb (fun i => negb (writes_instr i)) is.
 
@@ -426,6 +429,16 @@ Proof.
   all: try (destruct (Nat.ltb 0 (e_quota _ _)); [apply IH; exact Hno | reflexivity]).
   all: try (destruct (Nat.ltb 0 (e_connlimit _ _)); [apply IH; exact Hno | reflexivity]).
   all: try (destruct (assoc_verdict _ _); [reflexivity | apply IH; exact Hno]).
+  (* IDynset: writes_instr and run_rule_writes branch on the data-reg option and
+     the field/immediate flag.  set (None) and field-map (Some _, true) are writes
+     so [no_writes] excludes them (discriminate); an immediate-map (Some _, false)
+     is env-neutral, threaded by IH. *)
+  all: match goal with
+       | [ d : option reg, b : bool |- _ ] =>
+           destruct d as [dreg |]; [destruct b |];
+           cbn [run_rule_writes writes_instr negb] in *;
+           solve [ apply IH; exact Hno | discriminate Hi ]
+       end.
 Qed.
 
 (** Operand immediates are verdict-neutral: running them leaves the tail reached
@@ -824,7 +837,8 @@ Definition straight_instr (i : instr) : bool :=
   | ILimit _ | IQuota _ | IConnlimit _
   | INat _ _ _ _ _ _ _ | ITproxy _ _ _ | IFwd _ _ _ | IQueueSreg _ _ _
   | IReject _ _ | IQueue _ _ _ _ | IImmediate _
-  | IMetaSet _ _ | ICtSet _ _ => false
+  | IMetaSet _ _ | ICtSet _ _
+  | IDynset _ _ _ None _ | IDynset _ _ _ (Some _) true => false
   | _ => true
   end.
 Definition straight (is : list instr) : bool := forallb straight_instr is.
@@ -832,7 +846,10 @@ Definition straight (is : list instr) : bool := forallb straight_instr is.
 Lemma straight_imp_nw : forall is, straight is = true -> no_writes is = true.
 Proof.
   unfold straight, no_writes. intros is. rewrite !forallb_forall. intros H i Hin.
-  specialize (H i Hin). destruct i; cbn in *; congruence.
+  specialize (H i Hin). destruct i; cbn in *; try congruence.
+  (* IDynset: both predicates branch on the data-reg option and field/imm flag *)
+  match goal with [ d : option reg, b : bool |- _ ] =>
+    destruct d; [destruct b |]; cbn in *; congruence end.
 Qed.
 Lemma str_cons : forall i l, straight (i :: l) = straight_instr i && straight l.
 Proof. reflexivity. Qed.
@@ -897,12 +914,22 @@ Proof.
   induction pre as [| i pre IH]; intros rf rest p Hs; [exists rf; reflexivity|].
   cbn [straight forallb] in Hs. apply Bool.andb_true_iff in Hs. destruct Hs as [Hi Hpre].
   destruct i; cbn [straight_instr] in Hi; try discriminate Hi;
-    cbn [app run_rule_writes]; apply IH; exact Hpre.
+    try (cbn [app run_rule_writes]; apply IH; exact Hpre).
+  (* IDynset: straight only for the immediate-map form (Some, false); set (None)
+     and field-map (Some, true) mutate env and are excluded by [straight_instr]. *)
+  match goal with [ d : option reg, b : bool |- _ ] =>
+    destruct d as [dreg |]; [destruct b |]; cbn [straight_instr] in Hi;
+    cbn [app run_rule_writes];
+    solve [ apply IH; exact Hpre | discriminate Hi ]
+  end.
 Qed.
 
-Definition is_set_stmt (s : stmt) : bool :=
-  match s with SMetaSet _ _ | SCtSet _ _ => true | _ => false end.
-Lemma straight_compile_stmt : forall s, is_set_stmt s = false -> straight (compile_stmt s) = true.
+(** A "mutating" statement: a meta/ct set (mutates a packet field) OR a dynset
+    (mutates the named-set state).  These are the statements the mutation
+    threading handles specially; every other statement is meta/ct- and env-neutral. *)
+Definition is_mut_stmt (s : stmt) : bool :=
+  match s with SMetaSet _ _ | SCtSet _ _ | SDynset _ _ _ _ => true | _ => false end.
+Lemma straight_compile_stmt : forall s, is_mut_stmt s = false -> straight (compile_stmt s) = true.
 Proof.
   destruct s; intro H; try discriminate H; cbn [compile_stmt].
   - reflexivity.                                          (* SCounter *)
@@ -913,7 +940,6 @@ Proof.
   - reflexivity.                                          (* SObjref *)
   - reflexivity.                                          (* SSynproxy *)
   - reflexivity.                                          (* SLast *)
-  - rewrite str_app, str_load_fields; reflexivity.        (* SDynset *)
   - reflexivity.                                          (* SExthdrReset *)
   - rewrite str_app, str_imms; reflexivity.               (* SDup *)
   - rewrite str_app, str_load_fields; reflexivity.        (* SObjrefMap *)
@@ -922,22 +948,158 @@ Proof.
   - rewrite str_app, str_vsrc, str_app, str_imms; reflexivity.         (* SDupSrc *)
 Qed.
 Lemma run_stmt_writes_neutral : forall s rf rest p,
-  is_set_stmt s = false ->
+  is_mut_stmt s = false ->
   exists rf', run_rule_writes rf (compile_stmt s ++ rest) p = run_rule_writes rf' rest p.
 Proof. intros. apply run_rule_writes_straight, straight_compile_stmt; assumption. Qed.
 Lemma body_writes_nonset : forall s body p,
-  is_set_stmt s = false -> body_writes (BStmt s :: body) p = body_writes body p.
-Proof. intros s body p H. destruct s; cbn [is_set_stmt] in H; try discriminate H; reflexivity. Qed.
+  is_mut_stmt s = false -> body_writes (BStmt s :: body) p = body_writes body p.
+Proof. intros s body p H. destruct s; cbn [is_mut_stmt] in H; try discriminate H; reflexivity. Qed.
 (** A statement list with no meta/ct set compiles to a no-write tail. *)
 Lemma nw_flat_compile_stmt : forall ss,
-  forallb (fun s => negb (is_set_stmt s)) ss = true ->
+  forallb (fun s => negb (is_mut_stmt s)) ss = true ->
   no_writes (flat_map compile_stmt ss) = true.
 Proof.
   induction ss as [| s ss IH]; intro H; [reflexivity|].
   cbn [flat_map]. cbn [forallb] in H. apply Bool.andb_true_iff in H. destruct H as [Hs Hss].
   rewrite nw_app. apply Bool.andb_true_iff. split.
-  - apply straight_imp_nw, straight_compile_stmt. destruct (is_set_stmt s); [discriminate Hs | reflexivity].
+  - apply straight_imp_nw, straight_compile_stmt. destruct (is_mut_stmt s); [discriminate Hs | reflexivity].
   - apply IH; exact Hss.
+Qed.
+
+(** ---- dynset (dynamic-set) write scaffolding ---- *)
+(** A field allocation has exactly one register per field. *)
+Lemma alloc_regs_length : forall fields slot, length (alloc_regs slot fields) = length fields.
+Proof. induction fields as [| f fs IH]; intros slot; cbn [alloc_regs length]; [reflexivity | f_equal; apply IH]. Qed.
+
+(** A pure-set dynset (empty data fields) compiles its data register to [None]:
+    the key registers exhaust the allocation, so [skipn (length keyfs)] is empty. *)
+Lemma skipn_map_snd_alloc_nil : forall keyfs,
+  skipn (length keyfs) (map snd (alloc_regs 0 keyfs)) = [].
+Proof.
+  intros. apply skipn_all2. rewrite map_length, alloc_regs_length. apply Nat.le_refl.
+Qed.
+
+Lemma compile_dynset_set : forall op name keyfs,
+  compile_stmt (SDynset op name keyfs []) =
+  load_fields (alloc_regs 0 keyfs) ++ [IDynset op name (map snd (alloc_regs 0 keyfs)) None false].
+Proof.
+  intros. cbn [compile_stmt]. rewrite app_nil_r, skipn_map_snd_alloc_nil. reflexivity.
+Qed.
+
+(** Reading back the concatenated key the loads leave in the key registers: it is
+    exactly the concatenation of the field values (distinct registers, cf. the
+    [MConcatSet] proof). *)
+Lemma write_fields_concat_key : forall keyfs rf p,
+  List.concat (map (write_fields rf (alloc_regs 0 keyfs) p) (map snd (alloc_regs 0 keyfs)))
+  = List.concat (map (fun f => field_value f p) keyfs).
+Proof.
+  intros. rewrite map_write_fields by apply alloc_regs_nodup.
+  rewrite map_fst_field, alloc_regs_fst. reflexivity.
+Qed.
+
+(** The mutation effect of a compiled pure-set dynset: after loading the key, the
+    [IDynset _ None] inserts/removes the concatenated key in the named set — i.e.
+    threads the packet whose env has [name] updated.  This is the dynamic-set
+    feedback loop on the VM side. *)
+Lemma run_dynset_set_writes : forall op name keyfs rf rest p,
+  run_rule_writes rf (compile_stmt (SDynset op name keyfs []) ++ rest) p
+  = run_rule_writes (write_fields rf (alloc_regs 0 keyfs) p) rest
+      (set_env_dynset p op name (List.concat (map (fun f => field_value f p) keyfs))).
+Proof.
+  intros. rewrite compile_dynset_set, <- app_assoc, run_load_fields_writes.
+  cbn [app run_rule_writes]. rewrite write_fields_concat_key. reflexivity.
+Qed.
+
+(** ---- map-dynset (key -> field data) write scaffolding ---- *)
+(** Total register slots a field list occupies (one allocation per field). *)
+Fixpoint slots_of (fields : list field) : nat :=
+  match fields with [] => 0 | f :: r => field_slots f + slots_of r end.
+
+(** A field allocation splits over [++]: the second list starts after the first's
+    slots.  This isolates the KEY registers ([alloc_regs 0 keyfs]) as a prefix of
+    the full key+data allocation, so they read back as the key field values. *)
+Lemma alloc_regs_app : forall a b slot,
+  alloc_regs slot (a ++ b) = alloc_regs slot a ++ alloc_regs (slot + slots_of a) b.
+Proof.
+  induction a as [| f a IH]; intros b slot; cbn [alloc_regs app slots_of].
+  - rewrite Nat.add_0_r. reflexivity.
+  - rewrite IH. replace (slot + field_slots f + slots_of a)
+      with (slot + (field_slots f + slots_of a)) by lia. reflexivity.
+Qed.
+
+Lemma write_fields_app : forall A B rf p,
+  write_fields rf (A ++ B) p = write_fields (write_fields rf A p) B p.
+Proof. induction A as [| [f r] A IH]; intros; cbn [write_fields app]; [reflexivity | apply IH]. Qed.
+
+Lemma nodup_app_disjoint : forall {A} (l l' : list A) x,
+  NoDup (l ++ l') -> In x l -> ~ In x l'.
+Proof.
+  induction l as [| a l IH]; intros l' x Hnd Hin; [inversion Hin|].
+  cbn [app] in Hnd. inversion Hnd as [| ? ? Hni Hnd' ]; subst.
+  destruct Hin as [-> | Hin].
+  - intro Hin'. apply Hni, in_or_app. right. exact Hin'.
+  - apply (IH l' x Hnd' Hin).
+Qed.
+
+(** Reading the LEFT (key) registers of a key++data allocation: the data writes
+    never clobber a key register (distinct slots), so they read back as the key
+    fields' values. *)
+Lemma map_write_fields_app_l : forall A B rf p,
+  NoDup (map snd (A ++ B)) ->
+  map (write_fields rf (A ++ B) p) (map snd A) = map (fun fr => field_value (fst fr) p) A.
+Proof.
+  intros A B rf p Hnd. rewrite map_app in Hnd.
+  rewrite <- (map_write_fields A rf p (NoDup_app_remove_r _ _ Hnd)).
+  apply map_ext_in. intros r Hr. rewrite write_fields_app.
+  apply write_fields_other, (nodup_app_disjoint _ _ r Hnd Hr).
+Qed.
+
+Lemma write_fields_concat_key_app : forall keyfs extra rf p,
+  List.concat (map (write_fields rf (alloc_regs 0 (keyfs ++ extra)) p) (map snd (alloc_regs 0 keyfs)))
+  = List.concat (map (fun f => field_value f p) keyfs).
+Proof.
+  intros. rewrite alloc_regs_app.
+  rewrite map_write_fields_app_l by (rewrite <- alloc_regs_app; apply alloc_regs_nodup).
+  rewrite map_fst_field, alloc_regs_fst. reflexivity.
+Qed.
+
+(** The first data register of a key++(d::ds) allocation reads back as [d]'s value. *)
+Lemma write_fields_data_head : forall keyfs d ds rf p,
+  write_fields rf (alloc_regs 0 (keyfs ++ d :: ds)) p (reg_of_slot (slots_of keyfs)) = field_value d p.
+Proof.
+  intros. rewrite alloc_regs_app, write_fields_app, Nat.add_0_l. apply write_fields_head.
+Qed.
+
+(** The data register a map dynset compiles to is the first slot past the key. *)
+Lemma skipn_map_snd_alloc_app : forall keyfs extra,
+  skipn (length keyfs) (map snd (alloc_regs 0 (keyfs ++ extra)))
+  = map snd (alloc_regs (slots_of keyfs) extra).
+Proof.
+  intros. rewrite alloc_regs_app, map_app, Nat.add_0_l, skipn_app.
+  rewrite skipn_all2 by (rewrite map_length, alloc_regs_length; apply Nat.le_refl).
+  rewrite map_length, alloc_regs_length, Nat.sub_diag. reflexivity.
+Qed.
+
+Lemma compile_dynset_map : forall op name keyfs d ds,
+  compile_stmt (SDynset op name keyfs (d :: ds)) =
+  load_fields (alloc_regs 0 (keyfs ++ d :: ds)) ++
+  [IDynset op name (map snd (alloc_regs 0 keyfs)) (Some (reg_of_slot (slots_of keyfs))) true].
+Proof.
+  intros. cbn [compile_stmt]. rewrite skipn_map_snd_alloc_app. cbn [alloc_regs map]. reflexivity.
+Qed.
+
+(** The mutation effect of a compiled field-data map dynset: after loading the key
+    and the data field, [IDynset _ (Some dreg) true] learns key -> (data field) in
+    the named map — the map analogue of the dynamic-set feedback loop. *)
+Lemma run_dynset_map_writes : forall op name keyfs d ds rf rest p,
+  run_rule_writes rf (compile_stmt (SDynset op name keyfs (d :: ds)) ++ rest) p
+  = run_rule_writes (write_fields rf (alloc_regs 0 (keyfs ++ d :: ds)) p) rest
+      (set_env_dynset_map p op name
+         (List.concat (map (fun f => field_value f p) keyfs)) (field_value d p)).
+Proof.
+  intros. rewrite compile_dynset_map, <- app_assoc, run_load_fields_writes.
+  cbn [app run_rule_writes].
+  rewrite write_fields_concat_key_app, write_fields_data_head. reflexivity.
 Qed.
 
 (** The body, compiled and run under [run_rule_writes] before a packet-neutral
@@ -957,23 +1119,32 @@ Proof.
       reflexivity.
     + (* BStmt s.  SMetaSet/SCtSet write meta/ct; every OTHER statement is a
          "straight-line", meta/ct-neutral prefix threaded through unchanged. *)
-      destruct (is_set_stmt s) eqn:Es.
-      * (* the two genuine meta/ct sets *)
-        destruct s; cbn [is_set_stmt] in Es; try discriminate Es;
-        cbn [compile_stmt] in Hit |- *; rewrite <- !app_assoc.
+      destruct (is_mut_stmt s) eqn:Es.
+      * (* the genuine mutating statements: meta/ct set (packet) or dynset (env) *)
+        destruct s; cbn [is_mut_stmt] in Es; try discriminate Es.
         -- (* SMetaSet k vs *)
+           cbn [compile_stmt] in Hit |- *; rewrite <- !app_assoc.
            edestruct (writes_vsrc_simple vs rf
                        ([IMetaSet k 1] ++ (flat_map compile_body_item body ++ tail)) p Hit)
              as [rf' [Hr Hv]].
            rewrite Hr. cbn [app run_rule_writes]. rewrite Hv.
            cbn [body_writes]. apply IH; [exact Htail | exact Hsb'].
         -- (* SCtSet k vs *)
+           cbn [compile_stmt] in Hit |- *; rewrite <- !app_assoc.
            edestruct (writes_vsrc_simple vs rf
                        ([ICtSet k 1] ++ (flat_map compile_body_item body ++ tail)) p Hit)
              as [rf' [Hr Hv]].
            rewrite Hr. cbn [app run_rule_writes]. rewrite Hv.
            cbn [body_writes]. apply IH; [exact Htail | exact Hsb'].
-      * (* any non-set statement: threaded straight, body_writes is the identity *)
+        -- (* SDynset op name keyfs dataf: a pure-set dynset (empty data) inserts/
+              removes the key in the named set, visible to later rules; a map dynset
+              (nonempty data) is env-neutral. *)
+           rewrite <- !app_assoc. destruct dataf as [| d ds].
+           ++ rewrite run_dynset_set_writes. cbn [body_writes].
+              apply IH; [exact Htail | exact Hsb'].
+           ++ rewrite run_dynset_map_writes. cbn [body_writes].
+              apply IH; [exact Htail | exact Hsb'].
+      * (* any non-mutating statement: threaded straight, body_writes is the identity *)
         edestruct (run_stmt_writes_neutral s rf
                      (flat_map compile_body_item body ++ tail) p Es) as [rf' Hr].
         rewrite <- app_assoc, Hr, (body_writes_nonset s body p Es).
@@ -1298,7 +1469,7 @@ Proof. intros. apply compile_chain_correct. Qed.
     set` is faithfully visible to later rules on BOTH sides. *)
 Lemma run_rule_writes_compile_rule : forall r p,
   simple_writes r = true ->
-  forallb (fun s => negb (is_set_stmt s)) (r_after r) = true ->
+  forallb (fun s => negb (is_mut_stmt s)) (r_after r) = true ->
   run_rule_writes empty_rf (compile_rule r) p = dsl_writes r p.
 Proof.
   intros r p Hs Ha. unfold compile_rule, dsl_writes.
@@ -1315,7 +1486,7 @@ Qed.
     the one residual mutation case).  ALL ordinary statements (mangle/NAT/dup/
     counter/dynset/exthdr/…) are in scope. *)
 Definition mut_wf (r : rule) : bool :=
-  simple_writes r && forallb (fun s => negb (is_set_stmt s)) (r_after r).
+  simple_writes r && forallb (fun s => negb (is_mut_stmt s)) (r_after r).
 
 Lemma run_program_mut_compile_chain : forall rs p,
   forallb mut_wf rs = true ->
@@ -1339,6 +1510,60 @@ Theorem compile_chain_mut_correct : forall c p,
 Proof.
   intros c p Hall. unfold run_chain_mut, eval_chain_mut, compile_chain.
   rewrite run_program_mut_compile_chain by exact Hall. reflexivity.
+Qed.
+
+(** ** Cross-packet preservation: the env a chain LEAVES is preserved too.
+
+    The same well-formedness gives that the compiled VM and the DSL agree not only
+    on the verdict but on the *environment the chain leaves* — including any
+    dynset-learned set/map elements.  This is what lets a learned element persist
+    to the next packet. *)
+Lemma run_program_mut_env_compile_chain : forall rs p,
+  forallb mut_wf rs = true ->
+  run_program_mut_env (map compile_rule rs) p = eval_rules_mut_env rs p.
+Proof.
+  induction rs as [| r rs IH]; intros p Hall; [reflexivity|].
+  cbn [forallb] in Hall. apply Bool.andb_true_iff in Hall. destruct Hall as [Hr Hrs].
+  unfold mut_wf in Hr. apply Bool.andb_true_iff in Hr. destruct Hr as [Hs Ha].
+  cbn [map run_program_mut_env eval_rules_mut_env].
+  rewrite run_rule_compile_rule. rewrite (run_rule_writes_compile_rule r p Hs Ha).
+  destruct (rule_applies r p).
+  - destruct (outcome r p) as [v |].
+    + destruct (terminal v); [reflexivity | apply IH; exact Hrs].
+    + apply IH; exact Hrs.
+  - apply IH; exact Hrs.
+Qed.
+
+Theorem compile_chain_mut_env_correct : forall c p,
+  forallb mut_wf (c_rules c) = true ->
+  run_chain_mut_env (compile_chain c) (c_policy c) p = eval_chain_mut_env c p.
+Proof.
+  intros c p Hall. unfold run_chain_mut_env, eval_chain_mut_env, compile_chain.
+  rewrite run_program_mut_env_compile_chain by exact Hall. reflexivity.
+Qed.
+
+(** [seq_eval_env] is congruent in its per-packet evaluator. *)
+Lemma seq_eval_env_ext : forall ev1 ev2,
+  (forall e p, ev1 e p = ev2 e p) ->
+  forall e packets, seq_eval_env ev1 e packets = seq_eval_env ev2 e packets.
+Proof.
+  intros ev1 ev2 Hext e packets. revert e.
+  induction packets as [| p ps IH]; intros e; cbn [seq_eval_env]; [reflexivity|].
+  rewrite Hext. destruct (ev2 e p) as [v e']. f_equal. apply IH.
+Qed.
+
+(** Stateful cross-packet preservation for the LEARNING done by the ruleset itself:
+    threading the env a chain leaves (dynset-learned sets/maps) into the next
+    packet, the compiled VM reproduces the DSL sequence.  So a `add @s {…}` on an
+    earlier packet is visible to a `lookup @s` on a later one, end-to-end and
+    compiler-preserved — the cross-packet half of the dynamic-set feedback loop. *)
+Theorem compile_seq_mut_correct : forall c e packets,
+  forallb mut_wf (c_rules c) = true ->
+  seq_eval_env (fun e' p => run_chain_mut_env (compile_chain c) (c_policy c) (set_env p e')) e packets
+  = seq_eval_env (fun e' p => eval_chain_mut_env c (set_env p e')) e packets.
+Proof.
+  intros c e packets Hall. apply seq_eval_env_ext. intros e' p.
+  apply compile_chain_mut_env_correct. exact Hall.
 Qed.
 
 (** ** Multi-chain semantic preservation (jump / goto / return + user chains).

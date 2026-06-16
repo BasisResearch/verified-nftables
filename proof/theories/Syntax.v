@@ -341,6 +341,11 @@ Inductive body_item : Type :=
 Definition body_matches (b : list body_item) : list matchcond :=
   flat_map (fun it => match it with BMatch m => m :: nil | BStmt _ => nil end) b.
 
+(** The [dynset] op string denoting element removal (`delete @s {...}`), vs the
+    add/update insertion ops.  Defined here, where [String] notation is in scope,
+    so [Semantics.env_set_upd] can branch on it without importing [String]. *)
+Definition op_delete : string := "delete".
+
 (** A rule: an ordered body (matches + verdict-neutral statements) then an
     outcome — a static verdict, a verdict-map lookup ([r_vmap]), or a terminal
     redirect ([r_nat] / [r_tproxy]). *)

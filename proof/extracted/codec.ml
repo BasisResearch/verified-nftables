@@ -272,7 +272,7 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.IDup (dev,addr) ->
       let opt label = function Some r -> Printf.sprintf " %s %d" label r | None -> "" in
       Printf.sprintf "[ dup%s%s ]" (opt "sreg_addr" addr) (opt "sreg_dev" dev)
-  | Bytecode.IDynset (op,name,krs,dreg) ->
+  | Bytecode.IDynset (op,name,krs,dreg,_) ->
       let r = nreg (match krs with x :: _ -> x | [] -> 1) in
       let dat = (match dreg with Some d -> Printf.sprintf " sreg_data %d" (nreg d) | None -> "") in
       Printf.sprintf "[ dynset %s reg_key %d set %s%s ]" op r name dat

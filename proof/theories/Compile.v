@@ -191,12 +191,15 @@ Definition compile_stmt (s : stmt) : list instr :=
   | SLast info    => [ILast info]
   | SDynset op name keyfs dataf =>
       (* keys then data, allocated contiguously: the data register follows the
-         key registers exactly as nft places sreg_data after reg_key *)
+         key registers exactly as nft places sreg_data after reg_key.  [keyregs]
+         names only the KEY registers (the data register is [datareg]); [fdata] is
+         [true] because the data here is a packet field (modelled). *)
       let pairs := alloc_regs 0 (keyfs ++ dataf) in
       load_fields pairs ++
-      [IDynset op name (map snd pairs)
+      [IDynset op name (map snd (alloc_regs 0 keyfs))
          (match skipn (length keyfs) (map snd pairs) with
-          | [] => None | r :: _ => Some r end)]
+          | [] => None | r :: _ => Some r end)
+         (match dataf with [] => false | _ => true end)]
   | SExthdrReset proto htype => [IExthdrReset proto htype]
   | SDup imms dev addr =>
       map (fun rv => IImmediateData (fst rv) (snd rv)) imms ++ [IDup dev addr]
@@ -206,7 +209,7 @@ Definition compile_stmt (s : stmt) : list instr :=
   | SDynsetImm op name keyfs dimms datareg =>
       load_fields (alloc_regs 0 keyfs) ++
       map (fun rv => IImmediateData (fst rv) (snd rv)) dimms ++
-      [IDynset op name (map snd (alloc_regs 0 keyfs)) (Some datareg)]
+      [IDynset op name (map snd (alloc_regs 0 keyfs)) (Some datareg) false]
   | SExthdrWrite vs proto htype off len =>
       compile_vsrc vs ++ [IExthdrWrite proto htype off len 1]
   | SDupSrc src imms devreg addrreg =>

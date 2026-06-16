@@ -297,7 +297,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | IObjref _ _ :: rest   => run_rule rf rest p   (* verdict-neutral *)
   | ISynproxy _ _ :: rest => run_rule rf rest p
   | ILast _ :: rest       => run_rule rf rest p
-  | IDynset _ _ _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)
+  | IDynset _ _ _ _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)
   | IExthdrReset _ _ :: rest => run_rule rf rest p (* verdict-neutral *)
   | IDup _ _ :: rest      => run_rule rf rest p   (* verdict-neutral *)
   | IObjrefMap _ _ :: rest => run_rule rf rest p  (* verdict-neutral *)
@@ -361,6 +361,62 @@ Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
 
+(** ** Dynamic sets: the `dynset` feedback loop (`add`/`update`/`delete @s {key}`).
+
+    Unlike a meta/ct set (which mutates a packet field), a dynset mutates the
+    NAMED SET STATE in the environment, so a *later* rule's `lookup @s` observes
+    the element this rule inserted (or removed) — the whole point of dynamic sets
+    (per-key rate limiting, learning sets, …).  [env_set_upd] applies that effect
+    to the env: `add`/`update` prepend the exact interval [key,key] (so [set_mem]
+    on [key] now succeeds — exact element, cf. the set/interval model), `delete`
+    drops the exact [key,key] elements.  Every other component of the env (maps,
+    routes, limiters) and of the packet is unchanged. *)
+Definition env_set_upd (e : env) (op name : String.string) (key : data) : env :=
+  {| e_set := (fun n =>
+       if String.eqb n name
+       then if String.eqb op op_delete
+            then filter (fun lh => negb (andb (data_eqb (fst lh) key) (data_eqb (snd lh) key)))
+                        (e_set e n)
+            else (key, key) :: e_set e n
+       else e_set e n);
+     e_vmap := e_vmap e; e_map := e_map e;
+     e_routes := e_routes e; e_rt := e_rt e;
+     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e |}.
+
+Definition set_env_dynset (p : packet) (op name : String.string) (key : data) : packet :=
+  {| pkt_env := env_set_upd (pkt_env p) op name key;
+     pkt_meta := pkt_meta p; pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
+     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
+
+(** The map analogue: a `dynset` whose target is a MAP (`add @m {key : data}`)
+    learns the entry [key -> data] in the named value-map [e_map], so a later
+    `@m`-keyed lookup (map value / verdict map) sees it.  add/update prepend the
+    entry (so [map_lookup_data] finds the freshest first), delete drops entries
+    with that key. *)
+Definition env_map_upd (e : env) (op name : String.string) (key dat : data) : env :=
+  {| e_set := e_set e; e_vmap := e_vmap e;
+     e_map := (fun n =>
+       if String.eqb n name
+       then if String.eqb op op_delete
+            then filter (fun kv => negb (data_eqb (fst kv) key)) (e_map e n)
+            else (key, dat) :: e_map e n
+       else e_map e n);
+     e_routes := e_routes e; e_rt := e_rt e;
+     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e |}.
+
+Definition set_env_dynset_map (p : packet) (op name : String.string) (key dat : data) : packet :=
+  {| pkt_env := env_map_upd (pkt_env p) op name key dat;
+     pkt_meta := pkt_meta p; pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
+     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
+
 (** The VM's meta/ct effect of running one rule's bytecode: mirrors [run_rule]'s
     register threading, but instead of a verdict it returns the packet with the
     [IMetaSet]/[ICtSet] writes applied (in execution order; a write only happens
@@ -420,7 +476,14 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
   | IObjref _ _ :: rest => run_rule_writes rf rest p
   | ISynproxy _ _ :: rest => run_rule_writes rf rest p
   | ILast _ :: rest => run_rule_writes rf rest p
-  | IDynset _ _ _ _ :: rest => run_rule_writes rf rest p
+  | IDynset op name keyregs None _ :: rest =>
+      (* pure-set dynset: insert/remove the concatenated key in the named set, so a
+         LATER rule's lookup sees it (the dynamic-set feedback loop). *)
+      run_rule_writes rf rest (set_env_dynset p op name (List.concat (map rf keyregs)))
+  | IDynset op name keyregs (Some dreg) true :: rest =>
+      (* map dynset whose data is a packet field: learn key -> data in the map. *)
+      run_rule_writes rf rest (set_env_dynset_map p op name (List.concat (map rf keyregs)) (rf dreg))
+  | IDynset _ _ _ (Some _) false :: rest => run_rule_writes rf rest p   (* immediate-data dynset: env-neutral *)
   | IExthdrReset _ _ :: rest => run_rule_writes rf rest p
   | IDup _ _ :: rest => run_rule_writes rf rest p
   | IObjrefMap _ _ :: rest => run_rule_writes rf rest p
@@ -474,6 +537,18 @@ Fixpoint body_writes (body : list body_item) (p : packet) : packet :=
   | BMatch m :: rest => if eval_matchcond m p then body_writes rest p else p
   | BStmt (SMetaSet k vs) :: rest => body_writes rest (set_meta p k (eval_vsrc vs p))
   | BStmt (SCtSet k vs)   :: rest => body_writes rest (set_ct p k (eval_vsrc vs p))
+  | BStmt (SDynset op name keyfs nil) :: rest =>
+      (* pure-set dynset: insert/remove the concatenated key in the named set, so a
+         later rule's [lookup @name] observes it (cf. [run_rule_writes]'s IDynset). *)
+      body_writes rest (set_env_dynset p op name
+                          (List.concat (map (fun f => field_value f p) keyfs)))
+  | BStmt (SDynset op name keyfs (d :: _)) :: rest =>
+      (* map dynset with a field-valued data: learn key -> (first data field) in the
+         named map.  (Only the first data field is recorded; the corpus never emits a
+         multi-field map data, and BOTH sides record exactly this, so DSL = VM.) *)
+      body_writes rest (set_env_dynset_map p op name
+                          (List.concat (map (fun f => field_value f p) keyfs))
+                          (field_value d p))
   | BStmt _ :: rest => body_writes rest p
   end.
 Definition dsl_writes (r : rule) (p : packet) : packet := body_writes (r_body r) p.
@@ -508,6 +583,61 @@ Definition eval_chain_mut (c : chain) (p : packet) : verdict :=
   match eval_rules_mut (c_rules c) p with Some v => v | None => c_policy c end.
 Definition run_chain_mut (prog : program) (policy : verdict) (p : packet) : verdict :=
   match run_program_mut prog p with Some v => v | None => policy end.
+
+(** ** Cross-packet persistence of learned state.
+
+    A `dynset` learns an element into a named set; that learning must persist to
+    the NEXT packet (per-source rate limiting, learning sets, …).  Within one
+    packet [eval_rules_mut]/[run_program_mut] thread the mutated packet (hence its
+    [pkt_env]) across rules; to thread it across PACKETS we expose the final
+    environment.  [eval_rules_mut_env]/[run_program_mut_env] mirror the verdict
+    evaluators but also return the env left after the chain ran (the shared
+    set/map/limiter state, NOT the per-packet meta/ct fields, which are local to
+    each packet).  On a terminal verdict the env still reflects the writes the
+    final rule's body made before the verdict. *)
+Fixpoint eval_rules_mut_env (rs : list rule) (p : packet) : option verdict * env :=
+  match rs with
+  | [] => (None, pkt_env p)
+  | r :: rest =>
+      if rule_applies r p then
+        match outcome r p with
+        | Some v => if terminal v then (Some v, pkt_env (dsl_writes r p))
+                    else eval_rules_mut_env rest (dsl_writes r p)
+        | None   => eval_rules_mut_env rest (dsl_writes r p)
+        end
+      else eval_rules_mut_env rest (dsl_writes r p)
+  end.
+
+Fixpoint run_program_mut_env (prog : program) (p : packet) : option verdict * env :=
+  match prog with
+  | [] => (None, pkt_env p)
+  | rp :: rest =>
+      match run_rule empty_rf rp p with
+      | Some v => if terminal v then (Some v, pkt_env (run_rule_writes empty_rf rp p))
+                  else run_program_mut_env rest (run_rule_writes empty_rf rp p)
+      | None   => run_program_mut_env rest (run_rule_writes empty_rf rp p)
+      end
+  end.
+
+(** Run a base chain in mutation mode, returning the verdict AND the env the chain
+    leaves (with any dynset-learned elements), so a packet sequence can thread it. *)
+Definition eval_chain_mut_env (c : chain) (p : packet) : verdict * env :=
+  match eval_rules_mut_env (c_rules c) p with (Some v, e) => (v, e) | (None, e) => (c_policy c, e) end.
+Definition run_chain_mut_env (prog : program) (policy : verdict) (p : packet) : verdict * env :=
+  match run_program_mut_env prog p with (Some v, e) => (v, e) | (None, e) => (policy, e) end.
+
+(** A packet sequence threaded through a shared, learning environment: each packet
+    is evaluated against the current [e], and the env it LEAVES (learned sets/maps)
+    seeds the next packet.  This is [seq_eval]'s analogue where the state update is
+    the chain's own dynset learning, not an external [step] keyed on the verdict —
+    so a later packet's `lookup @s` observes what an earlier packet's `add @s`
+    learned. *)
+Fixpoint seq_eval_env (ev : env -> packet -> verdict * env)
+    (e : env) (packets : list packet) : list verdict :=
+  match packets with
+  | [] => []
+  | p :: ps => let '(v, e') := ev e p in v :: seq_eval_env ev e' ps
+  end.
 
 (** ** Multi-chain control flow: jump / goto / return + user-defined chains.
 

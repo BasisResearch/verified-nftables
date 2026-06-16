@@ -298,6 +298,85 @@ let () =
       (Printf.printf "    (warning: mutation made no difference for this packet)\n"))
     [ "mark initially unset", mk_pkt () ];
   Printf.printf "\n";
+  (* (5b) dynset feedback loop: the dynamic-SET mutation a `dynset` performs.
+     Rule 1 is `add @learn {ip saddr}` — it inserts the packet's source address
+     into the named set "learn"; rule 2 is `ip saddr @learn accept`.  Under the
+     mutation-aware semantics the second rule's lookup observes the element rule 1
+     learned and the packet is ACCEPTED; the old verdict-only model no-ops the
+     dynset (verdict-neutral), so @learn stays EMPTY, the lookup misses, and the
+     packet falls through to the DROP policy.  This is exactly the set-feedback the
+     audit flagged as missing — the witness shows (a) the compiler preserves the
+     fed-back verdict (DSL_mut = VM_mut) and (b) the feedback changes the result
+     (mut accept != no-mut drop). *)
+  Printf.printf "=== add @learn {ip saddr}; ip saddr @learn accept (dynset set feedback) ===\n";
+  let dyn_chain = chain Verdict.Drop [
+    rule_b [ Syntax.BStmt (Syntax.SDynset ("add", "learn", [Syntax.FIp4Saddr], [])) ] Verdict.Continue;
+    rule_b [ Syntax.BMatch (Syntax.MConcatSet ([Syntax.FIp4Saddr], false, "learn")) ] Verdict.Accept;
+  ] in
+  let dprog = Compile.compile_chain dyn_chain in
+  Stdlib.List.iter (fun (name, p) ->
+    let dsl_mut   = Semantics.eval_chain_mut dyn_chain p in
+    let vm_mut    = Semantics.run_chain_mut  dprog dyn_chain.Syntax.c_policy p in
+    let dsl_nomut = Semantics.eval_chain dyn_chain p in
+    let ok = dsl_mut = vm_mut in
+    Printf.printf "  %-26s mut: DSL=%-7s VM=%-7s | verdict-only DSL=%-7s %s\n"
+      name (string_of_verdict dsl_mut) (string_of_verdict vm_mut) (string_of_verdict dsl_nomut)
+      (if ok then "ok" else "MISMATCH");
+    if not ok then incr fails;
+    if dsl_mut = dsl_nomut then
+      Printf.printf "    (warning: dynset feedback made no difference for this packet)\n")
+    [ "saddr 10.0.0.1 learned", mk_pkt ~nh:(nh ~saddr:[10;0;0;1] ~daddr:[8;8;8;8]) () ];
+  Printf.printf "\n";
+  (* (5c) MAP dynset feedback: `add @m {ip saddr : tcp dport}` learns a key->value
+     entry; a later `meta mark set ip saddr map @m` reads it back, then a match on
+     the mark accepts.  Combines map-dynset learning with meta mutation. *)
+  Printf.printf "=== add @m {ip saddr : tcp dport}; meta mark set ip saddr map @m; meta mark 22 accept ===\n";
+  let mapdyn_chain = chain Verdict.Drop [
+    rule_b [ Syntax.BStmt (Syntax.SDynset ("add", "m", [Syntax.FIp4Saddr], [Syntax.FThDport])) ] Verdict.Continue;
+    rule_b [ Syntax.BStmt (Syntax.SMetaSet (Packet.MKmark, Syntax.VMap ([Syntax.FIp4Saddr], [], "m"))) ] Verdict.Continue;
+    rule_b [ Syntax.BMatch (meq Syntax.FMetaMark [0; 22]) ] Verdict.Accept;
+  ] in
+  let mdprog = Compile.compile_chain mapdyn_chain in
+  Stdlib.List.iter (fun (name, p) ->
+    let dsl_mut   = Semantics.eval_chain_mut mapdyn_chain p in
+    let vm_mut    = Semantics.run_chain_mut  mdprog mapdyn_chain.Syntax.c_policy p in
+    let dsl_nomut = Semantics.eval_chain mapdyn_chain p in
+    let ok = dsl_mut = vm_mut in
+    Printf.printf "  %-26s mut: DSL=%-7s VM=%-7s | verdict-only DSL=%-7s %s\n"
+      name (string_of_verdict dsl_mut) (string_of_verdict vm_mut) (string_of_verdict dsl_nomut)
+      (if ok then "ok" else "MISMATCH");
+    if not ok then incr fails;
+    if dsl_mut = dsl_nomut then
+      Printf.printf "    (warning: map-dynset feedback made no difference for this packet)\n")
+    [ "saddr->dport learned in @m", mk_pkt ~nh:(nh ~saddr:[10;0;0;1] ~daddr:[8;8;8;8]) ~th:(th ~dport:[0;22]) () ];
+  Printf.printf "\n";
+  (* (5d) CROSS-PACKET persistence (compile_seq_mut_correct): a learning set that
+     accumulates ACROSS packets.  Rule 1 accepts if the source is already in @seen;
+     rule 2 learns it.  So the FIRST packet from a source is dropped (not yet seen)
+     and a LATER packet from the same source is accepted — the env a packet leaves
+     seeds the next.  The compiled VM reproduces the DSL sequence exactly. *)
+  Printf.printf "=== ip saddr @seen accept; add @seen {ip saddr}  (across a 2-packet sequence) ===\n";
+  let seen_chain = chain Verdict.Drop [
+    rule_b [ Syntax.BMatch (Syntax.MConcatSet ([Syntax.FIp4Saddr], false, "seen")) ] Verdict.Accept;
+    rule_b [ Syntax.BStmt (Syntax.SDynset ("add", "seen", [Syntax.FIp4Saddr], [])) ] Verdict.Continue;
+  ] in
+  let sprog = Compile.compile_chain seen_chain in
+  let spol  = seen_chain.Syntax.c_policy in
+  let one   = mk_pkt ~nh:(nh ~saddr:[10;0;0;1] ~daddr:[8;8;8;8]) () in
+  let pkts  = [ one; one ] in    (* two packets from the same source *)
+  let dsl_seq = Semantics.seq_eval_env
+    (fun e p -> Semantics.eval_chain_mut_env seen_chain (Semantics.set_env p e)) empty_env pkts in
+  let vm_seq  = Semantics.seq_eval_env
+    (fun e p -> Semantics.run_chain_mut_env sprog spol (Semantics.set_env p e)) empty_env pkts in
+  let pp s = "[" ^ Stdlib.String.concat "; " (Stdlib.List.map string_of_verdict s) ^ "]" in
+  let ok = dsl_seq = vm_seq in
+  Printf.printf "  same source x2          DSL=%-18s VM=%-18s %s\n"
+    (pp dsl_seq) (pp vm_seq) (if ok then "ok" else "MISMATCH");
+  if not ok then incr fails;
+  (match dsl_seq with
+   | [ a; b ] when a <> b -> ()   (* first dropped, second accepted: cross-packet learning *)
+   | _ -> Printf.printf "    (warning: no cross-packet difference observed)\n");
+  Printf.printf "\n";
   Printf.printf "%s: compile & optimize preserve the DSL verdict on every packet\n"
     (if !fails = 0 then "PASS" else Printf.sprintf "FAIL (%d mismatches)" !fails);
   if !fails > 0 then exit 1

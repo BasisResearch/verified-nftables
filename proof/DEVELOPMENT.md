@@ -46,8 +46,9 @@ theorem is stated against is **not** faithful in these areas. Grouped by kind:
   `blocks_of_file`) now round-trip through the data model **642/651 byte-identical**
   (the 9 out are interval sets carrying a `userdata` annotation).
 - ⛔ STILL OPEN — **routing table (`fib`)**, **conntrack table (`ct`)**, and
-  **stateful objects** (counter/quota/limit/meter, dynset feedback) remain
+  **stateful objects** (counter/quota/limit/meter; MAP-dynset feedback) remain
   per-packet oracles, not the explicit FIB/conntrack/object state they should be.
+  (SET-dynset feedback is now modelled — see B below.)
 - **Routing table (`fib`/`rt`)** *(relocated to shared state, 2026-06)*: `fib` and
   `rt` now read from the evaluation environment (`e_fib : selector -> result ->
   data`, `e_rt : rt_key -> data` in `env`), NOT from the packet — so the routing
@@ -77,9 +78,36 @@ theorem is stated against is **not** faithful in these areas. Grouped by kind:
   limiter per ruleset; per-rule attribution of which limiter consumed is the
   refinement. `counter`/`ct helper`/`synproxy`/`secmark` objects still verdict-
   neutral.)
-- **Dynamic sets / meters (`dynset`, `update`, `meter`)**: their entire purpose is
-  to mutate set state at runtime so later lookups see it (per-key rate limiting);
-  modelled as verdict-neutral, so the feedback loop is absent.
+- ✅ **Dynamic sets (`add`/`update`/`delete @s {key}`)** *(FIXED 2026-06)*: a `dynset`
+  whose target is a SET (no map data) now MUTATES the named-set state in the env
+  instead of being verdict-neutral.  `set_env_dynset`/`env_set_upd` (in `Semantics.v`)
+  insert the exact element `[key,key]` (add/update — so a later `set_mem` on `key`
+  succeeds) or drop it (delete); this is threaded through the mutation machinery
+  (`run_rule_writes` on `IDynset _ None`, `body_writes` on `SDynset _ _ _ []`), so a
+  LATER rule's `lookup @s` observes the element this rule learned — the dynamic-set
+  feedback loop.  It is carried by the SAME axiom-free theorem as meta/ct mutation,
+  **`compile_chain_mut_correct`** (dynset is now an `is_mut_stmt`, no longer a
+  straight-line no-op), so the compiler is proven to preserve the fed-back verdict.
+  semtest (5b): `add @learn {ip saddr}; ip saddr @learn accept` — the source address
+  is learned by rule 1 and matched by rule 2, flipping the verdict the old
+  verdict-neutral model gave (DROP) to ACCEPT, with VM = DSL.
+- ✅ **Map dynsets (`add @m {key : field}`)** *(FIXED 2026-06)*: a dynset whose data
+  is a packet FIELD now learns `key -> data` in the value map (`env_map_upd`/
+  `set_env_dynset_map`); the compiled `IDynset _ (Some dreg) true` (the `fdata`
+  flag marks a field-sourced data register, vs an immediate one) threads the same
+  write, so a later `@m`-keyed map lookup observes it.  Also carried by
+  `compile_chain_mut_correct`.  semtest (5c): `add @m {ip saddr : tcp dport};
+  meta mark set ip saddr map @m; meta mark 22 accept` — the learned key→value is
+  read back into the mark and matched, VM = DSL.
+- ✅ **Cross-packet persistence** *(FIXED 2026-06)*: the env a chain LEAVES (with its
+  learned set/map elements) is exposed by `eval_chain_mut_env`/`run_chain_mut_env`
+  and threaded across a packet SEQUENCE by `seq_eval_env`, so a `add @s` on an
+  earlier packet is visible to a `lookup @s` on a later one.  **`compile_seq_mut_correct`**
+  (axiom-free) proves the compiled VM reproduces the DSL sequence.  semtest (5d):
+  `ip saddr @seen accept; add @seen {ip saddr}` over two packets from one source →
+  `[drop; accept]` (first unseen, second learned), VM = DSL.
+- ⛔ STILL verdict-neutral: an IMMEDIATE-data dynset (`add @m {key : 10.0.0.1}`,
+  `SDynsetImm` — the `fdata=false` form) and `meter`/`numgen` increments.
 - **flowtables, incremental `numgen`, `osf`**: stateful; oracle'd or ignored.
 
 **B. In-traversal mutation ignored ("verdict-neutral" overused)** — a statement
@@ -98,12 +126,16 @@ that doesn't change *this* rule's verdict still mutates state later rules read:
   and the DSL `body_writes`/`dsl_writes` (left-to-right: a `set` writes
   `eval_vsrc vs` against the packet mutated so far; a failing match stops, keeping
   earlier writes). `eval_rules_mut`/`run_program_mut` (and `eval/run_chain_mut`)
-  thread the writes so a later rule observes an earlier `set`. The theorem
+  thread the writes so a later rule observes an earlier `set`. A **set-`dynset`**
+  (`add`/`update`/`delete @s {key}`) likewise mutates the env's named-set state
+  (`run_rule_writes` on `IDynset _ None` → `set_env_dynset`; `body_writes` on
+  `SDynset _ _ _ []`), so a later `lookup @s` sees the learned element — the
+  dynamic-set feedback loop (semtest 5b). The theorem
   **`compile_chain_mut_correct`** (axiom-free) proves
   `run_chain_mut (compile_chain c) policy = eval_chain_mut c` for **every rule**
-  (`mut_wf`, a well-formedness — NOT a feature scope): matches, meta/ct sets, AND
-  every other statement (mangle, NAT, dup, counter, log, dynset, exthdr, objref, …,
-  which are threaded as meta/ct-neutral via the `straight`-line-prefix lemma). The
+  (`mut_wf`, a well-formedness — NOT a feature scope): matches, meta/ct sets,
+  set-dynsets, AND every other statement (mangle, NAT, dup, counter, log, map-dynset,
+  exthdr, objref, …, threaded as state-neutral via the `straight`-line-prefix lemma). The
   cited `meta mark set 0x1 ; meta mark 0x1 accept` bug now ACCEPTS on both sides, and
   semtest witnesses a rule *mixing* `counter`/`log` with the meta-set. Built on the
   operand value-correctness `eval_vsrc vs p = (regfile after compile_vsrc vs) 1`,
@@ -159,7 +191,7 @@ that doesn't change *this* rule's verdict still mutates state later rules read:
   values, a prefix match for a short (wildcard) value. The conflicting
   singleton-range→equality optimisation (a full-width range-eq diverges from a
   prefix `MEq`) is dropped (`simplify_match` is now the identity) — only a minor
-  bytecode-shrinking pass is foregone; all eight theorems and corpus 2532/2532 are
+  bytecode-shrinking pass is foregone; all ten theorems and corpus 2532/2532 are
   unaffected. semtest (4e): `iifname "eth"` accepts eth0/eth1, drops wlan0, VM=DSL.
 - **Operand *value* semantics** *(largely FIXED 2026-06; see B)*: `eval_vsrc` is now
   proved equal to the register the compiled operand leaves for immediate, field,
@@ -184,21 +216,30 @@ The gap-closing program was tracked as C→A→B→D. Status as of 2026-06:
   (`compile_table_correct`); multi-table/hook/priority dispatch
   (`compile_ruleset_correct`, `compile_hook_correct`).
 - 🔶 **(3) In-traversal mutation** (B): DONE for the common fragment —
-  `meta`/`ct` `set` is threaded across rules (`compile_chain_mut_correct`).
-  **STILL OPEN:** payload-mangle, NAT address/port rewrite, and `dynset`
-  set-feedback mutations are threaded only as meta/ct-*neutral* (their own writes
-  are not yet visible to later rules).
+  `meta`/`ct` `set`, **set-`dynset`** (`add`/`update`/`delete @s {key}`), AND
+  **field-data map-`dynset`** (`add @m {key : field}`) are threaded across rules so
+  a later lookup sees the learned element/entry (`compile_chain_mut_correct`); the
+  learned env also persists ACROSS packets (`compile_seq_mut_correct`).
+  **STILL OPEN:** payload-mangle, NAT address/port rewrite, and IMMEDIATE-data
+  dynsets are threaded only as state-*neutral* (their own writes are not yet visible
+  to later rules).
 - 🔶 **(4) Explicit tables** (D-ish): FIB done (`lpm_fib`); **STILL OPEN:** the
   conntrack table is still a per-packet oracle, not a flow-keyed table that
-  accumulates across packets (`ct count`, `ct state`).
+  accumulates across packets (`ct count`, `ct state`).  This is a subsystem-level
+  relocation (per-packet `pkt_ct` → flow-keyed shared env), not a contained
+  addition — deferred rather than half-done.
 - 🔶 **(5) Data fidelity** (D): interval/prefix sets and wildcard ifnames done;
-  **STILL OPEN:** concat-key sub-4-byte register-slot padding.
+  **STILL OPEN:** concat-key sub-4-byte register-slot padding.  This is
+  *unvalidatable* in the current harness — the corpus never populates a set and
+  `make validate` checks offsets, not set-membership byte layout — so a padding
+  model would be an unverified guess (the exact Goodhart trap `issues.org` warns
+  against); left documented rather than faked, pending a data-plane membership oracle.
 
-So the headline honest gaps remaining are: **payload/NAT/dynset mutation
-threading**, the **flow-keyed conntrack table**, and **concat-key padding** —
-plus the standing framing caveat that this is internal consistency against a
-self-authored semantics, with kernel fidelity resting on `make validate` (28/28)
-rather than the corpus round-trip.
+So the headline honest gaps remaining are: **payload/NAT and immediate-data-dynset
+mutation threading**, the **flow-keyed conntrack table**,
+and **concat-key padding** — plus the standing framing caveat that this is internal
+consistency against a self-authored semantics, with kernel fidelity resting on
+`make validate` (28/28) rather than the corpus round-trip.
 
 ## What exists
 
@@ -222,7 +263,7 @@ rather than the corpus round-trip.
 Build & check proofs: `make proofs`. Forward test: `make difftest`. Corpus
 coverage: `make corpus` (clones nftables' `tests/py` once into a cache dir).
 
-## The theorems (all eight `Closed under the global context` — no axioms)
+## The theorems (all ten `Closed under the global context` — no axioms)
 
 The two headline statements:
 
@@ -241,18 +282,20 @@ as the DSL specifies; the second says the optimizer never changes a verdict.
 
 The verified core has grown well past those two. The full set of top-level
 theorems in `Correct.v`/`Optimize.v`, each verified axiom-free by
-`Print Assumptions` (8 × "Closed under the global context"):
+`Print Assumptions` (10 × "Closed under the global context"):
 
 | theorem | what it preserves |
 |---|---|
 | `compile_chain_correct` | a single base chain's per-packet verdict |
 | `optimize_chain_correct` | the optimizer changes no verdict |
 | `compile_chain_sets_correct` | a `lookup @s` reads the elements *declared* for `s` (named state as a declared object) |
-| `compile_chain_mut_correct` | in-traversal **mutation** (meta/ct `set`) is visible to later rules; holds for *every* rule under `mut_wf` well-formedness |
+| `compile_chain_mut_correct` | in-traversal **mutation** (meta/ct `set`, set-`dynset` learning, field-data map-`dynset` learning) is visible to later rules; holds for *every* rule under `mut_wf` well-formedness |
+| `compile_chain_mut_env_correct` | the **env a chain leaves** (its dynset-learned sets/maps) is preserved too — basis for cross-packet learning |
 | `compile_table_correct` | **control flow**: `jump`/`goto`/`return` + user chains (fuel-bounded) |
 | `compile_ruleset_correct` | multi-table/multi-hook dispatch with netfilter verdict combination |
 | `compile_hook_correct` | hook → priority-ordered base-chain selection |
 | `compile_seq_correct` | **stateful accumulation** across a packet sequence (limiters threaded between packets) |
+| `compile_seq_mut_correct` | **cross-packet learning**: dynset-learned env threaded between packets, so an earlier packet's `add @s` is seen by a later packet's `lookup @s` |
 
 Re-check anytime with `Print Assumptions <name>` (see the probe in the git
 history) — every one must print "Closed under the global context".
@@ -323,8 +366,10 @@ these is future work.
 **Known abstractions** (each faithful or documented, none a silent no-op):
 `reject`/`queue` model only their control-flow (stop traversal), not the emitted
 ICMP / userspace hand-off; sets carry their elements inside the `lookup`
-instruction (the real set lives in a separate NEWSET object; dynamic set mutation
-is out of scope); `notrack` is verdict-neutral here (its conntrack side effect is
+instruction (the real set lives in a separate NEWSET object; dynamic SET mutation
+is verdict-neutral in this single-packet model but IS modelled by the
+mutation-aware `run_chain_mut`/`eval_chain_mut` — see "B" above — so a learned
+element is visible to later rules); `notrack` is verdict-neutral here (its conntrack side effect is
 outside the single-packet model). `nat`/`masq`/`redir` model only their terminal
 control-flow (accept + stop traversal); the address/port translation loaded into
 registers 1–4 is carried for byte-identical rendering but is outside the
@@ -409,16 +454,209 @@ verdict-preserving (`optimize_chain_correct`, axiom-free):
 (`compile`/`optimize`/`compile_optimized`), and `to_netlink_text`. See
 `extracted/example.ml` (`dune exec ./example.exe`) for an end-to-end demo.
 
-## Next steps (toward the broader instructions.org goals)
+## Orientation for a fresh session (read this before picking up a TODO)
 
-The DSL → control-plane-bytecode compiler and optimizer are complete and 100%
-corpus-faithful. What remains is breadth and depth beyond the round-trip:
+**Build & verify (every change must keep ALL of these green):**
 
-1. The **netlink emitter** shim (libnftnl) as the last untrusted, differentially
-   tested step; round-trip `compile → emit → nft list` against a live kernel.
-2. **More optimization passes** — e.g. consecutive-duplicate-rule elimination
-   (needs a `rule_eq_dec`; a monolithic `decide equality` is too costly, so it
-   wants a bottom-up `vsrc`/`stmt`/spec eq_dec hierarchy), or rule→vmap/set
-   consolidation (the classic nft optimization, harder to verify).
-3. The *future* goals: a data-plane bytecode interpreter spec, and VST proofs
-   that the C interpreter meets it (CompCert/clightgen enters here).
+| command | gate |
+|---|---|
+| `make proofs` | all `.v` check; also re-runs `Extract.v` → regenerates `extracted/*.ml{,i}` |
+| `make corpus` | upstream `tests/py` round-trip: **2532/2532, 0 mismatches** |
+| `make difftest` | compiled bytecode **byte-identical** to live `nft --debug=netlink` |
+| `make validate` | `field_load` offsets/names vs live `nft`: **28/28** |
+| `make semtest` | executable witnesses: DSL = VM = optimized on packet batteries (incl. the mutation / sequence witnesses) |
+
+Axiom-freedom (must stay at **10**), re-check with:
+```
+cd theories && printf 'From Nft Require Import Correct Optimize.\nPrint Assumptions compile_chain_correct.\n... (all 10) ...\n' | coqtop -R . Nft | grep -c "Closed under the global context"
+```
+The 10 theorems are listed in "The theorems" table above. Any new top-level
+theorem must also print `Closed under the global context`.
+
+**Where things live:**
+- `theories/Packet.v` — the `packet` and its `env` (the shared mutable state:
+  `e_set`/`e_vmap`/`e_map`/`e_routes`/`e_rt`/`e_limit`/`e_quota`/`e_connlimit`).
+  `meta_key`, `ct_key`, etc.
+- `theories/Syntax.v` — the DSL AST; `field_load : field -> loaddesc` and
+  `do_load`/`field_value` (how a field reads the packet/env); `op_delete`.
+- `theories/Bytecode.v` — the VM instruction set (`IDynset` has an `fdata` flag,
+  see "discriminator pattern" below).
+- `theories/Compile.v` — `compile_stmt`/`compile_chain`; register allocation
+  `alloc_regs`/`reg_of_slot`/`field_slots`/`load_fields`.
+- `theories/Semantics.v` — verdict semantics (`eval_chain`/`run_chain`, jump-aware
+  `eval_table`/`run_table`, hook `eval_ruleset`/`eval_hook`); **mutation** machinery
+  (`run_rule_writes`/`body_writes`, `eval_chain_mut`/`run_chain_mut`); **cross-packet**
+  (`eval_chain_mut_env`/`run_chain_mut_env`/`seq_eval_env`); env mutators
+  (`set_meta`/`set_ct`/`set_env_dynset`/`set_env_dynset_map`/`env_set_upd`/`env_map_upd`).
+- `theories/Correct.v` — all the theorems and their scaffolding.
+- `theories/Extract.v` — **add any function you want to call from `semtest.ml` to the
+  `Separate Extraction` list** (else "Unbound value Semantics.X").
+- `extracted/` — `codec.ml` (renderer), `corpus_test.ml` (parser + DSL
+  reconstructor), `glue.ml`, `semtest.ml`, `nftc.ml{,i}` are **hand-written**
+  (`proof/.gitignore` ignores `extracted/*.ml{,i}`, so these are force-added with
+  `git add -f`); everything else under `extracted/` is generated by `make proofs`.
+  In hand-written `.ml`, use `Stdlib.List`/`Stdlib.String` — the extracted `List`/
+  `String` modules shadow the stdlib ones.
+
+## Architecture: the state & mutation machinery (reuse these patterns)
+
+**Design rule for state.** State that *accumulates* or is *shared/named* lives in
+`env` (carried inside `packet.pkt_env`); a purely per-packet abstraction is a
+packet-field oracle (`pkt_meta`, `pkt_ct`, `pkt_sock`, …). The correctness theorems
+quantify over the whole `env`, so anything in `env` is automatically non-vacuous.
+
+**To relocate a per-packet oracle into `env`** (e.g. the conntrack TODO): change
+BOTH `Syntax.do_load` (the relevant `L*` case) and the matching VM load case in
+`Semantics.run_rule`/`run_rule_writes` so they read the new `env` field; the
+`compile_load`-style correctness lemmas realign automatically because both sides
+read the *same* env function.
+
+**To add a new in-traversal MUTATION** (a statement whose write a later rule sees):
+1. `Semantics.v`: give its compiled instruction an effect in `run_rule_writes`
+   (return the mutated packet), and its DSL effect in `body_writes`. Keep the
+   *verdict* semantics (`run_rule`/`eval_rules`/`outcome`) neutral — mutation only
+   affects *later* rules, which `eval_rules_mut`/`run_program_mut` already thread.
+2. `Correct.v`: mark the instruction as a write in `writes_instr` (`true`) and
+   non-straight in `straight_instr` (`false`); add the statement to `is_mut_stmt`;
+   handle it in `run_compile_body_writes`'s `is_mut_stmt = true` branch with a
+   *readback* lemma proving `run_rule_writes (compile …) = body_writes …`. Re-check
+   that `run_rule_writes_neutral`, `straight_imp_nw`, `run_rule_writes_straight`
+   still discharge the instruction's pattern (they `destruct` the instruction —
+   add `option`/`bool` sub-destructs for new argument shapes, as the `IDynset`
+   cases already do).
+3. Add `mut_wf` well-formedness ONLY to exclude a genuinely malformed sub-case.
+4. Witness it in `semtest.ml`: show `DSL_mut = VM_mut` AND that mutation changes the
+   verdict vs the verdict-only `eval_chain` (the adversarial check).
+
+**Register readback lemmas** (in `Correct.v`, reuse for any field-loading
+statement): `alloc_regs_app`/`slots_of` (split a key++data allocation),
+`write_fields_app`, `map_write_fields_app_l` (read the key prefix of a key++data
+load), `write_fields_concat_key`/`write_fields_concat_key_app` (concat key = concat
+of field values), `write_fields_data_head` (first data register = first data
+field's value), `skipn_map_snd_alloc_app` (the data register a dynset compiles to).
+
+**Discriminator pattern (variant without changing rendering).** When two DSL
+constructs compile to the *same* rendered instruction but need different semantics
+(e.g. `SDynset` field-data vs `SDynsetImm` immediate-data, both `dynset … sreg_data`),
+add a flag to the Bytecode instruction that `codec.ml` **ignores** (so corpus
+byte-identity is untouched), set it in `compile_stmt`, and branch on it only in the
+semantics. `IDynset`'s `fdata : bool` is the worked example.
+
+**Cross-packet preservation.** `eval_chain_mut_env`/`run_chain_mut_env` return
+`(verdict, env)`; `seq_eval_env` threads that env into the next packet;
+`compile_seq_mut_correct` is the theorem. Per-packet fields (`pkt_meta`/`pkt_ct`)
+are *not* carried across packets (they are local), only `env` is.
+
+## Remaining work (TODOs for a fresh session)
+
+Each item says what's missing, why it matters, a concrete plan, the risks, and how
+to validate. Ordered roughly by value × tractability.
+
+### TODO 1 — Flow-keyed conntrack table  (HIGH value, LARGE, the main open gap)
+**Missing.** `ct` is a per-packet oracle: `Syntax.do_load`'s `LCt k => pkt_ct p k`,
+and `ct set` mutates the *packet* (`set_ct`, threaded within one packet only). The
+real conntrack table is keyed by flow (5-tuple) and accumulates across packets
+(`ct count`, `ct state`, `ct mark` learned on packet 1 seen on packet 2 of the same
+flow).
+**Why it matters.** Stateful firewalling (`ct state established accept`) is the
+single most common real nftables idiom; today its cross-packet, per-flow nature is
+abstracted away.
+**Plan.**
+1. `Packet.v`: add a `flow_key` type (model as `data`, the canonicalised 5-tuple)
+   and `e_ct : flow_key -> ct_key -> data` to `env`; add `pkt_flowkey : flow_key`
+   to `packet` (packet-determined, like `pkt_fibkey`).
+2. `Syntax.do_load`: `LCt k => e_ct (pkt_env p) (pkt_flowkey p) k`. Mirror in the VM
+   `ICtLoad` case in `Semantics.run_rule` AND `run_rule_writes`.
+3. Replace `set_ct` (packet mutator) with an `env`-level `env_ct_upd e flow k v`
+   + `set_env_ct p k v := set_env p (env_ct_upd (pkt_env p) (pkt_flowkey p) k v)`.
+   `ICtSet`/`SCtSet` then mutate `env` (like the dynset), so a `ct mark set` is
+   visible to later rules AND (via `seq_eval_env`) later packets of the same flow.
+4. `Correct.v`: the `SCtSet` case in `run_compile_body_writes` moves from the
+   `writes_vsrc_simple`/`set_ct` path to an env-write path analogous to the dynset
+   set case (reuse `run_vsrc_value`/`writes_vsrc_simple` for the value, then the
+   env update). Re-prove `compile_chain_mut_correct`; add a `compile_seq_mut`
+   witness for cross-packet `ct mark`.
+**Risk.** `do_load`'s `LCt` change ripples into *every* match proof that reads a ct
+field (they go through `compile_load_correct`, which should realign since both
+sides read `e_ct`, but expect to touch `run_compile_matches_const` ct sub-cases).
+Do it incrementally: first relocate the READ (`do_load` + VM load) and re-green
+everything, THEN relocate the WRITE (`set_ct` → env). Two separate green commits.
+**Validate.** `make proofs` (10 axiom-free), corpus/difftest/validate unchanged
+(ct *rendering* is untouched — only the semantics of `LCt`/`ICtSet` change), and a
+new semtest: packet 1 `ct mark set 0x1`, packet 2 of the same flow `ct mark 0x1
+accept` → `[…; accept]`, with a *different* flow staying at the policy.
+
+### TODO 2 — Immediate-data dynset feedback (`SDynsetImm`, `add @m {key : 10.0.0.1}`)
+**Missing.** A dynset whose map data is immediate constants compiles to
+`IDynset … (Some dreg) false` and is left env-neutral (the `fdata=false` path). Only
+field-data map dynsets (`fdata=true`) are modelled.
+**Why it matters.** Completeness of map learning; lower value than TODO 1 (constant
+map data is rarer than field/conntrack-derived data).
+**Plan.** Make `fdata=false` a write too. The data value is the immediate at `dreg`:
+define `imm_at (r) (dimms) := fold_left (fun acc rv => if Nat.eqb (fst rv) r then snd rv else acc) dimms []`
+(last write wins, matching `set_reg` order); `body_writes` for `SDynsetImm` uses
+`imm_at datareg dimms`. Prove `load_imms`-readback: running the `IImmediateData`
+prefix leaves `dreg` holding `imm_at datareg dimms` **when** `datareg ∈ map fst dimms`
+(a fold-independence lemma: a matching key overrides the initial register value).
+Add that `existsb (fst = datareg) dimms` to `simple_body` as a well-formedness
+(true for every corpus rule). Then handle `SDynsetImm` in `run_compile_body_writes`
+and add it to `is_mut_stmt`; flip its `IDynset … (Some _) false` to a write in
+`writes_instr`/`straight_instr`.
+**Risk.** Low–moderate; the only new lemma is fold-independence. **Validate.**
+semtest: `add @m {ip saddr : 0x1}; meta mark set ip saddr map @m; meta mark 0x1 accept`.
+
+### TODO 3 — Payload-mangle / NAT address-port rewrite, visible to later rules
+**Missing.** `payload set` (mangle), `ip dscp set`, ttl/hoplimit, and NAT
+address/port rewrites are modelled as verdict-neutral / terminal-Accept; their
+write to packet bytes is not threaded, so a later rule reading the mangled bytes
+sees the original. (`SMangle`, `nat_spec`, `SExthdrWrite` are the statements.)
+**Plan.** Add a `set_payload p base off len v` packet mutator (like `set_meta`),
+extend `run_rule_writes`/`body_writes` for `SMangle`/`IPayloadWrite` (the value is
+already `compile_vsrc`/`eval_vsrc`, reuse `writes_vsrc_simple`). NAT is *terminal*,
+so its rewrite is only observable by a *different* hook's chain — model it in the
+`eval_ruleset`/`run_ruleset` dispatch (carry the rewritten packet to the next base
+chain) rather than within one chain. **Risk.** Moderate; `read_payload`/`slice`
+readback after a partial-overwrite needs a small byte-splice lemma. **Validate.**
+semtest: `ip daddr set 1.2.3.4 ; ip daddr 1.2.3.4 accept`.
+
+### TODO 4 — Concat-key 4-byte register-slot padding  (BLOCKED on an oracle)
+**Missing.** The kernel pads each concatenated set-key field to its 4-byte register
+slot; `set_mem`/`ILookup` concatenate raw field bytes, so membership is wrong for
+sub-4-byte concatenated fields. **Why it is BLOCKED, not just undone.** There is no
+data-plane set-membership oracle in this harness: the corpus never populates a set
+(its round-trip shares whatever padding convention we pick and cannot catch a wrong
+one), and `make validate` checks `field_load` offsets, not membership byte layout.
+So implementing padding would be a self-consistent **but unvalidated guess** — the
+exact "optimise a proxy metric instead of the specification" trap in `../issues.org`.
+**Unblock first, THEN fix.** Build a data-plane oracle: a small harness that installs
+a set + a rule into a network namespace, sends a crafted packet (`scapy`/`nfqueue`),
+and observes accept/drop — then a differential test of `set_mem` against it. Only
+once that exists should padding be added to `set_mem` (pad each field value to
+`4 * field_slots`) and to the declared-set elements, and checked against the oracle.
+
+### TODO 5 — Meters / `numgen` incremental state
+**Missing.** `meter` (per-key dynamic rate limiting that mutates set state to rate-
+limit) and `numgen inc` (a global incrementing counter) are per-packet oracles
+(`pkt_numgen`), so two firings of the "same" packet can't differ. **Plan.** `meter`
+composes TODO-1-style env state with the dynset feedback already built (a meter is a
+dynset with a per-key limiter); `numgen inc` needs a counter in `env` threaded by
+`seq_eval`/`seq_eval_env`. **Risk.** Low once TODO 1 lands. **Validate.** semtest
+sequence showing the counter advance / the meter rate-limit per key.
+
+### TODO 6 — Netlink emitter shim (libnftnl), end-to-end to a live kernel
+**Missing.** The pipeline stops at byte-identical netlink *text*. Add an untrusted
+OCaml shim that emits real netlink via libnftnl, then round-trip
+`compile → emit → nft list ruleset` against a live kernel and diff. This closes the
+"text matches" → "kernel installs the same ruleset" gap. Untrusted + differentially
+tested, like `glue.ml`.
+
+### TODO 7 — More optimization passes (each needs `optimize_chain_correct` extended)
+- Consecutive-duplicate-*rule* elimination: needs `rule_eq_dec`; a monolithic
+  `decide equality` is too costly, so build a bottom-up `vsrc`/`stmt`/spec `eq_dec`
+  hierarchy. - Rule→vmap/set consolidation (the classic nft optimisation; harder to
+  verify — a set of single-match accept rules becomes one `@set` lookup).
+
+### TODO 8 — (future, per `../instructions.org`) Data-plane interpreter + VST
+A data-plane bytecode *interpreter* spec (what the C engine does to a packet) and
+VST proofs that the C interpreter meets it (CompCert/clightgen). This is the
+"end-to-end verified implementation" north star beyond the control-plane compiler.

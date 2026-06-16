@@ -46,7 +46,15 @@ Inductive instr : Type :=
 | IObjref      (otype : nat) (oname : string)
 | ISynproxy    (mss wscale : nat)
 | ILast        (info : string)
-| IDynset      (op name : string) (keyregs : list reg) (datareg : option reg)
+| IDynset      (op name : string) (keyregs : list reg) (datareg : option reg) (fdata : bool)
+                            (* [keyregs] hold the (concatenated) set/map key; [datareg]
+                               is the map data register (None = a pure SET dynset).
+                               [fdata] distinguishes a data register fed by a packet
+                               FIELD ([true], the value is modelled) from one fed by
+                               IMMEDIATE constants ([false], a separate SDynsetImm
+                               whose value-effect is left out of the model).  [fdata]
+                               does not affect rendering — it only guides the
+                               mutation semantics. *)
 | IExthdrReset (proto : string) (htype : nat)
 | IDup         (devreg addrreg : option reg)
 | IObjrefMap   (sregs : list reg) (name : string)

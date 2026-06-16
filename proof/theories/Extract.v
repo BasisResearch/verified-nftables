@@ -31,6 +31,9 @@ Separate Extraction
   run_table
   eval_chain_mut
   run_chain_mut
+  eval_chain_mut_env
+  run_chain_mut_env
+  seq_eval_env
   eval_ruleset
   run_ruleset
   set_env
