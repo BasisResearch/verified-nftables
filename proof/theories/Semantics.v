@@ -90,6 +90,7 @@ Definition env_with_sets (base : env) (d : set_decls) : env :=
      e_vmap := fun n => assoc_str n (sd_vmaps d) (e_vmap base n);
      e_map  := fun n => assoc_str n (sd_maps d)  (e_map base n);
      e_routes := e_routes base; e_rt := e_rt base;
+     e_ifaddr := e_ifaddr base;
      e_limit := e_limit base; e_quota := e_quota base; e_connlimit := e_connlimit base |}.
 
 (** A declared set's elements are exactly what `lookup @n` reads. *)
@@ -361,6 +362,24 @@ Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
 
+(** Overwrite [len] bytes at offset [off] of a byte list (a header), keeping the
+    rest — the payload-write primitive. *)
+Definition splice (l : list byte) (off len : nat) (v : data) : list byte :=
+  firstn off l ++ v ++ skipn (off + len) l.
+
+(** Source-NAT a packet: rewrite its IPv4 source address (network header bytes
+    12..15, where [FIp4Saddr] reads) to [v].  This is the data-plane effect a
+    `snat`/`masquerade` performs; [set_saddr p (e_ifaddr (pkt_env p) oifname)]
+    realises `masquerade` = "use the IP of the interface the packet exits". *)
+Definition set_saddr (p : packet) (v : data) : packet :=
+  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p;
+     pkt_sock := pkt_sock p; pkt_eh := pkt_eh p; pkt_lh := pkt_lh p;
+     pkt_nh := splice (pkt_nh p) 12 4 v; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
+
 (** ** Dynamic sets: the `dynset` feedback loop (`add`/`update`/`delete @s {key}`).
 
     Unlike a meta/ct set (which mutates a packet field), a dynset mutates the
@@ -381,6 +400,7 @@ Definition env_set_upd (e : env) (op name : String.string) (key : data) : env :=
        else e_set e n);
      e_vmap := e_vmap e; e_map := e_map e;
      e_routes := e_routes e; e_rt := e_rt e;
+     e_ifaddr := e_ifaddr e;
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e |}.
 
 Definition set_env_dynset (p : packet) (op name : String.string) (key : data) : packet :=
@@ -406,6 +426,7 @@ Definition env_map_upd (e : env) (op name : String.string) (key dat : data) : en
             else (key, dat) :: e_map e n
        else e_map e n);
      e_routes := e_routes e; e_rt := e_rt e;
+     e_ifaddr := e_ifaddr e;
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e |}.
 
 Definition set_env_dynset_map (p : packet) (op name : String.string) (key dat : data) : packet :=
@@ -639,13 +660,26 @@ Definition run_chain_mut_env (prog : program) (policy : verdict) (p : packet) : 
     before the verdict.  [eval_chain_trace_verdict] proves the verdict component is
     identical to the verified [eval_chain_mut], so this only EXPOSES the packet the
     mutation semantics was already threading — it adds no new behaviour. *)
+(** The data-plane effect of a terminal NAT rule on the packet.  A `masquerade`
+    rewrites the IPv4 SOURCE address to the address of the interface the packet
+    exits (`e_ifaddr` keyed by the output-interface name) — the source-NAT the
+    kernel performs.  (snat/dnat/redir address translation is not yet modelled
+    here; those leave the packet unchanged at this layer — see TODO 3.) *)
+Definition apply_masq (r : rule) (p : packet) : packet :=
+  match r_nat r with
+  | Some ns => if String.eqb (nat_kind ns) nat_masq_kind
+               then set_saddr p (e_ifaddr (pkt_env p) (field_value FMetaOifname p))
+               else p
+  | None => p
+  end.
+
 Fixpoint eval_rules_trace (rs : list rule) (p : packet) : option verdict * packet :=
   match rs with
   | [] => (None, p)
   | r :: rest =>
       if rule_applies r p then
         match outcome r p with
-        | Some v => if terminal v then (Some v, dsl_writes r p)
+        | Some v => if terminal v then (Some v, apply_masq r (dsl_writes r p))
                     else eval_rules_trace rest (dsl_writes r p)
         | None   => eval_rules_trace rest (dsl_writes r p)
         end

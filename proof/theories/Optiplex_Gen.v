@@ -37,6 +37,7 @@ Definition decls : set_decls :=
 Definition base_env : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => [];
+     e_ifaddr := (fun _ => []);
      e_limit := fun _ => 0; e_quota := fun _ => 0; e_connlimit := fun _ => 0 |}.
 
 Definition gen_env : env := env_with_sets base_env decls.
@@ -77,7 +78,7 @@ Definition filter_postrouting : chain :=
    c_rules := [{| r_body := [(BMatch (MEq FMetaMark [0; 0; 0; 153]));
              (BStmt (SLog "[nft:rdppost]"))];
      r_verdict := Accept; r_vmap := None;
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
+     r_nat := (Some {| nat_imms := []; nat_field := None; nat_map := None; nat_src := None; nat_kind := "masq"; nat_family := ""; nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
 
 Definition filter_input : chain :=
   {| c_policy := Drop;

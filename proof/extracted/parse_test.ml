@@ -317,6 +317,21 @@ let check_optiplex_mark () =
   (* and the masquerade rule specifically fires on the marked packet *)
   let post1 = Stdlib.List.nth postrouting.Syntax.c_rules 0 in
   check "masquerade rule fires on mark" (Semantics.rule_applies post1 p_out = true);
+  (* masquerade SOURCE-NAT: the packet leaving postrouting has its ip saddr
+     rewritten to the address of the interface it exits (e_ifaddr oifname). *)
+  let eth0 = ascii "eth0" and eth0_ip = [203;0;113;5] in   (* TEST-NET-3 *)
+  let env_if = { env with Packet.e_ifaddr = (fun n -> if n = eth0 then eth0_ip else []) } in
+  let p_masq =                                             (* marked, exits eth0 *)
+    { (mk_pkt ~env:env_if ()) with
+      Packet.pkt_meta = (fun k -> match k with
+        | Packet.MKmark -> mark99 | Packet.MKoifname -> eth0 | _ -> []);
+      pkt_nh = Stdlib.List.init 20 (fun _ -> 0) } in       (* saddr starts 0.0.0.0 *)
+  let saddr_in  = Syntax.field_value Syntax.FIp4Saddr p_masq in
+  let (_, p_masq_out) = Semantics.eval_chain_trace postrouting p_masq in
+  let saddr_out = Syntax.field_value Syntax.FIp4Saddr p_masq_out in
+  Printf.printf "    masquerade: ip saddr  %s -> %s  (eth0's IP)\n"
+    (show saddr_in) (show saddr_out);
+  check "masquerade rewrites saddr to exit-iface IP" (data_eq saddr_out eth0_ip);
   (* contrast: an RDP/3389 packet is marked at rule 1; an unmarked packet at
      postrouting does NOT masquerade *)
   let (_, p_rdp_out) = Semantics.eval_chain_trace prerouting (mk_pkt_dport ~env ~dport:[13;61]) in

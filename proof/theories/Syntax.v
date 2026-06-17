@@ -346,6 +346,10 @@ Definition body_matches (b : list body_item) : list matchcond :=
     so [Semantics.env_set_upd] can branch on it without importing [String]. *)
 Definition op_delete : string := "delete".
 
+(** The [nat_kind] string denoting source masquerade, branched on by
+    [Semantics.apply_masq] (source-NAT to the exit interface's address). *)
+Definition nat_masq_kind : string := "masq".
+
 (** A rule: an ordered body (matches + verdict-neutral statements) then an
     outcome — a static verdict, a verdict-map lookup ([r_vmap]), or a terminal
     redirect ([r_nat] / [r_tproxy]). *)

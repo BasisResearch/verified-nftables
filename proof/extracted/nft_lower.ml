@@ -347,11 +347,18 @@ let limit_spec rate unit_ : Packet.limit_spec =
     | _ -> raise (Unsupported ("limit unit " ^ unit_)) in
   { Packet.ls_rate = rate; ls_unit = u; ls_burst = 5; ls_bytes = false; ls_flags = 0 }
 
+(* a `masquerade` NAT spec: source-NAT to the exit interface's address *)
+let masq_spec : Syntax.nat_spec =
+  { Syntax.nat_imms = []; nat_field = None; nat_map = None; nat_src = None;
+    nat_kind = "masq"; nat_family = ""; nat_amin = None; nat_amax = None;
+    nat_pmin = None; nat_pmax = None; nat_flags = 0 }
+
 let lower_rule st (clauses : Nft_ast.clause list) : Syntax.rule =
   let body = ref [] in
   let deps = ref [] in
   let verdict = ref Verdict.Continue in
   let vmap = ref None in
+  let nat = ref None in   (* set for `masquerade` (a source-NAT terminal) *)
   let push bi = body := bi :: !body in
   let ensure_dep = function
     | None -> ()
@@ -381,10 +388,11 @@ let lower_rule st (clauses : Nft_ast.clause list) : Syntax.rule =
         push (Syntax.BMatch (Syntax.MLimit (limit_spec r u)))
     | Nft_ast.CStmt s ->
         if stmt_is_terminal_accept s then verdict := Verdict.Accept;
+        (match s with Nft_ast.StMasquerade -> nat := Some masq_spec | _ -> ());
         (match lower_stmt st s with Some st' -> push (Syntax.BStmt st') | None -> ()))
     clauses;
   { Syntax.r_body = L.rev !body; r_verdict = !verdict; r_vmap = !vmap;
-    r_nat = None; r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] }
+    r_nat = !nat; r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] }
 
 (* ---------- declarations ---------- *)
 
@@ -439,7 +447,7 @@ let build_env st : Packet.env =
   { Packet.e_set  = (fun n -> match L.assoc_opt n sets  with Some e -> e | None -> []);
     e_vmap        = (fun n -> match L.assoc_opt n vmaps with Some e -> e | None -> []);
     e_map         = (fun n -> match L.assoc_opt n maps  with Some e -> e | None -> []);
-    e_routes = []; e_rt = (fun _ -> []);
+    e_routes = []; e_rt = (fun _ -> []); e_ifaddr = (fun _ -> []);
     e_limit = (fun _ -> 1); e_quota = (fun _ -> 1); e_connlimit = (fun _ -> 1) }
 
 let lower (f : Nft_ast.sfile) : parsed =

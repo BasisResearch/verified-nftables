@@ -110,6 +110,11 @@ Record env : Type := {
                                                 a `limit` match passes (rule
                                                 continues) iff [0 < remaining]. *)
   e_quota : quota_spec -> nat;               (* a quota's remaining bytes. *)
+  e_ifaddr : data -> data;                   (* an interface's primary IPv4 source
+                                                address, keyed by its name — the
+                                                source `masquerade` rewrites a
+                                                packet to (the IP of the interface
+                                                it exits).  Shared host config. *)
   e_connlimit : connlimit_spec -> nat;       (* a connlimit's remaining slots.
                                                 These are shared, mutable limiter
                                                 state, threaded across packets by

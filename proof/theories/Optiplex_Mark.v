@@ -22,7 +22,7 @@
     rule-by-rule (its verdict is the verified [eval_chain_mut], by
     [eval_chain_trace_verdict]); [chain_out] is the packet it leaves. *)
 
-From Stdlib Require Import List String Ascii NArith.
+From Stdlib Require Import List String Ascii NArith Lia.
 From Nft Require Import Bytes Verdict Packet Syntax Semantics Optiplex_Gen.
 Import ListNotations.
 
@@ -117,6 +117,13 @@ Qed.
 Lemma pre2_outcome_accept : forall p, outcome pre2 p = Some Accept.
 Proof. intros p. reflexivity. Qed.
 
+(* the prerouting streaming rule is a dnat, not a masquerade — so the trace's
+   source-NAT step [apply_masq] is a no-op on it *)
+Lemma pre2_no_masq : r_nat pre2 = None.
+Proof. reflexivity. Qed.
+Lemma apply_masq_none : forall r p, r_nat r = None -> apply_masq r p = p.
+Proof. intros r p H. unfold apply_masq. rewrite H. reflexivity. Qed.
+
 (** ** What comes out of the prerouting chain.
 
     Run the WHOLE prerouting chain on a streaming packet: it traverses rule 1
@@ -135,9 +142,11 @@ Proof.
   (* rule 1: traversed but does not match; threads its (no-op) writes *)
   cbn [eval_rules_trace]. rewrite pre1_streaming_skips by assumption.
   rewrite pre1_streaming_noop by assumption.
-  (* rule 2: matches, terminal accept, leaves the marked packet *)
+  (* rule 2: matches, terminal accept, leaves the marked packet (it is a dnat,
+     so apply_masq is a no-op — the source rewrite happens at postrouting) *)
   cbn [eval_rules_trace]. rewrite pre2_streaming_applies by assumption.
   rewrite pre2_outcome_accept. cbn [terminal].
+  rewrite (apply_masq_none pre2 _ pre2_no_masq).
   rewrite pre2_streaming_marks by assumption. reflexivity.
 Qed.
 
@@ -154,6 +163,80 @@ Theorem unmarked_not_masqueraded : forall p,
 Proof.
   intros p Hm. unfold rule_applies, post1, filter_postrouting.
   cbn -[field_value]. rewrite Hm. vm_compute. reflexivity.
+Qed.
+
+(** ** What `masquerade` does to the SOURCE address.
+
+    The postrouting rule is `mark 0x99 … masquerade`.  Masquerade is source-NAT:
+    it rewrites the packet's IPv4 source address to the address of the interface
+    the packet exits — `e_ifaddr (oifname)` in the model.  We prove the OUTPUT
+    packet of the postrouting chain is exactly the input with its source address
+    so rewritten, and (reading it back) that its `ip saddr` field is that
+    interface's address. *)
+
+Lemma postrouting_rules_eq : c_rules filter_postrouting = [post1].
+Proof. reflexivity. Qed.
+
+(* the masquerade rule is a terminal NAT (accepts) carrying r_nat = Some masq *)
+Lemma post1_outcome_accept : forall p, outcome post1 p = Some Accept.
+Proof. reflexivity. Qed.
+
+(* its body (a mark match + log) writes nothing to the packet *)
+Lemma post1_dsl_noop : forall p,
+  field_value FMetaMark p = mark99 -> dsl_writes post1 p = p.
+Proof.
+  intros p Hm. unfold dsl_writes, post1, filter_postrouting.
+  cbn -[field_value pkt_env]. rewrite Hm. vm_compute. reflexivity.
+Qed.
+
+(* applying its NAT effect source-rewrites to the exit interface's address *)
+Lemma post1_apply_masq : forall p,
+  apply_masq post1 p = set_saddr p (e_ifaddr (pkt_env p) (field_value FMetaOifname p)).
+Proof.
+  intro p. unfold apply_masq, post1, filter_postrouting.
+  cbn -[set_saddr e_ifaddr field_value pkt_env]. reflexivity.
+Qed.
+
+(* THE OUTPUT PACKET of the postrouting chain: the input with its source address
+   set to the exit interface's address (= what masquerade does). *)
+Theorem masquerade_output : forall p ifaddr,
+  field_value FMetaMark p = mark99 ->
+  e_ifaddr (pkt_env p) (field_value FMetaOifname p) = ifaddr ->
+  eval_chain_trace filter_postrouting p = (Accept, set_saddr p ifaddr).
+Proof.
+  intros p ifaddr Hmark Hifa.
+  unfold eval_chain_trace. rewrite postrouting_rules_eq. cbn [eval_rules_trace].
+  rewrite (masquerade_gated_on_mark p Hmark), post1_outcome_accept. cbn [terminal].
+  rewrite (post1_dsl_noop p Hmark), post1_apply_masq, Hifa. reflexivity.
+Qed.
+
+(* reading the source address back: after masquerade, `ip saddr` IS the exit
+   interface's address (for a well-formed IPv4 header and a 4-byte address). *)
+Lemma saddr_after_set : forall p v,
+  16 <= List.length (pkt_nh p) -> List.length v = 4 ->
+  field_value FIp4Saddr (set_saddr p v) = v.
+Proof.
+  intros p v Hlen Hv.
+  unfold field_value; cbn [field_load do_load]; unfold read_payload, set_saddr;
+    cbn [pkt_nh]. unfold slice, splice.
+  assert (H12 : List.length (firstn 12 (pkt_nh p)) = 12)
+    by (rewrite firstn_length_le; [reflexivity | lia]).
+  rewrite skipn_app, H12.
+  rewrite (skipn_all2 (firstn 12 (pkt_nh p))) by lia.
+  replace (12 - 12) with 0 by lia. cbn [skipn app].
+  rewrite firstn_app, Hv. replace (4 - 4) with 0 by lia.
+  rewrite firstn_O, app_nil_r, firstn_all2 by lia. reflexivity.
+Qed.
+
+Theorem masquerade_source_is_exit_iface : forall p ifaddr,
+  field_value FMetaMark p = mark99 ->
+  e_ifaddr (pkt_env p) (field_value FMetaOifname p) = ifaddr ->
+  List.length ifaddr = 4 -> 16 <= List.length (pkt_nh p) ->
+  field_value FIp4Saddr (snd (eval_chain_trace filter_postrouting p)) = ifaddr.
+Proof.
+  intros p ifaddr Hmark Hifa Hlen Hnh.
+  rewrite (masquerade_output p ifaddr Hmark Hifa). cbn [snd].
+  apply saddr_after_set; assumption.
 Qed.
 
 (** ** End-to-end: a streaming packet across the WHOLE ruleset.

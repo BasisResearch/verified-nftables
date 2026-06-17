@@ -150,12 +150,27 @@ let vmap_spec (vm : Syntax.vmap_spec) : string =
   spf "{| vm_fields := %s; vm_keyf := %s; vm_name := %s |}"
     (field_list vm.Syntax.vm_fields) keyf (qstring vm.Syntax.vm_name)
 
+let opt_int = function None -> "None" | Some n -> spf "(Some %d)" n
+
+let nat_spec (ns : Syntax.nat_spec) : string =
+  (* the lowering only produces `masquerade` (no explicit operand); fail loudly if
+     a richer NAT operand (snat/dnat address/map/field) ever needs emitting *)
+  (match ns.Syntax.nat_field, ns.Syntax.nat_map, ns.Syntax.nat_src, ns.Syntax.nat_imms with
+   | None, None, None, [] -> ()
+   | _ -> raise (Unsupported "nat operand emission (extend nft_emit.nat_spec)"));
+  spf "{| nat_imms := []; nat_field := None; nat_map := None; nat_src := None; nat_kind := %s; nat_family := %s; nat_amin := %s; nat_amax := %s; nat_pmin := %s; nat_pmax := %s; nat_flags := %d |}"
+    (qstring ns.Syntax.nat_kind) (qstring ns.Syntax.nat_family)
+    (opt_int ns.Syntax.nat_amin) (opt_int ns.Syntax.nat_amax)
+    (opt_int ns.Syntax.nat_pmin) (opt_int ns.Syntax.nat_pmax) ns.Syntax.nat_flags
+
 let rule (r : Syntax.rule) : string =
   let vmap = match r.Syntax.r_vmap with
     | None -> "None" | Some vm -> spf "(Some %s)" (vmap_spec vm) in
+  let nat = match r.Syntax.r_nat with
+    | None -> "None" | Some ns -> spf "(Some %s)" (nat_spec ns) in
   let body = "[" ^ S.concat ";\n             " (L.map body_item r.Syntax.r_body) ^ "]" in
-  spf "{| r_body := %s;\n     r_verdict := %s; r_vmap := %s;\n     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}"
-    body (verdict r.Syntax.r_verdict) vmap
+  spf "{| r_body := %s;\n     r_verdict := %s; r_vmap := %s;\n     r_nat := %s; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}"
+    body (verdict r.Syntax.r_verdict) vmap nat
 
 let chain (c : Syntax.chain) : string =
   let rules = "[" ^ S.concat ";\n\n   " (L.map rule c.Syntax.c_rules) ^ "]" in
@@ -198,6 +213,7 @@ let emit (src_path : string) (p : Nft_lower.parsed) : string =
   pr "Definition base_env : env :=\n";
   pr "  {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];\n";
   pr "     e_routes := []; e_rt := fun _ => [];\n";
+  pr "     e_ifaddr := (fun _ => []);\n";
   pr "     e_limit := fun _ => 0; e_quota := fun _ => 0; e_connlimit := fun _ => 0 |}.\n\n";
   pr "Definition gen_env : env := env_with_sets base_env decls.\n\n";
   (* each table's chains, then the per-table chain environment *)
