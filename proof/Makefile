@@ -11,7 +11,7 @@
 ROCQBIN ?=
 COQMAKE  = CoqMakefile
 
-.PHONY: all proofs glue lib example semtest difftest corpus validate clean
+.PHONY: all proofs glue lib example semtest difftest corpus validate parse-test gen clean
 
 all: proofs glue
 
@@ -27,6 +27,23 @@ example: proofs
 # run the extracted DSL semantics, bytecode VM, and compiler on concrete packets.
 semtest: proofs
 	cd extracted && dune exec ./semtest.exe
+
+# Build+run the .nft frontend's validation harness (TODO 9, milestone M1):
+# parse ../ruleset.nft and check the parsed AST's verdicts against the
+# Example_Ruleset.v theorems; parse difftest.sh's ruleset and check it lowers to
+# glue.ml's known-good AST; and (best-effort) a live `nft --debug=netlink`
+# round-trip.  A file argument turns it into a CLI: `dune exec ./parse_test.exe
+# -- path/to/ruleset.nft` parses and prints the compiled bytecode.
+parse-test: proofs
+	cd extracted && dune exec ./parse_test.exe
+
+# Regenerate the parser's output as Coq terms (theories/*_Gen.v) from the .nft
+# sources, so the proofs (Optiplex_Antispoof, Ruleset_Verified) are about the
+# actual parser output.  Checked in for reproducibility; rerun after a parser
+# change.  nft2coq IS the frontend; the emitted .v is checked by the Rocq kernel.
+gen: lib
+	cd extracted && dune exec ./nft2coq.exe -- ../../optiplex.nft > ../theories/Optiplex_Gen.v
+	cd extracted && dune exec ./nft2coq.exe -- ../../ruleset.nft  > ../theories/Ruleset_Gen.v
 
 # Build/check every .v listed in _CoqProject; Extract.v writes extracted/*.ml.
 proofs: $(COQMAKE)

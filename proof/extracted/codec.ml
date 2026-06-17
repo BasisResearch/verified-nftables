@@ -286,8 +286,11 @@ let render_instr (i : Bytecode.instr) : string = match i with
       "[ queue num " ^ nums ^ (if byp then " bypass" else "")
         ^ (if fan then " fanout" else "") ^ " ]"
   | Bytecode.IImmediate v ->
-      let vn = (match v with Verdict.Accept->"accept"|Verdict.Drop->"drop"
-                            |Verdict.Continue->"continue"|Verdict.Reject _->"reject") in
+      let vn = (match v with
+        | Verdict.Accept->"accept" | Verdict.Drop->"drop"
+        | Verdict.Continue->"continue" | Verdict.Reject _->"reject"
+        | Verdict.Queue _->"queue" | Verdict.Return->"return"
+        | Verdict.Jump n->"jump "^n | Verdict.Goto n->"goto "^n) in
       Printf.sprintf "[ immediate reg 0 %s ]" vn
   | Bytecode.IImmediateData (dst,v) ->
       (* NAT operand registers (1..4) are raw nft numbers, not slot regs *)

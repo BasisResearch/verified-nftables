@@ -5,9 +5,15 @@
 ; machine-generated extraction output.
 (library
  (name nftc)
- (modules (:standard \ glue corpus_test example semtest))
+ (modules (:standard \ glue corpus_test example semtest parse_test nft2coq))
  (wrapped false)
  (flags (:standard -w -a)))
+
+; The .nft -> Syntax-AST frontend (untrusted glue): an ocamllex lexer and a
+; Menhir parser feeding the lowering pass (Nft_lower). Part of the nftc library
+; so the parsed AST flows straight into the verified compile/optimize pipeline.
+(ocamllex lexer)
+(menhir (modules parser))
 
 ; The untrusted glue: a forward demo (glue) and the corpus differential test.
 (executables
@@ -27,5 +33,24 @@
 (executable
  (name semtest)
  (modules semtest)
+ (libraries nftc)
+ (flags (:standard -w -a)))
+
+; The .nft frontend's validation harness + CLI: with no args, parses
+; ../../ruleset.nft and checks the resulting AST's verdicts against
+; Example_Ruleset.v's proven properties, and checks difftest.sh's ruleset lowers
+; to the known-good hand-built AST; with a file arg, parses it and prints the
+; compiled netlink bytecode.
+(executable
+ (name parse_test)
+ (modules parse_test)
+ (libraries nftc)
+ (flags (:standard -w -a)))
+
+; nft2coq: emit a parsed ruleset's AST as a Coq source file, so a proof can
+; Require Import it and reason about the parser's actual output (no hand step).
+(executable
+ (name nft2coq)
+ (modules nft2coq)
  (libraries nftc)
  (flags (:standard -w -a)))

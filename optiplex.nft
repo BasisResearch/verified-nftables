@@ -1,0 +1,179 @@
+#!/usr/bin/nft -f
+# vim:set ts=2 sw=2 et:
+
+# IPv4/IPv6 Simple & Safe firewall ruleset.
+# More examples in /usr/share/nftables/ and /usr/share/doc/nftables/examples/.
+
+# define windows = 192.168.51.186
+define lan = lan0
+
+destroy table inet filter
+destroy table bridge vmfilter
+table inet filter {
+  chain prerouting {
+    type nat hook prerouting priority -100; policy accept
+    # iifname home fib daddr type local meta l4proto {tcp,udp} th dport 3389 mark set 0x99 log prefix "[nft:rdppre]" dnat ip to $windows
+    # iifname {$lan,home} fib daddr type local meta l4proto {tcp,udp} th dport {47984,47989,48010,47998,47999,48000,48002} mark set 0x99 log prefix "[nft:rdppre]" dnat ip to $windows
+    # iifname {$lan,home} fib daddr type local meta l4proto {tcp,udp} th dport {47984,47989,48010,47998,47999,48000,48002} mark set 0x99 log prefix "[nft:rdppre]" dnat ip to $windows
+  }
+
+  chain postrouting {
+    type nat hook postrouting priority 100; policy accept
+    mark 0x99 log prefix "[nft:rdppost]" masquerade
+  }
+
+  chain input {
+    type filter hook input priority filter
+    policy drop
+
+    ct state {established, related} accept comment "allow tracked connections"
+    iif lo accept comment "allow from loopback"
+    ip protocol icmp accept comment "allow icmp"
+    meta l4proto ipv6-icmp accept comment "allow icmp v6"
+    iifname br.20 tcp dport https accept comment "allow incoming https request from the vms"
+    iifname br.20 udp dport 51820 accept comment "allow incoming wireguard"
+    iifname $lan ip saddr 192.168.50.0/24 tcp dport 2049 accept comment "give everyone access to nfs share"
+    # iifname br.1 udp dport 68 accept comment "allow incoming dhcp"
+    iifname vlan.25 udp dport 67 accept comment "allow incoming printer dhcp request"
+    iifname {$lan, home} tcp dport {ssh, http, https, 1246} accept comment "allow services"
+    iifname {$lan, home} meta l4proto {tcp, udp} th dport 22000 accept comment "allow syncthing"
+
+    iifname $lan tcp dport {29811 - 29814 , 27017, 27217, 8043} accept comment "allow omada"
+
+    iifname $lan udp dport 29810 accept comment "allow omada"
+
+    iifname $lan udp dport 45747 log prefix "[nft:wg]" accept comment "allow wireguard"
+    iifname immich meta l4proto {tcp, udp} th dport 53 accept 
+    pkttype host limit rate 5/second counter reject with icmpx type admin-prohibited
+    log prefix "[nft:reject]" counter
+  }
+  chain forward {
+    type filter hook forward priority filter
+    policy drop
+
+    log prefix "[forwarding]"
+    iifname podman* accept
+    iifname immich accept
+    ct state {established, related} accept comment "allow tracked connections"
+    mark {0x99,0x100} log prefix "[nft:rdpforward]" accept
+    # iifname home oifname br.20 meta l4proto {tcp, udp} th dport 3389 ip daddr $windows accept
+    # enable to allow the brother printer to update its firmware 
+    # remember to also enable ipv4 forwarding
+    # ct state {established, related} accept comment "allow tracked connections"
+    # iifname vlan.25 oifname $lan accept
+    # log prefix "[nft:forward]"
+  }
+
+  # chain post {
+  #   type nat hook postrouting priority srcnat
+
+  #   iifname vlan.25 oifname $lan masquerade
+  # }
+}
+
+
+table bridge vmfilter {
+
+    set vmaddrs {
+	type ipv4_addr
+	flags constant
+	elements = {
+	    # actual budget
+	    192.168.51.20 ,
+	    # vikunja
+	    192.168.51.14 ,
+	    # freshrss
+	    192.168.51.15 ,
+	    # gentoo
+	    192.168.51.12,
+	    # hass
+	    192.168.51.10,
+	    # router
+	    192.168.51.1,
+	    # memos
+	    192.168.51.21,
+	    # isso
+	    192.168.51.22,
+	    # ntfy
+	    192.168.51.23,
+	    # collabora
+	    192.168.51.24
+        }
+    }
+
+    set vmantispoof {
+	type ipv4_addr . ifname
+	flags constant
+	elements = {
+	    # actual budget
+	    192.168.51.20 . inc-budge ,
+	    # vikunja
+	    192.168.51.14 . inc-vikun ,
+	    # freshrss
+	    192.168.51.15 . inc-fresh ,
+	    # gentoo
+	    192.168.51.12 . vb-gentoo ,
+	    # hass
+	    192.168.51.10 . vb-hass,
+	    # router
+	    192.168.51.1 . vlan.20,
+	    # memos
+	    192.168.51.21 . vb-memos,
+	    # isso
+	    192.168.51.22 . vb-isso,
+	    # ntfy
+	    192.168.51.23 . vb-ntfy,
+	    # collabora
+	    192.168.51.24 . vb-coll
+	}
+    }
+
+  chain vm {
+	iifname vlan.20 udp sport 67 accept
+	# sunshine?
+	# iifname vlan.20 oifname vnet* ip daddr $windows accept
+	oifname vlan.20 accept
+	iifname {vb-jellyseerr,vb-sabnzbd,vb-radar} oifname {vb-jellyseerr,vb-sabnzbd,vb-radar} accept
+	# iifname vb-gentoo oifname vb-forgejo accept
+  }
+
+  chain iot {
+	# iifname vlan.1 udp dport 67 accept
+	# oifname vlan.1 iifname iot accept
+	accept
+  }
+
+  chain cam {
+	accept
+  }
+
+  chain scanner {
+	accept
+  }
+
+  chain output {
+        type filter hook output priority filter
+	policy accept
+
+	
+	# meta obrname br.20 ip daddr . oifname != @vmantispoof drop
+	meta obrname br.20 ip daddr @vmaddrs ip daddr . oifname != @vmantispoof drop
+	meta obrname br.1 ip daddr 192.168.100.2 oifname != vb-hass drop
+  }
+
+  chain forward {
+	type filter hook forward priority filter
+	policy drop
+
+	ether type arp accept
+	ct state {established, related} accept
+	ip protocol icmp accept comment "allow icmp"
+	meta l4proto ipv6-icmp accept comment "allow icmp v6"
+
+	meta ibrname br.1 goto iot
+	meta ibrname br.20 goto vm
+	meta ibrname br.3 goto scanner
+	meta ibrname br.110 goto cam
+	log prefix "[nft:bridge]" counter
+    }
+}

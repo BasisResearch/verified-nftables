@@ -10,4 +10,9 @@ theories/Compile.v
 theories/Correct.v
 theories/Optimize.v
 theories/Example_Ruleset.v
+theories/Ruleset_Gen.v
+theories/Optiplex_Gen.v
+theories/Optiplex_Antispoof.v
+theories/Optiplex_Antispoof_Gaps.v
+theories/Ruleset_Verified.v
 theories/Extract.v

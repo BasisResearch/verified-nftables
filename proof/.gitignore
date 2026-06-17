@@ -19,5 +19,16 @@ extracted/*.mli
 !extracted/nftc.mli
 !extracted/example.ml
 !extracted/semtest.ml
+# .nft frontend (TODO 9): hand-written lexer/parser/lowering/driver + harness.
+# (lexer.mll / parser.mly are not matched by the *.ml(i) ignore, but listed for
+# clarity; their generated .ml live only under _build.)
+!extracted/lexer.mll
+!extracted/parser.mly
+!extracted/nft_ast.ml
+!extracted/nft_lower.ml
+!extracted/nft_parse.ml
+!extracted/nft_emit.ml
+!extracted/nft2coq.ml
+!extracted/parse_test.ml
 extracted/_build/
 .CoqMakefile.d

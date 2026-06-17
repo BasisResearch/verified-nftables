@@ -52,3 +52,16 @@ let compile_optimized (c : chain) : program = compile (optimize c)
 (* ---- rendering (untrusted, corpus-tested) ---- *)
 let to_netlink_text : program -> string = Codec.render_program
 let render_instr : Bytecode.instr -> string = Codec.render_instr
+
+(* ---- the .nft text frontend (untrusted parser; see Nft_parse) ----
+   parse a ruleset file/string into the Syntax AST + the set/map environment its
+   lookups read, so properties can be proved about it (and, via the verified
+   compiler, of the installed bytecode). *)
+type parsed = Nft_lower.parsed
+let parse_string : string -> parsed = Nft_parse.parse_string
+let parse_file   : string -> parsed = Nft_parse.parse_file
+(* all chains of the named table (for jump resolution by eval_table) *)
+let table_chains (p : parsed) ~(table : string) : (string * chain) list =
+  Nft_lower.chains_of p ~table
+let find_chain (p : parsed) ~(table : string) ~(chain : string) : chain =
+  Nft_lower.find_chain p ~table ~chain

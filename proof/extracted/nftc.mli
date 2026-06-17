@@ -62,3 +62,28 @@ val to_netlink_text : program -> string
 
 (** Render a single instruction. *)
 val render_instr : Bytecode.instr -> string
+
+(** {2 The .nft text frontend (untrusted parser)}
+
+    Parse nftables DSL text into the {!Syntax} AST plus the {!Packet.env} its
+    set/map lookups read.  The parser is untrusted glue — like the renderer it is
+    validated externally (against {!module:Example_Ruleset}'s proven verdicts and
+    live [nft]), not part of the proof TCB.  Once parsed, properties proved of the
+    AST hold of the compiled bytecode via [compile_table_correct]. *)
+
+(** A parsed ruleset: the tables' chains and the environment their lookups read. *)
+type parsed = Nft_lower.parsed
+
+(** Parse a ruleset from a string. @raise Nft_parse.Parse_error on a lex/parse
+    error; @raise Nft_lower.Unsupported on a construct outside the supported
+    subset (never a silent mis-parse). *)
+val parse_string : string -> parsed
+
+(** Parse a ruleset from a file. *)
+val parse_file : string -> parsed
+
+(** All chains of the named table, in source order (jump targets + base chains). *)
+val table_chains : parsed -> table:string -> (string * chain) list
+
+(** The named chain of the named table. *)
+val find_chain : parsed -> table:string -> chain:string -> chain
