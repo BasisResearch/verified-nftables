@@ -711,14 +711,19 @@ renderer).
     port other than br.20 (`other_bridge_port_bypasses_binding`) bypass the drop.
     Real findings: the protection covers only the enumerated addresses, only on
     br.20.
-  - `Optiplex_Mark.v` — the **firewall mark (0x99)** machinery of the prerouting/
-    postrouting nat chains: RDP/3389 traffic from `home` is marked
-    (`rdp_traffic_marked`) and the marking is precise (`non_rdp_not_marked`); the
-    postrouting masquerade is gated exactly on the mark (`marked_is_masqueraded`,
-    `unmarked_not_masqueraded`); and end-to-end the prerouting mark drives the
-    postrouting masquerade (`rdp_flow_marks_and_masquerades`).  Uses the
-    `body_writes`/`dsl_writes` mutation semantics; the cross-hook skb mark is
-    threaded explicitly.  (Parsing these rules added `fib daddr type` matches.)
+  - `Optiplex_Mark.v` — the **firewall mark (0x99)** machinery, end-to-end.  A
+    game-streaming packet (dport 48010) is run through the WHOLE prerouting chain
+    by `eval_chain_trace` (a packet-returning whole-chain evaluator added to
+    `Semantics.v`, proven verdict-identical to the verified `eval_chain_mut` by
+    `eval_chain_trace_verdict`): it flows PAST rule 1 (the 3389 rule, which does
+    not match — `pre1_streaming_noop`) and is marked by rule 2.  The headline
+    `streaming_prerouting_io` characterises **what comes out**:
+    `eval_chain_trace filter_prerouting p = (Accept, set_meta p MKmark 0x99)` —
+    the input packet with exactly the mark changed.  `streaming_flow_whole_ruleset`
+    then carries that packet to the postrouting hook, where the mark drives the
+    masquerade rule (`masquerade_gated_on_mark`) and the chain accepts; the
+    cross-hook skb mark is threaded explicitly (the model evaluates per base chain).
+    (Parsing these rules added `fib daddr type` matches.)
 
 **Validation (`make parse-test`, all green):** (A) parsed `ruleset.nft` run
 through the extracted `eval_table` reproduces the 8 proven verdicts; (D) parsed

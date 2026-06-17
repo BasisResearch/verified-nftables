@@ -270,16 +270,18 @@ let check_optiplex_antispoof () =
   Printf.printf "\n"
 
 (* ---------- (E) optiplex.nft firewall mark vs Optiplex_Mark.v ----------
-   Parse optiplex.nft and confirm the extracted write/match semantics agree with
-   the mark theorems: the prerouting RDP rule sets meta mark to 0x99, and the
-   postrouting masquerade rule fires exactly on a 0x99-marked packet. *)
+   Parse optiplex.nft and run a packet through WHOLE chains (extracted
+   eval_chain_trace / eval_chain_mut), watching the mark the packet carries
+   before and after each chain — the end-to-end traversal the proofs establish. *)
 
 let mark99 = [0;0;0;153]
 let data_eq (a : int list) (b : int list) = (a = b)
+let show d = S.concat ":" (Stdlib.List.map string_of_int d)
 
-(* a packet for the prerouting RDP rule: iifname=home, fib daddr type=local
-   (via a route returning type=2), tcp, dport 3389 *)
-let mk_rdp ~env ~dport : Packet.packet =
+(* a streaming packet (dport 48010): iifname=home, fib daddr type=local (via a
+   route returning type=2), tcp.  Not the 3389 RDP port — so it flows PAST
+   prerouting rule 1 and is marked by rule 2. *)
+let mk_pkt_dport ~env ~dport : Packet.packet =
   let env_fib =
     { env with Packet.e_routes =
         [ (([0], [255]),
@@ -291,38 +293,36 @@ let mk_rdp ~env ~dport : Packet.packet =
     pkt_fibkey = (fun _ -> [0]);
     pkt_th = [0;0] @ dport }
 
-(* a packet carrying a given meta mark *)
-let mk_marked ~env ~mark : Packet.packet =
-  { (mk_pkt ~env ()) with
-    Packet.pkt_meta = (fun k -> match k with Packet.MKmark -> mark | _ -> []) }
+let mark_of p = Syntax.field_value Syntax.FMetaMark p
 
 let check_optiplex_mark () =
   Printf.printf "=== (E) optiplex.nft firewall mark vs Optiplex_Mark.v ===\n";
   let parsed = Nft_parse.parse_file "../../optiplex.nft" in
   let env = parsed.Nft_lower.p_env in
-  let pre1  = Stdlib.List.nth
-    (Nft_lower.find_chain parsed ~table:"filter" ~chain:"prerouting").Syntax.c_rules 0 in
-  let post1 = Stdlib.List.nth
-    (Nft_lower.find_chain parsed ~table:"filter" ~chain:"postrouting").Syntax.c_rules 0 in
-  (* Property 1: RDP/3389 traffic leaves the prerouting rule marked 0x99 *)
-  let marked = Syntax.field_value Syntax.FMetaMark
-                 (Semantics.dsl_writes pre1 (mk_rdp ~env ~dport:[13;61])) in
-  Printf.printf "    rdp_traffic_marked         -> mark=%s (want 0x99)\n"
-    (S.concat ":" (Stdlib.List.map string_of_int marked));
-  check "rdp_traffic_marked" (data_eq marked mark99);
-  (* Property 1b: non-RDP (dport 22) is not marked (stays unset = []) *)
-  let unmarked = Syntax.field_value Syntax.FMetaMark
-                   (Semantics.dsl_writes pre1 (mk_rdp ~env ~dport:[0;22])) in
-  check "non_rdp_not_marked" (data_eq unmarked []);
-  (* Property 2: the masquerade rule is gated on the mark *)
-  check "marked_is_masqueraded"
-    (Semantics.rule_applies post1 (mk_marked ~env ~mark:mark99) = true);
-  check "unmarked_not_masqueraded"
-    (Semantics.rule_applies post1 (mk_marked ~env ~mark:[0;0;0;0]) = false);
-  (* Property 3: end-to-end — prerouting's mark drives postrouting's masquerade *)
-  check "rdp_flow_marks_and_masquerades"
-    (Semantics.rule_applies post1
-       (Semantics.dsl_writes pre1 (mk_rdp ~env ~dport:[13;61])) = true);
+  let prerouting  = Nft_lower.find_chain parsed ~table:"filter" ~chain:"prerouting" in
+  let postrouting = Nft_lower.find_chain parsed ~table:"filter" ~chain:"postrouting" in
+  (* a game-streaming packet enters with NO mark *)
+  let p_in = mk_pkt_dport ~env ~dport:[187;138] in   (* dport 48010 *)
+  Printf.printf "    packet in:  mark=%s\n" (let m = mark_of p_in in if m=[] then "(unset)" else show m);
+  (* traverse the WHOLE prerouting chain; observe the verdict AND the packet out *)
+  let (v_pre, p_out) = Semantics.eval_chain_trace prerouting p_in in
+  Printf.printf "    prerouting: verdict=%s, packet out mark=%s\n"
+    (verdict_str v_pre) (show (mark_of p_out));
+  check "prerouting accepts" (v_pre = Verdict.Accept);
+  check "prerouting marks the packet 0x99" (data_eq (mark_of p_out) mark99);
+  (* carry that packet to postrouting; the mark drives masquerade (accept) *)
+  let v_post = Semantics.eval_chain_mut postrouting p_out in
+  Printf.printf "    postrouting (on marked packet): verdict=%s\n" (verdict_str v_post);
+  check "postrouting accepts the marked packet" (v_post = Verdict.Accept);
+  (* and the masquerade rule specifically fires on the marked packet *)
+  let post1 = Stdlib.List.nth postrouting.Syntax.c_rules 0 in
+  check "masquerade rule fires on mark" (Semantics.rule_applies post1 p_out = true);
+  (* contrast: an RDP/3389 packet is marked at rule 1; an unmarked packet at
+     postrouting does NOT masquerade *)
+  let (_, p_rdp_out) = Semantics.eval_chain_trace prerouting (mk_pkt_dport ~env ~dport:[13;61]) in
+  check "RDP/3389 also marked 0x99" (data_eq (mark_of p_rdp_out) mark99);
+  check "unmarked packet not masqueraded"
+    (Semantics.rule_applies post1 (mk_pkt ~env ()) = false);
   Printf.printf "\n"
 
 (* ---------- CLI: parse a file and print compiled bytecode ---------- *)

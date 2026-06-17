@@ -626,6 +626,57 @@ Definition eval_chain_mut_env (c : chain) (p : packet) : verdict * env :=
 Definition run_chain_mut_env (prog : program) (policy : verdict) (p : packet) : verdict * env :=
   match run_program_mut_env prog p with (Some v, e) => (v, e) | (None, e) => (policy, e) end.
 
+(** ** Whole-chain packet trace.
+
+    [eval_rules_mut] already threads the *mutated* packet from each rule to the
+    next (a `meta`/`ct` `set` or dynset is visible downstream); it just returns the
+    verdict.  To follow a packet ACROSS chains/hooks (e.g. a mark set in the
+    prerouting chain that the postrouting chain reads — the kernel carries it on
+    the skb) we also need the packet the chain LEAVES, not only its env.
+    [eval_rules_trace]/[eval_chain_trace] mirror the mutation evaluators exactly
+    but return [(verdict, final packet)]: every rule contributes [dsl_writes],
+    matched or not, and a terminal verdict still records the writes its body made
+    before the verdict.  [eval_chain_trace_verdict] proves the verdict component is
+    identical to the verified [eval_chain_mut], so this only EXPOSES the packet the
+    mutation semantics was already threading — it adds no new behaviour. *)
+Fixpoint eval_rules_trace (rs : list rule) (p : packet) : option verdict * packet :=
+  match rs with
+  | [] => (None, p)
+  | r :: rest =>
+      if rule_applies r p then
+        match outcome r p with
+        | Some v => if terminal v then (Some v, dsl_writes r p)
+                    else eval_rules_trace rest (dsl_writes r p)
+        | None   => eval_rules_trace rest (dsl_writes r p)
+        end
+      else eval_rules_trace rest (dsl_writes r p)
+  end.
+
+Definition eval_chain_trace (c : chain) (p : packet) : verdict * packet :=
+  match eval_rules_trace (c_rules c) p with
+  | (Some v, q) => (v, q) | (None, q) => (c_policy c, q) end.
+
+Lemma eval_rules_trace_verdict : forall rs p,
+  fst (eval_rules_trace rs p) = eval_rules_mut rs p.
+Proof.
+  induction rs as [|r rest IH]; intros p; simpl; [reflexivity|].
+  destruct (rule_applies r p).
+  - destruct (outcome r p) as [v|]; [destruct (terminal v); simpl; auto|]; auto.
+  - auto.
+Qed.
+
+Lemma eval_chain_trace_verdict : forall c p,
+  fst (eval_chain_trace c p) = eval_chain_mut c p.
+Proof.
+  intros c p. unfold eval_chain_trace, eval_chain_mut.
+  rewrite <- (eval_rules_trace_verdict (c_rules c) p).
+  destruct (eval_rules_trace (c_rules c) p) as [[v|] q]; reflexivity.
+Qed.
+
+(** Run a whole chain on a packet and return the packet it leaves (the
+    [eval_chain_trace] packet component) — the input to the next chain/hook. *)
+Definition chain_out (c : chain) (p : packet) : packet := snd (eval_chain_trace c p).
+
 (** A packet sequence threaded through a shared, learning environment: each packet
     is evaluated against the current [e], and the env it LEAVES (learned sets/maps)
     seeds the next packet.  This is [seq_eval]'s analogue where the state update is
