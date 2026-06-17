@@ -269,6 +269,62 @@ let check_optiplex_antispoof () =
     (run ~obrname:"br.3" ~oifname:"vb-evil" ~daddr:(ip 20)) Verdict.Accept;
   Printf.printf "\n"
 
+(* ---------- (E) optiplex.nft firewall mark vs Optiplex_Mark.v ----------
+   Parse optiplex.nft and confirm the extracted write/match semantics agree with
+   the mark theorems: the prerouting RDP rule sets meta mark to 0x99, and the
+   postrouting masquerade rule fires exactly on a 0x99-marked packet. *)
+
+let mark99 = [0;0;0;153]
+let data_eq (a : int list) (b : int list) = (a = b)
+
+(* a packet for the prerouting RDP rule: iifname=home, fib daddr type=local
+   (via a route returning type=2), tcp, dport 3389 *)
+let mk_rdp ~env ~dport : Packet.packet =
+  let env_fib =
+    { env with Packet.e_routes =
+        [ (([0], [255]),
+           (fun (r : Packet.fib_result) ->
+              match r with Packet.FRtype -> [0;0;0;2] | _ -> [])) ] } in
+  { (mk_pkt ~env:env_fib ()) with
+    Packet.pkt_meta = (fun k -> match k with
+      | Packet.MKiifname -> ascii "home" | Packet.MKl4proto -> [6] | _ -> []);
+    pkt_fibkey = (fun _ -> [0]);
+    pkt_th = [0;0] @ dport }
+
+(* a packet carrying a given meta mark *)
+let mk_marked ~env ~mark : Packet.packet =
+  { (mk_pkt ~env ()) with
+    Packet.pkt_meta = (fun k -> match k with Packet.MKmark -> mark | _ -> []) }
+
+let check_optiplex_mark () =
+  Printf.printf "=== (E) optiplex.nft firewall mark vs Optiplex_Mark.v ===\n";
+  let parsed = Nft_parse.parse_file "../../optiplex.nft" in
+  let env = parsed.Nft_lower.p_env in
+  let pre1  = Stdlib.List.nth
+    (Nft_lower.find_chain parsed ~table:"filter" ~chain:"prerouting").Syntax.c_rules 0 in
+  let post1 = Stdlib.List.nth
+    (Nft_lower.find_chain parsed ~table:"filter" ~chain:"postrouting").Syntax.c_rules 0 in
+  (* Property 1: RDP/3389 traffic leaves the prerouting rule marked 0x99 *)
+  let marked = Syntax.field_value Syntax.FMetaMark
+                 (Semantics.dsl_writes pre1 (mk_rdp ~env ~dport:[13;61])) in
+  Printf.printf "    rdp_traffic_marked         -> mark=%s (want 0x99)\n"
+    (S.concat ":" (Stdlib.List.map string_of_int marked));
+  check "rdp_traffic_marked" (data_eq marked mark99);
+  (* Property 1b: non-RDP (dport 22) is not marked (stays unset = []) *)
+  let unmarked = Syntax.field_value Syntax.FMetaMark
+                   (Semantics.dsl_writes pre1 (mk_rdp ~env ~dport:[0;22])) in
+  check "non_rdp_not_marked" (data_eq unmarked []);
+  (* Property 2: the masquerade rule is gated on the mark *)
+  check "marked_is_masqueraded"
+    (Semantics.rule_applies post1 (mk_marked ~env ~mark:mark99) = true);
+  check "unmarked_not_masqueraded"
+    (Semantics.rule_applies post1 (mk_marked ~env ~mark:[0;0;0;0]) = false);
+  (* Property 3: end-to-end — prerouting's mark drives postrouting's masquerade *)
+  check "rdp_flow_marks_and_masquerades"
+    (Semantics.rule_applies post1
+       (Semantics.dsl_writes pre1 (mk_rdp ~env ~dport:[13;61])) = true);
+  Printf.printf "\n"
+
 (* ---------- CLI: parse a file and print compiled bytecode ---------- *)
 
 let cli (path : string) =
@@ -288,6 +344,7 @@ let () =
   else begin
     check_ruleset_nft ();
     check_optiplex_antispoof ();
+    check_optiplex_mark ();
     check_difftest_ast ();
     check_live_nft ();
     if !fails = 0 then Printf.printf "ALL PARSER CHECKS PASSED\n"

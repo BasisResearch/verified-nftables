@@ -85,7 +85,14 @@ let lookup ctx tbl s =
 
 type kind =
   | KIfname | KIp4 | KIp6 | KPort | KL4proto | KEthertype
-  | KCtstate | KMark | KIcmp | KIcmpv6 | KPkttype | KNum of int
+  | KCtstate | KMark | KIcmp | KIcmpv6 | KPkttype | KFibType | KNum of int
+
+(* fib route-type symbols (the RTN_ route types), as 4-byte words *)
+let sym_fibtype = [
+  "unspec",[0;0;0;0]; "unicast",[0;0;0;1]; "local",[0;0;0;2];
+  "broadcast",[0;0;0;3]; "anycast",[0;0;0;6]; "multicast",[0;0;0;5];
+  "blackhole",[0;0;0;6]; "unreachable",[0;0;0;7]; "prohibit",[0;0;0;8];
+]
 
 (* encode a single (non-range, non-prefix, non-concat) value for a field kind *)
 let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
@@ -109,6 +116,8 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
   | KIcmpv6, Nft_ast.Vsym s -> lookup "icmpv6 type" sym_icmpv6 s
   | KPkttype, Nft_ast.Vsym s -> lookup "pkttype" sym_pkttype s
   | KPkttype, Nft_ast.Vnum n -> [n land 0xff]
+  | KFibType, Nft_ast.Vsym s -> lookup "fib type" sym_fibtype s
+  | KFibType, Nft_ast.Vnum n -> bytes_of_int 4 n
   | KNum w, Nft_ast.Vnum n -> bytes_of_int w n
   | _, Nft_ast.Vvar n -> raise (Unsupported ("unresolved $" ^ n))
   | _ -> raise (Unsupported "value/selector type mismatch")
@@ -158,6 +167,9 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * Bytes.data option =
   | ["oifname"]          -> (Syntax.FMetaOifname, KIfname, none)
   | ["iif"]              -> (Syntax.FMetaIif, KIfname, none)
   | ["oif"]              -> (Syntax.FMetaOif, KIfname, none)
+  | ["fib"; sel; "type"]    -> (Syntax.FFib (sel, Packet.FRtype), KFibType, none)
+  | ["fib"; sel; "oifname"] -> (Syntax.FFib (sel, Packet.FRoifname), KIfname, none)
+  | ["fib"; sel; "oif"]     -> (Syntax.FFib (sel, Packet.FRoif), KNum 4, none)
   | ["ct"; "state"]      -> (Syntax.FCtState, KCtstate, none)
   | ["ct"; "mark"]       -> (Syntax.FCtMark, KMark, none)
   | _ -> raise (Unsupported ("selector: " ^ S.concat " " kp))

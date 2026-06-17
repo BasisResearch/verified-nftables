@@ -12,9 +12,9 @@ destroy table bridge vmfilter
 table inet filter {
   chain prerouting {
     type nat hook prerouting priority -100; policy accept
-    # iifname home fib daddr type local meta l4proto {tcp,udp} th dport 3389 mark set 0x99 log prefix "[nft:rdppre]" dnat ip to $windows
-    # iifname {$lan,home} fib daddr type local meta l4proto {tcp,udp} th dport {47984,47989,48010,47998,47999,48000,48002} mark set 0x99 log prefix "[nft:rdppre]" dnat ip to $windows
-    # iifname {$lan,home} fib daddr type local meta l4proto {tcp,udp} th dport {47984,47989,48010,47998,47999,48000,48002} mark set 0x99 log prefix "[nft:rdppre]" dnat ip to $windows
+    iifname home fib daddr type local meta l4proto {tcp,udp} th dport 3389 mark set 0x99 log prefix "[nft:rdppre]" dnat ip to $windows
+    iifname {$lan,home} fib daddr type local meta l4proto {tcp,udp} th dport {47984,47989,48010,47998,47999,48000,48002} mark set 0x99 log prefix "[nft:rdppre]" dnat ip to $windows
+    iifname {$lan,home} fib daddr type local meta l4proto {tcp,udp} th dport {47984,47989,48010,47998,47999,48000,48002} mark set 0x99 log prefix "[nft:rdppre]" dnat ip to $windows
   }
 
   chain postrouting {

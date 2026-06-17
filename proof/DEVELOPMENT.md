@@ -262,6 +262,7 @@ consistency against a self-authored semantics, with kernel fidelity resting on
 | `theories/Optiplex_Gen.v` `Ruleset_Gen.v` | **generated** by `nft2coq` from `../optiplex.nft` / `../ruleset.nft` (the parser's output as Coq terms; kernel-checked) |
 | `theories/Optiplex_Antispoof.v` | **anti-spoofing** proofs about the parsed `optiplex.nft` bridge `output` chain (+ legit-traffic-allowed); all axiom-free |
 | `theories/Optiplex_Antispoof_Gaps.v` | **adversarial** proofs: the binding is unenforced outside `@vmaddrs` / off br.20 (real bypasses), axiom-free |
+| `theories/Optiplex_Mark.v` | **firewall-mark** proofs about the parsed prerouting/postrouting chains: marking RDP traffic, mark-gated masquerade, cross-hook flow; axiom-free |
 | `theories/Ruleset_Verified.v` | the 8 `ruleset.nft` packet properties, about the *generated* AST (supersedes the hand copy in `Example_Ruleset.v`) |
 | `extracted/parse_test.ml` | *untrusted* harness/CLI: checks parsed-AST verdicts vs the proofs (ruleset.nft 8 props; optiplex anti-spoofing + bypasses); difftest AST equality; live-`nft` round-trip |
 | `extracted/corpus_test.ml` | *untrusted* harness: round-trips the upstream corpus through the verified compiler |
@@ -710,6 +711,14 @@ renderer).
     port other than br.20 (`other_bridge_port_bypasses_binding`) bypass the drop.
     Real findings: the protection covers only the enumerated addresses, only on
     br.20.
+  - `Optiplex_Mark.v` — the **firewall mark (0x99)** machinery of the prerouting/
+    postrouting nat chains: RDP/3389 traffic from `home` is marked
+    (`rdp_traffic_marked`) and the marking is precise (`non_rdp_not_marked`); the
+    postrouting masquerade is gated exactly on the mark (`marked_is_masqueraded`,
+    `unmarked_not_masqueraded`); and end-to-end the prerouting mark drives the
+    postrouting masquerade (`rdp_flow_marks_and_masquerades`).  Uses the
+    `body_writes`/`dsl_writes` mutation semantics; the cross-hook skb mark is
+    threaded explicitly.  (Parsing these rules added `fib daddr type` matches.)
 
 **Validation (`make parse-test`, all green):** (A) parsed `ruleset.nft` run
 through the extracted `eval_table` reproduces the 8 proven verdicts; (D) parsed

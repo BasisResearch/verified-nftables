@@ -68,7 +68,7 @@ let ct_key (k : Packet.ct_key) : string = match k with
   | Packet.CKpackets->"CKpackets" | Packet.CKproto->"CKproto" | Packet.CKzone->"CKzone"
   | Packet.CKevent->"CKevent"
 
-let field (f : Syntax.field) : string = match f with
+let rec field (f : Syntax.field) : string = match f with
   | Syntax.FMetaL4proto->"FMetaL4proto" | Syntax.FMetaNfproto->"FMetaNfproto"
   | Syntax.FMetaProtocol->"FMetaProtocol" | Syntax.FMetaMark->"FMetaMark"
   | Syntax.FMetaIif->"FMetaIif" | Syntax.FMetaOif->"FMetaOif"
@@ -94,7 +94,12 @@ let field (f : Syntax.field) : string = match f with
   | Syntax.FIcmpType->"FIcmpType" | Syntax.FIcmpCode->"FIcmpCode"
   | Syntax.FMetaGen k -> spf "(FMetaGen %s)" (meta_key k)
   | Syntax.FCtGen k -> spf "(FCtGen %s)" (ct_key k)
+  | Syntax.FFib (sel, res) -> spf "(FFib %s %s)" (qstring sel) (fib_result res)
   | _ -> raise (Unsupported "field constructor not emittable (extend nft_emit.field)")
+
+and fib_result (r : Packet.fib_result) : string = match r with
+  | Packet.FRoif -> "FRoif" | Packet.FRoifname -> "FRoifname"
+  | Packet.FRtype -> "FRtype" | Packet.FRpresent -> "FRpresent"
 
 let field_list (fs : Syntax.field list) : string =
   "[" ^ S.concat "; " (L.map field fs) ^ "]"

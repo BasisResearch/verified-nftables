@@ -232,6 +232,9 @@ keyatom:
   | META MARK     { ["meta"; "mark"] }
   | META PKTTYPE  { ["meta"; "pkttype"] }
   | CT IDENT      { ["ct"; $2] }
+  (* fib (routing-table) lookup: `fib <key> <result>`, e.g. `fib daddr type` *)
+  | FIB IDENT TYPE  { ["fib"; $2; "type"] }
+  | FIB IDENT IDENT { ["fib"; $2; $3] }
   | IIF           { ["iif"] }
   | OIF           { ["oif"] }
   | IIFNAME       { ["iifname"] }

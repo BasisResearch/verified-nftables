@@ -14,5 +14,6 @@ theories/Ruleset_Gen.v
 theories/Optiplex_Gen.v
 theories/Optiplex_Antispoof.v
 theories/Optiplex_Antispoof_Gaps.v
+theories/Optiplex_Mark.v
 theories/Ruleset_Verified.v
 theories/Extract.v
