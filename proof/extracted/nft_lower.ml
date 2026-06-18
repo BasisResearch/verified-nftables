@@ -205,23 +205,39 @@ let width_of_kind = function
 
 (* ---------- selector resolution: keypath -> (field, kind, l4proto-dep) ---------- *)
 
-let dep_l4 = function
-  | "tcp" -> Some [6] | "udp" -> Some [17]
-  | "icmp" -> Some [1] | "icmpv6" -> Some [58] | _ -> None
+(* An implicit dependency that nft inserts BEFORE a payload/meta match so the
+   compared bytes are only read when they actually belong to the right header.
+   - [DL4 pv]: `meta l4proto == pv` (e.g. before a tcp/udp/icmp selector).
+   - [DNfproto pv]: `meta nfproto == pv`, the implicit NETWORK-protocol guard
+     real nft emits before every `ip`/`ip6` payload match in a chain that can
+     see more than one L3 family (inet/bridge/netdev) — see payload.c
+     payload_gen_dependency / payload_add_dependency.  In a single-L3 family
+     (ip/ip6/arp) nft emits NO such guard, so [DNfproto] is discharged to a
+     no-op there (resolved in [ensure_dep], which is family-aware).
+   - [DNone]: no dependency. *)
+type dep = DNone | DL4 of Bytes.data | DNfproto of Bytes.data
 
-let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * Bytes.data option =
-  let none = None in
+let dep_l4 = function
+  | "tcp" -> DL4 [6] | "udp" -> DL4 [17]
+  | "icmp" -> DL4 [1] | "icmpv6" -> DL4 [58] | _ -> DNone
+
+let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
+  let none = DNone in
   match kp with
   | ["tcp"; "dport"] | ["udp"; "dport"] | ["th"; "dport"] ->
       (Syntax.FThDport, KPort, dep_l4 (L.hd kp))
   | ["tcp"; "sport"] | ["udp"; "sport"] | ["th"; "sport"] ->
       (Syntax.FThSport, KPort, dep_l4 (L.hd kp))
   | ["tcp"; "flags"] -> (Syntax.FTcpFlags, KTcpflag, dep_l4 "tcp")
-  | ["ip"; "saddr"]    -> (Syntax.FIp4Saddr, KIp4, none)
-  | ["ip"; "daddr"]    -> (Syntax.FIp4Daddr, KIp4, none)
-  | ["ip"; "protocol"] -> (Syntax.FIp4Protocol, KL4proto, none)
-  | ["ip6"; "saddr"]   -> (Syntax.FIp6Saddr, KIp6, none)
-  | ["ip6"; "daddr"]   -> (Syntax.FIp6Daddr, KIp6, none)
+  (* `ip`/`ip6` are NETWORK-header (PNetwork) selectors: nft guards them with an
+     implicit `meta nfproto == 2` (IPv4) / `== 10` (IPv6) in any multi-L3 family,
+     so reading the IPv4 header on an IPv6 packet (or vice versa) can't match.
+     [ensure_dep] turns [DNfproto] into a real match only for inet/bridge/netdev. *)
+  | ["ip"; "saddr"]    -> (Syntax.FIp4Saddr, KIp4, DNfproto [2])
+  | ["ip"; "daddr"]    -> (Syntax.FIp4Daddr, KIp4, DNfproto [2])
+  | ["ip"; "protocol"] -> (Syntax.FIp4Protocol, KL4proto, DNfproto [2])
+  | ["ip6"; "saddr"]   -> (Syntax.FIp6Saddr, KIp6, DNfproto [10])
+  | ["ip6"; "daddr"]   -> (Syntax.FIp6Daddr, KIp6, DNfproto [10])
   | ["icmp"; "type"]   -> (Syntax.FIcmpType, KIcmp, dep_l4 "icmp")
   | ["icmpv6"; "type"] -> (Syntax.FIcmpType, KIcmpv6, dep_l4 "icmpv6")
   | ["ether"; "type"]  -> (Syntax.FEtherType, KEthertype, none)
@@ -378,7 +394,7 @@ let intern_anon_concat st (kinds : kind list) (elems : Nft_ast.value list) : str
 
 (* lower a single match clause into body items (the l4proto dep is handled by the
    caller via the returned dep) *)
-let lower_match st (m : Nft_ast.smatch) : Bytes.data option * Syntax.matchcond =
+let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
   let neg = m.Nft_ast.m_rhs.Nft_ast.neg in
   let op  = m.Nft_ast.m_rhs.Nft_ast.op in
   match m.Nft_ast.m_keys with
@@ -475,8 +491,8 @@ let lower_match st (m : Nft_ast.smatch) : Bytes.data option * Syntax.matchcond =
       let triples = L.map key_field kps in
       let fields = L.map (fun (f,_,_) -> f) triples in
       let kinds  = L.map (fun (_,k,_) -> k) triples in
-      let dep = L.fold_left (fun acc (_,_,d) -> match acc with Some _ -> acc | None -> d)
-                  None triples in
+      let dep = L.fold_left (fun acc (_,_,d) -> match acc with DNone -> d | _ -> acc)
+                  DNone triples in
       let name = match m.Nft_ast.m_rhs.Nft_ast.payload with
         | Nft_ast.SEref nm -> nm
         | Nft_ast.SEset elems -> intern_anon_concat st kinds elems
@@ -542,17 +558,28 @@ let addr_nat_spec st kind (v : Nft_ast.value) : Syntax.nat_spec option =
              nat_flags = 0 }
   | _ -> None   (* unresolvable / non-literal target: stay a bare terminal Accept *)
 
-let lower_rule st (clauses : Nft_ast.clause list) : Syntax.rule =
+(* In a multi-L3 family an inet chain sees both IPv4 and IPv6 packets, so nft
+   guards every `ip`/`ip6` payload match with `meta nfproto == {2|10}`.  A
+   single-L3 family (ip/ip6/arp) sees only one network protocol, so nft emits no
+   such guard.  (bridge/netdev guard the network layer with `meta protocol`
+   (ethertype) instead and are out of scope of this nfproto fix.) *)
+let family_is_inet = function "inet" -> true | _ -> false
+
+let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
   let body = ref [] in
-  let deps = ref [] in
+  let deps = ref [] in       (* (field, value) deps already emitted, for dedup *)
   let verdict = ref Verdict.Continue in
   let vmap = ref None in
   let nat = ref None in   (* set for `masquerade` (a source-NAT terminal) *)
   let push bi = body := bi :: !body in
+  let push_dep fld pv =
+    if not (L.mem (fld, pv) !deps) then
+      (push (Syntax.BMatch (Syntax.MEq (fld, pv))); deps := (fld, pv) :: !deps)
+  in
   let ensure_dep = function
-    | None -> ()
-    | Some pv -> if not (L.mem pv !deps) then
-        (push (Syntax.BMatch (Syntax.MEq (Syntax.FMetaL4proto, pv))); deps := pv :: !deps)
+    | DNone -> ()
+    | DL4 pv -> push_dep Syntax.FMetaL4proto pv
+    | DNfproto pv -> if family_is_inet family then push_dep Syntax.FMetaNfproto pv
   in
   L.iter (fun (cl : Nft_ast.clause) ->
     match cl with
@@ -610,14 +637,14 @@ let lower_setdecl st (sd : Nft_ast.setdecl) : unit =
     st.sets <- (sd.Nft_ast.sd_name, elems) :: st.sets
   end
 
-let lower_chain st (sc : Nft_ast.schain) : string * Syntax.chain =
+let lower_chain st ~family (sc : Nft_ast.schain) : string * Syntax.chain =
   let is_base = L.exists (function Nft_ast.ITypeHook _ -> true | _ -> false)
                   sc.Nft_ast.sc_items in
   let policy = ref None and rules = ref [] in
   L.iter (function
     | Nft_ast.ITypeHook _ -> ()
     | Nft_ast.IPolicy v -> policy := Some (lower_verdict v)
-    | Nft_ast.IRule cls -> rules := lower_rule st cls :: !rules)
+    | Nft_ast.IRule cls -> rules := lower_rule st ~family cls :: !rules)
     sc.Nft_ast.sc_items;
   let c_policy = match !policy with
     | Some v -> v | None -> if is_base then Verdict.Accept else Verdict.Continue in
@@ -656,8 +683,9 @@ let lower (f : Nft_ast.sfile) : parsed =
   (* pass 3: chains *)
   let tables = L.filter_map (function
     | Nft_ast.TopTable t ->
+        let family = t.Nft_ast.st_family in
         let chains = L.filter_map (function
-          | Nft_ast.TChain sc -> Some (lower_chain st sc)
+          | Nft_ast.TChain sc -> Some (lower_chain st ~family sc)
           | Nft_ast.TSet _ | Nft_ast.TObj _ -> None) t.Nft_ast.st_items in
         Some (t.Nft_ast.st_family, t.Nft_ast.st_name, chains)
     | _ -> None) f

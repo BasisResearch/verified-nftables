@@ -744,6 +744,82 @@ let check_meta_nfproto () =
     (body 0 <> [Syntax.BMatch (Syntax.MEq (Syntax.FMetaNfproto, [6]))]);
   Printf.printf "\n"
 
+(* ---------- (L') implicit `meta nfproto` guard before inet ip/ip6 matches ----
+   In a multi-L3 family (inet) a chain sees BOTH IPv4 and IPv6 packets, so real
+   nft inserts an implicit network-protocol dependency before every ip/ip6
+   payload match: `[ meta load nfproto ] [ cmp eq reg1 0x02 ]` for IPv4 (0x0a for
+   IPv6) — payload.c payload_gen_dependency / payload_add_dependency; golden
+   tests/py/inet/ip_tcp.t.payload + sets.t.payload.inet.  This guard is what makes
+   `ip saddr X` in an inet table mean "IPv4 packet AND saddr==X", not just
+   "network bytes 12..15 == X" (those bytes are part of the SOURCE ADDRESS in an
+   IPv6 header).  In a SINGLE-L3 family (ip/ip6) the chain sees only one network
+   protocol and nft emits NO guard.  Before the fix the lowering dropped the guard
+   for every family, so an inet `ip saddr 10.1.2.3` rule wrongly matched an IPv6
+   packet whose pkt_nh[12..15] = 10.1.2.3 and Accepted it. *)
+let check_inet_nfproto_dep () =
+  Printf.printf "=== (L') implicit meta nfproto guard before inet ip/ip6 matches ===\n";
+  (* the .nft frontend has no IPv6 address literal yet, so the parse-side checks
+     use `ip saddr`; the ip6 guard (FMetaNfproto [10]) is exercised by the
+     key_field DNfproto [10] mapping and the optiplex/ruleset Gen regeneration. *)
+  let src fam =
+    Printf.sprintf
+      "table %s t {\n\
+      \  chain c {\n\
+      \    type filter hook input priority 0; policy drop;\n\
+      \    ip saddr 10.1.2.3 accept\n\
+      \  }\n\
+       }\n" fam in
+  let body fam i =
+    let p = Nft_parse.parse_string (src fam) in
+    let c = Nft_lower.find_chain p ~table:"t" ~chain:"c" in
+    (Stdlib.List.nth c.Syntax.c_rules i).Syntax.r_body in
+  (* inet: ip saddr is guarded by `meta nfproto == 2` BEFORE the FIp4Saddr match *)
+  check "inet ip saddr is guarded by FMetaNfproto [2] (nfproto dep, then match)"
+    (match body "inet" 0 with
+     | Syntax.BMatch (Syntax.MEq (Syntax.FMetaNfproto, [2]))
+       :: Syntax.BMatch (Syntax.MEq (Syntax.FIp4Saddr, _)) :: _ -> true
+     | _ -> false);
+  (* the OLD lowering produced a SINGLE body item with no guard (regression) *)
+  check "inet ip saddr is NOT a lone FIp4Saddr match (the dropped-guard bug)"
+    (body "inet" 0 <> [Syntax.BMatch (Syntax.MEq (Syntax.FIp4Saddr, [10;1;2;3]))]);
+  (* single-L3 family (ip): nft emits no guard, so the body is just the match *)
+  check "ip-table ip saddr has NO nfproto guard (single-L3 family)"
+    (body "ip" 0 = [Syntax.BMatch (Syntax.MEq (Syntax.FIp4Saddr, [10;1;2;3]))]);
+  (* ---- behavioural divergence the guard fixes ---- *)
+  let env =
+    (Nft_parse.parse_string
+       "table inet t {\n  chain c {\n    type filter hook input priority 0; policy accept;\n  }\n}\n")
+      .Nft_lower.p_env in
+  (* network bytes 12..15 = 10.1.2.3.  In an IPv4 header that's the SOURCE
+     ADDRESS; in an IPv6 header it's part of the (longer) source address. *)
+  let nh_v4 = [0;0;0;0; 0;0;0;0; 0;0;0;0; 10;1;2;3] in
+  let mk_with_nfproto nfp nh =
+    { (mk_pkt ~env ()) with
+      Packet.pkt_nh = nh;
+      pkt_meta = (fun k -> match k with Packet.MKnfproto -> nfp | _ -> []) } in
+  let p_v4 = mk_with_nfproto [2]  nh_v4 in   (* genuine IPv4 packet *)
+  let p_v6 = mk_with_nfproto [10] nh_v4 in   (* IPv6 packet, same byte pattern *)
+  let guarded : Syntax.chain =
+    { Syntax.c_policy = Verdict.Drop;
+      c_rules = [ { Syntax.r_body =
+                      [ Syntax.BMatch (Syntax.MEq (Syntax.FMetaNfproto, [2]));
+                        Syntax.BMatch (Syntax.MEq (Syntax.FIp4Saddr, [10;1;2;3])) ];
+                    r_verdict = Verdict.Accept; r_vmap = None; r_nat = None;
+                    r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } ] } in
+  let unguarded : Syntax.chain =     (* the OLD, buggy lowering *)
+    { Syntax.c_policy = Verdict.Drop;
+      c_rules = [ { Syntax.r_body =
+                      [ Syntax.BMatch (Syntax.MEq (Syntax.FIp4Saddr, [10;1;2;3])) ];
+                    r_verdict = Verdict.Accept; r_vmap = None; r_nat = None;
+                    r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } ] } in
+  check "guarded inet rule ACCEPTS the genuine IPv4 packet (nft accepts)"
+    (Semantics.eval_chain guarded p_v4 = Verdict.Accept);
+  check "guarded inet rule DROPS the IPv6 packet (nft falls through to drop)"
+    (Semantics.eval_chain guarded p_v6 = Verdict.Drop);
+  check "the OLD unguarded rule WRONGLY accepted the IPv6 packet (regression guard)"
+    (Semantics.eval_chain unguarded p_v6 = Verdict.Accept);
+  Printf.printf "\n"
+
 (* ---------- (K) synproxy is verdict-bearing, not a no-op ----------
    The DSL `synproxy` statement was verdict-neutral; the kernel
    (nft_synproxy.c) STOPS traversal for a TCP SYN/ACK (NF_STOLEN/NF_DROP),
@@ -998,6 +1074,7 @@ let () =
     check_ct_state ();
     check_tcp_flags ();
     check_meta_nfproto ();
+    check_inet_nfproto_dep ();
     check_synproxy ();
     check_concat_iv ();
     check_ifname_exact ();

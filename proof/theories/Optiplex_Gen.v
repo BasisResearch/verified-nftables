@@ -90,7 +90,8 @@ Definition filter_input : chain :=
      r_verdict := Accept; r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
-   {| r_body := [(BMatch (MEq FIp4Protocol [1]))];
+   {| r_body := [(BMatch (MEq FMetaNfproto [2]));
+             (BMatch (MEq FIp4Protocol [1]))];
      r_verdict := Accept; r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
@@ -111,6 +112,7 @@ Definition filter_input : chain :=
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
    {| r_body := [(BMatch (MEq FMetaIifname [108; 97; 110; 48; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0]));
+             (BMatch (MEq FMetaNfproto [2]));
              (BMatch (MMasked FIp4Saddr false [255; 255; 255; 0] [0; 0; 0; 0] [192; 168; 50; 0]));
              (BMatch (MEq FMetaL4proto [6]));
              (BMatch (MEq FThDport [8; 1]))];
