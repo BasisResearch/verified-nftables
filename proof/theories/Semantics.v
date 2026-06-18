@@ -736,6 +736,33 @@ Definition set_nh_field (p : packet) (off len : nat) (v : data) : packet :=
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
      pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
 
+(** Rewrite [len] bytes of the TRANSPORT header at [off] to [v], leaving every
+    other packet component intact — the L4-port-NAT write primitive.  This is the
+    transport-header analogue of [set_nh_field]: the kernel's
+    [nf_nat_proto.c]/[tcp_manip_pkt] writes the new port into the TCP/UDP header
+    (`*portptr = newport`) while [set_nh_field] handled the L3 address.  Callers
+    pass the L4 port slot ([FThSport] @0 len 2 / [FThDport] @2 len 2). *)
+Definition set_th_field (p : packet) (off len : nat) (v : data) : packet :=
+  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p;
+     pkt_sock := pkt_sock p; pkt_eh := pkt_eh p; pkt_lh := pkt_lh p;
+     pkt_nh := pkt_nh p; pkt_th := splice (pkt_th p) off len v;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
+
+(** Source-port-NAT a packet: rewrite the L4 SOURCE port ([FThSport] = transport
+    bytes 0..1) to [v].  This is the port half of a `snat ... :PORT` /
+    `masquerade to :PORT` (kernel [NF_NAT_MANIP_SRC] proto). *)
+Definition set_sport (p : packet) (v : data) : packet := set_th_field p 0 2 v.
+
+(** Destination-port-NAT a packet: rewrite the L4 DESTINATION port ([FThDport] =
+    transport bytes 2..3) to [v].  This is the port half of a `dnat to A:PORT` /
+    `redirect to :PORT` (kernel [NF_NAT_MANIP_DST] proto: `*portptr = newport`,
+    nf_nat_proto.c:163-172). *)
+Definition set_dport (p : packet) (v : data) : packet := set_th_field p 2 2 v.
+
 (** The (offset, length) of the L3 source / destination address slot for a NAT
     [family] ("ip" = IPv4: src @12 len 4 / dst @16 len 4, where [FIp4Saddr] /
     [FIp4Daddr] read; "ip6" = IPv6: src @8 len 16 / dst @24 len 16, where
@@ -1158,20 +1185,47 @@ Definition redir_daddr (h : hook_id) (fam : String.string) (p : packet) : data :
   | _ => e_ifaddr (pkt_env p) (field_value FMetaIifname p)
   end.
 
+(** The L4 port the kernel writes is [min_proto.all] of the NAT range, loaded as a
+    big-endian 16-bit value from the proto-min register ([nft_nat_setup_proto],
+    nft_nat.c:57-60).  In the model the operand is [nat_pmin]; encode it as the
+    2-byte big-endian port the transport header carries. *)
+Definition nat_port_bytes (pmin : nat) : data := N_to_data 2 (N.of_nat pmin).
+
+(** Apply the L4 PORT half of a NAT effect, mirroring the kernel
+    [nft_nat_setup_proto]: the port rewrite happens ONLY when the proto-min
+    register is set (`if (priv->sreg_proto_min)`, nft_nat.c:120) — in the model,
+    when [nat_pmin ns = Some pmin].  A SOURCE NAT (snat/masquerade) rewrites the
+    L4 SOURCE port ([set_sport]); a DESTINATION NAT (dnat/redirect) the L4
+    DESTINATION port ([set_dport]) — exactly the [NF_NAT_MANIP_{SRC,DST}] split of
+    [tcp_manip_pkt] (nf_nat_proto.c).  Address-only NAT ([nat_pmin] = None) leaves
+    the port byte-for-byte unchanged. *)
+Definition apply_nat_port (is_src : bool) (ns : nat_spec) (p : packet) : packet :=
+  match nat_pmin ns with
+  | Some pmin =>
+      if is_src then set_sport p (nat_port_bytes pmin)
+                else set_dport p (nat_port_bytes pmin)
+  | None => p
+  end.
+
 (** The data-plane NAT effect of a terminal rule at hook [h].  Only [redir] is
-    hook-dependent (see [redir_daddr]); masq/snat/dnat are hook-invariant. *)
+    hook-dependent (see [redir_daddr]); masq/snat/dnat are hook-invariant.  Each
+    kind first performs its L3 address rewrite ([set_saddr]/[set_daddr]) and then,
+    when a port operand is present ([nat_pmin] = Some), the L4 port rewrite
+    ([apply_nat_port]) — the kernel applies both the addr and the proto range in a
+    single [nf_nat_setup_info]. *)
 Definition apply_nat (h : hook_id) (r : rule) (p : packet) : packet :=
   match r_nat r with
   | Some ns =>
       let fam := nat_addrfamily ns in
       if String.eqb (nat_kind ns) nat_masq_kind
-      then set_saddr fam p (e_ifaddr (pkt_env p) (field_value FMetaOifname p))
+      then apply_nat_port true ns
+             (set_saddr fam p (e_ifaddr (pkt_env p) (field_value FMetaOifname p)))
       else if String.eqb (nat_kind ns) nat_snat_kind
-      then set_saddr fam p (nat_addr ns p)
+      then apply_nat_port true ns (set_saddr fam p (nat_addr ns p))
       else if String.eqb (nat_kind ns) nat_dnat_kind
-      then set_daddr fam p (nat_addr ns p)
+      then apply_nat_port false ns (set_daddr fam p (nat_addr ns p))
       else if String.eqb (nat_kind ns) nat_redir_kind
-      then set_daddr fam p (redir_daddr h fam p)
+      then apply_nat_port false ns (set_daddr fam p (redir_daddr h fam p))
       else p
   | None => p
   end.

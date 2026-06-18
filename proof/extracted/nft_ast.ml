@@ -72,8 +72,8 @@ type sstmt =
   | StLog       of string          (* options string (e.g. the prefix), verbatim *)
   | StLimit     of int * string * bool  (* rate [over] N / unit; bool = over/invert *)
   | StMasquerade
-  | StSnat      of value option
-  | StDnat      of value option
+  | StSnat      of value option * int option  (* `snat to <addr>[:<port>]` *)
+  | StDnat      of value option * int option  (* `dnat to <addr>[:<port>]` *)
   | StMetaSet   of string * value  (* `meta <k> set v` / `mark set v` (k="mark") *)
   | StCtSet     of string * value  (* `ct <k> set v` *)
 

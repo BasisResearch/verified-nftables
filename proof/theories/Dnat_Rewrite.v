@@ -142,3 +142,111 @@ Proof.
   rewrite (daddr_after_set p _ Hnh Hlen) in Hread.
   symmetry; exact Hread.
 Qed.
+
+(** * L4 PORT rewrite (`dnat to A:PORT` / `snat ... :PORT`).
+
+    A `dnat to A.B.C.D:PORT` rewrites BOTH the L3 destination address AND the L4
+    DESTINATION port (TCP/UDP header bytes 2..3).  The kernel loads [PORT] into the
+    proto-min register and [nf_nat_proto.c]/[tcp_manip_pkt] writes it into the
+    header (`*portptr = newport`, nf_nat_proto.c:163-172).  Before the fix the model
+    ignored [nat_pmin]/[nat_pmax] entirely, so the transport header (and hence the
+    port) was provably left byte-for-byte unchanged — `pkt_th (chain_out …) = pkt_th p`.
+    These theorems prove the opposite: the port IS now rewritten, and the
+    formerly-provable no-op is refuted. *)
+
+(* `dnat to 10.0.0.1:8080`: same address operand, plus port 8080 in nat_pmin. *)
+Definition dnat_port_spec : nat_spec :=
+  {| nat_imms := [(1, [10;0;0;1])]; nat_field := None; nat_map := None; nat_src := None;
+     nat_kind := "dnat"; nat_family := "ip";
+     nat_amin := None; nat_amax := None;
+     nat_pmin := Some 8080; nat_pmax := Some 8080; nat_flags := 0 |}.
+Definition dnat_port_rule : rule :=
+  {| r_body := []; r_verdict := Continue; r_vmap := None; r_nat := Some dnat_port_spec;
+     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+Definition dnat_port_chain : chain := {| c_policy := Accept; c_rules := [dnat_port_rule] |}.
+
+(* 8080 = 0x1f90 -> big-endian [0x1f; 0x90] = [31; 144]. *)
+Lemma dnat_port_bytes_8080 : nat_port_bytes 8080 = [31; 144].
+Proof. reflexivity. Qed.
+
+(* The dnat-with-port effect: address rewrite followed by the L4 dest-port write. *)
+Lemma dnat_port_apply : forall h p,
+  apply_nat h dnat_port_rule p
+    = set_dport (set_daddr "ip" p [10;0;0;1]) [31; 144].
+Proof. reflexivity. Qed.
+
+(* THE OUTPUT PACKET: dnat to A:PORT sets both the destination address and dport. *)
+Theorem dnat_port_output : forall h p,
+  eval_chain_trace h dnat_port_chain p
+    = (Accept, set_dport (set_daddr "ip" p [10;0;0;1]) [31; 144]).
+Proof.
+  intros h p. unfold eval_chain_trace, dnat_port_chain. cbn [c_rules eval_rules_trace].
+  reflexivity.
+Qed.
+
+(* Reading the destination port back: after `dnat to A:8080`, `th dport` IS 8080
+   (= big-endian [31;144]), for a transport header with at least 4 bytes. *)
+Lemma dport_after_set : forall p v,
+  4 <= List.length (pkt_th p) -> List.length v = 2 ->
+  read_payload PTransport 2 2 (set_dport p v) = v.
+Proof.
+  intros p v Hlen Hv.
+  unfold read_payload, set_dport, set_th_field; cbn [pkt_th].
+  unfold slice, splice.
+  assert (H2 : List.length (firstn 2 (pkt_th p)) = 2)
+    by (rewrite firstn_length_le; [reflexivity | lia]).
+  rewrite skipn_app, H2.
+  rewrite (skipn_all2 (firstn 2 (pkt_th p))) by lia.
+  replace (2 - 2) with 0 by lia. cbn [skipn app].
+  rewrite firstn_app, Hv. replace (2 - 2) with 0 by lia.
+  rewrite firstn_O, app_nil_r, firstn_all2 by lia. reflexivity.
+Qed.
+
+Theorem dnat_port_dport_is_8080 : forall p,
+  20 <= List.length (pkt_nh p) ->
+  4 <= List.length (pkt_th p) ->
+  read_payload PTransport 2 2 (chain_out dnat_port_chain p) = [31; 144].
+Proof.
+  intros p Hnh Hth. unfold chain_out. rewrite dnat_port_output. cbn [snd].
+  (* set_daddr touches pkt_nh only, so pkt_th length is preserved. *)
+  apply dport_after_set; [cbn [set_daddr set_nh_field pkt_th]; exact Hth | reflexivity].
+Qed.
+
+(* The infidelity is REFUTED: the dnat-with-port chain does NOT leave the transport
+   header unchanged (the red agent's [dnat_port_NOT_rewritten] is now false) — the
+   L4 destination port IS rewritten whenever the current dport differs from 8080. *)
+Theorem dnat_port_rewrites_th : forall p,
+  20 <= List.length (pkt_nh p) ->
+  4 <= List.length (pkt_th p) ->
+  read_payload PTransport 2 2 p <> [31; 144] ->
+  pkt_th (chain_out dnat_port_chain p) <> pkt_th p.
+Proof.
+  intros p Hnh Hth Hne Heq.
+  apply Hne.
+  rewrite <- (dnat_port_dport_is_8080 p Hnh Hth).
+  unfold read_payload. rewrite Heq. reflexivity.
+Qed.
+
+(** A `snat ... :PORT` rewrites the L4 SOURCE port (transport bytes 0..1), not the
+    destination — the [NF_NAT_MANIP_SRC] half.  A dnat with NO port operand
+    ([nat_pmin] = None, the address-only case) leaves the transport header
+    untouched, mirroring `if (priv->sreg_proto_min)` (nft_nat.c:120). *)
+Definition snat_port_spec : nat_spec :=
+  {| nat_imms := [(1, [192;168;0;1])]; nat_field := None; nat_map := None; nat_src := None;
+     nat_kind := "snat"; nat_family := "ip";
+     nat_amin := None; nat_amax := None;
+     nat_pmin := Some 4000; nat_pmax := Some 4000; nat_flags := 0 |}.
+Definition snat_port_rule : rule :=
+  {| r_body := []; r_verdict := Continue; r_vmap := None; r_nat := Some snat_port_spec;
+     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+
+(* snat to A:PORT writes the SOURCE port (offset 0), leaving the dest port alone. *)
+Theorem snat_port_writes_sport : forall h p,
+  apply_nat h snat_port_rule p
+    = set_sport (set_saddr "ip" p [192;168;0;1]) (nat_port_bytes 4000).
+Proof. reflexivity. Qed.
+
+(* The address-only dnat ([nat_pmin]=None) is a pure L3 rewrite: pkt_th preserved. *)
+Theorem dnat_addronly_th_preserved : forall h p,
+  pkt_th (apply_nat h dnat_rule p) = pkt_th p.
+Proof. reflexivity. Qed.

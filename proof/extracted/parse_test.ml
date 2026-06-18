@@ -401,6 +401,36 @@ let check_dnat_rewrite () =
   check "dnat rewrites ip daddr to the target" (data_eq daddr_out [10;0;0;1]);
   check "dnat does NOT touch ip saddr"
     (data_eq (Syntax.field_value Syntax.FIp4Saddr p_out) [1;2;3;4]);
+  (* (F') `dnat to A:PORT` ALSO rewrites the L4 DESTINATION port (transport bytes
+     2..3).  The parser must carry the port into nat_pmin/nat_pmax, and
+     Semantics.apply_nat must write the big-endian port into the TCP/UDP header
+     (kernel nft_nat.c:57-60 + nf_nat_proto.c). *)
+  let src_p =
+    "table ip nat {\n\
+    \  chain prerouting {\n\
+    \    type nat hook prerouting priority dstnat; policy accept;\n\
+    \    dnat to 10.0.0.1:8080\n\
+    \  }\n\
+     }\n" in
+  let parsed_p = Nft_parse.parse_string src_p in
+  let env_p = parsed_p.Nft_lower.p_env in
+  let pre_p = Nft_lower.find_chain parsed_p ~table:"nat" ~chain:"prerouting" in
+  let rp = Stdlib.List.nth pre_p.Syntax.c_rules 0 in
+  let ns = match rp.Syntax.r_nat with Some n -> n | None -> failwith "no nat_spec" in
+  check "dnat to A:PORT carries the port into nat_pmin" (ns.Syntax.nat_pmin = Some 8080);
+  check "dnat to A:PORT carries the port into nat_pmax" (ns.Syntax.nat_pmax = Some 8080);
+  (* a packet with dport=80 in the transport header (bytes 2..3 = [0;80]) *)
+  let th = [0;0; 0;80; 0;0;0;0] in
+  let p_in2 = { (mk_pkt ~env:env_p ()) with Packet.pkt_nh = nh; pkt_th = th } in
+  let dport_in = Packet.read_payload Packet.PTransport 2 2 p_in2 in
+  let (_, p_out2) = Semantics.eval_chain_trace Semantics.Hprerouting pre_p p_in2 in
+  let dport_out = Packet.read_payload Packet.PTransport 2 2 p_out2 in
+  Printf.printf "    dnat:port: th dport  %s -> %s  (target :8080 = 0x1f90)\n"
+    (show dport_in) (show dport_out);
+  check "dnat to A:PORT rewrites th dport to the big-endian port (8080=0x1f90)"
+    (data_eq dport_out [0x1f; 0x90]);
+  check "dnat to A:PORT also rewrites ip daddr to the address operand"
+    (data_eq (Syntax.field_value Syntax.FIp4Daddr p_out2) [10;0;0;1]);
   Printf.printf "\n"
 
 (* (G) FAMILY-AWARE NAT: an ip6 dnat/snat rewrites the 128-bit IPv6 address slot

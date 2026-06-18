@@ -325,10 +325,10 @@ stmt:
   | LIMIT RATE INT SLASH IDENT      { StLimit ($3, $5, false) }
   | LIMIT RATE OVER INT SLASH IDENT { StLimit ($4, $6, true) }
   | MASQUERADE                { StMasquerade }
-  | SNAT nat_to               { StSnat $2 }
-  | DNAT nat_to               { StDnat $2 }
-  | DNAT IP nat_to            { StDnat $3 }
-  | DNAT IP6 nat_to           { StDnat $3 }
+  | SNAT nat_to               { let (a,p) = $2 in StSnat (a,p) }
+  | DNAT nat_to               { let (a,p) = $2 in StDnat (a,p) }
+  | DNAT IP nat_to            { let (a,p) = $3 in StDnat (a,p) }
+  | DNAT IP6 nat_to           { let (a,p) = $3 in StDnat (a,p) }
   | MARK SET value            { StMetaSet ("mark", $3) }
   | META IDENT SET value      { StMetaSet ($2, $4) }
   | CT IDENT SET value        { StCtSet ($2, $4) }
@@ -338,5 +338,7 @@ log_opts:
   | PREFIX STRING      { $2 }
 
 nat_to:
-  | /* empty */ { None }
-  | TO value    { Some $2 }
+  | /* empty */          { (None, None) }
+  | TO value             { (Some $2, None) }
+  | TO value COLON INT   { (Some $2, Some $4) }
+  | TO COLON INT         { (None, Some $3) }
