@@ -40,10 +40,10 @@ Definition ip6_snat_rule : rule :=
 
 (* The IPv6 dnat NAT effect destination-rewrites the IPv6 dest slot (off 24,
    len 16) to the target operand. *)
-Lemma ip6_dnat_apply : forall p, apply_nat ip6_dnat_rule p = set_daddr "ip6" p tgt6.
+Lemma ip6_dnat_apply : forall h p, apply_nat h ip6_dnat_rule p = set_daddr "ip6" p tgt6.
 Proof. reflexivity. Qed.
 
-Lemma ip6_snat_apply : forall p, apply_nat ip6_snat_rule p = set_saddr "ip6" p tgt6.
+Lemma ip6_snat_apply : forall h p, apply_nat h ip6_snat_rule p = set_saddr "ip6" p tgt6.
 Proof. reflexivity. Qed.
 
 (* Reading the IPv6 destination back: after the ip6 dnat, `ip6 daddr` IS the
@@ -110,9 +110,9 @@ Definition pkt6 : packet :=
      pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0 |}.
 
 Theorem ip6_dnat_dest_is_target :
-  field_value FIp6Daddr (apply_nat ip6_dnat_rule pkt6) = tgt6.
+  field_value FIp6Daddr (apply_nat Hprerouting ip6_dnat_rule pkt6) = tgt6.
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem ip6_snat_src_is_target :
-  field_value FIp6Saddr (apply_nat ip6_snat_rule pkt6) = tgt6.
+  field_value FIp6Saddr (apply_nat Hprerouting ip6_snat_rule pkt6) = tgt6.
 Proof. vm_compute. reflexivity. Qed.

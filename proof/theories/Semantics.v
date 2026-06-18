@@ -1106,7 +1106,43 @@ Definition nat_addr (ns : nat_spec) (p : packet) : data :=
     leaves the packet unchanged. *)
 Definition nat_addrfamily (ns : nat_spec) : String.string :=
   if String.eqb (nat_family ns) nat_fam_ip6 then nat_fam_ip6 else nat_fam_ip4.
-Definition apply_nat (r : rule) (p : packet) : packet :=
+
+(** The netfilter hook a base chain is attached to.  This is the SAME [hook_id]
+    used by the hook-registration metadata below ([hooked_chain]); it is named
+    here because the data-plane NAT effect ([apply_nat]) is hook-dependent — the
+    kernel core branches on [hooknum] (e.g. [nf_nat_redirect_ipv4]). *)
+Inductive hook_id : Type :=
+| Hprerouting | Hinput | Hforward | Houtput | Hpostrouting | Hingress.
+Definition hook_eqb (a b : hook_id) : bool :=
+  match a, b with
+  | Hprerouting, Hprerouting | Hinput, Hinput | Hforward, Hforward
+  | Houtput, Houtput | Hpostrouting, Hpostrouting | Hingress, Hingress => true
+  | _, _ => false
+  end.
+
+(** The loopback destination the kernel forces for an OUTPUT-hooked `redirect`
+    ("local packets: make them go to loopback", [nf_nat_redirect_ipv4] /
+    [nf_nat_redirect_ipv6]): IPv4 = INADDR_LOOPBACK = 127.0.0.1, IPv6 = ::1. *)
+Definition loopback_ip4 : data := [127; 0; 0; 1].
+Definition loopback_ip6 : data := [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1].
+Definition loopback_addr (family : String.string) : data :=
+  if String.eqb family nat_fam_ip6 then loopback_ip6 else loopback_ip4.
+
+(** The destination a `redirect` rewrites to, which is HOOK-DEPENDENT exactly as
+    the kernel core [nf_nat_redirect_ipv4]/[nf_nat_redirect_ipv6] (branch on
+    [hooknum]): at [Houtput] (NF_INET_LOCAL_OUT) local packets are forced to the
+    loopback address (127.0.0.1 / ::1); otherwise (PRE_ROUTING) the new
+    destination is the inbound interface's primary address.  [nft_redir_validate]
+    permits only these two hooks. *)
+Definition redir_daddr (h : hook_id) (fam : String.string) (p : packet) : data :=
+  match h with
+  | Houtput => loopback_addr fam
+  | _ => e_ifaddr (pkt_env p) (field_value FMetaIifname p)
+  end.
+
+(** The data-plane NAT effect of a terminal rule at hook [h].  Only [redir] is
+    hook-dependent (see [redir_daddr]); masq/snat/dnat are hook-invariant. *)
+Definition apply_nat (h : hook_id) (r : rule) (p : packet) : packet :=
   match r_nat r with
   | Some ns =>
       let fam := nat_addrfamily ns in
@@ -1117,30 +1153,34 @@ Definition apply_nat (r : rule) (p : packet) : packet :=
       else if String.eqb (nat_kind ns) nat_dnat_kind
       then set_daddr fam p (nat_addr ns p)
       else if String.eqb (nat_kind ns) nat_redir_kind
-      then set_daddr fam p (e_ifaddr (pkt_env p) (field_value FMetaIifname p))
+      then set_daddr fam p (redir_daddr h fam p)
       else p
   | None => p
   end.
 
-Fixpoint eval_rules_trace (rs : list rule) (p : packet) : option verdict * packet :=
+(** [eval_rules_trace]/[eval_chain_trace] take the netfilter hook [h] the base
+    chain is attached to, because the data-plane NAT effect at a terminal verdict
+    ([apply_nat]) is hook-dependent (an OUTPUT-hooked `redirect` rewrites the
+    destination to loopback, not the inbound-interface address). *)
+Fixpoint eval_rules_trace (h : hook_id) (rs : list rule) (p : packet) : option verdict * packet :=
   match rs with
   | [] => (None, p)
   | r :: rest =>
       if rule_loadable r p && rule_applies r p then
         match outcome r p with
-        | Some v => if terminal v then (Some v, apply_nat r (dsl_writes r p))
-                    else eval_rules_trace rest (dsl_writes r p)
-        | None   => eval_rules_trace rest (dsl_writes r p)
+        | Some v => if terminal v then (Some v, apply_nat h r (dsl_writes r p))
+                    else eval_rules_trace h rest (dsl_writes r p)
+        | None   => eval_rules_trace h rest (dsl_writes r p)
         end
-      else eval_rules_trace rest (dsl_writes r p)
+      else eval_rules_trace h rest (dsl_writes r p)
   end.
 
-Definition eval_chain_trace (c : chain) (p : packet) : verdict * packet :=
-  match eval_rules_trace (c_rules c) p with
+Definition eval_chain_trace (h : hook_id) (c : chain) (p : packet) : verdict * packet :=
+  match eval_rules_trace h (c_rules c) p with
   | (Some v, q) => (v, q) | (None, q) => (c_policy c, q) end.
 
-Lemma eval_rules_trace_verdict : forall rs p,
-  fst (eval_rules_trace rs p) = eval_rules_mut rs p.
+Lemma eval_rules_trace_verdict : forall h rs p,
+  fst (eval_rules_trace h rs p) = eval_rules_mut rs p.
 Proof.
   induction rs as [|r rest IH]; intros p; simpl; [reflexivity|].
   destruct (rule_loadable r p && rule_applies r p).
@@ -1148,17 +1188,17 @@ Proof.
   - auto.
 Qed.
 
-Lemma eval_chain_trace_verdict : forall c p,
-  fst (eval_chain_trace c p) = eval_chain_mut c p.
+Lemma eval_chain_trace_verdict : forall h c p,
+  fst (eval_chain_trace h c p) = eval_chain_mut c p.
 Proof.
-  intros c p. unfold eval_chain_trace, eval_chain_mut.
-  rewrite <- (eval_rules_trace_verdict (c_rules c) p).
-  destruct (eval_rules_trace (c_rules c) p) as [[v|] q]; reflexivity.
+  intros h c p. unfold eval_chain_trace, eval_chain_mut.
+  rewrite <- (eval_rules_trace_verdict h (c_rules c) p).
+  destruct (eval_rules_trace h (c_rules c) p) as [[v|] q]; reflexivity.
 Qed.
 
 (** Run a whole chain on a packet and return the packet it leaves (the
     [eval_chain_trace] packet component) — the input to the next chain/hook. *)
-Definition chain_out (c : chain) (p : packet) : packet := snd (eval_chain_trace c p).
+Definition chain_out (h : hook_id) (c : chain) (p : packet) : packet := snd (eval_chain_trace h c p).
 
 (** A packet sequence threaded through a shared, learning environment: each packet
     is evaluated against the current [e], and the env it LEAVES (learned sets/maps)
@@ -1307,15 +1347,9 @@ Fixpoint run_ruleset (fuel : nat)
     priority order.  This is *separate* metadata from a chain's rules (a base
     chain is `type filter hook input priority 0`), so we model it as a tagged list
     rather than fields on [chain] — the engine then filters by hook and sorts by
-    priority to obtain the ordered base-chain list [eval_ruleset] traverses. *)
-Inductive hook_id : Type :=
-| Hprerouting | Hinput | Hforward | Houtput | Hpostrouting | Hingress.
-Definition hook_eqb (a b : hook_id) : bool :=
-  match a, b with
-  | Hprerouting, Hprerouting | Hinput, Hinput | Hforward, Hforward
-  | Houtput, Houtput | Hpostrouting, Hpostrouting | Hingress, Hingress => true
-  | _, _ => false
-  end.
+    priority to obtain the ordered base-chain list [eval_ruleset] traverses.
+    [hook_id]/[hook_eqb] are defined above (near [apply_nat], which is itself
+    hook-dependent). *)
 Record hooked_chain : Type := {
   hc_hook : hook_id;
   hc_prio : nat;

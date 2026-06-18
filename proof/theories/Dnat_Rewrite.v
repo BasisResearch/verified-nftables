@@ -23,7 +23,8 @@ Definition dnat_rule : rule :=
      r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
 Definition dnat_chain : chain := {| c_policy := Accept; c_rules := [dnat_rule] |}.
 
-Definition chain_out (c : chain) (p : packet) : packet := snd (eval_chain_trace c p).
+(* dnat is hook-invariant; evaluate the trace at the prerouting hook. *)
+Definition chain_out (c : chain) (p : packet) : packet := snd (eval_chain_trace Hprerouting c p).
 
 (* The dnat rule's terminal outcome is Accept (verdict component unchanged). *)
 Lemma dnat_outcome_accept : forall p, outcome dnat_rule p = Some Accept.
@@ -34,15 +35,15 @@ Lemma dnat_addr_target : forall p, nat_addr dnat_spec p = [10;0;0;1].
 Proof. reflexivity. Qed.
 
 (* The dnat NAT effect destination-rewrites to the target operand. *)
-Lemma dnat_apply : forall p, apply_nat dnat_rule p = set_daddr "ip" p [10;0;0;1].
+Lemma dnat_apply : forall h p, apply_nat h dnat_rule p = set_daddr "ip" p [10;0;0;1].
 Proof. reflexivity. Qed.
 
 (* THE OUTPUT PACKET of the dnat chain: the input with its destination address
    set to the target (= what dnat does). *)
-Theorem dnat_output : forall p,
-  eval_chain_trace dnat_chain p = (Accept, set_daddr "ip" p [10;0;0;1]).
+Theorem dnat_output : forall h p,
+  eval_chain_trace h dnat_chain p = (Accept, set_daddr "ip" p [10;0;0;1]).
 Proof.
-  intro p. unfold eval_chain_trace, dnat_chain. cbn [c_rules eval_rules_trace].
+  intros h p. unfold eval_chain_trace, dnat_chain. cbn [c_rules eval_rules_trace].
   reflexivity.
 Qed.
 
@@ -84,4 +85,60 @@ Theorem dnat_is_not_noop : forall p,
 Proof.
   intros p Hnh Hne H.
   apply Hne. rewrite <- (dnat_dest_is_target p Hnh), H. reflexivity.
+Qed.
+
+(** * Redirect is hook-dependent (kernel [nf_nat_redirect_ipv4]/[ipv6]).
+
+    A `redirect` is a destination-NAT whose target the kernel core picks by the
+    hook: at the OUTPUT hook (NF_INET_LOCAL_OUT) "local packets go to loopback"
+    (IPv4 127.0.0.1 / IPv6 ::1), while at PRE_ROUTING it uses the inbound
+    interface's primary address.  The model's [apply_nat] now threads the hook and
+    mirrors this exactly; the old behaviour (always the iif address) was
+    kernel-incorrect for the output hook. *)
+Definition redir_spec (fam : string) : nat_spec :=
+  {| nat_imms := []; nat_field := None; nat_map := None; nat_src := None;
+     nat_kind := "redir"; nat_family := fam;
+     nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None; nat_flags := 0 |}.
+Definition redir_rule (fam : string) : rule :=
+  {| r_body := []; r_verdict := Continue; r_vmap := None; r_nat := Some (redir_spec fam);
+     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+
+(* At the OUTPUT hook, redirect rewrites the destination to the LOOPBACK constant
+   (127.0.0.1 for ip, ::1 for ip6), INDEPENDENT of the inbound-interface address. *)
+Theorem redir_output_ip4_loopback : forall p,
+  apply_nat Houtput (redir_rule "ip") p = set_daddr "ip" p [127;0;0;1].
+Proof. reflexivity. Qed.
+
+Theorem redir_output_ip6_loopback : forall p,
+  apply_nat Houtput (redir_rule "ip6") p
+    = set_daddr "ip6" p [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1].
+Proof. reflexivity. Qed.
+
+(* At PRE_ROUTING, redirect still uses the inbound-interface address. *)
+Theorem redir_prerouting_iifaddr : forall p,
+  apply_nat Hprerouting (redir_rule "ip") p
+    = set_daddr "ip" p (e_ifaddr (pkt_env p) (field_value FMetaIifname p)).
+Proof. reflexivity. Qed.
+
+(* The fix is observable on a well-formed IPv4 packet: when the inbound-interface
+   address is NOT the loopback (the usual case) and the address slot is 4 bytes,
+   reading `ip daddr` back after an OUTPUT-hook redirect yields 127.0.0.1, whereas
+   after a PRE_ROUTING redirect it yields the iif address — so the two hooks
+   diverge.  Before the fix [apply_nat] was hook-blind and these coincided. *)
+Theorem redir_output_differs_from_prerouting : forall p,
+  20 <= List.length (pkt_nh p) ->
+  List.length (e_ifaddr (pkt_env p) (field_value FMetaIifname p)) = 4 ->
+  e_ifaddr (pkt_env p) (field_value FMetaIifname p) <> [127;0;0;1] ->
+  apply_nat Houtput (redir_rule "ip") p <> apply_nat Hprerouting (redir_rule "ip") p.
+Proof.
+  intros p Hnh Hlen Hne Heq.
+  apply Hne.
+  assert (Hread :
+    field_value FIp4Daddr (apply_nat Houtput (redir_rule "ip") p)
+    = field_value FIp4Daddr (apply_nat Hprerouting (redir_rule "ip") p))
+    by (rewrite Heq; reflexivity).
+  rewrite redir_output_ip4_loopback, redir_prerouting_iifaddr in Hread.
+  rewrite (daddr_after_set p [127;0;0;1] Hnh eq_refl) in Hread.
+  rewrite (daddr_after_set p _ Hnh Hlen) in Hread.
+  symmetry; exact Hread.
 Qed.

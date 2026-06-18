@@ -333,7 +333,7 @@ let check_optiplex_mark () =
   let p_in = mk_pkt_dport ~env ~dport:[187;138] in   (* dport 48010 *)
   Printf.printf "    packet in:  mark=%s\n" (let m = mark_of p_in in if m=[] then "(unset)" else show m);
   (* traverse the WHOLE prerouting chain; observe the verdict AND the packet out *)
-  let (v_pre, p_out) = Semantics.eval_chain_trace prerouting p_in in
+  let (v_pre, p_out) = Semantics.eval_chain_trace Semantics.Hprerouting prerouting p_in in
   Printf.printf "    prerouting: verdict=%s, packet out mark=%s\n"
     (verdict_str v_pre) (show (mark_of p_out));
   check "prerouting accepts" (v_pre = Verdict.Accept);
@@ -355,14 +355,14 @@ let check_optiplex_mark () =
         | Packet.MKmark -> mark99 | Packet.MKoifname -> eth0 | _ -> []);
       pkt_nh = Stdlib.List.init 20 (fun _ -> 0) } in       (* saddr starts 0.0.0.0 *)
   let saddr_in  = Syntax.field_value Syntax.FIp4Saddr p_masq in
-  let (_, p_masq_out) = Semantics.eval_chain_trace postrouting p_masq in
+  let (_, p_masq_out) = Semantics.eval_chain_trace Semantics.Hpostrouting postrouting p_masq in
   let saddr_out = Syntax.field_value Syntax.FIp4Saddr p_masq_out in
   Printf.printf "    masquerade: ip saddr  %s -> %s  (eth0's IP)\n"
     (show saddr_in) (show saddr_out);
   check "masquerade rewrites saddr to exit-iface IP" (data_eq saddr_out eth0_ip);
   (* contrast: an RDP/3389 packet is marked at rule 1; an unmarked packet at
      postrouting does NOT masquerade *)
-  let (_, p_rdp_out) = Semantics.eval_chain_trace prerouting (mk_pkt_dport ~env ~dport:[13;61]) in
+  let (_, p_rdp_out) = Semantics.eval_chain_trace Semantics.Hprerouting prerouting (mk_pkt_dport ~env ~dport:[13;61]) in
   check "RDP/3389 also marked 0x99" (data_eq (mark_of p_rdp_out) mark99);
   check "unmarked packet not masqueraded"
     (Semantics.rule_applies post1 (mk_pkt ~env ()) = false);
@@ -390,7 +390,7 @@ let check_dnat_rewrite () =
   let nh = [0x45;0;0;0; 0;0;0;0; 64;6;0;0; 1;2;3;4; 192;168;0;9] in
   let p_in = { (mk_pkt ~env ()) with Packet.pkt_nh = nh } in
   let daddr_in = Syntax.field_value Syntax.FIp4Daddr p_in in
-  let (v, p_out) = Semantics.eval_chain_trace prerouting p_in in
+  let (v, p_out) = Semantics.eval_chain_trace Semantics.Hprerouting prerouting p_in in
   let daddr_out = Syntax.field_value Syntax.FIp4Daddr p_out in
   Printf.printf "    dnat: ip daddr  %s -> %s  (target 10.0.0.1)\n"
     (show daddr_in) (show daddr_out);
@@ -427,7 +427,7 @@ let check_ip6_nat () =
       .Nft_lower.p_env in
   let p_in = { (mk_pkt ~env ()) with Packet.pkt_nh = nh } in
   (* ip6 dnat: the IPv6 destination (bytes 24..39) becomes the target *)
-  let p_d = Semantics.apply_nat (mk_rule (mk_spec Syntax.nat_dnat_kind)) p_in in
+  let p_d = Semantics.apply_nat Semantics.Hprerouting (mk_rule (mk_spec Syntax.nat_dnat_kind)) p_in in
   let d6 = Syntax.field_value Syntax.FIp6Daddr p_d in
   Printf.printf "    ip6 dnat: ip6 daddr -> %s\n" (show d6);
   check "ip6 dnat sets the 16-byte IPv6 destination to the target"
@@ -438,7 +438,7 @@ let check_ip6_nat () =
     (data_eq (Syntax.field_value Syntax.FIp6Saddr p_d)
              (Syntax.field_value Syntax.FIp6Saddr p_in));
   (* ip6 snat: the IPv6 source (bytes 8..23) becomes the target *)
-  let p_s = Semantics.apply_nat (mk_rule (mk_spec Syntax.nat_snat_kind)) p_in in
+  let p_s = Semantics.apply_nat Semantics.Hprerouting (mk_rule (mk_spec Syntax.nat_snat_kind)) p_in in
   check "ip6 snat sets the 16-byte IPv6 source to the target"
     (data_eq (Syntax.field_value Syntax.FIp6Saddr p_s) tgt6);
   check "ip6 snat preserves the network-header length"
@@ -449,9 +449,61 @@ let check_ip6_nat () =
       nat_src = None; nat_kind = Syntax.nat_dnat_kind; nat_family = Syntax.nat_fam_ip4;
       nat_amin = None; nat_amax = None; nat_pmin = None; nat_pmax = None;
       nat_flags = 0 } in
-  let p4 = Semantics.apply_nat (mk_rule v4spec) p_in in
+  let p4 = Semantics.apply_nat Semantics.Hprerouting (mk_rule v4spec) p_in in
   check "ip (v4) dnat still rewrites the IPv4 destination slot"
     (data_eq (Syntax.field_value Syntax.FIp4Daddr p4) [10;0;0;1]);
+  Printf.printf "\n"
+
+(* (G') HOOK-DEPENDENT redirect.  `redirect` is a destination-NAT whose target
+   the kernel core picks by the HOOK (nf_nat_redirect_ipv4/ipv6, branch on
+   hooknum): at the OUTPUT hook (NF_INET_LOCAL_OUT) "local packets go to
+   loopback" (127.0.0.1 / ::1); at PRE_ROUTING it uses the inbound interface's
+   primary address.  nft_redir_validate permits exactly {prerouting, output}.
+   Semantics.apply_nat now threads the hook; before the fix it was hook-blind and
+   always used the iif address, which is kernel-incorrect at the output hook. *)
+let check_redir_hook () =
+  Printf.printf "=== (G') hook-dependent redirect destination ===\n";
+  let mk_spec fam =
+    { Syntax.nat_imms = []; nat_field = None; nat_map = None; nat_src = None;
+      nat_kind = Syntax.nat_redir_kind; nat_family = fam;
+      nat_amin = None; nat_amax = None; nat_pmin = None; nat_pmax = None;
+      nat_flags = 0 } in
+  let mk_rule sp =
+    { Syntax.r_body = []; r_verdict = Verdict.Continue; r_vmap = None;
+      r_nat = Some sp; r_tproxy = None; r_fwd = None; r_queue = None;
+      r_after = [] } in
+  (* inbound interface eth0 has a non-loopback primary address 203.0.113.5 *)
+  let eth0 = ascii "eth0" and eth0_ip = [203;0;113;5] in
+  let env =
+    { (Nft_parse.parse_string
+         "table ip nat {\n  chain c { type nat hook output priority 0; }\n}\n")
+        .Nft_lower.p_env
+      with Packet.e_ifaddr = (fun n -> if n = eth0 then eth0_ip else []) } in
+  let nh = [0x45;0;0;0; 0;0;0;0; 64;6;0;0; 1;2;3;4; 192;168;0;9] in
+  let p_in =
+    { (mk_pkt ~env ()) with
+      Packet.pkt_meta = (fun k -> match k with Packet.MKiifname -> eth0 | _ -> []);
+      pkt_nh = nh } in
+  (* OUTPUT hook: destination forced to the loopback 127.0.0.1 (NOT eth0's IP) *)
+  let p_out = Semantics.apply_nat Semantics.Houtput (mk_rule (mk_spec Syntax.nat_fam_ip4)) p_in in
+  let d_out = Syntax.field_value Syntax.FIp4Daddr p_out in
+  Printf.printf "    redirect@output:     ip daddr -> %s  (want 127.0.0.1)\n" (show d_out);
+  check "output-hook redirect forces daddr to 127.0.0.1" (data_eq d_out [127;0;0;1]);
+  check "output-hook redirect does NOT use the iif address" (not (data_eq d_out eth0_ip));
+  (* PRE_ROUTING hook: destination becomes the inbound interface's address *)
+  let p_pre = Semantics.apply_nat Semantics.Hprerouting (mk_rule (mk_spec Syntax.nat_fam_ip4)) p_in in
+  let d_pre = Syntax.field_value Syntax.FIp4Daddr p_pre in
+  Printf.printf "    redirect@prerouting: ip daddr -> %s  (want eth0's IP)\n" (show d_pre);
+  check "prerouting-hook redirect uses the iif address" (data_eq d_pre eth0_ip);
+  check "redirect diverges by hook (output<>prerouting)" (not (data_eq d_out d_pre));
+  (* IPv6 output-hook redirect -> ::1 *)
+  let nh6 = Stdlib.List.init 40 (fun i -> i) in
+  let p6_in = { (mk_pkt ~env ()) with Packet.pkt_nh = nh6;
+      Packet.pkt_meta = (fun k -> match k with Packet.MKiifname -> eth0 | _ -> []) } in
+  let p6_out = Semantics.apply_nat Semantics.Houtput (mk_rule (mk_spec Syntax.nat_fam_ip6)) p6_in in
+  let d6 = Syntax.field_value Syntax.FIp6Daddr p6_out in
+  check "ip6 output-hook redirect forces daddr to ::1"
+    (data_eq d6 [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1]);
   Printf.printf "\n"
 
 (* (H) iif/oif NUMERIC INTERFACE-INDEX lowering.  iif/oif read the numeric
@@ -886,6 +938,7 @@ let () =
     check_optiplex_mark ();
     check_dnat_rewrite ();
     check_ip6_nat ();
+    check_redir_hook ();
     check_iif_index ();
     check_ct_state ();
     check_tcp_flags ();

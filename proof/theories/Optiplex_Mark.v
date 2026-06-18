@@ -155,8 +155,8 @@ Qed.
    source-NAT step [apply_masq] is a no-op on it *)
 Lemma pre2_no_masq : r_nat pre2 = None.
 Proof. reflexivity. Qed.
-Lemma apply_masq_none : forall r p, r_nat r = None -> apply_nat r p = p.
-Proof. intros r p H. unfold apply_nat. rewrite H. reflexivity. Qed.
+Lemma apply_masq_none : forall h r p, r_nat r = None -> apply_nat h r p = p.
+Proof. intros h r p H. unfold apply_nat. rewrite H. reflexivity. Qed.
 
 (** ** What comes out of the prerouting chain.
 
@@ -170,7 +170,7 @@ Theorem streaming_prerouting_io : forall p,
   field_value FMetaL4proto p = l4_tcp ->
   field_value FThDport p = port48010 ->
   read_payload_ok PTransport 2 2 p = true ->
-  eval_chain_trace filter_prerouting p = (Accept, set_meta p MKmark mark99).
+  eval_chain_trace Hprerouting filter_prerouting p = (Accept, set_meta p MKmark mark99).
 Proof.
   intros p Henv Hiif Hfib Hl4 Hdport Hok.
   unfold eval_chain_trace. rewrite prerouting_rules_eq.
@@ -183,7 +183,7 @@ Proof.
   cbn [eval_rules_trace]. rewrite pre2_streaming_applies by assumption.
   rewrite (pre2_loadable p Hok).
   rewrite pre2_outcome_accept. cbn [terminal].
-  rewrite (apply_masq_none pre2 _ pre2_no_masq).
+  rewrite (apply_masq_none Hprerouting pre2 _ pre2_no_masq).
   rewrite pre2_streaming_marks by assumption. reflexivity.
 Qed.
 
@@ -227,10 +227,10 @@ Proof.
 Qed.
 
 (* applying its NAT effect source-rewrites to the exit interface's address *)
-Lemma post1_apply_masq : forall p,
-  apply_nat post1 p = set_saddr "ip" p (e_ifaddr (pkt_env p) (field_value FMetaOifname p)).
+Lemma post1_apply_masq : forall h p,
+  apply_nat h post1 p = set_saddr "ip" p (e_ifaddr (pkt_env p) (field_value FMetaOifname p)).
 Proof.
-  intro p. unfold apply_nat, nat_addrfamily, post1, filter_postrouting.
+  intros h p. unfold apply_nat, nat_addrfamily, post1, filter_postrouting.
   cbn -[set_saddr e_ifaddr field_value pkt_env]. reflexivity.
 Qed.
 
@@ -239,7 +239,7 @@ Qed.
 Theorem masquerade_output : forall p ifaddr,
   field_value FMetaMark p = mark99 ->
   e_ifaddr (pkt_env p) (field_value FMetaOifname p) = ifaddr ->
-  eval_chain_trace filter_postrouting p = (Accept, set_saddr "ip" p ifaddr).
+  eval_chain_trace Hpostrouting filter_postrouting p = (Accept, set_saddr "ip" p ifaddr).
 Proof.
   intros p ifaddr Hmark Hifa.
   unfold eval_chain_trace. rewrite postrouting_rules_eq. cbn [eval_rules_trace].
@@ -270,7 +270,7 @@ Theorem masquerade_source_is_exit_iface : forall p ifaddr,
   field_value FMetaMark p = mark99 ->
   e_ifaddr (pkt_env p) (field_value FMetaOifname p) = ifaddr ->
   List.length ifaddr = 4 -> 16 <= List.length (pkt_nh p) ->
-  field_value FIp4Saddr (snd (eval_chain_trace filter_postrouting p)) = ifaddr.
+  field_value FIp4Saddr (snd (eval_chain_trace Hpostrouting filter_postrouting p)) = ifaddr.
 Proof.
   intros p ifaddr Hmark Hifa Hlen Hnh.
   rewrite (masquerade_output p ifaddr Hmark Hifa). cbn [snd].
@@ -292,7 +292,7 @@ Theorem streaming_flow_whole_ruleset : forall p,
   field_value FThDport p = port48010 ->
   read_payload_ok PTransport 2 2 p = true ->
   (* prerouting: packet in p -> (Accept, p with mark 0x99) out *)
-  eval_chain_trace filter_prerouting p = (Accept, set_meta p MKmark mark99)
+  eval_chain_trace Hprerouting filter_prerouting p = (Accept, set_meta p MKmark mark99)
   (* postrouting reads the mark and masquerades (terminal accept) *)
   /\ rule_applies post1 (set_meta p MKmark mark99) = true
   /\ eval_chain_mut filter_postrouting (set_meta p MKmark mark99) = Accept.
