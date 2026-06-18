@@ -29,15 +29,18 @@ Open Scope string_scope.
 Theorem unlisted_daddr_unconstrained : forall p,
   pkt_env p = gen_env ->
   field_value Fobrname p = sbytes "br.20" ->
+  read_payload_ok PNetwork 16 4 p = true ->
   set_mem (field_value FIp4Daddr p) (e_set gen_env "vmaddrs") = false ->
   eval_table vm_fuel vmfilter_chains vmfilter_output p = Accept.
 Proof.
-  intros p Henv Hobr Hnotin. unfold Fobrname in Hobr.
+  intros p Henv Hobr Hok Hnotin. unfold Fobrname in Hobr.
   unfold eval_table, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
   (* the antispoof rule does NOT fire: `ip daddr @vmaddrs` is false *)
   erewrite erj_skip.
-  2:{ unfold rule_applies. cbn -[field_value pkt_env].
-      rewrite Hobr, !app_nil_r, Henv, Hnotin. vm_compute. reflexivity. }
+  2:{ unfold rule_applies, eval_matchcond, match_loadable, eval_matchcond_body,
+        fields_loadable, field_loadable, load_ok.
+      cbn -[field_value pkt_env read_payload_ok].
+      rewrite ?Hok, Hobr, ?app_nil_r, Henv, Hnotin. vm_compute. reflexivity. }
   (* the hass rule does not fire either (its guard is obrname br.1, not br.20) *)
   erewrite erj_skip.
   2:{ unfold rule_applies. cbn -[field_value pkt_env]. rewrite Hobr.
@@ -52,11 +55,12 @@ Qed.
 Theorem spoof_to_unlisted_address : forall p,
   pkt_env p = gen_env ->
   field_value Fobrname p = sbytes "br.20" ->
+  read_payload_ok PNetwork 16 4 p = true ->
   field_value FIp4Daddr p = ip4 192 168 51 13 ->        (* not a registered VM *)
   field_value FMetaOifname p = sbytes "inc-budge" ->     (* a mismatched interface *)
   eval_table vm_fuel vmfilter_chains vmfilter_output p = Accept.
 Proof.
-  intros p Henv Hobr Hdaddr Hoif.
+  intros p Henv Hobr Hok Hdaddr Hoif.
   apply unlisted_daddr_unconstrained; auto.
   rewrite Hdaddr. vm_compute. reflexivity.
 Qed.

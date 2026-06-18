@@ -66,11 +66,17 @@ Lemma pre1_streaming_noop : forall p,
   field_value (FFib "daddr" FRtype) p = fib_local ->
   field_value FMetaL4proto p = l4_tcp ->
   field_value FThDport p = port48010 ->
+  read_payload_ok PTransport 2 2 p = true ->
   dsl_writes pre1 p = p.
 Proof.
-  intros p Henv Hiif Hfib Hl4 Hdport.
-  unfold dsl_writes, pre1, filter_prerouting. cbn -[field_value pkt_env set_meta].
-  rewrite !Hiif, !Hfib, !Hl4, !Hdport, !Henv. cbn -[set_meta]. reflexivity.
+  intros p Henv Hiif Hfib Hl4 Hdport Hok.
+  unfold dsl_writes, pre1, filter_prerouting.
+  cbn -[field_value pkt_env set_meta read_payload_ok].
+  unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
+    field_loadable, load_ok.
+  cbn -[field_value pkt_env set_meta read_payload_ok].
+  rewrite ?Hok, !Hiif, !Hfib, !Hl4, !Hdport, !Henv.
+  cbn -[set_meta read_payload_ok]. rewrite ?Hok. cbn -[set_meta]. reflexivity.
 Qed.
 
 (* rule 2 matches a streaming packet and sets the mark: the packet that comes out
@@ -81,11 +87,17 @@ Lemma pre2_streaming_marks : forall p,
   field_value (FFib "daddr" FRtype) p = fib_local ->
   field_value FMetaL4proto p = l4_tcp ->
   field_value FThDport p = port48010 ->
+  read_payload_ok PTransport 2 2 p = true ->
   dsl_writes pre2 p = set_meta p MKmark mark99.
 Proof.
-  intros p Henv Hiif Hfib Hl4 Hdport.
-  unfold dsl_writes, pre2, filter_prerouting. cbn -[field_value pkt_env set_meta].
-  rewrite !Hiif, !Hfib, !Hl4, !Hdport, !Henv. cbn -[set_meta]. reflexivity.
+  intros p Henv Hiif Hfib Hl4 Hdport Hok.
+  unfold dsl_writes, pre2, filter_prerouting.
+  cbn -[field_value pkt_env set_meta read_payload_ok].
+  unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
+    field_loadable, load_ok.
+  cbn -[field_value pkt_env set_meta read_payload_ok].
+  rewrite ?Hok, !Hiif, !Hfib, !Hl4, !Hdport, !Henv.
+  cbn -[set_meta read_payload_ok]. rewrite ?Hok. cbn -[set_meta]. reflexivity.
 Qed.
 
 Lemma pre1_streaming_skips : forall p,
@@ -94,11 +106,16 @@ Lemma pre1_streaming_skips : forall p,
   field_value (FFib "daddr" FRtype) p = fib_local ->
   field_value FMetaL4proto p = l4_tcp ->
   field_value FThDport p = port48010 ->
+  read_payload_ok PTransport 2 2 p = true ->
   rule_applies pre1 p = false.
 Proof.
-  intros p Henv Hiif Hfib Hl4 Hdport.
-  unfold rule_applies, pre1, filter_prerouting. cbn -[field_value pkt_env].
-  rewrite !Hiif, !Hfib, !Hl4, !Hdport, !Henv. vm_compute. reflexivity.
+  intros p Henv Hiif Hfib Hl4 Hdport Hok.
+  unfold rule_applies, pre1, filter_prerouting.
+  cbn -[field_value pkt_env read_payload_ok].
+  unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
+    field_loadable, load_ok.
+  cbn -[field_value pkt_env read_payload_ok].
+  rewrite ?Hok, !Hiif, !Hfib, !Hl4, !Hdport, !Henv. vm_compute. reflexivity.
 Qed.
 
 Lemma pre2_streaming_applies : forall p,
@@ -107,15 +124,30 @@ Lemma pre2_streaming_applies : forall p,
   field_value (FFib "daddr" FRtype) p = fib_local ->
   field_value FMetaL4proto p = l4_tcp ->
   field_value FThDport p = port48010 ->
+  read_payload_ok PTransport 2 2 p = true ->
   rule_applies pre2 p = true.
 Proof.
-  intros p Henv Hiif Hfib Hl4 Hdport.
-  unfold rule_applies, pre2, filter_prerouting. cbn -[field_value pkt_env].
-  rewrite !Hiif, !Hfib, !Hl4, !Hdport, !Henv. vm_compute. reflexivity.
+  intros p Henv Hiif Hfib Hl4 Hdport Hok.
+  unfold rule_applies, pre2, filter_prerouting.
+  cbn -[field_value pkt_env read_payload_ok].
+  unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
+    field_loadable, load_ok.
+  cbn -[field_value pkt_env read_payload_ok].
+  rewrite ?Hok, !Hiif, !Hfib, !Hl4, !Hdport, !Henv. vm_compute. reflexivity.
 Qed.
 
 Lemma pre2_outcome_accept : forall p, outcome pre2 p = Some Accept.
 Proof. intros p. reflexivity. Qed.
+
+(* the streaming rule is loadable: its only payload read is the th-dport set key *)
+Lemma pre2_loadable : forall p,
+  read_payload_ok PTransport 2 2 p = true -> rule_loadable pre2 p = true.
+Proof.
+  intros p Hok. unfold rule_loadable, pre2, filter_prerouting, end_loadable,
+    tail_loadable, terminal_loadable, body_item_loadable, match_loadable,
+    stmt_loadable, vsrc_loadable, fields_loadable, field_loadable, load_ok.
+  cbn -[read_payload_ok]. rewrite ?Hok. reflexivity.
+Qed.
 
 (* the prerouting streaming rule is a dnat, not a masquerade — so the trace's
    source-NAT step [apply_masq] is a no-op on it *)
@@ -135,16 +167,19 @@ Theorem streaming_prerouting_io : forall p,
   field_value (FFib "daddr" FRtype) p = fib_local ->
   field_value FMetaL4proto p = l4_tcp ->
   field_value FThDport p = port48010 ->
+  read_payload_ok PTransport 2 2 p = true ->
   eval_chain_trace filter_prerouting p = (Accept, set_meta p MKmark mark99).
 Proof.
-  intros p Henv Hiif Hfib Hl4 Hdport.
+  intros p Henv Hiif Hfib Hl4 Hdport Hok.
   unfold eval_chain_trace. rewrite prerouting_rules_eq.
   (* rule 1: traversed but does not match; threads its (no-op) writes *)
   cbn [eval_rules_trace]. rewrite pre1_streaming_skips by assumption.
+  rewrite Bool.andb_false_r.
   rewrite pre1_streaming_noop by assumption.
   (* rule 2: matches, terminal accept, leaves the marked packet (it is a dnat,
      so apply_masq is a no-op — the source rewrite happens at postrouting) *)
   cbn [eval_rules_trace]. rewrite pre2_streaming_applies by assumption.
+  rewrite (pre2_loadable p Hok).
   rewrite pre2_outcome_accept. cbn [terminal].
   rewrite (apply_masq_none pre2 _ pre2_no_masq).
   rewrite pre2_streaming_marks by assumption. reflexivity.
@@ -252,13 +287,14 @@ Theorem streaming_flow_whole_ruleset : forall p,
   field_value (FFib "daddr" FRtype) p = fib_local ->
   field_value FMetaL4proto p = l4_tcp ->
   field_value FThDport p = port48010 ->
+  read_payload_ok PTransport 2 2 p = true ->
   (* prerouting: packet in p -> (Accept, p with mark 0x99) out *)
   eval_chain_trace filter_prerouting p = (Accept, set_meta p MKmark mark99)
   (* postrouting reads the mark and masquerades (terminal accept) *)
   /\ rule_applies post1 (set_meta p MKmark mark99) = true
   /\ eval_chain_mut filter_postrouting (set_meta p MKmark mark99) = Accept.
 Proof.
-  intros p Henv Hiif Hfib Hl4 Hdport.
+  intros p Henv Hiif Hfib Hl4 Hdport Hok.
   assert (Hmark : field_value FMetaMark (set_meta p MKmark mark99) = mark99)
     by apply mark_after_set.
   split; [ now apply streaming_prerouting_io | split ].

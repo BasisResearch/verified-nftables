@@ -60,7 +60,9 @@ let mk_pkt ?(env = empty_env) ?(l4proto = [6]) ?(nh = []) ?(th = []) ?(fibkey = 
     pkt_numgen = dummy0; pkt_osf = [];
     pkt_tunnel = (fun _ -> []);
     pkt_symhash = (fun _ _ -> []); pkt_xfrm = (fun _ _ _ -> []);
-    pkt_ctdir = (fun _ _ -> []); pkt_inner = (fun _ _ _ _ -> []) }
+    pkt_ctdir = (fun _ _ -> []); pkt_inner = (fun _ _ _ _ -> []);
+    (* well-formed, non-fragment, L4 header parsed: transport reads succeed *)
+    pkt_have_l4 = true; pkt_fragoff = 0 }
 
 (* an IPv4 network header: src at offset 12, dst at offset 16 (4 bytes each) *)
 let nh ~saddr ~daddr = (Stdlib.List.init 12 (fun _ -> 0)) @ saddr @ daddr

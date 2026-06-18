@@ -86,16 +86,33 @@ Proof.
     [reflexivity | rewrite IH; reflexivity].
 Qed.
 
+Lemma body_stmts_app : forall a b,
+  body_stmts (a ++ b) = body_stmts a ++ body_stmts b.
+Proof. intros. unfold body_stmts. apply flat_map_app. Qed.
+
+Lemma body_stmts_map_BStmt : forall l, body_stmts (map BStmt l) = l.
+Proof.
+  unfold body_stmts. induction l as [| s l IH]; simpl;
+    [reflexivity | rewrite IH; reflexivity].
+Qed.
+
+Lemma body_stmts_map_BMatch : forall l, body_stmts (map BMatch l) = nil.
+Proof.
+  unfold body_stmts. induction l as [| m l IH]; simpl;
+    [reflexivity | rewrite IH; reflexivity].
+Qed.
+
 (** ** Optimization 1: dead-rule elimination. *)
 
 Definition is_empty {A} (l : list A) : bool :=
   match l with [] => true | _ => false end.
 
-(** A rule that matches everything and stops chain traversal: no match
-    conditions, a terminal static verdict, and no verdict-map (whose result
-    could be a fall-through). *)
+(** A rule that matches everything and stops chain traversal: an EMPTY body (no
+    match conditions and no statements — so nothing can break / NFT_BREAK on any
+    packet, making the rule unconditionally fire), a terminal static verdict, and
+    no verdict-map (whose result could be a fall-through). *)
 Definition shadows (r : rule) : bool :=
-  is_empty (body_matches (r_body r)) && terminal (r_verdict r) &&
+  is_empty (r_body r) && terminal (r_verdict r) &&
   (match r_vmap r with None => true | Some _ => false end) &&
   (match r_nat r with None => true | Some _ => false end) &&
   (match r_tproxy r with None => true | Some _ => false end) &&
@@ -121,17 +138,19 @@ Proof.
       apply andb_true_iff in Hs3. destruct Hs3 as [Hs4 Hnat].
       apply andb_true_iff in Hs4. destruct Hs4 as [Hs5 Hvm].
       apply andb_true_iff in Hs5. destruct Hs5 as [Hm Hv].
-      cbn [eval_rules]. unfold rule_applies, outcome, terminal_outcome.
-      destruct (body_matches (r_body r)) as [| m ms] eqn:Em; [| discriminate Hm].
+      cbn [eval_rules]. unfold rule_loadable, rule_applies, end_loadable, tail_loadable,
+        terminal_loadable, outcome, terminal_outcome.
+      destruct (r_body r) as [| it body] eqn:Eb; [| discriminate Hm].
       destruct (r_vmap r) as [vm |] eqn:Evm; [discriminate Hvm |].
       destruct (r_nat r) as [n |] eqn:Enat; [discriminate Hnat |].
       destruct (r_tproxy r) as [t |] eqn:Etp; [discriminate Htp |].
       destruct (r_fwd r) as [w |] eqn:Efwd; [discriminate Hfwd |].
       destruct (r_queue r) as [q |] eqn:Eq; [discriminate Hq |].
-      cbn [forallb]. destruct (r_verdict r) eqn:Ev; cbn in Hv |- *;
+      cbn [forallb body_matches flat_map].
+      destruct (r_verdict r) eqn:Ev; cbn in Hv |- *;
         try discriminate Hv; reflexivity.
     + (* keep r, recurse *)
-      cbn [eval_rules]. destruct (rule_applies r p).
+      cbn [eval_rules]. destruct (rule_loadable r p && rule_applies r p).
       * destruct (outcome r p) as [v |].
         -- destruct (terminal v); [reflexivity | apply IH].
         -- apply IH.
@@ -179,13 +198,50 @@ Qed.
 Lemma outcome_dedup : forall r p, outcome (dedup_rule r) p = outcome r p.
 Proof. intros r p. unfold outcome, dedup_rule. reflexivity. Qed.
 
+(** [body_item_loadable] of a body splits into the matches' and statements'
+    loadability, so dedup/reorder of the matches preserves it. *)
+Lemma body_loadable_split : forall body p,
+  forallb (fun it => body_item_loadable it p) body
+  = forallb (fun m => match_loadable m p) (body_matches body)
+    && forallb (fun s => stmt_loadable s p) (body_stmts body).
+Proof.
+  induction body as [| it body IH]; intros p; [reflexivity|].
+  assert (Hbm : forall x l, body_matches (x :: l) =
+            match x with BMatch m => m :: body_matches l | BStmt _ => body_matches l end)
+    by (intros [m'|s'] l; reflexivity).
+  assert (Hbs : forall x l, body_stmts (x :: l) =
+            match x with BStmt s => s :: body_stmts l | BMatch _ => body_stmts l end)
+    by (intros [m'|s'] l; reflexivity).
+  destruct it as [m | s]; cbn [forallb body_item_loadable]; rewrite Hbm, Hbs;
+    cbn [forallb]; rewrite IH;
+    generalize (forallb (fun m0 => match_loadable m0 p) (body_matches body)) as bM;
+    generalize (forallb (fun s0 => stmt_loadable s0 p) (body_stmts body)) as bS; intros bS bM.
+  - destruct (match_loadable m p), bM, bS; reflexivity.
+  - destruct (stmt_loadable s p), bM, bS; reflexivity.
+Qed.
+
+Lemma end_loadable_dedup : forall r p, end_loadable (dedup_rule r) p = end_loadable r p.
+Proof. intros r p. unfold end_loadable, tail_loadable, terminal_loadable, vmap_loadable,
+  terminal_outcome, dedup_rule; reflexivity. Qed.
+
+Lemma rule_loadable_dedup : forall r p, rule_loadable (dedup_rule r) p = rule_loadable r p.
+Proof.
+  intros r p. unfold rule_loadable. rewrite end_loadable_dedup. f_equal.
+  unfold dedup_rule. cbn [r_body].
+  rewrite body_loadable_split.
+  rewrite body_matches_app, body_matches_map_BMatch, body_matches_map_BStmt, app_nil_r.
+  rewrite body_stmts_app, body_stmts_map_BMatch, body_stmts_map_BStmt. cbn [app].
+  rewrite (forallb_nodup _ matchcond_eq_dec).
+  symmetry. apply body_loadable_split.
+Qed.
+
 Lemma eval_rules_map_dedup : forall rs p,
   eval_rules (map dedup_rule rs) p = eval_rules rs p.
 Proof.
   induction rs as [| r rs IH]; intros p.
   - reflexivity.
-  - cbn [map eval_rules]. rewrite rule_applies_dedup, outcome_dedup.
-    destruct (rule_applies r p).
+  - cbn [map eval_rules]. rewrite rule_applies_dedup, outcome_dedup, rule_loadable_dedup.
+    destruct (rule_loadable r p && rule_applies r p).
     + destruct (outcome r p) as [v |].
       * destruct (terminal v); [reflexivity | apply IH].
       * apply IH.
@@ -236,14 +292,27 @@ Proof.
   cbn [map forallb]. rewrite simplify_match_correct, IH. reflexivity.
 Qed.
 
+Lemma rule_loadable_simplify : forall r p,
+  rule_loadable (simplify_rule r) p = rule_loadable r p.
+Proof.
+  intros r p. unfold rule_loadable.
+  replace (end_loadable (simplify_rule r) p) with (end_loadable r p)
+    by (unfold end_loadable, tail_loadable, terminal_loadable, vmap_loadable,
+        terminal_outcome, simplify_rule; reflexivity).
+  f_equal. unfold simplify_rule. cbn [r_body].
+  induction (r_body r) as [| it b IH]; [reflexivity|].
+  destruct it as [m | s]; cbn [map forallb body_item_loadable simplify_item];
+    rewrite IH; reflexivity.
+Qed.
+
 Lemma eval_rules_map_simplify : forall rs p,
   eval_rules (map simplify_rule rs) p = eval_rules rs p.
 Proof.
   induction rs as [| r rs IH]; intros p; [reflexivity |].
-  cbn [map eval_rules]. rewrite rule_applies_simplify.
+  cbn [map eval_rules]. rewrite rule_applies_simplify, rule_loadable_simplify.
   replace (outcome (simplify_rule r) p) with (outcome r p)
     by (unfold outcome, simplify_rule; reflexivity).
-  destruct (rule_applies r p).
+  destruct (rule_loadable r p && rule_applies r p).
   - destruct (outcome r p) as [v |].
     + destruct (terminal v); [reflexivity | apply IH].
     + apply IH.
@@ -285,17 +354,20 @@ Proof.
     apply andb_true_iff in Hn as [Hn Hnat].
     apply andb_true_iff in Hn as [Hn Hvm].
     apply andb_true_iff in Hn as [Hba Hv].
-    apply andb_true_iff in Hba as [Hb _].
-    cbn [eval_rules]. unfold rule_applies, outcome, terminal_outcome.
+    apply andb_true_iff in Hba as [Hb Hra].
+    cbn [eval_rules]. unfold rule_loadable, rule_applies, end_loadable, tail_loadable,
+      terminal_loadable, outcome, terminal_outcome.
     destruct (r_body r) as [| it b] eqn:Eb; [| discriminate Hb].
+    destruct (r_after r) as [| sa ra] eqn:Era; [| discriminate Hra].
     cbn [body_matches flat_map forallb].
     destruct (r_vmap r); [discriminate |].
     destruct (r_nat r); [discriminate |].
     destruct (r_tproxy r); [discriminate |].
     destruct (r_fwd r); [discriminate |].
     destruct (r_queue r); [discriminate |].
-    destruct (r_verdict r); cbn in Hv |- *; try discriminate Hv; reflexivity.
-  - cbn [eval_rules]. destruct (rule_applies r p).
+    destruct (r_verdict r); cbn in Hv |- *; try discriminate Hv;
+      rewrite ?Bool.andb_false_r, ?Bool.andb_true_r; reflexivity.
+  - cbn [eval_rules]. destruct (rule_loadable r p && rule_applies r p).
     + destruct (outcome r p) as [v |].
       * destruct (terminal v); [reflexivity | apply IH].
       * apply IH.

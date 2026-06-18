@@ -52,7 +52,10 @@ let mk_pkt ~env ?(ct = dummy0) ?(protocol = []) ?(l4proto = []) ?(iifname = [])
     pkt_numgen = dummy0; pkt_osf = [];
     pkt_tunnel = (fun _ -> []); pkt_symhash = (fun _ _ -> []);
     pkt_xfrm = (fun _ _ _ -> []); pkt_ctdir = (fun _ _ -> []);
-    pkt_inner = (fun _ _ _ _ -> []) }
+    pkt_inner = (fun _ _ _ _ -> []);
+    (* a well-formed (non-fragment) packet whose L4 header was parsed, so transport
+       payload loads succeed; transport-reading tests pad [th] to its read width *)
+    pkt_have_l4 = true; pkt_fragoff = 0 }
 
 (* wire constants, matching Example_Ruleset.v *)
 let cts_invalid = [0;0;0;1] and cts_established = [0;0;0;2]
@@ -104,6 +107,20 @@ let check_ruleset_nft () =
        ~l4proto:l4_icmp6 ~th:(th_icmptype 135) ()) Verdict.Accept;
   ignore icmp6_nd_nsol;
   want "forward_drops_all" forward (mk_pkt ~env ()) Verdict.Drop;
+  (* REGRESSION (NFT_BREAK soundness fix): a packet with NO usable transport header
+     (pkt_have_l4 = false, empty pkt_th) must NOT match `tcp dport != 22`; the
+     payload read BREAKs (the kernel NFT_BREAKs) so the rule does not fire and the
+     packet reaches the chain's `policy accept`.  The OLD truncating model
+     spuriously dropped it ([] != [0;22] -> match -> Drop). *)
+  let dropneq_chain : Syntax.chain =
+    { Syntax.c_policy = Verdict.Accept;
+      c_rules = [ { Syntax.r_body = [ Syntax.BMatch (Syntax.MNeq (Syntax.FThDport, [0;22])) ];
+                    r_verdict = Verdict.Drop; r_vmap = None; r_nat = None;
+                    r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } ] } in
+  let bad_pkt = { (mk_pkt ~env ()) with Packet.pkt_have_l4 = false; pkt_th = [] } in
+  want "nft_break: no-L4 tcp dport!=22 -> accept" dropneq_chain bad_pkt Verdict.Accept;
+  let frag_pkt = { (mk_pkt ~env ()) with Packet.pkt_fragoff = 8; pkt_th = [9;9;9;9] } in
+  want "nft_break: fragment tcp dport!=22 -> accept" dropneq_chain frag_pkt Verdict.Accept;
   Printf.printf "\n"
 
 (* ---------- (B) difftest ruleset vs glue.ml's known-good AST ---------- *)

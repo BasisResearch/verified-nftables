@@ -161,6 +161,15 @@ Record packet : Type := {
                                "meta load protocol").  The inner packet is a
                                separate packet, so its fields are an independent
                                oracle rather than a function of the outer headers. *)
+  pkt_have_l4 : bool;       (* whether the kernel set NFT_PKTINFO_L4PROTO for this
+                               packet (i.e. a transport/L4 header was parsed).  A
+                               TRANSPORT-base payload load on a packet WITHOUT this
+                               flag BREAKs the rule (kernel nft_payload.c
+                               nft_payload_eval: `if (!(pkt->flags &
+                               NFT_PKTINFO_L4PROTO) || pkt->fragoff) goto err;`). *)
+  pkt_fragoff : nat;        (* the IP fragment offset; a nonzero offset means this is
+                               a non-first fragment with no usable transport header,
+                               so a TRANSPORT-base load likewise BREAKs the rule. *)
 }.
 
 (** Read [len] bytes at [off] from a header byte string. *)
@@ -176,6 +185,39 @@ Definition read_payload (b : pbase) (off len : nat) (p : packet) : data :=
   | PInner     => slice (pkt_ih p) off len
   | PTunnel    => slice (pkt_tnl p) off len
   end.
+
+(** The header byte string a base reads from. *)
+Definition base_bytes (b : pbase) (p : packet) : list byte :=
+  match b with
+  | PLink      => pkt_lh p
+  | PNetwork   => pkt_nh p
+  | PTransport => pkt_th p
+  | PInner     => pkt_ih p
+  | PTunnel    => pkt_tnl p
+  end.
+
+(** Whether a payload read of [len] bytes at [off] from base [b] SUCCEEDS, i.e.
+    does NOT cause the kernel's nft_payload_eval to `goto err` (which sets the
+    verdict to NFT_BREAK and so makes the rule NOT match).  Faithful to
+    linux net/netfilter/nft_payload.c:
+
+      - a TRANSPORT (and decapsulated-INNER) load requires the L4 header was
+        parsed and the packet is not an IP fragment:
+          `if (!(pkt->flags & NFT_PKTINFO_L4PROTO) || pkt->fragoff) goto err;`
+      - ANY load must fit in the header bytes (skb_copy_bits returns <0 / the read
+        runs off the end of the header otherwise):
+          `if (skb_copy_bits(skb, offset, dest, priv->len) < 0) goto err;`
+
+    A failed read must FAIL the rule's match (return [false] here), never compare a
+    truncated/empty value — that silent truncation was the soundness bug. *)
+Definition read_payload_ok (b : pbase) (off len : nat) (p : packet) : bool :=
+  let l4_ok :=
+    match b with
+    | PTransport | PInner =>
+        andb (pkt_have_l4 p) (Nat.eqb (pkt_fragoff p) 0)
+    | _ => true
+    end in
+  andb l4_ok (negb (Nat.ltb (List.length (base_bytes b p)) (off + len))).
 
 (** Longest-prefix-match routing lookup: return the result-[res] component of the
     first route whose destination interval contains [key] (the table is kept

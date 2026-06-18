@@ -167,7 +167,7 @@ Proof. reflexivity. Qed.
 
 Lemma erj_cons : forall n cs r rest p,
   eval_rules_j (S n) cs (r :: rest) p =
-  (if rule_applies r p
+  (if andb (rule_loadable r p) (rule_applies r p)
    then match outcome r p with
         | None => eval_rules_j n cs rest p
         | Some Return => None
@@ -200,7 +200,11 @@ Ltac eval_fw Hpe :=
     | rewrite erj_nil
     | rewrite erj_cons
     | match goal with H : field_value _ _ = _ |- _ => rewrite H end
-    | progress cbn -[eval_rules_j field_value pkt_env] ];
+    | match goal with H : read_payload_ok _ _ _ _ = _ |- _ => rewrite H end
+    | progress unfold rule_loadable, rule_applies, end_loadable, tail_loadable,
+        terminal_loadable, vmap_loadable, body_item_loadable, match_loadable,
+        fields_loadable, field_loadable, load_ok, eval_matchcond, eval_matchcond_body
+    | progress cbn -[eval_rules_j field_value read_payload_ok pkt_env] ];
   reflexivity.
 
 (** ** The properties.
@@ -243,8 +247,9 @@ Theorem ssh_accepted : forall p,
   field_value FMetaProtocol p = eth_ip ->
   field_value FMetaL4proto p = l4_tcp ->
   field_value FThDport p = port 22 ->
+  read_payload_ok PTransport 2 2 p = true ->
   eval_table fw_fuel fw_chains inbound p = Accept.
-Proof. intros p Hpe Hct Hiif Hpr Hl4 Hdp. eval_fw Hpe. Qed.
+Proof. intros p Hpe Hct Hiif Hpr Hl4 Hdp Hok. eval_fw Hpe. Qed.
 
 (* A closed TCP port (e.g. 25/SMTP) on a new IPv4 connection is dropped: every
    rule falls through and the chain's `policy drop` applies.  This is the
@@ -256,8 +261,9 @@ Theorem smtp_dropped : forall p,
   field_value FMetaProtocol p = eth_ip ->
   field_value FMetaL4proto p = l4_tcp ->
   field_value FThDport p = port 25 ->
+  read_payload_ok PTransport 2 2 p = true ->
   eval_table fw_fuel fw_chains inbound p = Drop.
-Proof. intros p Hpe Hct Hiif Hpr Hl4 Hdp. eval_fw Hpe. Qed.
+Proof. intros p Hpe Hct Hiif Hpr Hl4 Hdp Hok. eval_fw Hpe. Qed.
 
 (* The IPv6 path: a new IPv6 TCP connection to a closed port is also dropped.
    meta protocol = ip6 -> jump inbound_ipv6, whose only rule matches ICMPv6 ND
@@ -269,8 +275,10 @@ Theorem ipv6_closed_port_dropped : forall p,
   field_value FMetaProtocol p = eth_ip6 ->
   field_value FMetaL4proto p = l4_tcp ->
   field_value FThDport p = port 25 ->
+  read_payload_ok PTransport 2 2 p = true ->
+  read_payload_ok PTransport 0 1 p = true ->
   eval_table fw_fuel fw_chains inbound p = Drop.
-Proof. intros p Hpe Hct Hiif Hpr Hl4 Hdp. eval_fw Hpe. Qed.
+Proof. intros p Hpe Hct Hiif Hpr Hl4 Hdp Hok Hok2. eval_fw Hpe. Qed.
 
 (* IPv6 neighbour discovery is accepted via the jump into inbound_ipv6. *)
 Theorem ipv6_nd_accepted : forall p,
@@ -280,8 +288,9 @@ Theorem ipv6_nd_accepted : forall p,
   field_value FMetaProtocol p = eth_ip6 ->
   field_value FMetaL4proto p = l4_icmp6 ->
   field_value FIcmpType p = icmp6_nd_nsol ->
+  read_payload_ok PTransport 0 1 p = true ->
   eval_table fw_fuel fw_chains inbound p = Accept.
-Proof. intros p Hpe Hct Hiif Hpr Hl4 Hty. eval_fw Hpe. Qed.
+Proof. intros p Hpe Hct Hiif Hpr Hl4 Hty Hok. eval_fw Hpe. Qed.
 
 (* The forward hook drops everything (it has no rules and `policy drop`), for
    every packet and every set/map state — no hypotheses needed. *)
@@ -305,9 +314,10 @@ Theorem smtp_dropped_in_bytecode : forall p,
   field_value FMetaProtocol p = eth_ip ->
   field_value FMetaL4proto p = l4_tcp ->
   field_value FThDport p = port 25 ->
+  read_payload_ok PTransport 2 2 p = true ->
   run_table fw_fuel (compile_env fw_chains) (compile_chain inbound)
             (c_policy inbound) p = Drop.
 Proof.
-  intros p Hpe Hct Hiif Hpr Hl4 Hdp.
+  intros p Hpe Hct Hiif Hpr Hl4 Hdp Hok.
   rewrite compile_table_correct. apply smtp_dropped; assumption.
 Qed.

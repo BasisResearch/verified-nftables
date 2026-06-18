@@ -23,7 +23,27 @@ Definition apply_transform (t : transform) (d : data) : data :=
 Definition apply_transforms (ts : list transform) (d : data) : data :=
   fold_left (fun acc t => apply_transform t acc) ts d.
 
-Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
+(** Whether every field in a list is loadable on a packet. *)
+Definition fields_loadable (fs : list field) (p : packet) : bool :=
+  forallb (fun f => field_loadable f p) fs.
+
+(** Whether all the fields a match condition reads are loadable.  A match whose
+    load BREAKs (a too-short / fragmented / no-L4 transport header) does NOT
+    apply — the rule is skipped — so the match must evaluate to [false]
+    regardless of any negation.  This is the soundness fix: a failed load can
+    never make a negated condition spuriously true. *)
+Definition match_loadable (m : matchcond) (p : packet) : bool :=
+  match m with
+  | MEq  f _ | MNeq f _ | MRange f _ _ _ | MMasked f _ _ _ _
+  | MCmp f _ _ | MTransform f _ _ _ | MSetT f _ _ _ | MRangeT f _ _ _ _ =>
+      field_loadable f p
+  | MConcatSet fields _ _ => fields_loadable fields p
+  | MConcatSetT elems _ _ => fields_loadable (map fst elems) p
+  | MLimit _ | MQuota _ | MConnlimit _ => true
+  end.
+
+(** The unguarded comparison body of a match (the original semantics). *)
+Definition eval_matchcond_body (m : matchcond) (p : packet) : bool :=
   match m with
   | MEq  f v => data_eqb (List.firstn (List.length v) (field_value f p)) v
   | MNeq f v => negb (data_eqb (List.firstn (List.length v) (field_value f p)) v)
@@ -58,10 +78,91 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
         (e_set (pkt_env p) name))
   end.
 
+(** A match condition: [false] (does not apply) if its load breaks, else the
+    ordinary comparison. *)
+Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
+  andb (match_loadable m p) (eval_matchcond_body m p).
+
 (** A rule applies when all its match conditions hold (empty = matches all).
     Statements in the body are verdict-neutral and ignored here. *)
 Definition rule_applies (r : rule) (p : packet) : bool :=
   forallb (fun m => eval_matchcond m p) (body_matches (r_body r)).
+
+(** ** Whole-rule loadability.
+
+    A payload load that BREAKs (NFT_BREAK) anywhere in a rule — in a match, a
+    statement operand, the verdict-map key, or the terminal operand — makes the
+    kernel abandon the rule (the rule produces no verdict; traversal continues to
+    the next rule).  Because the break wins regardless of where it occurs, the
+    rule's outcome depends only on whether ANYTHING in it breaks: we collect every
+    field the rule loads into [rule_loadable] and skip the rule when it is [false]
+    (so the verdict does not depend on the interleaved match/statement order). *)
+
+(** Fields a value source loads. *)
+Definition vsrc_loadable (vs : vsrc) (p : packet) : bool :=
+  match vs with
+  | VImm _ => true
+  | VField f _ => field_loadable f p
+  | VMap fields _ _ => fields_loadable fields p
+  | VHash fields _ _ _ _ => fields_loadable fields p
+  | VOr srcs _ => fields_loadable (map fst srcs) p
+  | VMapT elems _ => fields_loadable (map fst elems) p
+  | VHashMap fields _ _ _ _ _ => fields_loadable fields p
+  end.
+
+Definition stmt_loadable (s : stmt) (p : packet) : bool :=
+  match s with
+  | SMangle vs _ _ _ _ _ _ => vsrc_loadable vs p
+  | SMetaSet _ vs => vsrc_loadable vs p
+  | SCtSet _ vs => vsrc_loadable vs p
+  | SCtSetDir _ _ vs => vsrc_loadable vs p
+  | SDynset _ _ keyfs dataf => fields_loadable (keyfs ++ dataf) p
+  | SObjrefMap keyfs _ => fields_loadable keyfs p
+  | SDynsetImm _ _ keyfs _ _ => fields_loadable keyfs p
+  | SExthdrWrite vs _ _ _ _ => vsrc_loadable vs p
+  | SDupSrc src _ _ _ => vsrc_loadable src p
+  | SCounter _ _ | SNotrack | SLog _ | SObjref _ _ | SSynproxy _ _
+  | SLast _ | SExthdrReset _ _ | SDup _ _ _ => true
+  end.
+
+Definition body_item_loadable (it : body_item) (p : packet) : bool :=
+  match it with
+  | BMatch m => match_loadable m p
+  | BStmt s => stmt_loadable s p
+  end.
+
+Definition vmap_loadable (ov : option vmap_spec) (p : packet) : bool :=
+  match ov with
+  | None => true
+  | Some vm => match vm_keyf vm with
+               | Some (f, _) => field_loadable f p
+               | None => fields_loadable (vm_fields vm) p
+               end
+  end.
+
+Definition terminal_loadable (r : rule) (p : packet) : bool :=
+  match r_nat r with
+  | Some n => match nat_src n with
+              | Some vs => vsrc_loadable vs p
+              | None => match nat_map n with
+                        | Some (fields, _, _) => fields_loadable fields p
+                        | None => match nat_field n with
+                                  | Some (f, _) => field_loadable f p
+                                  | None => true
+                                  end
+                        end
+              end
+  | None =>
+  match r_tproxy r with
+  | Some _ => true
+  | None =>
+  match r_fwd r with
+  | Some w => match fwd_src w with Some vs => vsrc_loadable vs p | None => true end
+  | None =>
+  match r_queue r with
+  | Some q => match q_src q with Some vs => vsrc_loadable vs p | None => true end
+  | None => true
+  end end end end.
 
 (** ** Named sets and maps as DECLARED objects.
 
@@ -186,6 +287,51 @@ Definition outcome (r : rule) (p : packet) : option verdict :=
   | None => terminal_outcome r p
   end.
 
+(** ** Whole-rule loadability (NFT_BREAK reachability).
+
+    A payload load that BREAKs (NFT_BREAK) anywhere the rule actually EVALUATES
+    makes the kernel abandon the rule (no verdict; traversal continues).  This
+    mirrors exactly what the compiled bytecode executes (and breaks on), in order:
+      - every body item (matches + statements) is evaluated, so all must load;
+      - the verdict-map key (if any) is loaded; on a HIT the rule's verdict is
+        fixed and nothing after the [IVmap] runs (so the terminal/[r_after] need
+        not load); on a MISS the terminal is evaluated;
+      - on the terminal: a side-effect terminal (nat/tproxy/fwd/queue) loads its
+        operand then accepts (so [r_after] never runs); a static *terminal*
+        verdict stops too; only a [Continue] fall-through runs [r_after].
+    [rule_loadable] is [false] exactly when some load on this evaluated path
+    breaks; [eval_rules] then skips the rule, matching the VM (which breaks at
+    that load and falls through to the next rule). *)
+
+(** Loadability of the part that runs AFTER the verdict map misses: the terminal,
+    and — only on a [Continue] fall-through — the post-outcome statements. *)
+Definition tail_loadable (r : rule) (p : packet) : bool :=
+  terminal_loadable r p &&
+  (match terminal_outcome r p with
+   | None => forallb (fun s => stmt_loadable s p) (r_after r)  (* fall-through: r_after runs *)
+   | Some _ => true                                            (* terminal: r_after skipped *)
+   end).
+
+(** Loadability of a rule's outcome computation (verdict map then terminal),
+    mirroring [outcome]'s evaluation order. *)
+Definition end_loadable (r : rule) (p : packet) : bool :=
+  match r_vmap r with
+  | Some vm =>
+      vmap_loadable (r_vmap r) p &&
+      (let key := match vm_keyf vm with
+                  | Some (f, ts) => apply_transforms ts (field_value f p)
+                  | None => List.concat (map (fun f => field_value f p) (vm_fields vm))
+                  end in
+       match assoc_verdict key (e_vmap (pkt_env p) (vm_name vm)) with
+       | Some _ => true              (* vmap HIT: terminal/r_after unreachable *)
+       | None   => tail_loadable r p (* vmap MISS: terminal runs *)
+       end)
+  | None => tail_loadable r p
+  end.
+
+Definition rule_loadable (r : rule) (p : packet) : bool :=
+  forallb (fun it => body_item_loadable it p) (r_body r) && end_loadable r p.
+
 (** Evaluate a rule list.  [None] means "fell through every rule"; [Some v]
     means a terminal verdict [v] was reached.  A [Continue] verdict on an
     applicable rule simply proceeds, exactly like a non-applicable rule. *)
@@ -193,7 +339,7 @@ Fixpoint eval_rules (rs : list rule) (p : packet) : option verdict :=
   match rs with
   | [] => None
   | r :: rest =>
-      if rule_applies r p then
+      if rule_loadable r p && rule_applies r p then
         match outcome r p with
         | Some v => if terminal v then Some v else eval_rules rest p
         | None   => eval_rules rest p
@@ -242,7 +388,13 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | IInnerLoad t h fl desc _ dst :: rest =>
       run_rule (set_reg rf dst (pkt_inner p t h fl desc)) rest p
   | IPayloadLoad b o l dst :: rest =>
-      run_rule (set_reg rf dst (read_payload b o l p)) rest p
+      (* A payload read that runs off the end of the header (or a transport read on
+         a fragment / no-L4 packet) makes the kernel set the verdict to NFT_BREAK,
+         i.e. the rule does NOT match.  Model that as breaking the rule here
+         ([None]), rather than loading a truncated value. *)
+      if read_payload_ok b o l p
+      then run_rule (set_reg rf dst (read_payload b o l p)) rest p
+      else None
   | ICmp op src v :: rest =>
       if eval_cmp op (rf src) v then run_rule rf rest p else None
   | IRange op src lo hi :: rest =>
@@ -352,7 +504,8 @@ Definition set_meta (p : packet) (k : meta_key) (v : data) : packet :=
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
 Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
   {| pkt_env := pkt_env p; pkt_meta := pkt_meta p;
      pkt_ct := (fun k' => if ct_eqb k k' then v else pkt_ct p k');
@@ -360,7 +513,8 @@ Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
 
 (** Overwrite [len] bytes at offset [off] of a byte list (a header), keeping the
     rest — the payload-write primitive. *)
@@ -378,7 +532,8 @@ Definition set_saddr (p : packet) (v : data) : packet :=
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
 
 (** ** Dynamic sets: the `dynset` feedback loop (`add`/`update`/`delete @s {key}`).
 
@@ -410,7 +565,8 @@ Definition set_env_dynset (p : packet) (op name : String.string) (key : data) : 
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
 
 (** The map analogue: a `dynset` whose target is a MAP (`add @m {key : data}`)
     learns the entry [key -> data] in the named value-map [e_map], so a later
@@ -436,7 +592,8 @@ Definition set_env_dynset_map (p : packet) (op name : String.string) (key dat : 
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
 
 (** The VM's meta/ct effect of running one rule's bytecode: mirrors [run_rule]'s
     register threading, but instead of a verdict it returns the packet with the
@@ -461,7 +618,12 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
   | ISymhash m o dst :: rest => run_rule_writes (set_reg rf dst (pkt_symhash p m o)) rest p
   | IInnerLoad t h fl desc _ dst :: rest =>
       run_rule_writes (set_reg rf dst (pkt_inner p t h fl desc)) rest p
-  | IPayloadLoad b o l dst :: rest => run_rule_writes (set_reg rf dst (read_payload b o l p)) rest p
+  | IPayloadLoad b o l dst :: rest =>
+      (* a broken payload read breaks the rule (NFT_BREAK): no later statement in
+         this rule runs, so the packet is returned unchanged — mirrors [run_rule]. *)
+      if read_payload_ok b o l p
+      then run_rule_writes (set_reg rf dst (read_payload b o l p)) rest p
+      else p
   | ICmp op src v :: rest => if eval_cmp op (rf src) v then run_rule_writes rf rest p else p
   | IRange op src lo hi :: rest => if eval_range op (rf src) lo hi then run_rule_writes rf rest p else p
   | IBitwise dst src mask xor :: rest => run_rule_writes (set_reg rf dst (data_bitops (rf src) mask xor)) rest p
@@ -556,21 +718,33 @@ Fixpoint body_writes (body : list body_item) (p : packet) : packet :=
   match body with
   | [] => p
   | BMatch m :: rest => if eval_matchcond m p then body_writes rest p else p
-  | BStmt (SMetaSet k vs) :: rest => body_writes rest (set_meta p k (eval_vsrc vs p))
-  | BStmt (SCtSet k vs)   :: rest => body_writes rest (set_ct p k (eval_vsrc vs p))
+  (* A mutating statement whose operand load BREAKs (unloadable payload) stops the
+     rule's execution before its write, exactly as [run_rule_writes] breaks at the
+     operand's [IPayloadLoad] — so no write happens and the packet is returned. *)
+  | BStmt (SMetaSet k vs) :: rest =>
+      if vsrc_loadable vs p then body_writes rest (set_meta p k (eval_vsrc vs p)) else p
+  | BStmt (SCtSet k vs)   :: rest =>
+      if vsrc_loadable vs p then body_writes rest (set_ct p k (eval_vsrc vs p)) else p
   | BStmt (SDynset op name keyfs nil) :: rest =>
       (* pure-set dynset: insert/remove the concatenated key in the named set, so a
          later rule's [lookup @name] observes it (cf. [run_rule_writes]'s IDynset). *)
-      body_writes rest (set_env_dynset p op name
-                          (List.concat (map (fun f => field_value f p) keyfs)))
-  | BStmt (SDynset op name keyfs (d :: _)) :: rest =>
+      if fields_loadable keyfs p
+      then body_writes rest (set_env_dynset p op name
+                               (List.concat (map (fun f => field_value f p) keyfs)))
+      else p
+  | BStmt (SDynset op name keyfs (d :: ds)) :: rest =>
       (* map dynset with a field-valued data: learn key -> (first data field) in the
          named map.  (Only the first data field is recorded; the corpus never emits a
          multi-field map data, and BOTH sides record exactly this, so DSL = VM.) *)
-      body_writes rest (set_env_dynset_map p op name
-                          (List.concat (map (fun f => field_value f p) keyfs))
-                          (field_value d p))
-  | BStmt _ :: rest => body_writes rest p
+      if fields_loadable (keyfs ++ d :: ds) p
+      then body_writes rest (set_env_dynset_map p op name
+                               (List.concat (map (fun f => field_value f p) keyfs))
+                               (field_value d p))
+      else p
+  (* every OTHER statement is meta/ct- and env-neutral, but it still LOADS its
+     operand fields; an unloadable load BREAKs the rule (so no later statement
+     runs), exactly as [run_rule_writes] breaks at that operand's payload load. *)
+  | BStmt s :: rest => if stmt_loadable s p then body_writes rest p else p
   end.
 Definition dsl_writes (r : rule) (p : packet) : packet := body_writes (r_body r) p.
 
@@ -582,7 +756,7 @@ Fixpoint eval_rules_mut (rs : list rule) (p : packet) : option verdict :=
   match rs with
   | [] => None
   | r :: rest =>
-      if rule_applies r p then
+      if rule_loadable r p && rule_applies r p then
         match outcome r p with
         | Some v => if terminal v then Some v else eval_rules_mut rest (dsl_writes r p)
         | None   => eval_rules_mut rest (dsl_writes r p)
@@ -620,7 +794,7 @@ Fixpoint eval_rules_mut_env (rs : list rule) (p : packet) : option verdict * env
   match rs with
   | [] => (None, pkt_env p)
   | r :: rest =>
-      if rule_applies r p then
+      if rule_loadable r p && rule_applies r p then
         match outcome r p with
         | Some v => if terminal v then (Some v, pkt_env (dsl_writes r p))
                     else eval_rules_mut_env rest (dsl_writes r p)
@@ -677,7 +851,7 @@ Fixpoint eval_rules_trace (rs : list rule) (p : packet) : option verdict * packe
   match rs with
   | [] => (None, p)
   | r :: rest =>
-      if rule_applies r p then
+      if rule_loadable r p && rule_applies r p then
         match outcome r p with
         | Some v => if terminal v then (Some v, apply_masq r (dsl_writes r p))
                     else eval_rules_trace rest (dsl_writes r p)
@@ -694,7 +868,7 @@ Lemma eval_rules_trace_verdict : forall rs p,
   fst (eval_rules_trace rs p) = eval_rules_mut rs p.
 Proof.
   induction rs as [|r rest IH]; intros p; simpl; [reflexivity|].
-  destruct (rule_applies r p).
+  destruct (rule_loadable r p && rule_applies r p).
   - destruct (outcome r p) as [v|]; [destruct (terminal v); simpl; auto|]; auto.
   - auto.
 Qed.
@@ -754,7 +928,7 @@ Fixpoint eval_rules_j (fuel : nat) (cs : list (String.string * chain))
     match rs with
     | [] => None
     | r :: rest =>
-      if rule_applies r p then
+      if rule_loadable r p && rule_applies r p then
         match outcome r p with
         | None => eval_rules_j fuel' cs rest p
         | Some Return => None
@@ -903,7 +1077,8 @@ Definition set_env (p : packet) (e : env) : packet :=
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p; pkt_numgen := pkt_numgen p;
      pkt_osf := pkt_osf p; pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p;
-     pkt_xfrm := pkt_xfrm p; pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p |}.
+     pkt_xfrm := pkt_xfrm p; pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
 
 (** Run a sequence of packets against a shared, evolving environment [e]: each
     packet is evaluated by [ev] against the current [e], then [step] updates [e]

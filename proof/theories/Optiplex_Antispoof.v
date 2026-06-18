@@ -40,14 +40,14 @@ Definition vm_fuel : nat := 4.
 
 (** ** Stepping lemmas for the fuel-bounded interpreter. *)
 Lemma erj_drop_first : forall f cs r rest p,
-  rule_applies r p = true -> outcome r p = Some Drop ->
+  rule_loadable r p = true -> rule_applies r p = true -> outcome r p = Some Drop ->
   eval_rules_j (S f) cs (r :: rest) p = Some Drop.
-Proof. intros f cs r rest p Hap Hout. cbn. rewrite Hap, Hout. reflexivity. Qed.
+Proof. intros f cs r rest p Hld Hap Hout. cbn. rewrite Hld, Hap, Hout. reflexivity. Qed.
 
 Lemma erj_skip : forall f cs r rest p,
   rule_applies r p = false ->
   eval_rules_j (S f) cs (r :: rest) p = eval_rules_j f cs rest p.
-Proof. intros f cs r rest p Hap. cbn. rewrite Hap. reflexivity. Qed.
+Proof. intros f cs r rest p Hap. cbn. rewrite Hap, Bool.andb_false_r. reflexivity. Qed.
 
 (** ** The general anti-spoofing theorem (about the PARSED chain [vmfilter_output]).
 
@@ -58,19 +58,27 @@ Proof. intros f cs r rest p Hap. cbn. rewrite Hap. reflexivity. Qed.
 Theorem antispoof_general : forall p,
   pkt_env p = gen_env ->
   field_value Fobrname p = sbytes "br.20" ->
+  read_payload_ok PNetwork 16 4 p = true ->     (* the ip daddr load succeeds *)
   set_mem (field_value FIp4Daddr p) (e_set gen_env "vmaddrs") = true ->
   set_mem (field_value FIp4Daddr p ++ field_value FMetaOifname p)%list
           (e_set gen_env "vmantispoof") = false ->
   eval_table vm_fuel vmfilter_chains vmfilter_output p = Drop.
 Proof.
-  intros p Henv Hobr Hin Hpair. unfold Fobrname in Hobr.
+  intros p Henv Hobr Hok Hin Hpair. unfold Fobrname in Hobr.
   unfold eval_table, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
-  erewrite erj_drop_first; [ reflexivity | | reflexivity ].
+  erewrite erj_drop_first; [ reflexivity | | | reflexivity ].
+  (* rule_loadable (the antispoof rule) p = true: only the ip daddr payload load
+     can break, discharged by [Hok]. *)
+  - unfold rule_loadable, end_loadable, tail_loadable, terminal_loadable, vmap_loadable,
+      body_item_loadable, match_loadable, fields_loadable, field_loadable, load_ok.
+    cbn -[read_payload_ok]. rewrite Hok. reflexivity.
   (* rule_applies (the antispoof rule) p = true.  [cbn -[field_value pkt_env]]
      reduces forallb/body_matches/eval_matchcond but keeps [field_value]/[pkt_env]
      wrapped, so the field-value and env hypotheses can rewrite them. *)
-  unfold rule_applies. cbn -[field_value pkt_env].
-  rewrite Hobr, !app_nil_r, Henv, Hin, Hpair. vm_compute. reflexivity.
+  - unfold rule_applies, eval_matchcond, match_loadable, eval_matchcond_body,
+      fields_loadable, field_loadable, load_ok.
+    cbn -[field_value pkt_env read_payload_ok].
+    rewrite ?Hok, Hobr, ?app_nil_r, Henv, Hin, Hpair. vm_compute. reflexivity.
 Qed.
 
 (** ** Concrete witness 1 — the spoofing attempt is blocked.
@@ -81,11 +89,12 @@ Qed.
 Theorem vikunja_cannot_spoof_budget : forall p,
   pkt_env p = gen_env ->
   field_value Fobrname p = sbytes "br.20" ->
+  read_payload_ok PNetwork 16 4 p = true ->            (* a well-formed IPv4 header *)
   field_value FIp4Daddr p = ip4 192 168 51 20 ->      (* budget's address *)
   field_value FMetaOifname p = sbytes "inc-vikun" ->   (* vikunja's interface *)
   eval_table vm_fuel vmfilter_chains vmfilter_output p = Drop.
 Proof.
-  intros p Henv Hobr Hdaddr Hoif. apply antispoof_general; auto.
+  intros p Henv Hobr Hok Hdaddr Hoif. apply antispoof_general; auto.
   - rewrite Hdaddr. vm_compute. reflexivity.
   - rewrite Hdaddr, Hoif. vm_compute. reflexivity.
 Qed.
@@ -94,11 +103,12 @@ Qed.
 Theorem gentoo_cannot_spoof_hass : forall p,
   pkt_env p = gen_env ->
   field_value Fobrname p = sbytes "br.20" ->
+  read_payload_ok PNetwork 16 4 p = true ->
   field_value FIp4Daddr p = ip4 192 168 51 10 ->       (* hass's address *)
   field_value FMetaOifname p = sbytes "vb-gentoo" ->    (* gentoo's interface *)
   eval_table vm_fuel vmfilter_chains vmfilter_output p = Drop.
 Proof.
-  intros p Henv Hobr Hdaddr Hoif. apply antispoof_general; auto.
+  intros p Henv Hobr Hok Hdaddr Hoif. apply antispoof_general; auto.
   - rewrite Hdaddr. vm_compute. reflexivity.
   - rewrite Hdaddr, Hoif. vm_compute. reflexivity.
 Qed.
@@ -112,19 +122,24 @@ Qed.
 Theorem budget_legitimate_allowed : forall p,
   pkt_env p = gen_env ->
   field_value Fobrname p = sbytes "br.20" ->
+  read_payload_ok PNetwork 16 4 p = true ->
   field_value FIp4Daddr p = ip4 192 168 51 20 ->
   field_value FMetaOifname p = sbytes "inc-budge" ->    (* its OWN interface *)
   eval_table vm_fuel vmfilter_chains vmfilter_output p = Accept.
 Proof.
-  intros p Henv Hobr Hdaddr Hoif. unfold Fobrname in Hobr.
+  intros p Henv Hobr Hok Hdaddr Hoif. unfold Fobrname in Hobr.
   unfold eval_table, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
   (* antispoof rule does not apply: the pair IS bound, so the `!=` match is false *)
   erewrite erj_skip.
-  2:{ unfold rule_applies. cbn -[field_value pkt_env].
-      rewrite Hobr, !app_nil_r, Henv, Hdaddr, Hoif. vm_compute. reflexivity. }
+  2:{ unfold rule_applies, eval_matchcond, match_loadable, eval_matchcond_body,
+        fields_loadable, field_loadable, load_ok.
+      cbn -[field_value pkt_env read_payload_ok].
+      rewrite ?Hok, Hobr, ?app_nil_r, Henv, Hdaddr, Hoif. vm_compute. reflexivity. }
   (* hass rule does not apply either: obrname is br.20, not br.1 *)
   erewrite erj_skip.
-  2:{ unfold rule_applies. cbn -[field_value pkt_env]. rewrite Hobr.
+  2:{ unfold rule_applies, eval_matchcond, match_loadable, eval_matchcond_body,
+        fields_loadable, field_loadable, load_ok.
+      cbn -[field_value pkt_env read_payload_ok]. rewrite ?Hok, Hobr.
       vm_compute. reflexivity. }
   reflexivity.
 Qed.

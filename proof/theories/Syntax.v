@@ -151,6 +151,21 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
 Definition field_value (f : field) (p : packet) : data :=
   do_load (field_load f) p.
 
+(** Whether a load SUCCEEDS on a packet (does not cause the kernel to NFT_BREAK).
+    Only a payload load can fail (a short/fragmented/no-L4 header); every other
+    load reads kernel-computed state or an oracle and always succeeds. *)
+Definition load_ok (ld : loaddesc) (p : packet) : bool :=
+  match ld with
+  | LPayload b off len => read_payload_ok b off len p
+  | _ => true
+  end.
+
+(** Whether a field's load succeeds on a packet.  When [false] the corresponding
+    match condition must FAIL (the rule does not apply), never compare a
+    truncated value — this is the soundness fix. *)
+Definition field_loadable (f : field) (p : packet) : bool :=
+  load_ok (field_load f) p.
+
 (** A match condition: equality / inequality against an immediate, or a
     (possibly negated) range membership [lo <= field <= hi]. *)
 (** A register transform applied between a load and a comparison. *)
