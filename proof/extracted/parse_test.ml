@@ -487,6 +487,67 @@ let check_iif_index () =
     (Semantics.eval_matchcond m_lo (mk_iif (ascii "lo")) = false);
   Printf.printf "\n"
 
+(* (I) SINGLE POSITIVE `ct state X` BITMASK lowering.  ct_state has
+   .basetype = bitmask_type (ct.c:54), and the relational evaluator
+   (evaluate.c:2792-2797) rewrites OP_IMPLICIT over a TYPE_BITMASK basetype to
+   OP_EQ for EVERY bitmask type EXCEPT TYPE_CT_STATE.  So a single positive
+   `ct state established` stays an implicit bitmask test, emitted (golden
+   tests/py/any/ct.t.payload:35-40) as
+     [ bitwise reg1 = (reg1 & 0x00000002) ^ 0x0 ]  [ cmp neq reg1 0x0 ]
+   i.e. it matches iff (state & 2) != 0, NOT state == 2.  The parser must lower
+   it to MMasked (FCtState, neg=true, mask=X, xor=0, val=0), which the model
+   evaluates as eval_cmp CNe ((state & X) ^ 0) 0 = (state & X) != 0.  The set
+   form `{...}` stays an exact set lookup (MConcatSet) and the negated single
+   form `ct state != X` stays a plain cmp neq (MNeq) — both already correct. *)
+let check_ct_state () =
+  Printf.printf "=== (I) single positive `ct state X` bitmask lowering ===\n";
+  let src =
+    "table ip t {\n\
+    \  chain c {\n\
+    \    type filter hook input priority 0; policy accept;\n\
+    \    ct state established accept\n\
+    \    ct state new accept\n\
+    \    ct state != established accept\n\
+    \    ct state {established, related} accept\n\
+    \  }\n\
+     }\n" in
+  let parsed = Nft_parse.parse_string src in
+  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_lower.p_env in
+  let body i = (Stdlib.List.nth c.Syntax.c_rules i).Syntax.r_body in
+  (* `ct state established` => bitmask test (state & 2) != 0, NOT MEq *)
+  check "ct state established lowers to MMasked bitmask test (not MEq)"
+    (body 0 = [Syntax.BMatch
+       (Syntax.MMasked (Syntax.FCtState, true, [0;0;0;2], [0;0;0;0], [0;0;0;0]))]);
+  (* `ct state new` => bitmask test (state & 8) != 0 *)
+  check "ct state new lowers to MMasked bitmask test"
+    (body 1 = [Syntax.BMatch
+       (Syntax.MMasked (Syntax.FCtState, true, [0;0;0;8], [0;0;0;0], [0;0;0;0]))]);
+  (* `ct state != established` stays a plain cmp neq (MNeq) — already correct *)
+  check "ct state != established stays MNeq (plain cmp neq)"
+    (body 2 = [Syntax.BMatch (Syntax.MNeq (Syntax.FCtState, [0;0;0;2]))]);
+  (* the set form `{...}` stays an exact set lookup (MConcatSet) *)
+  check "ct state {established, related} stays a set lookup (MConcatSet)"
+    (match body 3 with
+     | [Syntax.BMatch (Syntax.MConcatSet ([Syntax.FCtState], false, _))] -> true
+     | _ -> false);
+  (* the established rule ACCEPTS a packet with the established bit set together
+     with another bit (state = 2|64 = 66) — real nft accepts (66 & 2 = 2 != 0),
+     the old MEq model rejected it (66 <> 2). *)
+  let m_estab = Syntax.MMasked (Syntax.FCtState, true, [0;0;0;2], [0;0;0;0], [0;0;0;0]) in
+  let mk_ct st = mk_pkt ~env ~ct:(ct_state st) () in
+  check "ct state established matches state = established|untracked = 66 (real nft accepts)"
+    (Semantics.eval_matchcond m_estab (mk_ct [0;0;0;66]) = true);
+  check "ct state established matches a pure established state = 2"
+    (Semantics.eval_matchcond m_estab (mk_ct [0;0;0;2]) = true);
+  check "ct state established does NOT match a state without the established bit (state = 8)"
+    (Semantics.eval_matchcond m_estab (mk_ct [0;0;0;8]) = false);
+  (* the OLD (buggy) MEq lowering rejects the established|untracked packet *)
+  let m_old = Syntax.MEq (Syntax.FCtState, [0;0;0;2]) in
+  check "the OLD MEq lowering wrongly rejected state = 66 (regression guard)"
+    (Semantics.eval_matchcond m_old (mk_ct [0;0;0;66]) = false);
+  Printf.printf "\n"
+
 (* ---------- CLI: parse a file and print compiled bytecode ---------- *)
 
 let cli (path : string) =
@@ -510,6 +571,7 @@ let () =
     check_dnat_rewrite ();
     check_ip6_nat ();
     check_iif_index ();
+    check_ct_state ();
     check_difftest_ast ();
     check_live_nft ();
     if !fails = 0 then Printf.printf "ALL PARSER CHECKS PASSED\n"

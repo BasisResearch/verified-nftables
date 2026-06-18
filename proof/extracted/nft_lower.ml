@@ -325,6 +325,22 @@ let lower_match st (m : Nft_ast.smatch) : Bytes.data option * Syntax.matchcond =
                  Syntax.MMasked (f, neg, mask, L.init w (fun _ -> 0), band bs mask)
              | Nft_ast.Vset elems ->        (* a `$var` that expands to a set *)
                  Syntax.MConcatSet ([f], neg, intern_anon_set st k elems)
+             | v' when k = KCtstate ->
+                 (* ct_state has .basetype = bitmask_type, and the relational
+                    evaluator (evaluate.c:2792-2797) rewrites OP_IMPLICIT over a
+                    TYPE_BITMASK basetype to OP_EQ for EVERY bitmask type EXCEPT
+                    TYPE_CT_STATE.  So a single positive `ct state X` stays an
+                    implicit bitmask test, emitted (golden ct.t.payload:35-40) as
+                    `bitwise reg1 = (reg1 & X) ^ 0; cmp neq reg1 0`, i.e. it
+                    matches iff (state & X) != 0, NOT state == X.  The negated
+                    form `ct state != X` is a plain cmp neq (golden
+                    ct.t.payload:7-10), which is exactly MNeq. *)
+                 let bits = enc_atom k v' in
+                 let w = width_of_kind k in
+                 let zero = L.init w (fun _ -> 0) in
+                 if neg
+                 then Syntax.MNeq (f, bits)
+                 else Syntax.MMasked (f, true (* CNe vs 0 *), bits, zero, zero)
              | v' -> if neg then Syntax.MNeq (f, enc_atom k v')
                      else Syntax.MEq (f, enc_atom k v'))
       in (dep, mc)
