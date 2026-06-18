@@ -183,19 +183,66 @@ Fixpoint split_by (widths : list nat) (d : data) : list data :=
   | w :: ws => firstn w d :: split_by ws (skipn w d)
   end.
 
+(** ** Register-slot layout of a concatenated set key.
+
+    The kernel and nftables userspace lay out a concatenated set key by placing
+    each field in its OWN 32-bit register slot (NFT_REG32_SIZE = 4 bytes,
+    include/linux/netfilter/nf_tables.h:50): each field contributes
+    [netlink_padded_len] = its byte length ROUNDED UP to a multiple of 4
+    (include/netlink.h:122-127), and the packet lookup key advances by a whole
+    [netlink_register_space] register per field (src/netlink_linearize.c:120-128,
+    src/evaluate.c:5192).  So a 1-byte [ct direction] occupies a full 4-byte
+    slot, a 2-byte port occupies a full 4-byte slot, etc.; e.g. the element of
+    `{ original . 0x12345678 }` is the 8-byte key [00 00 00 00][12 34 56 78].
+    Within a slot the field's bytes sit at the FRONT (low offset), with zero
+    padding in the trailing bytes — verified by the golden corpus, which displays
+    a 2-byte dport=80 in its slot as [00 50](.. 00 00 padding) and a 1-byte
+    ct-state=8 as [00 00 00 08] only because state is itself a 4-byte field.
+    This project's own bytecode/codec layer already uses one register slot per
+    field (codec.ml:167).
+
+    [reg_slot n] rounds [n] up to the next multiple of [NFT_REG32_SIZE] = 4.
+    (The ifname kind is 16 bytes, already a multiple of 4, so the generic
+    round-up handles it too.) *)
+Definition reg_slot (n : nat) : nat := 4 * Nat.div (n + 3) 4.
+
 (** One field's interval test: [lo_i <= val_i <= hi_i] in big-endian order. *)
 Definition field_in_iv (val : data) (lohi : data * data) : bool :=
   andb (data_le (fst lohi) val) (data_le val (snd lohi)).
 
 (** A list of per-field values matches one concatenated element [iv=(lo,hi)] iff
-    every field's value lies in its own per-field interval.  [lo] and [hi] are
-    split by the per-field widths (= the lengths of [vals]). *)
+    every field's value lies in its own per-field interval.
+
+    [lo] and [hi] are the per-field concatenation of the per-field bounds, each
+    field laid out in its 4-byte register SLOT (so a sub-4-byte non-last field is
+    followed by the kernel's zero padding — the source of standing worklist #4).
+    We split [lo]/[hi] by the per-field SLOT widths (= [reg_slot] of each field's
+    raw length), then for each field compare only the field's real bytes
+    ([firstn (length val)] of its slot) against the field value, discarding the
+    trailing register padding.
+
+    For a SINGLE field, [split_by [reg_slot w] d = [d]] (last-takes-remainder),
+    the stored bound has length exactly [length val], and [firstn (length val) d
+    = d], so this coincides definitionally with the flat [data_in_iv] — see
+    [concat_in_iv_single]. *)
 Definition concat_in_iv (vals : list data) (iv : data * data) : bool :=
-  let widths := map (@length byte) vals in
-  let los := split_by widths (fst iv) in
-  let his := split_by widths (snd iv) in
-  forallb (fun t => field_in_iv (fst t) (snd t))
-          (combine vals (combine los his)).
+  match vals with
+  | [v] =>
+      (* SINGLE field: no register padding is possible (there is no following
+         field), so the stored bound IS the field's bytes; test it directly.
+         This keeps single-field interval/point sets byte-for-byte identical to
+         the flat [data_in_iv] and makes [concat_in_iv_single] hold for ALL
+         bounds (used by the single-register [ILookup] correctness proof). *)
+      field_in_iv v iv
+  | _ =>
+      let slots := map (fun v => reg_slot (@length byte v)) vals in
+      let los := split_by slots (fst iv) in
+      let his := split_by slots (snd iv) in
+      forallb (fun t => let '(val, (lo, hi)) := t in
+                 field_in_iv val (firstn (@length byte val) lo,
+                                  firstn (@length byte val) hi))
+              (combine vals (combine los his))
+  end.
 
 (** Membership of a per-field-decomposed key in a concatenated set: some element
     whose per-field intervals all contain the corresponding field value. *)
@@ -211,8 +258,7 @@ Definition concat_set_mem (vals : list data) (s : list (data * data)) : bool :=
 Lemma concat_in_iv_single : forall (v lo hi : data),
   concat_in_iv [v] (lo, hi) = data_in_iv v (lo, hi).
 Proof.
-  intros v lo hi. unfold concat_in_iv, data_in_iv, field_in_iv.
-  cbn [map split_by combine forallb fst snd]. apply Bool.andb_true_r.
+  intros v lo hi. unfold concat_in_iv, data_in_iv, field_in_iv. reflexivity.
 Qed.
 
 Lemma concat_set_mem_single : forall (v : data) (s : list (data * data)),

@@ -231,6 +231,24 @@ let enc_atom_be (k : kind) (v : Nft_ast.value) : Bytes.data =
   | KMark, Nft_ast.Vnum n -> bytes_of_int (width_of_kind k) n
   | _ -> enc_atom k v
 
+(* ---------- concatenated-set register-slot padding ----------
+
+   A concatenated set (NFT_SET_CONCAT) lays each field in its OWN 32-bit register
+   slot: each field's contribution to the element key is its byte length ROUNDED
+   UP to a multiple of NFT_REG32_SIZE = 4 (include/netlink.h netlink_padded_len /
+   netlink_register_space; src/evaluate.c:5192; src/netlink_linearize.c:120-128).
+   Within a slot the field's bytes sit at the FRONT, followed by zero padding in
+   the trailing bytes (golden corpus: a 2-byte dport=80 displays as 0050 in its
+   4-byte slot).  So when we emit a per-field lo/hi bound for a concatenated
+   element, each field must be zero-padded on the trailing side to its 4-byte
+   slot, matching what nft stores and what [concat_in_iv] (Bytes.v) now expects.
+   This mirrors the bytecode/codec layer, which already uses one register slot
+   per field (codec.ml:167). *)
+let reg_slot (n : int) : int = 4 * ((n + 3) / 4)
+let pad_to_slot (b : Bytes.data) : Bytes.data =
+  let n = L.length b in
+  b @ (L.init (reg_slot n - n) (fun _ -> 0))
+
 (* ---------- selector resolution: keypath -> (field, kind, l4proto-dep) ---------- *)
 
 (* An implicit dependency that nft inserts BEFORE a payload/meta match so the
@@ -406,7 +424,10 @@ let interval_of_decl_elem st (types : string list) (v : Nft_ast.value)
             raise (Unsupported "CIDR/prefix in concatenated set element for non-ipv4 field")
         | v' -> let b = bytes_of_typeatom st t v' in (b, b) in
       let ivs = L.map2 iv_of_typeatom types vs in
-      (L.concat (L.map fst ivs), L.concat (L.map snd ivs))
+      (* per-field register-slot padding (NFT_SET_CONCAT): each field occupies a
+         whole 4-byte slot, field bytes at the front + trailing zero padding. *)
+      (L.concat (L.map (fun (lo,_) -> pad_to_slot lo) ivs),
+       L.concat (L.map (fun (_,hi) -> pad_to_slot hi) ivs))
   | _ -> raise (Unsupported "set element arity does not match declared type")
 
 (* ---------- match lowering ---------- *)
@@ -428,7 +449,9 @@ let intern_anon_concat st (kinds : kind list) (elems : Nft_ast.value list) : str
   let enc1 v = match resolve_var st v with
     | Nft_ast.Vconcat vs when L.length vs = L.length kinds ->
         let ivs = L.map2 (fun k v -> interval_of_value st k v) kinds vs in
-        (L.concat (L.map fst ivs), L.concat (L.map snd ivs))
+        (* per-field register-slot padding (NFT_SET_CONCAT); see [pad_to_slot]. *)
+        (L.concat (L.map (fun (lo,_) -> pad_to_slot lo) ivs),
+         L.concat (L.map (fun (_,hi) -> pad_to_slot hi) ivs))
     | _ -> raise (Unsupported "concatenated set element arity mismatch") in
   st.sets <- (name, L.map enc1 elems) :: st.sets;
   name

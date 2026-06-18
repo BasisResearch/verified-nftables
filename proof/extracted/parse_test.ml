@@ -989,8 +989,13 @@ let check_concat_iv () =
     (set_name <> None);
   let nm = match set_name with Some n -> n | None -> "" in
   let elems = env.Packet.e_set nm in
-  check "the stored concat element is the per-field cross-product [10.0.0.0..10.255.255.255] . [10..23]"
-    (elems = [ ([10;0;0;0] @ port 10, [10;255;255;255] @ port 23) ]);
+  (* NFT_SET_CONCAT register-slot layout: each field occupies a whole 4-byte
+     register slot, field bytes at the FRONT + trailing zero padding (kernel
+     netlink_padded_len / one register per field; golden corpus shows a 2-byte
+     dport in its slot as e.g. 0050).  daddr (4 bytes) fills its slot exactly;
+     the 2-byte dport bound is zero-padded to 4 bytes ([0;10;0;0] / [0;23;0;0]). *)
+  check "the stored concat element is per-field, each in its 4-byte register slot: [10.0.0.0..10.255.255.255] . [10..23] (dport slot-padded)"
+    (elems = [ ([10;0;0;0] @ port 10 @ [0;0], [10;255;255;255] @ port 23 @ [0;0]) ]);
   (* a packet inside daddr's range but OUTSIDE dport's range: kernel rejects *)
   let mk_pkt2 ~daddr ~dport =
     { (mk_pkt ~env ~l4proto:l4_tcp ~th:(th_dport dport) ()) with
@@ -1017,6 +1022,44 @@ let check_concat_iv () =
   check "compiled bytecode REJECTS the bad packet too (run_chain = policy, rule skipped)"
     (Semantics.run_chain prog c.Syntax.c_policy p_bad = Verdict.Accept
      && Semantics.eval_chain c p_bad = Verdict.Accept);
+  (* SUB-4-BYTE NON-LAST field register padding (worklist #4 core fix): a 2-byte
+     [tcp sport] in the FIRST position must occupy a full 4-byte register slot, so
+     the kernel's element of `{ 80 . 443 }` is [00 50 00 00][01 bb 00 00], NOT the
+     contiguous [00 50][01 bb].  Both the stored element and the lookup key advance
+     a whole register per field (netlink_linearize.c).  The OLD spec split by raw
+     widths [2;2] and would have expected/produced the unpadded contiguous layout,
+     diverging from the kernel.  We pin the slot-padded layout end-to-end. *)
+  let src2 =
+    "table ip t {\n\
+    \  chain c {\n\
+    \    type filter hook input priority 0; policy accept;\n\
+    \    tcp sport . tcp dport { 80 . 443 } accept\n\
+    \  }\n\
+     }\n" in
+  let parsed2 = Nft_parse.parse_string src2 in
+  let c2 = Nft_lower.find_chain parsed2 ~table:"t" ~chain:"c" in
+  let env2 = parsed2.Nft_lower.p_env in
+  let body2 = (Stdlib.List.nth c2.Syntax.c_rules 0).Syntax.r_body in
+  let the_concat2 =
+    L.find_opt (function
+      | Syntax.BMatch (Syntax.MConcatSet ([Syntax.FThSport; Syntax.FThDport], false, _)) -> true
+      | _ -> false) body2 in
+  let nm2 = match the_concat2 with
+    | Some (Syntax.BMatch (Syntax.MConcatSet (_, _, n))) -> n | _ -> "" in
+  let elems2 = env2.Packet.e_set nm2 in
+  check "tcp sport . tcp dport {80 . 443}: sub-4-byte NON-LAST sport is padded to its 4-byte slot ([00 50 00 00][01 bb 00 00])"
+    (elems2 = [ (port 80 @ [0;0] @ port 443 @ [0;0], port 80 @ [0;0] @ port 443 @ [0;0]) ]);
+  let m2 = match the_concat2 with
+    | Some (Syntax.BMatch mc) -> mc | _ -> failwith "no sport.dport concat" in
+  (* transport header is sport(2) ++ dport(2) *)
+  let mk_p2 ~sport ~dport =
+    mk_pkt ~env:env2 ~l4proto:l4_tcp ~th:(port sport @ port dport) () in
+  check "matches the exact (80,443) pair the kernel matches against the padded element"
+    (Semantics.eval_matchcond m2 (mk_p2 ~sport:80 ~dport:443) = true);
+  check "rejects (80, 444): dport differs"
+    (Semantics.eval_matchcond m2 (mk_p2 ~sport:80 ~dport:444) = false);
+  check "rejects (81, 443): non-last sport differs (would be missed if sport's slot were mis-split)"
+    (Semantics.eval_matchcond m2 (mk_p2 ~sport:81 ~dport:443) = false);
   Printf.printf "\n"
 
 (* (M) NON-WILDCARD interface-name match is an EXACT 16-byte zero-padded compare,
