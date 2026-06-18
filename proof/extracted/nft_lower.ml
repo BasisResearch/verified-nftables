@@ -186,7 +186,15 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
   (* a single tcp-flag symbol / numeric literal -> a 1-byte mask *)
   | KTcpflag, Nft_ast.Vsym s -> [lookup "tcp flag" sym_tcpflag s]
   | KTcpflag, Nft_ast.Vnum n -> [n land 0xff]
-  | KMark, Nft_ast.Vnum n -> bytes_of_int 4 n
+  (* `meta mark` / `ct mark` are HOST-ENDIAN (BYTEORDER_HOST_ENDIAN) 4-byte
+     integers in the kernel (nft_meta.c `*dest = skb->mark;`; src/ct.c:52 /
+     src/meta.c:106).  We store them little-endian (host order on x86) like the
+     register actually holds them, exactly as [KIfindex] already does.  For
+     equality/neq this is order-agnostic (the kernel uses memcmp); for an ORDERED
+     or RANGE match nft inserts a `byteorder hton(4,4)` before the cmp/range so
+     the comparison runs over network bytes — see [lower_match], which prepends a
+     [TByteorder true 4 4] transform and encodes the bounds network-order. *)
+  | KMark, Nft_ast.Vnum n -> bytes_of_int_le 4 n
   | KIcmp, Nft_ast.Vnum n -> [n land 0xff]
   | KIcmp, Nft_ast.Vsym s -> lookup "icmp type" sym_icmp s
   | KIcmpv6, Nft_ast.Vnum n -> [n land 0xff]
@@ -203,6 +211,25 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
 let width_of_kind = function
   | KIp4 -> 4 | KIp6 -> 16 | KPort | KEthertype -> 2
   | KCtstate | KMark | KIfindex -> 4 | KNum w -> w | _ -> 1
+
+(* A kind stored HOST-ENDIAN (little-endian on x86) in the register, like the
+   kernel holds `meta mark` / `ct mark` (BYTEORDER_HOST_ENDIAN).  For these,
+   an ORDERED or RANGE comparison is only numerically meaningful after nft's
+   mandatory `byteorder reg = hton(reg, N, N)` conversion, which we model with a
+   [TByteorder true w w] transform.  Equality/neq need no conversion (memcmp is
+   order-independent), so only the range/ordered path consults this. *)
+let host_endian_kind = function KMark -> true | _ -> false
+
+(* Encode a value NETWORK-ORDER (big-endian).  Used for the bounds of a RANGE
+   match on a host-endian field: nft stores the range immediates network-order
+   (golden `range eq reg 1 0x00000032 0x00000045`) and converts the loaded
+   host-endian field to network order with `hton` before the range test, so the
+   comparison is numeric.  [enc_atom] (host-endian for [KMark]) is right for the
+   eq/membership immediates but wrong for these post-hton range bounds. *)
+let enc_atom_be (k : kind) (v : Nft_ast.value) : Bytes.data =
+  match k, v with
+  | KMark, Nft_ast.Vnum n -> bytes_of_int (width_of_kind k) n
+  | _ -> enc_atom k v
 
 (* ---------- selector resolution: keypath -> (field, kind, l4proto-dep) ---------- *)
 
@@ -475,6 +502,16 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
              | Nft_ast.Op_ne       -> Syntax.MNeq (f, bits))
         | Nft_ast.SEvalue v ->
             (match resolve_var st v with
+             | Nft_ast.Vrange (a, b) when host_endian_kind k ->
+                 (* host-endian field range: nft loads the host-endian value, then
+                    `byteorder reg = hton(reg, w, w)` to network order, then a
+                    network-order `range eq` (golden ct.t.payload `ct mark
+                    0x32-0x45` -> `byteorder hton(4,4)` ; `range eq ...`).  Model
+                    it with the hton transform + network-order bounds so the range
+                    test is numeric (not a host-endian-byte lexicographic compare). *)
+                 let w = width_of_kind k in
+                 Syntax.MRangeT (f, [Syntax.TByteorder (true, w, w)], neg,
+                                 enc_atom_be k a, enc_atom_be k b)
              | Nft_ast.Vrange (a, b) -> Syntax.MRange (f, neg, enc_atom k a, enc_atom k b)
              | Nft_ast.Vprefix (Nft_ast.Vip4 bs, len) ->
                  let w = width_of_kind k in let mask = prefix_mask w len in

@@ -27,7 +27,7 @@ From Nft Require Import Bytes Verdict Packet Syntax Semantics Optiplex_Gen.
 Import ListNotations.
 
 (** ** Wire constants (literal bytes, so [cbn] fully reduces the matches). *)
-Definition mark99    : data := [0; 0; 0; 153].   (* the 0x99 firewall mark *)
+Definition mark99    : data := [153; 0; 0; 0].   (* the 0x99 firewall mark, host-endian (LE) *)
 (* "home" in a 16-byte IFNAMSIZ zero-padded ifname register (the kernel
    compares the full 16-byte buffer for an exact name match). *)
 Definition if_home   : data := [104; 111; 109; 101; 0;0;0;0; 0;0;0;0; 0;0;0;0].

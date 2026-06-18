@@ -27,7 +27,7 @@ Definition decls : set_decls :=
    ("__set12", [([116; 115], [116; 118]); ([105; 137], [105; 137]); ([106; 81], [106; 81]); ([31; 107], [31; 107])]);
    ("__set13", [([6], [6]); ([17], [17])]);
    ("__set14", [([0; 0; 0; 2], [0; 0; 0; 2]); ([0; 0; 0; 4], [0; 0; 0; 4])]);
-   ("__set15", [([0; 0; 0; 153], [0; 0; 0; 153]); ([0; 0; 1; 0], [0; 0; 1; 0])]);
+   ("__set15", [([153; 0; 0; 0], [153; 0; 0; 0]); ([0; 1; 0; 0], [0; 1; 0; 0])]);
    ("__set16", [([118; 98; 45; 106; 101; 108; 108; 121; 115; 101; 101; 114; 114; 0; 0; 0], [118; 98; 45; 106; 101; 108; 108; 121; 115; 101; 101; 114; 114; 0; 0; 0]); ([118; 98; 45; 115; 97; 98; 110; 122; 98; 100; 0; 0; 0; 0; 0; 0], [118; 98; 45; 115; 97; 98; 110; 122; 98; 100; 0; 0; 0; 0; 0; 0]); ([118; 98; 45; 114; 97; 100; 97; 114; 0; 0; 0; 0; 0; 0; 0; 0], [118; 98; 45; 114; 97; 100; 97; 114; 0; 0; 0; 0; 0; 0; 0; 0])]);
    ("__set17", [([118; 98; 45; 106; 101; 108; 108; 121; 115; 101; 101; 114; 114; 0; 0; 0], [118; 98; 45; 106; 101; 108; 108; 121; 115; 101; 101; 114; 114; 0; 0; 0]); ([118; 98; 45; 115; 97; 98; 110; 122; 98; 100; 0; 0; 0; 0; 0; 0], [118; 98; 45; 115; 97; 98; 110; 122; 98; 100; 0; 0; 0; 0; 0; 0]); ([118; 98; 45; 114; 97; 100; 97; 114; 0; 0; 0; 0; 0; 0; 0; 0], [118; 98; 45; 114; 97; 100; 97; 114; 0; 0; 0; 0; 0; 0; 0; 0])]);
    ("__set18", [([0; 0; 0; 2], [0; 0; 0; 2]); ([0; 0; 0; 4], [0; 0; 0; 4])])];
@@ -50,7 +50,7 @@ Definition filter_prerouting : chain :=
              (BMatch (MEq (FFib "daddr" FRtype) [0; 0; 0; 2]));
              (BMatch (MConcatSet [FMetaL4proto] false "__set0"));
              (BMatch (MEq FThDport [13; 61]));
-             (BStmt (SMetaSet MKmark (VImm [0; 0; 0; 153])));
+             (BStmt (SMetaSet MKmark (VImm [153; 0; 0; 0])));
              (BStmt (SLog "[nft:rdppre]"))];
      r_verdict := Accept; r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
@@ -59,7 +59,7 @@ Definition filter_prerouting : chain :=
              (BMatch (MEq (FFib "daddr" FRtype) [0; 0; 0; 2]));
              (BMatch (MConcatSet [FMetaL4proto] false "__set2"));
              (BMatch (MConcatSet [FThDport] false "__set3"));
-             (BStmt (SMetaSet MKmark (VImm [0; 0; 0; 153])));
+             (BStmt (SMetaSet MKmark (VImm [153; 0; 0; 0])));
              (BStmt (SLog "[nft:rdppre]"))];
      r_verdict := Accept; r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
@@ -68,14 +68,14 @@ Definition filter_prerouting : chain :=
              (BMatch (MEq (FFib "daddr" FRtype) [0; 0; 0; 2]));
              (BMatch (MConcatSet [FMetaL4proto] false "__set5"));
              (BMatch (MConcatSet [FThDport] false "__set6"));
-             (BStmt (SMetaSet MKmark (VImm [0; 0; 0; 153])));
+             (BStmt (SMetaSet MKmark (VImm [153; 0; 0; 0])));
              (BStmt (SLog "[nft:rdppre]"))];
      r_verdict := Accept; r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
 
 Definition filter_postrouting : chain :=
   {| c_policy := Accept;
-   c_rules := [{| r_body := [(BMatch (MEq FMetaMark [0; 0; 0; 153]));
+   c_rules := [{| r_body := [(BMatch (MEq FMetaMark [153; 0; 0; 0]));
              (BStmt (SLog "[nft:rdppost]"))];
      r_verdict := Accept; r_vmap := None;
      r_nat := (Some {| nat_imms := []; nat_field := None; nat_map := None; nat_src := None; nat_kind := "masq"; nat_family := ""; nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.

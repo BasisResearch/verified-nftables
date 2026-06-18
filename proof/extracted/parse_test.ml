@@ -305,7 +305,7 @@ let check_optiplex_antispoof () =
    eval_chain_trace / eval_chain_mut), watching the mark the packet carries
    before and after each chain — the end-to-end traversal the proofs establish. *)
 
-let mark99 = [0;0;0;153]
+let mark99 = [153;0;0;0]   (* 0x99 host-endian (little-endian), matching the LE meta/ct mark encoding *)
 let data_eq (a : int list) (b : int list) = (a = b)
 let show d = S.concat ":" (Stdlib.List.map string_of_int d)
 
@@ -1193,6 +1193,76 @@ let check_fib_type () =
      && Semantics.eval_matchcond m_any (mk_rtype [0;0;0;6]) = false);
   Printf.printf "\n"
 
+(* (O) HOST-ENDIAN MARK RANGE: `meta mark` / `ct mark` are BYTEORDER_HOST_ENDIAN
+   4-byte integers (nft_meta.c `*dest = skb->mark;`; src/ct.c:52 / src/meta.c:106).
+   For an ORDERED or RANGE comparison nft ALWAYS inserts `byteorder reg = hton(reg,
+   4, 4)` before the range so the byte-lexicographic register compare runs over
+   network bytes and is therefore NUMERIC (golden any/ct.t.payload `ct mark
+   0x32-0x45` -> `[ ct load mark => reg 1 ] [ byteorder reg 1 = hton(reg 1,4,4) ]
+   [ range eq reg 1 0x00000032 0x00000045 ]`).  The frontend previously lowered
+   `mark 0x5-0xff` to a bare MRange over host-endian bytes with NO hton, comparing
+   the wrong byte order: a mark=16 packet (stored LE [16;0;0;0]) was compared as if
+   big-endian -> out of range -> WRONG.  Now KMark is stored host-endian (LE) like
+   the kernel and a range lowers to MRangeT with the hton transform + network-order
+   bounds, so the test is numeric and faithful. *)
+let check_mark_range () =
+  Printf.printf "=== (O) host-endian mark range (hton before range) ===\n";
+  let src =
+    "table ip filter {\n\
+    \  chain input {\n\
+    \    type filter hook input priority 0; policy drop;\n\
+    \    meta mark 0x5-0xff accept\n\
+    \  }\n\
+     }\n" in
+  let parsed = Nft_parse.parse_string src in
+  let env = parsed.Nft_lower.p_env in
+  let input = Nft_lower.find_chain parsed ~table:"filter" ~chain:"input" in
+  let r0 = Stdlib.List.nth input.Syntax.c_rules 0 in
+  let mc = match r0.Syntax.r_body with
+    | Syntax.BMatch m :: _ -> m | _ -> failwith "no mark match" in
+  (* (1) lowering shape: MRangeT FMetaMark [hton(4,4)] with network-order bounds *)
+  (match mc with
+   | Syntax.MRangeT (Syntax.FMetaMark, [Syntax.TByteorder (true, 4, 4)], false,
+                     lo, hi) ->
+       check "mark range lowers to MRangeT + hton(4,4)" true;
+       check "range bounds are network-order (BE) [0;0;0;5]..[0;0;0;255]"
+         (data_eq lo [0;0;0;5] && data_eq hi [0;0;0;255])
+   | _ ->
+       check "mark range lowers to MRangeT + hton(4,4)" false;
+       check "range bounds are network-order (BE) [0;0;0;5]..[0;0;0;255]" false);
+  (* (2) behavioural: a mark=16 packet (host-endian LE [16;0;0;0]) is IN [5,255].
+     Old bare-MRange path compared LE bytes big-endian -> NO match (wrong).  With
+     the hton transform the field becomes [0;0;0;16] BE -> 5<=16<=255 -> match. *)
+  let mk_mark le = { (mk_pkt ~env ()) with
+    Packet.pkt_meta = (fun k -> match k with Packet.MKmark -> le | _ -> []) } in
+  let mark16 = [16;0;0;0] in          (* 0x10 host-endian *)
+  let mark256 = [0;1;0;0] in          (* 0x100 host-endian: out of [5,255] numerically *)
+  let mark1 = [1;0;0;0] in            (* 0x01 host-endian: below 5 *)
+  check "mark=0x10 matches range 0x5-0xff (numeric, post-hton)"
+    (Semantics.eval_matchcond mc (mk_mark mark16) = true);
+  check "mark=0x100 does NOT match 0x5-0xff (would spuriously match if LE-lex)"
+    (Semantics.eval_matchcond mc (mk_mark mark256) = false);
+  check "mark=0x1 does NOT match 0x5-0xff (below low bound)"
+    (Semantics.eval_matchcond mc (mk_mark mark1) = false);
+  (* (3) eq is unaffected: `meta mark 0x99` stays MEq over the host-endian (LE)
+     constant [153;0;0;0] (NO byteorder; memcmp eq is order-independent). *)
+  let src_eq =
+    "table ip filter {\n\
+    \  chain input {\n\
+    \    type filter hook input priority 0; policy drop;\n\
+    \    meta mark 0x99 accept\n\
+    \  }\n\
+     }\n" in
+  let p_eq = Nft_parse.parse_string src_eq in
+  let c_eq = Nft_lower.find_chain p_eq ~table:"filter" ~chain:"input" in
+  let mc_eq = match (Stdlib.List.nth c_eq.Syntax.c_rules 0).Syntax.r_body with
+    | Syntax.BMatch m :: _ -> m | _ -> failwith "no eq match" in
+  (match mc_eq with
+   | Syntax.MEq (Syntax.FMetaMark, [153;0;0;0]) ->
+       check "mark eq stays MEq over host-endian (LE) constant, no byteorder" true
+   | _ -> check "mark eq stays MEq over host-endian (LE) constant, no byteorder" false);
+  Printf.printf "\n"
+
 (* ---------- CLI: parse a file and print compiled bytecode ---------- *)
 
 let cli (path : string) =
@@ -1227,6 +1297,7 @@ let () =
     check_ifname_exact ();
     check_limit_over ();
     check_fib_type ();
+    check_mark_range ();
     check_difftest_ast ();
     check_live_nft ();
     if !fails = 0 then Printf.printf "ALL PARSER CHECKS PASSED\n"
