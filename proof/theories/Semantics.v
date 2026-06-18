@@ -535,6 +535,34 @@ Definition eval_chain (c : chain) (p : packet) : verdict :=
   | None   => c_policy c
   end.
 
+(** ** Jump-freedom: the exact domain on which [eval_rules]/[eval_chain] are
+    FAITHFUL.
+
+    [eval_rules] has NO chain environment, so when a rule's realised outcome on
+    [p] is a [Jump]/[Goto]/[Return] it can only treat it as a non-terminal
+    fall-through ([terminal (Jump _) = false]) — i.e. it silently ignores the
+    control transfer.  That is unfaithful to netfilter (nf_tables_core.c: a JUMP
+    runs the target chain, resuming the caller on return; a GOTO tail-calls it; a
+    RETURN pops to the caller).  The faithful interpreter is the environment-aware
+    [eval_rules_j]/[eval_table] below.
+
+    [outcome_jumpfree r p] holds exactly when the rule's realised outcome on [p]
+    is NOT a control-transfer verdict; [rules_jumpfree]/[chain_jumpfree] lift it to
+    a rule list / chain.  On this domain — and only on it — the cheap
+    environment-free [eval_chain] coincides with the faithful [eval_table] (see
+    [eval_rules_jumpfree_eq_j] / [eval_chain_eq_table_jumpfree] in Correct.v). *)
+Definition outcome_jumpfree (r : rule) (p : packet) : bool :=
+  match outcome r p with
+  | Some (Jump _) | Some (Goto _) | Some Return => false
+  | _ => true
+  end.
+
+Definition rules_jumpfree (rs : list rule) (p : packet) : bool :=
+  forallb (fun r => outcome_jumpfree r p) rs.
+
+Definition chain_jumpfree (c : chain) (p : packet) : bool :=
+  rules_jumpfree (c_rules c) p.
+
 (** ** Bytecode VM semantics. *)
 
 (** Run one rule's program over a register file.  [None] means a [cmp] failed

@@ -2399,6 +2399,100 @@ Proof.
   rewrite run_eval_rules_j. reflexivity.
 Qed.
 
+(** ** Fidelity bridge: where the environment-FREE [eval_chain] is faithful.
+
+    [compile_chain_correct] is a genuine *compiler*-correctness fact — the
+    compiled bytecode [run_chain] reproduces the declarative [eval_chain] for
+    every chain.  But [eval_chain] itself is only a faithful model of netfilter on
+    chains whose realised outcomes carry no [Jump]/[Goto]/[Return] (it has no
+    chain environment, so it can only treat a control-transfer verdict as a benign
+    fall-through).  The theorem below pins down EXACTLY that: on a jump-free rule
+    list the cheap [eval_rules] coincides with the faithful, environment-aware
+    [eval_rules_j] for *every* fuel large enough to traverse it and *every* chain
+    environment [cs].  Combined with [compile_chain_correct] and
+    [compile_table_correct] this gives: for a jump-free base chain the compiled
+    single-chain bytecode equals the faithful [eval_table] — and for a chain that
+    DOES jump, the faithful semantics is [eval_table]/[run_table]
+    ([compile_table_correct]), NOT [eval_chain]. *)
+Lemma eval_rules_jumpfree_eq_j : forall fuel cs rs p,
+  List.length rs < fuel ->
+  rules_jumpfree rs p = true ->
+  eval_rules_j fuel cs rs p = eval_rules rs p.
+Proof.
+  induction fuel as [| fuel IH]; intros cs rs p Hlen Hjf; [inversion Hlen|].
+  destruct rs as [| r rest]; [reflexivity|].
+  cbn [List.length] in Hlen. apply Nat.succ_lt_mono in Hlen.
+  cbn [rules_jumpfree forallb] in Hjf. apply Bool.andb_true_iff in Hjf.
+  destruct Hjf as [Hr Hrest].
+  cbn [eval_rules_j eval_rules].
+  destruct (rule_loadable r p && rule_applies r p); [| apply IH; assumption].
+  unfold outcome_jumpfree in Hr.
+  destruct (outcome r p) as [v |]; [| apply IH; assumption].
+  destruct v; cbn [terminal]; try reflexivity; try discriminate;
+    apply IH; assumption.
+Qed.
+
+(** On a jump-free chain the environment-free [eval_chain] equals the faithful
+    [eval_table] (for any fuel that can traverse it and any environment). *)
+Theorem eval_chain_eq_table_jumpfree : forall fuel cs c p,
+  List.length (c_rules c) < fuel ->
+  chain_jumpfree c p = true ->
+  eval_chain c p = eval_table fuel cs c p.
+Proof.
+  intros fuel cs c p Hlen Hjf. unfold eval_chain, eval_table, chain_jumpfree in *.
+  rewrite (eval_rules_jumpfree_eq_j fuel cs (c_rules c) p Hlen Hjf). reflexivity.
+Qed.
+
+(** Hence on a jump-free base chain the COMPILED single-chain bytecode reproduces
+    the faithful environment-aware [eval_table] — the headline compiler result and
+    the faithful semantics line up exactly on [eval_chain]'s valid domain. *)
+Theorem compile_chain_faithful_jumpfree : forall fuel cs c p,
+  List.length (c_rules c) < fuel ->
+  chain_jumpfree c p = true ->
+  run_chain (compile_chain c) (c_policy c) p = eval_table fuel cs c p.
+Proof.
+  intros fuel cs c p Hlen Hjf.
+  rewrite compile_chain_correct.
+  apply eval_chain_eq_table_jumpfree; assumption.
+Qed.
+
+(** ** Regression: the faithful semantics does NOT ignore a jump.
+
+    A base chain whose only rule is [jump "deny"], with ["deny"] a chain that
+    DROPs, must DROP — netfilter runs the target chain (nf_tables_core.c JUMP/GOTO
+    dispatch).  The environment-free [eval_chain] would (consistently with the
+    compiled bytecode) IGNORE the jump and return the base policy [Accept]; this
+    is exactly why [eval_chain] is restricted to its jump-free domain above and the
+    faithful semantics for jump-bearing chains is [eval_table].  Locked in here so
+    the jump-ignoring behaviour can never silently become the certified meaning. *)
+From Stdlib Require Import String.
+Local Open Scope string_scope.
+Definition rg_jump_rule : rule :=
+  {| r_body := []; r_verdict := Jump "deny"; r_vmap := None; r_nat := None;
+     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+Definition rg_drop_rule : rule :=
+  {| r_body := []; r_verdict := Drop; r_vmap := None; r_nat := None;
+     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+Definition rg_base : chain := {| c_policy := Accept; c_rules := [rg_jump_rule] |}.
+Definition rg_deny : chain := {| c_policy := Accept; c_rules := [rg_drop_rule] |}.
+Definition rg_cs : list (String.string * chain) := [("deny", rg_deny)].
+
+(** (A) the faithful interpreter runs the target chain and DROPs (matches nft). *)
+Theorem faithful_table_jump_drops : forall p, eval_table 10 rg_cs rg_base p = Drop.
+Proof. reflexivity. Qed.
+
+(** (B) and the compiled jump-aware VM agrees (via [compile_table_correct]). *)
+Theorem compiled_table_jump_drops : forall p,
+  run_table 10 (compile_env rg_cs) (compile_chain rg_base) (c_policy rg_base) p = Drop.
+Proof. intro p. rewrite compile_table_correct. apply faithful_table_jump_drops. Qed.
+
+(** (C) the base chain's only rule is NOT jump-free, so it is correctly OUTSIDE
+    the domain of [eval_chain_eq_table_jumpfree] — i.e. the bridge does not (and
+    cannot) certify the unfaithful [eval_chain] result on it. *)
+Theorem rg_base_not_jumpfree : forall p, chain_jumpfree rg_base p = false.
+Proof. reflexivity. Qed.
+Local Close Scope string_scope.
+
 (** ** Ruleset-level preservation: multi-table / multi-hook dispatch.
 
     Compiling each base chain (and its jump-target environment) and running the

@@ -1558,10 +1558,47 @@ let cli (path : string) =
       chains)
     parsed.Nft_lower.p_tables
 
+(* ---------- (J) jump/goto are NOT silently ignored (jump-aware eval_table) ----------
+   REGRESSION for the "compile_chain_correct certifies a jump-IGNORING semantics"
+   infidelity.  The environment-free eval_chain treats a `jump deny` as a benign
+   fall-through and returns the base policy (Accept here); the FAITHFUL, jump-aware
+   eval_table runs the target chain, so a `jump`/`goto` to a chain that DROPs must
+   DROP (matches nf_tables_core.c JUMP/GOTO dispatch). *)
+let check_jump_aware () =
+  Printf.printf "=== (J) jump/goto run the target chain (jump-aware eval_table) ===\n";
+  let env =
+    (Nft_parse.parse_string
+       "table ip filter {\n  chain c { type filter hook input priority 0; }\n}\n")
+      .Nft_lower.p_env in
+  let mk_rule v : Syntax.rule =
+    { Syntax.r_body = []; r_verdict = v; r_vmap = None; r_nat = None;
+      r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } in
+  let deny : Syntax.chain =
+    { Syntax.c_policy = Verdict.Accept; c_rules = [ mk_rule Verdict.Drop ] } in
+  let chains = [ ("deny", deny) ] in
+  let jump_base : Syntax.chain =
+    { Syntax.c_policy = Verdict.Accept; c_rules = [ mk_rule (Verdict.Jump "deny") ] } in
+  let goto_base : Syntax.chain =
+    { Syntax.c_policy = Verdict.Accept; c_rules = [ mk_rule (Verdict.Goto "deny") ] } in
+  let p = mk_pkt ~env () in
+  let vj = Semantics.eval_table 10 chains jump_base p in
+  let vg = Semantics.eval_table 10 chains goto_base p in
+  (* the OLD jump-ignoring eval_chain returns the base policy Accept; flag that too *)
+  let veval_chain = Semantics.eval_chain jump_base p in
+  Printf.printf "    jump deny -> %s (want drop);  goto deny -> %s (want drop)\n"
+    (verdict_str vj) (verdict_str vg);
+  Printf.printf "    (env-free eval_chain ignores the jump -> %s)\n" (verdict_str veval_chain);
+  check "jump deny runs target chain -> drop" (vj = Verdict.Drop);
+  check "goto deny runs target chain -> drop" (vg = Verdict.Drop);
+  check "env-free eval_chain would IGNORE the jump (-> accept)"
+    (veval_chain = Verdict.Accept);
+  Printf.printf "\n"
+
 let () =
   if Stdlib.Array.length Sys.argv > 1 then cli Sys.argv.(1)
   else begin
     check_ruleset_nft ();
+    check_jump_aware ();
     check_optiplex_antispoof ();
     check_optiplex_mark ();
     check_dnat_rewrite ();
