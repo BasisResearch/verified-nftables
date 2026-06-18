@@ -212,6 +212,7 @@ concat_keys:
   | concat_keys DOT keyatom  { $1 @ [$3] }
 
 keyatom:
+  | TCP FLAGS     { ["tcp"; "flags"] }   (* `flags` lexes as the FLAGS keyword *)
   | TCP IDENT     { ["tcp"; $2] }
   | UDP IDENT     { ["udp"; $2] }
   | TH IDENT      { ["th"; $2] }
@@ -243,10 +244,10 @@ keyatom:
   | MARK          { ["mark"] }
 
 rhs:
-  | payload     { { neg = false; payload = $1 } }
-  | NE payload  { { neg = true;  payload = $2 } }
-  | EQ payload  { { neg = false; payload = $2 } }
-  | BANG payload { { neg = true; payload = $2 } }
+  | payload     { { op = Op_implicit; neg = false; payload = $1 } }
+  | NE payload  { { op = Op_ne;       neg = true;  payload = $2 } }
+  | EQ payload  { { op = Op_eq;       neg = false; payload = $2 } }
+  | BANG payload { { op = Op_bang;    neg = true;  payload = $2 } }
 
 payload:
   | elem                             { SEvalue $1 }

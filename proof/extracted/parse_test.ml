@@ -67,6 +67,7 @@ let icmp6_nd_nsol = [135]
 let port n = [n / 256; n mod 256]
 let ct_state v = (fun (k : Packet.ct_key) -> match k with Packet.CKstate -> v | _ -> [])
 let th_dport p = [0;0] @ port p           (* sport(2) ++ dport(2) *)
+let th_flags fl = L.init 13 (fun _ -> 0) @ [fl]  (* flags byte at transport+13 *)
 let th_icmptype t = [t]                    (* icmp/icmpv6 type at transport offset 0 *)
 let ascii s = L.init (S.length s) (fun i -> Char.code (S.get s i))
 
@@ -548,6 +549,74 @@ let check_ct_state () =
     (Semantics.eval_matchcond m_old (mk_ct [0;0;0;66]) = false);
   Printf.printf "\n"
 
+(* (J) SINGLE POSITIVE `tcp flags X` BITMASK lowering.  tcp_flag_type has
+   .basetype = &bitmask_type (proto.c:583-591); the OP_IMPLICIT->OP_EQ rewrite
+   (evaluate.c:2792-2797) does NOT fire for it, so a bare `tcp flags X` stays an
+   implicit bitmask test, emitted (golden inet/tcp.t.payload:331-337) as
+     [ bitwise reg1 = (reg1 & X) ^ 0 ]  [ cmp neq reg1 0 ]
+   i.e. (flags & X) != 0, NOT flags == X.  The four written operators differ
+   (tests/py/inet/tcp.t:69-74):
+     implicit `tcp flags X`    -> MMasked (FTcpFlags, neg=true,  [X], [0], [0])
+     bang     `tcp flags ! X`  -> MMasked (FTcpFlags, neg=false, [X], [0], [0])
+     explicit `tcp flags == X` -> MEq  (FTcpFlags, [X])
+     explicit `tcp flags != X` -> MNeq (FTcpFlags, [X])
+   Before the fix `tcp flags` was Unsupported, and the only buildable encoding
+   (MEq) wrongly rejected every multi-flag packet (e.g. SYN|ACK for `tcp flags
+   syn`). *)
+let check_tcp_flags () =
+  Printf.printf "=== (J) single positive `tcp flags X` bitmask lowering ===\n";
+  let src =
+    "table inet t {\n\
+    \  chain c {\n\
+    \    type filter hook input priority 0; policy accept;\n\
+    \    tcp flags syn accept\n\
+    \    tcp flags ! syn accept\n\
+    \    tcp flags == syn accept\n\
+    \    tcp flags != cwr accept\n\
+    \  }\n\
+     }\n" in
+  let parsed = Nft_parse.parse_string src in
+  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_lower.p_env in
+  (* the l4proto-tcp dependency is prepended; the tcp-flags match is the LAST
+     body item of each rule *)
+  let last_match i =
+    let b = (Stdlib.List.nth c.Syntax.c_rules i).Syntax.r_body in
+    Stdlib.List.nth b (Stdlib.List.length b - 1) in
+  (* `tcp flags syn` => (flags & 0x02) != 0, MMasked neg=true — NOT MEq *)
+  check "tcp flags syn lowers to MMasked bitmask test (not MEq)"
+    (last_match 0 = Syntax.BMatch
+       (Syntax.MMasked (Syntax.FTcpFlags, true, [2], [0], [0])));
+  (* `tcp flags ! syn` => (flags & 0x02) == 0, MMasked neg=false *)
+  check "tcp flags ! syn lowers to MMasked (flags & syn) == 0"
+    (last_match 1 = Syntax.BMatch
+       (Syntax.MMasked (Syntax.FTcpFlags, false, [2], [0], [0])));
+  (* `tcp flags == syn` => exact equality, MEq *)
+  check "tcp flags == syn lowers to exact MEq"
+    (last_match 2 = Syntax.BMatch (Syntax.MEq (Syntax.FTcpFlags, [2])));
+  (* `tcp flags != cwr` => plain cmp neq, MNeq *)
+  check "tcp flags != cwr lowers to plain MNeq"
+    (last_match 3 = Syntax.BMatch (Syntax.MNeq (Syntax.FTcpFlags, [128])));
+  (* THE KEY behavioural case: a SYN|ACK packet (flags = 0x12 = 18). *)
+  let mk_fl fl = mk_pkt ~env ~l4proto:l4_tcp ~th:(th_flags fl) () in
+  let m_syn = Syntax.MMasked (Syntax.FTcpFlags, true, [2], [0], [0]) in
+  check "tcp flags syn matches a SYN|ACK packet (flags=0x12) — real nft accepts"
+    (Semantics.eval_matchcond m_syn (mk_fl 18) = true);
+  check "tcp flags syn matches a pure SYN packet (flags=0x02)"
+    (Semantics.eval_matchcond m_syn (mk_fl 2) = true);
+  check "tcp flags syn does NOT match ACK-only (flags=0x10)"
+    (Semantics.eval_matchcond m_syn (mk_fl 16) = false);
+  (* the OLD (only buildable) MEq encoding wrongly rejected SYN|ACK *)
+  let m_old = Syntax.MEq (Syntax.FTcpFlags, [2]) in
+  check "the OLD MEq encoding wrongly rejected SYN|ACK (regression guard)"
+    (Semantics.eval_matchcond m_old (mk_fl 18) = false);
+  (* explicit `== syn` is genuine equality: rejects SYN|ACK, accepts pure SYN *)
+  let m_eq = Syntax.MEq (Syntax.FTcpFlags, [2]) in
+  check "tcp flags == syn (explicit) rejects SYN|ACK, accepts pure SYN"
+    (Semantics.eval_matchcond m_eq (mk_fl 18) = false
+     && Semantics.eval_matchcond m_eq (mk_fl 2) = true);
+  Printf.printf "\n"
+
 (* ---------- CLI: parse a file and print compiled bytecode ---------- *)
 
 let cli (path : string) =
@@ -572,6 +641,7 @@ let () =
     check_ip6_nat ();
     check_iif_index ();
     check_ct_state ();
+    check_tcp_flags ();
     check_difftest_ast ();
     check_live_nft ();
     if !fails = 0 then Printf.printf "ALL PARSER CHECKS PASSED\n"

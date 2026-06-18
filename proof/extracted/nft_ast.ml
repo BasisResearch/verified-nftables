@@ -46,8 +46,16 @@ type setexpr =
   | SEset   of value list
   | SEref   of string              (* @name *)
 
-(* a match's rhs with an optional negation (`!=` or a leading `!`) *)
-type rhs = { neg : bool; payload : setexpr }
+(* The relational operator a match was WRITTEN with.  nftables treats these
+   differently for bitmask-basetype selectors (tcp flags, ct state): an IMPLICIT
+   comparison stays a bitmask test `(field & X) != 0`, an explicit `==`/`!=` is an
+   exact equality/inequality, and a leading `!` (Op_bang) is `(field & X) == 0`.
+   For non-bitmask selectors all four collapse to the [neg] flag (eq vs neq). *)
+type relop = Op_implicit | Op_eq | Op_ne | Op_bang
+
+(* a match's rhs: the operator it was written with, an optional negation (derived
+   from the operator: `!=` or a leading `!`), and the value/set payload. *)
+type rhs = { op : relop; neg : bool; payload : setexpr }
 
 (* A selector key path, e.g. ["tcp";"dport"], ["meta";"obrname"], ["oifname"]. *)
 type keypath = string list

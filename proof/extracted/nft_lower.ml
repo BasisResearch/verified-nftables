@@ -75,6 +75,12 @@ let sym_ctstate = [
   "invalid",[0;0;0;1]; "established",[0;0;0;2]; "related",[0;0;0;4];
   "new",[0;0;0;8]; "untracked",[0;0;0;64];
 ]
+(* TCP flag bits (the single byte at transport header + 13).  proto.c:
+   TCPHDR_FIN 0x01 .. TCPHDR_CWR 0x80.  A comma/`|` list ORs the bits. *)
+let sym_tcpflag = [
+  "fin",0x01; "syn",0x02; "rst",0x04; "psh",0x08;
+  "ack",0x10; "urg",0x20; "ecn",0x40; "cwr",0x80;
+]
 let sym_icmp = [
   "echo-reply",[0]; "destination-unreachable",[3]; "redirect",[5];
   "echo-request",[8]; "router-advertisement",[9]; "router-solicitation",[10];
@@ -108,7 +114,7 @@ let lookup ctx tbl s =
 
 type kind =
   | KIfname | KIfindex | KIp4 | KIp6 | KPort | KL4proto | KEthertype
-  | KCtstate | KMark | KIcmp | KIcmpv6 | KPkttype | KFibType | KNum of int
+  | KCtstate | KMark | KIcmp | KIcmpv6 | KPkttype | KFibType | KTcpflag | KNum of int
 
 (* fib route-type symbols (the RTN_ route types), as 4-byte words *)
 let sym_fibtype = [
@@ -136,6 +142,9 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
   | KEthertype, Nft_ast.Vsym s -> lookup "ethertype" sym_ethertype s
   | KCtstate, Nft_ast.Vsym s -> lookup "ct state" sym_ctstate s
   | KCtstate, Nft_ast.Vnum n -> bytes_of_int 4 n
+  (* a single tcp-flag symbol / numeric literal -> a 1-byte mask *)
+  | KTcpflag, Nft_ast.Vsym s -> [lookup "tcp flag" sym_tcpflag s]
+  | KTcpflag, Nft_ast.Vnum n -> [n land 0xff]
   | KMark, Nft_ast.Vnum n -> bytes_of_int 4 n
   | KIcmp, Nft_ast.Vnum n -> [n land 0xff]
   | KIcmp, Nft_ast.Vsym s -> lookup "icmp type" sym_icmp s
@@ -167,6 +176,7 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * Bytes.data option =
       (Syntax.FThDport, KPort, dep_l4 (L.hd kp))
   | ["tcp"; "sport"] | ["udp"; "sport"] | ["th"; "sport"] ->
       (Syntax.FThSport, KPort, dep_l4 (L.hd kp))
+  | ["tcp"; "flags"] -> (Syntax.FTcpFlags, KTcpflag, dep_l4 "tcp")
   | ["ip"; "saddr"]    -> (Syntax.FIp4Saddr, KIp4, none)
   | ["ip"; "daddr"]    -> (Syntax.FIp4Daddr, KIp4, none)
   | ["ip"; "protocol"] -> (Syntax.FIp4Protocol, KL4proto, none)
@@ -311,12 +321,43 @@ let intern_anon_concat st (kinds : kind list) (elems : Nft_ast.value list) : str
    caller via the returned dep) *)
 let lower_match st (m : Nft_ast.smatch) : Bytes.data option * Syntax.matchcond =
   let neg = m.Nft_ast.m_rhs.Nft_ast.neg in
+  let op  = m.Nft_ast.m_rhs.Nft_ast.op in
   match m.Nft_ast.m_keys with
   | [kp] ->
       let (f, k, dep) = key_field kp in
       let mc = match m.Nft_ast.m_rhs.Nft_ast.payload with
+        | Nft_ast.SEset _ when k = KTcpflag ->
+            (* `tcp flags { fin, syn, ... }` is a genuine set-membership lookup
+               (golden inet/tcp.t.payload:66 `lookup reg 1 set`), distinct from
+               the bare comma OR-mask form `tcp flags syn,ack`.  The surface AST
+               does not record whether braces were written, so the two are
+               ambiguous here; rather than silently pick the wrong encoding we
+               refuse the brace/comma set form for tcp flags (the single-value
+               bitmask forms below cover the infidelity this guards against). *)
+            raise (Unsupported
+              "tcp flags set/list form is ambiguous (brace-set vs OR-mask); \
+               use a single `tcp flags X` / `tcp flags ! X` / `tcp flags == X`")
         | Nft_ast.SEref name -> Syntax.MConcatSet ([f], neg, name)
         | Nft_ast.SEset elems -> Syntax.MConcatSet ([f], neg, intern_anon_set st k elems)
+        | Nft_ast.SEvalue v when k = KTcpflag ->
+            (* tcp_flag_type has .basetype = bitmask_type (proto.c:583-591), and
+               the OP_IMPLICIT->OP_EQ rewrite (evaluate.c:2792-2797) does NOT fire
+               for it, so a single positive `tcp flags X` stays an implicit
+               bitmask test, emitted (golden inet/tcp.t.payload:331-337) as
+               `bitwise reg1 = (reg1 & X) ^ 0; cmp neq reg1 0`, i.e. (flags & X)
+               != 0 — NOT flags == X.  The four written operators differ:
+                 implicit `tcp flags X`   -> (flags & X) != 0   MMasked neg:=true
+                 bang     `tcp flags ! X` -> (flags & X) == 0   MMasked neg:=false
+                                              (tcp.t:74 `& X == 0`)
+                 explicit `tcp flags == X`-> flags == X         MEq  (tcp.t:70)
+                 explicit `tcp flags != X`-> flags != X         MNeq (tcp.t:69) *)
+            let bits = enc_atom k (resolve_var st v) in
+            let zero = [0] in
+            (match op with
+             | Nft_ast.Op_implicit -> Syntax.MMasked (f, true,  bits, zero, zero)
+             | Nft_ast.Op_bang     -> Syntax.MMasked (f, false, bits, zero, zero)
+             | Nft_ast.Op_eq       -> Syntax.MEq  (f, bits)
+             | Nft_ast.Op_ne       -> Syntax.MNeq (f, bits))
         | Nft_ast.SEvalue v ->
             (match resolve_var st v with
              | Nft_ast.Vrange (a, b) -> Syntax.MRange (f, neg, enc_atom k a, enc_atom k b)
