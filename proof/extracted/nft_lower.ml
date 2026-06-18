@@ -385,6 +385,42 @@ let interval_of_value st (k : kind) (v : Nft_ast.value) : Bytes.data * Bytes.dat
       (net, bcast)
   | v' -> let b = enc_atom k v' in (b, b)
 
+(* Like [interval_of_value] but encode the bounds NETWORK-ORDER (big-endian),
+   used for an INTERVAL set over a HOST-ENDIAN field (e.g. `ct mark { 0x100-0x200 }`).
+   Such a set is an ORDERED comparison: the kernel compares register bytes with
+   memcmp (byte-lexicographic), so nft userspace ALWAYS inserts a
+   `byteorder reg = hton(reg,4,4)` before the `lookup` and stores the interval
+   immediates network-order — exactly the same conversion it emits for a DIRECT
+   `ct mark 0x32-0x45` range (golden any/ct.t.payload: interval mark set forces
+   the hton, an exact-element set does not).  We mirror that: the loaded
+   host-endian field gets a [TByteorder true w w] transform (see the SEset branch
+   in [lower_match]) and the stored bounds are big-endian via [enc_atom_be].
+   EXACT (degenerate point) elements are still encoded as a degenerate [b,b]
+   interval, but in big-endian so they remain consistent with the hton'd field
+   under [set_mem] (equality via [data_le] antisymmetry is order-independent). *)
+let interval_of_value_be st (k : kind) (v : Nft_ast.value) : Bytes.data * Bytes.data =
+  match resolve_var st v with
+  | Nft_ast.Vrange (a, b) -> (enc_atom_be k a, enc_atom_be k b)
+  | Nft_ast.Vprefix (Nft_ast.Vip4 b, len) ->
+      let w = width_of_kind k in let mask = prefix_mask w len in
+      let net = band b mask in
+      let bcast = L.map2 (fun n m -> n lor (m lxor 0xff)) net mask in
+      (net, bcast)
+  | v' -> let b = enc_atom_be k v' in (b, b)
+
+(* Does a single-field set contain at least one INTERVAL (range or prefix)
+   element?  An interval set is an ORDERED comparison and so forces nft's
+   `byteorder hton` on a host-endian field; an exact-only set (all point
+   elements) is an unordered memcmp-equality lookup and emits NO hton.  We only
+   take the byteorder path when BOTH the field is host-endian AND the set has an
+   interval element (matching the golden corpus: exact mark sets emit no hton). *)
+let set_has_interval st (elems : Nft_ast.value list) : bool =
+  L.exists
+    (fun v -> match resolve_var st v with
+       | Nft_ast.Vrange _ | Nft_ast.Vprefix _ -> true
+       | _ -> false)
+    elems
+
 (* byte width / encoder for a declared set TYPE atom (e.g. `ipv4_addr . ifname`) *)
 let bytes_of_typeatom st (atom : string) (v : Nft_ast.value) : Bytes.data =
   let v = resolve_var st v in
@@ -437,6 +473,14 @@ let interval_of_decl_elem st (types : string list) (v : Nft_ast.value)
 let intern_anon_set st (k : kind) (elems : Nft_ast.value list) : string =
   let name = fresh st "__set" in
   st.sets <- (name, L.map (interval_of_value st k) elems) :: st.sets;
+  name
+
+(* As [intern_anon_set] but encode the elements NETWORK-ORDER (big-endian): used
+   for an INTERVAL set over a host-endian field, whose lookup is preceded by a
+   `byteorder hton` (see the SEset branch in [lower_match]). *)
+let intern_anon_set_be st (k : kind) (elems : Nft_ast.value list) : string =
+  let name = fresh st "__set" in
+  st.sets <- (name, L.map (interval_of_value_be st k) elems) :: st.sets;
   name
 
 (* build the anonymous-set env entry for a CONCATENATED inline set, where each
@@ -503,6 +547,20 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
                  raise (Unsupported
                    "comma list rhs is only valid for bitmask selectors \
                     (ct state / tcp flags); use a `{ ... }` set instead"))
+        | Nft_ast.SEset elems when host_endian_kind k && set_has_interval st elems ->
+            (* INTERVAL set over a HOST-ENDIAN field (e.g. `ct mark { 0x100-0x200 }`):
+               this is an ORDERED comparison, so nft inserts a mandatory
+               `byteorder reg = hton(reg,4,4)` before the `lookup` and stores the
+               interval bounds network-order (golden any/ct.t.payload: an interval
+               mark set forces the hton, an exact-element set does not).  We mirror
+               the Round-7 direct-range fix on the set path: emit [MSetT] with a
+               [TByteorder true w w] transform on the loaded host-endian field and
+               big-endian set bounds, so [set_mem] (big-endian lexicographic via
+               [data_le]) tests numeric containment.  Without this the LE-stored
+               bounds would be compared big-endian -> wrong byte order, wrong verdict. *)
+            let w = width_of_kind k in
+            Syntax.MSetT (f, [Syntax.TByteorder (true, w, w)], neg,
+                          intern_anon_set_be st k elems)
         | Nft_ast.SEset elems -> Syntax.MConcatSet ([f], neg, intern_anon_set st k elems)
         | Nft_ast.SEvalue v when k = KTcpflag ->
             (* tcp_flag_type has .basetype = bitmask_type (proto.c:583-591), and
@@ -539,6 +597,13 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
              | Nft_ast.Vprefix (Nft_ast.Vip4 bs, len) ->
                  let w = width_of_kind k in let mask = prefix_mask w len in
                  Syntax.MMasked (f, neg, mask, L.init w (fun _ -> 0), band bs mask)
+             | Nft_ast.Vset elems
+               when host_endian_kind k && set_has_interval st elems ->
+                 (* a `$var` expanding to an INTERVAL set over a host-endian field:
+                    same hton-before-lookup as the inline SEset branch above. *)
+                 let w = width_of_kind k in
+                 Syntax.MSetT (f, [Syntax.TByteorder (true, w, w)], neg,
+                               intern_anon_set_be st k elems)
              | Nft_ast.Vset elems ->        (* a `$var` that expands to a set *)
                  Syntax.MConcatSet ([f], neg, intern_anon_set st k elems)
              | v' when k = KCtstate ->

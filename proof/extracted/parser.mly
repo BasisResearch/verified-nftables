@@ -233,6 +233,7 @@ keyatom:
   | META MARK     { ["meta"; "mark"] }
   | META PKTTYPE  { ["meta"; "pkttype"] }
   | CT IDENT      { ["ct"; $2] }
+  | CT MARK       { ["ct"; "mark"] }   (* `mark` lexes as the MARK keyword *)
   (* fib (routing-table) lookup: `fib <key> <result>`, e.g. `fib daddr type` *)
   | FIB IDENT TYPE  { ["fib"; $2; "type"] }
   | FIB IDENT IDENT { ["fib"; $2; $3] }

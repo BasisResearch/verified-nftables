@@ -1306,6 +1306,85 @@ let check_mark_range () =
    | _ -> check "mark eq stays MEq over host-endian (LE) constant, no byteorder" false);
   Printf.printf "\n"
 
+(* (O') HOST-ENDIAN MARK INTERVAL SET: an INTERVAL set on a host-endian field
+   (`ct mark { 0x100-0x200 }`) is ALSO an ordered comparison, so nft inserts the
+   SAME mandatory `byteorder reg = hton(reg,4,4)` before the `lookup` and stores
+   the interval bounds network-order (golden any/ct.t.payload: an interval mark
+   set forces the hton; an exact-element set `{0x32,0x2222}` does not).  The
+   frontend previously lowered the SEset path to a bare MConcatSet with LE bounds
+   and NO byteorder, so [set_mem]'s big-endian [data_le] compared the LE-stored
+   bounds in the wrong byte order: the model REJECTED a mark numerically inside
+   the interval that nft ACCEPTS.  Now an interval set over a host-endian field
+   lowers to MSetT + hton(4,4) with BE bounds (mirroring the Round-7 direct-range
+   fix on the set path), while an EXACT-only set stays a bare MConcatSet (memcmp
+   eq is order-independent — nft emits no hton there either). *)
+let check_mark_set () =
+  Printf.printf "=== (O') host-endian mark interval set (hton before lookup) ===\n";
+  let chain_of src =
+    let p = Nft_parse.parse_string src in
+    (p, Nft_lower.find_chain p ~table:"filter" ~chain:"input") in
+  let mc_of c = match (Stdlib.List.nth c.Syntax.c_rules 0).Syntax.r_body with
+    | Syntax.BMatch m :: _ -> m | _ -> failwith "no match" in
+  (* (1) INTERVAL set: MSetT FCtMark [hton(4,4)] with NETWORK-order (BE) bounds *)
+  let src_iv =
+    "table ip filter {\n\
+    \  chain input {\n\
+    \    type filter hook input priority 0; policy drop;\n\
+    \    ct mark { 0x100-0x200 } accept\n\
+    \  }\n\
+     }\n" in
+  let (p_iv, c_iv) = chain_of src_iv in
+  let env_iv = p_iv.Nft_lower.p_env in
+  let mc_iv = mc_of c_iv in
+  (match mc_iv with
+   | Syntax.MSetT (Syntax.FCtMark, [Syntax.TByteorder (true, 4, 4)], false, nm) ->
+       check "interval mark set lowers to MSetT + hton(4,4)" true;
+       check "interval set bounds are network-order (BE) [0;0;1;0]..[0;0;2;0]"
+         (env_iv.Packet.e_set nm = [ ([0;0;1;0], [0;0;2;0]) ])
+   | _ ->
+       check "interval mark set lowers to MSetT + hton(4,4)" false;
+       check "interval set bounds are network-order (BE) [0;0;1;0]..[0;0;2;0]" false);
+  (* (2) behavioural: a packet with ct mark 0x150 (host-endian LE [80;1;0;0]) is
+     numerically inside [0x100,0x200].  The OLD bare-MConcatSet path compared the
+     LE bound big-endian and REJECTED it (the proven divergence); with the hton
+     transform the field becomes [0;0;1;80] BE and 0x100<=0x150<=0x200 -> match. *)
+  let mk_ctmark le = mk_pkt ~env:env_iv
+    ~ct:(fun (k : Packet.ct_key) -> match k with Packet.CKmark -> le | _ -> []) () in
+  check "ct mark 0x150 matches { 0x100-0x200 } (numeric, post-hton; old model REJECTED it)"
+    (Semantics.eval_matchcond mc_iv (mk_ctmark [80;1;0;0]) = true);
+  check "ct mark 0x80 does NOT match { 0x100-0x200 } (below low bound)"
+    (Semantics.eval_matchcond mc_iv (mk_ctmark [128;0;0;0]) = false);
+  check "ct mark 0x300 does NOT match { 0x100-0x200 } (above high bound)"
+    (Semantics.eval_matchcond mc_iv (mk_ctmark [0;3;0;0]) = false);
+  (* directly exhibit the OLD bug on the BE-stored element: the LE-compared bound
+     would have rejected 0x150 (matching the infidelity's coqtop proof). *)
+  check "the BUG: LE-stored bounds compared big-endian reject 0x150 (old behaviour)"
+    (Bytes.set_mem [80;1;0;0] [ ([0;1;0;0], [0;2;0;0]) ] = false);
+  check "the FIX: BE-stored bounds + hton'd field accept 0x150"
+    (Bytes.set_mem (Bytes.data_byteorder true 4 4 [80;1;0;0]) [ ([0;0;1;0], [0;0;2;0]) ] = true);
+  (* (3) EXACT-only set stays a bare MConcatSet over host-endian (LE) constants,
+     NO byteorder (nft emits no hton for `ct mark { 0x32, 0x2222 }`). *)
+  let src_ex =
+    "table ip filter {\n\
+    \  chain input {\n\
+    \    type filter hook input priority 0; policy drop;\n\
+    \    ct mark { 0x32, 0x2222 } accept\n\
+    \  }\n\
+     }\n" in
+  let (p_ex, c_ex) = chain_of src_ex in
+  let env_ex = p_ex.Nft_lower.p_env in
+  let mc_ex = mc_of c_ex in
+  (match mc_ex with
+   | Syntax.MConcatSet ([Syntax.FCtMark], false, nm) ->
+       check "exact mark set stays a bare MConcatSet (no byteorder transform)" true;
+       (* host-endian (LE) point elements: 0x32=[50;0;0;0], 0x2222=[34;34;0;0] *)
+       check "exact set elements are host-endian (LE) points, no hton"
+         (env_ex.Packet.e_set nm = [ ([50;0;0;0],[50;0;0;0]); ([34;34;0;0],[34;34;0;0]) ])
+   | _ ->
+       check "exact mark set stays a bare MConcatSet (no byteorder transform)" false;
+       check "exact set elements are host-endian (LE) points, no hton" false);
+  Printf.printf "\n"
+
 (* ---------- CLI: parse a file and print compiled bytecode ---------- *)
 
 let cli (path : string) =
@@ -1341,6 +1420,7 @@ let () =
     check_limit_over ();
     check_fib_type ();
     check_mark_range ();
+    check_mark_set ();
     check_difftest_ast ();
     check_live_nft ();
     if !fails = 0 then Printf.printf "ALL PARSER CHECKS PASSED\n"

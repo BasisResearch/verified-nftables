@@ -129,6 +129,11 @@ let matchcond (m : Syntax.matchcond) : string = match m with
       spf "(MMasked %s %s %s %s %s)" (field f) (bool neg) (data mask) (data xor) (data v)
   | Syntax.MConcatSet (fs, neg, name) ->
       spf "(MConcatSet %s %s %s)" (field_list fs) (bool neg) (qstring name)
+  | Syntax.MSetT (f, ts, neg, name) ->
+      spf "(MSetT %s %s %s %s)" (field f) (transform_list ts) (bool neg) (qstring name)
+  | Syntax.MRangeT (f, ts, neg, lo, hi) ->
+      spf "(MRangeT %s %s %s %s %s)"
+        (field f) (transform_list ts) (bool neg) (data lo) (data hi)
   | Syntax.MLimit s -> spf "(MLimit %s)" (limit_spec s)
   | _ -> raise (Unsupported "matchcond constructor not emittable (extend nft_emit.matchcond)")
 
