@@ -110,7 +110,7 @@ Lemma pre1_streaming_skips : forall p,
   rule_applies pre1 p = false.
 Proof.
   intros p Henv Hiif Hfib Hl4 Hdport Hok.
-  unfold rule_applies, pre1, filter_prerouting.
+  unfold rule_applies, rule_applies_walk, pre1, filter_prerouting.
   cbn -[field_value pkt_env read_payload_ok].
   unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
     field_loadable, load_ok.
@@ -128,7 +128,7 @@ Lemma pre2_streaming_applies : forall p,
   rule_applies pre2 p = true.
 Proof.
   intros p Henv Hiif Hfib Hl4 Hdport Hok.
-  unfold rule_applies, pre2, filter_prerouting.
+  unfold rule_applies, rule_applies_walk, pre2, filter_prerouting.
   cbn -[field_value pkt_env read_payload_ok].
   unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
     field_loadable, load_ok.
@@ -189,14 +189,14 @@ Qed.
 Theorem masquerade_gated_on_mark : forall p,
   field_value FMetaMark p = mark99 -> rule_applies post1 p = true.
 Proof.
-  intros p Hm. unfold rule_applies, post1, filter_postrouting.
+  intros p Hm. unfold rule_applies, rule_applies_walk, post1, filter_postrouting.
   cbn -[field_value]. rewrite Hm. vm_compute. reflexivity.
 Qed.
 
 Theorem unmarked_not_masqueraded : forall p,
   field_value FMetaMark p = [0;0;0;0] -> rule_applies post1 p = false.
 Proof.
-  intros p Hm. unfold rule_applies, post1, filter_postrouting.
+  intros p Hm. unfold rule_applies, rule_applies_walk, post1, filter_postrouting.
   cbn -[field_value]. rewrite Hm. vm_compute. reflexivity.
 Qed.
 

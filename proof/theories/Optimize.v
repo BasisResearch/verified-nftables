@@ -139,14 +139,15 @@ Proof.
       apply andb_true_iff in Hs4. destruct Hs4 as [Hs5 Hvm].
       apply andb_true_iff in Hs5. destruct Hs5 as [Hm Hv].
       cbn [eval_rules]. unfold rule_loadable, rule_applies, end_loadable, tail_loadable,
-        terminal_loadable, outcome, terminal_outcome.
+        terminal_loadable, outcome, outcome_core, terminal_outcome.
       destruct (r_body r) as [| it body] eqn:Eb; [| discriminate Hm].
       destruct (r_vmap r) as [vm |] eqn:Evm; [discriminate Hvm |].
       destruct (r_nat r) as [n |] eqn:Enat; [discriminate Hnat |].
       destruct (r_tproxy r) as [t |] eqn:Etp; [discriminate Htp |].
       destruct (r_fwd r) as [w |] eqn:Efwd; [discriminate Hfwd |].
       destruct (r_queue r) as [q |] eqn:Eq; [discriminate Hq |].
-      cbn [forallb body_matches flat_map].
+      cbn [body_loadable_walk body_synproxy_stops existsb rule_applies_walk
+           forallb body_matches flat_map stmts_after_outcome].
       destruct (r_verdict r) eqn:Ev; cbn in Hv |- *;
         try discriminate Hv; reflexivity.
     + (* keep r, recurse *)
@@ -159,10 +160,20 @@ Qed.
 
 (** ** Optimization 2: intra-rule match deduplication. *)
 
+(** Whether a body contains a SYN-proxy statement.  Such a statement is
+    verdict-bearing AND position-sensitive (it STOPS traversal, making later
+    items unreachable), so the match-reordering dedup performs is NOT verdict-
+    preserving across it — [dedup_rule] therefore leaves such a rule untouched. *)
+Definition body_has_synproxy (body : list body_item) : bool :=
+  existsb (fun it => match it with BStmt (SSynproxy _ _) => true | _ => false end) body.
+
 (** Deduplicate the match conditions; the statements are kept (after the matches).
     The reordering is irrelevant to the verdict (matches commute, statements are
-    verdict-neutral) and the optimizer's output is not corpus-checked. *)
+    verdict-neutral) and the optimizer's output is not corpus-checked — EXCEPT when
+    a SYN-proxy is present, whose STOP short-circuits later matches, so we then keep
+    the rule unchanged. *)
 Definition dedup_rule (r : rule) : rule :=
+  if body_has_synproxy (r_body r) then r else
   {| r_body := map BMatch (nodup matchcond_eq_dec (body_matches (r_body r)))
                ++ map BStmt (body_stmts (r_body r));
      r_verdict := r_verdict r;
@@ -172,6 +183,19 @@ Definition dedup_rule (r : rule) : rule :=
      r_fwd     := r_fwd r;
      r_queue   := r_queue r;
      r_after   := r_after r |}.
+
+(** With no synproxy in the body, [body_synproxy_stops] is [false] and
+    [rule_applies_walk] collapses to [forallb eval_matchcond (body_matches …)]. *)
+Lemma body_has_synproxy_false_stops : forall body p,
+  body_has_synproxy body = false -> body_synproxy_stops body p = false.
+Proof.
+  induction body as [| it body IH]; intro p; [reflexivity|].
+  unfold body_has_synproxy, body_synproxy_stops in *. cbn [existsb].
+  destruct it as [m | s]; [cbn [orb]; apply IH|].
+  destruct s; cbn; try (apply IH); [].
+  (* SSynproxy: head true contradicts the hypothesis *)
+  intro H; discriminate H.
+Qed.
 
 Lemma forallb_nodup :
   forall (A : Type) (dec : forall x y : A, {x = y} + {x <> y}) f (l : list A),
@@ -187,16 +211,59 @@ Proof.
     congruence.
 Qed.
 
+(** [existsb] of the synproxy-stop predicate over a list of [BMatch] is [false]. *)
+Lemma existsb_synstop_map_BMatch : forall p ms,
+  existsb (fun it => match it with BStmt (SSynproxy _ _) => synproxy_stops p | _ => false end)
+    (map BMatch ms) = false.
+Proof. intros p ms. induction ms as [| m ms IH]; [reflexivity|]. cbn [map existsb]. exact IH. Qed.
+
+(** [existsb] of the synproxy-stop predicate over [map BStmt (body_stmts body)]
+    is [false] when the body has no synproxy. *)
+Lemma existsb_synstop_map_BStmt : forall p body,
+  body_has_synproxy body = false ->
+  existsb (fun it => match it with BStmt (SSynproxy _ _) => synproxy_stops p | _ => false end)
+    (map BStmt (body_stmts body)) = false.
+Proof.
+  intros p body. unfold body_has_synproxy, body_stmts.
+  induction body as [| it b IH]; [reflexivity|].
+  cbn [existsb flat_map]. destruct it as [m | s].
+  - cbn [orb]. exact IH.
+  - cbn [map existsb]. destruct s; cbn [orb]; try exact IH; intro H; discriminate H.
+Qed.
+
+(** The dedup body (matches-then-statements) has no stopping synproxy exactly when
+    the original body has no synproxy. *)
+Lemma dedup_body_no_synproxy_stops : forall body p,
+  body_has_synproxy body = false ->
+  body_synproxy_stops (map BMatch (nodup matchcond_eq_dec (body_matches body))
+                       ++ map BStmt (body_stmts body)) p = false.
+Proof.
+  intros body p Hsp. unfold body_synproxy_stops. rewrite existsb_app.
+  rewrite existsb_synstop_map_BMatch, Bool.orb_false_l.
+  apply existsb_synstop_map_BStmt; exact Hsp.
+Qed.
+
 Lemma rule_applies_dedup : forall r p,
   rule_applies (dedup_rule r) p = rule_applies r p.
 Proof.
-  intros r p. unfold rule_applies, dedup_rule. cbn [r_body].
+  intros r p. unfold rule_applies, dedup_rule.
+  destruct (body_has_synproxy (r_body r)) eqn:Hsp; [reflexivity|].
+  cbn [r_body].
+  rewrite (rule_applies_walk_no_synproxy _ p (dedup_body_no_synproxy_stops _ p Hsp)).
+  rewrite (rule_applies_walk_no_synproxy (r_body r) p
+             (body_has_synproxy_false_stops _ p Hsp)).
   rewrite body_matches_app, body_matches_map_BMatch, body_matches_map_BStmt.
   rewrite app_nil_r. apply forallb_nodup.
 Qed.
 
 Lemma outcome_dedup : forall r p, outcome (dedup_rule r) p = outcome r p.
-Proof. intros r p. unfold outcome, dedup_rule. reflexivity. Qed.
+Proof.
+  intros r p. unfold outcome, dedup_rule.
+  destruct (body_has_synproxy (r_body r)) eqn:Hsp; [reflexivity|].
+  cbn [r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after].
+  rewrite (body_has_synproxy_false_stops (r_body r) p Hsp).
+  rewrite (dedup_body_no_synproxy_stops _ p Hsp). reflexivity.
+Qed.
 
 (** [body_item_loadable] of a body splits into the matches' and statements'
     loadability, so dedup/reorder of the matches preserves it. *)
@@ -221,18 +288,31 @@ Proof.
 Qed.
 
 Lemma end_loadable_dedup : forall r p, end_loadable (dedup_rule r) p = end_loadable r p.
-Proof. intros r p. unfold end_loadable, tail_loadable, terminal_loadable, vmap_loadable,
-  terminal_outcome, dedup_rule; reflexivity. Qed.
+Proof.
+  intros r p. unfold dedup_rule. destruct (body_has_synproxy (r_body r)); [reflexivity|].
+  unfold end_loadable, tail_loadable, terminal_loadable, vmap_loadable,
+    terminal_outcome; reflexivity.
+Qed.
 
 Lemma rule_loadable_dedup : forall r p, rule_loadable (dedup_rule r) p = rule_loadable r p.
 Proof.
-  intros r p. unfold rule_loadable. rewrite end_loadable_dedup. f_equal.
-  unfold dedup_rule. cbn [r_body].
-  rewrite body_loadable_split.
-  rewrite body_matches_app, body_matches_map_BMatch, body_matches_map_BStmt, app_nil_r.
-  rewrite body_stmts_app, body_stmts_map_BMatch, body_stmts_map_BStmt. cbn [app].
-  rewrite (forallb_nodup _ matchcond_eq_dec).
-  symmetry. apply body_loadable_split.
+  intros r p. destruct (body_has_synproxy (r_body r)) eqn:Hsp.
+  - (* dedup_rule = r *) unfold dedup_rule; rewrite Hsp; reflexivity.
+  - unfold rule_loadable. rewrite end_loadable_dedup.
+    (* both [body_synproxy_stops] sides are [false], so the [if] reduces to [end_loadable] *)
+    assert (Hd : body_synproxy_stops (r_body (dedup_rule r)) p = false)
+      by (unfold dedup_rule; rewrite Hsp; cbn [r_body]; apply dedup_body_no_synproxy_stops; exact Hsp).
+    rewrite Hd, (body_has_synproxy_false_stops _ p Hsp).
+    f_equal.
+    rewrite (body_loadable_walk_no_synproxy (r_body (dedup_rule r)) p Hd).
+    rewrite (body_loadable_walk_no_synproxy (r_body r) p
+               (body_has_synproxy_false_stops _ p Hsp)).
+    unfold dedup_rule; rewrite Hsp; cbn [r_body].
+    rewrite body_loadable_split.
+    rewrite body_matches_app, body_matches_map_BMatch, body_matches_map_BStmt, app_nil_r.
+    rewrite body_stmts_app, body_stmts_map_BMatch, body_stmts_map_BStmt. cbn [app].
+    rewrite (forallb_nodup _ matchcond_eq_dec).
+    symmetry. apply body_loadable_split.
 Qed.
 
 Lemma eval_rules_map_dedup : forall rs p,
@@ -283,26 +363,32 @@ Proof.
   destruct it as [m | s]; simpl; rewrite IH; reflexivity.
 Qed.
 
+(** [simplify_match]/[simplify_item] are the identity (the pass is disabled), so a
+    simplified body equals the original — hence all the wrappers are trivial. *)
+Lemma simplify_item_id : forall it, simplify_item it = it.
+Proof. intros [m | s]; reflexivity. Qed.
+Lemma map_simplify_item_id : forall b, map simplify_item b = b.
+Proof. induction b as [| it b IH]; [reflexivity|]. cbn [map]. rewrite simplify_item_id, IH. reflexivity. Qed.
+
 Lemma rule_applies_simplify : forall r p,
   rule_applies (simplify_rule r) p = rule_applies r p.
 Proof.
   intros r p. unfold rule_applies, simplify_rule. cbn [r_body].
-  rewrite body_matches_simplify.
-  induction (body_matches (r_body r)) as [| m l IH]; [reflexivity |].
-  cbn [map forallb]. rewrite simplify_match_correct, IH. reflexivity.
+  rewrite map_simplify_item_id. reflexivity.
 Qed.
 
 Lemma rule_loadable_simplify : forall r p,
   rule_loadable (simplify_rule r) p = rule_loadable r p.
 Proof.
-  intros r p. unfold rule_loadable.
-  replace (end_loadable (simplify_rule r) p) with (end_loadable r p)
+  intros r p. unfold rule_loadable, simplify_rule. cbn [r_body].
+  rewrite map_simplify_item_id.
+  replace (end_loadable {| r_body := r_body r; r_verdict := r_verdict r;
+                           r_vmap := r_vmap r; r_nat := r_nat r; r_tproxy := r_tproxy r;
+                           r_fwd := r_fwd r; r_queue := r_queue r; r_after := r_after r |} p)
+    with (end_loadable r p)
     by (unfold end_loadable, tail_loadable, terminal_loadable, vmap_loadable,
-        terminal_outcome, simplify_rule; reflexivity).
-  f_equal. unfold simplify_rule. cbn [r_body].
-  induction (r_body r) as [| it b IH]; [reflexivity|].
-  destruct it as [m | s]; cbn [map forallb body_item_loadable simplify_item];
-    rewrite IH; reflexivity.
+        terminal_outcome; reflexivity).
+  reflexivity.
 Qed.
 
 Lemma eval_rules_map_simplify : forall rs p,
@@ -311,7 +397,8 @@ Proof.
   induction rs as [| r rs IH]; intros p; [reflexivity |].
   cbn [map eval_rules]. rewrite rule_applies_simplify, rule_loadable_simplify.
   replace (outcome (simplify_rule r) p) with (outcome r p)
-    by (unfold outcome, simplify_rule; reflexivity).
+    by (unfold outcome, simplify_rule; cbn [r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after];
+        rewrite map_simplify_item_id; reflexivity).
   destruct (rule_loadable r p && rule_applies r p).
   - destruct (outcome r p) as [v |].
     + destruct (terminal v); [reflexivity | apply IH].
@@ -356,10 +443,11 @@ Proof.
     apply andb_true_iff in Hn as [Hba Hv].
     apply andb_true_iff in Hba as [Hb Hra].
     cbn [eval_rules]. unfold rule_loadable, rule_applies, end_loadable, tail_loadable,
-      terminal_loadable, outcome, terminal_outcome.
+      terminal_loadable, outcome, outcome_core, terminal_outcome.
     destruct (r_body r) as [| it b] eqn:Eb; [| discriminate Hb].
     destruct (r_after r) as [| sa ra] eqn:Era; [| discriminate Hra].
-    cbn [body_matches flat_map forallb].
+    cbn [body_loadable_walk body_synproxy_stops existsb rule_applies_walk
+         body_matches flat_map forallb stmts_after_outcome].
     destruct (r_vmap r); [discriminate |].
     destruct (r_nat r); [discriminate |].
     destruct (r_tproxy r); [discriminate |].

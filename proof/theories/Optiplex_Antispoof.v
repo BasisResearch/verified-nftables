@@ -75,7 +75,7 @@ Proof.
   (* rule_applies (the antispoof rule) p = true.  [cbn -[field_value pkt_env]]
      reduces forallb/body_matches/eval_matchcond but keeps [field_value]/[pkt_env]
      wrapped, so the field-value and env hypotheses can rewrite them. *)
-  - unfold rule_applies, eval_matchcond, match_loadable, eval_matchcond_body,
+  - unfold rule_applies, rule_applies_walk, eval_matchcond, match_loadable, eval_matchcond_body,
       fields_loadable, field_loadable, load_ok.
     cbn -[field_value pkt_env read_payload_ok].
     rewrite ?Hok, Hobr, ?app_nil_r, Henv, Hin, Hpair. vm_compute. reflexivity.
@@ -131,13 +131,13 @@ Proof.
   unfold eval_table, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
   (* antispoof rule does not apply: the pair IS bound, so the `!=` match is false *)
   erewrite erj_skip.
-  2:{ unfold rule_applies, eval_matchcond, match_loadable, eval_matchcond_body,
+  2:{ unfold rule_applies, rule_applies_walk, eval_matchcond, match_loadable, eval_matchcond_body,
         fields_loadable, field_loadable, load_ok.
       cbn -[field_value pkt_env read_payload_ok].
       rewrite ?Hok, Hobr, ?app_nil_r, Henv, Hdaddr, Hoif. vm_compute. reflexivity. }
   (* hass rule does not apply either: obrname is br.20, not br.1 *)
   erewrite erj_skip.
-  2:{ unfold rule_applies, eval_matchcond, match_loadable, eval_matchcond_body,
+  2:{ unfold rule_applies, rule_applies_walk, eval_matchcond, match_loadable, eval_matchcond_body,
         fields_loadable, field_loadable, load_ok.
       cbn -[field_value pkt_env read_payload_ok]. rewrite ?Hok, Hobr.
       vm_compute. reflexivity. }

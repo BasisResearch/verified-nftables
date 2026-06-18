@@ -617,6 +617,46 @@ let check_tcp_flags () =
      && Semantics.eval_matchcond m_eq (mk_fl 2) = true);
   Printf.printf "\n"
 
+(* ---------- (K) synproxy is verdict-bearing, not a no-op ----------
+   The DSL `synproxy` statement was verdict-neutral; the kernel
+   (nft_synproxy.c) STOPS traversal for a TCP SYN/ACK (NF_STOLEN/NF_DROP),
+   BREAKs for a non-TCP packet (NFT_BREAK), and CONTINUEs otherwise.  A chain
+   whose only rule is `synproxy` (policy accept) now DROPs a SYN packet, drops
+   an ACK packet, accepts (falls through) a bare-RST TCP packet, and accepts
+   (rule does not apply) a non-TCP packet — it is NOT a constant no-op. *)
+let check_synproxy () =
+  Printf.printf "=== (K) synproxy is verdict-bearing (not a no-op) ===\n";
+  (* the synproxy verdict is env-independent; take an env from a trivial parse *)
+  let env =
+    (Nft_parse.parse_string
+       "table inet t {\n  chain c {\n    type filter hook input priority 0; policy accept;\n  }\n}\n")
+      .Nft_lower.p_env in
+  (* the SSynproxy statement is not on the .nft frontend, so build the AST directly *)
+  let rule : Syntax.rule =
+    { Syntax.r_body = [ Syntax.BStmt (Syntax.SSynproxy (1460, 7)) ];
+      r_verdict = Verdict.Continue; r_vmap = None; r_nat = None;
+      r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } in
+  let chain : Syntax.chain = { Syntax.c_policy = Verdict.Accept; c_rules = [ rule ] } in
+  let mk_tcp fl = mk_pkt ~env ~l4proto:l4_tcp ~th:(th_flags fl) () in
+  let non_tcp = { (mk_pkt ~env ()) with Packet.pkt_th = []; pkt_have_l4 = false } in
+  check "synproxy STOPS a TCP SYN packet (NF_STOLEN -> Drop)"
+    (Semantics.eval_chain chain (mk_tcp 2) = Verdict.Drop);
+  check "synproxy STOPS a TCP ACK packet (NF_STOLEN/NF_DROP -> Drop)"
+    (Semantics.eval_chain chain (mk_tcp 16) = Verdict.Drop);
+  check "synproxy CONTINUEs a bare-RST TCP packet (falls through to policy accept)"
+    (Semantics.eval_chain chain (mk_tcp 4) = Verdict.Accept);
+  check "synproxy does NOT apply to a non-TCP packet (NFT_BREAK -> policy accept)"
+    (Semantics.eval_chain chain non_tcp = Verdict.Accept);
+  (* the red agent's no-op claim is refuted: not constant across packets *)
+  check "synproxy is NOT a verdict no-op (SYN vs RST differ)"
+    (Semantics.eval_chain chain (mk_tcp 2) <> Semantics.eval_chain chain (mk_tcp 4));
+  (* the compiled bytecode agrees (compile_chain_correct) *)
+  let pol = chain.Syntax.c_policy in
+  let prog = Compile.compile_chain chain in
+  check "compiled bytecode STOPS the SYN packet too"
+    (Semantics.run_chain prog pol (mk_tcp 2) = Verdict.Drop);
+  Printf.printf "\n"
+
 (* ---------- CLI: parse a file and print compiled bytecode ---------- *)
 
 let cli (path : string) =
@@ -642,6 +682,7 @@ let () =
     check_iif_index ();
     check_ct_state ();
     check_tcp_flags ();
+    check_synproxy ();
     check_difftest_ast ();
     check_live_nft ();
     if !fails = 0 then Printf.printf "ALL PARSER CHECKS PASSED\n"

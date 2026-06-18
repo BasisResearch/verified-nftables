@@ -23,6 +23,52 @@ Definition apply_transform (t : transform) (d : data) : data :=
 Definition apply_transforms (ts : list transform) (d : data) : data :=
   fold_left (fun acc t => apply_transform t acc) ts d.
 
+(** ** SYN-proxy.
+
+    A `synproxy` statement is NOT verdict-neutral.  The kernel
+    (net/netfilter/nft_synproxy.c, nft_synproxy_do_eval / nft_synproxy_eval_v4):
+
+      - a NON-TCP packet sets the verdict to NFT_BREAK (line 117): the rule does
+        NOT apply — exactly the behaviour of a transport-base payload load on a
+        packet without an L4 header.  We therefore tie synproxy's applicability to
+        the loadability of the TCP-flags byte (a [PTransport] load): a non-TCP /
+        non-L4 / fragmented packet makes it unloadable, so the rule is skipped.
+
+      - a TCP packet whose SYN or ACK flag is set is the packet synproxy is
+        written to catch: the kernel STOPS chain traversal here — NF_STOLEN for a
+        SYN (line 61: the SYN is answered with a syncookie SYN+ACK and consumed) or
+        a valid 3WHS ACK (line 67), NF_DROP for a rejected ACK / bad checksum /
+        unparseable header (lines 69/122/130/135).  Every one of these STOPS
+        traversal and discards the packet from this hook's decision; the official
+        docs corroborate (doc/statements.txt:55: "reject and synproxy internally
+        issue a drop verdict at the end of their respective actions").  We model
+        this control-flow outcome — the packet never reaches the chain policy or a
+        later rule — as the terminal verdict [Drop] (the syncookie/seq side effect
+        of STOLEN is below the model's single-packet resolution, exactly as
+        Reject's ICMP and Queue's hand-off are).
+
+      - a TCP packet with neither SYN nor ACK (e.g. a bare RST) leaves the verdict
+        untouched: an implicit NFT_CONTINUE.  We model this as a transparent
+        fall-through (the rule applies but contributes no verdict).
+
+    [synproxy_flags] reads the 1-byte TCP-flags field (transport offset 13, where
+    [Syntax.FTcpFlags] reads); [synproxy_stops] is the SYN|ACK (= 0x12) test that
+    decides "terminal stop" vs "continue". *)
+Definition synproxy_flags (p : packet) : data := read_payload PTransport 13 1 p.
+
+(** Whether a synproxy statement's TCP-flags load succeeds (i.e. the packet has a
+    parsed, non-fragmented TCP header).  A failure is the kernel's NFT_BREAK for a
+    non-TCP packet: the rule does not apply. *)
+Definition synproxy_loadable (p : packet) : bool := read_payload_ok PTransport 13 1 p.
+
+(** Whether synproxy STOPS chain traversal on this packet: true iff a SYN or ACK
+    flag is set (0x02 | 0x10 = 0x12). *)
+Definition synproxy_stops (p : packet) : bool :=
+  match synproxy_flags p with
+  | b :: _ => negb (Nat.eqb (Nat.land b 18) 0)
+  | [] => false
+  end.
+
 (** Whether every field in a list is loadable on a packet. *)
 Definition fields_loadable (fs : list field) (p : packet) : bool :=
   forallb (fun f => field_loadable f p) fs.
@@ -83,10 +129,57 @@ Definition eval_matchcond_body (m : matchcond) (p : packet) : bool :=
 Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
   andb (match_loadable m p) (eval_matchcond_body m p).
 
+(** Whether a rule's body contains a SYN-proxy statement that STOPS traversal on
+    this packet (a TCP packet with SYN or ACK set; see [synproxy_stops]).  Such a
+    synproxy is a terminal action — it short-circuits the verdict map / terminal —
+    so it is checked first in [outcome].  (A synproxy whose flags-load BREAKs makes
+    the whole rule unloadable, so it never reaches here; a non-stopping synproxy is
+    transparent.) *)
+Definition body_synproxy_stops (body : list body_item) (p : packet) : bool :=
+  existsb (fun it => match it with
+                     | BStmt (SSynproxy _ _) => synproxy_stops p
+                     | _ => false
+                     end) body.
+
 (** A rule applies when all its match conditions hold (empty = matches all).
-    Statements in the body are verdict-neutral and ignored here. *)
+    Statements are walked in ORDER: a SYN-proxy statement that STOPS traversal
+    (see [synproxy_stops]) short-circuits — any match positioned AFTER it is
+    unreachable (the kernel has already STOLEN/DROPped the packet), so the
+    remaining matches vacuously pass; a match positioned BEFORE a stopping synproxy
+    still gates whether the synproxy runs at all (a failing earlier match BREAKs
+    the rule first).  Every other statement is verdict-neutral.  When the body has
+    no stopping synproxy this is exactly [forallb eval_matchcond (body_matches …)]
+    (proved as [rule_applies_no_synproxy]). *)
+Fixpoint rule_applies_walk (body : list body_item) (p : packet) : bool :=
+  match body with
+  | [] => true
+  | BMatch m :: rest => eval_matchcond m p && rule_applies_walk rest p
+  | BStmt (SSynproxy _ _) :: rest =>
+      if synproxy_stops p then true else rule_applies_walk rest p
+  | BStmt _ :: rest => rule_applies_walk rest p
+  end.
 Definition rule_applies (r : rule) (p : packet) : bool :=
-  forallb (fun m => eval_matchcond m p) (body_matches (r_body r)).
+  rule_applies_walk (r_body r) p.
+
+(** When the body contains no stopping synproxy, [rule_applies_walk] is exactly
+    [forallb eval_matchcond] over the body's matches. *)
+Lemma rule_applies_walk_no_synproxy : forall body p,
+  body_synproxy_stops body p = false ->
+  rule_applies_walk body p = forallb (fun m => eval_matchcond m p) (body_matches body).
+Proof.
+  induction body as [| it body IH]; intro p; [reflexivity|].
+  assert (Hcons : forall it0 b, body_synproxy_stops (it0 :: b) p =
+            (match it0 with BStmt (SSynproxy _ _) => synproxy_stops p | _ => false end)
+            || body_synproxy_stops b p) by reflexivity.
+  rewrite Hcons. destruct it as [m | s].
+  - cbn [orb]. cbn [rule_applies_walk body_matches flat_map app forallb]. intro H.
+    rewrite IH by exact H. reflexivity.
+  - destruct s; cbn [rule_applies_walk body_matches flat_map app];
+      try (cbn [orb]; intro H; apply IH; exact H).
+    (* SSynproxy: the [orb] head is [synproxy_stops p]; the hypothesis forces it false *)
+    destruct (synproxy_stops p) eqn:Hs; cbn [orb];
+      [discriminate | intro H; apply IH; exact H].
+Qed.
 
 (** ** Whole-rule loadability.
 
@@ -121,7 +214,8 @@ Definition stmt_loadable (s : stmt) (p : packet) : bool :=
   | SDynsetImm _ _ keyfs _ _ => fields_loadable keyfs p
   | SExthdrWrite vs _ _ _ _ => vsrc_loadable vs p
   | SDupSrc src _ _ _ => vsrc_loadable src p
-  | SCounter _ _ | SNotrack | SLog _ | SObjref _ _ | SSynproxy _ _
+  | SSynproxy _ _ => synproxy_loadable p   (* non-TCP / non-L4 => NFT_BREAK (rule skipped) *)
+  | SCounter _ _ | SNotrack | SLog _ | SObjref _ _
   | SLast _ | SExthdrReset _ _ | SDup _ _ _ => true
   end.
 
@@ -199,6 +293,25 @@ Lemma e_set_declared : forall base d n,
   e_set (env_with_sets base d) n = assoc_str n (sd_sets d) (e_set base n).
 Proof. reflexivity. Qed.
 
+(** The verdict contribution of a list of post-outcome ([r_after]) statements,
+    walked left-to-right exactly as the VM runs them on a [Continue] fall-through:
+    a SYN-proxy whose flags-load BREAKs (non-TCP) abandons the rule ([None]); one
+    that STOPS (SYN/ACK) is terminal [Some Drop]; an ordinary statement whose
+    operand load BREAKs also abandons the rule ([None]); otherwise we proceed.
+    (Only synproxy is verdict-bearing; every other statement is verdict-neutral, so
+    the only [Some] this produces is the synproxy [Drop].)  [r_after] never carries
+    a synproxy after lowering — this keeps the per-rule equation faithful even for
+    a hand-built rule that puts one there. *)
+Fixpoint stmts_after_outcome (ss : list stmt) (p : packet) : option verdict :=
+  match ss with
+  | [] => None
+  | SSynproxy _ _ :: rest =>
+      if synproxy_loadable p
+      then (if synproxy_stops p then Some Drop else stmts_after_outcome rest p)
+      else None
+  | s :: rest => if stmt_loadable s p then stmts_after_outcome rest p else None
+  end.
+
 (** The *value* a value-source computes into register 1 — the operand of a
     set/mangle/NAT statement.  This is the value-level meaning the verdict proof
     previously delegated to the corpus; [run_vsrc_value] (in Correct) proves the
@@ -263,17 +376,28 @@ Definition terminal_outcome (r : rule) (p : packet) : option verdict :=
   | None =>
   match r_queue r with
   | Some _ => Some Accept   (* queue is terminal accept (hand-off is a side effect) *)
-  | None => match r_verdict r with Continue => None | v => Some v end
+  | None => match r_verdict r with
+            (* a [Continue] verdict falls through to the post-outcome statements;
+               a SYN-proxy among them is the only verdict-bearing one (terminal
+               Drop), otherwise the fall-through continues ([None]). *)
+            | Continue => stmts_after_outcome (r_after r) p
+            | v => Some v
+            end
   end
   end
   end
   end.
 
 (** A rule's outcome (when it applies): a [Some v] (verdict reached) or [None]
-    (fall through).  A verdict map is evaluated first: a hit gives its verdict, a
-    miss falls through to the terminal outcome (so a rule may carry both a vmap
-    and a trailing redirect/masquerade). *)
-Definition outcome (r : rule) (p : packet) : option verdict :=
+    (fall through).  A SYN-proxy stop in the body is the terminal action (the
+    packet is consumed/dropped at this hook — see [synproxy_stops]); otherwise a
+    verdict map is evaluated first: a hit gives its verdict, a miss falls through
+    to the terminal outcome (so a rule may carry both a vmap and a trailing
+    redirect/masquerade). *)
+(** The verdict-map / terminal part of a rule's outcome (the part the compiled
+    [compile_end] realises): a vmap hit gives its verdict, a miss falls through to
+    the terminal.  This is the outcome IGNORING any body synproxy. *)
+Definition outcome_core (r : rule) (p : packet) : option verdict :=
   match r_vmap r with
   | Some vm =>
       let key := match vm_keyf vm with
@@ -286,6 +410,9 @@ Definition outcome (r : rule) (p : packet) : option verdict :=
       end
   | None => terminal_outcome r p
   end.
+
+Definition outcome (r : rule) (p : packet) : option verdict :=
+  if body_synproxy_stops (r_body r) p then Some Drop else outcome_core r p.
 
 (** ** Whole-rule loadability (NFT_BREAK reachability).
 
@@ -329,8 +456,46 @@ Definition end_loadable (r : rule) (p : packet) : bool :=
   | None => tail_loadable r p
   end.
 
+(** Loadability of a body, walked left-to-right: every item must load, but a
+    SYN-proxy that STOPS traversal makes every later item UNREACHABLE (the kernel
+    has already STOLEN/DROPped), so those need not load — exactly mirroring the VM,
+    which returns the synproxy verdict and never executes the rest.  With no
+    stopping synproxy this is [forallb body_item_loadable] (the prior model). *)
+Fixpoint body_loadable_walk (body : list body_item) (p : packet) : bool :=
+  match body with
+  | [] => true
+  | BStmt (SSynproxy _ _) :: rest =>
+      synproxy_loadable p &&
+      (if synproxy_stops p then true else body_loadable_walk rest p)
+  | it :: rest => body_item_loadable it p && body_loadable_walk rest p
+  end.
+
+(** A rule is loadable when its body loads (up to any stopping SYN-proxy) AND —
+    unless a body SYN-proxy STOPS traversal (in which case the verdict-map /
+    terminal / [r_after] are unreachable, exactly like a vmap HIT) — the end part
+    loads too. *)
+(** With no stopping synproxy in the body, [body_loadable_walk] collapses to
+    [forallb body_item_loadable] (every item is required to load, as before). *)
+Lemma body_loadable_walk_no_synproxy : forall body p,
+  body_synproxy_stops body p = false ->
+  body_loadable_walk body p = forallb (fun it => body_item_loadable it p) body.
+Proof.
+  induction body as [| it body IH]; intro p; [reflexivity|].
+  assert (Hcons : body_synproxy_stops (it :: body) p =
+            (match it with BStmt (SSynproxy _ _) => synproxy_stops p | _ => false end)
+            || body_synproxy_stops body p) by reflexivity.
+  rewrite Hcons. destruct it as [m | s].
+  - cbn [orb body_loadable_walk forallb]. intro H. rewrite IH by exact H. reflexivity.
+  - destruct s; cbn [body_loadable_walk forallb body_item_loadable stmt_loadable];
+      try (cbn [orb]; intro H; rewrite IH by exact H; reflexivity).
+    (* SSynproxy: non-stopping; [body_item_loadable] is [synproxy_loadable] *)
+    destruct (synproxy_stops p) eqn:Hs; cbn [orb];
+      [discriminate | intro H; rewrite IH by exact H; reflexivity].
+Qed.
+
 Definition rule_loadable (r : rule) (p : packet) : bool :=
-  forallb (fun it => body_item_loadable it p) (r_body r) && end_loadable r p.
+  body_loadable_walk (r_body r) p &&
+  (if body_synproxy_stops (r_body r) p then true else end_loadable r p).
 
 (** Evaluate a rule list.  [None] means "fell through every rule"; [Some v]
     means a terminal verdict [v] was reached.  A [Continue] verdict on an
@@ -448,7 +613,14 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | INotrack :: rest      => run_rule rf rest p
   | ILog _ :: rest        => run_rule rf rest p
   | IObjref _ _ :: rest   => run_rule rf rest p   (* verdict-neutral *)
-  | ISynproxy _ _ :: rest => run_rule rf rest p
+  | ISynproxy _ _ :: rest =>
+      (* SYN-proxy: a non-TCP packet BREAKs the rule (NFT_BREAK); a TCP packet with
+         SYN or ACK set STOPS traversal (NF_STOLEN/NF_DROP, modelled as terminal
+         Drop); any other TCP packet falls through (NFT_CONTINUE).  See
+         [synproxy_loadable]/[synproxy_stops]. *)
+      if synproxy_loadable p
+      then (if synproxy_stops p then Some Drop else run_rule rf rest p)
+      else None
   | ILast _ :: rest       => run_rule rf rest p
   | IDynset _ _ _ _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)
   | IExthdrReset _ _ :: rest => run_rule rf rest p (* verdict-neutral *)
@@ -684,7 +856,13 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
   | INotrack :: rest => run_rule_writes rf rest p
   | ILog _ :: rest => run_rule_writes rf rest p
   | IObjref _ _ :: rest => run_rule_writes rf rest p
-  | ISynproxy _ _ :: rest => run_rule_writes rf rest p
+  | ISynproxy _ _ :: rest =>
+      (* mirrors [run_rule]: a non-TCP packet breaks the rule, a SYN/ACK packet
+         stops traversal (terminal) — either way no later statement in this rule
+         runs, so the packet is returned unchanged; other TCP packets fall through. *)
+      if synproxy_loadable p
+      then (if synproxy_stops p then p else run_rule_writes rf rest p)
+      else p
   | ILast _ :: rest => run_rule_writes rf rest p
   | IDynset op name keyregs None _ :: rest =>
       (* pure-set dynset: insert/remove the concatenated key in the named set, so a
@@ -767,6 +945,14 @@ Fixpoint body_writes (body : list body_item) (p : packet) : packet :=
       then body_writes rest (set_env_dynset_map p op name
                                (List.concat (map (fun f => field_value f p) keyfs))
                                (field_value d p))
+      else p
+  (* SYN-proxy is meta/ct- and env-neutral, but it BREAKs the rule on a non-TCP
+     packet and STOPS (terminal) on a SYN/ACK packet — either way no later
+     statement runs (cf. [run_rule_writes]'s ISynproxy); other TCP packets fall
+     through. *)
+  | BStmt (SSynproxy _ _) :: rest =>
+      if synproxy_loadable p
+      then (if synproxy_stops p then p else body_writes rest p)
       else p
   (* every OTHER statement is meta/ct- and env-neutral, but it still LOADS its
      operand fields; an unloadable load BREAKs the rule (so no later statement

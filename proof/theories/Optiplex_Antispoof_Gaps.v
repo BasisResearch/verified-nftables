@@ -37,13 +37,13 @@ Proof.
   unfold eval_table, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
   (* the antispoof rule does NOT fire: `ip daddr @vmaddrs` is false *)
   erewrite erj_skip.
-  2:{ unfold rule_applies, eval_matchcond, match_loadable, eval_matchcond_body,
+  2:{ unfold rule_applies, rule_applies_walk, eval_matchcond, match_loadable, eval_matchcond_body,
         fields_loadable, field_loadable, load_ok.
       cbn -[field_value pkt_env read_payload_ok].
       rewrite ?Hok, Hobr, ?app_nil_r, Henv, Hnotin. vm_compute. reflexivity. }
   (* the hass rule does not fire either (its guard is obrname br.1, not br.20) *)
   erewrite erj_skip.
-  2:{ unfold rule_applies. cbn -[field_value pkt_env]. rewrite Hobr.
+  2:{ unfold rule_applies, rule_applies_walk. cbn -[field_value pkt_env]. rewrite Hobr.
       vm_compute. reflexivity. }
   reflexivity.
 Qed.
@@ -84,11 +84,11 @@ Proof.
   unfold eval_table, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
   (* antispoof rule: its `meta obrname br.20` guard is false (we are on br.3) *)
   erewrite erj_skip.
-  2:{ unfold rule_applies. cbn -[field_value pkt_env]. rewrite Hobr.
+  2:{ unfold rule_applies, rule_applies_walk. cbn -[field_value pkt_env]. rewrite Hobr.
       vm_compute. reflexivity. }
   (* hass rule: its `meta obrname br.1` guard is also false *)
   erewrite erj_skip.
-  2:{ unfold rule_applies. cbn -[field_value pkt_env]. rewrite Hobr.
+  2:{ unfold rule_applies, rule_applies_walk. cbn -[field_value pkt_env]. rewrite Hobr.
       vm_compute. reflexivity. }
   reflexivity.
 Qed.

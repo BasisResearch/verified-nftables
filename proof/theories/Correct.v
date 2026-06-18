@@ -595,6 +595,9 @@ Proof.
   all: try (destruct (Nat.ltb 0 (e_connlimit _ _)); [apply IH; exact Hno | reflexivity]).
   all: try (destruct (assoc_verdict _ _); [reflexivity | apply IH; exact Hno]).
   all: try (destruct (read_payload_ok _ _ _ _); [apply IH; exact Hno | reflexivity]).
+  (* ISynproxy: break/stop return [p]; the continue arm threads by IH. *)
+  all: try (destruct (synproxy_loadable p);
+            [destruct (synproxy_stops p); [reflexivity | apply IH; exact Hno] | reflexivity]).
   (* IDynset: writes_instr and run_rule_writes branch on the data-reg option and
      the field/immediate flag.  set (None) and field-map (Some _, true) are writes
      so [no_writes] excludes them (discriminate); an immediate-map (Some _, false)
@@ -1130,6 +1133,7 @@ Definition straight_instr (i : instr) : bool :=
   | INat _ _ _ _ _ _ _ | ITproxy _ _ _ | IFwd _ _ _ | IQueueSreg _ _ _
   | IReject _ _ | IQueue _ _ _ _ | IImmediate _
   | IMetaSet _ _ | ICtSet _ _
+  | ISynproxy _ _   (* can BREAK (non-TCP) or STOP (SYN/ACK) the rule *)
   | IDynset _ _ _ None _ | IDynset _ _ _ (Some _) true => false
   | _ => true
   end.
@@ -1334,16 +1338,21 @@ Qed.
     threading handles specially; every other statement is meta/ct- and env-neutral. *)
 Definition is_mut_stmt (s : stmt) : bool :=
   match s with SMetaSet _ _ | SCtSet _ _ | SDynset _ _ _ _ => true | _ => false end.
-Lemma straight_compile_stmt : forall s, is_mut_stmt s = false -> straight (compile_stmt s) = true.
+(** A SYN-proxy statement: write-neutral but NOT straight — it can BREAK (non-TCP)
+    or STOP (SYN/ACK) the rule, so it is excluded from the straight-line scaffolding
+    and handled explicitly (cf. [run_compile_body_writes]). *)
+Definition is_synproxy_stmt (s : stmt) : bool :=
+  match s with SSynproxy _ _ => true | _ => false end.
+Lemma straight_compile_stmt : forall s,
+  is_mut_stmt s = false -> is_synproxy_stmt s = false -> straight (compile_stmt s) = true.
 Proof.
-  destruct s; intro H; try discriminate H; cbn [compile_stmt].
+  destruct s; intros H Hsp; try discriminate H; try discriminate Hsp; cbn [compile_stmt].
   - reflexivity.                                          (* SCounter *)
   - reflexivity.                                          (* SNotrack *)
   - reflexivity.                                          (* SLog *)
   - rewrite str_app, str_vsrc; reflexivity.               (* SMangle *)
   - rewrite str_app, str_vsrc; reflexivity.               (* SCtSetDir *)
   - reflexivity.                                          (* SObjref *)
-  - reflexivity.                                          (* SSynproxy *)
   - reflexivity.                                          (* SLast *)
   - reflexivity.                                          (* SExthdrReset *)
   - rewrite str_app, str_imms; reflexivity.               (* SDup *)
@@ -1353,20 +1362,31 @@ Proof.
   - rewrite str_app, str_vsrc, str_app, str_imms; reflexivity.         (* SDupSrc *)
 Qed.
 Lemma run_stmt_writes_neutral : forall s rf rest p,
-  is_mut_stmt s = false ->
+  is_mut_stmt s = false -> is_synproxy_stmt s = false ->
   stmt_loadable s p = true ->
   exists rf', run_rule_writes rf (compile_stmt s ++ rest) p = run_rule_writes rf' rest p.
 Proof.
-  intros s rf rest p Hm Hl. apply run_rule_writes_straight.
-  - apply straight_compile_stmt; exact Hm.
+  intros s rf rest p Hm Hsp Hl. apply run_rule_writes_straight.
+  - apply straight_compile_stmt; [exact Hm | exact Hsp].
   - apply lo_compile_stmt; exact Hl.
 Qed.
 Lemma body_writes_nonset : forall s body p,
-  is_mut_stmt s = false -> stmt_loadable s p = true ->
+  is_mut_stmt s = false -> is_synproxy_stmt s = false -> stmt_loadable s p = true ->
   body_writes (BStmt s :: body) p = body_writes body p.
 Proof.
-  intros s body p H Hl. destruct s; cbn [is_mut_stmt] in H; try discriminate H;
+  intros s body p H Hsp Hl. destruct s; cbn [is_mut_stmt is_synproxy_stmt] in H, Hsp;
+    try discriminate H; try discriminate Hsp;
     cbn [body_writes]; rewrite Hl; reflexivity.
+Qed.
+(** [no_writes] of a single compiled statement that is not a meta/ct set. *)
+Lemma nw_compile_stmt_nonmut : forall s,
+  is_mut_stmt s = false -> no_writes (compile_stmt s) = true.
+Proof.
+  intros s Hm. destruct (is_synproxy_stmt s) eqn:Hsp.
+  - (* SSynproxy => [ISynproxy m w], which is not a write *)
+    destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp.
+    cbn [compile_stmt no_writes forallb writes_instr negb]. reflexivity.
+  - apply straight_imp_nw, straight_compile_stmt; [exact Hm | exact Hsp].
 Qed.
 (** A statement list with no meta/ct set compiles to a no-write tail. *)
 Lemma nw_flat_compile_stmt : forall ss,
@@ -1376,7 +1396,7 @@ Proof.
   induction ss as [| s ss IH]; intro H; [reflexivity|].
   cbn [flat_map]. cbn [forallb] in H. apply Bool.andb_true_iff in H. destruct H as [Hs Hss].
   rewrite nw_app. apply Bool.andb_true_iff. split.
-  - apply straight_imp_nw, straight_compile_stmt. destruct (is_mut_stmt s); [discriminate Hs | reflexivity].
+  - apply nw_compile_stmt_nonmut. destruct (is_mut_stmt s); [discriminate Hs | reflexivity].
   - apply IH; exact Hss.
 Qed.
 
@@ -1532,6 +1552,8 @@ Proof.
   - rewrite run_vsrc_writes_break by exact Hl; reflexivity.   (* SMetaSet *)
   - rewrite run_vsrc_writes_break by exact Hl; reflexivity.   (* SCtSet *)
   - rewrite run_vsrc_writes_break by exact Hl; reflexivity.   (* SCtSetDir *)
+  - (* SSynproxy: stmt_loadable = synproxy_loadable = false (non-TCP) => break *)
+    cbn [app run_rule_writes]. unfold synproxy_loadable in *. rewrite Hl. reflexivity.
   - rewrite run_load_fields_writes_break; [reflexivity|]. rewrite forallb_alloc_regs; exact Hl.  (* SDynset *)
   - rewrite run_load_fields_writes_break; [reflexivity|]. rewrite forallb_alloc_regs; exact Hl.  (* SObjrefMap *)
   - rewrite run_load_fields_writes_break; [reflexivity|]. rewrite forallb_alloc_regs; exact Hl.  (* SDynsetImm *)
@@ -1563,11 +1585,12 @@ Proof.
           rewrite <- app_assoc, run_stmt_writes_break by exact Hsl.
           destruct s; cbn [is_mut_stmt body_writes];
             try (rewrite Hsl; reflexivity);
-            (* mutating-stmt cases: body_writes guards on the same loadability *)
+            (* mutating-stmt + synproxy cases: body_writes guards on the same loadability *)
             cbn [stmt_loadable] in Hsl.
-          - rewrite Hsl; reflexivity.
-          - rewrite Hsl; reflexivity.
-          - destruct dataf as [| d ds].
+          - rewrite Hsl; reflexivity.                           (* SMetaSet *)
+          - rewrite Hsl; reflexivity.                           (* SCtSet *)
+          - rewrite Hsl; reflexivity.                           (* SSynproxy *)
+          - destruct dataf as [| d ds].                         (* SDynset *)
             + unfold fields_loadable in Hsl; rewrite app_nil_r in Hsl;
                 fold (fields_loadable keyfs p) in Hsl; rewrite Hsl; reflexivity.
             + rewrite Hsl; reflexivity. }
@@ -1597,18 +1620,29 @@ Proof.
               rewrite Hsl. apply IH; [exact Htail | exact Hsb'].
            ++ rewrite run_dynset_map_writes by exact Hsl. cbn [body_writes].
               rewrite Hsl. apply IH; [exact Htail | exact Hsb'].
-      * (* any non-mutating statement: threaded straight, body_writes is the identity *)
-        edestruct (run_stmt_writes_neutral s rf
-                     (flat_map compile_body_item body ++ tail) p Es Hsl) as [rf' Hr].
-        rewrite <- app_assoc, Hr, (body_writes_nonset s body p Es Hsl).
-        apply (IH tail Htail Hsb' rf' p).
+      * destruct (is_synproxy_stmt s) eqn:Esp.
+        -- (* SSynproxy: loadable (TCP) here.  If it STOPS, both sides are [p];
+              otherwise it threads (verdict-neutral for writes). *)
+           destruct s; cbn [is_synproxy_stmt] in Esp; try discriminate Esp.
+           cbn [compile_stmt] in Hit |- *; rewrite <- app_assoc.
+           cbn [stmt_loadable] in Hsl. cbn [app run_rule_writes body_writes].
+           rewrite Hsl. destruct (synproxy_stops p) eqn:Hstop.
+           ++ reflexivity.
+           ++ apply IH; [exact Htail | exact Hsb'].
+        -- (* any other non-mutating statement: threaded straight, body_writes is the identity *)
+           edestruct (run_stmt_writes_neutral s rf
+                        (flat_map compile_body_item body ++ tail) p Es Esp Hsl) as [rf' Hr].
+           rewrite <- app_assoc, Hr, (body_writes_nonset s body p Es Esp Hsl).
+           apply (IH tail Htail Hsb' rf' p).
 Qed.
 
 Lemma run_stmt_exists : forall s rf rest p,
+  is_synproxy_stmt s = false ->
   stmt_loadable s p = true ->
   exists rf', run_rule rf (compile_stmt s ++ rest) p = run_rule rf' rest p.
 Proof.
-  destruct s; intros rf rest p Hl; cbn [stmt_loadable] in Hl; try (exists rf; reflexivity).
+  destruct s; intros rf rest p Hsp Hl; cbn [stmt_loadable is_synproxy_stmt] in Hsp, Hl;
+    try discriminate Hsp; try (exists rf; reflexivity).
   - (* SMangle *) edestruct (run_vsrc_exists vs rf
       (IPayloadWrite 1 b off len ctype coff cflags :: rest) p Hl) as [rf' Hr].
     exists rf'. cbn [compile_stmt]. rewrite <- app_assoc. cbn [app].
@@ -1652,17 +1686,6 @@ Proof.
     cbn [run_rule]. eexists; reflexivity.
 Qed.
 
-Lemma run_stmts_exists : forall ss rf tail p,
-  forallb (fun s => stmt_loadable s p) ss = true ->
-  exists rf', run_rule rf (flat_map compile_stmt ss ++ tail) p = run_rule rf' tail p.
-Proof.
-  induction ss as [| s ss IH]; intros rf tail p Hl.
-  - exists rf. reflexivity.
-  - cbn [forallb] in Hl. apply Bool.andb_true_iff in Hl. destruct Hl as [Hs Hss].
-    cbn [flat_map]. rewrite <- app_assoc.
-    edestruct (run_stmt_exists s rf (flat_map compile_stmt ss ++ tail) p Hs) as [rf1 H1].
-    rewrite H1. edestruct (IH rf1 tail p Hss) as [rf2 H2]. exists rf2. rewrite H2. reflexivity.
-Qed.
 
 Definition verdict_result (v : verdict) : option verdict :=
   match v with Continue => None | v0 => Some v0 end.
@@ -1795,15 +1818,6 @@ Proof.
   rewrite Hr. cbn [run_rule]. reflexivity.
 Qed.
 
-(** Running verdict-neutral statements alone falls through to [None]. *)
-Lemma run_stmts_none : forall ss rf p,
-  forallb (fun s => stmt_loadable s p) ss = true ->
-  run_rule rf (flat_map compile_stmt ss) p = None.
-Proof.
-  intros ss rf p Hl. edestruct (run_stmts_exists ss rf [] p Hl) as [rf' H].
-  rewrite app_nil_r in H. rewrite H. reflexivity.
-Qed.
-
 (** A statement whose operand load BREAKs returns [None] (the VM stops at the
     failing payload load), regardless of the trailing program. *)
 Lemma run_stmt_break : forall s rf rest p,
@@ -1816,6 +1830,8 @@ Proof.
   - (* SMetaSet *) rewrite run_vsrc_break by exact Hl. reflexivity.
   - (* SCtSet *) rewrite run_vsrc_break by exact Hl. reflexivity.
   - (* SCtSetDir *) rewrite run_vsrc_break by exact Hl. reflexivity.
+  - (* SSynproxy: synproxy_loadable = false (non-TCP) => the rule BREAKs to None *)
+    cbn [app run_rule]. unfold synproxy_loadable in *. rewrite Hl. reflexivity.
   - (* SDynset *) rewrite run_load_fields_break; [reflexivity|]. rewrite forallb_alloc_regs; exact Hl.
   - (* SObjrefMap *) rewrite run_load_fields_break; [reflexivity|]. rewrite forallb_alloc_regs; exact Hl.
   - (* SDynsetImm *) rewrite run_load_fields_break; [reflexivity|]. rewrite forallb_alloc_regs; exact Hl.
@@ -1823,18 +1839,37 @@ Proof.
   - (* SDupSrc *) rewrite run_vsrc_break by exact Hl. reflexivity.
 Qed.
 
-Lemma run_stmts_break : forall ss rf p,
-  forallb (fun s => stmt_loadable s p) ss = false ->
-  run_rule rf (flat_map compile_stmt ss) p = None.
+(** Unfold [stmts_after_outcome] on a non-synproxy head (the catch-all arm). *)
+Lemma stmts_after_outcome_nonsyn : forall s ss p,
+  is_synproxy_stmt s = false ->
+  stmts_after_outcome (s :: ss) p =
+    if stmt_loadable s p then stmts_after_outcome ss p else None.
 Proof.
-  induction ss as [| s ss IH]; intros rf p Hl; [discriminate Hl|].
-  cbn [forallb] in Hl. apply Bool.andb_false_iff in Hl.
+  intros s ss p Hsp. destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp;
+    reflexivity.
+Qed.
+
+(** Running the post-outcome statements alone realises [stmts_after_outcome]: a
+    verdict-neutral statement falls through, a SYN-proxy decides (BREAK/STOP); a
+    loadable list with no synproxy falls through to [None]. *)
+Lemma run_stmts_after : forall ss rf p,
+  run_rule rf (flat_map compile_stmt ss) p = stmts_after_outcome ss p.
+Proof.
+  induction ss as [| s ss IH]; intros rf p; [reflexivity|].
   cbn [flat_map].
-  destruct (stmt_loadable s p) eqn:Hs.
-  - (* s loadable; break is later *)
-    edestruct (run_stmt_exists s rf (flat_map compile_stmt ss) p Hs) as [rf' Hr].
-    rewrite Hr. apply IH. destruct Hl as [Hd | Hr']; [congruence | exact Hr'].
-  - rewrite run_stmt_break by exact Hs. reflexivity.
+  destruct (is_synproxy_stmt s) eqn:Hsp.
+  - (* SSynproxy: break / stop / continue, mirroring run_rule's ISynproxy *)
+    destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp.
+    cbn [compile_stmt app run_rule stmts_after_outcome].
+    destruct (synproxy_loadable p) eqn:Hld.
+    + destruct (synproxy_stops p) eqn:Hstop; [reflexivity | apply IH].
+    + reflexivity.
+  - (* any other statement: verdict-neutral when loadable, else BREAK to None *)
+    rewrite stmts_after_outcome_nonsyn by exact Hsp.
+    destruct (stmt_loadable s p) eqn:Hl.
+    + edestruct (run_stmt_exists s rf (flat_map compile_stmt ss) p Hsp Hl) as [rf' Hr].
+      rewrite Hr. apply IH.
+    + rewrite run_stmt_break by exact Hl. reflexivity.
 Qed.
 
 (** A static verdict tail followed by trailing statements: a terminal verdict
@@ -1844,33 +1879,72 @@ Lemma run_verdict_tail_after : forall v tail rf p,
     match v with Continue => run_rule rf tail p | _ => verdict_result v end.
 Proof. destruct v; cbn [verdict_tail app run_rule]; reflexivity. Qed.
 
-(** The body version: an ordered list of matches and verdict-neutral statements.
-    A [BMatch] is the single-match step (reusing [run_compile_matches_const] at a
-    one-element list); a [BStmt] threads the register file through and drops out
-    of [body_matches]. *)
+(** The body version: an ordered list of matches and statements, walked
+    left-to-right.  A [BMatch] is the single-match step; a verdict-neutral [BStmt]
+    threads the register file through; a SYN-proxy [BStmt] that STOPS short-circuits
+    to [Some Drop] (matches after it never run), so the result is exactly
+    [if rule_applies_walk body then (if body_synproxy_stops body then Some Drop else res) else None].
+    (On a loadable body — the hypothesis — synproxy never BREAKs here.) *)
 Lemma run_compile_body : forall body tail res p,
-  (forall rf, run_rule rf tail p = res) ->
-  forallb (fun it => body_item_loadable it p) body = true ->
+  (body_synproxy_stops body p = false -> forall rf, run_rule rf tail p = res) ->
+  body_loadable_walk body p = true ->
   forall rf, run_rule rf (flat_map compile_body_item body ++ tail) p =
-    if forallb (fun m => eval_matchcond m p) (body_matches body) then res else None.
+    if rule_applies_walk body p
+    then (if body_synproxy_stops body p then Some Drop else res)
+    else None.
 Proof.
   induction body as [| it body IH]; intros tail res p Hc Hld rf.
-  - cbn [flat_map app body_matches forallb]. apply Hc.
-  - cbn [forallb] in Hld. apply Bool.andb_true_iff in Hld. destruct Hld as [Hitl Hldr].
-    destruct it as [m | s]; cbn [flat_map compile_body_item]; rewrite <- app_assoc.
+  - cbn [flat_map app rule_applies_walk body_synproxy_stops existsb]. apply Hc. reflexivity.
+  - destruct it as [m | s]; cbn [flat_map compile_body_item]; rewrite <- app_assoc.
     + (* BMatch m: a single-match step, then the rest of the body *)
+      cbn [body_loadable_walk] in Hld. apply Bool.andb_true_iff in Hld. destruct Hld as [Hitl Hldr].
+      assert (Hrelay : body_synproxy_stops body p = false -> forall rf0, run_rule rf0 tail p = res).
+      { intros Hb rf0. apply Hc.
+        unfold body_synproxy_stops. cbn [existsb]. cbn [orb]. exact Hb. }
       replace (compile_match m ++ (flat_map compile_body_item body ++ tail))
         with (flat_map compile_match [m] ++ (flat_map compile_body_item body ++ tail))
         by (cbn [flat_map app]; rewrite app_nil_r; reflexivity).
       rewrite (run_compile_matches_const [m] (flat_map compile_body_item body ++ tail)
-                 (if forallb (fun m => eval_matchcond m p) (body_matches body) then res else None)
-                 p (fun rf0 => IH tail res p Hc Hldr rf0)).
-      cbn [body_matches flat_map app forallb]. rewrite Bool.andb_true_r.
+                 (if rule_applies_walk body p
+                  then (if body_synproxy_stops body p then Some Drop else res) else None)
+                 p (fun rf0 => IH tail res p Hrelay Hldr rf0)).
+      cbn [flat_map app forallb]. rewrite Bool.andb_true_r.
+      cbn [rule_applies_walk body_synproxy_stops existsb]. cbn [orb].
       destruct (eval_matchcond m p); reflexivity.
-    + (* BStmt s: verdict-neutral, drops out of body_matches *)
-      cbn [body_matches flat_map app]. cbn [body_item_loadable] in Hitl.
-      edestruct (run_stmt_exists s rf (flat_map compile_body_item body ++ tail) p Hitl) as [rf' Hr].
-      rewrite Hr. apply IH; [exact Hc | exact Hldr].
+    + (* BStmt s: synproxy decides (stop => Some Drop); any other statement threads *)
+      destruct (is_synproxy_stmt s) eqn:Hsp.
+      * (* SSynproxy: stop => Some Drop, else continue *)
+        destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp.
+        cbn [body_loadable_walk] in Hld. apply Bool.andb_true_iff in Hld. destruct Hld as [Hitl Hldr'].
+        cbn [compile_stmt app run_rule]. rewrite Hitl.
+        change (body_synproxy_stops (BStmt (SSynproxy mss wscale) :: body) p)
+          with (synproxy_stops p || body_synproxy_stops body p).
+        change (rule_applies_walk (BStmt (SSynproxy mss wscale) :: body) p)
+          with (if synproxy_stops p then true else rule_applies_walk body p).
+        destruct (synproxy_stops p) eqn:Hstop; cbn [orb].
+        -- reflexivity.
+        -- (* continue: Hldr' is [body_loadable_walk body] *)
+           apply IH; [| exact Hldr']. intros Hb rf0. apply Hc.
+           change (body_synproxy_stops (BStmt (SSynproxy mss wscale) :: body) p)
+             with (synproxy_stops p || body_synproxy_stops body p).
+           rewrite Hstop. cbn [orb]. exact Hb.
+      * (* verdict-neutral statement: threads, drops out of the walk/existsb *)
+        assert (Hbw : body_loadable_walk (BStmt s :: body) p =
+                  body_item_loadable (BStmt s) p && body_loadable_walk body p)
+          by (destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp; reflexivity).
+        rewrite Hbw in Hld. apply Bool.andb_true_iff in Hld. destruct Hld as [Hitl Hldr].
+        cbn [body_item_loadable] in Hitl.
+        edestruct (run_stmt_exists s rf (flat_map compile_body_item body ++ tail) p Hsp Hitl)
+          as [rf' Hr].
+        rewrite Hr.
+        assert (Hh : (match BStmt s with BStmt (SSynproxy _ _) => synproxy_stops p | _ => false end) = false)
+          by (destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp; reflexivity).
+        assert (Hhead : body_synproxy_stops (BStmt s :: body) p = body_synproxy_stops body p)
+          by (unfold body_synproxy_stops; cbn [existsb]; rewrite Hh; reflexivity).
+        assert (Hwalk : rule_applies_walk (BStmt s :: body) p = rule_applies_walk body p)
+          by (destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp; reflexivity).
+        rewrite Hhead, Hwalk. apply IH; [| exact Hldr].
+        intros Hb rf0. apply Hc. rewrite Hhead. exact Hb.
 Qed.
 
 (** A single compiled match whose field is unloadable BREAKs the rule. *)
@@ -1890,18 +1964,19 @@ Proof.
     unfold fields_loadable in Hl. rewrite forallb_map in Hl. exact Hl.
 Qed.
 
-(** If any body item is unloadable, the compiled body BREAKs to [None]. *)
+(** If the body's load walk BREAKs (an item on the reachable path is unloadable),
+    the compiled body runs to [None] — the VM hits the failing load before any
+    verdict-bearing synproxy. *)
 Lemma run_compile_body_break : forall body tail p,
-  forallb (fun it => body_item_loadable it p) body = false ->
+  body_loadable_walk body p = false ->
   forall rf, run_rule rf (flat_map compile_body_item body ++ tail) p = None.
 Proof.
   induction body as [| it body IH]; intros tail p Hl rf; [discriminate Hl|].
-  cbn [forallb] in Hl. apply Bool.andb_false_iff in Hl.
-  destruct it as [m | s]; cbn [flat_map compile_body_item body_item_loadable] in *;
-    rewrite <- app_assoc.
-  - (* BMatch *) destruct (match_loadable m p) eqn:Hm.
+  destruct it as [m | s]; cbn [flat_map compile_body_item] in *; rewrite <- app_assoc.
+  - (* BMatch *) cbn [body_loadable_walk body_item_loadable] in Hl.
+    apply Bool.andb_false_iff in Hl. destruct (match_loadable m p) eqn:Hm.
     + (* match loads; break later in body *)
-      assert (Hbr : forallb (fun it => body_item_loadable it p) body = false)
+      assert (Hbr : body_loadable_walk body p = false)
         by (destruct Hl as [Hd | Hr]; [congruence | exact Hr]).
       replace (compile_match m ++ flat_map compile_body_item body ++ tail)
         with (flat_map compile_match [m] ++ (flat_map compile_body_item body ++ tail))
@@ -1910,11 +1985,24 @@ Proof.
                  None p (fun rf0 => IH tail p Hbr rf0)).
       destruct (forallb (fun m0 => eval_matchcond m0 p) [m]); reflexivity.
     + apply compile_match_break; exact Hm.
-  - (* BStmt *) destruct (stmt_loadable s p) eqn:Hs.
-    + edestruct (run_stmt_exists s rf (flat_map compile_body_item body ++ tail) p Hs) as [rf' Hr].
-      rewrite Hr. apply IH.
-      destruct Hl as [Hd | Hr']; [congruence | exact Hr'].
-    + apply run_stmt_break; exact Hs.
+  - (* BStmt *) destruct (is_synproxy_stmt s) eqn:Hsp.
+    + (* SSynproxy: walk = synproxy_loadable && (if stops then true else walk rest) *)
+      destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp.
+      cbn [body_loadable_walk] in Hl. cbn [compile_stmt app run_rule].
+      apply Bool.andb_false_iff in Hl. destruct (synproxy_loadable p) eqn:Hld.
+      * (* loadable: the break must be in the unreachable rest only when NOT stopping *)
+        destruct Hl as [Hd | Hr]; [discriminate Hd|].
+        destruct (synproxy_stops p) eqn:Hstop; [discriminate Hr | apply IH; exact Hr].
+      * reflexivity.
+    + (* other statement *)
+      assert (Hbw : body_loadable_walk (BStmt s :: body) p =
+                body_item_loadable (BStmt s) p && body_loadable_walk body p)
+        by (destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp; reflexivity).
+      rewrite Hbw in Hl. apply Bool.andb_false_iff in Hl.
+      cbn [body_item_loadable] in Hl. destruct (stmt_loadable s p) eqn:Hs.
+      * edestruct (run_stmt_exists s rf (flat_map compile_body_item body ++ tail) p Hsp Hs) as [rf' Hr].
+        rewrite Hr. apply IH. destruct Hl as [Hd | Hr']; [congruence | exact Hr'].
+      * apply run_stmt_break; exact Hs.
 Qed.
 
 (** The terminal of a rule (nat/tproxy/fwd/queue/verdict) runs, from any register
@@ -1944,7 +2032,9 @@ Proof.
         -- rewrite <- app_assoc. destruct (q_src q) as [vs |];
              [apply run_vsrc_queue; exact Htl | apply run_imms_queue].
         -- rewrite run_verdict_tail_after.
-           destruct (r_verdict r); solve [ reflexivity | apply run_stmts_none; exact Har ].
+           (* Continue runs r_after, realising [stmts_after_outcome] = the
+              [Continue] arm of [terminal_outcome]; every other verdict is terminal. *)
+           destruct (r_verdict r); solve [ reflexivity | apply run_stmts_after ].
 Qed.
 
 (** When the terminal/post-outcome part is NOT loadable, the compiled terminal
@@ -1987,18 +2077,20 @@ Proof.
            rewrite run_verdict_tail_after.
            destruct (r_verdict r);
              try (destruct Hl as [Hd | Ht]; [discriminate Hd | discriminate Ht]).
-           (* Continue: terminal_outcome = None, so the [Some] disjunct is r_after break *)
-           apply run_stmts_break.
-           destruct Hl as [Hd | Ht]; [discriminate Hd | exact Ht].
+           (* Continue: terminal_outcome = stmts_after_outcome (r_after); tail_loadable
+              false forces it [None], and [run_stmts_after] realises that [None]. *)
+           rewrite run_stmts_after.
+           destruct Hl as [Hd | Ht]; [discriminate Hd|].
+           destruct (stmts_after_outcome (r_after r) p); [discriminate Ht | reflexivity].
 Qed.
 
 (** The compiled verdict-map prefix + terminal + post-outcome statements runs to
     the rule's [outcome] when the [end_loadable] part of the rule succeeds. *)
 Lemma run_compile_end : forall r rf p,
   end_loadable r p = true ->
-  run_rule rf (compile_end r ++ flat_map compile_stmt (r_after r)) p = outcome r p.
+  run_rule rf (compile_end r ++ flat_map compile_stmt (r_after r)) p = outcome_core r p.
 Proof.
-  intros r rf p Hel. unfold compile_end, compile_vmap, outcome, end_loadable in *.
+  intros r rf p Hel. unfold compile_end, compile_vmap, outcome_core, end_loadable in *.
   destruct (r_vmap r) as [vm |].
   - apply Bool.andb_true_iff in Hel. destruct Hel as [Hvk Hrest].
     unfold vmap_loadable in Hvk.
@@ -2032,9 +2124,9 @@ Lemma run_rule_compile_rule : forall r p,
   if rule_applies r p then outcome r p else None.
 Proof.
   intros r p Hl. unfold rule_loadable in Hl. apply Bool.andb_true_iff in Hl. destruct Hl as [Hbody Hend].
-  unfold compile_rule, rule_applies.
+  unfold compile_rule, rule_applies, outcome.
   apply run_compile_body; [| exact Hbody].
-  intro rf. apply run_compile_end; exact Hend.
+  intro Hns. rewrite Hns in Hend. intro rf. apply run_compile_end; exact Hend.
 Qed.
 
 (** When a rule is NOT loadable, the compiled rule BREAKs: the VM hits the first
@@ -2088,15 +2180,20 @@ Lemma run_rule_compile_rule_break : forall r p,
 Proof.
   intros r p Hl. unfold rule_loadable in Hl. apply Bool.andb_false_iff in Hl.
   unfold compile_rule.
-  destruct (forallb (fun it => body_item_loadable it p) (r_body r)) eqn:Hbody.
-  - (* body loadable; the break is in the end (vmap key / terminal) *)
+  destruct (body_loadable_walk (r_body r) p) eqn:Hbody.
+  - (* body loads; so the break is in the end (and there is no stopping synproxy,
+       else the [if body_synproxy_stops then true ...] disjunct could not be false) *)
+    assert (Hns : body_synproxy_stops (r_body r) p = false).
+    { destruct (body_synproxy_stops (r_body r) p) eqn:Hbs; [|reflexivity].
+      destruct Hl as [Hd | He]; [congruence | discriminate He]. }
     rewrite (run_compile_body (r_body r)
               (compile_end r ++ flat_map compile_stmt (r_after r)) None p).
-    + destruct (forallb (fun m => eval_matchcond m p) (body_matches (r_body r))); reflexivity.
-    + intro rf. apply run_compile_end_break.
-      destruct Hl as [Hd | He]; [congruence | exact He].
+    + rewrite Hns. rewrite (rule_applies_walk_no_synproxy _ _ Hns).
+      destruct (forallb (fun m => eval_matchcond m p) (body_matches (r_body r))); reflexivity.
+    + intros _ rf. apply run_compile_end_break.
+      rewrite Hns in Hl. destruct Hl as [Hd | He]; [congruence | exact He].
     + exact Hbody.
-  - (* a body item breaks *)
+  - (* a body item on the reachable path breaks *)
     apply run_compile_body_break; exact Hbody.
 Qed.
 

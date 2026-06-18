@@ -238,7 +238,11 @@ Inductive stmt : Type :=
 | SCtSet   (k : ct_key) (vs : vsrc)     (* ct set <k> with a value *)
 | SCtSetDir (key dir : string) (vs : vsrc)  (* directional ct set (zone, ...) *)
 | SObjref  (otype : nat) (oname : string)   (* reference a named stateful object *)
-| SSynproxy (mss wscale : nat)              (* SYN-proxy (verdict-neutral here) *)
+| SSynproxy (mss wscale : nat)              (* SYN-proxy: verdict-BEARING — a
+                               non-TCP packet BREAKs the rule (NFT_BREAK), a TCP
+                               SYN/ACK STOPS traversal (NF_STOLEN/NF_DROP, modelled
+                               as terminal Drop), other TCP packets CONTINUE; see
+                               [Semantics.synproxy_stops]/[run_rule]. *)
 | SLast    (info : string)                  (* `last used` accounting; verbatim *)
 | SDynset  (op name : string) (keyfs dataf : list field)
                             (* add/delete [keyfs] (-> [dataf] for a map) to a set *)
