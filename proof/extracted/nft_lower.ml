@@ -71,6 +71,16 @@ let sym_l4proto = [
   "dccp",[33]; "gre",[47]; "esp",[50]; "ah",[51]; "icmpv6",[58];
   "ipv6-icmp",[58]; "comp",[108]; "sctp",[132];
 ]
+(* meta nfproto is the netfilter L3 FAMILY (NFPROTO family), a distinct 1-byte
+   datatype from the L4/IP-protocol space (sym_l4proto).  datatype.c
+   nfproto_tbl lists only ipv4/ipv6 as symbols; the rest are the NFPROTO
+   family constants from linux/netfilter.h (UNSPEC 0, INET 1, IPV4 2,
+   ARP 3, NETDEV 5, BRIDGE 7, IPV6 10).  `meta nfproto ipv4` => cmp 0x02,
+   `meta nfproto ipv6` => cmp 0x0a (golden inet/meta.t.payload). *)
+let sym_nfproto = [
+  "inet",[1]; "ipv4",[2]; "arp",[3]; "netdev",[5];
+  "bridge",[7]; "ipv6",[10];
+]
 let sym_ctstate = [
   "invalid",[0;0;0;1]; "established",[0;0;0;2]; "related",[0;0;0;4];
   "new",[0;0;0;8]; "untracked",[0;0;0;64];
@@ -113,7 +123,7 @@ let lookup ctx tbl s =
 (* ---------- field kinds: how a value is encoded for a given selector ---------- *)
 
 type kind =
-  | KIfname | KIfindex | KIp4 | KIp6 | KPort | KL4proto | KEthertype
+  | KIfname | KIfindex | KIp4 | KIp6 | KPort | KL4proto | KNfproto | KEthertype
   | KCtstate | KMark | KIcmp | KIcmpv6 | KPkttype | KFibType | KTcpflag | KNum of int
 
 (* fib route-type symbols (the RTN_ route types), as 4-byte words *)
@@ -138,6 +148,8 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
         |> function Some p -> p | None -> raise (Unsupported ("service " ^ s)))
   | KL4proto, Nft_ast.Vnum n -> [n land 0xff]
   | KL4proto, Nft_ast.Vsym s -> lookup "l4proto" sym_l4proto s
+  | KNfproto, Nft_ast.Vnum n -> [n land 0xff]
+  | KNfproto, Nft_ast.Vsym s -> lookup "nfproto" sym_nfproto s
   | KEthertype, Nft_ast.Vnum n -> bytes_of_int 2 n
   | KEthertype, Nft_ast.Vsym s -> lookup "ethertype" sym_ethertype s
   | KCtstate, Nft_ast.Vsym s -> lookup "ct state" sym_ctstate s
@@ -188,7 +200,7 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * Bytes.data option =
   | ["ether"; "saddr"] -> (Syntax.FEtherSaddr, KNum 6, none)
   | ["ether"; "daddr"] -> (Syntax.FEtherDaddr, KNum 6, none)
   | ["meta"; "l4proto"]  -> (Syntax.FMetaL4proto, KL4proto, none)
-  | ["meta"; "nfproto"]  -> (Syntax.FMetaNfproto, KL4proto, none)
+  | ["meta"; "nfproto"]  -> (Syntax.FMetaNfproto, KNfproto, none)
   | ["meta"; "protocol"] -> (Syntax.FMetaProtocol, KEthertype, none)
   | ["meta"; "mark"]     -> (Syntax.FMetaMark, KMark, none)
   | ["meta"; "iifname"]  -> (Syntax.FMetaIifname, KIfname, none)

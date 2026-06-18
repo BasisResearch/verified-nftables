@@ -617,6 +617,44 @@ let check_tcp_flags () =
      && Semantics.eval_matchcond m_eq (mk_fl 2) = true);
   Printf.printf "\n"
 
+(* ---------- (L) meta nfproto is the NFPROTO L3 family, not L4 proto ----------
+   `meta nfproto` reads the netfilter family register (NFPROTO family), a
+   distinct 1-byte datatype from the L4/IP-protocol space.  datatype.c
+   nfproto_tbl maps only ipv4=NFPROTO_IPV4=2 and ipv6=NFPROTO_IPV6=10.  Golden
+   inet/meta.t.payload: `meta nfproto ipv4` => cmp eq reg1 0x02,
+   `meta nfproto ipv6` => cmp eq reg1 0x0a.  These corpus rules (inet/meta.t:6-7
+   ;ok) were UNSUPPORTED before the fix because nfproto was wired to sym_l4proto
+   (tcp=6/udp=17/... — no ipv4/ipv6). *)
+let check_meta_nfproto () =
+  Printf.printf "=== (L) meta nfproto -> NFPROTO family (ipv4=2, ipv6=10) ===\n";
+  let src =
+    "table inet t {\n\
+    \  chain c {\n\
+    \    type filter hook input priority 0; policy accept;\n\
+    \    meta nfproto ipv4 accept\n\
+    \    meta nfproto ipv6 accept\n\
+    \    meta nfproto 2 accept\n\
+    \  }\n\
+     }\n" in
+  let parsed = Nft_parse.parse_string src in
+  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
+  let body i = (Stdlib.List.nth c.Syntax.c_rules i).Syntax.r_body in
+  (* `meta nfproto ipv4` => MEq FMetaNfproto [2] (NFPROTO_IPV4), matching the
+     golden `cmp eq reg1 0x02` (FMetaNfproto reads MKnfproto, width 1). *)
+  check "meta nfproto ipv4 lowers to MEq FMetaNfproto [2]"
+    (body 0 = [Syntax.BMatch (Syntax.MEq (Syntax.FMetaNfproto, [2]))]);
+  (* `meta nfproto ipv6` => MEq FMetaNfproto [10] (NFPROTO_IPV6), golden 0x0a. *)
+  check "meta nfproto ipv6 lowers to MEq FMetaNfproto [10]"
+    (body 1 = [Syntax.BMatch (Syntax.MEq (Syntax.FMetaNfproto, [10]))]);
+  (* numeric form is byte-truncated (already worked, kept faithful). *)
+  check "meta nfproto 2 (numeric) lowers to MEq FMetaNfproto [2]"
+    (body 2 = [Syntax.BMatch (Syntax.MEq (Syntax.FMetaNfproto, [2]))]);
+  (* the buggy l4proto table never had ipv4/ipv6, so this would have raised
+     Unsupported — guard that nfproto is NOT taking an l4proto value (6=tcp). *)
+  check "meta nfproto ipv4 is NOT the l4proto encoding (tcp=6)"
+    (body 0 <> [Syntax.BMatch (Syntax.MEq (Syntax.FMetaNfproto, [6]))]);
+  Printf.printf "\n"
+
 (* ---------- (K) synproxy is verdict-bearing, not a no-op ----------
    The DSL `synproxy` statement was verdict-neutral; the kernel
    (nft_synproxy.c) STOPS traversal for a TCP SYN/ACK (NF_STOLEN/NF_DROP),
@@ -751,6 +789,7 @@ let () =
     check_iif_index ();
     check_ct_state ();
     check_tcp_flags ();
+    check_meta_nfproto ();
     check_synproxy ();
     check_concat_iv ();
     check_difftest_ast ();
