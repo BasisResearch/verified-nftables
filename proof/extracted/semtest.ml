@@ -32,7 +32,7 @@ let rule_b body v : Syntax.rule =
 (* ---- the runtime environment (named set/map state the lookups read) ---- *)
 let empty_env : Packet.env =
   { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
-    e_routes = []; e_rt = (fun _ -> []); e_ifaddr = (fun _ -> []);
+    e_routes = []; e_rt = (fun _ -> []); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
     (* limiters default to 1 remaining token (0 < 1 -> the match passes) *)
     e_limit = (fun _ -> 1); e_quota = (fun _ -> 1); e_connlimit = (fun _ -> 1) }
 (* an environment whose rate-limiter "lim" has [n] remaining tokens *)

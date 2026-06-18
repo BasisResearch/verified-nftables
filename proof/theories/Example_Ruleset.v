@@ -103,7 +103,7 @@ Definition fw_env : env :=
                         else [];
      e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => [];
-     e_ifaddr := (fun _ => []);
+     e_ifaddr := (fun _ => []); e_ifaddr6 := (fun _ => []);
      e_limit := fun _ => 0; e_quota := fun _ => 0; e_connlimit := fun _ => 0 |}.
 
 (** ** The chains, translated rule-for-rule from ruleset.nft. *)

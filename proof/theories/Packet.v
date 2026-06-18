@@ -112,9 +112,17 @@ Record env : Type := {
   e_quota : quota_spec -> nat;               (* a quota's remaining bytes. *)
   e_ifaddr : data -> data;                   (* an interface's primary IPv4 source
                                                 address, keyed by its name — the
-                                                source `masquerade` rewrites a
+                                                source `masquerade` rewrites an IPv4
                                                 packet to (the IP of the interface
                                                 it exits).  Shared host config. *)
+  e_ifaddr6 : data -> data;                  (* an interface's primary IPv6 source
+                                                address (a 16-byte in6_addr), keyed
+                                                by its name — what an IPv6
+                                                `masquerade` rewrites to.  The kernel
+                                                computes it via ipv6_dev_get_saddr
+                                                (nf_nat_masquerade_ipv6); it is a
+                                                DIFFERENT value from the IPv4
+                                                e_ifaddr.  Shared host config. *)
   e_connlimit : connlimit_spec -> nat;       (* a connlimit's remaining slots.
                                                 These are shared, mutable limiter
                                                 state, threaded across packets by

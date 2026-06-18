@@ -524,6 +524,45 @@ let check_ip6_nat () =
   let p4 = Semantics.apply_nat Semantics.Hprerouting (mk_rule v4spec) p_in in
   check "ip (v4) dnat still rewrites the IPv4 destination slot"
     (data_eq (Syntax.field_value Syntax.FIp4Daddr p4) [10;0;0;1]);
+  (* --- ip6 masquerade is FAMILY-AWARE end-to-end (the kernel dispatches by
+     family: nft_masq.c NFPROTO_IPV6 -> nf_nat_masquerade_ipv6, which rewrites the
+     whole 16-byte IPv6 source via ipv6_dev_get_saddr).  `ip6 masquerade` is valid
+     and in the corpus (tests/py/ip6/masquerade.t).  Before the fix the parser
+     lowered masquerade with nat_family = "" (family-blind), and apply_nat spliced
+     the 4-byte IPv4 e_ifaddr into the middle of the IPv6 source. --- *)
+  let parsed6 =
+    Nft_parse.parse_string
+      "table ip6 nat {\n\
+      \  chain post {\n\
+      \    type nat hook postrouting priority srcnat; policy accept;\n\
+      \    masquerade\n\
+      \  }\n\
+       }\n" in
+  let post6 = Nft_lower.find_chain parsed6 ~table:"nat" ~chain:"post" in
+  let mr = Stdlib.List.nth post6.Syntax.c_rules 0 in
+  (match mr.Syntax.r_nat with
+   | Some ns ->
+       check "ip6 masquerade lowers to nat_family = \"ip6\" (was \"\", family-blind)"
+         (ns.Syntax.nat_family = Syntax.nat_fam_ip6)
+   | None -> check "ip6 masquerade lowers to a nat_spec" false);
+  (* the exit interface's IPv6 address (16 bytes, all 0xBB) via e_ifaddr6; the IPv4
+     e_ifaddr is a DIFFERENT value, to prove masquerade picks the IPv6 one *)
+  let if6 = Stdlib.List.init 16 (fun _ -> 0xBB) in
+  let env6 = parsed6.Nft_lower.p_env in
+  let env6 = { env6 with Packet.e_ifaddr = (fun _ -> [9;9;9;9]);
+                         e_ifaddr6 = (fun _ -> if6) } in
+  let p6 = { (mk_pkt ~env:env6 ()) with Packet.pkt_nh = nh } in
+  let src6_in = Syntax.field_value Syntax.FIp6Saddr p6 in
+  let (_, p6_out) = Semantics.eval_chain_trace Semantics.Hpostrouting post6 p6 in
+  let src6_out = Syntax.field_value Syntax.FIp6Saddr p6_out in
+  Printf.printf "    ip6 masquerade: ip6 saddr  %s -> %s  (exit iface's IPv6)\n"
+    (show src6_in) (show src6_out);
+  check "ip6 masquerade rewrites the FULL 16-byte IPv6 source to e_ifaddr6"
+    (data_eq src6_out if6);
+  check "ip6 masquerade preserves the network-header length (no shift/corruption)"
+    (Stdlib.List.length p6_out.Packet.pkt_nh = Stdlib.List.length nh);
+  check "ip6 masquerade does NOT use the 4-byte IPv4 e_ifaddr"
+    (not (data_eq src6_out [9;9;9;9]));
   Printf.printf "\n"
 
 (* (G') HOOK-DEPENDENT redirect.  `redirect` is a destination-NAT whose target

@@ -682,11 +682,22 @@ let limit_spec rate unit_ over : Packet.limit_spec =
   { Packet.ls_rate = rate; ls_unit = u; ls_burst = 5; ls_bytes = false;
     ls_flags = (if over then 1 else 0) }
 
-(* a `masquerade` NAT spec: source-NAT to the exit interface's address *)
-let masq_spec : Syntax.nat_spec =
+(* The L3 NAT address family for a NAT statement in a chain of table [family].  The
+   kernel dispatches masquerade/snat/dnat BY FAMILY (nft_masq.c:113-121:
+   NFPROTO_IPV4 -> nf_nat_masquerade_ipv4 vs NFPROTO_IPV6 -> nf_nat_masquerade_ipv6),
+   so the address geometry (4-byte IPv4 slot vs 16-byte IPv6 slot) and the source
+   value (IPv4 e_ifaddr vs IPv6 e_ifaddr6) must follow the table family.  An ip6
+   table -> "ip6"; ip/inet/everything else -> "ip" (inet masquerade defaults to
+   IPv4 geometry — the corpus ip6 masquerade case is in an `ip6` table). *)
+let nat_l3_family = function "ip6" -> "ip6" | _ -> "ip"
+
+(* a `masquerade` NAT spec: source-NAT to the exit interface's address, in the
+   address family of the enclosing table ([nat_l3_family]) so an `ip6 masquerade`
+   rewrites the 16-byte IPv6 source (nf_nat_masquerade_ipv6), not the IPv4 slot. *)
+let masq_spec ~family : Syntax.nat_spec =
   { Syntax.nat_imms = []; nat_field = None; nat_map = None; nat_src = None;
-    nat_kind = "masq"; nat_family = ""; nat_amin = None; nat_amax = None;
-    nat_pmin = None; nat_pmax = None; nat_flags = 0 }
+    nat_kind = "masq"; nat_family = nat_l3_family family; nat_amin = None;
+    nat_amax = None; nat_pmin = None; nat_pmax = None; nat_flags = 0 }
 
 (* an `snat to <ip>[:<port>]` / `dnat to <ip>[:<port>]` NAT spec: the target
    address goes into register 1 (= NFTNL_EXPR_NAT_REG_ADDR_MIN), which the kernel
@@ -712,10 +723,10 @@ let addr_nat_spec st kind ?(port=None) (v : Nft_ast.value) : Syntax.nat_spec opt
    (nft_nat.c:114/120 — two independent register guards).  In the model this is a
    nat_spec with nat_has_addr = false, so apply_nat preserves the address and
    apply_nat_port rewrites the port. *)
-let portonly_nat_spec kind (port : int) : Syntax.nat_spec =
+let portonly_nat_spec ~family kind (port : int) : Syntax.nat_spec =
   { Syntax.nat_imms = []; nat_field = None; nat_map = None; nat_src = None;
-    nat_kind = kind; nat_family = "ip"; nat_amin = None; nat_amax = None;
-    nat_pmin = Some port; nat_pmax = Some port; nat_flags = 0 }
+    nat_kind = kind; nat_family = nat_l3_family family; nat_amin = None;
+    nat_amax = None; nat_pmin = Some port; nat_pmax = Some port; nat_flags = 0 }
 
 (* In a multi-L3 family an inet chain sees both IPv4 and IPv6 packets, so nft
    guards every `ip`/`ip6` payload match with `meta nfproto == {2|10}`.  A
@@ -765,11 +776,11 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
     | Nft_ast.CStmt s ->
         if stmt_is_terminal_accept s then verdict := Verdict.Accept;
         (match s with
-         | Nft_ast.StMasquerade -> nat := Some masq_spec
+         | Nft_ast.StMasquerade -> nat := Some (masq_spec ~family)
          | Nft_ast.StSnat (Some v, port) -> nat := addr_nat_spec st "snat" ~port v
          | Nft_ast.StDnat (Some v, port) -> nat := addr_nat_spec st "dnat" ~port v
-         | Nft_ast.StSnat (None, Some port) -> nat := Some (portonly_nat_spec "snat" port)
-         | Nft_ast.StDnat (None, Some port) -> nat := Some (portonly_nat_spec "dnat" port)
+         | Nft_ast.StSnat (None, Some port) -> nat := Some (portonly_nat_spec ~family "snat" port)
+         | Nft_ast.StDnat (None, Some port) -> nat := Some (portonly_nat_spec ~family "dnat" port)
          | _ -> ());
         (match lower_stmt st s with Some st' -> push (Syntax.BStmt st') | None -> ()))
     clauses;
@@ -829,7 +840,7 @@ let build_env st : Packet.env =
   { Packet.e_set  = (fun n -> match L.assoc_opt n sets  with Some e -> e | None -> []);
     e_vmap        = (fun n -> match L.assoc_opt n vmaps with Some e -> e | None -> []);
     e_map         = (fun n -> match L.assoc_opt n maps  with Some e -> e | None -> []);
-    e_routes = []; e_rt = (fun _ -> []); e_ifaddr = (fun _ -> []);
+    e_routes = []; e_rt = (fun _ -> []); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
     e_limit = (fun _ -> 1); e_quota = (fun _ -> 1); e_connlimit = (fun _ -> 1) }
 
 let lower (f : Nft_ast.sfile) : parsed =

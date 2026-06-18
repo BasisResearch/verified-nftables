@@ -302,7 +302,7 @@ Definition env_with_sets (base : env) (d : set_decls) : env :=
      e_vmap := fun n => assoc_str n (sd_vmaps d) (e_vmap base n);
      e_map  := fun n => assoc_str n (sd_maps d)  (e_map base n);
      e_routes := e_routes base; e_rt := e_rt base;
-     e_ifaddr := e_ifaddr base;
+     e_ifaddr := e_ifaddr base; e_ifaddr6 := e_ifaddr6 base;
      e_limit := e_limit base; e_quota := e_quota base; e_connlimit := e_connlimit base |}.
 
 (** A declared set's elements are exactly what `lookup @n` reads. *)
@@ -807,7 +807,7 @@ Definition env_set_upd (e : env) (op name : String.string) (key : data) : env :=
        else e_set e n);
      e_vmap := e_vmap e; e_map := e_map e;
      e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e;
+     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e |}.
 
 Definition set_env_dynset (p : packet) (op name : String.string) (key : data) : packet :=
@@ -834,7 +834,7 @@ Definition env_map_upd (e : env) (op name : String.string) (key dat : data) : en
             else (key, dat) :: e_map e n
        else e_map e n);
      e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e;
+     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e |}.
 
 Definition set_env_dynset_map (p : packet) (op name : String.string) (key dat : data) : packet :=
@@ -1185,6 +1185,18 @@ Definition redir_daddr (h : hook_id) (fam : String.string) (p : packet) : data :
   | _ => e_ifaddr (pkt_env p) (field_value FMetaIifname p)
   end.
 
+(** The SOURCE address a `masquerade` rewrites to: the exit interface's primary
+    address, chosen by family exactly as the kernel dispatches masquerade BY FAMILY
+    (nft_masq.c:113-121 branches NFPROTO_IPV4 -> nf_nat_masquerade_ipv4 vs
+    NFPROTO_IPV6 -> nf_nat_masquerade_ipv6).  An IPv4 masquerade writes the 4-byte
+    [e_ifaddr]; an IPv6 masquerade writes the 16-byte [e_ifaddr6] (the kernel
+    computes it via ipv6_dev_get_saddr — a DIFFERENT, 128-bit value, not the IPv4
+    address).  Keyed by the exit-interface name ([FMetaOifname]). *)
+Definition masq_saddr (fam : String.string) (p : packet) : data :=
+  if String.eqb fam nat_fam_ip6
+  then e_ifaddr6 (pkt_env p) (field_value FMetaOifname p)
+  else e_ifaddr  (pkt_env p) (field_value FMetaOifname p).
+
 (** The L4 port the kernel writes is [min_proto.all] of the NAT range, loaded as a
     big-endian 16-bit value from the proto-min register ([nft_nat_setup_proto],
     nft_nat.c:57-60).  In the model the operand is [nat_pmin]; encode it as the
@@ -1242,7 +1254,7 @@ Definition apply_nat (h : hook_id) (r : rule) (p : packet) : packet :=
       let fam := nat_addrfamily ns in
       if String.eqb (nat_kind ns) nat_masq_kind
       then apply_nat_port true ns
-             (set_saddr fam p (e_ifaddr (pkt_env p) (field_value FMetaOifname p)))
+             (set_saddr fam p (masq_saddr fam p))
       else if String.eqb (nat_kind ns) nat_snat_kind
       then apply_nat_port true ns
              (if nat_has_addr ns then set_saddr fam p (nat_addr ns p) else p)

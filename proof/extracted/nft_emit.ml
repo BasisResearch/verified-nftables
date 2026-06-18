@@ -218,7 +218,7 @@ let emit (src_path : string) (p : Nft_lower.parsed) : string =
   pr "Definition base_env : env :=\n";
   pr "  {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];\n";
   pr "     e_routes := []; e_rt := fun _ => [];\n";
-  pr "     e_ifaddr := (fun _ => []);\n";
+  pr "     e_ifaddr := (fun _ => []); e_ifaddr6 := (fun _ => []);\n";
   pr "     e_limit := fun _ => 0; e_quota := fun _ => 0; e_connlimit := fun _ => 0 |}.\n\n";
   pr "Definition gen_env : env := env_with_sets base_env decls.\n\n";
   (* each table's chains, then the per-table chain environment *)

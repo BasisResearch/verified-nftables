@@ -32,7 +32,7 @@ Import ListNotations.
     loadability matters here. *)
 Definition empty_env : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
-     e_routes := []; e_rt := fun _ => []; e_ifaddr := fun _ => [];
+     e_routes := []; e_rt := fun _ => []; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => [];
      e_limit := fun _ => 0; e_quota := fun _ => 0; e_connlimit := fun _ => 0 |}.
 
 Definition bad_pkt : packet :=

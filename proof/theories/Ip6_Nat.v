@@ -99,7 +99,7 @@ Qed.
 Definition e0 : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
-     e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_connlimit := fun _ => 0 |}.
+     e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => []; e_connlimit := fun _ => 0 |}.
 Definition pkt6 : packet :=
   {| pkt_env := e0; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
@@ -115,4 +115,77 @@ Proof. vm_compute. reflexivity. Qed.
 
 Theorem ip6_snat_src_is_target :
   field_value FIp6Saddr (apply_nat Hprerouting ip6_snat_rule pkt6) = tgt6.
+Proof. vm_compute. reflexivity. Qed.
+
+(** ** IPv6 masquerade rewrites the FULL 16-byte IPv6 source (family-aware).
+
+    The kernel dispatches masquerade BY FAMILY (nft_masq.c:113-121:
+    NFPROTO_IPV6 -> nf_nat_masquerade_ipv6, nf_nat_masquerade.c:241-262), computing
+    a 128-bit IPv6 source via ipv6_dev_get_saddr and rewriting the whole 16-byte
+    source — a DIFFERENT value from the IPv4 interface address.  Before the fix the
+    model's masquerade was family-blind: [nat_family = ""] -> "ip", so it spliced
+    the 4-byte IPv4 [e_ifaddr] into bytes 12..15 (the middle of the IPv6 source),
+    leaving the IPv6 source slot (bytes 8..23) NOT rewritten.  The fix gives
+    masquerade a real [nat_family] (the parser threads the ip6 table family) and a
+    family-indexed source ([masq_saddr] picks the 16-byte [e_ifaddr6] for ip6).
+    `ip6 masquerade` is valid and in the corpus (tests/py/ip6/masquerade.t). *)
+
+(* The exit interface's IPv6 source (a 16-byte in6_addr), all 0xBB. *)
+Definition if6 : data := List.repeat 187 16.
+
+Definition masq6_spec : nat_spec :=
+  {| nat_imms := []; nat_map := None; nat_field := None;
+     nat_src := None; nat_kind := nat_masq_kind; nat_family := nat_fam_ip6;
+     nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None;
+     nat_flags := 0 |}.
+Definition masq6_rule : rule :=
+  {| r_body := []; r_verdict := Continue; r_vmap := None;
+     r_nat := Some masq6_spec; r_tproxy := None; r_fwd := None;
+     r_queue := None; r_after := [] |}.
+
+(* An env whose IPv6 interface address (e_ifaddr6) is [if6] for every interface,
+   and whose IPv4 e_ifaddr is a DIFFERENT 4-byte value — to prove masquerade picks
+   the IPv6 one, not the IPv4 one. *)
+Definition e6 : env :=
+  {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
+     e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
+     e_quota := fun _ => 0; e_ifaddr := fun _ => [9;9;9;9];
+     e_ifaddr6 := fun _ => if6; e_connlimit := fun _ => 0 |}.
+
+(* A 40-byte IPv6 packet whose source slot (bytes 8..23) holds distinguishable
+   markers 108..123 (as in the red probe). *)
+Definition pkt6m : packet :=
+  {| pkt_env := e6; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
+     pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
+     pkt_lh := []; pkt_nh := seq 100 40; pkt_th := []; pkt_ih := []; pkt_tnl := [];
+     pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
+     pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
+     pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0 |}.
+
+(* THE FIX: an ip6 masquerade rewrites the whole 16-byte IPv6 source to the exit
+   interface's IPv6 address [if6] (= ipv6_dev_get_saddr), reading back via
+   FIp6Saddr (network bytes 8..23). *)
+Theorem masq6_src_is_ipv6_ifaddr :
+  field_value FIp6Saddr (apply_nat Hpostrouting masq6_rule pkt6m) = if6.
+Proof. vm_compute. reflexivity. Qed.
+
+(* And the red agent's soundness bug is now FALSE: bytes 8..11 of the IPv6 source
+   are NO LONGER the original markers [108;109;110;111] — they are the new IPv6
+   ifaddr's first 4 bytes.  (Before the fix this equality held, proving the source
+   was untouched.) *)
+Theorem masq6_does_rewrite_ipv6_source_prefix :
+  firstn 4 (skipn 8 (pkt_nh (apply_nat Hpostrouting masq6_rule pkt6m)))
+    <> [108;109;110;111].
+Proof. vm_compute. discriminate. Qed.
+
+(* The full 16-byte IPv6 source slot (8..23) is exactly [if6] — including the tail
+   bytes 16..23 the family-blind model left untouched. *)
+Theorem masq6_full_source_slot :
+  firstn 16 (skipn 8 (pkt_nh (apply_nat Hpostrouting masq6_rule pkt6m))) = if6.
+Proof. vm_compute. reflexivity. Qed.
+
+(* The network-header length is preserved (no 12-byte shift/corruption). *)
+Theorem masq6_nh_len_preserved :
+  List.length (pkt_nh (apply_nat Hpostrouting masq6_rule pkt6m)) = 40.
 Proof. vm_compute. reflexivity. Qed.
