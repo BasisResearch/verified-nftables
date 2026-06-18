@@ -19,4 +19,5 @@ theories/Ruleset_Verified.v
 theories/Payload_Break.v
 theories/Dnat_Rewrite.v
 theories/Ip6_Nat.v
+theories/Iif_Index.v
 theories/Extract.v

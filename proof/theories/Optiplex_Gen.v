@@ -86,7 +86,7 @@ Definition filter_input : chain :=
      r_verdict := Accept; r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
-   {| r_body := [(BMatch (MEq FMetaIif [108; 111]))];
+   {| r_body := [(BMatch (MEq FMetaIif [1; 0; 0; 0]))];
      r_verdict := Accept; r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 

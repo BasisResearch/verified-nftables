@@ -443,6 +443,50 @@ let check_ip6_nat () =
     (data_eq (Syntax.field_value Syntax.FIp4Daddr p4) [10;0;0;1]);
   Printf.printf "\n"
 
+(* (H) iif/oif NUMERIC INTERFACE-INDEX lowering.  iif/oif read the numeric
+   interface INDEX (LMeta MKiif/MKoif).  nft resolves the name to a 4-byte
+   host-endian (little-endian on x86) integer at LOAD time and the kernel
+   compares the skb's numeric index against it (meta.c ifindex_type; golden
+   tests/py/any/meta.t.payload: `meta iif "lo"` => cmp 0x00000001).  The parser
+   must lower iif/oif to that index encoding, NOT the ASCII name bytes (which are
+   correct only for iifname/oifname). *)
+let check_iif_index () =
+  Printf.printf "=== (H) iif/oif numeric interface-index lowering ===\n";
+  let src =
+    "table ip t {\n\
+    \  chain c {\n\
+    \    type filter hook input priority 0; policy accept;\n\
+    \    iif lo accept\n\
+    \    iif 7 accept\n\
+    \    oif lo accept\n\
+    \  }\n\
+     }\n" in
+  let parsed = Nft_parse.parse_string src in
+  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_lower.p_env in
+  let body i = (Stdlib.List.nth c.Syntax.c_rules i).Syntax.r_body in
+  (* `iif lo` => the loopback index 1, little-endian; NOT ASCII "lo" = [108;111] *)
+  check "iif lo lowers to numeric index [1;0;0;0] (not ASCII)"
+    (body 0 = [Syntax.BMatch (Syntax.MEq (Syntax.FMetaIif, [1;0;0;0]))]);
+  (* numeric form `iif 7` => [7;0;0;0] *)
+  check "iif 7 lowers to numeric index [7;0;0;0]"
+    (body 1 = [Syntax.BMatch (Syntax.MEq (Syntax.FMetaIif, [7;0;0;0]))]);
+  (* `oif lo` => FMetaOif with the same index encoding *)
+  check "oif lo lowers to numeric index [1;0;0;0] on FMetaOif"
+    (body 2 = [Syntax.BMatch (Syntax.MEq (Syntax.FMetaOif, [1;0;0;0]))]);
+  (* the lowered matchcond matches a packet that genuinely arrived on lo *)
+  let mk_iif idx =
+    { (mk_pkt ~env ()) with
+      Packet.pkt_meta = (fun k -> match k with Packet.MKiif -> idx | _ -> []) } in
+  let m_lo = Syntax.MEq (Syntax.FMetaIif, [1;0;0;0]) in
+  check "iif lo matches a packet whose numeric iif = 1 (real nft matches)"
+    (Semantics.eval_matchcond m_lo (mk_iif [1;0;0;0]) = true);
+  check "iif lo does NOT match a packet on a different iface (index 2)"
+    (Semantics.eval_matchcond m_lo (mk_iif [2;0;0;0]) = false);
+  check "iif lo does NOT match the impossible ASCII-meta packet"
+    (Semantics.eval_matchcond m_lo (mk_iif (ascii "lo")) = false);
+  Printf.printf "\n"
+
 (* ---------- CLI: parse a file and print compiled bytecode ---------- *)
 
 let cli (path : string) =
@@ -465,6 +509,7 @@ let () =
     check_optiplex_mark ();
     check_dnat_rewrite ();
     check_ip6_nat ();
+    check_iif_index ();
     check_difftest_ast ();
     check_live_nft ();
     if !fails = 0 then Printf.printf "ALL PARSER CHECKS PASSED\n"

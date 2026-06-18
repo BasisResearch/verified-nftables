@@ -26,6 +26,29 @@ let bytes_of_int (width : int) (n : int) : Bytes.data =
   if n < 0 then raise (Unsupported "negative numeric literal");
   L.init width (fun i -> (n lsr (8 * (width - 1 - i))) land 0xff)
 
+(* little-endian (host byte order on x86), least-significant byte first.  This
+   is how the kernel stores host-endian integer meta keys such as the interface
+   index (meta.c ifindex_type: BYTEORDER_HOST_ENDIAN, 4 bytes). *)
+let bytes_of_int_le (width : int) (n : int) : Bytes.data =
+  if n < 0 then raise (Unsupported "negative numeric literal");
+  L.init width (fun i -> (n lsr (8 * i)) land 0xff)
+
+(* Interface-name -> numeric ifindex resolution.  Real nft resolves this at LOAD
+   time via nft_if_nametoindex() against the live host, so it is host-specific.
+   We only know the loopback index for certain: the kernel always assigns "lo"
+   index 1 (it is the first device registered).  Any other name cannot be
+   faithfully resolved without the live interface table, so we degrade to
+   [Unsupported] rather than guess (mirroring how unresolvable NAT targets and
+   $-vars degrade).  A numeric form `iif 2` is always exact. *)
+let nametoindex (s : string) : int =
+  match s with
+  | "lo" -> 1
+  | _ -> raise (Unsupported
+           ("iif/oif interface name " ^ s ^
+            " is resolved to a numeric index at load time against the live "
+            ^ "host; use the numeric form (e.g. `iif 2`) or `iifname " ^ s
+            ^ "` for the ASCII-name match"))
+
 let ascii (s : string) : Bytes.data =
   L.init (S.length s) (fun i -> Char.code (S.get s i))
 
@@ -84,7 +107,7 @@ let lookup ctx tbl s =
 (* ---------- field kinds: how a value is encoded for a given selector ---------- *)
 
 type kind =
-  | KIfname | KIp4 | KIp6 | KPort | KL4proto | KEthertype
+  | KIfname | KIfindex | KIp4 | KIp6 | KPort | KL4proto | KEthertype
   | KCtstate | KMark | KIcmp | KIcmpv6 | KPkttype | KFibType | KNum of int
 
 (* fib route-type symbols (the RTN_ route types), as 4-byte words *)
@@ -98,6 +121,10 @@ let sym_fibtype = [
 let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
   match k, v with
   | KIfname, (Nft_ast.Vsym s | Nft_ast.Vstr s) -> ifname_bytes s
+  (* iif/oif: the interface INDEX, a 4-byte host-endian integer.  A numeric
+     literal is taken verbatim; a name is resolved to its index at load time. *)
+  | KIfindex, Nft_ast.Vnum n -> bytes_of_int_le 4 n
+  | KIfindex, (Nft_ast.Vsym s | Nft_ast.Vstr s) -> bytes_of_int_le 4 (nametoindex s)
   | KIp4, Nft_ast.Vip4 b -> b
   | KIp6, Nft_ast.Vip4 b -> b           (* a v4-mapped literal in a v6 context *)
   | KPort, Nft_ast.Vnum n -> bytes_of_int 2 n
@@ -125,7 +152,7 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
 (* the byte width a kind compares at (for building a prefix mask) *)
 let width_of_kind = function
   | KIp4 -> 4 | KIp6 -> 16 | KPort | KEthertype -> 2
-  | KCtstate | KMark -> 4 | KNum w -> w | _ -> 1
+  | KCtstate | KMark | KIfindex -> 4 | KNum w -> w | _ -> 1
 
 (* ---------- selector resolution: keypath -> (field, kind, l4proto-dep) ---------- *)
 
@@ -156,8 +183,8 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * Bytes.data option =
   | ["meta"; "mark"]     -> (Syntax.FMetaMark, KMark, none)
   | ["meta"; "iifname"]  -> (Syntax.FMetaIifname, KIfname, none)
   | ["meta"; "oifname"]  -> (Syntax.FMetaOifname, KIfname, none)
-  | ["meta"; "iif"]      -> (Syntax.FMetaIif, KIfname, none)
-  | ["meta"; "oif"]      -> (Syntax.FMetaOif, KIfname, none)
+  | ["meta"; "iif"]      -> (Syntax.FMetaIif, KIfindex, none)
+  | ["meta"; "oif"]      -> (Syntax.FMetaOif, KIfindex, none)
   | ["meta"; "obrname"]  -> (Syntax.FMetaGen Packet.MKbri_oifname, KIfname, none)
   | ["meta"; "ibrname"]  -> (Syntax.FMetaGen Packet.MKbri_iifname, KIfname, none)
   | ["meta"; "pkttype"]  -> (Syntax.FMetaPkttype, KPkttype, none)
@@ -165,8 +192,8 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * Bytes.data option =
   | ["pkttype"]          -> (Syntax.FMetaPkttype, KPkttype, none)
   | ["iifname"]          -> (Syntax.FMetaIifname, KIfname, none)
   | ["oifname"]          -> (Syntax.FMetaOifname, KIfname, none)
-  | ["iif"]              -> (Syntax.FMetaIif, KIfname, none)
-  | ["oif"]              -> (Syntax.FMetaOif, KIfname, none)
+  | ["iif"]              -> (Syntax.FMetaIif, KIfindex, none)
+  | ["oif"]              -> (Syntax.FMetaOif, KIfindex, none)
   | ["fib"; sel; "type"]    -> (Syntax.FFib (sel, Packet.FRtype), KFibType, none)
   | ["fib"; sel; "oifname"] -> (Syntax.FFib (sel, Packet.FRoifname), KIfname, none)
   | ["fib"; sel; "oif"]     -> (Syntax.FFib (sel, Packet.FRoif), KNum 4, none)
@@ -238,7 +265,8 @@ let bytes_of_typeatom st (atom : string) (v : Nft_ast.value) : Bytes.data =
   match atom with
   | "ipv4_addr"    -> enc_atom KIp4 v
   | "ipv6_addr"    -> enc_atom KIp6 v
-  | "ifname" | "iface_index" -> enc_atom KIfname v
+  | "ifname"       -> enc_atom KIfname v
+  | "iface_index"  -> enc_atom KIfindex v
   | "inet_service" -> enc_atom KPort v
   | "inet_proto"   -> enc_atom KL4proto v
   | "ether_addr"   -> enc_atom (KNum 6) v
