@@ -916,6 +916,61 @@ let check_ifname_exact () =
     (Semantics.run_chain prog c.Syntax.c_policy (mk_iifn [0x7a;0x7a;0x7a; 0;0;0;0;0; 0;0;0;0; 0;0;0;0]) = Verdict.Accept);
   Printf.printf "\n"
 
+(* ---------- (L) limiter `over` / invert flag flips the verdict ----------
+   Real nftables limit/quota/connlimit carry an "over" (invert) bit (bit 0 of
+   the flags field).  The kernel XORs the under/not-exceeded test with that bit:
+     nft_limit.c:48,52   nft_quota.c:43   nft_connlimit.c:47.
+   The parser sets ls_flags bit 0 for `limit rate over N/unit`, and
+   Semantics.eval_matchcond_body now XORs the over-bit with `0 < remaining`. *)
+let check_limit_over () =
+  Printf.printf "=== (L) limiter `over`/invert flag flips the verdict ===\n";
+  let src =
+    "table ip t {\n\
+    \  chain c {\n\
+    \    type filter hook input priority 0; policy accept;\n\
+    \    limit rate 10/second accept\n\
+    \    limit rate over 10/second drop\n\
+    \  }\n\
+     }\n" in
+  let parsed = Nft_parse.parse_string src in
+  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_lower.p_env in
+  let body i = (Stdlib.List.nth c.Syntax.c_rules i).Syntax.r_body in
+  (* `limit rate 10/second` => MLimit with ls_flags bit 0 = 0 (non-inverted) *)
+  check "limit rate 10/second lowers to MLimit with ls_flags=0 (non-over)"
+    (match body 0 with
+     | [Syntax.BMatch (Syntax.MLimit s)] -> s.Packet.ls_flags = 0
+     | _ -> false);
+  (* `limit rate over 10/second` => MLimit with ls_flags bit 0 = 1 (inverted) *)
+  check "limit rate over 10/second lowers to MLimit with ls_flags=1 (over/inverted)"
+    (match body 1 with
+     | [Syntax.BMatch (Syntax.MLimit s)] -> s.Packet.ls_flags = 1
+     | _ -> false);
+  (* extract the two specs and pin the semantic flip for a SHARED oracle. *)
+  let spec_of i = match body i with
+    | [Syntax.BMatch (Syntax.MLimit s)] -> s | _ -> assert false in
+  let s_under = spec_of 0 and s_over = spec_of 1 in
+  (* env where the limiter is UNDER (tokens remain): e_limit returns 1 (>0). *)
+  let env_under = { env with Packet.e_limit = (fun _ -> 1) } in
+  (* env where the limiter is EXCEEDED: e_limit returns 0. *)
+  let env_over  = { env with Packet.e_limit = (fun _ -> 0) } in
+  let m_under = Syntax.MLimit s_under and m_over = Syntax.MLimit s_over in
+  (* UNDER the rate: the plain `limit` MATCHES (continue/accept), the `over`
+     limiter does NOT (it only fires on the flood) — opposite verdicts. *)
+  check "under the rate: plain `limit` matches but `limit over` does NOT (flip)"
+    (Semantics.eval_matchcond m_under (mk_pkt ~env:env_under ()) = true
+     && Semantics.eval_matchcond m_over (mk_pkt ~env:env_under ()) = false);
+  (* EXCEEDING the rate: the plain `limit` stops (no match) while the `over`
+     limiter MATCHES — the standard anti-flood `limit rate over X drop` idiom. *)
+  check "exceeding the rate: plain `limit` misses but `limit over` matches (flip)"
+    (Semantics.eval_matchcond m_under (mk_pkt ~env:env_over ()) = false
+     && Semantics.eval_matchcond m_over (mk_pkt ~env:env_over ()) = true);
+  (* The flag is genuinely read: for the SAME oracle, over and non-over disagree. *)
+  check "over and non-over give opposite verdicts for the same oracle (flag honoured)"
+    (Semantics.eval_matchcond m_over (mk_pkt ~env:env_under ())
+       <> Semantics.eval_matchcond m_under (mk_pkt ~env:env_under ()));
+  Printf.printf "\n"
+
 (* ---------- CLI: parse a file and print compiled bytecode ---------- *)
 
 let cli (path : string) =
@@ -946,6 +1001,7 @@ let () =
     check_synproxy ();
     check_concat_iv ();
     check_ifname_exact ();
+    check_limit_over ();
     check_difftest_ast ();
     check_live_nft ();
     if !fails = 0 then Printf.printf "ALL PARSER CHECKS PASSED\n"

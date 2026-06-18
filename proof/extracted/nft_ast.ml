@@ -70,7 +70,7 @@ type sstmt =
   | StComment   of string
   | StCounter
   | StLog       of string          (* options string (e.g. the prefix), verbatim *)
-  | StLimit     of int * string    (* rate N / unit *)
+  | StLimit     of int * string * bool  (* rate [over] N / unit; bool = over/invert *)
   | StMasquerade
   | StSnat      of value option
   | StDnat      of value option

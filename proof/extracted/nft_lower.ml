@@ -513,11 +513,14 @@ let lower_stmt st (s : Nft_ast.sstmt) : Syntax.stmt option =
 let stmt_is_terminal_accept = function
   | Nft_ast.StMasquerade | Nft_ast.StSnat _ | Nft_ast.StDnat _ -> true | _ -> false
 
-let limit_spec rate unit_ : Packet.limit_spec =
+let limit_spec rate unit_ over : Packet.limit_spec =
   let u = match unit_ with
     | "second"->0 | "minute"->1 | "hour"->2 | "day"->3 | "week"->4
     | _ -> raise (Unsupported ("limit unit " ^ unit_)) in
-  { Packet.ls_rate = rate; ls_unit = u; ls_burst = 5; ls_bytes = false; ls_flags = 0 }
+  (* bit 0 of ls_flags = NFT_LIMIT_F_INV ("over"); the data-plane semantics XOR
+     the under/not-exceeded test with this bit (Semantics.v eval_matchcond_body). *)
+  { Packet.ls_rate = rate; ls_unit = u; ls_burst = 5; ls_bytes = false;
+    ls_flags = (if over then 1 else 0) }
 
 (* a `masquerade` NAT spec: source-NAT to the exit interface's address *)
 let masq_spec : Syntax.nat_spec =
@@ -570,8 +573,8 @@ let lower_rule st (clauses : Nft_ast.clause list) : Syntax.rule =
         if !vmap <> None then raise (Unsupported "more than one verdict map in a rule");
         let (f, _, dep) = key_field kp in ensure_dep dep;
         vmap := Some { Syntax.vm_fields = []; vm_keyf = Some (f, []); vm_name = name }
-    | Nft_ast.CStmt (Nft_ast.StLimit (r, u)) ->
-        push (Syntax.BMatch (Syntax.MLimit (limit_spec r u)))
+    | Nft_ast.CStmt (Nft_ast.StLimit (r, u, over)) ->
+        push (Syntax.BMatch (Syntax.MLimit (limit_spec r u over)))
     | Nft_ast.CStmt s ->
         if stmt_is_terminal_accept s then verdict := Verdict.Accept;
         (match s with

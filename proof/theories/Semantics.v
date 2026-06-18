@@ -117,9 +117,21 @@ Definition eval_matchcond_body (m : matchcond) (p : packet) : bool :=
                          (e_set (pkt_env p) name))
   | MRangeT f ts neg lo hi =>
       eval_range (if neg then CNe else CEq) (apply_transforms ts (field_value f p)) lo hi
-  | MLimit spec => Nat.ltb 0 (e_limit (pkt_env p) spec)
-  | MQuota spec => Nat.ltb 0 (e_quota (pkt_env p) spec)
-  | MConnlimit spec => Nat.ltb 0 (e_connlimit (pkt_env p) spec)
+  (* Each limiter carries an "over"/invert bit (bit 0 of its flags field).  The
+     kernel XORs the under/not-exceeded test with that bit:
+       nft_limit.c:48,52  (returns [invert] when tokens remain, [!invert] when
+                           exhausted; the caller BREAKs on a true return),
+       nft_quota.c:43     [if (nft_overquota(...) ^ nft_quota_invert(priv)) BREAK],
+       nft_connlimit.c:47 [if ((count > limit) ^ priv->invert) BREAK].
+     Our underlying oracle ([0 < remaining]) is the non-inverted "under" test
+     (match iff NOT exceeded); the over-bit flips it so an inverted limiter
+     matches iff the resource is EXCEEDED. *)
+  | MLimit spec =>
+      xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (Nat.ltb 0 (e_limit (pkt_env p) spec))
+  | MQuota spec =>
+      xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (Nat.ltb 0 (e_quota (pkt_env p) spec))
+  | MConnlimit spec =>
+      xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (Nat.ltb 0 (e_connlimit (pkt_env p) spec))
   | MConcatSetT elems neg name =>
       (* like [MConcatSet] but each element is transformed before concatenation;
          contents read from the named set in [pkt_env p].  Per-field membership
@@ -612,11 +624,17 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | IFwd _ _ _ :: _ => Some Accept           (* terminal forward *)
   | IQueueSreg _ _ _ :: _ => Some Accept     (* terminal queue *)
   | ILimit spec :: rest =>
-      if Nat.ltb 0 (e_limit (pkt_env p) spec) then run_rule rf rest p else None   (* over-limit breaks *)
+      (* the limit instruction carries NFT_LIMIT_F_INV (bit 0 of ls_flags); the
+         kernel BREAKs iff [under_test ^ invert].  Continue iff [match] = the
+         negation, i.e. iff the matchcond body is true. *)
+      if xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (Nat.ltb 0 (e_limit (pkt_env p) spec))
+      then run_rule rf rest p else None
   | IQuota spec :: rest =>
-      if Nat.ltb 0 (e_quota (pkt_env p) spec) then run_rule rf rest p else None   (* over-quota breaks *)
+      if xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (Nat.ltb 0 (e_quota (pkt_env p) spec))
+      then run_rule rf rest p else None
   | IConnlimit spec :: rest =>
-      if Nat.ltb 0 (e_connlimit (pkt_env p) spec) then run_rule rf rest p else None   (* over-limit breaks *)
+      if xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (Nat.ltb 0 (e_connlimit (pkt_env p) spec))
+      then run_rule rf rest p else None
   | ICounter _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)
   | INotrack :: rest      => run_rule rf rest p
   | ILog _ :: rest        => run_rule rf rest p
@@ -857,9 +875,9 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
   | ITproxy _ _ _ :: _ => p
   | IFwd _ _ _ :: _ => p
   | IQueueSreg _ _ _ :: _ => p
-  | ILimit spec :: rest => if Nat.ltb 0 (e_limit (pkt_env p) spec) then run_rule_writes rf rest p else p
-  | IQuota spec :: rest => if Nat.ltb 0 (e_quota (pkt_env p) spec) then run_rule_writes rf rest p else p
-  | IConnlimit spec :: rest => if Nat.ltb 0 (e_connlimit (pkt_env p) spec) then run_rule_writes rf rest p else p
+  | ILimit spec :: rest => if xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (Nat.ltb 0 (e_limit (pkt_env p) spec)) then run_rule_writes rf rest p else p
+  | IQuota spec :: rest => if xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (Nat.ltb 0 (e_quota (pkt_env p) spec)) then run_rule_writes rf rest p else p
+  | IConnlimit spec :: rest => if xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (Nat.ltb 0 (e_connlimit (pkt_env p) spec)) then run_rule_writes rf rest p else p
   | ICounter _ _ :: rest => run_rule_writes rf rest p
   | INotrack :: rest => run_rule_writes rf rest p
   | ILog _ :: rest => run_rule_writes rf rest p

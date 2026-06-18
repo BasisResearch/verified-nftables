@@ -27,7 +27,7 @@
 /* verdicts */
 %token ACCEPT DROP CONTINUE RETURN JUMP GOTO QUEUE REJECT
 /* statements */
-%token COUNTER LOG PREFIX LIMIT RATE WITH TO MASQUERADE SNAT DNAT
+%token COUNTER LOG PREFIX LIMIT RATE OVER WITH TO MASQUERADE SNAT DNAT
 /* match selectors */
 %token META CT IP IP6 TCP UDP TH ICMP ICMPV6 ETHER FIB
 %token IIF OIF IIFNAME OIFNAME PKTTYPE MARK
@@ -113,7 +113,7 @@ junktok:
   | TYPE {} | HOOK {} | PRIORITY {} | POLICY {} | COMMENT {} | VMAP {} | FLAGS {}
   | ELEMENTS {} | SET {} | MAP {} | TABLE {} | CHAIN {} | DEFINE {} | INCLUDE {}
   | ACCEPT {} | DROP {} | CONTINUE {} | RETURN {} | JUMP {} | GOTO {} | QUEUE {}
-  | REJECT {} | COUNTER {} | LOG {} | PREFIX {} | LIMIT {} | RATE {} | WITH {}
+  | REJECT {} | COUNTER {} | LOG {} | PREFIX {} | LIMIT {} | RATE {} | OVER {} | WITH {}
   | TO {} | MASQUERADE {} | SNAT {} | DNAT {} | META {} | CT {} | IP {} | IP6 {}
   | TCP {} | UDP {} | TH {} | ICMP {} | ICMPV6 {} | ETHER {} | FIB {} | IIF {}
   | OIF {} | IIFNAME {} | OIFNAME {} | PKTTYPE {} | MARK {} | FLUSH {} | RULESET {}
@@ -321,7 +321,8 @@ stmt:
   | COMMENT STRING            { StComment $2 }
   | COUNTER                   { StCounter }
   | LOG log_opts              { StLog $2 }
-  | LIMIT RATE INT SLASH IDENT { StLimit ($3, $5) }
+  | LIMIT RATE INT SLASH IDENT      { StLimit ($3, $5, false) }
+  | LIMIT RATE OVER INT SLASH IDENT { StLimit ($4, $6, true) }
   | MASQUERADE                { StMasquerade }
   | SNAT nat_to               { StSnat $2 }
   | DNAT nat_to               { StDnat $2 }

@@ -377,17 +377,20 @@ Proof.
       destruct (eval_range (if neg then CNe else CEq)
                  (apply_transforms ts (field_value f p)) lo hi);
         cbn [andb]; [apply IH; exact Hc | reflexivity].
-    + (* MLimit: no load, a stateful break *)
+    + (* MLimit: no load, a stateful break (over-bit XORed into the test) *)
       cbn [run_rule andb].
-      destruct (Nat.ltb 0 (e_limit (pkt_env p) spec)); cbn [andb];
+      destruct (xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1)
+                     (Nat.ltb 0 (e_limit (pkt_env p) spec))); cbn [andb];
         [apply IH; exact Hc | reflexivity].
-    + (* MQuota: no load, a stateful break *)
+    + (* MQuota: no load, a stateful break (over-bit XORed into the test) *)
       cbn [run_rule andb].
-      destruct (Nat.ltb 0 (e_quota (pkt_env p) qspec)); cbn [andb];
+      destruct (xorb (Nat.eqb (Nat.land (q_flags qspec) 1) 1)
+                     (Nat.ltb 0 (e_quota (pkt_env p) qspec))); cbn [andb];
         [apply IH; exact Hc | reflexivity].
-    + (* MConnlimit: no load, a stateful break *)
+    + (* MConnlimit: no load, a stateful break (over-bit XORed into the test) *)
       cbn [run_rule andb].
-      destruct (Nat.ltb 0 (e_connlimit (pkt_env p) clspec)); cbn [andb];
+      destruct (xorb (Nat.eqb (Nat.land (cl_flags clspec) 1) 1)
+                     (Nat.ltb 0 (e_connlimit (pkt_env p) clspec))); cbn [andb];
         [apply IH; exact Hc | reflexivity].
     + (* MConcatSetT: transformed multi-register key, distinct registers per element *)
       change (match_loadable (MConcatSetT celems neg nm) p)
@@ -1007,11 +1010,14 @@ Proof.
     destruct (eval_range (if neg then CNe else CEq) (apply_transforms ts (field_value f p)) lo hi);
       [apply Hc | reflexivity].
   - (* MLimit *) cbn [run_rule_writes andb].
-    destruct (Nat.ltb 0 (e_limit (pkt_env p) spec)); [apply Hc | reflexivity].
+    destruct (xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1)
+                   (Nat.ltb 0 (e_limit (pkt_env p) spec))); [apply Hc | reflexivity].
   - (* MQuota *) cbn [run_rule_writes andb].
-    destruct (Nat.ltb 0 (e_quota (pkt_env p) qspec)); [apply Hc | reflexivity].
+    destruct (xorb (Nat.eqb (Nat.land (q_flags qspec) 1) 1)
+                   (Nat.ltb 0 (e_quota (pkt_env p) qspec))); [apply Hc | reflexivity].
   - (* MConnlimit *) cbn [run_rule_writes andb].
-    destruct (Nat.ltb 0 (e_connlimit (pkt_env p) clspec)); [apply Hc | reflexivity].
+    destruct (xorb (Nat.eqb (Nat.land (cl_flags clspec) 1) 1)
+                   (Nat.ltb 0 (e_connlimit (pkt_env p) clspec))); [apply Hc | reflexivity].
   - (* MConcatSetT *)
     change (match_loadable (MConcatSetT celems neg nm) p)
       with (fields_loadable (map fst celems) p).

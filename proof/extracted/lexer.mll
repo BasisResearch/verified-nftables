@@ -22,7 +22,7 @@
     "jump", JUMP; "goto", GOTO; "queue", QUEUE; "reject", REJECT;
     (* statements *)
     "counter", COUNTER; "log", LOG; "prefix", PREFIX; "limit", LIMIT;
-    "rate", RATE; "with", WITH; "to", TO; "masquerade", MASQUERADE;
+    "rate", RATE; "over", OVER; "with", WITH; "to", TO; "masquerade", MASQUERADE;
     "snat", SNAT; "dnat", DNAT;
     (* selectors *)
     "meta", META; "ct", CT; "ip", IP; "ip6", IP6; "tcp", TCP; "udp", UDP;
