@@ -551,6 +551,57 @@ let check_iif_index () =
     (Semantics.eval_matchcond m_lo (mk_iif [2;0;0;0]) = false);
   check "iif lo does NOT match the impossible ASCII-meta packet"
     (Semantics.eval_matchcond m_lo (mk_iif (ascii "lo")) = false);
+  (* iif/oif are BYTEORDER_HOST_ENDIAN (src/meta.c NFT_META_IIF/OIF templates,
+     `4 * 8, BYTEORDER_HOST_ENDIAN`), exactly like ct/meta mark.  So an ORDERED or
+     RANGE match on them is an ordered comparison and nft inserts the mandatory
+     `byteorder reg = hton(reg,4,4)` before the range and stores the bounds
+     network-order (evaluate.c expr_evaluate_relational range/ordered default
+     -> BYTEORDER_BIG_ENDIAN on every operand), exactly as for `ct mark 2-5`.
+     The lowering must therefore route iif/oif ranges through the same hton path
+     as mark (MRangeT + TByteorder), NOT a bare LE-byte MRange (which data_le
+     would compare big-endian -> wrong verdict). *)
+  let src_r =
+    "table ip t {\n\
+    \  chain c {\n\
+    \    type filter hook input priority 0; policy drop;\n\
+    \    iif 2-5 accept\n\
+    \    oif 2-5 accept\n\
+    \  }\n\
+     }\n" in
+  let p_r = Nft_parse.parse_string src_r in
+  let c_r = Nft_lower.find_chain p_r ~table:"t" ~chain:"c" in
+  let body_r i = match (Stdlib.List.nth c_r.Syntax.c_rules i).Syntax.r_body with
+    | Syntax.BMatch m :: _ -> m | _ -> failwith "no iif/oif range match" in
+  (* (1) lowering shape: MRangeT FMetaIif/FMetaOif [hton(4,4)] with BE bounds *)
+  (match body_r 0 with
+   | Syntax.MRangeT (Syntax.FMetaIif, [Syntax.TByteorder (true, 4, 4)], false,
+                     lo, hi) ->
+       check "iif range lowers to MRangeT FMetaIif + hton(4,4)" true;
+       check "iif range bounds are network-order (BE) [0;0;0;2]..[0;0;0;5]"
+         (data_eq lo [0;0;0;2] && data_eq hi [0;0;0;5])
+   | _ ->
+       check "iif range lowers to MRangeT FMetaIif + hton(4,4)" false;
+       check "iif range bounds are network-order (BE) [0;0;0;2]..[0;0;0;5]" false);
+  (match body_r 1 with
+   | Syntax.MRangeT (Syntax.FMetaOif, [Syntax.TByteorder (true, 4, 4)], false,
+                     lo, hi) ->
+       check "oif range lowers to MRangeT FMetaOif + hton(4,4)" true;
+       check "oif range bounds are network-order (BE) [0;0;0;2]..[0;0;0;5]"
+         (data_eq lo [0;0;0;2] && data_eq hi [0;0;0;5])
+   | _ ->
+       check "oif range lowers to MRangeT FMetaOif + hton(4,4)" false;
+       check "oif range bounds are network-order (BE) [0;0;0;2]..[0;0;0;5]" false);
+  (* (2) behavioural: a packet with iif index 3 (host-endian LE [3;0;0;0]) is IN
+     [2,5].  The old bare-MRange path compared the LE bytes big-endian -> NO match
+     (the proven divergence: nft ACCEPTS, model REJECTED).  With the hton
+     transform the field becomes [0;0;0;3] BE -> 2<=3<=5 -> match. *)
+  let mc_iif_r = body_r 0 in
+  check "iif=3 matches range 2-5 (numeric, post-hton; old model REJECTED it)"
+    (Semantics.eval_matchcond mc_iif_r (mk_iif [3;0;0;0]) = true);
+  check "iif=1 does NOT match range 2-5 (below low bound)"
+    (Semantics.eval_matchcond mc_iif_r (mk_iif [1;0;0;0]) = false);
+  check "iif=256 does NOT match range 2-5 (would spuriously match if LE-lex on byte 0)"
+    (Semantics.eval_matchcond mc_iif_r (mk_iif [0;1;0;0]) = false);
   Printf.printf "\n"
 
 (* (I) SINGLE POSITIVE `ct state X` BITMASK lowering.  ct_state has

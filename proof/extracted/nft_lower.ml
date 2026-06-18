@@ -218,7 +218,7 @@ let width_of_kind = function
    mandatory `byteorder reg = hton(reg, N, N)` conversion, which we model with a
    [TByteorder true w w] transform.  Equality/neq need no conversion (memcmp is
    order-independent), so only the range/ordered path consults this. *)
-let host_endian_kind = function KMark -> true | _ -> false
+let host_endian_kind = function KMark | KIfindex -> true | _ -> false
 
 (* Encode a value NETWORK-ORDER (big-endian).  Used for the bounds of a RANGE
    match on a host-endian field: nft stores the range immediates network-order
@@ -229,6 +229,12 @@ let host_endian_kind = function KMark -> true | _ -> false
 let enc_atom_be (k : kind) (v : Nft_ast.value) : Bytes.data =
   match k, v with
   | KMark, Nft_ast.Vnum n -> bytes_of_int (width_of_kind k) n
+  (* iif/oif (interface INDEX) are BYTEORDER_HOST_ENDIAN like mark (src/meta.c
+     NFT_META_IIF/OIF templates), so an ordered/range match on them also goes
+     through the hton path; the bounds must be network-order, not the LE form
+     [enc_atom] uses for the eq/membership immediates. *)
+  | KIfindex, Nft_ast.Vnum n -> bytes_of_int 4 n
+  | KIfindex, (Nft_ast.Vsym s | Nft_ast.Vstr s) -> bytes_of_int 4 (nametoindex s)
   | _ -> enc_atom k v
 
 (* ---------- concatenated-set register-slot padding ----------
