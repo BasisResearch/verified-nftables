@@ -157,8 +157,9 @@ type kind =
 (* fib route-type symbols (the RTN_ route types), as 4-byte words *)
 let sym_fibtype = [
   "unspec",[0;0;0;0]; "unicast",[0;0;0;1]; "local",[0;0;0;2];
-  "broadcast",[0;0;0;3]; "anycast",[0;0;0;6]; "multicast",[0;0;0;5];
+  "broadcast",[0;0;0;3]; "anycast",[0;0;0;4]; "multicast",[0;0;0;5];
   "blackhole",[0;0;0;6]; "unreachable",[0;0;0;7]; "prohibit",[0;0;0;8];
+  "throw",[0;0;0;9]; "nat",[0;0;0;10]; "xresolve",[0;0;0;11];
 ]
 
 (* encode a single (non-range, non-prefix, non-concat) value for a field kind *)

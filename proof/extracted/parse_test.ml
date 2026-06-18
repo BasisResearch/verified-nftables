@@ -1047,6 +1047,62 @@ let check_limit_over () =
        <> Semantics.eval_matchcond m_under (mk_pkt ~env:env_under ()));
   Printf.printf "\n"
 
+(* (M) fib route-type symbol -> RTN_ constant.  The Menhir frontend's
+   sym_fibtype must encode each `fib ... type SYM` surface symbol as the kernel
+   RTN_ route-type constant (rtnetlink.h:262-275 / nftables src/fib.c).  The
+   anycast symbol is RTN_ANYCAST=4 and MUST NOT collide with blackhole
+   (RTN_BLACKHOLE=6); a previous mis-encoding gave anycast=6, conflating the two
+   and inverting the verdict on anycast/blackhole packets.  KFibType compares the
+   4-byte field exactly (MEq), so the bug is purely the lowering constant. *)
+let check_fib_type () =
+  Printf.printf "=== (N) fib route-type symbol -> RTN_ constant ===\n";
+  let src =
+    "table inet t {\n\
+    \  chain c {\n\
+    \    type filter hook prerouting priority 0; policy accept;\n\
+    \    fib daddr type anycast accept\n\
+    \    fib daddr type blackhole accept\n\
+    \    fib daddr type multicast accept\n\
+    \    fib daddr type unicast accept\n\
+    \  }\n\
+     }\n" in
+  let parsed = Nft_parse.parse_string src in
+  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
+  let body i = (Stdlib.List.nth c.Syntax.c_rules i).Syntax.r_body in
+  let rtype i = match body i with
+    | [Syntax.BMatch (Syntax.MEq (Syntax.FFib (_, Packet.FRtype), v))] -> Some v
+    | _ -> None in
+  (* anycast = RTN_ANYCAST = 4, NOT 6 (the old RTN_BLACKHOLE collision). *)
+  check "fib daddr type anycast lowers to RTN_ANYCAST=4 ([0;0;0;4])"
+    (rtype 0 = Some [0;0;0;4]);
+  check "fib daddr type blackhole lowers to RTN_BLACKHOLE=6 ([0;0;0;6])"
+    (rtype 1 = Some [0;0;0;6]);
+  (* the two distinct route types must NOT compile to identical bytecode. *)
+  check "anycast and blackhole encode to DIFFERENT constants (no collision)"
+    (rtype 0 <> rtype 1);
+  check "fib daddr type multicast lowers to RTN_MULTICAST=5 ([0;0;0;5])"
+    (rtype 2 = Some [0;0;0;5]);
+  check "fib daddr type unicast lowers to RTN_UNICAST=1 ([0;0;0;1])"
+    (rtype 3 = Some [0;0;0;1]);
+  (* behavioural: a packet whose looked-up route type is 4 (anycast) matches the
+     anycast rule and NOT the blackhole rule; type 6 (blackhole) is the reverse. *)
+  let m_any = match body 0 with [Syntax.BMatch m] -> m | _ -> assert false in
+  let m_bh  = match body 1 with [Syntax.BMatch m] -> m | _ -> assert false in
+  let env = parsed.Nft_lower.p_env in
+  let mk_rtype t =
+    let env' = { env with Packet.e_routes =
+      [ (([0], [255]),
+         (fun (r : Packet.fib_result) ->
+            match r with Packet.FRtype -> t | _ -> [])) ] } in
+    { (mk_pkt ~env:env' ()) with Packet.pkt_fibkey = (fun _ -> [0]) } in
+  check "route type 4 (anycast) matches the anycast rule, not blackhole"
+    (Semantics.eval_matchcond m_any (mk_rtype [0;0;0;4]) = true
+     && Semantics.eval_matchcond m_bh (mk_rtype [0;0;0;4]) = false);
+  check "route type 6 (blackhole) matches the blackhole rule, not anycast"
+    (Semantics.eval_matchcond m_bh (mk_rtype [0;0;0;6]) = true
+     && Semantics.eval_matchcond m_any (mk_rtype [0;0;0;6]) = false);
+  Printf.printf "\n"
+
 (* ---------- CLI: parse a file and print compiled bytecode ---------- *)
 
 let cli (path : string) =
@@ -1079,6 +1135,7 @@ let () =
     check_concat_iv ();
     check_ifname_exact ();
     check_limit_over ();
+    check_fib_type ();
     check_difftest_ast ();
     check_live_nft ();
     if !fails = 0 then Printf.printf "ALL PARSER CHECKS PASSED\n"
