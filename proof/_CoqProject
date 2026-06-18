@@ -18,4 +18,5 @@ theories/Optiplex_Mark.v
 theories/Ruleset_Verified.v
 theories/Payload_Break.v
 theories/Dnat_Rewrite.v
+theories/Ip6_Nat.v
 theories/Extract.v

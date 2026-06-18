@@ -521,34 +521,46 @@ Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
 Definition splice (l : list byte) (off len : nat) (v : data) : list byte :=
   firstn off l ++ v ++ skipn (off + len) l.
 
-(** Source-NAT a packet: rewrite its IPv4 source address (network header bytes
-    12..15, where [FIp4Saddr] reads) to [v].  This is the data-plane effect a
-    `snat`/`masquerade` performs; [set_saddr p (e_ifaddr (pkt_env p) oifname)]
-    realises `masquerade` = "use the IP of the interface the packet exits". *)
-Definition set_saddr (p : packet) (v : data) : packet :=
+(** Rewrite [len] bytes of the network header at [off] to [v], leaving every
+    other packet component intact — the address-NAT write primitive shared by
+    source- and destination-NAT.  Callers pass the family-dependent
+    ([off],[len]) of the address slot, so the kernel's [NF_NAT_MANIP_{SRC,DST}]
+    over the right geometry (32-bit IPv4 vs 128-bit IPv6 — netlink_linearize.c
+    [nat_addrlen]) is modelled exactly, with the header length preserved
+    ([splice]'s [len] = the family addr length). *)
+Definition set_nh_field (p : packet) (off len : nat) (v : data) : packet :=
   {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p;
      pkt_sock := pkt_sock p; pkt_eh := pkt_eh p; pkt_lh := pkt_lh p;
-     pkt_nh := splice (pkt_nh p) 12 4 v; pkt_th := pkt_th p;
+     pkt_nh := splice (pkt_nh p) off len v; pkt_th := pkt_th p;
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
      pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
 
-(** Destination-NAT a packet: rewrite its IPv4 destination address (network
-    header bytes 16..19, where [FIp4Daddr] reads) to [v].  This is the data-plane
-    effect a `dnat`/`redirect` performs — the kernel `nft_nat` applies
-    [NF_NAT_MANIP_DST] from [NFTNL_EXPR_NAT_REG_ADDR_MIN]
-    (netlink_linearize.c:1304). *)
-Definition set_daddr (p : packet) (v : data) : packet :=
-  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p;
-     pkt_sock := pkt_sock p; pkt_eh := pkt_eh p; pkt_lh := pkt_lh p;
-     pkt_nh := splice (pkt_nh p) 16 4 v; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
-     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
+(** The (offset, length) of the L3 source / destination address slot for a NAT
+    [family] ("ip" = IPv4: src @12 len 4 / dst @16 len 4, where [FIp4Saddr] /
+    [FIp4Daddr] read; "ip6" = IPv6: src @8 len 16 / dst @24 len 16, where
+    [FIp6Saddr] / [FIp6Daddr] read).  The kernel chooses 32 vs 128 bits by family
+    ([nat_addrlen], netlink_linearize.c:1237). *)
+Definition saddr_slot (family : String.string) : nat * nat :=
+  if String.eqb family nat_fam_ip6 then (8, 16) else (12, 4).
+Definition daddr_slot (family : String.string) : nat * nat :=
+  if String.eqb family nat_fam_ip6 then (24, 16) else (16, 4).
+
+(** Source-NAT a packet: rewrite its source address (the [saddr_slot] for the
+    NAT [family]) to [v].  This is the data-plane effect a `snat`/`masquerade`
+    performs; [set_saddr "ip" p (e_ifaddr (pkt_env p) oifname)] realises
+    `masquerade` = "use the IP of the interface the packet exits". *)
+Definition set_saddr (family : String.string) (p : packet) (v : data) : packet :=
+  let '(off, len) := saddr_slot family in set_nh_field p off len v.
+
+(** Destination-NAT a packet: rewrite its destination address (the [daddr_slot]
+    for the NAT [family]) to [v].  This is the data-plane effect a
+    `dnat`/`redirect` performs — the kernel `nft_nat` applies [NF_NAT_MANIP_DST]
+    from [NFTNL_EXPR_NAT_REG_ADDR_MIN] (netlink_linearize.c:1304). *)
+Definition set_daddr (family : String.string) (p : packet) (v : data) : packet :=
+  let '(off, len) := daddr_slot family in set_nh_field p off len v.
 
 (** ** Dynamic sets: the `dynset` feedback loop (`add`/`update`/`delete @s {key}`).
 
@@ -890,20 +902,28 @@ Definition nat_addr (ns : nat_spec) (p : packet) : data :=
       the kernel's [NF_NAT_MANIP_DST] from [NFTNL_EXPR_NAT_REG_ADDR_MIN].
     - "redir": destination-NAT the IPv4 destination to the INBOUND interface's
       local address (redirect = DNAT to the box itself).
-    Only the address rewrite is modelled; the protocol-PORT range
-    ([nat_pmin]/[nat_pmax]) is a separate obligation.  A non-IPv4 family or an
-    unrecognised kind leaves the packet unchanged. *)
+    The address geometry is FAMILY-DEPENDENT ([nat_family]): "ip" rewrites the
+    32-bit IPv4 slot, "ip6" the 128-bit IPv6 slot (the kernel picks 32 vs 128
+    bits by family — [nat_addrlen], netlink_linearize.c:1237).  masq/redir carry
+    [nat_family] = "" (their family is implicit in the chain); [nat_addrfamily]
+    normalises "" to "ip" so the legacy IPv4 behaviour is preserved while "ip6"
+    is honoured.  Only the address rewrite is modelled; the protocol-PORT range
+    ([nat_pmin]/[nat_pmax]) is a separate obligation.  An unrecognised kind
+    leaves the packet unchanged. *)
+Definition nat_addrfamily (ns : nat_spec) : String.string :=
+  if String.eqb (nat_family ns) nat_fam_ip6 then nat_fam_ip6 else nat_fam_ip4.
 Definition apply_nat (r : rule) (p : packet) : packet :=
   match r_nat r with
   | Some ns =>
+      let fam := nat_addrfamily ns in
       if String.eqb (nat_kind ns) nat_masq_kind
-      then set_saddr p (e_ifaddr (pkt_env p) (field_value FMetaOifname p))
+      then set_saddr fam p (e_ifaddr (pkt_env p) (field_value FMetaOifname p))
       else if String.eqb (nat_kind ns) nat_snat_kind
-      then set_saddr p (nat_addr ns p)
+      then set_saddr fam p (nat_addr ns p)
       else if String.eqb (nat_kind ns) nat_dnat_kind
-      then set_daddr p (nat_addr ns p)
+      then set_daddr fam p (nat_addr ns p)
       else if String.eqb (nat_kind ns) nat_redir_kind
-      then set_daddr p (e_ifaddr (pkt_env p) (field_value FMetaIifname p))
+      then set_daddr fam p (e_ifaddr (pkt_env p) (field_value FMetaIifname p))
       else p
   | None => p
   end.

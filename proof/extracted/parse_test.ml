@@ -389,6 +389,60 @@ let check_dnat_rewrite () =
     (data_eq (Syntax.field_value Syntax.FIp4Saddr p_out) [1;2;3;4]);
   Printf.printf "\n"
 
+(* (G) FAMILY-AWARE NAT: an ip6 dnat/snat rewrites the 128-bit IPv6 address slot
+   (dst @24 len 16 / src @8 len 16, where FIp6Daddr/FIp6Saddr read), NOT the IPv4
+   slot.  The kernel picks 32 vs 128 bits by family (nat_addrlen,
+   netlink_linearize.c:1237).  Before the fix, apply_nat ignored nat_family and
+   spliced a 16-byte literal into the 4-byte IPv4 slot: the IPv6 address was never
+   set and the header was shifted by 12 bytes.  No parser surface for ip6 NAT yet,
+   so this is built at the Semantics level from a hand spec. *)
+let check_ip6_nat () =
+  Printf.printf "=== (G) family-aware ip6 NAT rewrite ===\n";
+  let tgt6 = Stdlib.List.init 16 (fun _ -> 0xAA) in
+  let mk_spec kind =
+    { Syntax.nat_imms = [(1, tgt6)]; nat_field = None; nat_map = None;
+      nat_src = None; nat_kind = kind; nat_family = Syntax.nat_fam_ip6;
+      nat_amin = None; nat_amax = None; nat_pmin = None; nat_pmax = None;
+      nat_flags = 0 } in
+  let mk_rule sp =
+    { Syntax.r_body = []; r_verdict = Verdict.Continue; r_vmap = None;
+      r_nat = Some sp; r_tproxy = None; r_fwd = None; r_queue = None;
+      r_after = [] } in
+  (* a 40-byte IPv6 header: src bytes 8..23, dst bytes 24..39 distinct *)
+  let nh = Stdlib.List.init 40 (fun i -> i) in
+  let env =
+    (Nft_parse.parse_string
+       "table ip6 nat {\n  chain c { type nat hook prerouting priority 0; }\n}\n")
+      .Nft_lower.p_env in
+  let p_in = { (mk_pkt ~env ()) with Packet.pkt_nh = nh } in
+  (* ip6 dnat: the IPv6 destination (bytes 24..39) becomes the target *)
+  let p_d = Semantics.apply_nat (mk_rule (mk_spec Syntax.nat_dnat_kind)) p_in in
+  let d6 = Syntax.field_value Syntax.FIp6Daddr p_d in
+  Printf.printf "    ip6 dnat: ip6 daddr -> %s\n" (show d6);
+  check "ip6 dnat sets the 16-byte IPv6 destination to the target"
+    (data_eq d6 tgt6);
+  check "ip6 dnat preserves the network-header length (no shift/corruption)"
+    (Stdlib.List.length p_d.Packet.pkt_nh = Stdlib.List.length nh);
+  check "ip6 dnat does NOT touch the IPv6 source"
+    (data_eq (Syntax.field_value Syntax.FIp6Saddr p_d)
+             (Syntax.field_value Syntax.FIp6Saddr p_in));
+  (* ip6 snat: the IPv6 source (bytes 8..23) becomes the target *)
+  let p_s = Semantics.apply_nat (mk_rule (mk_spec Syntax.nat_snat_kind)) p_in in
+  check "ip6 snat sets the 16-byte IPv6 source to the target"
+    (data_eq (Syntax.field_value Syntax.FIp6Saddr p_s) tgt6);
+  check "ip6 snat preserves the network-header length"
+    (Stdlib.List.length p_s.Packet.pkt_nh = Stdlib.List.length nh);
+  (* sanity: an ip dnat still rewrites the IPv4 slot (regression for the v4 path) *)
+  let v4spec =
+    { Syntax.nat_imms = [(1, [10;0;0;1])]; nat_field = None; nat_map = None;
+      nat_src = None; nat_kind = Syntax.nat_dnat_kind; nat_family = Syntax.nat_fam_ip4;
+      nat_amin = None; nat_amax = None; nat_pmin = None; nat_pmax = None;
+      nat_flags = 0 } in
+  let p4 = Semantics.apply_nat (mk_rule v4spec) p_in in
+  check "ip (v4) dnat still rewrites the IPv4 destination slot"
+    (data_eq (Syntax.field_value Syntax.FIp4Daddr p4) [10;0;0;1]);
+  Printf.printf "\n"
+
 (* ---------- CLI: parse a file and print compiled bytecode ---------- *)
 
 let cli (path : string) =
@@ -410,6 +464,7 @@ let () =
     check_optiplex_antispoof ();
     check_optiplex_mark ();
     check_dnat_rewrite ();
+    check_ip6_nat ();
     check_difftest_ast ();
     check_live_nft ();
     if !fails = 0 then Printf.printf "ALL PARSER CHECKS PASSED\n"

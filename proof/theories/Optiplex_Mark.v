@@ -226,9 +226,9 @@ Qed.
 
 (* applying its NAT effect source-rewrites to the exit interface's address *)
 Lemma post1_apply_masq : forall p,
-  apply_nat post1 p = set_saddr p (e_ifaddr (pkt_env p) (field_value FMetaOifname p)).
+  apply_nat post1 p = set_saddr "ip" p (e_ifaddr (pkt_env p) (field_value FMetaOifname p)).
 Proof.
-  intro p. unfold apply_nat, post1, filter_postrouting.
+  intro p. unfold apply_nat, nat_addrfamily, post1, filter_postrouting.
   cbn -[set_saddr e_ifaddr field_value pkt_env]. reflexivity.
 Qed.
 
@@ -237,7 +237,7 @@ Qed.
 Theorem masquerade_output : forall p ifaddr,
   field_value FMetaMark p = mark99 ->
   e_ifaddr (pkt_env p) (field_value FMetaOifname p) = ifaddr ->
-  eval_chain_trace filter_postrouting p = (Accept, set_saddr p ifaddr).
+  eval_chain_trace filter_postrouting p = (Accept, set_saddr "ip" p ifaddr).
 Proof.
   intros p ifaddr Hmark Hifa.
   unfold eval_chain_trace. rewrite postrouting_rules_eq. cbn [eval_rules_trace].
@@ -249,11 +249,12 @@ Qed.
    interface's address (for a well-formed IPv4 header and a 4-byte address). *)
 Lemma saddr_after_set : forall p v,
   16 <= List.length (pkt_nh p) -> List.length v = 4 ->
-  field_value FIp4Saddr (set_saddr p v) = v.
+  field_value FIp4Saddr (set_saddr "ip" p v) = v.
 Proof.
   intros p v Hlen Hv.
   unfold field_value; cbn [field_load do_load]; unfold read_payload, set_saddr;
-    cbn [pkt_nh]. unfold slice, splice.
+    change (saddr_slot "ip") with (12, 4); cbn [set_nh_field pkt_nh].
+    unfold slice, splice.
   assert (H12 : List.length (firstn 12 (pkt_nh p)) = 12)
     by (rewrite firstn_length_le; [reflexivity | lia]).
   rewrite skipn_app, H12.

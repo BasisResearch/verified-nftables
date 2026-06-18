@@ -373,6 +373,13 @@ Definition nat_snat_kind  : string := "snat".
 Definition nat_dnat_kind  : string := "dnat".
 Definition nat_redir_kind : string := "redir".
 
+(** The [nat_family] strings, branched on by [Semantics.apply_nat] to pick the
+    address geometry: "ip" = the 32-bit IPv4 slot, "ip6" = the 128-bit IPv6 slot
+    (the kernel chooses 32 vs 128 bits by family — [nat_addrlen],
+    netlink_linearize.c:1237).  Defined here, where [String] is in scope. *)
+Definition nat_fam_ip4 : string := "ip".
+Definition nat_fam_ip6 : string := "ip6".
+
 (** A rule: an ordered body (matches + verdict-neutral statements) then an
     outcome — a static verdict, a verdict-map lookup ([r_vmap]), or a terminal
     redirect ([r_nat] / [r_tproxy]). *)

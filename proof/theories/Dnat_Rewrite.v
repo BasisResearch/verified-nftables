@@ -34,13 +34,13 @@ Lemma dnat_addr_target : forall p, nat_addr dnat_spec p = [10;0;0;1].
 Proof. reflexivity. Qed.
 
 (* The dnat NAT effect destination-rewrites to the target operand. *)
-Lemma dnat_apply : forall p, apply_nat dnat_rule p = set_daddr p [10;0;0;1].
+Lemma dnat_apply : forall p, apply_nat dnat_rule p = set_daddr "ip" p [10;0;0;1].
 Proof. reflexivity. Qed.
 
 (* THE OUTPUT PACKET of the dnat chain: the input with its destination address
    set to the target (= what dnat does). *)
 Theorem dnat_output : forall p,
-  eval_chain_trace dnat_chain p = (Accept, set_daddr p [10;0;0;1]).
+  eval_chain_trace dnat_chain p = (Accept, set_daddr "ip" p [10;0;0;1]).
 Proof.
   intro p. unfold eval_chain_trace, dnat_chain. cbn [c_rules eval_rules_trace].
   reflexivity.
@@ -50,11 +50,12 @@ Qed.
    (for a well-formed IPv4 header). *)
 Lemma daddr_after_set : forall p v,
   20 <= List.length (pkt_nh p) -> List.length v = 4 ->
-  field_value FIp4Daddr (set_daddr p v) = v.
+  field_value FIp4Daddr (set_daddr "ip" p v) = v.
 Proof.
   intros p v Hlen Hv.
   unfold field_value; cbn [field_load do_load]; unfold read_payload, set_daddr;
-    cbn [pkt_nh]. unfold slice, splice.
+    change (daddr_slot "ip") with (16, 4); cbn [set_nh_field pkt_nh].
+    unfold slice, splice.
   assert (H16 : List.length (firstn 16 (pkt_nh p)) = 16)
     by (rewrite firstn_length_le; [reflexivity | lia]).
   rewrite skipn_app, H16.
