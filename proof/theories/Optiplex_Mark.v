@@ -28,7 +28,9 @@ Import ListNotations.
 
 (** ** Wire constants (literal bytes, so [cbn] fully reduces the matches). *)
 Definition mark99    : data := [0; 0; 0; 153].   (* the 0x99 firewall mark *)
-Definition if_home   : data := [104; 111; 109; 101].  (* "home" *)
+(* "home" in a 16-byte IFNAMSIZ zero-padded ifname register (the kernel
+   compares the full 16-byte buffer for an exact name match). *)
+Definition if_home   : data := [104; 111; 109; 101; 0;0;0;0; 0;0;0;0; 0;0;0;0].
 Definition fib_local : data := [0; 0; 0; 2].      (* fib … type local (RTN_LOCAL) *)
 Definition l4_tcp    : data := [6].
 Definition port3389  : data := [13; 61].          (* 0x0d3d — RDP *)

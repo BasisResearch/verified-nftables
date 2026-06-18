@@ -24,8 +24,10 @@ Definition l4_tcp   : data := [6].
 Definition l4_icmp6 : data := [58].
 Definition port (n : nat) : data := [Nat.div n 256; Nat.modulo n 256].
 Definition icmp6_nd_nsol : data := [135].
-Definition if_lo  : data := [108;111].
-Definition if_eth : data := [101;116;104;48].
+(* ifname registers are fixed 16-byte (IFNAMSIZ) zero-padded buffers; the
+   kernel compares the full 16-byte buffer for an exact name match. *)
+Definition if_lo  : data := [108;111; 0;0; 0;0;0;0; 0;0;0;0; 0;0;0;0].  (* "lo" *)
+Definition if_eth : data := [101;116;104;48; 0;0;0;0; 0;0;0;0; 0;0;0;0].  (* "eth0" *)
 
 Definition fw_fuel : nat := 8.
 

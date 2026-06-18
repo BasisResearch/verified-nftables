@@ -52,12 +52,40 @@ let nametoindex (s : string) : int =
 let ascii (s : string) : Bytes.data =
   L.init (S.length s) (fun i -> Char.code (S.get s i))
 
-(* nft renders a trailing-`*` wildcard ifname as a cmp of just the prefix bytes,
-   which the model's prefix-aware MEq matches; drop the star. *)
+(* IFNAMSIZ: the interface-name register is a fixed 16-byte buffer. *)
+let ifnamsiz = 16
+
+let zero_pad (b : Bytes.data) (width : int) : Bytes.data =
+  let n = Stdlib.List.length b in
+  if n >= width then b
+  else b @ L.init (width - n) (fun _ -> 0)
+
+(* nft compiles an interface-name match in two DISTINCT ways (golden
+   any/meta.t.payload):
+     - exact name `iifname "dummy0"`  => full 16-byte zero-padded cmp
+       (`0x64756d6d 0x79300000 0x00000000 0x00000000`, payload:198-199);
+     - trailing-`*` wildcard `iifname "dummy*"` => a SHORT cmp of just the
+       prefix bytes (`0x64756d6d 0x79`, payload:224-225) — the ONLY prefix case.
+   The model's MEq is a prefix compare (data_eqb (firstn (length v) field) v),
+   so a SHORT v gives the wildcard semantics and a 16-byte zero-padded v gives
+   the exact semantics.  Emitting only the unpadded name (the old behaviour)
+   collapsed both into a prefix match, unsoundly matching same-prefix interfaces
+   the kernel rejects (e.g. `iifname br.20` matching "br.200").
+
+   The lexer keeps a backslash literally, so a trailing `\*` is an ESCAPED star
+   (a LITERAL '*' in the name, payload:227-230 `"dummy\*"` => byte 0x2a then
+   padded to 16), distinct from an unescaped trailing `*` wildcard. *)
 let ifname_bytes (s : string) : Bytes.data =
-  let s = if S.length s > 0 && S.get s (S.length s - 1) = '*'
-          then S.sub s 0 (S.length s - 1) else s in
-  ascii s
+  let n = S.length s in
+  if n >= 2 && S.get s (n - 1) = '*' && S.get s (n - 2) = '\\' then
+    (* escaped star: literal '*' at the end, exact name -> pad to 16 *)
+    zero_pad (ascii (S.sub s 0 (n - 2) ^ "*")) ifnamsiz
+  else if n >= 1 && S.get s (n - 1) = '*' then
+    (* trailing unescaped star: wildcard prefix -> short bytes, no pad *)
+    ascii (S.sub s 0 (n - 1))
+  else
+    (* exact name: full 16-byte zero-padded compare *)
+    zero_pad (ascii s) ifnamsiz
 
 (* ---------- symbolic-constant tables ---------- *)
 

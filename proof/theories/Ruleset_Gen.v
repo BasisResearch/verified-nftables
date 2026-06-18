@@ -43,7 +43,7 @@ Definition firewall_inbound : chain :=
      r_verdict := Continue; r_vmap := (Some {| vm_fields := []; vm_keyf := (Some (FCtState, [])); vm_name := "__map1" |});
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
-   {| r_body := [(BMatch (MEq FMetaIifname [108; 111]))];
+   {| r_body := [(BMatch (MEq FMetaIifname [108; 111; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0]))];
      r_verdict := Accept; r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 

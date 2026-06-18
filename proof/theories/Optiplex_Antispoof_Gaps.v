@@ -28,7 +28,7 @@ Open Scope string_scope.
     (daddr . oifname) binding is never checked.  Stated for every such packet. *)
 Theorem unlisted_daddr_unconstrained : forall p,
   pkt_env p = gen_env ->
-  field_value Fobrname p = sbytes "br.20" ->
+  field_value Fobrname p = ifreg "br.20" ->
   read_payload_ok PNetwork 16 4 p = true ->
   set_mem (field_value FIp4Daddr p) (e_set gen_env "vmaddrs") = false ->
   eval_table vm_fuel vmfilter_chains vmfilter_output p = Accept.
@@ -55,10 +55,10 @@ Qed.
     address — yet it is accepted, because .13 is unprotected. *)
 Theorem spoof_to_unlisted_address : forall p,
   pkt_env p = gen_env ->
-  field_value Fobrname p = sbytes "br.20" ->
+  field_value Fobrname p = ifreg "br.20" ->
   read_payload_ok PNetwork 16 4 p = true ->
   field_value FIp4Daddr p = ip4 192 168 51 13 ->        (* not a registered VM *)
-  field_value FMetaOifname p = sbytes "inc-budge" ->     (* a mismatched interface *)
+  field_value FMetaOifname p = ifreg "inc-budge" ->     (* a mismatched interface *)
   eval_table vm_fuel vmfilter_chains vmfilter_output p = Accept.
 Proof.
   intros p Henv Hobr Hok Hdaddr Hoif.
@@ -76,9 +76,9 @@ Qed.
     interface (vb-evil) is not its bound one. *)
 Theorem other_bridge_port_bypasses_binding : forall p,
   pkt_env p = gen_env ->
-  field_value Fobrname p = sbytes "br.3" ->            (* NOT br.20 *)
+  field_value Fobrname p = ifreg "br.3" ->            (* NOT br.20 *)
   field_value FIp4Daddr p = ip4 192 168 51 20 ->        (* budget's PROTECTED address *)
-  field_value FMetaOifname p = sbytes "vb-evil" ->       (* not budget's interface *)
+  field_value FMetaOifname p = ifreg "vb-evil" ->       (* not budget's interface *)
   eval_table vm_fuel vmfilter_chains vmfilter_output p = Accept.
 Proof.
   intros p Henv Hobr Hdaddr Hoif. unfold Fobrname in Hobr.

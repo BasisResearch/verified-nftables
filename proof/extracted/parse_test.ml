@@ -62,7 +62,10 @@ let cts_invalid = [0;0;0;1] and cts_established = [0;0;0;2]
 and cts_related = [0;0;0;4] and cts_new = [0;0;0;8]
 let eth_ip = [8;0] and eth_ip6 = [134;221]
 let l4_tcp = [6] and l4_icmp6 = [58]
-let if_lo = [108;111] and if_eth = [101;116;104;48]
+(* 16-byte (IFNAMSIZ) zero-padded ifname registers, matching the kernel's
+   full-buffer exact compare. *)
+let if_lo  = [108;111; 0;0; 0;0;0;0; 0;0;0;0; 0;0;0;0]          (* "lo" *)
+and if_eth = [101;116;104;48; 0;0;0;0; 0;0;0;0; 0;0;0;0]        (* "eth0" *)
 let icmp6_nd_nsol = [135]
 let port n = [n / 256; n mod 256]
 let ct_state v = (fun (k : Packet.ct_key) -> match k with Packet.CKstate -> v | _ -> [])
@@ -70,6 +73,13 @@ let th_dport p = [0;0] @ port p           (* sport(2) ++ dport(2) *)
 let th_flags fl = L.init 13 (fun _ -> 0) @ [fl]  (* flags byte at transport+13 *)
 let th_icmptype t = [t]                    (* icmp/icmpv6 type at transport offset 0 *)
 let ascii s = L.init (S.length s) (fun i -> Char.code (S.get s i))
+(* An interface-name register is a fixed 16-byte (IFNAMSIZ) zero-padded buffer;
+   the kernel compares the full 16 bytes for an exact name match, so a packet's
+   iif/oif/obr/ibr name register holds the name zero-padded to 16 bytes. *)
+let ifname16 s =
+  let b = ascii s in
+  let n = L.length b in
+  if n >= 16 then b else b @ L.init (16 - n) (fun _ -> 0)
 
 (* ---------- (A) ruleset.nft vs Example_Ruleset.v ---------- *)
 
@@ -264,7 +274,7 @@ let check_optiplex_antispoof () =
   let output = Nft_lower.find_chain parsed ~table:"vmfilter" ~chain:"output" in
   let run ~obrname ~oifname ~daddr =
     Semantics.eval_table 4 chains output
-      (mk_bridge ~env ~obrname:(ascii obrname) ~oifname:(ascii oifname)
+      (mk_bridge ~env ~obrname:(ifname16 obrname) ~oifname:(ifname16 oifname)
          ~daddr) in
   let ip x = [192;168;51;x] in
   let want name v exp =
@@ -307,7 +317,7 @@ let mk_pkt_dport ~env ~dport : Packet.packet =
               match r with Packet.FRtype -> [0;0;0;2] | _ -> [])) ] } in
   { (mk_pkt ~env:env_fib ()) with
     Packet.pkt_meta = (fun k -> match k with
-      | Packet.MKiifname -> ascii "home" | Packet.MKl4proto -> [6] | _ -> []);
+      | Packet.MKiifname -> ifname16 "home" | Packet.MKl4proto -> [6] | _ -> []);
     pkt_fibkey = (fun _ -> [0]);
     pkt_th = [0;0] @ dport }
 
@@ -764,6 +774,69 @@ let check_concat_iv () =
      && Semantics.eval_chain c p_bad = Verdict.Accept);
   Printf.printf "\n"
 
+(* (M) NON-WILDCARD interface-name match is an EXACT 16-byte zero-padded compare,
+   NOT a short prefix.  nft stores the ifname register as the full IFNAMSIZ=16-byte
+   buffer and compares a literal non-wildcard name in full, zero-padded; only a
+   trailing-'*' wildcard emits a SHORT prefix cmp.  Golden tests/py/any/meta.t.payload:
+     meta iifname "dummy0" => cmp eq reg1 0x64756d6d 0x79300000 0x00000000 0x00000000
+                              (16 bytes: "dummy0" + 10 zeros);
+     meta iifname "dummy*" => cmp eq reg1 0x64756d6d 0x79  (5-byte prefix, the only one).
+   The parser previously emitted the bare unpadded name for BOTH, collapsing them
+   into one prefix match -> unsoundly matched same-prefix interfaces the kernel
+   rejects (e.g. `iifname dummy0` also matching "dummy0extra"). *)
+let check_ifname_exact () =
+  Printf.printf "=== (M) non-wildcard ifname is an exact 16-byte compare, not a prefix ===\n";
+  let src =
+    "table ip t {\n\
+    \  chain c {\n\
+    \    type filter hook input priority 0; policy accept;\n\
+    \    iifname \"dummy0\" accept\n\
+    \    iifname \"dummy*\" accept\n\
+    \    iifname \"dummy\\*\" accept\n\
+    \  }\n\
+     }\n" in
+  let parsed = Nft_parse.parse_string src in
+  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_lower.p_env in
+  let body i = (Stdlib.List.nth c.Syntax.c_rules i).Syntax.r_body in
+  let dummy0_16 = ifname16 "dummy0" in   (* "dummy0" + 10 zero bytes, 16 total *)
+  (* exact name -> full 16-byte zero-padded literal (golden payload:198-199) *)
+  check "iifname \"dummy0\" lowers to a 16-byte zero-padded literal"
+    (body 0 = [Syntax.BMatch (Syntax.MEq (Syntax.FMetaIifname, dummy0_16))]);
+  check "the 16-byte literal is exactly \"dummy0\"+10 zeros"
+    (Stdlib.List.length dummy0_16 = 16
+     && dummy0_16 = [0x64;0x75;0x6d;0x6d;0x79;0x30; 0;0;0;0; 0;0;0;0; 0;0]);
+  (* trailing-'*' wildcard -> SHORT 5-byte prefix literal (golden payload:224-225) *)
+  check "iifname \"dummy*\" stays a 5-byte prefix literal (wildcard)"
+    (body 1 = [Syntax.BMatch (Syntax.MEq (Syntax.FMetaIifname, ascii "dummy"))]);
+  (* an ESCAPED trailing star `dummy\*` is a LITERAL '*' in the name (NOT a
+     wildcard): exact, 16-byte zero-padded with 0x2a at byte 5 (golden
+     payload:227-230 `[ cmp eq reg1 0x64756d6d 0x792a0000 ... ]`). *)
+  check "iifname \"dummy\\*\" is a literal '*' -> 16-byte exact (\"dummy*\"+pad)"
+    (body 2 = [Syntax.BMatch (Syntax.MEq (Syntax.FMetaIifname, ifname16 "dummy*"))]);
+  (* end-to-end: a packet on the DISTINCT interface "dummy0extra" (16-byte reg) is
+     REJECTED by the exact rule but the wildcard would match its prefix. *)
+  let mk_iifn nm =
+    { (mk_pkt ~env ()) with
+      Packet.pkt_meta = (fun k -> match k with Packet.MKiifname -> nm | _ -> []) } in
+  let reg_d0e = [0x64;0x75;0x6d;0x6d;0x79;0x30;0x65;0x78;0x74;0x72;0x61; 0;0;0;0;0] in
+  let m_exact = Syntax.MEq (Syntax.FMetaIifname, dummy0_16) in
+  let m_wild  = Syntax.MEq (Syntax.FMetaIifname, ascii "dummy") in
+  check "exact `iifname dummy0` MATCHES the interface it names"
+    (Semantics.eval_matchcond m_exact (mk_iifn dummy0_16) = true);
+  check "exact `iifname dummy0` REJECTS the distinct iface dummy0extra (the fix; kernel drops)"
+    (Semantics.eval_matchcond m_exact (mk_iifn reg_d0e) = false);
+  check "the OLD unpadded literal WOULD wrongly accept dummy0extra (the bug)"
+    (Semantics.eval_matchcond (Syntax.MEq (Syntax.FMetaIifname, ascii "dummy0"))
+       (mk_iifn reg_d0e) = true);
+  check "the `*` wildcard correctly remains a prefix match (matches dummy0extra)"
+    (Semantics.eval_matchcond m_wild (mk_iifn reg_d0e) = true);
+  (* compiled bytecode agrees with the spec on the distinct interface *)
+  let prog = Compile.compile_chain c in
+  check "compiled bytecode also rejects dummy0extra at the exact rule (= policy accept, both rules skip)"
+    (Semantics.run_chain prog c.Syntax.c_policy (mk_iifn [0x7a;0x7a;0x7a; 0;0;0;0;0; 0;0;0;0; 0;0;0;0]) = Verdict.Accept);
+  Printf.printf "\n"
+
 (* ---------- CLI: parse a file and print compiled bytecode ---------- *)
 
 let cli (path : string) =
@@ -792,6 +865,7 @@ let () =
     check_meta_nfproto ();
     check_synproxy ();
     check_concat_iv ();
+    check_ifname_exact ();
     check_difftest_ast ();
     check_live_nft ();
     if !fails = 0 then Printf.printf "ALL PARSER CHECKS PASSED\n"

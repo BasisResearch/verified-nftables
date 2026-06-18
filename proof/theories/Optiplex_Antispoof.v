@@ -32,6 +32,12 @@ Definition ip4 (a b c d : nat) : data := [a; b; c; d].
 Fixpoint sbytes (s : string) : data :=
   match s with EmptyString => [] | String c r => nat_of_ascii c :: sbytes r end.
 
+(* An interface-name register is a fixed 16-byte (IFNAMSIZ) zero-padded buffer;
+   the kernel compares the full 16 bytes for an exact name match.  [ifreg]
+   names the bytes such a register holds for a given interface name. *)
+Definition pad16 (d : data) : data := List.app d (List.repeat 0 (16 - List.length d)).
+Definition ifreg (s : string) : data := pad16 (sbytes s).
+
 (* the field a `meta obrname` match reads (output bridge-port name) *)
 Definition Fobrname : field := FMetaGen MKbri_oifname.
 
@@ -57,7 +63,7 @@ Proof. intros f cs r rest p Hap. cbn. rewrite Hap, Bool.andb_false_r. reflexivit
     set memberships, so it holds for every such address/interface. *)
 Theorem antispoof_general : forall p,
   pkt_env p = gen_env ->
-  field_value Fobrname p = sbytes "br.20" ->
+  field_value Fobrname p = ifreg "br.20" ->
   read_payload_ok PNetwork 16 4 p = true ->     (* the ip daddr load succeeds *)
   concat_set_mem [field_value FIp4Daddr p] (e_set gen_env "vmaddrs") = true ->
   (* the (daddr . oifname) pair is NOT in vmantispoof — stated with the faithful
@@ -91,10 +97,10 @@ Qed.
     in vmantispoof, so the frame is dropped: vikunja cannot impersonate budget. *)
 Theorem vikunja_cannot_spoof_budget : forall p,
   pkt_env p = gen_env ->
-  field_value Fobrname p = sbytes "br.20" ->
+  field_value Fobrname p = ifreg "br.20" ->
   read_payload_ok PNetwork 16 4 p = true ->            (* a well-formed IPv4 header *)
   field_value FIp4Daddr p = ip4 192 168 51 20 ->      (* budget's address *)
-  field_value FMetaOifname p = sbytes "inc-vikun" ->   (* vikunja's interface *)
+  field_value FMetaOifname p = ifreg "inc-vikun" ->   (* vikunja's interface *)
   eval_table vm_fuel vmfilter_chains vmfilter_output p = Drop.
 Proof.
   intros p Henv Hobr Hok Hdaddr Hoif. apply antispoof_general; auto.
@@ -105,10 +111,10 @@ Qed.
 (** A second spoof: gentoo (behind vb-gentoo) trying to take hass's .10. *)
 Theorem gentoo_cannot_spoof_hass : forall p,
   pkt_env p = gen_env ->
-  field_value Fobrname p = sbytes "br.20" ->
+  field_value Fobrname p = ifreg "br.20" ->
   read_payload_ok PNetwork 16 4 p = true ->
   field_value FIp4Daddr p = ip4 192 168 51 10 ->       (* hass's address *)
-  field_value FMetaOifname p = sbytes "vb-gentoo" ->    (* gentoo's interface *)
+  field_value FMetaOifname p = ifreg "vb-gentoo" ->    (* gentoo's interface *)
   eval_table vm_fuel vmfilter_chains vmfilter_output p = Drop.
 Proof.
   intros p Henv Hobr Hok Hdaddr Hoif. apply antispoof_general; auto.
@@ -124,10 +130,10 @@ Qed.
     The rule blocks *only* spoofing, not the legitimate binding. *)
 Theorem budget_legitimate_allowed : forall p,
   pkt_env p = gen_env ->
-  field_value Fobrname p = sbytes "br.20" ->
+  field_value Fobrname p = ifreg "br.20" ->
   read_payload_ok PNetwork 16 4 p = true ->
   field_value FIp4Daddr p = ip4 192 168 51 20 ->
-  field_value FMetaOifname p = sbytes "inc-budge" ->    (* its OWN interface *)
+  field_value FMetaOifname p = ifreg "inc-budge" ->    (* its OWN interface *)
   eval_table vm_fuel vmfilter_chains vmfilter_output p = Accept.
 Proof.
   intros p Henv Hobr Hok Hdaddr Hoif. unfold Fobrname in Hobr.
