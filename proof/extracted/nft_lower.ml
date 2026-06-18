@@ -705,6 +705,18 @@ let addr_nat_spec st kind ?(port=None) (v : Nft_ast.value) : Syntax.nat_spec opt
              nat_flags = 0 }
   | _ -> None   (* unresolvable / non-literal target: stay a bare terminal Accept *)
 
+(* a PORT-ONLY `snat to :<port>` / `dnat to :<port>` NAT spec: NO address operand
+   (nat_imms = [], nat_field/map/src = None), only the L4 proto range.  The kernel
+   sets only NFTNL_EXPR_NAT_REG_PROTO_MIN/MAX (not the addr register), so
+   nft_nat_eval rewrites ONLY the L4 port and leaves the L3 address unchanged
+   (nft_nat.c:114/120 — two independent register guards).  In the model this is a
+   nat_spec with nat_has_addr = false, so apply_nat preserves the address and
+   apply_nat_port rewrites the port. *)
+let portonly_nat_spec kind (port : int) : Syntax.nat_spec =
+  { Syntax.nat_imms = []; nat_field = None; nat_map = None; nat_src = None;
+    nat_kind = kind; nat_family = "ip"; nat_amin = None; nat_amax = None;
+    nat_pmin = Some port; nat_pmax = Some port; nat_flags = 0 }
+
 (* In a multi-L3 family an inet chain sees both IPv4 and IPv6 packets, so nft
    guards every `ip`/`ip6` payload match with `meta nfproto == {2|10}`.  A
    single-L3 family (ip/ip6/arp) sees only one network protocol, so nft emits no
@@ -756,6 +768,8 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
          | Nft_ast.StMasquerade -> nat := Some masq_spec
          | Nft_ast.StSnat (Some v, port) -> nat := addr_nat_spec st "snat" ~port v
          | Nft_ast.StDnat (Some v, port) -> nat := addr_nat_spec st "dnat" ~port v
+         | Nft_ast.StSnat (None, Some port) -> nat := Some (portonly_nat_spec "snat" port)
+         | Nft_ast.StDnat (None, Some port) -> nat := Some (portonly_nat_spec "dnat" port)
          | _ -> ());
         (match lower_stmt st s with Some st' -> push (Syntax.BStmt st') | None -> ()))
     clauses;

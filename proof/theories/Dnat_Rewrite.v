@@ -250,3 +250,58 @@ Proof. reflexivity. Qed.
 Theorem dnat_addronly_th_preserved : forall h p,
   pkt_th (apply_nat h dnat_rule p) = pkt_th p.
 Proof. reflexivity. Qed.
+
+(** * Port-only NAT preserves the L3 address (independent address/proto guards).
+
+    A `dnat to :PORT` (`snat to :PORT`) sets ONLY the proto-min register, never the
+    addr-min register, so the kernel's [nft_nat_eval] takes the
+    `if (priv->sreg_proto_min)` branch but NOT `if (priv->sreg_addr_min)`
+    (nft_nat.c:114 vs :120): it rewrites ONLY the L4 port and leaves the L3
+    destination/source address byte-for-byte UNCHANGED.  In the model such a spec
+    has [nat_has_addr = false] (no register-1 immediate, no field/map/src), so
+    [apply_nat] skips [set_daddr]/[set_saddr] entirely — preserving [pkt_nh] (hence
+    the address and the header length) — and applies only [apply_nat_port].
+
+    Before the address guard was added, [apply_nat] always did
+    [set_daddr "ip" p (nat_addr ns p)] = [set_daddr "ip" p []], which SPLICED AN
+    EMPTY list into the 4-byte daddr slot: it deleted 4 bytes of the IP header and
+    shifted the rest left, corrupting/destroying the destination address. *)
+Definition dnat_portonly_spec : nat_spec :=
+  {| nat_imms := []; nat_field := None; nat_map := None; nat_src := None;
+     nat_kind := "dnat"; nat_family := "ip";
+     nat_amin := None; nat_amax := None;
+     nat_pmin := Some 80; nat_pmax := Some 80; nat_flags := 0 |}.
+Definition dnat_portonly_rule : rule :=
+  {| r_body := []; r_verdict := Continue; r_vmap := None;
+     r_nat := Some dnat_portonly_spec;
+     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+
+(* The port-only spec carries NO address operand (kernel: no addr register). *)
+Lemma dnat_portonly_no_addr : nat_has_addr dnat_portonly_spec = false.
+Proof. reflexivity. Qed.
+
+(* So [apply_nat] is a PURE L4 rewrite: it touches only the dest port, NOT the
+   network header.  Contrast the old (buggy) [set_dport (set_daddr "ip" p [])]. *)
+Theorem dnat_portonly_apply : forall h p,
+  apply_nat h dnat_portonly_rule p = set_dport p (nat_port_bytes 80).
+Proof. reflexivity. Qed.
+
+(* The network header is PRESERVED byte-for-byte (no splice, no truncation): the
+   destination address — and the whole IP header — survives unchanged. *)
+Theorem dnat_portonly_preserves_nh : forall h p,
+  pkt_nh (apply_nat h dnat_portonly_rule p) = pkt_nh p.
+Proof. reflexivity. Qed.
+
+(* Hence `ip daddr` reads back EXACTLY the input destination (the kernel guarantee
+   the buggy model violated by deleting the slot). *)
+Theorem dnat_portonly_preserves_daddr : forall h p,
+  field_value FIp4Daddr (apply_nat h dnat_portonly_rule p) = field_value FIp4Daddr p.
+Proof.
+  intros h p. unfold field_value; cbn [field_load do_load].
+  unfold read_payload, slice. rewrite dnat_portonly_preserves_nh. reflexivity.
+Qed.
+
+(* And it DOES rewrite the L4 destination port (the proto half still fires). *)
+Theorem dnat_portonly_writes_dport : forall h p,
+  pkt_th (apply_nat h dnat_portonly_rule p) = splice (pkt_th p) 2 2 (nat_port_bytes 80).
+Proof. reflexivity. Qed.

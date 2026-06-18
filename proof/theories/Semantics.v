@@ -1207,12 +1207,35 @@ Definition apply_nat_port (is_src : bool) (ns : nat_spec) (p : packet) : packet 
   | None => p
   end.
 
+(** Whether the NAT spec carries an L3 ADDRESS operand — i.e. whether the kernel
+    sets [priv->sreg_addr_min] (NFTNL_EXPR_NAT_REG_ADDR_MIN).  The address rewrite
+    in [nft_nat_eval] is gated EXACTLY on this register being present
+    (`if (priv->sreg_addr_min)`, nft_nat.c:114) and is INDEPENDENT of the proto
+    (port) register (`if (priv->sreg_proto_min)`, nft_nat.c:120).  A PORT-ONLY NAT
+    (`dnat to :80`, `snat to :1024`) sets only the proto register, so the kernel
+    rewrites ONLY the L4 port and leaves the L3 destination/source address
+    byte-for-byte UNCHANGED.  An address operand is present iff [nat_addr] has a
+    source: an explicit value source ([nat_src]), a named-map lookup ([nat_map]),
+    a packet field ([nat_field]), or a register-1 immediate ([nat_imms]). *)
+Definition nat_has_addr (ns : nat_spec) : bool :=
+  match nat_src ns, nat_map ns, nat_field ns with
+  | None, None, None => existsb (fun rv => Nat.eqb (fst rv) 1) (nat_imms ns)
+  | _, _, _ => true
+  end.
+
 (** The data-plane NAT effect of a terminal rule at hook [h].  Only [redir] is
     hook-dependent (see [redir_daddr]); masq/snat/dnat are hook-invariant.  Each
-    kind first performs its L3 address rewrite ([set_saddr]/[set_daddr]) and then,
-    when a port operand is present ([nat_pmin] = Some), the L4 port rewrite
-    ([apply_nat_port]) — the kernel applies both the addr and the proto range in a
-    single [nf_nat_setup_info]. *)
+    kind first performs its L3 address rewrite ([set_saddr]/[set_daddr]) — but ONLY
+    when an address operand is present ([nat_has_addr], the kernel's
+    `if (priv->sreg_addr_min)` guard, nft_nat.c:114); a port-only snat/dnat
+    therefore preserves the L3 address — and then, when a port operand is present
+    ([nat_pmin] = Some), the L4 port rewrite ([apply_nat_port], the independent
+    `if (priv->sreg_proto_min)` guard, nft_nat.c:120).  masquerade always derives
+    its source address from the exit interface and redirect from the inbound
+    interface / loopback, so both always carry an (implicit) address operand and
+    their address rewrite is unconditional, matching [nft_masq]/[nft_redir] which
+    always set up the address.  The kernel applies both the addr and the proto
+    range in a single [nf_nat_setup_info]. *)
 Definition apply_nat (h : hook_id) (r : rule) (p : packet) : packet :=
   match r_nat r with
   | Some ns =>
@@ -1221,9 +1244,11 @@ Definition apply_nat (h : hook_id) (r : rule) (p : packet) : packet :=
       then apply_nat_port true ns
              (set_saddr fam p (e_ifaddr (pkt_env p) (field_value FMetaOifname p)))
       else if String.eqb (nat_kind ns) nat_snat_kind
-      then apply_nat_port true ns (set_saddr fam p (nat_addr ns p))
+      then apply_nat_port true ns
+             (if nat_has_addr ns then set_saddr fam p (nat_addr ns p) else p)
       else if String.eqb (nat_kind ns) nat_dnat_kind
-      then apply_nat_port false ns (set_daddr fam p (nat_addr ns p))
+      then apply_nat_port false ns
+             (if nat_has_addr ns then set_daddr fam p (nat_addr ns p) else p)
       else if String.eqb (nat_kind ns) nat_redir_kind
       then apply_nat_port false ns (set_daddr fam p (redir_daddr h fam p))
       else p

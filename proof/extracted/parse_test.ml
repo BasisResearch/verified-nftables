@@ -431,6 +431,45 @@ let check_dnat_rewrite () =
     (data_eq dport_out [0x1f; 0x90]);
   check "dnat to A:PORT also rewrites ip daddr to the address operand"
     (data_eq (Syntax.field_value Syntax.FIp4Daddr p_out2) [10;0;0;1]);
+  (* (F'') PORT-ONLY `dnat to :PORT`: the kernel sets only the proto register
+     (NFTNL_EXPR_NAT_REG_PROTO_MIN), NOT the addr register, so nft_nat_eval
+     rewrites ONLY the L4 destination port and leaves the L3 destination ADDRESS
+     byte-for-byte unchanged (nft_nat.c:114 vs :120, two independent register
+     guards).  Previously the parser dropped this to a bare Accept; and the
+     Semantics, if it lowered, spliced an EMPTY address slot, deleting 4 bytes of
+     the IP header.  Now it must preserve daddr and rewrite only dport. *)
+  let src_po =
+    "table ip nat {\n\
+    \  chain prerouting {\n\
+    \    type nat hook prerouting priority dstnat; policy accept;\n\
+    \    dnat to :80\n\
+    \  }\n\
+     }\n" in
+  let parsed_po = Nft_parse.parse_string src_po in
+  let env_po = parsed_po.Nft_lower.p_env in
+  let pre_po = Nft_lower.find_chain parsed_po ~table:"nat" ~chain:"prerouting" in
+  let rpo = Stdlib.List.nth pre_po.Syntax.c_rules 0 in
+  let nso = match rpo.Syntax.r_nat with
+    | Some n -> n | None -> failwith "port-only dnat dropped to bare Accept" in
+  check "dnat to :PORT lowers to a real nat_spec (not a bare Accept)"
+    (rpo.Syntax.r_nat <> None);
+  check "dnat to :PORT carries the port into nat_pmin" (nso.Syntax.nat_pmin = Some 80);
+  check "dnat to :PORT has NO address operand (nat_has_addr = false)"
+    (Semantics.nat_has_addr nso = false);
+  let th_po = [0;0; 0;25; 0;0;0;0] in
+  let p_in3 = { (mk_pkt ~env:env_po ()) with Packet.pkt_nh = nh; pkt_th = th_po } in
+  let daddr_in3 = Syntax.field_value Syntax.FIp4Daddr p_in3 in
+  let (_, p_out3) = Semantics.eval_chain_trace Semantics.Hprerouting pre_po p_in3 in
+  let daddr_out3 = Syntax.field_value Syntax.FIp4Daddr p_out3 in
+  let dport_out3 = Packet.read_payload Packet.PTransport 2 2 p_out3 in
+  Printf.printf "    dnat :80: ip daddr  %s -> %s (preserved); th dport -> %s (= 0x0050)\n"
+    (show daddr_in3) (show daddr_out3) (show dport_out3);
+  check "dnat to :PORT PRESERVES ip daddr (no address rewrite, no header truncation)"
+    (data_eq daddr_out3 daddr_in3);
+  check "dnat to :PORT preserves the network-header length (no 4-byte deletion)"
+    (Stdlib.List.length p_out3.Packet.pkt_nh = Stdlib.List.length nh);
+  check "dnat to :PORT rewrites th dport to the big-endian port (80=0x0050)"
+    (data_eq dport_out3 [0x00; 0x50]);
   Printf.printf "\n"
 
 (* (G) FAMILY-AWARE NAT: an ip6 dnat/snat rewrites the 128-bit IPv6 address slot
