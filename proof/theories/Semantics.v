@@ -535,6 +535,21 @@ Definition set_saddr (p : packet) (v : data) : packet :=
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
      pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
 
+(** Destination-NAT a packet: rewrite its IPv4 destination address (network
+    header bytes 16..19, where [FIp4Daddr] reads) to [v].  This is the data-plane
+    effect a `dnat`/`redirect` performs — the kernel `nft_nat` applies
+    [NF_NAT_MANIP_DST] from [NFTNL_EXPR_NAT_REG_ADDR_MIN]
+    (netlink_linearize.c:1304). *)
+Definition set_daddr (p : packet) (v : data) : packet :=
+  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p;
+     pkt_sock := pkt_sock p; pkt_eh := pkt_eh p; pkt_lh := pkt_lh p;
+     pkt_nh := splice (pkt_nh p) 16 4 v; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
+
 (** ** Dynamic sets: the `dynset` feedback loop (`add`/`update`/`delete @s {key}`).
 
     Unlike a meta/ct set (which mutates a packet field), a dynset mutates the
@@ -834,16 +849,62 @@ Definition run_chain_mut_env (prog : program) (policy : verdict) (p : packet) : 
     before the verdict.  [eval_chain_trace_verdict] proves the verdict component is
     identical to the verified [eval_chain_mut], so this only EXPOSES the packet the
     mutation semantics was already threading — it adds no new behaviour. *)
-(** The data-plane effect of a terminal NAT rule on the packet.  A `masquerade`
-    rewrites the IPv4 SOURCE address to the address of the interface the packet
-    exits (`e_ifaddr` keyed by the output-interface name) — the source-NAT the
-    kernel performs.  (snat/dnat/redir address translation is not yet modelled
-    here; those leave the packet unchanged at this layer — see TODO 3.) *)
-Definition apply_masq (r : rule) (p : packet) : packet :=
+(** The target ADDRESS operand of a NAT statement — the value the kernel loads
+    into [NFTNL_EXPR_NAT_REG_ADDR_MIN] (register 1) and applies as the new
+    source/destination address.  This mirrors exactly the register-1 operand the
+    compiler emits ([compile_terminal]) and the loadability discipline
+    ([terminal_loadable]): an explicit value source ([nat_src]), else a named-map
+    lookup ([nat_map]), else a (transformed) packet field ([nat_field]), else the
+    immediate destined for register 1 ([nat_imms]). *)
+Definition nat_addr (ns : nat_spec) (p : packet) : data :=
+  match nat_src ns with
+  | Some vs => eval_vsrc vs p
+  | None =>
+  match nat_map ns with
+  | Some (fields, ts, name) =>
+      map_lookup_data
+        (match fields with
+         | [] => apply_transforms ts []
+         | f0 :: frest =>
+             List.concat (apply_transforms ts (field_value f0 p)
+                          :: map (fun f => field_value f p) frest)
+         end)
+        (e_map (pkt_env p) name)
+  | None =>
+  match nat_field ns with
+  | Some (f, ts) => apply_transforms ts (field_value f p)
+  | None =>
+      (* the immediate loaded into register 1 = NFTNL_EXPR_NAT_REG_ADDR_MIN *)
+      match find (fun rv => Nat.eqb (fst rv) 1) (nat_imms ns) with
+      | Some rv => snd rv
+      | None => []
+      end
+  end end end.
+
+(** The data-plane effect of a terminal NAT rule on the packet, dispatched on
+    [nat_kind]:
+    - "masq": source-NAT the IPv4 source to the EXIT interface's address
+      ([e_ifaddr] keyed by the output-interface name) — masquerade.
+    - "snat": source-NAT the IPv4 source to the target operand ([nat_addr]).
+    - "dnat": destination-NAT the IPv4 destination to the target operand —
+      the kernel's [NF_NAT_MANIP_DST] from [NFTNL_EXPR_NAT_REG_ADDR_MIN].
+    - "redir": destination-NAT the IPv4 destination to the INBOUND interface's
+      local address (redirect = DNAT to the box itself).
+    Only the address rewrite is modelled; the protocol-PORT range
+    ([nat_pmin]/[nat_pmax]) is a separate obligation.  A non-IPv4 family or an
+    unrecognised kind leaves the packet unchanged. *)
+Definition apply_nat (r : rule) (p : packet) : packet :=
   match r_nat r with
-  | Some ns => if String.eqb (nat_kind ns) nat_masq_kind
-               then set_saddr p (e_ifaddr (pkt_env p) (field_value FMetaOifname p))
-               else p
+  | Some ns =>
+      if String.eqb (nat_kind ns) nat_masq_kind
+      then set_saddr p (e_ifaddr (pkt_env p) (field_value FMetaOifname p))
+      else if String.eqb (nat_kind ns) nat_snat_kind
+      then set_saddr p (nat_addr ns p)
+      else if String.eqb (nat_kind ns) nat_dnat_kind
+      then set_daddr p (nat_addr ns p)
+      else if String.eqb (nat_kind ns) nat_redir_kind
+      then set_daddr p (e_ifaddr (pkt_env p) (field_value FMetaIifname p))
+      else p
   | None => p
   end.
 
@@ -853,7 +914,7 @@ Fixpoint eval_rules_trace (rs : list rule) (p : packet) : option verdict * packe
   | r :: rest =>
       if rule_loadable r p && rule_applies r p then
         match outcome r p with
-        | Some v => if terminal v then (Some v, apply_masq r (dsl_writes r p))
+        | Some v => if terminal v then (Some v, apply_nat r (dsl_writes r p))
                     else eval_rules_trace rest (dsl_writes r p)
         | None   => eval_rules_trace rest (dsl_writes r p)
         end

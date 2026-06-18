@@ -153,8 +153,8 @@ Qed.
    source-NAT step [apply_masq] is a no-op on it *)
 Lemma pre2_no_masq : r_nat pre2 = None.
 Proof. reflexivity. Qed.
-Lemma apply_masq_none : forall r p, r_nat r = None -> apply_masq r p = p.
-Proof. intros r p H. unfold apply_masq. rewrite H. reflexivity. Qed.
+Lemma apply_masq_none : forall r p, r_nat r = None -> apply_nat r p = p.
+Proof. intros r p H. unfold apply_nat. rewrite H. reflexivity. Qed.
 
 (** ** What comes out of the prerouting chain.
 
@@ -226,9 +226,9 @@ Qed.
 
 (* applying its NAT effect source-rewrites to the exit interface's address *)
 Lemma post1_apply_masq : forall p,
-  apply_masq post1 p = set_saddr p (e_ifaddr (pkt_env p) (field_value FMetaOifname p)).
+  apply_nat post1 p = set_saddr p (e_ifaddr (pkt_env p) (field_value FMetaOifname p)).
 Proof.
-  intro p. unfold apply_masq, post1, filter_postrouting.
+  intro p. unfold apply_nat, post1, filter_postrouting.
   cbn -[set_saddr e_ifaddr field_value pkt_env]. reflexivity.
 Qed.
 

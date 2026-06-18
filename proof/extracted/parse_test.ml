@@ -357,6 +357,38 @@ let check_optiplex_mark () =
     (Semantics.rule_applies post1 (mk_pkt ~env ()) = false);
   Printf.printf "\n"
 
+(* (F) dnat DESTINATION-NAT: a parsed `dnat to <ip>` rewrites the packet's IPv4
+   destination address (the analogue of masquerade's source rewrite).  Confirms
+   the parser lowers dnat into a nat_spec carrying the target in register 1, and
+   that Semantics.apply_nat performs NF_NAT_MANIP_DST in the trace. *)
+let check_dnat_rewrite () =
+  Printf.printf "=== (F) dnat destination-NAT rewrite ===\n";
+  let src =
+    "table ip nat {\n\
+    \  chain prerouting {\n\
+    \    type nat hook prerouting priority dstnat; policy accept;\n\
+    \    dnat to 10.0.0.1\n\
+    \  }\n\
+     }\n" in
+  let parsed = Nft_parse.parse_string src in
+  let env = parsed.Nft_lower.p_env in
+  let prerouting = Nft_lower.find_chain parsed ~table:"nat" ~chain:"prerouting" in
+  let r0 = Stdlib.List.nth prerouting.Syntax.c_rules 0 in
+  check "dnat lowers to a nat_spec (not a bare Accept)" (r0.Syntax.r_nat <> None);
+  (* a packet whose destination starts 192.168.0.9 (nh bytes 16..19) *)
+  let nh = [0x45;0;0;0; 0;0;0;0; 64;6;0;0; 1;2;3;4; 192;168;0;9] in
+  let p_in = { (mk_pkt ~env ()) with Packet.pkt_nh = nh } in
+  let daddr_in = Syntax.field_value Syntax.FIp4Daddr p_in in
+  let (v, p_out) = Semantics.eval_chain_trace prerouting p_in in
+  let daddr_out = Syntax.field_value Syntax.FIp4Daddr p_out in
+  Printf.printf "    dnat: ip daddr  %s -> %s  (target 10.0.0.1)\n"
+    (show daddr_in) (show daddr_out);
+  check "dnat is a terminal accept" (v = Verdict.Accept);
+  check "dnat rewrites ip daddr to the target" (data_eq daddr_out [10;0;0;1]);
+  check "dnat does NOT touch ip saddr"
+    (data_eq (Syntax.field_value Syntax.FIp4Saddr p_out) [1;2;3;4]);
+  Printf.printf "\n"
+
 (* ---------- CLI: parse a file and print compiled bytecode ---------- *)
 
 let cli (path : string) =
@@ -377,6 +409,7 @@ let () =
     check_ruleset_nft ();
     check_optiplex_antispoof ();
     check_optiplex_mark ();
+    check_dnat_rewrite ();
     check_difftest_ast ();
     check_live_nft ();
     if !fails = 0 then Printf.printf "ALL PARSER CHECKS PASSED\n"

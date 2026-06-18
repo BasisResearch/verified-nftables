@@ -353,6 +353,20 @@ let masq_spec : Syntax.nat_spec =
     nat_kind = "masq"; nat_family = ""; nat_amin = None; nat_amax = None;
     nat_pmin = None; nat_pmax = None; nat_flags = 0 }
 
+(* an `snat to <ip>` / `dnat to <ip>` NAT spec: the target address goes into
+   register 1 (= NFTNL_EXPR_NAT_REG_ADDR_MIN), which the kernel nft_nat applies
+   as NF_NAT_MANIP_SRC / NF_NAT_MANIP_DST.  Only an explicit IPv4 literal target
+   is modelled here; anything else (map/field/port-only) stays a bare terminal
+   Accept (nat = None) as before. *)
+let addr_nat_spec st kind (v : Nft_ast.value) : Syntax.nat_spec option =
+  match (try resolve_var st v with Unsupported _ -> v) with
+  | Nft_ast.Vip4 b ->
+      Some { Syntax.nat_imms = [(1, b)]; nat_field = None; nat_map = None;
+             nat_src = None; nat_kind = kind; nat_family = "ip";
+             nat_amin = None; nat_amax = None; nat_pmin = None; nat_pmax = None;
+             nat_flags = 0 }
+  | _ -> None   (* unresolvable / non-literal target: stay a bare terminal Accept *)
+
 let lower_rule st (clauses : Nft_ast.clause list) : Syntax.rule =
   let body = ref [] in
   let deps = ref [] in
@@ -388,7 +402,11 @@ let lower_rule st (clauses : Nft_ast.clause list) : Syntax.rule =
         push (Syntax.BMatch (Syntax.MLimit (limit_spec r u)))
     | Nft_ast.CStmt s ->
         if stmt_is_terminal_accept s then verdict := Verdict.Accept;
-        (match s with Nft_ast.StMasquerade -> nat := Some masq_spec | _ -> ());
+        (match s with
+         | Nft_ast.StMasquerade -> nat := Some masq_spec
+         | Nft_ast.StSnat (Some v) -> nat := addr_nat_spec st "snat" v
+         | Nft_ast.StDnat (Some v) -> nat := addr_nat_spec st "dnat" v
+         | _ -> ());
         (match lower_stmt st s with Some st' -> push (Syntax.BStmt st') | None -> ()))
     clauses;
   { Syntax.r_body = L.rev !body; r_verdict = !verdict; r_vmap = !vmap;

@@ -361,9 +361,17 @@ Definition body_matches (b : list body_item) : list matchcond :=
     so [Semantics.env_set_upd] can branch on it without importing [String]. *)
 Definition op_delete : string := "delete".
 
-(** The [nat_kind] string denoting source masquerade, branched on by
-    [Semantics.apply_masq] (source-NAT to the exit interface's address). *)
-Definition nat_masq_kind : string := "masq".
+(** The [nat_kind] strings, branched on by [Semantics.apply_nat] to select the
+    data-plane rewrite:
+    - [nat_masq_kind] ("masq") source-NATs to the exit interface's address;
+    - [nat_snat_kind] ("snat") source-NATs to the operand address (reg 1);
+    - [nat_dnat_kind] ("dnat") dest-NATs to the operand address (reg 1);
+    - [nat_redir_kind] ("redir") dest-NATs to the inbound interface's address
+      (redirect = local DNAT). *)
+Definition nat_masq_kind  : string := "masq".
+Definition nat_snat_kind  : string := "snat".
+Definition nat_dnat_kind  : string := "dnat".
+Definition nat_redir_kind : string := "redir".
 
 (** A rule: an ordered body (matches + verdict-neutral statements) then an
     outcome — a static verdict, a verdict-map lookup ([r_vmap]), or a terminal
