@@ -657,6 +657,75 @@ let check_synproxy () =
     (Semantics.run_chain prog pol (mk_tcp 2) = Verdict.Drop);
   Printf.printf "\n"
 
+(* (L) CONCATENATED interval/range set: per-field (cross-product) membership.
+   A concatenated set (NFT_SET_CONCAT) is matched FIELD-BY-FIELD against each
+   field's own [lo,hi] — the set is the cross-product of per-field intervals, NOT
+   one flat lexicographic interval over the concatenation (nf_tables.h
+   NFTA_SET_FIELD_LEN; evaluate.c:1819 field_len[]; netlink_linearize.c:126-129
+   one register slot per field).  Golden 2-D range element
+   tests/py/inet/sets.t.payload.inet:32 `0a000000 . 000a - 0affffff . 0017`.
+   For `ip daddr . tcp dport { 10.0.0.0/8 . 10-23 }` and a packet
+   (daddr 10.0.0.5, dport 100): per-field daddr IS in [10.0.0.0,10.255.255.255]
+   but dport 100 is NOT in [10,23] -> kernel REJECTS; the old flat lexicographic
+   set_mem ACCEPTED (unsound).  This check pins the per-field semantics. *)
+let check_concat_iv () =
+  Printf.printf "=== (L) concatenated range set is per-field, not flat-lexicographic ===\n";
+  let src =
+    "table ip t {\n\
+    \  chain c {\n\
+    \    type filter hook input priority 0; policy accept;\n\
+    \    ip daddr . tcp dport { 10.0.0.0/8 . 10-23 } accept\n\
+    \  }\n\
+     }\n" in
+  let parsed = Nft_parse.parse_string src in
+  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_lower.p_env in
+  let body0 = (Stdlib.List.nth c.Syntax.c_rules 0).Syntax.r_body in
+  (* the match lowers to a 2-field MConcatSet whose stored element is the per-field
+     concatenation lo = 10.0.0.0 ++ dport 10, hi = 10.255.255.255 ++ dport 23.
+     (A `meta l4proto tcp` dependency item may be prepended because `tcp dport`
+     reads the transport header, so we search the body for the concat match.) *)
+  let the_concat =
+    L.find_opt (function
+      | Syntax.BMatch (Syntax.MConcatSet ([Syntax.FIp4Daddr; _], false, _)) -> true
+      | _ -> false) body0 in
+  let set_name = match the_concat with
+    | Some (Syntax.BMatch (Syntax.MConcatSet (_, _, nm))) -> Some nm
+    | _ -> None in
+  check "ip daddr . tcp dport {CIDR . range} lowers to a 2-field MConcatSet"
+    (set_name <> None);
+  let nm = match set_name with Some n -> n | None -> "" in
+  let elems = env.Packet.e_set nm in
+  check "the stored concat element is the per-field cross-product [10.0.0.0..10.255.255.255] . [10..23]"
+    (elems = [ ([10;0;0;0] @ port 10, [10;255;255;255] @ port 23) ]);
+  (* a packet inside daddr's range but OUTSIDE dport's range: kernel rejects *)
+  let mk_pkt2 ~daddr ~dport =
+    { (mk_pkt ~env ~l4proto:l4_tcp ~th:(th_dport dport) ()) with
+      Packet.pkt_nh = (L.init 16 (fun _ -> 0)) @ daddr } in
+  let p_bad  = mk_pkt2 ~daddr:[10;0;0;5] ~dport:100 in   (* dport 100 not in [10,23] *)
+  let p_good = mk_pkt2 ~daddr:[10;0;0;5] ~dport:20  in   (* both fields in range *)
+  let p_dout = mk_pkt2 ~daddr:[11;0;0;5] ~dport:20  in   (* daddr out of range *)
+  let m = match the_concat with
+    | Some (Syntax.BMatch mc) -> mc | _ -> failwith "no concat match" in
+  check "REJECTS daddr in-range but dport OUT of range (kernel drops; old flat model wrongly accepted)"
+    (Semantics.eval_matchcond m p_bad = false);
+  check "ACCEPTS only when BOTH fields are in their own range"
+    (Semantics.eval_matchcond m p_good = true);
+  check "REJECTS daddr out of range (even with dport in range)"
+    (Semantics.eval_matchcond m p_dout = false);
+  (* the OLD flat-lexicographic set_mem wrongly accepted p_bad: demonstrate the
+     divergence directly on the stored element. *)
+  check "flat set_mem over the concatenation WOULD accept the bad packet (the bug)"
+    (Bytes.set_mem ([10;0;0;5] @ port 100) elems = true);
+  check "per-field concat_set_mem REJECTS it (the fix)"
+    (Bytes.concat_set_mem [ [10;0;0;5]; port 100 ] elems = false);
+  (* the compiled bytecode agrees with the spec (compile_chain_correct) *)
+  let prog = Compile.compile_chain c in
+  check "compiled bytecode REJECTS the bad packet too (run_chain = policy, rule skipped)"
+    (Semantics.run_chain prog c.Syntax.c_policy p_bad = Verdict.Accept
+     && Semantics.eval_chain c p_bad = Verdict.Accept);
+  Printf.printf "\n"
+
 (* ---------- CLI: parse a file and print compiled bytecode ---------- *)
 
 let cli (path : string) =
@@ -683,6 +752,7 @@ let () =
     check_ct_state ();
     check_tcp_flags ();
     check_synproxy ();
+    check_concat_iv ();
     check_difftest_ast ();
     check_live_nft ();
     if !fails = 0 then Printf.printf "ALL PARSER CHECKS PASSED\n"

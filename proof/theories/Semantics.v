@@ -101,10 +101,14 @@ Definition eval_matchcond_body (m : matchcond) (p : packet) : bool :=
   | MConcatSet fields neg name =>
       (* membership of the concatenated key in the *named* set, whose contents are
          read from the runtime environment [pkt_env p], not inlined in the rule.
-         NOTE: the kernel pads each concatenated field to its 4-byte register
-         slot; this model omits that inter-field padding (faithful for
-         4-byte-aligned fields). *)
-      xorb neg (set_mem (List.concat (map (fun f => field_value f p) fields))
+         A concatenated set is NFT_SET_CONCAT: the kernel matches EACH FIELD
+         against its OWN [lo,hi] independently (the set is the cross-product of
+         the per-field intervals, NOT one flat lexicographic interval over the
+         concatenation).  So we pass the per-field value list to
+         [concat_set_mem], which splits each stored element's bound by the
+         per-field widths and tests every field separately.  For a single field
+         this coincides with the old flat [set_mem] ([concat_set_mem_single]). *)
+      xorb neg (concat_set_mem (map (fun f => field_value f p) fields)
                          (e_set (pkt_env p) name))
   | MTransform f ts op v =>
       eval_cmp op (apply_transforms ts (field_value f p)) v
@@ -118,9 +122,10 @@ Definition eval_matchcond_body (m : matchcond) (p : packet) : bool :=
   | MConnlimit spec => Nat.ltb 0 (e_connlimit (pkt_env p) spec)
   | MConcatSetT elems neg name =>
       (* like [MConcatSet] but each element is transformed before concatenation;
-         contents read from the named set in [pkt_env p] *)
-      xorb neg (set_mem
-        (List.concat (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) elems))
+         contents read from the named set in [pkt_env p].  Per-field membership
+         (cross-product of per-field intervals), as for [MConcatSet]. *)
+      xorb neg (concat_set_mem
+        (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) elems)
         (e_set (pkt_env p) name))
   end.
 
@@ -575,8 +580,11 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | IJhash dst src l s m o :: rest =>
       run_rule (set_reg rf dst (data_jhash l s m o (rf src))) rest p
   | ILookup srcs name neg :: rest =>
-      (* set membership: contents read from the named set in [pkt_env p] *)
-      if xorb neg (set_mem (List.concat (map rf srcs)) (e_set (pkt_env p) name))
+      (* set membership: contents read from the named set in [pkt_env p].  Each
+         source register holds one concatenated field's value, so [map rf srcs]
+         is the per-field value list; [concat_set_mem] tests each field against
+         its own per-field interval (NFT_SET_CONCAT cross-product semantics). *)
+      if xorb neg (concat_set_mem (map rf srcs) (e_set (pkt_env p) name))
       then run_rule rf rest p else None
   | IVmap srcs name :: rest =>
       (* a verdict map: a hit terminates with that verdict; a miss falls through
@@ -831,7 +839,7 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
   | IByteorder dst src h sz len :: rest => run_rule_writes (set_reg rf dst (data_byteorder h sz len (rf src))) rest p
   | IJhash dst src l s m o :: rest => run_rule_writes (set_reg rf dst (data_jhash l s m o (rf src))) rest p
   | ILookup srcs name neg :: rest =>
-      if xorb neg (set_mem (List.concat (map rf srcs)) (e_set (pkt_env p) name))
+      if xorb neg (concat_set_mem (map rf srcs) (e_set (pkt_env p) name))
       then run_rule_writes rf rest p else p
   | IVmap srcs name :: rest =>
       match assoc_verdict (List.concat (map rf srcs)) (e_vmap (pkt_env p) name) with

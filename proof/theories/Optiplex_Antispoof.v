@@ -59,8 +59,11 @@ Theorem antispoof_general : forall p,
   pkt_env p = gen_env ->
   field_value Fobrname p = sbytes "br.20" ->
   read_payload_ok PNetwork 16 4 p = true ->     (* the ip daddr load succeeds *)
-  set_mem (field_value FIp4Daddr p) (e_set gen_env "vmaddrs") = true ->
-  set_mem (field_value FIp4Daddr p ++ field_value FMetaOifname p)%list
+  concat_set_mem [field_value FIp4Daddr p] (e_set gen_env "vmaddrs") = true ->
+  (* the (daddr . oifname) pair is NOT in vmantispoof — stated with the faithful
+     per-field (cross-product) membership the kernel actually uses, NOT the old
+     flat lexicographic [set_mem] over the concatenation. *)
+  concat_set_mem [field_value FIp4Daddr p; field_value FMetaOifname p]
           (e_set gen_env "vmantispoof") = false ->
   eval_table vm_fuel vmfilter_chains vmfilter_output p = Drop.
 Proof.

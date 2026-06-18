@@ -6,7 +6,7 @@
     (we never need the 0..255 bound for the equivalence proofs; only equality
     of byte strings matters). *)
 
-From Stdlib Require Import List PeanoNat Bool NArith.
+From Stdlib Require Import List PeanoNat Bool NArith Lia.
 Import ListNotations.
 
 (** A byte is modelled as a [nat]; only equality of byte strings matters for the
@@ -151,6 +151,77 @@ Definition data_in_iv (x : data) (iv : data * data) : bool :=
   andb (data_le (fst iv) x) (data_le x (snd iv)).
 Definition set_mem (x : data) (s : list (data * data)) : bool :=
   existsb (data_in_iv x) s.
+
+(** ** Per-field (cross-product) membership for CONCATENATED sets.
+
+    A concatenated set (NFT_SET_CONCAT) is NOT one flat lexicographic interval
+    over the concatenated key: the kernel is told each field's length
+    (NFTA_SET_FIELD_LEN, nf_tables.h) and the pipapo backend matches EACH FIELD
+    against its OWN [lo,hi] independently — the set is the CROSS-PRODUCT of the
+    per-field intervals.  So for `ip daddr . tcp dport { 10.0.0.0/8 . 10-23 }`
+    the element is {daddr in [10.0.0.0,10.255.255.255]} x {dport in [10,23]},
+    and a packet matches iff BOTH hold (a flat lexicographic test over the
+    concatenation is an unsound over-approximation).
+
+    The stored element bound [lo] (resp. [hi]) is the per-field concatenation of
+    the per-field lower (resp. upper) bounds, laid out with the SAME per-field
+    widths as the packet's per-field values [vals].  We split [lo]/[hi] by those
+    widths and test each field's slice independently. *)
+
+(** Split [d] into successive chunks of the given byte [widths].  Every chunk
+    but the LAST takes exactly its width; the final field takes ALL remaining
+    bytes.  Giving the last field the remainder means that for a SINGLE field the
+    chunk is the whole bound [d] (no truncation), so the per-field test on one
+    field coincides definitionally with the flat [data_in_iv] — single-field
+    interval/point sets are byte-for-byte unchanged.  For a well-formed
+    multi-field bound (the per-field concatenation) the remainder of the last
+    split is exactly that last field's bytes, so this matches the kernel. *)
+Fixpoint split_by (widths : list nat) (d : data) : list data :=
+  match widths with
+  | [] => []
+  | [_] => [d]
+  | w :: ws => firstn w d :: split_by ws (skipn w d)
+  end.
+
+(** One field's interval test: [lo_i <= val_i <= hi_i] in big-endian order. *)
+Definition field_in_iv (val : data) (lohi : data * data) : bool :=
+  andb (data_le (fst lohi) val) (data_le val (snd lohi)).
+
+(** A list of per-field values matches one concatenated element [iv=(lo,hi)] iff
+    every field's value lies in its own per-field interval.  [lo] and [hi] are
+    split by the per-field widths (= the lengths of [vals]). *)
+Definition concat_in_iv (vals : list data) (iv : data * data) : bool :=
+  let widths := map (@length byte) vals in
+  let los := split_by widths (fst iv) in
+  let his := split_by widths (snd iv) in
+  forallb (fun t => field_in_iv (fst t) (snd t))
+          (combine vals (combine los his)).
+
+(** Membership of a per-field-decomposed key in a concatenated set: some element
+    whose per-field intervals all contain the corresponding field value. *)
+Definition concat_set_mem (vals : list data) (s : list (data * data)) : bool :=
+  existsb (concat_in_iv vals) s.
+
+(** ** Regression: for a SINGLE field, per-field membership coincides DEFINITIONALLY
+    with the old flat [set_mem] — the last (here only) field takes the whole bound,
+    so no truncation happens and [concat_in_iv [v] (lo,hi) = data_in_iv v (lo,hi)].
+    This guarantees single-field interval/point sets are byte-for-byte unchanged
+    (and is what makes the compiled single-register [ILookup] still match the DSL
+    [MSetT]/single-field [MConcatSet]). *)
+Lemma concat_in_iv_single : forall (v lo hi : data),
+  concat_in_iv [v] (lo, hi) = data_in_iv v (lo, hi).
+Proof.
+  intros v lo hi. unfold concat_in_iv, data_in_iv, field_in_iv.
+  cbn [map split_by combine forallb fst snd]. apply Bool.andb_true_r.
+Qed.
+
+Lemma concat_set_mem_single : forall (v : data) (s : list (data * data)),
+  concat_set_mem [v] s = set_mem v s.
+Proof.
+  intros v s. unfold concat_set_mem, set_mem.
+  induction s as [| [lo hi] s' IH]; cbn [existsb]; [reflexivity|].
+  rewrite concat_in_iv_single, IH. reflexivity.
+Qed.
 
 Lemma data_eqb_sym : forall a b, data_eqb a b = data_eqb b a.
 Proof.

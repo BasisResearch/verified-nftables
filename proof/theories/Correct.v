@@ -343,7 +343,7 @@ Proof.
       rewrite map_write_fields by apply alloc_regs_nodup.
       rewrite map_fst_field, alloc_regs_fst.
       destruct (xorb neg
-                 (set_mem (concat (map (fun f => field_value f p) fields))
+                 (concat_set_mem (map (fun f => field_value f p) fields)
                            (e_set (pkt_env p) nm)));
         cbn [andb]; [apply IH; exact Hc | reflexivity].
     + (* MTransform *) destruct (field_loadable f p) eqn:Hf; cbn [andb];
@@ -361,7 +361,8 @@ Proof.
       edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
                   (ILookup [1] nm neg :: (flat_map compile_match ms ++ tail)) p)
         as [rf' [H1 H2]].
-      rewrite H2. cbn [run_rule concat map]. rewrite app_nil_r, H1, set_reg_same.
+      rewrite H2. cbn [run_rule map]. rewrite H1, set_reg_same.
+      rewrite concat_set_mem_single.
       destruct (xorb neg (set_mem (apply_transforms ts (field_value f p))
                                    (e_set (pkt_env p) nm)));
         cbn [andb]; [apply IH; exact Hc | reflexivity].
@@ -400,8 +401,8 @@ Proof.
                   (ILookup (map snd (alloc_regs 0 (map fst celems))) nm neg
                    :: (flat_map compile_match ms ++ tail)) p Hf) as [rf' [Hrb [_ Hrun]]].
       rewrite Hrun. cbn [run_rule]. rewrite Hrb.
-      destruct (xorb neg (set_mem
-                 (concat (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) celems))
+      destruct (xorb neg (concat_set_mem
+                 (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) celems)
                  (e_set (pkt_env p) nm)));
         cbn [andb]; [apply IH; exact Hc | reflexivity].
 Qed.
@@ -978,7 +979,7 @@ Proof.
     rewrite run_load_fields_writes by (rewrite forallb_alloc_regs; exact Hf). cbn [run_rule_writes].
     rewrite map_write_fields by apply alloc_regs_nodup.
     rewrite map_fst_field, alloc_regs_fst.
-    destruct (xorb neg (set_mem (concat (map (fun f => field_value f p) fields))
+    destruct (xorb neg (concat_set_mem (map (fun f => field_value f p) fields)
                                  (e_set (pkt_env p) nm)));
       [apply Hc | reflexivity].
   - (* MTransform *) destruct (field_loadable f p) eqn:Hf; cbn [andb];
@@ -993,7 +994,8 @@ Proof.
     rewrite compile_load_writes by exact Hf. rewrite <- !app_assoc. cbn [app].
     edestruct (run_transforms_prefix_writes ts (set_reg rf 1 (field_value f p))
                 (ILookup [1] nm neg :: X) p) as [rf' [H1 [_ H2]]].
-    rewrite H2. cbn [run_rule_writes concat map]. rewrite app_nil_r, H1, set_reg_same.
+    rewrite H2. cbn [run_rule_writes map]. rewrite H1, set_reg_same.
+    rewrite concat_set_mem_single.
     destruct (xorb neg (set_mem (apply_transforms ts (field_value f p)) (e_set (pkt_env p) nm)));
       [apply Hc | reflexivity].
   - (* MRangeT *) destruct (field_loadable f p) eqn:Hf; cbn [andb];
@@ -1022,8 +1024,8 @@ Proof.
                 (ILookup (map snd (alloc_regs 0 (map fst celems))) nm neg :: X) p Hf)
       as [rf' [Hrb [_ Hrun]]].
     rewrite Hrun. cbn [run_rule_writes]. rewrite Hrb.
-    destruct (xorb neg (set_mem
-               (concat (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) celems))
+    destruct (xorb neg (concat_set_mem
+               (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) celems)
                (e_set (pkt_env p) nm)));
       [apply Hc | reflexivity].
 Qed.

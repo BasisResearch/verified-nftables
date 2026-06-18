@@ -294,7 +294,21 @@ let interval_of_decl_elem st (types : string list) (v : Nft_ast.value)
        | Nft_ast.Vprefix _ when t = "ipv4_addr" -> interval_of_value st KIp4 v'
        | _ -> let b = bytes_of_typeatom st t v' in (b, b))
   | _, Nft_ast.Vconcat vs when L.length vs = L.length types ->
-      let b = L.concat (L.map2 (bytes_of_typeatom st) types vs) in (b, b)
+      (* CONCATENATED element (NFT_SET_CONCAT): the kernel ranges EACH field
+         independently, so an element is the per-field cross-product of intervals.
+         We emit lo = concat of per-field lows, hi = concat of per-field highs;
+         a per-field range/CIDR therefore becomes faithfully expressible (it used
+         to be refused / silently flattened).  See [concat_set_mem] in Bytes.v. *)
+      let iv_of_typeatom t v =
+        match resolve_var st v with
+        | Nft_ast.Vrange (a, b) -> (bytes_of_typeatom st t a, bytes_of_typeatom st t b)
+        | Nft_ast.Vprefix (Nft_ast.Vip4 _, _) when t = "ipv4_addr" ->
+            interval_of_value st KIp4 v
+        | Nft_ast.Vprefix _ ->
+            raise (Unsupported "CIDR/prefix in concatenated set element for non-ipv4 field")
+        | v' -> let b = bytes_of_typeatom st t v' in (b, b) in
+      let ivs = L.map2 iv_of_typeatom types vs in
+      (L.concat (L.map fst ivs), L.concat (L.map snd ivs))
   | _ -> raise (Unsupported "set element arity does not match declared type")
 
 (* ---------- match lowering ---------- *)
@@ -310,9 +324,13 @@ let intern_anon_set st (k : kind) (elems : Nft_ast.value list) : string =
    element is a Vconcat matched against [kinds] *)
 let intern_anon_concat st (kinds : kind list) (elems : Nft_ast.value list) : string =
   let name = fresh st "__set" in
+  (* per-field cross-product element (NFT_SET_CONCAT): lo = concat of per-field
+     lows, hi = concat of per-field highs.  A per-field range/CIDR is now
+     faithfully expressible (was previously refused). *)
   let enc1 v = match resolve_var st v with
     | Nft_ast.Vconcat vs when L.length vs = L.length kinds ->
-        let b = L.concat (L.map2 enc_atom kinds vs) in (b, b)
+        let ivs = L.map2 (fun k v -> interval_of_value st k v) kinds vs in
+        (L.concat (L.map fst ivs), L.concat (L.map snd ivs))
     | _ -> raise (Unsupported "concatenated set element arity mismatch") in
   st.sets <- (name, L.map enc1 elems) :: st.sets;
   name

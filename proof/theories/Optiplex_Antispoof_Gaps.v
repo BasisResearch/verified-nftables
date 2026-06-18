@@ -40,7 +40,8 @@ Proof.
   2:{ unfold rule_applies, rule_applies_walk, eval_matchcond, match_loadable, eval_matchcond_body,
         fields_loadable, field_loadable, load_ok.
       cbn -[field_value pkt_env read_payload_ok].
-      rewrite ?Hok, Hobr, ?app_nil_r, Henv, Hnotin. vm_compute. reflexivity. }
+      rewrite ?Hok, Hobr, ?app_nil_r, Henv, ?concat_set_mem_single, Hnotin.
+      vm_compute. reflexivity. }
   (* the hass rule does not fire either (its guard is obrname br.1, not br.20) *)
   erewrite erj_skip.
   2:{ unfold rule_applies, rule_applies_walk. cbn -[field_value pkt_env]. rewrite Hobr.
