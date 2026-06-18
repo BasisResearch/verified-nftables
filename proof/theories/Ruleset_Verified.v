@@ -127,18 +127,24 @@ Theorem smtp_dropped : forall p,
   eval_table fw_fuel firewall_chains firewall_inbound p = Drop.
 Proof. intros p Hpe Hct Hiif Hpr Hl4 Hdp Hok. eval_fw Hpe. Qed.
 
-(* IPv6 neighbour discovery is accepted via the jump into inbound_ipv6. *)
+(* IPv6 neighbour discovery is accepted via the jump into inbound_ipv6.
+   In the inet table the `icmpv6 type {...}` rule carries the implicit
+   `meta nfproto == 10` (NFPROTO_IPV6) network guard that real nft inserts before
+   every icmpv6 match (icmpv6 is an IPv6-only L4 protocol), so a genuine IPv6 ND
+   packet (nfproto = 10) is required for the match to fire. *)
+Definition nfproto_ip6 : data := [10].
 Theorem ipv6_nd_accepted : forall p,
   pkt_env p = gen_env ->
   field_value FCtState p = cts_new ->
   field_value FMetaIifname p = if_eth ->
   field_value FMetaProtocol p = eth_ip6 ->
+  field_value FMetaNfproto p = nfproto_ip6 ->
   field_value FMetaL4proto p = l4_icmp6 ->
   field_value FIcmpType p = icmp6_nd_nsol ->
   read_payload_ok PTransport 2 2 p = true ->
   read_payload_ok PTransport 0 1 p = true ->
   eval_table fw_fuel firewall_chains firewall_inbound p = Accept.
-Proof. intros p Hpe Hct Hiif Hpr Hl4 Hty Hok Hok2. eval_fw Hpe. Qed.
+Proof. intros p Hpe Hct Hiif Hpr Hnfp Hl4 Hty Hok Hok2. eval_fw Hpe. Qed.
 
 (* The forward hook drops everything (no rules, policy drop). *)
 Theorem forward_drops_all : forall p,

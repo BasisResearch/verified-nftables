@@ -39,11 +39,12 @@ let verdict_str = function
 (* ---------- concrete packet construction (mirrors semtest.ml) ---------- *)
 
 let dummy0 _ = []
-let mk_pkt ~env ?(ct = dummy0) ?(protocol = []) ?(l4proto = []) ?(iifname = [])
-           ?(th = []) () : Packet.packet =
+let mk_pkt ~env ?(ct = dummy0) ?(protocol = []) ?(l4proto = []) ?(nfproto = [])
+           ?(iifname = []) ?(th = []) () : Packet.packet =
   { Packet.pkt_env = env;
     pkt_meta = (fun k -> match k with
       | Packet.MKprotocol -> protocol | Packet.MKl4proto -> l4proto
+      | Packet.MKnfproto -> nfproto
       | Packet.MKiifname -> iifname | _ -> []);
     pkt_ct = ct; pkt_sock = dummy0;
     pkt_eh = (fun _ _ _ _ _ -> []);
@@ -113,9 +114,11 @@ let check_ruleset_nft () =
   want "ipv6_closed_port_dropped" inbound
     (mk_pkt ~env ~ct:(ct_state cts_new) ~iifname:if_eth ~protocol:eth_ip6
        ~l4proto:l4_tcp ~th:(th_dport 25) ()) Verdict.Drop;
+  (* a genuine IPv6 packet has nfproto = NFPROTO_IPV6 = 10; the inet icmpv6 rule
+     now carries the implicit `meta nfproto == 10` guard (icmpv6 is IPv6-only). *)
   want "ipv6_nd_accepted" inbound
     (mk_pkt ~env ~ct:(ct_state cts_new) ~iifname:if_eth ~protocol:eth_ip6
-       ~l4proto:l4_icmp6 ~th:(th_icmptype 135) ()) Verdict.Accept;
+       ~nfproto:[10] ~l4proto:l4_icmp6 ~th:(th_icmptype 135) ()) Verdict.Accept;
   ignore icmp6_nd_nsol;
   want "forward_drops_all" forward (mk_pkt ~env ()) Verdict.Drop;
   (* REGRESSION (NFT_BREAK soundness fix): a packet with NO usable transport header
@@ -820,6 +823,93 @@ let check_inet_nfproto_dep () =
     (Semantics.eval_chain unguarded p_v6 = Verdict.Accept);
   Printf.printf "\n"
 
+(* ---------- (L'') implicit `meta nfproto` guard before inet icmp/icmpv6 -------
+   icmp is an IPv4-only L4 protocol and icmpv6 an IPv6-only one, so in a multi-L3
+   family (inet) nft pins BOTH the network protocol AND the transport protocol:
+   `[ meta load nfproto ][ cmp 0x02 ] [ meta load l4proto ][ cmp 0x01 ]` before an
+   `icmp` match (0x0a / 0x3a for icmpv6) — golden inet/icmp.t.payload:
+   `# icmp type echo-request` and `# icmpv6 type echo-request`.  tcp/udp are valid
+   over both families and get ONLY the l4proto guard, so this is the icmp special
+   case (CONTRAST inet/tcp.t.payload `# tcp dport 22` -> l4proto only, no nfproto).
+   A SINGLE-L3 family (ip/ip6) emits NO nfproto guard (golden ip/icmp.t.payload.ip:
+   `# icmp type echo-request accept` -> l4proto only).  Before the fix the lowering
+   emitted only the l4proto guard for inet icmp, so the model wrongly matched an
+   IPv6 packet whose l4proto==1 and transport byte 0 == 8. *)
+let check_inet_icmp_nfproto_dep () =
+  Printf.printf "=== (L'') implicit meta nfproto guard before inet icmp/icmpv6 ===\n";
+  let src fam sel =
+    Printf.sprintf
+      "table %s t {\n\
+      \  chain c {\n\
+      \    type filter hook input priority 0; policy drop;\n\
+      \    %s type echo-request accept\n\
+      \  }\n\
+       }\n" fam sel in
+  let body fam sel =
+    let p = Nft_parse.parse_string (src fam sel) in
+    let c = Nft_lower.find_chain p ~table:"t" ~chain:"c" in
+    (Stdlib.List.nth c.Syntax.c_rules 0).Syntax.r_body in
+  (* inet icmp: nfproto==2 THEN l4proto==1 THEN icmp.type==8 (golden byte order) *)
+  check "inet icmp type is guarded by FMetaNfproto [2] THEN FMetaL4proto [1]"
+    (match body "inet" "icmp" with
+     | Syntax.BMatch (Syntax.MEq (Syntax.FMetaNfproto, [2]))
+       :: Syntax.BMatch (Syntax.MEq (Syntax.FMetaL4proto, [1]))
+       :: Syntax.BMatch (Syntax.MEq (Syntax.FIcmpType, [8])) :: _ -> true
+     | _ -> false);
+  (* inet icmpv6: nfproto==10 THEN l4proto==58 THEN icmpv6.type==128 *)
+  check "inet icmpv6 type is guarded by FMetaNfproto [10] THEN FMetaL4proto [58]"
+    (match body "inet" "icmpv6" with
+     | Syntax.BMatch (Syntax.MEq (Syntax.FMetaNfproto, [10]))
+       :: Syntax.BMatch (Syntax.MEq (Syntax.FMetaL4proto, [58]))
+       :: Syntax.BMatch (Syntax.MEq (Syntax.FIcmpType, [128])) :: _ -> true
+     | _ -> false);
+  (* the OLD lowering emitted ONLY the l4proto guard (no nfproto) — regression *)
+  check "inet icmp is NOT just [l4proto==1 ; icmp.type==8] (the dropped-guard bug)"
+    (body "inet" "icmp" <>
+      [ Syntax.BMatch (Syntax.MEq (Syntax.FMetaL4proto, [1]));
+        Syntax.BMatch (Syntax.MEq (Syntax.FIcmpType, [8])) ]);
+  (* single-L3 family (ip): nft emits no nfproto guard, just l4proto + the match *)
+  check "ip-table icmp has NO nfproto guard (single-L3 family), l4proto only"
+    (body "ip" "icmp" =
+      [ Syntax.BMatch (Syntax.MEq (Syntax.FMetaL4proto, [1]));
+        Syntax.BMatch (Syntax.MEq (Syntax.FIcmpType, [8])) ]);
+  (* ---- behavioural divergence the guard fixes ---- *)
+  let env =
+    (Nft_parse.parse_string
+       "table inet t {\n  chain c {\n    type filter hook input priority 0; policy accept;\n  }\n}\n")
+      .Nft_lower.p_env in
+  (* an IPv6 packet whose kernel-computed l4proto is 1 (next-header 1) and whose
+     transport byte 0 is 8: the model's UNGUARDED body wrongly matched it. *)
+  let mk_with nfp l4p th =
+    { (mk_pkt ~env ()) with
+      Packet.pkt_th = th;
+      pkt_meta = (fun k -> match k with
+        | Packet.MKnfproto -> nfp | Packet.MKl4proto -> l4p | _ -> []) } in
+  let p_v4 = mk_with [2]  [1] [8] in   (* genuine IPv4 icmp echo-request *)
+  let p_v6 = mk_with [10] [1] [8] in   (* IPv6 packet, l4proto 1 + th byte 8 *)
+  let guarded : Syntax.chain =
+    { Syntax.c_policy = Verdict.Drop;
+      c_rules = [ { Syntax.r_body =
+                      [ Syntax.BMatch (Syntax.MEq (Syntax.FMetaNfproto, [2]));
+                        Syntax.BMatch (Syntax.MEq (Syntax.FMetaL4proto, [1]));
+                        Syntax.BMatch (Syntax.MEq (Syntax.FIcmpType, [8])) ];
+                    r_verdict = Verdict.Accept; r_vmap = None; r_nat = None;
+                    r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } ] } in
+  let unguarded : Syntax.chain =     (* the OLD, buggy lowering: l4proto only *)
+    { Syntax.c_policy = Verdict.Drop;
+      c_rules = [ { Syntax.r_body =
+                      [ Syntax.BMatch (Syntax.MEq (Syntax.FMetaL4proto, [1]));
+                        Syntax.BMatch (Syntax.MEq (Syntax.FIcmpType, [8])) ];
+                    r_verdict = Verdict.Accept; r_vmap = None; r_nat = None;
+                    r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } ] } in
+  check "guarded inet icmp rule ACCEPTS the genuine IPv4 packet (nft accepts)"
+    (Semantics.eval_chain guarded p_v4 = Verdict.Accept);
+  check "guarded inet icmp rule DROPS the IPv6 packet (nft falls through to drop)"
+    (Semantics.eval_chain guarded p_v6 = Verdict.Drop);
+  check "the OLD unguarded icmp rule WRONGLY accepted the IPv6 packet (regression)"
+    (Semantics.eval_chain unguarded p_v6 = Verdict.Accept);
+  Printf.printf "\n"
+
 (* ---------- (K) synproxy is verdict-bearing, not a no-op ----------
    The DSL `synproxy` statement was verdict-neutral; the kernel
    (nft_synproxy.c) STOPS traversal for a TCP SYN/ACK (NF_STOLEN/NF_DROP),
@@ -1131,6 +1221,7 @@ let () =
     check_tcp_flags ();
     check_meta_nfproto ();
     check_inet_nfproto_dep ();
+    check_inet_icmp_nfproto_dep ();
     check_synproxy ();
     check_concat_iv ();
     check_ifname_exact ();

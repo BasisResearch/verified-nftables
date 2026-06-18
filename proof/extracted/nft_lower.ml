@@ -216,14 +216,27 @@ let width_of_kind = function
      (ip/ip6/arp) nft emits NO such guard, so [DNfproto] is discharged to a
      no-op there (resolved in [ensure_dep], which is family-aware).
    - [DNone]: no dependency. *)
-type dep = DNone | DL4 of Bytes.data | DNfproto of Bytes.data
+type dep1 = DL4 of Bytes.data | DNfproto of Bytes.data
+(* A selector may carry SEVERAL implicit deps that nft emits, in order.  Most
+   selectors carry zero or one; the L3-specific L4 protocols icmp/icmpv6 carry
+   TWO — the network-protocol guard `meta nfproto == {2|10}` AND the transport
+   guard `meta l4proto == {1|58}` — because ICMP is IPv4-only and ICMPv6 is
+   IPv6-only, so in a multi-L3 family nft pins BOTH (golden inet/icmp.t.payload:
+   nfproto THEN l4proto).  tcp/udp are valid over both families and get only the
+   l4proto guard. *)
+type dep = dep1 list
 
 let dep_l4 = function
-  | "tcp" -> DL4 [6] | "udp" -> DL4 [17]
-  | "icmp" -> DL4 [1] | "icmpv6" -> DL4 [58] | _ -> DNone
+  | "tcp" -> [DL4 [6]] | "udp" -> [DL4 [17]]
+  (* icmp/icmpv6 are NETWORK-protocol-LINKED L4 protocols: nft emits the nfproto
+     guard BEFORE the l4proto guard (payload.c proto_icmp/proto_icmp6 are linked
+     to the IPv4/IPv6 network bases).  Order matches the golden byte sequence. *)
+  | "icmp" -> [DNfproto [2]; DL4 [1]]
+  | "icmpv6" -> [DNfproto [10]; DL4 [58]]
+  | _ -> []
 
 let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
-  let none = DNone in
+  let none = [] in
   match kp with
   | ["tcp"; "dport"] | ["udp"; "dport"] | ["th"; "dport"] ->
       (Syntax.FThDport, KPort, dep_l4 (L.hd kp))
@@ -234,11 +247,11 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
      implicit `meta nfproto == 2` (IPv4) / `== 10` (IPv6) in any multi-L3 family,
      so reading the IPv4 header on an IPv6 packet (or vice versa) can't match.
      [ensure_dep] turns [DNfproto] into a real match only for inet/bridge/netdev. *)
-  | ["ip"; "saddr"]    -> (Syntax.FIp4Saddr, KIp4, DNfproto [2])
-  | ["ip"; "daddr"]    -> (Syntax.FIp4Daddr, KIp4, DNfproto [2])
-  | ["ip"; "protocol"] -> (Syntax.FIp4Protocol, KL4proto, DNfproto [2])
-  | ["ip6"; "saddr"]   -> (Syntax.FIp6Saddr, KIp6, DNfproto [10])
-  | ["ip6"; "daddr"]   -> (Syntax.FIp6Daddr, KIp6, DNfproto [10])
+  | ["ip"; "saddr"]    -> (Syntax.FIp4Saddr, KIp4, [DNfproto [2]])
+  | ["ip"; "daddr"]    -> (Syntax.FIp4Daddr, KIp4, [DNfproto [2]])
+  | ["ip"; "protocol"] -> (Syntax.FIp4Protocol, KL4proto, [DNfproto [2]])
+  | ["ip6"; "saddr"]   -> (Syntax.FIp6Saddr, KIp6, [DNfproto [10]])
+  | ["ip6"; "daddr"]   -> (Syntax.FIp6Daddr, KIp6, [DNfproto [10]])
   | ["icmp"; "type"]   -> (Syntax.FIcmpType, KIcmp, dep_l4 "icmp")
   | ["icmpv6"; "type"] -> (Syntax.FIcmpType, KIcmpv6, dep_l4 "icmpv6")
   | ["ether"; "type"]  -> (Syntax.FEtherType, KEthertype, none)
@@ -492,8 +505,7 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
       let triples = L.map key_field kps in
       let fields = L.map (fun (f,_,_) -> f) triples in
       let kinds  = L.map (fun (_,k,_) -> k) triples in
-      let dep = L.fold_left (fun acc (_,_,d) -> match acc with DNone -> d | _ -> acc)
-                  DNone triples in
+      let dep = L.concat (L.map (fun (_,_,d) -> d) triples) in
       let name = match m.Nft_ast.m_rhs.Nft_ast.payload with
         | Nft_ast.SEref nm -> nm
         | Nft_ast.SEset elems -> intern_anon_concat st kinds elems
@@ -577,11 +589,12 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
     if not (L.mem (fld, pv) !deps) then
       (push (Syntax.BMatch (Syntax.MEq (fld, pv))); deps := (fld, pv) :: !deps)
   in
-  let ensure_dep = function
-    | DNone -> ()
+  let ensure_dep1 = function
     | DL4 pv -> push_dep Syntax.FMetaL4proto pv
     | DNfproto pv -> if family_is_inet family then push_dep Syntax.FMetaNfproto pv
   in
+  (* materialise deps in order (nfproto guard pushed before l4proto guard) *)
+  let ensure_dep ds = L.iter ensure_dep1 ds in
   L.iter (fun (cl : Nft_ast.clause) ->
     match cl with
     | Nft_ast.CVerdict v -> verdict := lower_verdict v

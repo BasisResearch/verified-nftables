@@ -32,7 +32,8 @@ Definition firewall_inbound_ipv4 : chain :=
 
 Definition firewall_inbound_ipv6 : chain :=
   {| c_policy := Continue;
-   c_rules := [{| r_body := [(BMatch (MEq FMetaL4proto [58]));
+   c_rules := [{| r_body := [(BMatch (MEq FMetaNfproto [10]));
+             (BMatch (MEq FMetaL4proto [58]));
              (BMatch (MConcatSet [FIcmpType] false "__set0"))];
      r_verdict := Accept; r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
