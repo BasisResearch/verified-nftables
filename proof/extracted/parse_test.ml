@@ -520,6 +520,7 @@ let check_ct_state () =
     \    ct state new accept\n\
     \    ct state != established accept\n\
     \    ct state {established, related} accept\n\
+    \    ct state new,established,related,untracked accept\n\
     \  }\n\
      }\n" in
   let parsed = Nft_parse.parse_string src in
@@ -557,6 +558,32 @@ let check_ct_state () =
   let m_old = Syntax.MEq (Syntax.FCtState, [0;0;0;2]) in
   check "the OLD MEq lowering wrongly rejected state = 66 (regression guard)"
     (Semantics.eval_matchcond m_old (mk_ct [0;0;0;66]) = false);
+  (* COMMA-LIST `ct state new,established,related,untracked` is NOT a set: nft's
+     expr_evaluate_list (evaluate.c:1854-1888) OR-folds the four bitmask members
+     into one constant new|established|related|untracked = 8|2|4|64 = 0x4e and
+     emits the implicit-bitmask test (state & 0x4e) != 0 — golden ct.t.payload:1-5
+     `bitwise reg1 = (reg1 & 0x4e) ^ 0 ; cmp neq reg1 0`.  Distinct from the BRACE
+     set form above (real lookup).  Before the fix the parser collapsed both to
+     SEset -> MConcatSet, so the comma form mis-lowered to a set membership that
+     REJECTS a multi-bit state (e.g. 0x06 = established|related) which nft accepts. *)
+  let m_comma = Syntax.MMasked (Syntax.FCtState, true, [0;0;0;0x4e], [0;0;0;0], [0;0;0;0]) in
+  check "ct state new,established,related,untracked OR-folds to (state & 0x4e) != 0"
+    (body 4 = [Syntax.BMatch m_comma]);
+  (* the comma OR-mask ACCEPTS state = 0x06 (established|related): 0x06 & 0x4e != 0 *)
+  check "comma list matches state = established|related = 0x06 (real nft accepts)"
+    (Semantics.eval_matchcond m_comma (mk_ct [0;0;0;6]) = true);
+  (* it still rejects a state with none of the listed bits (e.g. invalid = 1) *)
+  check "comma list does NOT match state = invalid = 1 (no listed bit set)"
+    (Semantics.eval_matchcond m_comma (mk_ct [0;0;0;1]) = false);
+  (* the OLD set-membership lowering (before the fix the comma form collapsed to
+     SEset -> MConcatSet) wrongly REJECTED state = 0x06: the model's set_mem
+     requires an EXACT element, and 0x06 is not one of {8,2,4,64}.  This is the
+     bytecode/semantic divergence the fix closes (golden ct.t.payload comma form
+     is bitwise+cmp, NOT lookup). *)
+  check "the OLD set-membership lowering wrongly REJECTED state = 0x06 (regression guard)"
+    (Bytes.set_mem [0;0;0;6]
+       [([0;0;0;8],[0;0;0;8]); ([0;0;0;2],[0;0;0;2]);
+        ([0;0;0;4],[0;0;0;4]); ([0;0;0;64],[0;0;0;64])] = false);
   Printf.printf "\n"
 
 (* (J) SINGLE POSITIVE `tcp flags X` BITMASK lowering.  tcp_flag_type has

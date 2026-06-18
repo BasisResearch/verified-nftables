@@ -251,7 +251,7 @@ rhs:
 
 payload:
   | elem                             { SEvalue $1 }
-  | elem COMMA bareset               { SEset ($1 :: $3) }   (* `ct state a,b` (no braces) *)
+  | elem COMMA bareset               { SElist ($1 :: $3) }  (* `ct state a,b` (no braces): OR-fold list *)
   | AT                               { SEref $1 }
   | LBRACE nls RBRACE                { SEset [] }
   | LBRACE nls valueseq nls RBRACE   { SEset $3 }

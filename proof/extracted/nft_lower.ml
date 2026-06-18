@@ -261,6 +261,7 @@ let prefix_mask (width : int) (len : int) : Bytes.data =
       if b < len then m := !m lor (0x80 lsr (b - bit_lo))
     done; !m)
 let band a b = L.map2 (land) a b
+let bor  a b = L.map2 (lor)  a b
 
 (* ---------- mutable lowering state ---------- *)
 
@@ -396,6 +397,32 @@ let lower_match st (m : Nft_ast.smatch) : Bytes.data option * Syntax.matchcond =
               "tcp flags set/list form is ambiguous (brace-set vs OR-mask); \
                use a single `tcp flags X` / `tcp flags ! X` / `tcp flags == X`")
         | Nft_ast.SEref name -> Syntax.MConcatSet ([f], neg, name)
+        | Nft_ast.SElist elems ->
+            (* A BARE COMMA list `ct state new,established,...` is NOT a set: nft's
+               expr_evaluate_list (evaluate.c:1854-1888) requires every member to
+               have a TYPE_BITMASK basetype (line 1871) and OR-folds them all into a
+               single constant (line 1877 mpz_ior), then emits the implicit-bitmask
+               test `(field & orMask) != 0` — exactly the single-value KCtstate /
+               KTcpflag encoding below, just with the OR of all members.  A BRACE set
+               `{ ... }` (SEset) is a different expression -> real lookup.  We refuse
+               the list form for non-bitmask selectors, mirroring nft's error. *)
+            (match k with
+             | KCtstate | KTcpflag ->
+                 let w = width_of_kind k in
+                 let zero = L.init w (fun _ -> 0) in
+                 let orMask =
+                   L.fold_left
+                     (fun acc v -> bor acc (enc_atom k (resolve_var st v)))
+                     zero elems in
+                 (match op with
+                  | Nft_ast.Op_implicit -> Syntax.MMasked (f, true,  orMask, zero, zero)
+                  | Nft_ast.Op_bang     -> Syntax.MMasked (f, false, orMask, zero, zero)
+                  | Nft_ast.Op_eq       -> Syntax.MEq  (f, orMask)
+                  | Nft_ast.Op_ne       -> Syntax.MNeq (f, orMask))
+             | _ ->
+                 raise (Unsupported
+                   "comma list rhs is only valid for bitmask selectors \
+                    (ct state / tcp flags); use a `{ ... }` set instead"))
         | Nft_ast.SEset elems -> Syntax.MConcatSet ([f], neg, intern_anon_set st k elems)
         | Nft_ast.SEvalue v when k = KTcpflag ->
             (* tcp_flag_type has .basetype = bitmask_type (proto.c:583-591), and
@@ -454,6 +481,8 @@ let lower_match st (m : Nft_ast.smatch) : Bytes.data option * Syntax.matchcond =
         | Nft_ast.SEref nm -> nm
         | Nft_ast.SEset elems -> intern_anon_concat st kinds elems
         | Nft_ast.SEvalue (Nft_ast.Vconcat _ as v) -> intern_anon_concat st kinds [v]
+        | Nft_ast.SElist _ -> raise (Unsupported
+            "bare comma list is not valid for a concatenated selector; use `{ ... }`")
         | Nft_ast.SEvalue _ -> raise (Unsupported "concatenated match needs a set/ref rhs")
       in (dep, Syntax.MConcatSet (fields, neg, name))
 

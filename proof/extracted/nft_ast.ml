@@ -43,7 +43,8 @@ type verdict =
    (anonymous) set, or a reference to a named set/map (`@name`). *)
 type setexpr =
   | SEvalue of value
-  | SEset   of value list
+  | SEset   of value list          (* `{ a, b, ... }` braces: real set-membership lookup *)
+  | SElist  of value list          (* `a, b, ...` bare commas: OR-fold for bitmask selectors *)
   | SEref   of string              (* @name *)
 
 (* The relational operator a match was WRITTEN with.  nftables treats these
