@@ -2364,6 +2364,170 @@ Theorem compile_chain_sets_correct : forall c base d p,
   = eval_chain c (set_env p (env_with_sets base d)).
 Proof. intros. apply compile_chain_correct. Qed.
 
+(** ** Limiter-sweep agreement: the VM's [limit_sweep_prog (compile_rule r)] depletes
+    exactly the same `limit`/`quota`/`connlimit` buckets as the DSL's
+    [limit_sweep_body (r_body r)].  This is what lets the cross-rule/cross-packet
+    consumption agree on both sides (so a rate limit limits the same later packets
+    under the compiled VM as under the DSL). *)
+
+(** A "limit-free" instruction is anything but a limiter; [straight] => limit-free. *)
+Definition limit_free_instr (i : instr) : bool :=
+  match i with ILimit _ | IQuota _ | IConnlimit _ => false | _ => true end.
+Lemma straight_imp_lf_instr : forall i, straight_instr i = true -> limit_free_instr i = true.
+Proof. intros i H; destruct i; cbn in *; congruence. Qed.
+Lemma straight_imp_lf : forall is, straight is = true -> limit_free_prog is = true.
+Proof.
+  unfold straight, limit_free_prog. intros is. rewrite !forallb_forall.
+  intros H i Hin. apply straight_imp_lf_instr, H, Hin.
+Qed.
+Lemma lf_app : forall a b, limit_free_prog (a ++ b) = limit_free_prog a && limit_free_prog b.
+Proof. intros. apply forallb_app. Qed.
+Lemma lf_cons : forall i l, limit_free_prog (i :: l) = limit_free_instr i && limit_free_prog l.
+Proof. reflexivity. Qed.
+
+(** Limit-freeness of the value-source / load building blocks (all are [straight]). *)
+Lemma lf_vsrc : forall vs, limit_free_prog (compile_vsrc vs) = true.
+Proof. intro vs. apply straight_imp_lf, str_vsrc. Qed.
+Lemma lf_load_fields : forall pairs, limit_free_prog (load_fields pairs) = true.
+Proof. intro. apply straight_imp_lf, str_load_fields. Qed.
+Lemma lf_transforms : forall ts, limit_free_prog (compile_transforms ts) = true.
+Proof. intro. apply straight_imp_lf, str_transforms. Qed.
+Lemma lf_imms : forall imms,
+  limit_free_prog (map (fun rv => IImmediateData (fst rv) (snd rv)) imms) = true.
+Proof. intro. apply straight_imp_lf, str_imms. Qed.
+
+(** A non-limiter [compile_match] is limit-free. *)
+Lemma lf_compile_match_nonlimit : forall m,
+  match m with MLimit _ | MQuota _ | MConnlimit _ => false | _ => true end = true ->
+  limit_free_prog (compile_match m) = true.
+Proof.
+  intros m Hm. destruct m; cbn [compile_match] in *; try discriminate Hm.
+  - unfold compile_load; destruct (field_load f); reflexivity.
+  - unfold compile_load; destruct (field_load f); reflexivity.
+  - unfold compile_load; destruct (field_load f); reflexivity.
+  - unfold compile_load; destruct (field_load f); reflexivity.
+  - unfold compile_load; destruct (field_load f); reflexivity.
+  - (* MConcatSet: load_fields ++ [ILookup ...] *)
+    rewrite lf_app, lf_load_fields. reflexivity.
+  - (* MTransform: compile_load :: compile_transforms ++ [ICmp ...] *)
+    rewrite lf_cons, lf_app, lf_transforms.
+    unfold compile_load; destruct (field_load f); reflexivity.
+  - (* MSetT: compile_load :: compile_transforms ++ [ILookup ...] *)
+    rewrite lf_cons, lf_app, lf_transforms.
+    unfold compile_load; destruct (field_load f); reflexivity.
+  - (* MRangeT: compile_load :: compile_transforms ++ [IRange ...] *)
+    rewrite lf_cons, lf_app, lf_transforms.
+    unfold compile_load; destruct (field_load f); reflexivity.
+  - (* MConcatSetT: load_fields_t ++ [ILookup ...] *)
+    rewrite lf_app, straight_imp_lf by apply str_load_fields_t. reflexivity.
+Qed.
+
+(** [compile_stmt] never emits a limiter (no statement is a limit/quota/connlimit). *)
+Lemma lf_compile_stmt : forall s, limit_free_prog (compile_stmt s) = true.
+Proof.
+  intro s. destruct (is_mut_stmt s) eqn:Hm; [| destruct (is_synproxy_stmt s) eqn:Hsp].
+  - (* mutating statement: SMetaSet/SCtSet/SDynset/SNotrack — none are limiters *)
+    destruct s; cbn [is_mut_stmt] in Hm; try discriminate Hm; cbn [compile_stmt].
+    + reflexivity.                                                     (* SNotrack -> [INotrack] *)
+    + rewrite lf_app, lf_vsrc. reflexivity.                            (* SMetaSet -> ..++[IMetaSet] *)
+    + rewrite lf_app, lf_vsrc. reflexivity.                            (* SCtSet  -> ..++[ICtSet] *)
+    + (* SDynset: load_fields ++ [IDynset ...] *)
+      rewrite lf_app, lf_load_fields. reflexivity.
+  - (* synproxy -> [ISynproxy m w], not a limiter *)
+    destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp.
+    cbn [compile_stmt]. reflexivity.
+  - apply straight_imp_lf, straight_compile_stmt; [exact Hm | exact Hsp].
+Qed.
+Lemma lf_flat_compile_stmt : forall ss, limit_free_prog (flat_map compile_stmt ss) = true.
+Proof.
+  induction ss as [| s ss IH]; [reflexivity|].
+  cbn [flat_map]. rewrite lf_app, lf_compile_stmt, IH. reflexivity.
+Qed.
+Lemma lf_compile_vmap : forall r, limit_free_prog (compile_vmap r) = true.
+Proof.
+  intro r. unfold compile_vmap. destruct (r_vmap r) as [vm |]; [| reflexivity].
+  destruct (vm_keyf vm) as [[f ts] |].
+  - rewrite lf_cons, lf_app, lf_transforms.
+    unfold compile_load; destruct (field_load f); reflexivity.
+  - rewrite lf_app, lf_load_fields. reflexivity.
+Qed.
+
+Lemma lf_verdict_tail : forall v, limit_free_prog (verdict_tail v) = true.
+Proof. intro v. destruct v; reflexivity. Qed.
+
+Lemma lf_compile_terminal : forall r, limit_free_prog (compile_terminal r) = true.
+Proof.
+  intro r. unfold compile_terminal.
+  destruct (r_nat r) as [n |].
+  { rewrite lf_app. apply Bool.andb_true_iff; split; [| reflexivity].
+    destruct (nat_src n) as [vs |]; [apply lf_vsrc |].
+    destruct (nat_map n) as [[[fields ts] name] |].
+    - rewrite lf_app, lf_load_fields, lf_app, lf_transforms; reflexivity.
+    - destruct (nat_field n) as [[f ts] |].
+      + cbn [limit_free_prog forallb]. rewrite lf_transforms.
+        unfold compile_load; destruct (field_load f); reflexivity.
+      + apply lf_imms. }
+  destruct (r_tproxy r) as [t |].
+  { rewrite lf_app. apply Bool.andb_true_iff; split; [| reflexivity].
+    destruct (tp_portmap t) as [[[m o] name] |].
+    - rewrite lf_app, lf_imms; reflexivity.
+    - apply lf_imms. }
+  destruct (r_fwd r) as [w |].
+  { rewrite lf_app. apply Bool.andb_true_iff; split; [| reflexivity].
+    destruct (fwd_src w) as [vs |]; [apply lf_vsrc | apply lf_imms]. }
+  destruct (r_queue r) as [q |].
+  { rewrite lf_app. apply Bool.andb_true_iff; split; [| reflexivity].
+    destruct (q_src q) as [vs |]; [apply lf_vsrc | apply lf_imms]. }
+  apply lf_verdict_tail.
+Qed.
+
+Lemma lf_compile_end : forall r, limit_free_prog (compile_end r) = true.
+Proof.
+  intro r. unfold compile_end. rewrite lf_app, lf_compile_vmap, lf_compile_terminal. reflexivity.
+Qed.
+
+(** A limit-free prefix is swept-through (the sweep is the identity on it). *)
+Lemma limit_sweep_prog_app : forall a b p,
+  limit_sweep_prog (a ++ b) p = limit_sweep_prog b (limit_sweep_prog a p).
+Proof. intros. unfold limit_sweep_prog. apply fold_left_app. Qed.
+Lemma limit_sweep_body_app : forall a b p,
+  limit_sweep_body (a ++ b) p = limit_sweep_body b (limit_sweep_body a p).
+Proof. intros. unfold limit_sweep_body. apply fold_left_app. Qed.
+
+(** Each compiled body item sweeps to the same packet as the single-item DSL sweep. *)
+Lemma limit_sweep_compile_body_item : forall it p,
+  limit_sweep_prog (compile_body_item it) p =
+  match it with
+  | BMatch (MLimit spec)     => set_limit p spec
+  | BMatch (MQuota spec)     => set_quota p spec
+  | BMatch (MConnlimit spec) => set_connlimit p spec
+  | _ => p
+  end.
+Proof.
+  intros it p. destruct it as [m | s]; cbn [compile_body_item].
+  - destruct m; try (apply limit_sweep_prog_id, lf_compile_match_nonlimit; reflexivity);
+      reflexivity.
+  - apply limit_sweep_prog_id, lf_compile_stmt.
+Qed.
+
+(** The whole rule: the bytecode sweep equals the DSL body sweep (the [compile_end]
+    and [r_after] tails are limit-free, contributing nothing). *)
+Lemma limit_sweep_prog_compile_rule : forall r p,
+  limit_sweep_prog (compile_rule r) p = limit_sweep_body (r_body r) p.
+Proof.
+  intros r p. unfold compile_rule.
+  rewrite !limit_sweep_prog_app.
+  rewrite (limit_sweep_prog_id (compile_end r)) by apply lf_compile_end.
+  rewrite (limit_sweep_prog_id (flat_map compile_stmt (r_after r))) by apply lf_flat_compile_stmt.
+  (* now: limit_sweep_prog (flat_map compile_body_item (r_body r)) p
+        = limit_sweep_body (r_body r) p *)
+  unfold limit_sweep_body. generalize p. clear p.
+  induction (r_body r) as [| it body IH]; intro p; [reflexivity|].
+  cbn [flat_map fold_left].
+  rewrite limit_sweep_prog_app, limit_sweep_compile_body_item.
+  rewrite IH. reflexivity.
+Qed.
+
 (** ** Phase B main theorem: the compiler preserves in-traversal mutation.
 
     The compiled bytecode's meta/ct effect equals the declarative one for ANY
@@ -2400,6 +2564,22 @@ Definition mut_wf (r : rule) : bool :=
      numgen is reachable only through the bytecode, never the parser/DSL. *)
   && numgen_free_prog (compile_rule r).
 
+(** The packet a rule's bytecode LEAVES in mutation mode (writes + numgen advance +
+    limiter consumption) equals the DSL's [dsl_step] for a well-formed rule. *)
+Lemma vm_step_dsl_step : forall r p,
+  simple_writes r = true ->
+  forallb (fun s => negb (is_mut_stmt s)) (r_after r) = true ->
+  numgen_free_prog (compile_rule r) = true ->
+  limit_sweep_prog (compile_rule r)
+    (numgen_sweep_prog (compile_rule r) (run_rule_writes empty_rf (compile_rule r) p))
+  = dsl_step r p.
+Proof.
+  intros r p Hs Ha Hnf. unfold dsl_step.
+  rewrite (numgen_sweep_prog_id (compile_rule r) _ Hnf).
+  rewrite (run_rule_writes_compile_rule r p Hs Ha).
+  apply limit_sweep_prog_compile_rule.
+Qed.
+
 Lemma run_program_mut_compile_chain : forall rs p,
   forallb mut_wf rs = true ->
   run_program_mut (map compile_rule rs) p = eval_rules_mut rs p.
@@ -2409,10 +2589,9 @@ Proof.
   unfold mut_wf in Hr. apply Bool.andb_true_iff in Hr. destruct Hr as [Hr Hnf].
   apply Bool.andb_true_iff in Hr. destruct Hr as [Hs Ha].
   cbn [map run_program_mut eval_rules_mut].
-  (* the VM threads [numgen_sweep_prog (compile_rule r) (run_rule_writes …)]; the rule
-     is numgen-free, so the sweep is the identity and this is just [run_rule_writes]. *)
-  rewrite (numgen_sweep_prog_id (compile_rule r) _ Hnf).
-  rewrite (run_rule_writes_compile_rule r p Hs Ha).
+  (* the VM threads writes + numgen advance + limiter consumption; for a well-formed
+     (numgen-free) rule this equals the DSL [dsl_step]. *)
+  rewrite (vm_step_dsl_step r p Hs Ha Hnf).
   destruct (rule_loadable r p) eqn:Hrl.
   - rewrite (run_rule_compile_rule r p Hrl). cbn [andb].
     destruct (rule_applies r p).
@@ -2446,8 +2625,7 @@ Proof.
   unfold mut_wf in Hr. apply Bool.andb_true_iff in Hr. destruct Hr as [Hr Hnf].
   apply Bool.andb_true_iff in Hr. destruct Hr as [Hs Ha].
   cbn [map run_program_mut_env eval_rules_mut_env].
-  rewrite (numgen_sweep_prog_id (compile_rule r) _ Hnf).
-  rewrite (run_rule_writes_compile_rule r p Hs Ha).
+  rewrite (vm_step_dsl_step r p Hs Ha Hnf).
   destruct (rule_loadable r p) eqn:Hrl.
   - rewrite (run_rule_compile_rule r p Hrl). cbn [andb].
     destruct (rule_applies r p).

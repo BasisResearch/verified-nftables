@@ -177,12 +177,14 @@ Proof.
   (* rule 1: traversed but does not match; threads its (no-op) writes *)
   cbn [eval_rules_trace]. rewrite pre1_streaming_skips by assumption.
   rewrite Bool.andb_false_r.
+  rewrite (dsl_step_limit_free pre1 p) by reflexivity.
   rewrite pre1_streaming_noop by assumption.
   (* rule 2: matches, terminal accept, leaves the marked packet (it is a dnat,
      so apply_masq is a no-op — the source rewrite happens at postrouting) *)
   cbn [eval_rules_trace]. rewrite pre2_streaming_applies by assumption.
   rewrite (pre2_loadable p Hok).
   rewrite pre2_outcome_accept. cbn [terminal].
+  rewrite (dsl_step_limit_free pre2 p) by reflexivity.
   rewrite (apply_masq_none Hprerouting pre2 _ pre2_no_masq).
   rewrite pre2_streaming_marks by assumption. reflexivity.
 Qed.
@@ -264,6 +266,7 @@ Proof.
   intros p ifaddr Hmark Horig Hnone Hifa.
   unfold eval_chain_trace. rewrite postrouting_rules_eq. cbn [eval_rules_trace].
   rewrite (masquerade_gated_on_mark p Hmark), post1_outcome_accept. cbn [terminal].
+  rewrite (dsl_step_limit_free post1 p) by reflexivity.
   rewrite (post1_dsl_noop p Hmark), (post1_apply_masq Hpostrouting p Horig Hnone), Hifa.
   reflexivity.
 Qed.

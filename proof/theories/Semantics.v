@@ -179,6 +179,43 @@ Definition env_numgen_upd (e : env) (spec : numgen_spec) : env :=
      e_ct := e_ct e; e_nat := e_nat e;
      e_numgen := (fun s => if numgen_eqb spec s then S (e_numgen e s) else e_numgen e s) |}.
 
+(** Update the SHARED rate-limiter token bucket [e_limit] for instance [spec]:
+    CONSUME one unit of the bucket on a PASSING evaluation, leaving it unchanged when
+    the bucket is empty (the kernel nft_limit_eval keeps `tokens` unchanged when
+    `delta < 0`).  Mirrors `delta = tokens - cost; if (delta >= 0) tokens := delta`
+    with cost = 1.  Every other instance's bucket — and every other env component —
+    is preserved.  [pred] is the unit-cost decrement (saturating at 0). *)
+Definition env_limit_upd (e : env) (spec : limit_spec) : env :=
+  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
+     e_routes := e_routes e; e_rt := e_rt e;
+     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_limit := (fun s => if limit_eqb spec s then Nat.pred (e_limit e s) else e_limit e s);
+     e_quota := e_quota e; e_connlimit := e_connlimit e;
+     e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
+
+(** Update the SHARED quota counter [e_quota] for instance [spec]: CONSUME one unit
+    UNCONDITIONALLY (the kernel nft_overquota accumulates skb->len on every
+    evaluation, regardless of whether the rule passes). *)
+Definition env_quota_upd (e : env) (spec : quota_spec) : env :=
+  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
+     e_routes := e_routes e; e_rt := e_rt e;
+     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_limit := e_limit e;
+     e_quota := (fun s => if quota_eqb spec s then Nat.pred (e_quota e s) else e_quota e s);
+     e_connlimit := e_connlimit e;
+     e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
+
+(** Update the SHARED connlimit slot count [e_connlimit] for instance [spec]: CONSUME
+    one slot on a PASSING evaluation (the kernel adds the skb's connection to the
+    conncount list and BREAKs once `count > limit`). *)
+Definition env_connlimit_upd (e : env) (spec : connlimit_spec) : env :=
+  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
+     e_routes := e_routes e; e_rt := e_rt e;
+     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_limit := e_limit e; e_quota := e_quota e;
+     e_connlimit := (fun s => if connlimit_eqb spec s then Nat.pred (e_connlimit e s) else e_connlimit e s);
+     e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
+
 (** Advance the shared `numgen inc` counter once: the side effect of EVALUATING a
     `numgen inc` expression.  The value the eval RETURNS is read by [do_load] BEFORE
     this from [e_numgen]; [set_numgen] then bumps the counter so the NEXT evaluation
@@ -206,6 +243,61 @@ Definition set_numgen (p : packet) (spec : numgen_spec) : packet :=
 Lemma read_payload_ok_numgen : forall b o l p spec,
   read_payload_ok b o l (set_numgen p spec) = read_payload_ok b o l p.
 Proof. intros. unfold set_numgen. destruct (ng_random spec); reflexivity. Qed.
+
+(** CONSUME one unit of a `limit` token bucket when the limiter PASSES on packet [p]
+    (its bucket is non-empty: [0 < e_limit (pkt_env p) spec]).  When the bucket is
+    empty, the kernel leaves `tokens` unchanged, so we do nothing.  Only [pkt_env]'s
+    [e_limit] changes; every other packet/env component is preserved, so all
+    loadability predicates are invariant and the DSL/VM stay lock-step. *)
+Definition set_limit (p : packet) (spec : limit_spec) : packet :=
+  if Nat.ltb 0 (e_limit (pkt_env p) spec) then
+  {| pkt_env := env_limit_upd (pkt_env p) spec; pkt_meta := pkt_meta p;
+     pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
+     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
+     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}
+  else p.
+
+(** CONSUME one unit of a `quota` UNCONDITIONALLY (the kernel accumulates the skb
+    length on every evaluation). *)
+Definition set_quota (p : packet) (spec : quota_spec) : packet :=
+  {| pkt_env := env_quota_upd (pkt_env p) spec; pkt_meta := pkt_meta p;
+     pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
+     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
+     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
+
+(** CONSUME one `connlimit` slot when the limiter PASSES on packet [p]. *)
+Definition set_connlimit (p : packet) (spec : connlimit_spec) : packet :=
+  if Nat.ltb 0 (e_connlimit (pkt_env p) spec) then
+  {| pkt_env := env_connlimit_upd (pkt_env p) spec; pkt_meta := pkt_meta p;
+     pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
+     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
+     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}
+  else p.
+
+Lemma read_payload_ok_limit : forall b o l p spec,
+  read_payload_ok b o l (set_limit p spec) = read_payload_ok b o l p.
+Proof. intros. unfold set_limit. destruct (Nat.ltb 0 (e_limit (pkt_env p) spec)); reflexivity. Qed.
+Lemma read_payload_ok_quota : forall b o l p spec,
+  read_payload_ok b o l (set_quota p spec) = read_payload_ok b o l p.
+Proof. reflexivity. Qed.
+Lemma read_payload_ok_connlimit : forall b o l p spec,
+  read_payload_ok b o l (set_connlimit p spec) = read_payload_ok b o l p.
+Proof. intros. unfold set_connlimit. destruct (Nat.ltb 0 (e_connlimit (pkt_env p) spec)); reflexivity. Qed.
 
 (** The cross-packet `numgen inc` COUNTER ADVANCE of running a rule's bytecode: each
     incremental [INumgen] the program contains advances the instance's shared counter
@@ -236,6 +328,71 @@ Proof.
   cbn [fold_left]. destruct i; try (apply IH; exact Hrest).
   (* INumgen: ng_random forces set_numgen = identity *)
   unfold set_numgen. rewrite Hi. apply IH; exact Hrest.
+Qed.
+
+(** The cross-rule/cross-packet CONSUMPTION of a rule's `limit`/`quota`/`connlimit`
+    matches.  Mirroring [numgen_sweep_prog], this advances (depletes) each limiter
+    the rule's bytecode evaluates, applied by the MUTATION evaluators
+    ([run_program_mut]/[run_program_mut_env]) to the packet a rule leaves, so the
+    NEXT packet of the traversal reads the depleted bucket and can get a DIFFERENT
+    verdict — which is the entire purpose of a rate limit.  Keeping the consumption
+    OUT of the per-instruction [run_rule_writes] preserves the load-fields/match
+    lock-step (the verdict side reads the bucket deterministically; the consumption
+    is a cross-rule/cross-packet effect, the same documented intra-rule scoping as
+    `numgen inc`).  The fold is over the running packet, so a second limiter in the
+    same rule sees the first one's consumption (the kernel runs limiters
+    left-to-right against the running token state). *)
+Definition limit_sweep_prog (is : list instr) (p : packet) : packet :=
+  fold_left (fun q i => match i with
+                        | ILimit spec => set_limit q spec
+                        | IQuota spec => set_quota q spec
+                        | IConnlimit spec => set_connlimit q spec
+                        | _ => q
+                        end) is p.
+
+(** The DSL analogue: consume the same limiters by walking a rule body's matches.  A
+    `limit`/`quota`/`connlimit` is the matchcond [MLimit]/[MQuota]/[MConnlimit]. *)
+Definition limit_sweep_body (body : list body_item) (p : packet) : packet :=
+  fold_left (fun q it => match it with
+                         | BMatch (MLimit spec)    => set_limit q spec
+                         | BMatch (MQuota spec)    => set_quota q spec
+                         | BMatch (MConnlimit spec) => set_connlimit q spec
+                         | _ => q
+                         end) body p.
+
+(** Whether a program contains NO limiter instruction (so [limit_sweep_prog] is the
+    identity).  Used to discharge limiter-neutral programs in the same shape as
+    [numgen_free_prog]. *)
+Definition limit_free_prog (is : list instr) : bool :=
+  forallb (fun i => match i with ILimit _ | IQuota _ | IConnlimit _ => false | _ => true end) is.
+
+Lemma limit_sweep_prog_id : forall is p,
+  limit_free_prog is = true -> limit_sweep_prog is p = p.
+Proof.
+  intros is. unfold limit_sweep_prog, limit_free_prog.
+  induction is as [| i is IH]; intros p H; [reflexivity|].
+  cbn [forallb] in H. apply Bool.andb_true_iff in H. destruct H as [Hi Hrest].
+  cbn [fold_left]. destruct i; try discriminate Hi; apply IH; exact Hrest.
+Qed.
+
+(** Whether a rule body contains NO `limit`/`quota`/`connlimit` match (so the DSL
+    [limit_sweep_body] is the identity — a rule that does no rate limiting threads its
+    writes unchanged, exactly as before this fix).  Every existing example/Gen ruleset
+    EXCEPT the limit cases satisfies this. *)
+Definition limit_free_body (body : list body_item) : bool :=
+  forallb (fun it => match it with
+                     | BMatch (MLimit _) | BMatch (MQuota _) | BMatch (MConnlimit _) => false
+                     | _ => true
+                     end) body.
+
+Lemma limit_sweep_body_id : forall body p,
+  limit_free_body body = true -> limit_sweep_body body p = p.
+Proof.
+  intros body. unfold limit_sweep_body, limit_free_body.
+  induction body as [| it body IH]; intros p H; [reflexivity|].
+  cbn [forallb] in H. apply Bool.andb_true_iff in H. destruct H as [Hi Hrest].
+  cbn [fold_left]. destruct it as [m | s]; [destruct m | ];
+    try discriminate Hi; apply IH; exact Hrest.
 Qed.
 
 (** [set_untracked] only flips [pkt_untracked]; it leaves every payload / meta /
@@ -1700,6 +1857,23 @@ Fixpoint body_writes (body : list body_item) (p : packet) : packet :=
   end.
 Definition dsl_writes (r : rule) (p : packet) : packet := body_writes (r_body r) p.
 
+(** The full cross-rule effect of running a rule [r] on packet [p] in mutation mode:
+    its meta/ct/env writes ([dsl_writes]) AND the depletion of every `limit`/`quota`/
+    `connlimit` token bucket it evaluates ([limit_sweep_body]).  The next rule — and,
+    through [pkt_env], the next packet of the traversal — observes both, so a rate
+    limit actually limits later packets.  (The limit sweep reads/writes only
+    [e_limit]/[e_quota]/[e_connlimit], which [dsl_writes] never touches, so the two
+    compose order-independently for those fields.) *)
+Definition dsl_step (r : rule) (p : packet) : packet :=
+  limit_sweep_body (r_body r) (dsl_writes r p).
+
+(** A limit-free rule's [dsl_step] is just its [dsl_writes] (no limiter consumption);
+    so every existing rate-limit-free proof about [dsl_writes]/[eval_chain_trace]
+    carries over unchanged. *)
+Lemma dsl_step_limit_free : forall r p,
+  limit_free_body (r_body r) = true -> dsl_step r p = dsl_writes r p.
+Proof. intros r p H. unfold dsl_step. apply limit_sweep_body_id, H. Qed.
+
 (** Mutation-aware rule-list evaluation: every non-terminal rule threads its
     writes to the rest, so a later rule observes an earlier `set` (the write
     happens whether or not the rule's verdict matched — a non-applicable rule
@@ -1710,20 +1884,21 @@ Fixpoint eval_rules_mut (rs : list rule) (p : packet) : option verdict :=
   | r :: rest =>
       if rule_loadable r p && rule_applies r p then
         match outcome r p with
-        | Some v => if terminal v then Some v else eval_rules_mut rest (dsl_writes r p)
-        | None   => eval_rules_mut rest (dsl_writes r p)
+        | Some v => if terminal v then Some v else eval_rules_mut rest (dsl_step r p)
+        | None   => eval_rules_mut rest (dsl_step r p)
         end
-      else eval_rules_mut rest (dsl_writes r p)
+      else eval_rules_mut rest (dsl_step r p)
   end.
 
 Fixpoint run_program_mut (prog : program) (p : packet) : option verdict :=
   match prog with
   | [] => None
   | rp :: rest =>
-      (* the packet a rule LEAVES carries both its [run_rule_writes] meta/ct/env writes
-         AND its `numgen inc` counter advance ([numgen_sweep_prog]); the next rule (and,
-         through the env, the next packet) sees both. *)
-      let p' := numgen_sweep_prog rp (run_rule_writes empty_rf rp p) in
+      (* the packet a rule LEAVES carries its [run_rule_writes] meta/ct/env writes, its
+         `numgen inc` counter advance ([numgen_sweep_prog]), AND the depletion of every
+         `limit`/`quota`/`connlimit` bucket it evaluated ([limit_sweep_prog]); the next
+         rule (and, through the env, the next packet) sees all three. *)
+      let p' := limit_sweep_prog rp (numgen_sweep_prog rp (run_rule_writes empty_rf rp p)) in
       match run_rule empty_rf rp p with
       | Some v => if terminal v then Some v else run_program_mut rest p'
       | None   => run_program_mut rest p'
@@ -1752,18 +1927,18 @@ Fixpoint eval_rules_mut_env (rs : list rule) (p : packet) : option verdict * env
   | r :: rest =>
       if rule_loadable r p && rule_applies r p then
         match outcome r p with
-        | Some v => if terminal v then (Some v, pkt_env (dsl_writes r p))
-                    else eval_rules_mut_env rest (dsl_writes r p)
-        | None   => eval_rules_mut_env rest (dsl_writes r p)
+        | Some v => if terminal v then (Some v, pkt_env (dsl_step r p))
+                    else eval_rules_mut_env rest (dsl_step r p)
+        | None   => eval_rules_mut_env rest (dsl_step r p)
         end
-      else eval_rules_mut_env rest (dsl_writes r p)
+      else eval_rules_mut_env rest (dsl_step r p)
   end.
 
 Fixpoint run_program_mut_env (prog : program) (p : packet) : option verdict * env :=
   match prog with
   | [] => (None, pkt_env p)
   | rp :: rest =>
-      let p' := numgen_sweep_prog rp (run_rule_writes empty_rf rp p) in
+      let p' := limit_sweep_prog rp (numgen_sweep_prog rp (run_rule_writes empty_rf rp p)) in
       match run_rule empty_rf rp p with
       | Some v => if terminal v then (Some v, pkt_env p')
                   else run_program_mut_env rest p'
@@ -2095,11 +2270,11 @@ Fixpoint eval_rules_trace (h : hook_id) (rs : list rule) (p : packet) : option v
   | r :: rest =>
       if rule_loadable r p && rule_applies r p then
         match outcome r p with
-        | Some v => if terminal v then (Some v, apply_nat h r (dsl_writes r p))
-                    else eval_rules_trace h rest (dsl_writes r p)
-        | None   => eval_rules_trace h rest (dsl_writes r p)
+        | Some v => if terminal v then (Some v, apply_nat h r (dsl_step r p))
+                    else eval_rules_trace h rest (dsl_step r p)
+        | None   => eval_rules_trace h rest (dsl_step r p)
         end
-      else eval_rules_trace h rest (dsl_writes r p)
+      else eval_rules_trace h rest (dsl_step r p)
   end.
 
 Definition eval_chain_trace (h : hook_id) (c : chain) (p : packet) : verdict * packet :=

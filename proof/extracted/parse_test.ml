@@ -1672,6 +1672,31 @@ let check_limit_over () =
   check "over and non-over give opposite verdicts for the same oracle (flag honoured)"
     (Semantics.eval_matchcond m_over (mk_pkt ~env:env_under ())
        <> Semantics.eval_matchcond m_under (mk_pkt ~env:env_under ()));
+  (* CROSS-PACKET CONSUMPTION (the blue fix): a `limit` is a SHARED, CONSUMING token
+     bucket, not a stateless per-packet oracle.  Build a one-rule chain
+     `limit rate 10/second accept`, policy DROP, against an env whose bucket holds
+     exactly ONE token.  Thread packet 1 -> its verdict + the env it LEAVES; build
+     packet 2 of the SAME flow carrying that env; run again.  The kernel ACCEPTS
+     packet 1 (one token), the bucket EMPTIES, and packet 2 of the depleted bucket
+     is DROPPED (chain policy).  The OLD per-packet oracle proved BOTH accepted. *)
+  let rule_accept =
+    { Syntax.r_body = [Syntax.BMatch m_under]; r_verdict = Verdict.Accept;
+      r_vmap = None; r_nat = None; r_tproxy = None; r_fwd = None;
+      r_queue = None; r_after = [] } in
+  let chain_lim = { Syntax.c_policy = Verdict.Drop; c_rules = [rule_accept] } in
+  let env_one = { env with Packet.e_limit = (fun _ -> 1) } in
+  let p1 = mk_pkt ~env:env_one ~flow:[1;1] () in
+  let (v1, e_after) = Semantics.eval_chain_mut_env chain_lim p1 in
+  let p2 = mk_pkt ~env:e_after ~flow:[1;1] () in
+  let (v2, _) = Semantics.eval_chain_mut_env chain_lim p2 in
+  check "consuming bucket: packet 1 ACCEPTED (one token available)"
+    (v1 = Verdict.Accept);
+  check "consuming bucket: token CONSUMED (env left by packet 1 has 0 tokens)"
+    (e_after.Packet.e_limit s_under = 0);
+  check "consuming bucket: packet 2 of the depleted bucket DROPPED (policy)"
+    (v2 = Verdict.Drop);
+  check "consecutive packets get DIFFERENT verdicts (a rate limit actually limits)"
+    (v1 <> v2);
   Printf.printf "\n"
 
 (* (M) fib route-type symbol -> RTN_ constant.  The Menhir frontend's

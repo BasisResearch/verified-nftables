@@ -88,16 +88,35 @@ Definition numgen_eqb (a b : numgen_spec) : bool :=
   andb (Bool.eqb (ng_random a) (ng_random b))
        (andb (Nat.eqb (ng_mod a) (ng_mod b)) (Nat.eqb (ng_offset a) (ng_offset b))).
 
+(** Structural equality on [limit_spec], used to key the shared per-instance rate
+    limiter [e_limit] (each `limit` expression in a ruleset has its OWN token bucket
+    in the kernel; here we conflate instances with identical parameters, which is
+    conservative and sufficient — a ruleset rarely repeats an identical limiter). *)
+Definition limit_eqb (a b : limit_spec) : bool :=
+  andb (Nat.eqb (ls_rate a) (ls_rate b))
+       (andb (Nat.eqb (ls_unit a) (ls_unit b))
+       (andb (Nat.eqb (ls_burst a) (ls_burst b))
+       (andb (Bool.eqb (ls_bytes a) (ls_bytes b))
+             (Nat.eqb (ls_flags a) (ls_flags b))))).
+
 (** A quota: [q_bytes] the limit, [q_consumed] bytes already used, [q_flags] the
     NFT_QUOTA_F_* bits (bit 0 = "over"/inverted). *)
 Record quota_spec : Type := {
   q_bytes : nat; q_consumed : nat; q_flags : nat
 }.
 
+Definition quota_eqb (a b : quota_spec) : bool :=
+  andb (Nat.eqb (q_bytes a) (q_bytes b))
+       (andb (Nat.eqb (q_consumed a) (q_consumed b))
+             (Nat.eqb (q_flags a) (q_flags b))).
+
 (** A connection limit: [cl_count] the threshold, [cl_flags] (bit 0 = "over"). *)
 Record connlimit_spec : Type := {
   cl_count : nat; cl_flags : nat
 }.
+
+Definition connlimit_eqb (a b : connlimit_spec) : bool :=
+  andb (Nat.eqb (cl_count a) (cl_count b)) (Nat.eqb (cl_flags a) (cl_flags b)).
 
 (** Payload bases: which header a [payload load] reads from. *)
 Inductive pbase : Type :=
@@ -144,10 +163,34 @@ Record env : Type := {
                                not an opaque oracle. *)
   e_rt   : rt_key -> data;                   (* routing-state (rt) keys, likewise
                                                 shared external routing state. *)
-  e_limit : limit_spec -> nat;               (* a rate limiter's REMAINING tokens;
-                                                a `limit` match passes (rule
-                                                continues) iff [0 < remaining]. *)
-  e_quota : quota_spec -> nat;               (* a quota's remaining bytes. *)
+  e_limit : limit_spec -> nat;               (* a rate limiter's REMAINING tokens —
+                                                SHARED, CONSUMING, flow-/instance-keyed
+                                                state, NOT a per-packet oracle.  A
+                                                `limit` match passes (rule continues)
+                                                iff [0 < remaining]; when it passes the
+                                                bucket is DECREMENTED by the unit cost
+                                                (the kernel nft_limit_eval:
+                                                `delta = tokens - cost; if (delta>=0)
+                                                tokens = delta; return invert`).  The
+                                                consumption is applied cross-rule/cross-
+                                                packet by [limit_sweep_prog] (VM) /
+                                                [limit_sweep_body] (DSL) at the mutation-
+                                                evaluator boundary, exactly like the
+                                                `numgen inc` counter — so a later packet
+                                                of a traversal reads the depleted bucket
+                                                and gets a DIFFERENT verdict, which is
+                                                the entire point of a rate limit.  Refill
+                                                by elapsed time is abstracted to +0
+                                                within a traversal (back-to-back packets
+                                                in one ktime). *)
+  e_quota : quota_spec -> nat;               (* a quota's remaining bytes — SHARED,
+                                                CONSUMING state.  A `quota` match passes
+                                                iff [0 < remaining]; the bucket is
+                                                DECREMENTED by a unit cost on EVERY
+                                                evaluation (the kernel nft_overquota
+                                                accumulates skb->len UNCONDITIONALLY,
+                                                regardless of pass/fail).  Consumed by
+                                                [limit_sweep_*] like [e_limit]. *)
   e_ifaddr : data -> data;                   (* an interface's primary IPv4 source
                                                 address, keyed by its name — the
                                                 source `masquerade` rewrites an IPv4
@@ -161,12 +204,22 @@ Record env : Type := {
                                                 (nf_nat_masquerade_ipv6); it is a
                                                 DIFFERENT value from the IPv4
                                                 e_ifaddr.  Shared host config. *)
-  e_connlimit : connlimit_spec -> nat;       (* a connlimit's remaining slots.
-                                                These are shared, mutable limiter
-                                                state, threaded across packets by
-                                                [eval_seq] (see Semantics) — so the
-                                                accumulation that a per-packet
-                                                oracle hid is now expressible. *)
+  e_connlimit : connlimit_spec -> nat;       (* a connlimit's remaining slots —
+                                                SHARED, CONSUMING state.  A `connlimit`
+                                                match passes iff [0 < remaining]; the
+                                                slot count is DECREMENTED on a passing
+                                                evaluation (the kernel nft_connlimit
+                                                adds the skb's connection to the list
+                                                and BREAKs once `count > limit`).  This
+                                                shared, mutable limiter state is now
+                                                ACTUALLY threaded+consumed across rules
+                                                and packets by [limit_sweep_prog] /
+                                                [limit_sweep_body] at the mutation-
+                                                evaluator boundary (exactly the
+                                                `numgen inc` / [e_limit] pattern), so
+                                                the accumulation a per-packet oracle
+                                                hid is now both expressible AND
+                                                exercised. *)
   e_ct : data -> ct_key -> data;             (* the SHARED, flow-keyed conntrack
                                                 table: the writable+persistent
                                                 conntrack keys ([ct_writable]: mark,

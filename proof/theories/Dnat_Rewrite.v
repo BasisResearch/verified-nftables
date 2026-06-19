@@ -80,6 +80,7 @@ Proof.
   intros h p Horig Hnone.
   assert (Hw : dsl_writes dnat_rule p = p) by reflexivity.
   unfold eval_chain_trace, dnat_chain. cbn [c_rules eval_rules_trace].
+  rewrite (dsl_step_limit_free dnat_rule p) by reflexivity.
   cbn -[apply_nat dnat_rule dsl_writes]. rewrite Hw.
   rewrite (dnat_apply h p Horig Hnone). reflexivity.
 Qed.
@@ -273,6 +274,7 @@ Proof.
   intros h p Horig Hnone.
   assert (Hw : dsl_writes dnat_port_rule p = p) by reflexivity.
   unfold eval_chain_trace, dnat_port_chain. cbn [c_rules eval_rules_trace].
+  rewrite (dsl_step_limit_free dnat_port_rule p) by reflexivity.
   cbn -[apply_nat dnat_port_rule dsl_writes]. rewrite Hw.
   rewrite (dnat_port_apply h p Horig Hnone). reflexivity.
 Qed.
