@@ -401,6 +401,19 @@ let check_dnat_rewrite () =
   check "dnat rewrites ip daddr to the target" (data_eq daddr_out [10;0;0;1]);
   check "dnat does NOT touch ip saddr"
     (data_eq (Syntax.field_value Syntax.FIp4Saddr p_out) [1;2;3;4]);
+  (* The IPv4 HEADER CHECKSUM (network bytes 10..11) is NOT left stale: the kernel
+     runs csum_replace4(&iph->check, old_daddr, new_daddr) in the same step as the
+     address rewrite (nf_nat_proto.c:329-333).  The model now updates it
+     incrementally (RFC 1624) via set_nh_addr_ip4/csum_update_field. *)
+  let ipck_in  = Packet.slice p_in.Packet.pkt_nh  10 2 in
+  let ipck_out = Packet.slice p_out.Packet.pkt_nh 10 2 in
+  let ipck_exp = Bytes.csum_update_field ipck_in [192;168;0;9] [10;0;0;1] in
+  Printf.printf "    dnat: ip checksum  %s -> %s  (csum_replace4; expected %s)\n"
+    (show ipck_in) (show ipck_out) (show ipck_exp);
+  check "dnat UPDATES the IPv4 header checksum (not left stale)"
+    (not (data_eq ipck_out ipck_in));
+  check "dnat IP checksum is the RFC-1624 incremental update (csum_replace4)"
+    (data_eq ipck_out ipck_exp);
   (* (F') `dnat to A:PORT` ALSO rewrites the L4 DESTINATION port (transport bytes
      2..3).  The parser must carry the port into nat_pmin/nat_pmax, and
      Semantics.apply_nat must write the big-endian port into the TCP/UDP header

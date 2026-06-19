@@ -71,11 +71,97 @@ Fixpoint N_to_data (len : nat) (n : N) : data :=
   | S k => N_to_data k (N.div n 256) ++ [N.to_nat (N.modulo n 256)]
   end.
 
+Lemma N_to_data_length : forall len n, List.length (N_to_data len n) = len.
+Proof.
+  induction len; intro n; simpl; [reflexivity|].
+  rewrite app_length, IHlen; simpl; lia.
+Qed.
+
 (** Left/right bit shift of a register value (preserving its byte width). *)
 Definition data_shift (shl : bool) (amt : nat) (d : data) : data :=
   N_to_data (length d)
     (if shl then N.shiftl (data_to_N d) (N.of_nat amt)
              else N.shiftr (data_to_N d) (N.of_nat amt)).
+
+(** ** Internet checksum incremental update (RFC 1624).
+
+    The Internet checksum (IPv4 header [check], TCP/UDP [check]) is the 16-bit
+    one's-complement of the one's-complement sum of the 16-bit words of the
+    checksummed region.  When NAT rewrites a field (an address word or a port)
+    the kernel does NOT recompute the whole sum; it does an INCREMENTAL update —
+    [csum_replace4]/[inet_proto_csum_replace2] (lib/checksum.c) compute, per
+    RFC 1624 eqn. 3:
+
+        HC' = ~(~HC + ~m + m')
+
+    where [HC] is the old checksum, [m] the old value of the changed 16-bit
+    word(s) and [m'] the new value, all reduced into 16 bits with the
+    one's-complement end-around carry.  [csum_fold16] folds an arbitrary-width
+    one's-complement accumulator back into 16 bits (the end-around carry: while
+    there are bits above bit 15, add them back in). *)
+Definition mask16 (n : N) : N := N.land n 65535.
+Definition not16 (n : N) : N := N.lxor n 65535.
+
+(** Fold a wide one's-complement accumulator into 16 bits by repeatedly adding
+    the carry (high bits) back into the low 16 — bounded by [fuel] iterations
+    (two passes always suffice for sums of a handful of 16-bit words). *)
+Fixpoint csum_fold16_fuel (fuel : nat) (n : N) : N :=
+  match fuel with
+  | 0 => mask16 n
+  | S k =>
+      let lo := mask16 n in
+      let hi := N.shiftr n 16 in
+      if N.eqb hi 0 then lo else csum_fold16_fuel k (lo + hi)
+  end.
+Definition csum_fold16 (n : N) : N := csum_fold16_fuel 4 n.
+
+(** The new 16-bit checksum after replacing the 16-bit word [oldw] by [neww]
+    in a region whose old checksum is [oldck] (all taken as 16-bit values):
+    [HC' = ~(~HC + ~m + m')], folded into 16 bits (RFC 1624 eqn. 3). *)
+Definition csum_replace16 (oldck oldw neww : N) : N :=
+  mask16 (not16 (csum_fold16 (not16 (mask16 oldck)
+                              + not16 (mask16 oldw)
+                              + mask16 neww))).
+
+(** Replace a sequence of consecutive 16-bit words [olds]/[news] in [oldck],
+    applying [csum_replace16] left-to-right (the kernel sums multiple words for
+    an IPv6 address or for the L4 pseudo-header that covers the L3 address). *)
+Fixpoint csum_replace_words (oldck : N) (olds news : list N) : N :=
+  match olds, news with
+  | o :: os, n :: ns => csum_replace_words (csum_replace16 oldck o n) os ns
+  | _, _ => oldck
+  end.
+
+(** Split a big-endian byte string into its 16-bit words (pairs of bytes; a
+    trailing odd byte is treated as the high byte of a final word, mirroring the
+    checksum's right-zero-padding). *)
+Fixpoint data_to_words16 (d : data) : list N :=
+  match d with
+  | [] => []
+  | [b] => [N.shiftl (N.of_nat b) 8]
+  | hi :: lo :: rest => (N.shiftl (N.of_nat hi) 8 + N.of_nat lo)%N :: data_to_words16 rest
+  end.
+
+(** Big-endian 2-byte encoding of a 16-bit checksum value. *)
+Definition csum_to_data (n : N) : data := N_to_data 2 (mask16 n).
+(** The 16-bit value of a big-endian 2-byte checksum field. *)
+Definition csum_of_data (d : data) : N := mask16 (data_to_N d).
+
+Lemma csum_to_data_length : forall n, List.length (csum_to_data n) = 2.
+Proof. intro n. unfold csum_to_data. apply N_to_data_length. Qed.
+
+(** Incrementally update a 2-byte checksum field [ck] for a field change from
+    [old] to [new] (both byte strings of the same length, split into 16-bit
+    words) — the model of [csum_replace4] (4-byte address: two 16-bit words) and
+    [inet_proto_csum_replace2] (2-byte port: one word).  Returns the new 2-byte
+    checksum field. *)
+Definition csum_update_field (ck old new : data) : data :=
+  csum_to_data (csum_replace_words (csum_of_data ck)
+                                   (data_to_words16 old) (data_to_words16 new)).
+
+Lemma csum_update_field_length : forall ck old new,
+  List.length (csum_update_field ck old new) = 2.
+Proof. intros. unfold csum_update_field. apply csum_to_data_length. Qed.
 
 (** Jenkins-hash transform ([hash ... = jhash(reg, len, seed) % mod offset]).
     The real jhash is a specific mixing function; we model it as a deterministic

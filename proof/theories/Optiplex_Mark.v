@@ -255,15 +255,8 @@ Lemma saddr_after_set : forall p v,
 Proof.
   intros p v Hlen Hv.
   unfold field_value; cbn [field_load do_load]; unfold read_payload, set_saddr;
-    change (saddr_slot "ip") with (12, 4); cbn [set_nh_field pkt_nh].
-    unfold slice, splice.
-  assert (H12 : List.length (firstn 12 (pkt_nh p)) = 12)
-    by (rewrite firstn_length_le; [reflexivity | lia]).
-  rewrite skipn_app, H12.
-  rewrite (skipn_all2 (firstn 12 (pkt_nh p))) by lia.
-  replace (12 - 12) with 0 by lia. cbn [skipn app].
-  rewrite firstn_app, Hv. replace (4 - 4) with 0 by lia.
-  rewrite firstn_O, app_nil_r, firstn_all2 by lia. reflexivity.
+    change (saddr_slot "ip") with (12, 4); cbn [String.eqb].
+  apply slice_set_nh_addr_ip4_same; lia.
 Qed.
 
 Theorem masquerade_source_is_exit_iface : forall p ifaddr,

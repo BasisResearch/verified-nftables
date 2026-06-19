@@ -55,15 +55,8 @@ Lemma daddr_after_set : forall p v,
 Proof.
   intros p v Hlen Hv.
   unfold field_value; cbn [field_load do_load]; unfold read_payload, set_daddr;
-    change (daddr_slot "ip") with (16, 4); cbn [set_nh_field pkt_nh].
-    unfold slice, splice.
-  assert (H16 : List.length (firstn 16 (pkt_nh p)) = 16)
-    by (rewrite firstn_length_le; [reflexivity | lia]).
-  rewrite skipn_app, H16.
-  rewrite (skipn_all2 (firstn 16 (pkt_nh p))) by lia.
-  replace (16 - 16) with 0 by lia. cbn [skipn app].
-  rewrite firstn_app, Hv. replace (4 - 4) with 0 by lia.
-  rewrite firstn_O, app_nil_r, firstn_all2 by lia. reflexivity.
+    change (daddr_slot "ip") with (16, 4); cbn [String.eqb].
+  apply slice_set_nh_addr_ip4_same; lia.
 Qed.
 
 Theorem dnat_dest_is_target : forall p,
@@ -305,3 +298,53 @@ Qed.
 Theorem dnat_portonly_writes_dport : forall h p,
   pkt_th (apply_nat h dnat_portonly_rule p) = splice (pkt_th p) 2 2 (nat_port_bytes 80).
 Proof. reflexivity. Qed.
+
+(** * The IPv4 header checksum is NOT left stale after a NAT address rewrite.
+
+    The kernel's [nf_nat_ipv4_manip_pkt] (nf_nat_proto.c:329-333) runs
+    [csum_replace4(&iph->check, old_addr, new_addr)] in the SAME step as writing
+    the new address, so the IPv4 header checksum (network bytes 10..11) is updated
+    incrementally (RFC 1624).  The model now mirrors this in [set_daddr]/[set_saddr]
+    (via [set_nh_addr_ip4] -> [csum_update_field]).  A red probe of the form
+    `ip_csum (chain_out dnat_chain p) = ip_csum p` — asserting the checksum is
+    UNCHANGED after a rewrite — is therefore now provably FALSE on a packet whose
+    destination actually changes.
+
+    [ip_csum] names the IPv4 header checksum slot (bytes 10..11). *)
+Definition ip_csum (p : packet) : data := List.firstn 2 (List.skipn 10 (pkt_nh p)).
+
+(* A concrete, well-formed 20-byte IPv4 header whose destination is 1.2.3.4 and
+   whose checksum field starts at [0;0] (the slot we observe being updated). *)
+Definition ip4_hdr : data :=
+  [ 69; 0; 0; 20            (* ver/ihl, tos, total length *)
+  ; 0; 0; 0; 0              (* id, frag *)
+  ; 64; 6                   (* ttl, proto=TCP *)
+  ; 0; 0                    (* header checksum (bytes 10..11) — observed *)
+  ; 10; 0; 0; 2             (* source 10.0.0.2 *)
+  ; 1; 2; 3; 4 ].           (* destination 1.2.3.4 -> dnat to 10.0.0.1 *)
+Definition env0 : env :=
+  {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
+     e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
+     e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => [];
+     e_connlimit := fun _ => 0 |}.
+Definition pkt4 : packet :=
+  {| pkt_env := env0; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
+     pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
+     pkt_lh := []; pkt_nh := ip4_hdr; pkt_th := [0;0;0;0;0;0;0;0]; pkt_ih := [];
+     pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
+     pkt_osf := []; pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
+     pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := true; pkt_fragoff := 0 |}.
+
+(* The dnat rewrites the destination 1.2.3.4 -> 10.0.0.1, so the IPv4 header
+   checksum slot MUST change.  The red property [ip_csum out = ip_csum p] is FALSE. *)
+Theorem dnat_updates_ip_checksum :
+  ip_csum (chain_out dnat_chain pkt4) <> ip_csum pkt4.
+Proof. vm_compute. discriminate. Qed.
+
+(* And the new checksum is exactly the RFC-1624 incremental update of the old
+   checksum for the (old daddr -> new daddr) change — i.e. [csum_replace4]. *)
+Theorem dnat_ip_checksum_is_incremental :
+  ip_csum (chain_out dnat_chain pkt4)
+    = csum_update_field (ip_csum pkt4) [1;2;3;4] [10;0;0;1].
+Proof. vm_compute. reflexivity. Qed.

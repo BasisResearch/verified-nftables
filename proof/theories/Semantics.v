@@ -4,7 +4,7 @@
     semantics — a function from a packet to the verdict the base chain produces —
     so "semantics preserving" is a literal equality of these functions. *)
 
-From Stdlib Require Import List NArith Bool.
+From Stdlib Require Import List NArith Bool Lia.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode.
 Import ListNotations.
 (* [String] is left UNimported (it shadows List's [concat]/[length]); the chain
@@ -791,6 +791,21 @@ Definition set_sport (p : packet) (v : data) : packet := set_th_field p 0 2 v.
     nf_nat_proto.c:163-172). *)
 Definition set_dport (p : packet) (v : data) : packet := set_th_field p 2 2 v.
 
+(** KNOWN APPROXIMATION (below resolution): the L4 (TCP/UDP) CHECKSUM is NOT
+    updated by [set_sport]/[set_dport] (nor by the L3 address rewrite, whose new
+    address the L4 pseudo-header covers).  The kernel's [tcp_manip_pkt]/
+    [udp_manip_pkt] run [inet_proto_csum_replace2(&hdr->check, oldport, newport)]
+    and [nf_csum_update] (nf_nat_proto.c:177/57).  Modelling that faithfully needs
+    the L4 PROTOCOL at the write site (TCP checksum @ transport bytes 16..17, UDP
+    @ 6..7 — a protocol-dependent slot the NAT statement does not itself carry),
+    so the L4 checksum is left as a documented gap, exactly like ICMP-error
+    emission.  CRUCIALLY, [set_sport]/[set_dport] only ever splice the 2-byte PORT
+    slot, so the model NEVER PROVES the L4 checksum is unchanged across a rewrite
+    that the kernel would update — it simply does not assert anything about those
+    bytes.  By contrast the IPv4 L3 header checksum IS a fixed slot (bytes 10..11)
+    and IS updated ([set_nh_addr_ip4], above), because the formerly-provable
+    "IP checksum unchanged after a rewrite" was a reachable CERTIFIED falsehood. *)
+
 (** The (offset, length) of the L3 source / destination address slot for a NAT
     [family] ("ip" = IPv4: src @12 len 4 / dst @16 len 4, where [FIp4Saddr] /
     [FIp4Daddr] read; "ip6" = IPv6: src @8 len 16 / dst @24 len 16, where
@@ -801,19 +816,133 @@ Definition saddr_slot (family : String.string) : nat * nat :=
 Definition daddr_slot (family : String.string) : nat * nat :=
   if String.eqb family nat_fam_ip6 then (24, 16) else (16, 4).
 
+(** The IPv4 header checksum field lives at network-header bytes 10..11.  After a
+    NAT address rewrite the kernel does NOT leave it stale: [nf_nat_ipv4_manip_pkt]
+    (nf_nat_proto.c:329-333) calls [csum_replace4(&iph->check, old_addr, new_addr)]
+    — an RFC-1624 incremental update — in the SAME step as writing the new address.
+    [ip_check_off]/[ip_check_len] name that slot; [set_ip_check] splices the
+    incrementally-updated 2-byte checksum (computed from the old/new address words)
+    into it, modelling [csum_replace4].  IPv6 has NO L3 header checksum, so only the
+    IPv4 family updates it. *)
+Definition ip_check_off : nat := 10.
+Definition ip_check_len : nat := 2.
+
+(** Rewrite [len] bytes of the network header at [off] to [v] AND incrementally
+    update the IPv4 header checksum (bytes 10..11) for the change from the OLD
+    bytes at that slot to [v] — the address-NAT write primitive that mirrors the
+    kernel's combined `iph->daddr = ...; csum_replace4(&iph->check, old, new)`.
+    The old field is read from the (pre-write) network header; the new checksum is
+    [csum_update_field] over (old field, new field).  Only the address slot is
+    touched besides the checksum, so the header length is preserved. *)
+Definition set_nh_addr_ip4 (p : packet) (off len : nat) (v : data) : packet :=
+  let nh   := pkt_nh p in
+  let old  := slice nh off len in
+  let nh1  := splice nh off len v in
+  let ck0  := slice nh1 ip_check_off ip_check_len in
+  let ck1  := csum_update_field ck0 old v in
+  let nh2  := splice nh1 ip_check_off ip_check_len ck1 in
+  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p;
+     pkt_sock := pkt_sock p; pkt_eh := pkt_eh p; pkt_lh := pkt_lh p;
+     pkt_nh := nh2; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
+
+(** [set_nh_addr_ip4] leaves the transport header untouched. *)
+Lemma set_nh_addr_ip4_th : forall p off len v,
+  pkt_th (set_nh_addr_ip4 p off len v) = pkt_th p.
+Proof. reflexivity. Qed.
+
+(** Splicing [w] (|w|=2) at offset 10 and then reading [len] bytes at [off] with
+    [off >= 12] returns the same bytes as reading [off]/[len] from the unspliced
+    list (the checksum slot 10..11 is disjoint from an address slot at >= 12). *)
+Lemma slice_splice_after : forall l w off len,
+  List.length w = ip_check_len ->
+  ip_check_off + ip_check_len <= off ->
+  slice (splice l ip_check_off ip_check_len w) off len = slice l off len.
+Proof.
+  intros l w off len Hw Hoff. unfold slice, splice, ip_check_off, ip_check_len in *.
+  assert (Hcase : 10 <= List.length l \/ List.length l < 10) by lia.
+  destruct Hcase as [Hlong|Hshort].
+  2:{ (* l too short: firstn 10 l = l, skipn 12 l = [], so splice = l ++ w *)
+    rewrite (firstn_all2 l) by lia. rewrite (skipn_all2 l) by lia.
+    rewrite app_nil_r.
+    rewrite (skipn_all2 (l ++ w)) by (rewrite length_app; lia).
+    rewrite (skipn_all2 l) by lia.
+    cbn [firstn]. reflexivity. }
+  assert (Hf10 : List.length (firstn 10 l) = 10) by (rewrite firstn_length_le; lia).
+  rewrite skipn_app, Hf10.
+  rewrite (skipn_all2 (firstn 10 l)) by (rewrite Hf10; lia). cbn [app].
+  rewrite skipn_app, Hw.
+  rewrite (skipn_all2 w) by lia.
+  cbn [app].
+  rewrite skipn_skipn.
+  replace (off - 10 - 2 + (10 + 2)) with off by lia.
+  reflexivity.
+Qed.
+
 (** Source-NAT a packet: rewrite its source address (the [saddr_slot] for the
     NAT [family]) to [v].  This is the data-plane effect a `snat`/`masquerade`
     performs; [set_saddr "ip" p (e_ifaddr (pkt_env p) oifname)] realises
-    `masquerade` = "use the IP of the interface the packet exits". *)
+    `masquerade` = "use the IP of the interface the packet exits".  For IPv4 the
+    IP header checksum is incrementally updated ([set_nh_addr_ip4], mirroring
+    [csum_replace4]); IPv6 has no L3 checksum so it is a bare slot splice. *)
 Definition set_saddr (family : String.string) (p : packet) (v : data) : packet :=
-  let '(off, len) := saddr_slot family in set_nh_field p off len v.
+  let '(off, len) := saddr_slot family in
+  if String.eqb family nat_fam_ip6 then set_nh_field p off len v
+  else set_nh_addr_ip4 p off len v.
 
 (** Destination-NAT a packet: rewrite its destination address (the [daddr_slot]
     for the NAT [family]) to [v].  This is the data-plane effect a
     `dnat`/`redirect` performs — the kernel `nft_nat` applies [NF_NAT_MANIP_DST]
-    from [NFTNL_EXPR_NAT_REG_ADDR_MIN] (netlink_linearize.c:1304). *)
+    from [NFTNL_EXPR_NAT_REG_ADDR_MIN] (netlink_linearize.c:1304), and
+    [nf_nat_ipv4_manip_pkt] also runs [csum_replace4] on the IPv4 header checksum. *)
 Definition set_daddr (family : String.string) (p : packet) (v : data) : packet :=
-  let '(off, len) := daddr_slot family in set_nh_field p off len v.
+  let '(off, len) := daddr_slot family in
+  if String.eqb family nat_fam_ip6 then set_nh_field p off len v
+  else set_nh_addr_ip4 p off len v.
+
+(** [set_saddr]/[set_daddr] leave the transport header untouched (for both
+    families): the L4 port and the rest of the transport stay byte-for-byte. *)
+Lemma set_saddr_th : forall fam p v, pkt_th (set_saddr fam p v) = pkt_th p.
+Proof.
+  intros fam p v. unfold set_saddr.
+  destruct (saddr_slot fam) as [off len].
+  destruct (String.eqb fam nat_fam_ip6); reflexivity.
+Qed.
+Lemma set_daddr_th : forall fam p v, pkt_th (set_daddr fam p v) = pkt_th p.
+Proof.
+  intros fam p v. unfold set_daddr.
+  destruct (daddr_slot fam) as [off len].
+  destruct (String.eqb fam nat_fam_ip6); reflexivity.
+Qed.
+
+(** Reading the network-header bytes [off..off+len) back after an IPv4 address
+    rewrite at the SAME slot [off]/[len] (with [off >= 12], i.e. either the source
+    @12 or destination @16 slot, disjoint from the checksum @10..11) yields [v] —
+    the address survives, the checksum update doesn't disturb it. *)
+Lemma slice_set_nh_addr_ip4_same : forall p off len v,
+  12 <= off ->
+  List.length v = len ->
+  off + len <= List.length (pkt_nh p) ->
+  slice (pkt_nh (set_nh_addr_ip4 p off len v)) off len = v.
+Proof.
+  intros p off len v Hoff Hv Hlen.
+  unfold set_nh_addr_ip4; cbn [pkt_nh].
+  rewrite slice_splice_after
+    by (unfold ip_check_off, ip_check_len; try apply csum_update_field_length; lia).
+  unfold slice, splice.
+  assert (Hf : List.length (firstn off (pkt_nh p)) = off)
+    by (apply firstn_length_le; lia).
+  rewrite skipn_app, Hf.
+  rewrite (skipn_all2 (firstn off (pkt_nh p))) by (rewrite Hf; lia). cbn [app].
+  replace (off - off) with 0 by lia. rewrite skipn_O.
+  rewrite firstn_app. rewrite Hv. replace (len - len) with 0 by lia.
+  rewrite firstn_O, app_nil_r.
+  apply firstn_all2. lia.
+Qed.
 
 (** ** Dynamic sets: the `dynset` feedback loop (`add`/`update`/`delete @s {key}`).
 
