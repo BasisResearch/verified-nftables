@@ -186,12 +186,27 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
 Definition field_value (f : field) (p : packet) : data :=
   do_load (field_load f) p.
 
+(** Whether an extension-header / TCP-option / SCTP-chunk VALUE load finds its
+    target present.  Derived from the SAME underlying existence oracle the
+    F_PRESENT load reports on ([pkt_eh p ep h 0 0 true]): nonzero <=> present.
+    This links the "present?" flag and the "value bytes" so the impossible
+    kernel state "option absent yet value=v" is no longer admissible: a VALUE
+    load on an absent option is NOT loadable (matches the kernel's NFT_BREAK in
+    nft_exthdr_{tcp,ipv6,ipv4}_eval err path, taken when F_PRESENT is unset). *)
+Definition exthdr_present (p : packet) (ep : exthdr_proto) (h : nat) : bool :=
+  List.existsb (fun b => negb (Nat.eqb b 0)) (pkt_eh p ep h 0 0 true).
+
 (** Whether a load SUCCEEDS on a packet (does not cause the kernel to NFT_BREAK).
-    Only a payload load can fail (a short/fragmented/no-L4 header); every other
-    load reads kernel-computed state or an oracle and always succeeds. *)
+    A payload load can fail (a short/fragmented/no-L4/no-L2 header).  An exthdr
+    VALUE load (present=false) fails when the requested extension header / TCP
+    option / SCTP chunk is ABSENT — kernel nft_exthdr_*_eval `goto err` ->
+    NFT_BREAK; an exthdr EXISTENCE load (present=true) NEVER breaks (the kernel
+    stores 0 on the err path under F_PRESENT).  Every other load reads
+    kernel-computed state or an oracle and always succeeds. *)
 Definition load_ok (ld : loaddesc) (p : packet) : bool :=
   match ld with
   | LPayload b off len => read_payload_ok b off len p
+  | LExthdr ep h _ _ pr => if pr then true else exthdr_present p ep h
   | _ => true
   end.
 

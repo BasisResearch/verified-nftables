@@ -19,8 +19,10 @@ Proof.
   intros f dst rf rest p Hl. unfold field_value, do_load, compile_load.
   unfold field_loadable, load_ok in Hl.
   destruct (field_load f) eqn:E; simpl; try reflexivity.
-  (* LPayload: the VM guards on read_payload_ok, which [Hl] establishes *)
-  rewrite Hl. reflexivity.
+  - (* LExthdr: the VM guards on the same load_ok, which [Hl] establishes *)
+    unfold load_ok. rewrite Hl. reflexivity.
+  - (* LPayload: the VM guards on read_payload_ok, which [Hl] establishes *)
+    rewrite Hl. reflexivity.
 Qed.
 
 Lemma forallb_map : forall {A B} (g : B -> bool) (h : A -> B) (l : list A),
@@ -36,7 +38,9 @@ Lemma compile_load_break : forall f dst rf rest p,
 Proof.
   intros f dst rf rest p Hl. unfold field_loadable, load_ok in Hl.
   unfold compile_load. destruct (field_load f) eqn:E; cbn [run_rule] in *; try discriminate Hl.
-  rewrite Hl. reflexivity.
+  - (* LExthdr: VM guard load_ok is false, so the rule breaks (None) *)
+    unfold load_ok. rewrite Hl. reflexivity.
+  - rewrite Hl. reflexivity.
 Qed.
 
 Lemma compile_load_break_writes : forall f dst rf rest p,
@@ -45,7 +49,9 @@ Lemma compile_load_break_writes : forall f dst rf rest p,
 Proof.
   intros f dst rf rest p Hl. unfold field_loadable, load_ok in Hl.
   unfold compile_load. destruct (field_load f) eqn:E; cbn [run_rule_writes] in *; try discriminate Hl.
-  rewrite Hl. reflexivity.
+  - (* LExthdr: VM guard load_ok is false, so the rule breaks (packet unchanged) *)
+    unfold load_ok. rewrite Hl. reflexivity.
+  - rewrite Hl. reflexivity.
 Qed.
 
 (** ** Multi-register concatenation: the allocator emits distinct registers, so
@@ -599,6 +605,9 @@ Proof.
   all: try (destruct (Nat.ltb 0 (e_connlimit _ _)); [apply IH; exact Hno | reflexivity]).
   all: try (destruct (assoc_verdict _ _); [reflexivity | apply IH; exact Hno]).
   all: try (destruct (read_payload_ok _ _ _ _); [apply IH; exact Hno | reflexivity]).
+  (* IExthdrLoad: the load_ok guard breaks the rule (returns [p]) when false;
+     the continue arm threads by IH (the load is not a write). *)
+  all: try (destruct (load_ok _ _); [apply IH; exact Hno | reflexivity]).
   (* ISynproxy: break/stop return [p]; the continue arm threads by IH. *)
   all: try (destruct (synproxy_loadable p);
             [destruct (synproxy_stops p); [reflexivity | apply IH; exact Hno] | reflexivity]).
@@ -637,7 +646,9 @@ Proof.
   intros f dst rf rest p Hl. unfold field_value, do_load, compile_load.
   unfold field_loadable, load_ok in Hl.
   destruct (field_load f) eqn:E; simpl; try reflexivity.
-  rewrite Hl. reflexivity.
+  - (* LExthdr: VM guards on the same load_ok, established by [Hl] *)
+    unfold load_ok. rewrite Hl. reflexivity.
+  - rewrite Hl. reflexivity.
 Qed.
 
 Lemma run_load_fields_writes : forall pairs rf tail p,
@@ -1214,7 +1225,11 @@ Qed.
 (** Whether every payload load in an instruction list SUCCEEDS on [p] (the only
     instruction that can break a straight prefix is a failing [IPayloadLoad]). *)
 Definition loads_ok_instr (i : instr) (p : packet) : bool :=
-  match i with IPayloadLoad b o l _ => read_payload_ok b o l p | _ => true end.
+  match i with
+  | IPayloadLoad b o l _ => read_payload_ok b o l p
+  | IExthdrLoad ep h o l pr _ => load_ok (LExthdr ep h o l pr) p
+  | _ => true
+  end.
 Definition loads_ok (is : list instr) (p : packet) : bool :=
   forallb (fun i => loads_ok_instr i p) is.
 
@@ -1328,17 +1343,19 @@ Proof.
   cbn [loads_ok forallb] in Hlo. apply Bool.andb_true_iff in Hlo. destruct Hlo as [Hl Hlop].
   destruct i; cbn [straight_instr] in Hi; try discriminate Hi;
     try (cbn [app run_rule_writes]; apply IH; [exact Hpre | exact Hlop]).
-  (* Two remaining goals: IDynset (branches on datareg/fdata) and IPayloadLoad
-     (succeeds by [Hl], threading to the rest). *)
+  (* Three remaining goals: IDynset (branches on datareg/fdata), IExthdrLoad and
+     IPayloadLoad (each guarded by [Hl], threading to the rest). *)
   all: cbn [loads_ok_instr] in Hl.
-  - (* IDynset *) match goal with [ d : option reg, b : bool |- _ ] =>
-      destruct d as [dreg |]; [destruct b |]; cbn [straight_instr] in Hi;
+  all: first
+    [ (* IDynset *) match goal with [ d : option reg, b : bool |- _ ] =>
+        destruct d as [dreg |]; [destruct b |]; cbn [straight_instr] in Hi;
+        cbn [app run_rule_writes];
+        solve [ apply IH; [exact Hpre | exact Hlop] | discriminate Hi ]
+      end
+    | (* IExthdrLoad / IPayloadLoad: guarded by [Hl] *)
       cbn [app run_rule_writes];
-      solve [ apply IH; [exact Hpre | exact Hlop] | discriminate Hi ]
-    end.
-  - (* IPayloadLoad *) cbn [app run_rule_writes].
-    match goal with |- context [if ?c then _ else _] => destruct c; [| discriminate Hl] end.
-    apply IH; [exact Hpre | exact Hlop].
+      match goal with |- context [if ?c then _ else _] => destruct c; [| discriminate Hl] end;
+      apply IH; [exact Hpre | exact Hlop] ].
 Qed.
 
 (** A "mutating" statement: a meta/ct set (mutates a packet field) OR a dynset

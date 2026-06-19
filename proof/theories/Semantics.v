@@ -811,7 +811,13 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | IOsf dst :: rest =>
       run_rule (set_reg rf dst (pkt_osf p)) rest p
   | IExthdrLoad ep h o l pr dst :: rest =>
-      run_rule (set_reg rf dst (pkt_eh p ep h o l pr)) rest p
+      (* A VALUE load (pr=false) of an ABSENT extension-header / TCP-option /
+         SCTP-chunk makes the kernel set NFT_BREAK (nft_exthdr_*_eval err path).
+         An EXISTENCE load (pr=true) never breaks (stores 0 under F_PRESENT).
+         Gate on the same predicate the DSL's [load_ok] uses. *)
+      if load_ok (LExthdr ep h o l pr) p
+      then run_rule (set_reg rf dst (pkt_eh p ep h o l pr)) rest p
+      else None
   | IFibLoad sel res dst :: rest =>
       run_rule (set_reg rf dst (lpm_fib (e_routes (pkt_env p)) (pkt_fibkey p sel) res)) rest p
   | ICtDirLoad key dir dst :: rest =>
@@ -1531,7 +1537,12 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
       run_rule_writes (set_reg rf dst (do_load (LNumgen spec) p)) rest p
   | IOsf dst :: rest => run_rule_writes (set_reg rf dst (pkt_osf p)) rest p
   | IExthdrLoad ep h o l pr dst :: rest =>
-      run_rule_writes (set_reg rf dst (pkt_eh p ep h o l pr)) rest p
+      (* a VALUE load of an absent exthdr/option breaks the rule (NFT_BREAK): no
+         later statement runs, the packet is returned unchanged — mirrors
+         [run_rule] and the payload guard below. *)
+      if load_ok (LExthdr ep h o l pr) p
+      then run_rule_writes (set_reg rf dst (pkt_eh p ep h o l pr)) rest p
+      else p
   | IFibLoad sel res dst :: rest => run_rule_writes (set_reg rf dst (lpm_fib (e_routes (pkt_env p)) (pkt_fibkey p sel) res)) rest p
   | ICtDirLoad key dir dst :: rest => run_rule_writes (set_reg rf dst (pkt_ctdir p key dir)) rest p
   | IXfrmLoad dir sp key dst :: rest => run_rule_writes (set_reg rf dst (pkt_xfrm p dir sp key)) rest p

@@ -1052,6 +1052,49 @@ let check_notrack () =
     (Semantics.eval_chain_mut chain_no_notrack p = Verdict.Drop);
   Printf.printf "\n"
 
+(* exthdr / TCP-option VALUE load not-present guard.  Kernel nft_exthdr_tcp_eval
+   `goto err` -> NFT_BREAK when the requested option is ABSENT (VALUE load), so
+   the rule does not match and the chain falls through to its policy (Accept).
+   An EXISTENCE load (present=true) never breaks (stores 0).  Before the fix the
+   exthdr value was a pure oracle that always matched -> kernel-false Drop. *)
+let check_exthdr_present () =
+  Printf.printf "=== exthdr/TCP-option VALUE load not-present guard (NFT_BREAK) ===\n";
+  let maxseg_val = [5;180] in   (* 1460 = 0x05B4, the maxseg option value *)
+  (* `tcp option maxseg size 1460`: VALUE load, htype=2, off=2, len=2. *)
+  let f_maxseg = Syntax.FExthdr (Packet.EPtcpopt, 2, 2, 2, false) in
+  let maxseg_drop : Syntax.rule =
+    { Syntax.r_body = [ Syntax.BMatch (Syntax.MEq (f_maxseg, maxseg_val)) ];
+      r_verdict = Verdict.Drop; r_vmap = None; r_nat = None; r_tproxy = None;
+      r_fwd = None; r_queue = None; r_after = [] } in
+  let chain : Syntax.chain =
+    { Syntax.c_policy = Verdict.Accept; c_rules = [ maxseg_drop ] } in
+  let env = { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
+              e_routes = []; e_rt = (fun _ -> []); e_limit = (fun _ -> 0);
+              e_quota = (fun _ -> 0); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
+              e_connlimit = (fun _ -> 0); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None);
+              e_numgen = (fun _ -> 0) } in
+  (* ABSENT: existence oracle (present=true) returns [0]; the value oracle returns
+     the matching bytes anyway (the impossible-in-kernel state the model used to
+     admit).  The guard must REFUSE to load the value, so the chain ACCEPTS. *)
+  let eh_absent _ _ _ _ pr = if pr then [0] else maxseg_val in
+  let p_absent = { (mk_pkt ~env ()) with Packet.pkt_eh = eh_absent } in
+  check "VALUE load of an ABSENT tcp option is NOT loadable"
+    (not (Syntax.field_loadable f_maxseg p_absent));
+  check "EXISTENCE load (present=true) IS loadable even when absent"
+    (Syntax.field_loadable (Syntax.FExthdr (Packet.EPtcpopt, 2, 0, 0, true)) p_absent);
+  check "absent maxseg -> NFT_BREAK -> chain ACCEPTS (eval_chain, kernel-correct)"
+    (Semantics.eval_chain chain p_absent = Verdict.Accept);
+  check "absent maxseg -> chain ACCEPTS (eval_chain_mut, kernel-correct)"
+    (Semantics.eval_chain_mut chain p_absent = Verdict.Accept);
+  (* PRESENT: existence oracle returns [1]; the value matches -> DROP. *)
+  let eh_present _ _ _ _ pr = if pr then [1] else maxseg_val in
+  let p_present = { (mk_pkt ~env ()) with Packet.pkt_eh = eh_present } in
+  check "PRESENT maxseg with matching value -> chain DROPS (eval_chain)"
+    (Semantics.eval_chain chain p_present = Verdict.Drop);
+  check "PRESENT maxseg with matching value -> chain DROPS (eval_chain_mut)"
+    (Semantics.eval_chain_mut chain p_present = Verdict.Drop);
+  Printf.printf "\n"
+
 (* (I''') INTRA-RULE notrack->ct-state: `ct notrack ct state untracked accept` in ONE
    rule.  The kernel runs a rule's expressions left-to-right (nf_tables_core.c
    nft_rule_dp_for_each_expr): nft_notrack_eval latches IP_CT_UNTRACKED, then the SAME
@@ -1907,6 +1950,7 @@ let () =
     check_ct_mark_crosspkt ();
     check_notrack ();
     check_notrack_intra ();
+    check_exthdr_present ();
     check_interval_vmap ();
     check_tcp_flags ();
     check_meta_nfproto ();
