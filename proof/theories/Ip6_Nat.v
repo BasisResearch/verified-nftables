@@ -132,7 +132,7 @@ Definition e0 : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
      e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => []; e_connlimit := fun _ => 0;
-     e_ct := fun _ _ => []; e_nat := fun _ => None |}.
+     e_ct := fun _ _ => []; e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
 Definition pkt6 : packet :=
   {| pkt_env := e0; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
@@ -184,7 +184,7 @@ Definition e6 : env :=
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
      e_quota := fun _ => 0; e_ifaddr := fun _ => [9;9;9;9];
      e_ifaddr6 := fun _ => if6; e_connlimit := fun _ => 0;
-     e_ct := fun _ _ => []; e_nat := fun _ => None |}.
+     e_ct := fun _ _ => []; e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
 
 (* A 40-byte IPv6 packet whose source slot (bytes 8..23) holds distinguishable
    markers 108..123 (as in the red probe). *)

@@ -167,6 +167,77 @@ Definition set_untracked (p : packet) : packet :=
      pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
      pkt_untracked := true; pkt_ctdir_orig := pkt_ctdir_orig p |}.
 
+(** Update the SHARED `numgen inc` counter [e_numgen] for instance [spec]: INCREMENT
+    it by one, leaving every other instance's counter — and every other env
+    component — unchanged.  Mirrors the kernel's atomic_cmpxchg advancing the
+    instance's [atomic_t *counter] by one per evaluation (nft_ng_inc_gen). *)
+Definition env_numgen_upd (e : env) (spec : numgen_spec) : env :=
+  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
+     e_routes := e_routes e; e_rt := e_rt e;
+     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
+     e_ct := e_ct e; e_nat := e_nat e;
+     e_numgen := (fun s => if numgen_eqb spec s then S (e_numgen e s) else e_numgen e s) |}.
+
+(** Advance the shared `numgen inc` counter once: the side effect of EVALUATING a
+    `numgen inc` expression.  The value the eval RETURNS is read by [do_load] BEFORE
+    this from [e_numgen]; [set_numgen] then bumps the counter so the NEXT evaluation
+    (this rule's later firing, threaded within the rule, or — through the
+    cross-packet env threading by [run_rule_writes]/[body_writes] — the next packet's
+    firing) reads the successor.  `numgen random` (ng_random = true) has no counter,
+    so it is a no-op.  Only [pkt_env]'s [e_numgen] changes; every other packet/env
+    component is preserved, so all loadability predicates are invariant under it and
+    the DSL/VM stay in lock-step. *)
+Definition set_numgen (p : packet) (spec : numgen_spec) : packet :=
+  if ng_random spec then p else
+  {| pkt_env := env_numgen_upd (pkt_env p) spec; pkt_meta := pkt_meta p;
+     pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
+     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
+     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
+
+(** [set_numgen] only changes [pkt_env]'s [e_numgen]; it leaves payload / meta / ct /
+    flow / oracle components intact.  Hence loadability predicates and every read
+    EXCEPT a `numgen inc` load are invariant under it. *)
+Lemma read_payload_ok_numgen : forall b o l p spec,
+  read_payload_ok b o l (set_numgen p spec) = read_payload_ok b o l p.
+Proof. intros. unfold set_numgen. destruct (ng_random spec); reflexivity. Qed.
+
+(** The cross-packet `numgen inc` COUNTER ADVANCE of running a rule's bytecode: each
+    incremental [INumgen] the program contains advances the instance's shared counter
+    once (the kernel's per-evaluation atomic increment).  This is applied by the
+    MUTATION evaluators ([run_program_mut]/[run_program_mut_env]) to the packet a rule
+    leaves, so the NEXT packet of the traversal reads the successor numgen value —
+    threaded through [pkt_env] exactly like a dynset/ct/nat env write.  Keeping the
+    advance OUT of the per-instruction [run_rule_writes] preserves the load-fields
+    lock-step; a `numgen inc` is a verdict-/register effect within a rule, its counter
+    bump a cross-packet effect.  (A real ruleset contains no [INumgen]
+    ([numgen_free_prog]), so the sweep is the identity there and the compiler's
+    mutation correctness is unaffected.) *)
+Definition numgen_sweep_prog (is : list instr) (p : packet) : packet :=
+  fold_left (fun q i => match i with INumgen spec _ => set_numgen q spec | _ => q end) is p.
+
+(** Whether a program contains NO incremental [INumgen] (so [numgen_sweep_prog] is the
+    identity).  Holds for every compiled real ruleset (numgen has no DSL/parser
+    surface). *)
+Definition numgen_free_prog (is : list instr) : bool :=
+  forallb (fun i => match i with INumgen spec _ => ng_random spec | _ => true end) is.
+
+Lemma numgen_sweep_prog_id : forall is p,
+  numgen_free_prog is = true -> numgen_sweep_prog is p = p.
+Proof.
+  intros is. unfold numgen_sweep_prog, numgen_free_prog.
+  induction is as [| i is IH]; intros p H; [reflexivity|].
+  cbn [forallb] in H. apply Bool.andb_true_iff in H. destruct H as [Hi Hrest].
+  cbn [fold_left]. destruct i; try (apply IH; exact Hrest).
+  (* INumgen: ng_random forces set_numgen = identity *)
+  unfold set_numgen. rewrite Hi. apply IH; exact Hrest.
+Qed.
+
 (** [set_untracked] only flips [pkt_untracked]; it leaves every payload / meta /
     env / oracle component intact.  Hence every loadability predicate (which reads
     only payload geometry) is invariant under it, and [field_value]/[eval_matchcond]
@@ -190,6 +261,7 @@ Proof. reflexivity. Qed.
     exactly the original [forallb eval_matchcond (body_matches …)] over [p]. *)
 Definition body_has_notrack (body : list body_item) : bool :=
   existsb (fun it => match it with BStmt SNotrack => true | _ => false end) body.
+
 
 (** [set_untracked] is idempotent — it only ever forces the latch to [true]. *)
 Lemma set_untracked_idem : forall p,
@@ -388,7 +460,7 @@ Definition env_with_sets (base : env) (d : set_decls) : env :=
      e_routes := e_routes base; e_rt := e_rt base;
      e_ifaddr := e_ifaddr base; e_ifaddr6 := e_ifaddr6 base;
      e_limit := e_limit base; e_quota := e_quota base; e_connlimit := e_connlimit base;
-     e_ct := e_ct base; e_nat := e_nat base |}.
+     e_ct := e_ct base; e_nat := e_nat base; e_numgen := e_numgen base |}.
 
 (** A declared set's elements are exactly what `lookup @n` reads. *)
 Lemma e_set_declared : forall base d n,
@@ -719,7 +791,14 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | ISocketLoad k dst :: rest =>
       run_rule (set_reg rf dst (pkt_sock p k)) rest p
   | INumgen spec dst :: rest =>
-      run_rule (set_reg rf dst (pkt_numgen p spec)) rest p
+      (* `numgen inc` reads the SHARED counter value (= [do_load (LNumgen spec) p],
+         deterministic from [e_numgen]) into the dreg.  The VERDICT pass reads but
+         does NOT advance the counter (it threads no packet); the COUNTER ADVANCE
+         (the cross-packet round-robin) is applied on the WRITE pass
+         [run_rule_writes]/[body_writes] and threaded to the next packet by
+         [run_program_mut_env]/[eval_chain_mut_env] — exactly like a `ct`/`nat`/dynset
+         env write.  Reading [do_load] keeps this lock-step with the DSL [outcome]. *)
+      run_rule (set_reg rf dst (do_load (LNumgen spec) p)) rest p
   | IOsf dst :: rest =>
       run_rule (set_reg rf dst (pkt_osf p)) rest p
   | IExthdrLoad ep h o l pr dst :: rest =>
@@ -886,7 +965,7 @@ Definition env_ct_upd (e : env) (fl : data) (k : ct_key) (v : data) : env :=
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
      e_ct := (fun fl' k' =>
                 if andb (data_eqb fl fl') (ct_eqb k k') then v else e_ct e fl' k');
-     e_nat := e_nat e |}.
+     e_nat := e_nat e; e_numgen := e_numgen e |}.
 
 (** Update the SHARED, flow-keyed NAT-mapping table [e_nat] of an env: STORE the
     established translation [m] at flow [fl], leaving every other flow's mapping —
@@ -901,7 +980,8 @@ Definition env_nat_upd (e : env) (fl : data)
      e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
      e_ct := e_ct e;
-     e_nat := (fun fl' => if data_eqb fl fl' then Some m else e_nat e fl') |}.
+     e_nat := (fun fl' => if data_eqb fl fl' then Some m else e_nat e fl');
+     e_numgen := e_numgen e |}.
 
 (** Set a conntrack key.  A WRITABLE+PERSISTENT key ([ct_writable]: mark/label) is
     stored into the SHARED, flow-keyed conntrack table [e_ct] at THIS packet's flow
@@ -1382,7 +1462,7 @@ Definition env_set_upd (e : env) (op name : String.string) (key : data) : env :=
      e_routes := e_routes e; e_rt := e_rt e;
      e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
-     e_ct := e_ct e; e_nat := e_nat e |}.
+     e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
 
 Definition set_env_dynset (p : packet) (op name : String.string) (key : data) : packet :=
   {| pkt_env := env_set_upd (pkt_env p) op name key;
@@ -1410,7 +1490,7 @@ Definition env_map_upd (e : env) (op name : String.string) (key dat : data) : en
      e_routes := e_routes e; e_rt := e_rt e;
      e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
-     e_ct := e_ct e; e_nat := e_nat e |}.
+     e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
 
 Definition set_env_dynset_map (p : packet) (op name : String.string) (key dat : data) : packet :=
   {| pkt_env := env_map_upd (pkt_env p) op name key dat;
@@ -1434,7 +1514,12 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
   | ICtLoad k dst :: rest => run_rule_writes (set_reg rf dst (do_load (LCt k) p)) rest p
   | IRtLoad k dst :: rest => run_rule_writes (set_reg rf dst (e_rt (pkt_env p) k)) rest p
   | ISocketLoad k dst :: rest => run_rule_writes (set_reg rf dst (pkt_sock p k)) rest p
-  | INumgen spec dst :: rest => run_rule_writes (set_reg rf dst (pkt_numgen p spec)) rest p
+  | INumgen spec dst :: rest =>
+      (* per-instruction: verdict-/packet-neutral (reads the shared counter value).
+         The cross-packet counter ADVANCE is applied by [numgen_sweep_prog] at the
+         mutation-evaluator boundary, so the per-instruction write lock-step (and the
+         whole load-fields machinery) is preserved. *)
+      run_rule_writes (set_reg rf dst (do_load (LNumgen spec) p)) rest p
   | IOsf dst :: rest => run_rule_writes (set_reg rf dst (pkt_osf p)) rest p
   | IExthdrLoad ep h o l pr dst :: rest =>
       run_rule_writes (set_reg rf dst (pkt_eh p ep h o l pr)) rest p
@@ -1615,9 +1700,13 @@ Fixpoint run_program_mut (prog : program) (p : packet) : option verdict :=
   match prog with
   | [] => None
   | rp :: rest =>
+      (* the packet a rule LEAVES carries both its [run_rule_writes] meta/ct/env writes
+         AND its `numgen inc` counter advance ([numgen_sweep_prog]); the next rule (and,
+         through the env, the next packet) sees both. *)
+      let p' := numgen_sweep_prog rp (run_rule_writes empty_rf rp p) in
       match run_rule empty_rf rp p with
-      | Some v => if terminal v then Some v else run_program_mut rest (run_rule_writes empty_rf rp p)
-      | None   => run_program_mut rest (run_rule_writes empty_rf rp p)
+      | Some v => if terminal v then Some v else run_program_mut rest p'
+      | None   => run_program_mut rest p'
       end
   end.
 
@@ -1654,10 +1743,11 @@ Fixpoint run_program_mut_env (prog : program) (p : packet) : option verdict * en
   match prog with
   | [] => (None, pkt_env p)
   | rp :: rest =>
+      let p' := numgen_sweep_prog rp (run_rule_writes empty_rf rp p) in
       match run_rule empty_rf rp p with
-      | Some v => if terminal v then (Some v, pkt_env (run_rule_writes empty_rf rp p))
-                  else run_program_mut_env rest (run_rule_writes empty_rf rp p)
-      | None   => run_program_mut_env rest (run_rule_writes empty_rf rp p)
+      | Some v => if terminal v then (Some v, pkt_env p')
+                  else run_program_mut_env rest p'
+      | None   => run_program_mut_env rest p'
       end
   end.
 

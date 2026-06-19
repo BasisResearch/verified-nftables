@@ -128,6 +128,18 @@ Definition all_fields : list field :=
     FThSport; FThDport; FTcpSeq; FTcpAck; FTcpFlags;
     FUdpLen; FUdpCsum; FIcmpType; FIcmpCode ].
 
+(** The value a `numgen inc` expression hands to an evaluation, given the SHARED
+    counter [c] = the number of evaluations the instance has already performed
+    (read from [e_numgen]).  The kernel (nft_numgen.c nft_ng_inc_gen) inits the
+    atomic counter to [modulus-1], and each eval computes
+    [nval = (oval + 1 < modulus) ? oval + 1 : 0] then returns [nval + offset].
+    Numbering evals from 0, the value of eval [c] is therefore
+    [(c mod modulus) + offset]: eval 0 -> [0 + offset], eval 1 -> [1 + offset], …,
+    wrapping at [modulus] — exactly the round-robin sequence.  Rendered big-endian
+    in a 4-byte register slot (NFT_REG32_SIZE), like the kernel's u32 dreg. *)
+Definition numgen_inc_value (spec : numgen_spec) (c : nat) : data :=
+  N_to_data 4 (N.of_nat (Nat.modulo c (ng_mod spec) + ng_offset spec)).
+
 (** Evaluate a load against a packet. *)
 Definition do_load (ld : loaddesc) (p : packet) : data :=
   match ld with
@@ -150,7 +162,15 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
            end
   | LRt k           => e_rt (pkt_env p) k
   | LSocket k       => pkt_sock p k
-  | LNumgen spec    => pkt_numgen p spec
+  | LNumgen spec    =>
+      (* `numgen inc` reads the SHARED, persistent counter from the env and renders
+         the round-robin value [(counter mod modulus) + offset]; the increment that
+         makes the NEXT evaluation differ is applied by the write-side threading
+         ([set_numgen] in [run_rule_writes]/[body_writes]).  `numgen random`
+         (ng_random = true: get_random_u32) is genuinely per-packet, so it stays the
+         oracle [pkt_numgen]. *)
+      if ng_random spec then pkt_numgen p spec
+      else numgen_inc_value spec (e_numgen (pkt_env p) spec)
   | LOsf            => pkt_osf p
   | LExthdr ep h o l pr => pkt_eh p ep h o l pr
   | LFib sel res    => lpm_fib (e_routes (pkt_env p)) (pkt_fibkey p sel) res

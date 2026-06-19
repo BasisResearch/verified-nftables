@@ -979,7 +979,7 @@ let check_notrack () =
   let env = { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
               e_routes = []; e_rt = (fun _ -> []); e_limit = (fun _ -> 0);
               e_quota = (fun _ -> 0); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
-              e_connlimit = (fun _ -> 0); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None) } in
+              e_connlimit = (fun _ -> 0); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None); e_numgen = (fun _ -> 0) } in
   (* a packet whose ct-state ORACLE is `new` (= 8): genuinely tracked.  The notrack
      in rule 1 overrides this before rule 2's `ct state untracked` match. *)
   let oracle_new k = (match k with Packet.CKstate -> [0;0;0;8] | _ -> []) in
@@ -1027,7 +1027,7 @@ let check_notrack_intra () =
   let env = { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
               e_routes = []; e_rt = (fun _ -> []); e_limit = (fun _ -> 0);
               e_quota = (fun _ -> 0); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
-              e_connlimit = (fun _ -> 0); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None) } in
+              e_connlimit = (fun _ -> 0); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None); e_numgen = (fun _ -> 0) } in
   let oracle_new k = (match k with Packet.CKstate -> [0;0;0;8] | _ -> []) in
   let p = mk_pkt ~env ~ct:oracle_new ~flow:[7;7] () in
   (* the rule's own statement->match ordering: the match now SUCCEEDS *)

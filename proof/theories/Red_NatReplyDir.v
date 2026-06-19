@@ -54,7 +54,7 @@ Definition env0 : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
      e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => [];
-     e_connlimit := fun _ => 0; e_ct := fun _ _ => []; e_nat := fun _ => None |}.
+     e_connlimit := fun _ => 0; e_ct := fun _ _ => []; e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
 
 (* Build a packet with given env, source addr (@12..15), dest addr (@16..19), and
    conntrack direction [dir] ([true] = original, [false] = reply).  pkt_flow is

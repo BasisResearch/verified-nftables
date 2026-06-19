@@ -2376,7 +2376,12 @@ Qed.
     the one residual mutation case).  ALL ordinary statements (mangle/NAT/dup/
     counter/dynset/exthdr/…) are in scope. *)
 Definition mut_wf (r : rule) : bool :=
-  simple_writes r && forallb (fun s => negb (is_mut_stmt s)) (r_after r).
+  simple_writes r && forallb (fun s => negb (is_mut_stmt s)) (r_after r)
+  (* the rule's bytecode contains no incremental `numgen` ([numgen_free_prog]), so the
+     VM mutation evaluator's [numgen_sweep_prog] is the identity and agrees with the
+     DSL [dsl_writes] (which has no numgen surface).  Every real ruleset satisfies this:
+     numgen is reachable only through the bytecode, never the parser/DSL. *)
+  && numgen_free_prog (compile_rule r).
 
 Lemma run_program_mut_compile_chain : forall rs p,
   forallb mut_wf rs = true ->
@@ -2384,8 +2389,12 @@ Lemma run_program_mut_compile_chain : forall rs p,
 Proof.
   induction rs as [| r rs IH]; intros p Hall; [reflexivity|].
   cbn [forallb] in Hall. apply Bool.andb_true_iff in Hall. destruct Hall as [Hr Hrs].
-  unfold mut_wf in Hr. apply Bool.andb_true_iff in Hr. destruct Hr as [Hs Ha].
+  unfold mut_wf in Hr. apply Bool.andb_true_iff in Hr. destruct Hr as [Hr Hnf].
+  apply Bool.andb_true_iff in Hr. destruct Hr as [Hs Ha].
   cbn [map run_program_mut eval_rules_mut].
+  (* the VM threads [numgen_sweep_prog (compile_rule r) (run_rule_writes …)]; the rule
+     is numgen-free, so the sweep is the identity and this is just [run_rule_writes]. *)
+  rewrite (numgen_sweep_prog_id (compile_rule r) _ Hnf).
   rewrite (run_rule_writes_compile_rule r p Hs Ha).
   destruct (rule_loadable r p) eqn:Hrl.
   - rewrite (run_rule_compile_rule r p Hrl). cbn [andb].
@@ -2417,8 +2426,10 @@ Lemma run_program_mut_env_compile_chain : forall rs p,
 Proof.
   induction rs as [| r rs IH]; intros p Hall; [reflexivity|].
   cbn [forallb] in Hall. apply Bool.andb_true_iff in Hall. destruct Hall as [Hr Hrs].
-  unfold mut_wf in Hr. apply Bool.andb_true_iff in Hr. destruct Hr as [Hs Ha].
+  unfold mut_wf in Hr. apply Bool.andb_true_iff in Hr. destruct Hr as [Hr Hnf].
+  apply Bool.andb_true_iff in Hr. destruct Hr as [Hs Ha].
   cbn [map run_program_mut_env eval_rules_mut_env].
+  rewrite (numgen_sweep_prog_id (compile_rule r) _ Hnf).
   rewrite (run_rule_writes_compile_rule r p Hs Ha).
   destruct (rule_loadable r p) eqn:Hrl.
   - rewrite (run_rule_compile_rule r p Hrl). cbn [andb].

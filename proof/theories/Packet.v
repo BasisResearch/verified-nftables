@@ -79,6 +79,15 @@ Record numgen_spec : Type := {
   ng_random : bool; ng_mod : nat; ng_offset : nat
 }.
 
+(** Structural equality on [numgen_spec], used to key the shared per-instance
+    `numgen inc` counter [e_numgen] (each `numgen` expression in a ruleset has its
+    OWN atomic counter in the kernel; here we conflate instances with the same
+    parameters, which is conservative and sufficient — a ruleset rarely repeats an
+    identical numgen). *)
+Definition numgen_eqb (a b : numgen_spec) : bool :=
+  andb (Bool.eqb (ng_random a) (ng_random b))
+       (andb (Nat.eqb (ng_mod a) (ng_mod b)) (Nat.eqb (ng_offset a) (ng_offset b))).
+
 (** A quota: [q_bytes] the limit, [q_consumed] bytes already used, [q_flags] the
     NFT_QUOTA_F_* bits (bit 0 = "over"/inverted). *)
 Record quota_spec : Type := {
@@ -187,6 +196,29 @@ Record env : Type := {
                                restores [orig_addr_opt] on the OPPOSITE slot for a reply
                                ([pkt_ctdir_orig = false]) — nf_nat_packet's direction
                                inversion. *)
+  e_numgen : numgen_spec -> nat;
+                            (* the SHARED, persistent `numgen inc` counter, keyed by the
+                               numgen instance ([numgen_spec]) — each `numgen inc`
+                               expression has its OWN atomic counter in the kernel
+                               (nft_ng_inc: `atomic_t *counter`, allocated per expression
+                               in nft_ng_inc_init).  This is the COUNT of evaluations the
+                               instance has performed so far (the kernel stores the last
+                               returned [nval]; we store the eval count [c], from which the
+                               kernel's stored value is recovered as [c mod modulus]).  The
+                               value handed to the next evaluation is
+                               [(e_numgen spec mod ng_mod spec) + ng_offset spec] (rendered
+                               big-endian, 4 bytes), and the counter is then INCREMENTED so
+                               the NEXT evaluation (this packet's later firing, or the next
+                               packet's firing) gets the successor — i.e. successive evals
+                               are round-robin 0,1,...,N-1,0,...  This is the cross-packet
+                               state the per-packet [pkt_numgen] oracle could not express
+                               (it let two distinct packets both read 0); the increment is
+                               threaded across packets by [run_rule_writes]/[body_writes]
+                               exactly like the dynset/ct/nat env writes.  ONLY the
+                               incremental generator (ng_random = false) uses this; the
+                               RANDOM generator (ng_random = true,
+                               nft_ng_random_gen: get_random_u32) stays a genuine per-packet
+                               oracle [pkt_numgen]. *)
 }.
 
 Record packet : Type := {

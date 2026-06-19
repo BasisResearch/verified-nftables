@@ -35,7 +35,7 @@ let empty_env : Packet.env =
     e_routes = []; e_rt = (fun _ -> []); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
     (* limiters default to 1 remaining token (0 < 1 -> the match passes) *)
     e_limit = (fun _ -> 1); e_quota = (fun _ -> 1); e_connlimit = (fun _ -> 1);
-    e_ct = (fun _ _ -> []); e_nat = (fun _ -> None) }
+    e_ct = (fun _ _ -> []); e_nat = (fun _ -> None); e_numgen = (fun _ -> 0) }
 (* an environment whose rate-limiter "lim" has [n] remaining tokens *)
 let env_limit n : Packet.env = { empty_env with Packet.e_limit = (fun _ -> n) }
 (* an environment where the set/vmap [name] has the given contents *)

@@ -33,7 +33,7 @@ Definition syn_env : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => [];
      e_limit := fun _ => 0; e_quota := fun _ => 0; e_connlimit := fun _ => 0;
-     e_ct := fun _ _ => []; e_nat := fun _ => None |}.
+     e_ct := fun _ _ => []; e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
 
 (** A 20-byte TCP header whose flags byte (offset 13) is [fl]. *)
 Definition tcp_hdr (fl : nat) : list byte :=
