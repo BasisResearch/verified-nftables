@@ -159,12 +159,17 @@ type kind =
      -> [KNumLe 16]).  [KMark] is the special case [KNumLe 4]. *)
   | KNumLe of int
 
-(* fib route-type symbols (the RTN_ route types), as 4-byte words *)
+(* fib route-type symbols (the RTN_ route types), as 4-byte words.
+   `fib_addr_type` is BYTEORDER_HOST_ENDIAN (src/fib.c:50) and the kernel stores
+   the route type as a NATIVE u32 (`*dst = res.type`, nft_fib_ipv4.c) — i.e. on a
+   little-endian host (x86/ARM64-LE, where the validate gate runs) the RTN_LOCAL
+   register holds [2;0;0;0].  So we encode the type LITTLE-ENDIAN, exactly like
+   `mark`/`ifindex` (the other BYTEORDER_HOST_ENDIAN fields). *)
 let sym_fibtype = [
-  "unspec",[0;0;0;0]; "unicast",[0;0;0;1]; "local",[0;0;0;2];
-  "broadcast",[0;0;0;3]; "anycast",[0;0;0;4]; "multicast",[0;0;0;5];
-  "blackhole",[0;0;0;6]; "unreachable",[0;0;0;7]; "prohibit",[0;0;0;8];
-  "throw",[0;0;0;9]; "nat",[0;0;0;10]; "xresolve",[0;0;0;11];
+  "unspec",[0;0;0;0]; "unicast",[1;0;0;0]; "local",[2;0;0;0];
+  "broadcast",[3;0;0;0]; "anycast",[4;0;0;0]; "multicast",[5;0;0;0];
+  "blackhole",[6;0;0;0]; "unreachable",[7;0;0;0]; "prohibit",[8;0;0;0];
+  "throw",[9;0;0;0]; "nat",[10;0;0;0]; "xresolve",[11;0;0;0];
 ]
 
 (* encode a single (non-range, non-prefix, non-concat) value for a field kind *)
@@ -207,7 +212,7 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
   | KPkttype, Nft_ast.Vsym s -> lookup "pkttype" sym_pkttype s
   | KPkttype, Nft_ast.Vnum n -> [n land 0xff]
   | KFibType, Nft_ast.Vsym s -> lookup "fib type" sym_fibtype s
-  | KFibType, Nft_ast.Vnum n -> bytes_of_int 4 n
+  | KFibType, Nft_ast.Vnum n -> bytes_of_int_le 4 n
   | KNum w, Nft_ast.Vnum n -> bytes_of_int w n
   | KNumLe w, Nft_ast.Vnum n -> bytes_of_int_le w n
   | _, Nft_ast.Vvar n -> raise (Unsupported ("unresolved $" ^ n))
@@ -216,7 +221,7 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
 (* the byte width a kind compares at (for building a prefix mask) *)
 let width_of_kind = function
   | KIp4 -> 4 | KIp6 -> 16 | KPort | KEthertype -> 2
-  | KCtstate | KMark | KIfindex -> 4 | KNum w -> w | KNumLe w -> w | _ -> 1
+  | KCtstate | KMark | KIfindex | KFibType -> 4 | KNum w -> w | KNumLe w -> w | _ -> 1
 
 (* A kind stored HOST-ENDIAN (little-endian on x86) in the register, like the
    kernel holds `meta mark` / `ct mark` (BYTEORDER_HOST_ENDIAN).  For these,
@@ -224,7 +229,7 @@ let width_of_kind = function
    mandatory `byteorder reg = hton(reg, N, N)` conversion, which we model with a
    [TByteorder true w w] transform.  Equality/neq need no conversion (memcmp is
    order-independent), so only the range/ordered path consults this. *)
-let host_endian_kind = function KMark | KIfindex -> true | _ -> false
+let host_endian_kind = function KMark | KIfindex | KFibType -> true | _ -> false
 
 (* Encode a value NETWORK-ORDER (big-endian).  Used for the bounds of a RANGE
    match on a host-endian field: nft stores the range immediates network-order
@@ -241,6 +246,11 @@ let enc_atom_be (k : kind) (v : Nft_ast.value) : Bytes.data =
      [enc_atom] uses for the eq/membership immediates. *)
   | KIfindex, Nft_ast.Vnum n -> bytes_of_int 4 n
   | KIfindex, (Nft_ast.Vsym s | Nft_ast.Vstr s) -> bytes_of_int 4 (nametoindex s)
+  (* fib type is BYTEORDER_HOST_ENDIAN too (src/fib.c:50); an ordered/range match
+     on it goes through the same hton path, so its bounds are network-order. *)
+  | KFibType, Nft_ast.Vnum n -> bytes_of_int 4 n
+  | KFibType, Nft_ast.Vsym _ ->
+      (match enc_atom k v with b -> Stdlib.List.rev b)
   | _ -> enc_atom k v
 
 (* ---------- concatenated-set register-slot padding ----------

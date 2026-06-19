@@ -335,7 +335,7 @@ let mk_pkt_dport ~env ~dport : Packet.packet =
     { env with Packet.e_routes =
         [ (([0], [255]),
            (fun (r : Packet.fib_result) ->
-              match r with Packet.FRtype -> [0;0;0;2] | _ -> [])) ] } in
+              match r with Packet.FRtype -> [2;0;0;0] | _ -> [])) ] } in
   { (mk_pkt ~env:env_fib ()) with
     Packet.pkt_meta = (fun k -> match k with
       | Packet.MKiifname -> ifname16 "home" | Packet.MKl4proto -> [6] | _ -> []);
@@ -1875,20 +1875,23 @@ let check_fib_type () =
   let rtype i = match body i with
     | [Syntax.BMatch (Syntax.MEq (Syntax.FFib (_, Packet.FRtype), v))] -> Some v
     | _ -> None in
-  (* anycast = RTN_ANYCAST = 4, NOT 6 (the old RTN_BLACKHOLE collision). *)
-  check "fib daddr type anycast lowers to RTN_ANYCAST=4 ([0;0;0;4])"
-    (rtype 0 = Some [0;0;0;4]);
-  check "fib daddr type blackhole lowers to RTN_BLACKHOLE=6 ([0;0;0;6])"
-    (rtype 1 = Some [0;0;0;6]);
+  (* fib type is BYTEORDER_HOST_ENDIAN (src/fib.c:50), stored as a NATIVE u32 by
+     the kernel (`*dst = res.type`, nft_fib_ipv4.c), so on the LE validate host the
+     RTN_ value sits little-endian in the register: RTN_ANYCAST=4 -> [4;0;0;0]. *)
+  check "fib daddr type anycast lowers to RTN_ANYCAST=4 ([4;0;0;0])"
+    (rtype 0 = Some [4;0;0;0]);
+  check "fib daddr type blackhole lowers to RTN_BLACKHOLE=6 ([6;0;0;0])"
+    (rtype 1 = Some [6;0;0;0]);
   (* the two distinct route types must NOT compile to identical bytecode. *)
   check "anycast and blackhole encode to DIFFERENT constants (no collision)"
     (rtype 0 <> rtype 1);
-  check "fib daddr type multicast lowers to RTN_MULTICAST=5 ([0;0;0;5])"
-    (rtype 2 = Some [0;0;0;5]);
-  check "fib daddr type unicast lowers to RTN_UNICAST=1 ([0;0;0;1])"
-    (rtype 3 = Some [0;0;0;1]);
+  check "fib daddr type multicast lowers to RTN_MULTICAST=5 ([5;0;0;0])"
+    (rtype 2 = Some [5;0;0;0]);
+  check "fib daddr type unicast lowers to RTN_UNICAST=1 ([1;0;0;0])"
+    (rtype 3 = Some [1;0;0;0]);
   (* behavioural: a packet whose looked-up route type is 4 (anycast) matches the
-     anycast rule and NOT the blackhole rule; type 6 (blackhole) is the reverse. *)
+     anycast rule and NOT the blackhole rule; type 6 (blackhole) is the reverse.
+     The route oracle bytes are the same host-endian u32 the register holds. *)
   let m_any = match body 0 with [Syntax.BMatch m] -> m | _ -> assert false in
   let m_bh  = match body 1 with [Syntax.BMatch m] -> m | _ -> assert false in
   let env = parsed.Nft_lower.p_env in
@@ -1899,11 +1902,35 @@ let check_fib_type () =
             match r with Packet.FRtype -> t | _ -> [])) ] } in
     { (mk_pkt ~env:env' ()) with Packet.pkt_fibkey = (fun _ -> [0]) } in
   check "route type 4 (anycast) matches the anycast rule, not blackhole"
-    (Semantics.eval_matchcond m_any (mk_rtype [0;0;0;4]) = true
-     && Semantics.eval_matchcond m_bh (mk_rtype [0;0;0;4]) = false);
+    (Semantics.eval_matchcond m_any (mk_rtype [4;0;0;0]) = true
+     && Semantics.eval_matchcond m_bh (mk_rtype [4;0;0;0]) = false);
   check "route type 6 (blackhole) matches the blackhole rule, not anycast"
-    (Semantics.eval_matchcond m_bh (mk_rtype [0;0;0;6]) = true
-     && Semantics.eval_matchcond m_any (mk_rtype [0;0;0;6]) = false);
+    (Semantics.eval_matchcond m_bh (mk_rtype [6;0;0;0]) = true
+     && Semantics.eval_matchcond m_any (mk_rtype [6;0;0;0]) = false);
+  (* host-endian regression: the kernel-faithful RTN_LOCAL register [2;0;0;0]
+     MATCHES `fib daddr type local`, and the byte-reversed big-endian word
+     [0;0;0;2] (a value the LE kernel can never produce) does NOT. *)
+  let src_local =
+    "table inet t {\n\
+    \  chain c { type filter hook prerouting priority 0; policy accept;\n\
+    \    fib daddr type local accept\n\
+    \  }\n\
+     }\n" in
+  let pl = Nft_parse.parse_string src_local in
+  let cl = Nft_lower.find_chain pl ~table:"t" ~chain:"c" in
+  let m_local = match (Stdlib.List.nth cl.Syntax.c_rules 0).Syntax.r_body with
+    | [Syntax.BMatch m] -> m | _ -> assert false in
+  let envl = pl.Nft_lower.p_env in
+  let mk_rtype_l t =
+    let env' = { envl with Packet.e_routes =
+      [ (([0], [255]),
+         (fun (r : Packet.fib_result) ->
+            match r with Packet.FRtype -> t | _ -> [])) ] } in
+    { (mk_pkt ~env:env' ()) with Packet.pkt_fibkey = (fun _ -> [0]) } in
+  check "host-endian RTN_LOCAL [2;0;0;0] MATCHES `fib daddr type local`"
+    (Semantics.eval_matchcond m_local (mk_rtype_l [2;0;0;0]) = true);
+  check "byte-reversed [0;0;0;2] (kernel-impossible on LE) does NOT match"
+    (Semantics.eval_matchcond m_local (mk_rtype_l [0;0;0;2]) = false);
   Printf.printf "\n"
 
 (* (O) HOST-ENDIAN MARK RANGE: `meta mark` / `ct mark` are BYTEORDER_HOST_ENDIAN

@@ -48,7 +48,7 @@ Definition gen_env : env := env_with_sets base_env decls.
 Definition filter_prerouting : chain :=
   {| c_policy := Accept;
    c_rules := [{| r_body := [(BMatch (MEq FMetaIifname [104; 111; 109; 101; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0]));
-             (BMatch (MEq (FFib "daddr" FRtype) [0; 0; 0; 2]));
+             (BMatch (MEq (FFib "daddr" FRtype) [2; 0; 0; 0]));
              (BMatch (MConcatSet [FMetaL4proto] false "__set0"));
              (BMatch (MEq FThDport [13; 61]));
              (BStmt (SMetaSet MKmark (VImm [153; 0; 0; 0])));
@@ -57,7 +57,7 @@ Definition filter_prerouting : chain :=
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
    {| r_body := [(BMatch (MConcatSet [FMetaIifname] false "__set1"));
-             (BMatch (MEq (FFib "daddr" FRtype) [0; 0; 0; 2]));
+             (BMatch (MEq (FFib "daddr" FRtype) [2; 0; 0; 0]));
              (BMatch (MConcatSet [FMetaL4proto] false "__set2"));
              (BMatch (MConcatSet [FThDport] false "__set3"));
              (BStmt (SMetaSet MKmark (VImm [153; 0; 0; 0])));
@@ -66,7 +66,7 @@ Definition filter_prerouting : chain :=
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
    {| r_body := [(BMatch (MConcatSet [FMetaIifname] false "__set4"));
-             (BMatch (MEq (FFib "daddr" FRtype) [0; 0; 0; 2]));
+             (BMatch (MEq (FFib "daddr" FRtype) [2; 0; 0; 0]));
              (BMatch (MConcatSet [FMetaL4proto] false "__set5"));
              (BMatch (MConcatSet [FThDport] false "__set6"));
              (BStmt (SMetaSet MKmark (VImm [153; 0; 0; 0])));

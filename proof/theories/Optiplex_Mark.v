@@ -31,7 +31,7 @@ Definition mark99    : data := [153; 0; 0; 0].   (* the 0x99 firewall mark, host
 (* "home" in a 16-byte IFNAMSIZ zero-padded ifname register (the kernel
    compares the full 16-byte buffer for an exact name match). *)
 Definition if_home   : data := [104; 111; 109; 101; 0;0;0;0; 0;0;0;0; 0;0;0;0].
-Definition fib_local : data := [0; 0; 0; 2].      (* fib … type local (RTN_LOCAL) *)
+Definition fib_local : data := [2; 0; 0; 0].      (* fib … type local (RTN_LOCAL); host-endian u32 on LE *)
 Definition l4_tcp    : data := [6].
 Definition port3389  : data := [13; 61].          (* 0x0d3d — RDP *)
 Definition port48010 : data := [187; 138].        (* 0xbb8a — a Sunshine stream port *)
