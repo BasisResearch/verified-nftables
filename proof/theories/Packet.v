@@ -185,9 +185,11 @@ Record env : Type := {
                                                 in one ktime). *)
   e_quota : quota_spec -> nat;               (* a quota's remaining bytes — SHARED,
                                                 CONSUMING state.  A `quota` match passes
-                                                iff [0 < remaining]; the bucket is
-                                                DECREMENTED by a unit cost on EVERY
-                                                evaluation (the kernel nft_overquota
+                                                iff [cost <= remaining] (consumed+len
+                                                still <= quota; equality still passes);
+                                                the bucket is DECREMENTED by the packet's
+                                                byte length ([quota_cost], = skb->len) on
+                                                EVERY evaluation (the kernel nft_overquota
                                                 accumulates skb->len UNCONDITIONALLY,
                                                 regardless of pass/fail).  Consumed by
                                                 [limit_sweep_*] like [e_limit]. *)

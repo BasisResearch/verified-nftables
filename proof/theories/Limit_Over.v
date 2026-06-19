@@ -16,7 +16,7 @@
     These theorems pin the corrected behaviour: for a FIXED oracle value, the
     `over` and non-`over` specs give OPPOSITE match verdicts (the negation of the
     red agent's "flag ignored" theorems, which are now unprovable). *)
-From Stdlib Require Import List NArith Bool.
+From Stdlib Require Import List NArith Bool PeanoNat.
 Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.
 
@@ -42,8 +42,13 @@ Theorem quota_over_flag_flips : forall p,
     = negb (eval_matchcond_body (MQuota q_under) p).
 Proof.
   intros p H. cbn [eval_matchcond_body q_under q_over].
-  rewrite H. cbn [Nat.land Nat.eqb].
-  destruct (Nat.ltb 0 (e_quota (pkt_env p) q_over)); reflexivity.
+  (* the under-test [quota_under] depends only on the packet length and the
+     remaining bytes (NOT the flag); q_under/q_over share q_bytes and (by H) the
+     same remaining reading, so [quota_under] agrees and only the over-bit flips. *)
+  assert (Hu : quota_under p q_over = quota_under p q_under).
+  { unfold quota_under. rewrite H. reflexivity. }
+  rewrite Hu. cbn [Nat.land Nat.eqb].
+  destruct (quota_under p q_under); reflexivity.
 Qed.
 
 Theorem limit_over_flag_flips : forall p,
@@ -76,22 +81,66 @@ Proof.
   destruct (Nat.ltb 0 (e_connlimit (pkt_env p) c_over)); reflexivity.
 Qed.
 
-(** Concretely: when the resource is EXCEEDED (oracle remaining = 0), the
-    non-over form does NOT match (kernel BREAKs the flood under a plain
+(** Concretely: when the packet's byte length EXCEEDS the remaining quota
+    ([quota_cost p > remaining], i.e. the kernel's [consumed + skb->len > quota]),
+    the non-over form does NOT match (kernel BREAKs the flood under a plain
     `quota X`) while the `over` form DOES (the `quota over X drop` idiom fires
-    exactly on the traffic that exceeds the limit). *)
+    exactly on the traffic that exceeds the limit).  This is the BYTE accounting:
+    the verdict is driven by [meta len], not a fixed unit. *)
+Lemma leb_false_of_lt : forall a b : nat, b < a -> Nat.leb a b = false.
+Proof.
+  intros a b H. apply Nat.leb_gt. exact H.
+Qed.
+
 Theorem over_matches_when_exceeded : forall p,
-  e_quota (pkt_env p) q_over = 0 ->
+  e_quota (pkt_env p) q_over < quota_cost p ->
   eval_matchcond_body (MQuota q_over) p = true.
 Proof.
-  intros p H. cbn [eval_matchcond_body q_over]. rewrite H. reflexivity.
+  intros p H. cbn [eval_matchcond_body q_over]. unfold quota_under.
+  rewrite (leb_false_of_lt _ _ H). reflexivity.
 Qed.
 
 Theorem nonover_misses_when_exceeded : forall p,
-  e_quota (pkt_env p) q_under = 0 ->
+  e_quota (pkt_env p) q_under < quota_cost p ->
   eval_matchcond_body (MQuota q_under) p = false.
 Proof.
-  intros p H. cbn [eval_matchcond_body q_under]. rewrite H. reflexivity.
+  intros p H. cbn [eval_matchcond_body q_under]. unfold quota_under.
+  rewrite (leb_false_of_lt _ _ H). reflexivity.
+Qed.
+
+(** ** The quota now consumes the PACKET LENGTH, not a fixed unit (the fix).
+
+    Before the fix [env_quota_upd] decremented [e_quota] by exactly 1 per
+    evaluation, so two packets of any size depleted the bucket identically and a
+    quota of N "bytes" passed ~N packets regardless of size.  After the fix the
+    bucket loses the packet's [meta len] (= skb->len) on every evaluation, exactly
+    like byte-mode [limit].  These theorems pin the byte accounting:
+    (1) the remaining bucket drops by the packet length, and
+    (2) a single MTU-sized packet over-spends a small quota in ONE shot. *)
+Definition q_bytes100 : quota_spec := {| q_bytes := 100; q_consumed := 0; q_flags := 0 |}.
+
+(* The post-eval remaining = old remaining - (packet length), not old - 1. *)
+Lemma quota_eqb_b100 : quota_eqb q_bytes100 q_bytes100 = true.
+Proof. reflexivity. Qed.
+
+Theorem quota_consumes_packet_len : forall p,
+  e_quota (pkt_env (set_quota p q_bytes100)) q_bytes100
+    = e_quota (pkt_env p) q_bytes100 - N.to_nat (data_to_N (pkt_meta p MKlen)).
+Proof.
+  intro p. unfold set_quota, env_quota_upd, quota_cost; cbn [pkt_env e_quota].
+  rewrite quota_eqb_b100. reflexivity.
+Qed.
+
+(* A 1500-byte (MTU) packet exhausts a 100-byte quota in a SINGLE evaluation: the
+   non-over `quota 100 bytes` BREAKs (does not match) on the first big packet,
+   whereas the old pred-by-1 model would have passed ~100 packets. *)
+Theorem mtu_packet_overspends_small_quota : forall p,
+  pkt_meta p MKlen = [5; 220] ->     (* 5*256 + 220 = 1500 bytes, big-endian *)
+  e_quota (pkt_env p) q_bytes100 = 100 ->
+  eval_matchcond_body (MQuota q_bytes100) p = false.
+Proof.
+  intros p Hlen Hq. cbn [eval_matchcond_body q_bytes100]. unfold quota_under, quota_cost.
+  rewrite Hlen, Hq. reflexivity.
 Qed.
 
 (** ** The configured RATE/UNIT/BURST are now LIVE in the data plane.

@@ -391,7 +391,7 @@ Proof.
     + (* MQuota: no load, a stateful break (over-bit XORed into the test) *)
       cbn [run_rule andb].
       destruct (xorb (Nat.eqb (Nat.land (q_flags qspec) 1) 1)
-                     (Nat.ltb 0 (e_quota (pkt_env p) qspec))); cbn [andb];
+                     (quota_under p qspec)); cbn [andb];
         [apply IH; exact Hc | reflexivity].
     + (* MConnlimit: no load, a stateful break (over-bit XORed into the test) *)
       cbn [run_rule andb].
@@ -1025,7 +1025,7 @@ Proof.
                    (lim_under p spec)); [apply Hc | reflexivity].
   - (* MQuota *) cbn [run_rule_writes andb].
     destruct (xorb (Nat.eqb (Nat.land (q_flags qspec) 1) 1)
-                   (Nat.ltb 0 (e_quota (pkt_env p) qspec))); [apply Hc | reflexivity].
+                   (quota_under p qspec)); [apply Hc | reflexivity].
   - (* MConnlimit *) cbn [run_rule_writes andb].
     destruct (xorb (Nat.eqb (Nat.land (cl_flags clspec) 1) 1)
                    (Nat.ltb 0 (e_connlimit (pkt_env p) clspec))); [apply Hc | reflexivity].

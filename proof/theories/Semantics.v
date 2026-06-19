@@ -170,6 +170,21 @@ Definition lim_avail (p : packet) (spec : limit_spec) : nat :=
 Definition lim_under (p : packet) (spec : limit_spec) : bool :=
   Nat.leb (lim_cost p spec) (lim_avail p spec).
 
+(** Per-evaluation byte cost charged to a `quota`: the packet's [meta len], i.e.
+    the kernel's [skb->len] (nft_overquota: [consumed += skb->len]).  This is the
+    same length expression that byte-mode [lim_cost] uses. *)
+Definition quota_cost (p : packet) : nat :=
+  N.to_nat (data_to_N (pkt_meta p MKlen)).
+
+(** The non-inverted "under / not over quota" test.  With [e_quota] tracking the
+    REMAINING bytes ([quota - consumed]), the kernel's post-add state is
+    [consumed' = consumed + skb->len] and it BREAKs iff [consumed' > quota].  In
+    remaining terms that is PASS iff [consumed + cost <= quota], i.e. iff
+    [cost <= remaining] — a packet landing exactly on the quota still passes.
+    Mirrors [lim_under]'s [Nat.leb cost avail]. *)
+Definition quota_under (p : packet) (spec : quota_spec) : bool :=
+  Nat.leb (quota_cost p) (e_quota (pkt_env p) spec).
+
 (** The unguarded comparison body of a match (the original semantics). *)
 Definition eval_matchcond_body (m : matchcond) (p : packet) : bool :=
   match m with
@@ -211,7 +226,7 @@ Definition eval_matchcond_body (m : matchcond) (p : packet) : bool :=
   | MLimit spec =>
       xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (lim_under p spec)
   | MQuota spec =>
-      xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (Nat.ltb 0 (e_quota (pkt_env p) spec))
+      xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (quota_under p spec)
   | MConnlimit spec =>
       xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (Nat.ltb 0 (e_connlimit (pkt_env p) spec))
   | MConcatSetT elems neg name =>
@@ -283,15 +298,20 @@ Definition env_limit_upd (p : packet) (spec : limit_spec) : env :=
      e_quota := e_quota e; e_connlimit := e_connlimit e;
      e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
 
-(** Update the SHARED quota counter [e_quota] for instance [spec]: CONSUME one unit
-    UNCONDITIONALLY (the kernel nft_overquota accumulates skb->len on every
-    evaluation, regardless of whether the rule passes). *)
-Definition env_quota_upd (e : env) (spec : quota_spec) : env :=
+(** Update the SHARED quota counter [e_quota] for instance [spec] on packet [p]:
+    CONSUME the packet's byte length ([quota_cost p], = skb->len) UNCONDITIONALLY
+    (the kernel nft_overquota accumulates skb->len on every evaluation, regardless
+    of whether the rule passes).  With [e_quota] holding the REMAINING bytes, the
+    consumption is a saturating subtraction of the cost (nat truncates at 0 once the
+    quota is fully spent).  Mirrors byte-mode [limit] ([env_limit_upd], which
+    likewise takes [p] and charges [lim_cost p]). *)
+Definition env_quota_upd (p : packet) (spec : quota_spec) : env :=
+  let e := pkt_env p in
   {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
      e_routes := e_routes e; e_rt := e_rt e;
      e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
      e_limit := e_limit e;
-     e_quota := (fun s => if quota_eqb spec s then Nat.pred (e_quota e s) else e_quota e s);
+     e_quota := (fun s => if quota_eqb spec s then e_quota e s - quota_cost p else e_quota e s);
      e_connlimit := e_connlimit e;
      e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
 
@@ -350,10 +370,10 @@ Definition set_limit (p : packet) (spec : limit_spec) : packet :=
      pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
      pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
 
-(** CONSUME one unit of a `quota` UNCONDITIONALLY (the kernel accumulates the skb
-    length on every evaluation). *)
+(** CONSUME the packet's byte length ([quota_cost p], = skb->len) from a `quota`
+    UNCONDITIONALLY (the kernel accumulates skb->len on every evaluation). *)
 Definition set_quota (p : packet) (spec : quota_spec) : packet :=
-  {| pkt_env := env_quota_upd (pkt_env p) spec; pkt_meta := pkt_meta p;
+  {| pkt_env := env_quota_upd p spec; pkt_meta := pkt_meta p;
      pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
@@ -1136,7 +1156,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       if xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (lim_under p spec)
       then run_rule rf rest p else None
   | IQuota spec :: rest =>
-      if xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (Nat.ltb 0 (e_quota (pkt_env p) spec))
+      if xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (quota_under p spec)
       then run_rule rf rest p else None
   | IConnlimit spec :: rest =>
       if xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (Nat.ltb 0 (e_connlimit (pkt_env p) spec))
@@ -1828,7 +1848,7 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
   | IFwd _ _ _ :: _ => p
   | IQueueSreg _ _ _ :: _ => p
   | ILimit spec :: rest => if xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (lim_under p spec) then run_rule_writes rf rest p else p
-  | IQuota spec :: rest => if xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (Nat.ltb 0 (e_quota (pkt_env p) spec)) then run_rule_writes rf rest p else p
+  | IQuota spec :: rest => if xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (quota_under p spec) then run_rule_writes rf rest p else p
   | IConnlimit spec :: rest => if xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (Nat.ltb 0 (e_connlimit (pkt_env p) spec)) then run_rule_writes rf rest p else p
   | ICounter _ _ :: rest => run_rule_writes rf rest p
   | INotrack :: rest => run_rule_writes rf rest (set_untracked p)
