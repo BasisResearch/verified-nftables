@@ -56,6 +56,7 @@ let mk_pkt ~env ?(ct = dummy0) ?(protocol = []) ?(l4proto = []) ?(nfproto = [])
     pkt_inner = (fun _ _ _ _ -> []);
     (* a well-formed (non-fragment) packet whose L4 header was parsed, so transport
        payload loads succeed; transport-reading tests pad [th] to its read width *)
+    pkt_have_l2 = true;
     pkt_have_l4 = true; pkt_fragoff = 0; pkt_flow = flow; pkt_untracked = false;
     pkt_ctdir_orig = true }
 

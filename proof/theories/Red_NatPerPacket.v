@@ -79,7 +79,7 @@ Definition mkpkt (e : env) (saddr : data) : packet :=
      pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
      pkt_osf := []; pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
-     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0;
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l2 := true; pkt_have_l4 := false; pkt_fragoff := 0;
      pkt_flow := [7;7]; pkt_untracked := false; pkt_ctdir_orig := true |}.
 
 (* Packet 1 of the flow, evaluated against the fresh (no-mapping) env. *)

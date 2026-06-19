@@ -43,7 +43,7 @@ Definition mkpkt (e : env) (flow : data) : packet :=
      pkt_numgen := fun _ => [9;9;9;9];   (* random oracle; NOT read by `numgen inc` *)
      pkt_osf := []; pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
-     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0;
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l2 := true; pkt_have_l4 := false; pkt_fragoff := 0;
      pkt_flow := flow; pkt_untracked := false; pkt_ctdir_orig := true |}.
 
 (* A one-rule VM program that LOADS `numgen inc mod 2` into reg 1 (the value a

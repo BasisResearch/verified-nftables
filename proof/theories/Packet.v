@@ -270,6 +270,18 @@ Record packet : Type := {
                                "meta load protocol").  The inner packet is a
                                separate packet, so its fields are an independent
                                oracle rather than a function of the outer headers. *)
+  pkt_have_l2 : bool;       (* whether the skb carries a built MAC/link-layer header,
+                               i.e. skb_mac_header_was_set(skb) && skb_mac_header_len(skb)
+                               != 0.  A LINK-LAYER-base (ether) payload load on a packet
+                               WITHOUT this BREAKs the rule (kernel nft_payload.c
+                               nft_payload_eval: `case NFT_PAYLOAD_LL_HEADER: if
+                               (!skb_mac_header_was_set(skb) || skb_mac_header_len(skb) == 0)
+                               goto err;`).  This is the L2 analogue of [pkt_have_l4]: for
+                               LOCALLY-GENERATED packets at the output/postrouting hooks the
+                               L2 header has not been built, so every `ether saddr/daddr/type`
+                               load BREAKs -> the rule is skipped.  Every freshly-built test
+                               packet defaults to [true] (an L2-bearing packet); a
+                               locally-generated packet sets it [false]. *)
   pkt_have_l4 : bool;       (* whether the kernel set NFT_PKTINFO_L4PROTO for this
                                packet (i.e. a transport/L4 header was parsed).  A
                                TRANSPORT-base payload load on a packet WITHOUT this
@@ -359,6 +371,11 @@ Definition base_bytes (b : pbase) (p : packet) : list byte :=
       - a TRANSPORT (and decapsulated-INNER) load requires the L4 header was
         parsed and the packet is not an IP fragment:
           `if (!(pkt->flags & NFT_PKTINFO_L4PROTO) || pkt->fragoff) goto err;`
+      - a LINK-LAYER (ether) load requires the MAC header was built:
+          `case NFT_PAYLOAD_LL_HEADER: if (!skb_mac_header_was_set(skb) ||
+             skb_mac_header_len(skb) == 0) goto err;`
+        (false for LOCALLY-GENERATED packets at output/postrouting — the L2
+        header is not built there, so an `ether ...` match BREAKs.)
       - ANY load must fit in the header bytes (skb_copy_bits returns <0 / the read
         runs off the end of the header otherwise):
           `if (skb_copy_bits(skb, offset, dest, priv->len) < 0) goto err;`
@@ -366,13 +383,14 @@ Definition base_bytes (b : pbase) (p : packet) : list byte :=
     A failed read must FAIL the rule's match (return [false] here), never compare a
     truncated/empty value — that silent truncation was the soundness bug. *)
 Definition read_payload_ok (b : pbase) (off len : nat) (p : packet) : bool :=
-  let l4_ok :=
+  let layer_ok :=
     match b with
     | PTransport | PInner =>
         andb (pkt_have_l4 p) (Nat.eqb (pkt_fragoff p) 0)
+    | PLink => pkt_have_l2 p
     | _ => true
     end in
-  andb l4_ok (negb (Nat.ltb (List.length (base_bytes b p)) (off + len))).
+  andb layer_ok (negb (Nat.ltb (List.length (base_bytes b p)) (off + len))).
 
 (** Longest-prefix-match routing lookup: return the result-[res] component of the
     first route whose destination interval contains [key] (the table is kept

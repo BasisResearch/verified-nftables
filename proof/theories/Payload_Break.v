@@ -45,7 +45,7 @@ Definition bad_pkt : packet :=
      pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
      pkt_inner := fun _ _ _ _ => [];
-     pkt_have_l4 := false;     (* NFT_PKTINFO_L4PROTO not set -> transport read BREAKs *)
+     pkt_have_l2 := true; pkt_have_l4 := false;     (* NFT_PKTINFO_L4PROTO not set -> transport read BREAKs *)
      pkt_fragoff := 0; pkt_flow := []; pkt_untracked := false; pkt_ctdir_orig := true |}.
 
 (** The transport read fails (the kernel would NFT_BREAK). *)
@@ -104,7 +104,7 @@ Definition frag_pkt : packet :=
      pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
      pkt_inner := fun _ _ _ _ => [];
-     pkt_have_l4 := true;
+     pkt_have_l2 := true; pkt_have_l4 := true;
      pkt_fragoff := 8; pkt_flow := []; pkt_untracked := false; pkt_ctdir_orig := true |}.   (* a non-first fragment *)
 
 Theorem neq_dport_frag_no_match :
