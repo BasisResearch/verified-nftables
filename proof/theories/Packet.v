@@ -162,6 +162,24 @@ Record env : Type := {
                                                 WRITE_ONCE/READ_ONCE(ct->mark).  This
                                                 is the cross-packet state a per-packet
                                                 [pkt_ct] oracle could not express. *)
+  e_nat : data -> option (option data * option nat);
+                            (* the SHARED, flow-keyed NAT-mapping table: the
+                               translation tuple the kernel ESTABLISHES ONCE on the
+                               first (unconfirmed) packet of a flow and STORES in the
+                               conntrack entry ([nf_nat_setup_info]:
+                               get_unique_tuple + nf_conntrack_alter_reply), then
+                               REUSES for every later packet WITHOUT re-evaluating the
+                               rule operand (confirmed packets return NF_ACCEPT and the
+                               rewrite comes from the stored tuple via
+                               nf_nat_manip_pkt).  [e_nat flow = None] means no mapping
+                               is established for the flow yet (the first packet
+                               computes + stores one); [Some (addr_opt, port_opt)] is
+                               the established translation — the new L3 address (if a
+                               NAT_REG_ADDR operand was present) and the new L4 port (if
+                               a NAT_REG_PROTO operand was present).  This is the
+                               flow-keyed NAT state a per-packet pure [apply_nat] could
+                               not express — the exact analogue of [e_ct] for the NAT
+                               tuple. *)
 }.
 
 Record packet : Type := {

@@ -226,29 +226,45 @@ Proof.
   cbn -[field_value pkt_env]. rewrite Hm. vm_compute. reflexivity.
 Qed.
 
-(* applying its NAT effect source-rewrites to the exit interface's address *)
+(* applying its NAT effect source-rewrites to the exit interface's address AND
+   stores that established mapping in the flow-keyed [e_nat] table.  NAT is now
+   FLOW-STATEFUL (Round-2 fix): on the FIRST packet of a flow ([e_nat .. = None])
+   the mapping is computed from the exit interface and STORED; the source address
+   is rewritten exactly as before. *)
 Lemma post1_apply_masq : forall h p,
-  apply_nat h post1 p = set_saddr "ip" p (e_ifaddr (pkt_env p) (field_value FMetaOifname p)).
+  e_nat (pkt_env p) (pkt_flow p) = None ->
+  apply_nat h post1 p
+    = store_nat_mapping
+        (set_saddr "ip" p (e_ifaddr (pkt_env p) (field_value FMetaOifname p)))
+        (Some (e_ifaddr (pkt_env p) (field_value FMetaOifname p)), None).
 Proof.
-  intros h p. unfold apply_nat, nat_addrfamily, post1, filter_postrouting.
-  cbn -[set_saddr e_ifaddr field_value pkt_env]. reflexivity.
+  intros h p Hnone. unfold apply_nat, post1, filter_postrouting.
+  cbn -[set_saddr e_ifaddr field_value pkt_env e_nat store_nat_mapping].
+  rewrite Hnone.
+  unfold apply_nat_tuple, nat_is_src, nat_operand_addr, nat_addrfamily.
+  cbn -[set_saddr e_ifaddr field_value pkt_env store_nat_mapping]. reflexivity.
 Qed.
 
-(* THE OUTPUT PACKET of the postrouting chain: the input with its source address
-   set to the exit interface's address (= what masquerade does). *)
+(* THE OUTPUT PACKET of the postrouting chain (first packet of the flow): the input
+   with its source address set to the exit interface's address (= what masquerade
+   does), and the mapping recorded in [e_nat]. *)
 Theorem masquerade_output : forall p ifaddr,
   field_value FMetaMark p = mark99 ->
+  e_nat (pkt_env p) (pkt_flow p) = None ->
   e_ifaddr (pkt_env p) (field_value FMetaOifname p) = ifaddr ->
-  eval_chain_trace Hpostrouting filter_postrouting p = (Accept, set_saddr "ip" p ifaddr).
+  eval_chain_trace Hpostrouting filter_postrouting p
+    = (Accept, store_nat_mapping (set_saddr "ip" p ifaddr) (Some ifaddr, None)).
 Proof.
-  intros p ifaddr Hmark Hifa.
+  intros p ifaddr Hmark Hnone Hifa.
   unfold eval_chain_trace. rewrite postrouting_rules_eq. cbn [eval_rules_trace].
   rewrite (masquerade_gated_on_mark p Hmark), post1_outcome_accept. cbn [terminal].
-  rewrite (post1_dsl_noop p Hmark), post1_apply_masq, Hifa. reflexivity.
+  rewrite (post1_dsl_noop p Hmark), (post1_apply_masq Hpostrouting p Hnone), Hifa.
+  reflexivity.
 Qed.
 
 (* reading the source address back: after masquerade, `ip saddr` IS the exit
-   interface's address (for a well-formed IPv4 header and a 4-byte address). *)
+   interface's address (for a well-formed IPv4 header and a 4-byte address).  The
+   [store_nat_mapping] env write preserves [pkt_nh], so the read-back is unchanged. *)
 Lemma saddr_after_set : forall p v,
   16 <= List.length (pkt_nh p) -> List.length v = 4 ->
   field_value FIp4Saddr (set_saddr "ip" p v) = v.
@@ -260,12 +276,18 @@ Qed.
 
 Theorem masquerade_source_is_exit_iface : forall p ifaddr,
   field_value FMetaMark p = mark99 ->
+  e_nat (pkt_env p) (pkt_flow p) = None ->
   e_ifaddr (pkt_env p) (field_value FMetaOifname p) = ifaddr ->
   List.length ifaddr = 4 -> 16 <= List.length (pkt_nh p) ->
   field_value FIp4Saddr (snd (eval_chain_trace Hpostrouting filter_postrouting p)) = ifaddr.
 Proof.
-  intros p ifaddr Hmark Hifa Hlen Hnh.
-  rewrite (masquerade_output p ifaddr Hmark Hifa). cbn [snd].
+  intros p ifaddr Hmark Hnone Hifa Hlen Hnh.
+  rewrite (masquerade_output p ifaddr Hmark Hnone Hifa). cbn [snd].
+  (* [store_nat_mapping] preserves pkt_nh, so saddr read-back is the spliced value *)
+  unfold field_value; cbn [field_load do_load]; unfold read_payload.
+  cbn [store_nat_mapping pkt_nh].
+  fold (read_payload PNetwork 12 4 (set_saddr "ip" p ifaddr)).
+  fold (field_value FIp4Saddr (set_saddr "ip" p ifaddr)).
   apply saddr_after_set; assumption.
 Qed.
 

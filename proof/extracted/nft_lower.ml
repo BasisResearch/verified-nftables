@@ -842,7 +842,7 @@ let build_env st : Packet.env =
     e_map         = (fun n -> match L.assoc_opt n maps  with Some e -> e | None -> []);
     e_routes = []; e_rt = (fun _ -> []); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
     e_limit = (fun _ -> 1); e_quota = (fun _ -> 1); e_connlimit = (fun _ -> 1);
-    e_ct = (fun _ _ -> []) }
+    e_ct = (fun _ _ -> []); e_nat = (fun _ -> None) }
 
 let lower (f : Nft_ast.sfile) : parsed =
   let st = { defines = Hashtbl.create 16; sets = []; vmaps = []; maps = [];

@@ -34,17 +34,47 @@ Proof. reflexivity. Qed.
 Lemma dnat_addr_target : forall p, nat_addr dnat_spec p = [10;0;0;1].
 Proof. reflexivity. Qed.
 
-(* The dnat NAT effect destination-rewrites to the target operand. *)
-Lemma dnat_apply : forall h p, apply_nat h dnat_rule p = set_daddr "ip" p [10;0;0;1].
-Proof. reflexivity. Qed.
-
-(* THE OUTPUT PACKET of the dnat chain: the input with its destination address
-   set to the target (= what dnat does). *)
-Theorem dnat_output : forall h p,
-  eval_chain_trace h dnat_chain p = (Accept, set_daddr "ip" p [10;0;0;1]).
+(* The dnat NAT effect destination-rewrites to the target operand.  NAT is now
+   FLOW-STATEFUL (Round-2): on the first packet of a flow ([e_nat .. = None]) the
+   destination is rewritten exactly as before AND the mapping is stored; the
+   observable network header is unchanged by the [store_nat_mapping] env write. *)
+Lemma dnat_apply : forall h p,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
+  apply_nat h dnat_rule p
+    = store_nat_mapping (set_daddr "ip" p [10;0;0;1]) (Some [10;0;0;1], None).
 Proof.
-  intros h p. unfold eval_chain_trace, dnat_chain. cbn [c_rules eval_rules_trace].
+  intros h p Hnone. unfold apply_nat, dnat_rule, dnat_spec.
+  cbn -[set_daddr store_nat_mapping e_nat pkt_env pkt_flow]. rewrite Hnone.
   reflexivity.
+Qed.
+
+(* [store_nat_mapping] is observationally invisible on the network header. *)
+Lemma store_nat_nh : forall p m, pkt_nh (store_nat_mapping p m) = pkt_nh p.
+Proof. reflexivity. Qed.
+Lemma store_nat_th : forall p m, pkt_th (store_nat_mapping p m) = pkt_th p.
+Proof. reflexivity. Qed.
+(* …hence reading any IPv4 address field back through it is the read on the
+   underlying packet (the env write is below the header-read resolution). *)
+Lemma store_nat_daddr : forall p m,
+  field_value FIp4Daddr (store_nat_mapping p m) = field_value FIp4Daddr p.
+Proof.
+  intros p m. unfold field_value; cbn [field_load do_load]; unfold read_payload.
+  rewrite store_nat_nh. reflexivity.
+Qed.
+
+(* THE OUTPUT PACKET of the dnat chain (first packet of the flow): the input with
+   its destination address set to the target (= what dnat does), plus the stored
+   mapping in [e_nat]. *)
+Theorem dnat_output : forall h p,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
+  eval_chain_trace h dnat_chain p
+    = (Accept, store_nat_mapping (set_daddr "ip" p [10;0;0;1]) (Some [10;0;0;1], None)).
+Proof.
+  intros h p Hnone.
+  assert (Hw : dsl_writes dnat_rule p = p) by reflexivity.
+  unfold eval_chain_trace, dnat_chain. cbn [c_rules eval_rules_trace].
+  cbn -[apply_nat dnat_rule dsl_writes]. rewrite Hw.
+  rewrite (dnat_apply h p Hnone). reflexivity.
 Qed.
 
 (* Reading the destination address back: after dnat, `ip daddr` IS the target
@@ -59,10 +89,12 @@ Proof.
 Qed.
 
 Theorem dnat_dest_is_target : forall p,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
   20 <= List.length (pkt_nh p) ->
   field_value FIp4Daddr (chain_out dnat_chain p) = [10;0;0;1].
 Proof.
-  intros p Hnh. unfold chain_out. rewrite dnat_output. cbn [snd].
+  intros p Hnone Hnh. unfold chain_out. rewrite (dnat_output Hprerouting p Hnone). cbn [snd].
+  rewrite store_nat_daddr.
   apply daddr_after_set; [assumption | reflexivity].
 Qed.
 
@@ -71,12 +103,13 @@ Qed.
    by the dnat chain — the destination IS rewritten.  This is the analogue of the
    formerly-provable (and false) `chain_out dnat_chain p = p`. *)
 Theorem dnat_is_not_noop : forall p,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
   20 <= List.length (pkt_nh p) ->
   field_value FIp4Daddr p <> [10;0;0;1] ->
   chain_out dnat_chain p <> p.
 Proof.
-  intros p Hnh Hne H.
-  apply Hne. rewrite <- (dnat_dest_is_target p Hnh), H. reflexivity.
+  intros p Hnone Hnh Hne H.
+  apply Hne. rewrite <- (dnat_dest_is_target p Hnone Hnh), H. reflexivity.
 Qed.
 
 (** * Redirect is hook-dependent (kernel [nf_nat_redirect_ipv4]/[ipv6]).
@@ -96,21 +129,42 @@ Definition redir_rule (fam : string) : rule :=
      r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
 
 (* At the OUTPUT hook, redirect rewrites the destination to the LOOPBACK constant
-   (127.0.0.1 for ip, ::1 for ip6), INDEPENDENT of the inbound-interface address. *)
+   (127.0.0.1 for ip, ::1 for ip6), INDEPENDENT of the inbound-interface address.
+   On the first packet of a flow the mapping is also stored; the network header is
+   unchanged by that env write. *)
 Theorem redir_output_ip4_loopback : forall p,
-  apply_nat Houtput (redir_rule "ip") p = set_daddr "ip" p [127;0;0;1].
-Proof. reflexivity. Qed.
+  e_nat (pkt_env p) (pkt_flow p) = None ->
+  apply_nat Houtput (redir_rule "ip") p
+    = store_nat_mapping (set_daddr "ip" p [127;0;0;1]) (Some [127;0;0;1], None).
+Proof.
+  intros p Hnone. unfold apply_nat, redir_rule, redir_spec.
+  cbn -[set_daddr store_nat_mapping e_nat pkt_env pkt_flow]. rewrite Hnone. reflexivity.
+Qed.
 
 Theorem redir_output_ip6_loopback : forall p,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
   apply_nat Houtput (redir_rule "ip6") p
-    = set_daddr "ip6" p [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1].
-Proof. reflexivity. Qed.
+    = store_nat_mapping (set_daddr "ip6" p [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1])
+                        (Some [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1], None).
+Proof.
+  intros p Hnone. unfold apply_nat, redir_rule, redir_spec.
+  cbn -[set_daddr store_nat_mapping e_nat pkt_env pkt_flow]. rewrite Hnone. reflexivity.
+Qed.
 
 (* At PRE_ROUTING, redirect still uses the inbound-interface address. *)
 Theorem redir_prerouting_iifaddr : forall p,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
   apply_nat Hprerouting (redir_rule "ip") p
-    = set_daddr "ip" p (e_ifaddr (pkt_env p) (field_value FMetaIifname p)).
-Proof. reflexivity. Qed.
+    = store_nat_mapping
+        (set_daddr "ip" p (e_ifaddr (pkt_env p) (field_value FMetaIifname p)))
+        (Some (e_ifaddr (pkt_env p) (field_value FMetaIifname p)), None).
+Proof.
+  intros p Hnone. unfold apply_nat, redir_rule, redir_spec.
+  cbn -[set_daddr store_nat_mapping e_nat pkt_env pkt_flow e_ifaddr field_value redir_daddr].
+  rewrite Hnone.
+  unfold apply_nat_tuple, nat_is_src, nat_operand_addr, nat_addrfamily, redir_daddr.
+  cbn -[set_daddr store_nat_mapping e_ifaddr field_value]. reflexivity.
+Qed.
 
 (* The fix is observable on a well-formed IPv4 packet: when the inbound-interface
    address is NOT the loopback (the usual case) and the address slot is 4 bytes,
@@ -118,18 +172,21 @@ Proof. reflexivity. Qed.
    after a PRE_ROUTING redirect it yields the iif address — so the two hooks
    diverge.  Before the fix [apply_nat] was hook-blind and these coincided. *)
 Theorem redir_output_differs_from_prerouting : forall p,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
   20 <= List.length (pkt_nh p) ->
   List.length (e_ifaddr (pkt_env p) (field_value FMetaIifname p)) = 4 ->
   e_ifaddr (pkt_env p) (field_value FMetaIifname p) <> [127;0;0;1] ->
   apply_nat Houtput (redir_rule "ip") p <> apply_nat Hprerouting (redir_rule "ip") p.
 Proof.
-  intros p Hnh Hlen Hne Heq.
+  intros p Hnone Hnh Hlen Hne Heq.
   apply Hne.
   assert (Hread :
     field_value FIp4Daddr (apply_nat Houtput (redir_rule "ip") p)
     = field_value FIp4Daddr (apply_nat Hprerouting (redir_rule "ip") p))
     by (rewrite Heq; reflexivity).
-  rewrite redir_output_ip4_loopback, redir_prerouting_iifaddr in Hread.
+  rewrite (redir_output_ip4_loopback p Hnone),
+          (redir_prerouting_iifaddr p Hnone) in Hread.
+  rewrite !store_nat_daddr in Hread.
   rewrite (daddr_after_set p [127;0;0;1] Hnh eq_refl) in Hread.
   rewrite (daddr_after_set p _ Hnh Hlen) in Hread.
   symmetry; exact Hread.
@@ -161,19 +218,32 @@ Definition dnat_port_chain : chain := {| c_policy := Accept; c_rules := [dnat_po
 Lemma dnat_port_bytes_8080 : nat_port_bytes 8080 = [31; 144].
 Proof. reflexivity. Qed.
 
-(* The dnat-with-port effect: address rewrite followed by the L4 dest-port write. *)
+(* The dnat-with-port effect: address rewrite followed by the L4 dest-port write,
+   plus the stored flow mapping (Round-2).  The stored tuple records both the
+   address and the port operand. *)
 Lemma dnat_port_apply : forall h p,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
   apply_nat h dnat_port_rule p
-    = set_dport (set_daddr "ip" p [10;0;0;1]) [31; 144].
-Proof. reflexivity. Qed.
+    = store_nat_mapping (set_dport (set_daddr "ip" p [10;0;0;1]) [31; 144])
+                        (Some [10;0;0;1], Some 8080).
+Proof.
+  intros h p Hnone. unfold apply_nat, dnat_port_rule, dnat_port_spec.
+  cbn -[set_dport set_daddr store_nat_mapping e_nat pkt_env pkt_flow]. rewrite Hnone.
+  reflexivity.
+Qed.
 
 (* THE OUTPUT PACKET: dnat to A:PORT sets both the destination address and dport. *)
 Theorem dnat_port_output : forall h p,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
   eval_chain_trace h dnat_port_chain p
-    = (Accept, set_dport (set_daddr "ip" p [10;0;0;1]) [31; 144]).
+    = (Accept, store_nat_mapping (set_dport (set_daddr "ip" p [10;0;0;1]) [31; 144])
+                                 (Some [10;0;0;1], Some 8080)).
 Proof.
-  intros h p. unfold eval_chain_trace, dnat_port_chain. cbn [c_rules eval_rules_trace].
-  reflexivity.
+  intros h p Hnone.
+  assert (Hw : dsl_writes dnat_port_rule p = p) by reflexivity.
+  unfold eval_chain_trace, dnat_port_chain. cbn [c_rules eval_rules_trace].
+  cbn -[apply_nat dnat_port_rule dsl_writes]. rewrite Hw.
+  rewrite (dnat_port_apply h p Hnone). reflexivity.
 Qed.
 
 (* Reading the destination port back: after `dnat to A:8080`, `th dport` IS 8080
@@ -195,12 +265,16 @@ Proof.
 Qed.
 
 Theorem dnat_port_dport_is_8080 : forall p,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
   20 <= List.length (pkt_nh p) ->
   4 <= List.length (pkt_th p) ->
   read_payload PTransport 2 2 (chain_out dnat_port_chain p) = [31; 144].
 Proof.
-  intros p Hnh Hth. unfold chain_out. rewrite dnat_port_output. cbn [snd].
-  (* set_daddr touches pkt_nh + (the disjoint L4 csum slot); pkt_th length preserved. *)
+  intros p Hnone Hnh Hth. unfold chain_out. rewrite (dnat_port_output Hprerouting p Hnone). cbn [snd].
+  (* set_daddr touches pkt_nh + (the disjoint L4 csum slot); pkt_th length preserved;
+     store_nat_mapping leaves pkt_th untouched. *)
+  unfold read_payload at 1. rewrite store_nat_th.
+  fold (read_payload PTransport 2 2 (set_dport (set_daddr "ip" p [10;0;0;1]) [31;144])).
   apply dport_after_set; [rewrite set_daddr_th_len; exact Hth | reflexivity].
 Qed.
 
@@ -208,14 +282,15 @@ Qed.
    header unchanged (the red agent's [dnat_port_NOT_rewritten] is now false) — the
    L4 destination port IS rewritten whenever the current dport differs from 8080. *)
 Theorem dnat_port_rewrites_th : forall p,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
   20 <= List.length (pkt_nh p) ->
   4 <= List.length (pkt_th p) ->
   read_payload PTransport 2 2 p <> [31; 144] ->
   pkt_th (chain_out dnat_port_chain p) <> pkt_th p.
 Proof.
-  intros p Hnh Hth Hne Heq.
+  intros p Hnone Hnh Hth Hne Heq.
   apply Hne.
-  rewrite <- (dnat_port_dport_is_8080 p Hnh Hth).
+  rewrite <- (dnat_port_dport_is_8080 p Hnone Hnh Hth).
   unfold read_payload. rewrite Heq. reflexivity.
 Qed.
 
@@ -234,22 +309,32 @@ Definition snat_port_rule : rule :=
   {| r_body := []; r_verdict := Continue; r_vmap := None; r_nat := Some snat_port_spec;
      r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
 
-(* snat to A:PORT writes the SOURCE port (offset 0), leaving the dest port alone. *)
+(* snat to A:PORT writes the SOURCE port (offset 0), leaving the dest port alone,
+   and stores the (addr, port) mapping for the flow. *)
 Theorem snat_port_writes_sport : forall h p,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
   apply_nat h snat_port_rule p
-    = set_sport (set_saddr "ip" p [192;168;0;1]) (nat_port_bytes 4000).
-Proof. reflexivity. Qed.
+    = store_nat_mapping
+        (set_sport (set_saddr "ip" p [192;168;0;1]) (nat_port_bytes 4000))
+        (Some [192;168;0;1], Some 4000).
+Proof.
+  intros h p Hnone. unfold apply_nat, snat_port_rule, snat_port_spec.
+  cbn -[set_sport set_saddr store_nat_mapping e_nat pkt_env pkt_flow]. rewrite Hnone.
+  reflexivity.
+Qed.
 
 (* The address-only dnat ([nat_pmin]=None) leaves the L4 PORT bytes (transport
    slots 0..1 / 2..3) byte-for-byte unchanged — the kernel's
    `if (priv->sreg_proto_min)` is NOT taken — even though it does touch the L4
-   CHECKSUM slot for the address change (see [dnat_addronly_updates_l4_csum]). *)
+   CHECKSUM slot for the address change (see [dnat_addronly_updates_l4_csum]).
+   The [store_nat_mapping] env write preserves [pkt_th]. *)
 Theorem dnat_addronly_ports_preserved : forall h p poff plen,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
   poff + plen <= 6 ->
   slice (pkt_th (apply_nat h dnat_rule p)) poff plen = slice (pkt_th p) poff plen.
 Proof.
-  intros h p poff plen Hle.
-  change (apply_nat h dnat_rule p) with (set_daddr "ip" p [10;0;0;1]).
+  intros h p poff plen Hnone Hle.
+  rewrite (dnat_apply h p Hnone), store_nat_th.
   apply set_daddr_th_port; exact Hle.
 Qed.
 
@@ -282,31 +367,46 @@ Definition dnat_portonly_rule : rule :=
 Lemma dnat_portonly_no_addr : nat_has_addr dnat_portonly_spec = false.
 Proof. reflexivity. Qed.
 
-(* So [apply_nat] is a PURE L4 rewrite: it touches only the dest port, NOT the
-   network header.  Contrast the old (buggy) [set_dport (set_daddr "ip" p [])]. *)
+(* So [apply_nat] is a PURE L4 rewrite (plus the env store): it touches only the
+   dest port, NOT the network header.  Contrast the old (buggy)
+   [set_dport (set_daddr "ip" p [])].  The stored mapping carries NO address
+   ([fst = None]) — only the port. *)
 Theorem dnat_portonly_apply : forall h p,
-  apply_nat h dnat_portonly_rule p = set_dport p (nat_port_bytes 80).
-Proof. reflexivity. Qed.
+  e_nat (pkt_env p) (pkt_flow p) = None ->
+  apply_nat h dnat_portonly_rule p
+    = store_nat_mapping (set_dport p (nat_port_bytes 80)) (None, Some 80).
+Proof.
+  intros h p Hnone. unfold apply_nat, dnat_portonly_rule, dnat_portonly_spec.
+  cbn -[set_dport store_nat_mapping e_nat pkt_env pkt_flow nat_port_bytes]. rewrite Hnone.
+  reflexivity.
+Qed.
 
 (* The network header is PRESERVED byte-for-byte (no splice, no truncation): the
    destination address — and the whole IP header — survives unchanged. *)
 Theorem dnat_portonly_preserves_nh : forall h p,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
   pkt_nh (apply_nat h dnat_portonly_rule p) = pkt_nh p.
-Proof. reflexivity. Qed.
+Proof.
+  intros h p Hnone. rewrite (dnat_portonly_apply h p Hnone), store_nat_nh. reflexivity.
+Qed.
 
 (* Hence `ip daddr` reads back EXACTLY the input destination (the kernel guarantee
    the buggy model violated by deleting the slot). *)
 Theorem dnat_portonly_preserves_daddr : forall h p,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
   field_value FIp4Daddr (apply_nat h dnat_portonly_rule p) = field_value FIp4Daddr p.
 Proof.
-  intros h p. unfold field_value; cbn [field_load do_load].
-  unfold read_payload, slice. rewrite dnat_portonly_preserves_nh. reflexivity.
+  intros h p Hnone. unfold field_value; cbn [field_load do_load].
+  unfold read_payload, slice. rewrite (dnat_portonly_preserves_nh h p Hnone). reflexivity.
 Qed.
 
 (* And it DOES rewrite the L4 destination port (the proto half still fires). *)
 Theorem dnat_portonly_writes_dport : forall h p,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
   pkt_th (apply_nat h dnat_portonly_rule p) = splice (pkt_th p) 2 2 (nat_port_bytes 80).
-Proof. reflexivity. Qed.
+Proof.
+  intros h p Hnone. rewrite (dnat_portonly_apply h p Hnone), store_nat_th. reflexivity.
+Qed.
 
 (** * The IPv4 header checksum is NOT left stale after a NAT address rewrite.
 
@@ -336,7 +436,7 @@ Definition env0 : env :=
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
      e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => [];
      e_connlimit := fun _ => 0;
-     e_ct := fun _ _ => [] |}.
+     e_ct := fun _ _ => []; e_nat := fun _ => None |}.
 Definition pkt4 : packet :=
   {| pkt_env := env0; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];

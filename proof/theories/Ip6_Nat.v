@@ -39,12 +39,28 @@ Definition ip6_snat_rule : rule :=
      r_queue := None; r_after := [] |}.
 
 (* The IPv6 dnat NAT effect destination-rewrites the IPv6 dest slot (off 24,
-   len 16) to the target operand. *)
-Lemma ip6_dnat_apply : forall h p, apply_nat h ip6_dnat_rule p = set_daddr "ip6" p tgt6.
-Proof. reflexivity. Qed.
+   len 16) to the target operand.  NAT is now FLOW-STATEFUL (Round-2): on the first
+   packet of a flow ([e_nat .. = None]) the address rewrite is exactly as before AND
+   the mapping is stored; the network header is unchanged by that env write. *)
+Lemma ip6_dnat_apply : forall h p,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
+  apply_nat h ip6_dnat_rule p
+    = store_nat_mapping (set_daddr "ip6" p tgt6) (Some tgt6, None).
+Proof.
+  intros h p Hnone. unfold apply_nat, ip6_dnat_rule, ip6_dnat_spec.
+  cbn -[set_daddr store_nat_mapping e_nat pkt_env pkt_flow tgt6]. rewrite Hnone.
+  reflexivity.
+Qed.
 
-Lemma ip6_snat_apply : forall h p, apply_nat h ip6_snat_rule p = set_saddr "ip6" p tgt6.
-Proof. reflexivity. Qed.
+Lemma ip6_snat_apply : forall h p,
+  e_nat (pkt_env p) (pkt_flow p) = None ->
+  apply_nat h ip6_snat_rule p
+    = store_nat_mapping (set_saddr "ip6" p tgt6) (Some tgt6, None).
+Proof.
+  intros h p Hnone. unfold apply_nat, ip6_snat_rule, ip6_snat_spec.
+  cbn -[set_saddr store_nat_mapping e_nat pkt_env pkt_flow tgt6]. rewrite Hnone.
+  reflexivity.
+Qed.
 
 (* Reading the IPv6 destination back: after the ip6 dnat, `ip6 daddr` IS the
    16-byte target (for a well-formed IPv6 header, >= 40 bytes). *)
@@ -108,7 +124,7 @@ Definition e0 : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
      e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => []; e_connlimit := fun _ => 0;
-     e_ct := fun _ _ => [] |}.
+     e_ct := fun _ _ => []; e_nat := fun _ => None |}.
 Definition pkt6 : packet :=
   {| pkt_env := e0; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
@@ -160,7 +176,7 @@ Definition e6 : env :=
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
      e_quota := fun _ => 0; e_ifaddr := fun _ => [9;9;9;9];
      e_ifaddr6 := fun _ => if6; e_connlimit := fun _ => 0;
-     e_ct := fun _ _ => [] |}.
+     e_ct := fun _ _ => []; e_nat := fun _ => None |}.
 
 (* A 40-byte IPv6 packet whose source slot (bytes 8..23) holds distinguishable
    markers 108..123 (as in the red probe). *)

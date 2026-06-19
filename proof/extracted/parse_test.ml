@@ -483,6 +483,61 @@ let check_dnat_rewrite () =
     (Stdlib.List.length p_out3.Packet.pkt_nh = Stdlib.List.length nh);
   check "dnat to :PORT rewrites th dport to the big-endian port (80=0x0050)"
     (data_eq dport_out3 [0x00; 0x50]);
+  (* (F''') FLOW-STATEFUL NAT: the mapping is established ONCE on the first packet of
+     a flow and STORED in the conntrack entry (kernel nf_nat_setup_info:
+     get_unique_tuple + nf_conntrack_alter_reply on the UNCONFIRMED packet,
+     nf_nat_core.c:778-803); every LATER (confirmed) packet of the same flow reuses
+     the STORED tuple WITHOUT re-evaluating the rule operand (returns NF_ACCEPT,
+     rewrite from stored tuple via nf_nat_manip_pkt).  The model now mirrors this:
+     env carries a flow-keyed e_nat table; apply_nat computes+stores on the first
+     packet (e_nat flow = None) and reuses on later packets (e_nat flow = Some m).
+     We use `dnat to ip saddr` — an operand that VARIES per packet — so the fix is
+     observable: two same-flow packets with different saddrs get the SAME (packet-1)
+     destination.  Built at the Semantics level (no parser surface for `to ip saddr`). *)
+  let dnat_saddr_spec : Syntax.nat_spec =
+    { Syntax.nat_imms = []; nat_field = Some (Syntax.FIp4Saddr, []); nat_map = None;
+      nat_src = None; nat_kind = Syntax.nat_dnat_kind; nat_family = Syntax.nat_fam_ip4;
+      nat_amin = None; nat_amax = None; nat_pmin = None; nat_pmax = None; nat_flags = 0 } in
+  let dnat_saddr_rule : Syntax.rule =
+    { Syntax.r_body = []; r_verdict = Verdict.Accept; r_vmap = None;
+      r_nat = Some dnat_saddr_spec; r_tproxy = None; r_fwd = None;
+      r_queue = None; r_after = [] } in
+  let dnat_saddr_chain : Syntax.chain =
+    { Syntax.c_policy = Verdict.Drop; c_rules = [dnat_saddr_rule] } in
+  let flow0 = [7;7] in
+  (* a 20-byte IPv4 header with the given source address @12..15 (dst @16..19) *)
+  let mk_nh saddr = [0x45;0;0;20; 0;0;0;0; 64;6;0;0] @ saddr @ [9;9;9;9] in
+  (* packet 1 of the flow: saddr 1.1.1.1 — establishes + stores the mapping *)
+  let f1 = { (mk_pkt ~env ~flow:flow0 ()) with Packet.pkt_nh = mk_nh [1;1;1;1];
+             pkt_have_l4 = false } in
+  let (_, f1_out) =
+    Semantics.eval_chain_trace Semantics.Hprerouting dnat_saddr_chain f1 in
+  let d1 = Syntax.field_value Syntax.FIp4Daddr f1_out in
+  check "dnat to ip saddr: packet 1 dnat's dst to its own saddr (1.1.1.1)"
+    (data_eq d1 [1;1;1;1]);
+  check "the NAT mapping is STORED in the flow-keyed e_nat after packet 1"
+    ((f1_out.Packet.pkt_env).Packet.e_nat flow0 = Some (Some [1;1;1;1], None));
+  (* packet 2 of the SAME flow: DIFFERENT saddr 2.2.2.2, threaded through the env
+     packet 1 left — it must reuse packet 1's STORED destination (1.1.1.1), NOT its
+     own saddr.  This is the property that was UNSOUND (provably divergent) before. *)
+  let f2 = { (mk_pkt ~env:(f1_out.Packet.pkt_env) ~flow:flow0 ())
+             with Packet.pkt_nh = mk_nh [2;2;2;2]; pkt_have_l4 = false } in
+  let (_, f2_out) =
+    Semantics.eval_chain_trace Semantics.Hprerouting dnat_saddr_chain f2 in
+  let d2 = Syntax.field_value Syntax.FIp4Daddr f2_out in
+  Printf.printf "    dnat-to-saddr flow: pkt1 dst=%s  pkt2 dst=%s (same stored mapping)\n"
+    (show d1) (show d2);
+  check "packet 2 of the SAME flow reuses packet 1's STORED dnat dst (1.1.1.1, kernel-correct)"
+    (data_eq d2 [1;1;1;1]);
+  check "packet 2 does NOT dnat to its OWN saddr (2.2.2.2) — operand not re-evaluated"
+    (not (data_eq d2 [2;2;2;2]));
+  (* a packet on a DIFFERENT flow establishes its OWN mapping (flow-scoped) *)
+  let g = { (mk_pkt ~env:(f1_out.Packet.pkt_env) ~flow:[8;8] ())
+            with Packet.pkt_nh = mk_nh [2;2;2;2]; pkt_have_l4 = false } in
+  let (_, g_out) =
+    Semantics.eval_chain_trace Semantics.Hprerouting dnat_saddr_chain g in
+  check "a DIFFERENT flow establishes its own mapping (dnat dst = its own saddr 2.2.2.2)"
+    (data_eq (Syntax.field_value Syntax.FIp4Daddr g_out) [2;2;2;2]);
   Printf.printf "\n"
 
 (* (G) FAMILY-AWARE NAT: an ip6 dnat/snat rewrites the 128-bit IPv6 address slot

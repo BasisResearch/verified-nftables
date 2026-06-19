@@ -304,7 +304,7 @@ Definition env_with_sets (base : env) (d : set_decls) : env :=
      e_routes := e_routes base; e_rt := e_rt base;
      e_ifaddr := e_ifaddr base; e_ifaddr6 := e_ifaddr6 base;
      e_limit := e_limit base; e_quota := e_quota base; e_connlimit := e_connlimit base;
-     e_ct := e_ct base |}.
+     e_ct := e_ct base; e_nat := e_nat base |}.
 
 (** A declared set's elements are exactly what `lookup @n` reads. *)
 Lemma e_set_declared : forall base d n,
@@ -748,7 +748,23 @@ Definition env_ct_upd (e : env) (fl : data) (k : ct_key) (v : data) : env :=
      e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
      e_ct := (fun fl' k' =>
-                if andb (data_eqb fl fl') (ct_eqb k k') then v else e_ct e fl' k') |}.
+                if andb (data_eqb fl fl') (ct_eqb k k') then v else e_ct e fl' k');
+     e_nat := e_nat e |}.
+
+(** Update the SHARED, flow-keyed NAT-mapping table [e_nat] of an env: STORE the
+    established translation [m] at flow [fl], leaving every other flow's mapping —
+    and every other env component — unchanged.  This is the env analogue of
+    [env_ct_upd] for the NAT tuple, mirroring the kernel's
+    nf_conntrack_alter_reply / store-into-conntrack-entry in [nf_nat_setup_info]
+    that records the translation on the FIRST (unconfirmed) packet of a flow. *)
+Definition env_nat_upd (e : env) (fl : data)
+                       (m : option data * option nat) : env :=
+  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
+     e_routes := e_routes e; e_rt := e_rt e;
+     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
+     e_ct := e_ct e;
+     e_nat := (fun fl' => if data_eqb fl fl' then Some m else e_nat e fl') |}.
 
 (** Set a conntrack key.  A WRITABLE+PERSISTENT key ([ct_writable]: mark/label) is
     stored into the SHARED, flow-keyed conntrack table [e_ct] at THIS packet's flow
@@ -1229,7 +1245,7 @@ Definition env_set_upd (e : env) (op name : String.string) (key : data) : env :=
      e_routes := e_routes e; e_rt := e_rt e;
      e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
-     e_ct := e_ct e |}.
+     e_ct := e_ct e; e_nat := e_nat e |}.
 
 Definition set_env_dynset (p : packet) (op name : String.string) (key : data) : packet :=
   {| pkt_env := env_set_upd (pkt_env p) op name key;
@@ -1257,7 +1273,7 @@ Definition env_map_upd (e : env) (op name : String.string) (key dat : data) : en
      e_routes := e_routes e; e_rt := e_rt e;
      e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
-     e_ct := e_ct e |}.
+     e_ct := e_ct e; e_nat := e_nat e |}.
 
 Definition set_env_dynset_map (p : packet) (op name : String.string) (key dat : data) : packet :=
   {| pkt_env := env_map_upd (pkt_env p) op name key dat;
@@ -1670,22 +1686,107 @@ Definition nat_has_addr (ns : nat_spec) : bool :=
     their address rewrite is unconditional, matching [nft_masq]/[nft_redir] which
     always set up the address.  The kernel applies both the addr and the proto
     range in a single [nf_nat_setup_info]. *)
+(** Whether a NAT kind is a SOURCE NAT ([NF_NAT_MANIP_SRC]: snat/masquerade — the
+    L3 SOURCE address + L4 SOURCE port are rewritten) versus a DESTINATION NAT
+    ([NF_NAT_MANIP_DST]: dnat/redirect).  This is fixed by the rule's [nat_kind],
+    independent of the flow. *)
+Definition nat_is_src (ns : nat_spec) : bool :=
+  String.eqb (nat_kind ns) nat_masq_kind || String.eqb (nat_kind ns) nat_snat_kind.
+
+(** The L3 ADDRESS the operand evaluates to, i.e. the value the kernel loads into
+    [NAT_REG_ADDR_MIN] on the unconfirmed packet to build the new tuple — or [None]
+    when the spec carries no address operand (a port-only snat/dnat, the kernel's
+    `if (priv->sreg_addr_min)` guard being false, nft_nat.c:114).  masquerade derives
+    its source from the exit interface, redirect from the inbound interface/loopback,
+    so both always carry an (implicit) address.  This is the ONLY part of the NAT
+    effect that re-reads the current packet, so it is exactly what must be FROZEN at
+    the flow's first packet. *)
+Definition nat_operand_addr (h : hook_id) (ns : nat_spec) (p : packet) : option data :=
+  if String.eqb (nat_kind ns) nat_masq_kind
+  then Some (masq_saddr (nat_addrfamily ns) p)
+  else if String.eqb (nat_kind ns) nat_redir_kind
+  then Some (redir_daddr h (nat_addrfamily ns) p)
+  else if String.eqb (nat_kind ns) nat_snat_kind
+       || String.eqb (nat_kind ns) nat_dnat_kind
+  then if nat_has_addr ns then Some (nat_addr ns p) else None
+  else None.
+
+(** Apply a (possibly absent) L4 PORT translation [port_opt] to packet [p],
+    rewriting the SOURCE port for a source NAT or the DESTINATION port for a
+    destination NAT — the value-level analogue of [apply_nat_port] that takes the
+    stored port directly instead of re-reading [nat_pmin]. *)
+Definition apply_nat_port_val (is_src : bool) (port_opt : option nat) (p : packet) : packet :=
+  match port_opt with
+  | Some pmin =>
+      if is_src then set_sport p (nat_port_bytes pmin)
+                else set_dport p (nat_port_bytes pmin)
+  | None => p
+  end.
+
+(** Apply an ESTABLISHED translation [(addr_opt, port_opt)] to packet [p] for a NAT
+    of kind [ns]: rewrite the L3 address (source for a source NAT, destination for a
+    destination NAT) when [addr_opt = Some a], then the L4 port when
+    [port_opt = Some pmin].  This is the kernel's [nf_nat_manip_pkt] applying the
+    STORED tuple — it never re-reads the rule operand, so it is shared verbatim by
+    the first packet (where the tuple was just computed) and every later confirmed
+    packet of the flow. *)
+Definition apply_nat_tuple (ns : nat_spec) (p : packet)
+                           (m : option data * option nat) : packet :=
+  let fam := nat_addrfamily ns in
+  let is_src := nat_is_src ns in
+  let p1 := match fst m with
+            | Some a => if is_src then set_saddr fam p a else set_daddr fam p a
+            | None => p
+            end in
+  apply_nat_port_val is_src (snd m) p1.
+
+(** Replace packet [p]'s environment with the flow-keyed NAT mapping [m] STORED at
+    [p]'s flow ([env_nat_upd]).  Every set_*/address rewrite preserves [pkt_env], so
+    this records the established translation into the shared, threaded env exactly
+    where the kernel writes it into the conntrack entry. *)
+Definition store_nat_mapping (p : packet) (m : option data * option nat) : packet :=
+  {| pkt_env := env_nat_upd (pkt_env p) (pkt_flow p) m; pkt_meta := pkt_meta p;
+     pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
+     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p |}.
+
+(** The data-plane NAT effect of a terminal rule at hook [h], now FLOW-STATEFUL,
+    mirroring [nf_nat_setup_info]/[nft_nat_eval]:
+
+    - On the FIRST (unconfirmed) packet of a flow ([e_nat (pkt_flow p) = None]) the
+      kernel computes the new tuple from the rule operand (get_unique_tuple,
+      nf_nat_core.c:796), STORES it in the conntrack entry (nf_conntrack_alter_reply,
+      :803), and applies the rewrite.  The model mirrors this: it evaluates
+      [nat_operand_addr]/[nat_pmin] from the CURRENT packet, applies the tuple
+      ([apply_nat_tuple]) AND stores it into the shared, flow-keyed [e_nat]
+      ([store_nat_mapping]).
+
+    - On every LATER (confirmed) packet of the SAME flow ([e_nat (pkt_flow p) =
+      Some m]) the kernel returns NF_ACCEPT from nf_nat_setup_info WITHOUT
+      recomputing (nf_nat_core.c:778-780), and the rewrite comes from the STORED
+      tuple [m] (nf_nat_manip_pkt).  The model mirrors this: it applies [m] verbatim
+      ([apply_nat_tuple]) and does NOT re-read the operand — so two same-flow packets
+      with different saddrs both get the translation chosen on packet 1.
+
+    This is the exact analogue of the Round-1 conntrack-mark fix, now for the NAT
+    tuple.  The verdict side is untouched (NAT is terminal-Accept), so
+    [compile_chain_correct] is unaffected. *)
 Definition apply_nat (h : hook_id) (r : rule) (p : packet) : packet :=
   match r_nat r with
   | Some ns =>
-      let fam := nat_addrfamily ns in
-      if String.eqb (nat_kind ns) nat_masq_kind
-      then apply_nat_port true ns
-             (set_saddr fam p (masq_saddr fam p))
-      else if String.eqb (nat_kind ns) nat_snat_kind
-      then apply_nat_port true ns
-             (if nat_has_addr ns then set_saddr fam p (nat_addr ns p) else p)
-      else if String.eqb (nat_kind ns) nat_dnat_kind
-      then apply_nat_port false ns
-             (if nat_has_addr ns then set_daddr fam p (nat_addr ns p) else p)
-      else if String.eqb (nat_kind ns) nat_redir_kind
-      then apply_nat_port false ns (set_daddr fam p (redir_daddr h fam p))
-      else p
+      match e_nat (pkt_env p) (pkt_flow p) with
+      | Some m =>
+          (* confirmed flow: reuse the stored tuple, do NOT re-read the operand *)
+          apply_nat_tuple ns p m
+      | None =>
+          (* first packet of the flow: compute the tuple, apply it, and STORE it *)
+          let m := (nat_operand_addr h ns p, nat_pmin ns) in
+          store_nat_mapping (apply_nat_tuple ns p m) m
+      end
   | None => p
   end.
 
