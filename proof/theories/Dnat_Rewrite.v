@@ -411,3 +411,68 @@ Theorem dnat_addronly_tcp_ports_unchanged :
   slice (pkt_th (chain_out dnat_chain pkt4tcp)) 0 4
     = slice (pkt_th pkt4tcp) 0 4.
 Proof. vm_compute. reflexivity. Qed.
+
+(** * A ZERO UDP checksum ("checksum disabled", RFC 768) is LEFT UNTOUCHED by NAT.
+
+    A UDP checksum field of 0 means "no checksum" — legal for IPv4 UDP (RFC 768).
+    The kernel's [udp_manip_pkt] (nf_nat_proto.c:65) passes `do_csum = !!hdr->check`
+    and [__udp_manip_pkt] (nf_nat_proto.c:55) guards the ENTIRE checksum update
+    (`nf_csum_update` + `inet_proto_csum_replace2` + the CSUM_MANGLED_0 fixup) under
+    `if (do_csum)`.  So a dnat/snat changing the L3 address on a UDP packet whose
+    checksum is 0 leaves that field byte-for-byte 0.  The model now mirrors this:
+    [set_l4_csum_addr] gates the UDP (mandatory=false) update on a non-zero existing
+    checksum, so a zero stays zero.
+
+    [udp_csum] names the UDP checksum slot (transport bytes 6..7). *)
+Definition udp_csum (p : packet) : data := slice (pkt_th p) 6 2.
+
+(* A UDP packet with the checksum field (bytes 6..7) ZERO ("checksum disabled"). *)
+Definition pkt4udp0 : packet :=
+  {| pkt_env := env0;
+     pkt_meta := fun k => if meta_eqb k MKl4proto then [17] else [];
+     pkt_ct := fun _ => [];
+     pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
+     pkt_lh := []; pkt_nh := ip4_hdr;
+     (* UDP header: sport=0;80  dport=0;0  len=0;8  check=0;0 *)
+     pkt_th := [ 0;80; 0;0; 0;8; 0;0 ]; pkt_ih := [];
+     pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
+     pkt_osf := []; pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
+     pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := true; pkt_fragoff := 0 |}.
+
+(* CORRECTED behavior: the zero UDP checksum is LEFT ZERO after an address dnat
+   (the kernel's do_csum=false path).  This is the property the old red probe
+   showed UNPROVABLE before the fix; it now holds by reflexivity. *)
+Theorem dnat_leaves_zero_udp_checksum_zero :
+  udp_csum (chain_out dnat_chain pkt4udp0) = udp_csum pkt4udp0.
+Proof. vm_compute. reflexivity. Qed.
+
+(* Stated absolutely: the field stays exactly [0;0]. *)
+Theorem dnat_zero_udp_checksum_is_zero :
+  udp_csum (chain_out dnat_chain pkt4udp0) = [0;0].
+Proof. vm_compute. reflexivity. Qed.
+
+(* A UDP packet with a NON-ZERO checksum IS updated for the address delta (the
+   kernel's do_csum=true path), so the gate is non-vacuous — it discriminates on
+   the checksum value, not the protocol. *)
+Definition pkt4udpc : packet :=
+  {| pkt_env := env0;
+     pkt_meta := fun k => if meta_eqb k MKl4proto then [17] else [];
+     pkt_ct := fun _ => [];
+     pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
+     pkt_lh := []; pkt_nh := ip4_hdr;
+     (* UDP header with a non-zero checksum field (bytes 6..7 = [171;205]) *)
+     pkt_th := [ 0;80; 0;0; 0;8; 171;205 ]; pkt_ih := [];
+     pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
+     pkt_osf := []; pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
+     pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := true; pkt_fragoff := 0 |}.
+
+Theorem dnat_updates_nonzero_udp_checksum :
+  udp_csum (chain_out dnat_chain pkt4udpc) <> udp_csum pkt4udpc.
+Proof. vm_compute. discriminate. Qed.
+
+Theorem dnat_nonzero_udp_checksum_is_incremental :
+  udp_csum (chain_out dnat_chain pkt4udpc)
+    = csum_update_field (udp_csum pkt4udpc) [1;2;3;4] [10;0;0;1].
+Proof. vm_compute. reflexivity. Qed.

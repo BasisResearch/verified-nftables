@@ -819,12 +819,19 @@ Definition set_dport (p : packet) (v : data) : packet := set_th_field p 2 2 v.
     bytes 16..17 (`struct tcphdr.check`), UDP (17) at 6..7 (`struct udphdr.check`).
     Any other protocol (no L4 checksum the kernel's [l4proto_manip_pkt] would
     fix — ICMP/GRE/…) yields [None], so the address rewrite leaves the transport
-    header untouched (the kernel's `default: return true` of [l4proto_manip_pkt]). *)
-Definition l4_csum_slot (l4proto : data) : option (nat * nat) :=
+    header untouched (the kernel's `default: return true` of [l4proto_manip_pkt]).
+
+    The boolean is the checksum's MANDATORY flag: TCP (6) always carries a checksum
+    (the field is mandatory, do_csum is implicitly true in [tcp_manip_pkt]), so it
+    is [true]; UDP (17) MAY disable its checksum by leaving the field zero (RFC 768,
+    legal for IPv4), and [udp_manip_pkt] passes `do_csum = !!hdr->check` — the
+    checksum is updated ONLY when the existing field is non-zero — so it is [false].
+    A zero UDP checksum ("checksum disabled") must be left byte-for-byte zero. *)
+Definition l4_csum_slot (l4proto : data) : option (nat * nat * bool) :=
   match l4proto with
   | p :: nil =>
-      if Nat.eqb p 6 then Some (16, 2)        (* IPPROTO_TCP -> tcphdr.check @16 *)
-      else if Nat.eqb p 17 then Some (6, 2)   (* IPPROTO_UDP -> udphdr.check  @6 *)
+      if Nat.eqb p 6 then Some (16, 2, true)        (* IPPROTO_TCP -> tcphdr.check @16, mandatory *)
+      else if Nat.eqb p 17 then Some (6, 2, false)  (* IPPROTO_UDP -> udphdr.check  @6,  optional *)
       else None
   | _ => None
   end.
@@ -832,13 +839,13 @@ Definition l4_csum_slot (l4proto : data) : option (nat * nat) :=
 (** Whenever [l4_csum_slot] returns a slot, it starts at offset >= 6 (TCP @16,
     UDP @6) and has length 2 — so it lies strictly after the L4 PORT slots and
     the checksum is a 2-byte field. *)
-Lemma l4_csum_slot_geom : forall l4 coff clen,
-  l4_csum_slot l4 = Some (coff, clen) -> 6 <= coff /\ clen = 2.
+Lemma l4_csum_slot_geom : forall l4 coff clen mand,
+  l4_csum_slot l4 = Some (coff, clen, mand) -> 6 <= coff /\ clen = 2.
 Proof.
-  intros l4 coff clen H. unfold l4_csum_slot in H.
+  intros l4 coff clen mand H. unfold l4_csum_slot in H.
   destruct l4 as [|p [|b rest]]; try discriminate.
-  destruct (Nat.eqb p 6); [injection H as <- <-; split; lia|].
-  destruct (Nat.eqb p 17); [injection H as <- <-; split; lia| discriminate].
+  destruct (Nat.eqb p 6); [injection H as <- <- _; split; lia|].
+  destruct (Nat.eqb p 17); [injection H as <- <- _; split; lia| discriminate].
 Qed.
 
 (** Update the L4 (TCP/UDP) checksum for an L3-ADDRESS change [old -> new] (the
@@ -855,11 +862,17 @@ Qed.
     the slot, the RFC-1624 incremental update the kernel performs word by word. *)
 Definition set_l4_csum_addr (p : packet) (old new : data) : packet :=
   match l4_csum_slot (pkt_meta p MKl4proto) with
-  | Some (coff, clen) =>
+  | Some (coff, clen, mand) =>
       if andb (pkt_have_l4 p) (Nat.leb (coff + clen) (List.length (pkt_th p)))
       then let ck0 := slice (pkt_th p) coff clen in
-           let ck1 := csum_update_field ck0 old new in
-           set_th_field p coff clen ck1
+           (* UDP (mand=false) with a zero checksum field is "checksum disabled"
+              (RFC 768); [udp_manip_pkt] passes do_csum = !!hdr->check and guards
+              the whole update under `if (do_csum)`, leaving a zero checksum zero.
+              TCP (mand=true) always updates. *)
+           if andb (negb mand) (N.eqb (data_to_N ck0) 0)
+           then p
+           else let ck1 := csum_update_field ck0 old new in
+                set_th_field p coff clen ck1
       else p
   | None => p
   end.
@@ -871,8 +884,10 @@ Lemma set_l4_csum_addr_nh : forall p old new,
   pkt_nh (set_l4_csum_addr p old new) = pkt_nh p.
 Proof.
   intros p old new. unfold set_l4_csum_addr.
-  destruct (l4_csum_slot (pkt_meta p MKl4proto)) as [[coff clen]|]; [|reflexivity].
+  destruct (l4_csum_slot (pkt_meta p MKl4proto)) as [[[coff clen] mand]|]; [|reflexivity].
   destruct (pkt_have_l4 p && Nat.leb (coff + clen) (List.length (pkt_th p)));
+    [|reflexivity].
+  destruct (negb mand && N.eqb (data_to_N (slice (pkt_th p) coff clen)) 0);
     reflexivity.
 Qed.
 
@@ -883,10 +898,12 @@ Lemma set_l4_csum_addr_th_len : forall p old new,
   List.length (pkt_th (set_l4_csum_addr p old new)) = List.length (pkt_th p).
 Proof.
   intros p old new. unfold set_l4_csum_addr.
-  destruct (l4_csum_slot (pkt_meta p MKl4proto)) as [[coff clen]|] eqn:Hslot;
+  destruct (l4_csum_slot (pkt_meta p MKl4proto)) as [[[coff clen] mand]|] eqn:Hslot;
     [|reflexivity].
   destruct (pkt_have_l4 p && Nat.leb (coff + clen) (List.length (pkt_th p))) eqn:Hg;
     [|reflexivity].
+  destruct (negb mand && N.eqb (data_to_N (slice (pkt_th p) coff clen)) 0);
+    [reflexivity|].
   apply andb_true_iff in Hg as [_ Hlen]. apply PeanoNat.Nat.leb_le in Hlen.
   apply l4_csum_slot_geom in Hslot as [_ Hclen]. subst clen.
   cbn [set_th_field pkt_th]. unfold splice.
@@ -1028,10 +1045,12 @@ Lemma slice_set_l4_csum_addr_port : forall p old new poff plen,
   slice (pkt_th (set_l4_csum_addr p old new)) poff plen = slice (pkt_th p) poff plen.
 Proof.
   intros p old new poff plen Hle. unfold set_l4_csum_addr.
-  destruct (l4_csum_slot (pkt_meta p MKl4proto)) as [[coff clen]|] eqn:Hslot;
+  destruct (l4_csum_slot (pkt_meta p MKl4proto)) as [[[coff clen] mand]|] eqn:Hslot;
     [|reflexivity].
   destruct (pkt_have_l4 p && Nat.leb (coff + clen) (List.length (pkt_th p))) eqn:Hg;
     [|reflexivity].
+  destruct (negb mand && N.eqb (data_to_N (slice (pkt_th p) coff clen)) 0);
+    [reflexivity|].
   cbn [set_th_field pkt_th].
   apply andb_true_iff in Hg as [_ Hlen]. apply PeanoNat.Nat.leb_le in Hlen.
   (* coff is 16 (TCP) or 6 (UDP); poff+plen <= 6 <= coff, and coff <= |pkt_th| *)
