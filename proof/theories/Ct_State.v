@@ -28,16 +28,20 @@ From Stdlib Require Import List Bool.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.
 Import ListNotations.
 
-Definition e0 : env :=
+(* The conntrack-state value is now read from the SHARED, flow-keyed table [e_ct]
+   at the packet's flow (here the empty flow []), NOT a per-packet oracle: this
+   env records ct state [st] for the flow []. *)
+Definition e0_st (st : data) : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
      e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => []; e_connlimit := fun _ => 0;
-     e_ct := fun _ _ => []; e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
+     e_ct := fun _ k => match k with CKstate => st | _ => [] end;
+     e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
 
-(* A packet whose conntrack-state register is [st]. *)
+(* A packet whose conntrack-state register is [st] (stored in the flow table). *)
 Definition pkt_ctstate (st : data) : packet :=
-  {| pkt_env := e0; pkt_meta := fun _ => [];
-     pkt_ct := fun k => match k with CKstate => st | _ => [] end;
+  {| pkt_env := e0_st st; pkt_meta := fun _ => [];
+     pkt_ct := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := []; pkt_th := []; pkt_ih := []; pkt_tnl := [];
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];

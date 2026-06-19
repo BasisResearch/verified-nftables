@@ -1263,28 +1263,18 @@ Definition env_nat_upd (e : env) (fl : data)
      e_nat := (fun fl' => if data_eqb fl fl' then Some m else e_nat e fl');
      e_numgen := e_numgen e |}.
 
-(** Set a conntrack key.  A WRITABLE+PERSISTENT key ([ct_writable]: mark/label) is
-    stored into the SHARED, flow-keyed conntrack table [e_ct] at THIS packet's flow
-    ([pkt_flow]), so a later packet of the same flow reads it back via [do_load]'s
-    [LCt] case — the cross-packet conntrack-mark persistence the kernel implements
-    with WRITE_ONCE(ct->mark)/READ_ONCE(ct->mark).  A read-only key (state, counters,
-    …) the kernel never stores back is updated in the per-packet oracle [pkt_ct]
-    (used by nothing downstream but kept so the write is at least locally visible and
-    the DSL/VM remain in lock-step). *)
+(** Set a conntrack key.  The value is stored into the SHARED, flow-keyed
+    conntrack table [e_ct] at THIS packet's flow ([pkt_flow]), so a later packet of
+    the same flow reads it back via [do_load]'s [LCt] case — the cross-packet
+    conntrack-entry persistence the kernel implements with
+    WRITE_ONCE(ct->mark)/READ_ONCE(ct->mark) on the entry [nf_ct_get(skb)] selects.
+    The kernel only ever lets a rule WRITE the persistent keys ([ct_writable]:
+    mark/label); a read-only key has no setter, so a [set_ct] on one would never be
+    emitted by the parser — but routing it through the same flow table (rather than a
+    dead per-packet oracle) keeps the write faithful and the DSL/VM in lock-step. *)
 Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
-  if ct_writable k
-  then
   {| pkt_env := env_ct_upd (pkt_env p) (pkt_flow p) k v; pkt_meta := pkt_meta p;
      pkt_ct := pkt_ct p;
-     pkt_sock := pkt_sock p;
-     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
-     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}
-  else
-  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p;
-     pkt_ct := (fun k' => if ct_eqb k k' then v else pkt_ct p k');
      pkt_sock := pkt_sock p;
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;

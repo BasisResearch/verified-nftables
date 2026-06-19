@@ -145,21 +145,33 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
   match ld with
   | LMeta k         => pkt_meta p k
   | LCt k           =>
-      (* a WRITABLE+PERSISTENT conntrack key (mark/label) is read from the SHARED,
-         flow-keyed conntrack table at this packet's flow — so a `ct mark set V` on
-         an earlier packet of the same flow is observed here (kernel nft_ct_get_eval:
-         `ct = nf_ct_get(skb,&ctinfo); *dest = READ_ONCE(ct->mark)`).  Every other
-         (read-only, per-skb-computed) key stays a per-packet oracle [pkt_ct] —
-         EXCEPT that a `ct state` read AFTER a `notrack` in the same traversal returns
-         the constant NF_CT_STATE_UNTRACKED_BIT (= [0;0;0;64]): nft_notrack_eval set
-         the skb's ctinfo to IP_CT_UNTRACKED, so nft_ct_get_eval's NFT_CT_STATE case
-         takes the `else if (ctinfo == IP_CT_UNTRACKED)` branch
-         (= NF_CT_STATE_UNTRACKED_BIT) instead of computing from a real ct entry. *)
-      if ct_writable k then e_ct (pkt_env p) (pkt_flow p) k
-      else match k with
-           | CKstate => if pkt_untracked p then [0;0;0;64] else pkt_ct p k
-           | _ => pkt_ct p k
-           end
+      (* EVERY conntrack key is read from the SHARED, flow-keyed conntrack table
+         [e_ct] at THIS packet's flow ([pkt_flow]) — NOT from a free per-packet
+         oracle.  This mirrors the kernel: nft_ct_get_eval first does
+         `ct = nf_ct_get(pkt->skb, &ctinfo)` to select the flow's conntrack ENTRY,
+         then derives the requested key from THAT entry — both the
+         WRITABLE+PERSISTENT keys (mark/label: `*dest = READ_ONCE(ct->mark)`) and the
+         READ-ONLY, kernel-computed keys (state/direction/expiration/counters/zone:
+         e.g. NFT_CT_STATE `state = NF_CT_STATE_BIT(ctinfo)` where ctinfo is the
+         flow's tracking info).  Because the value is a function of the FLOW (not the
+         individual skb), two packets of the same connection read CONSISTENT
+         conntrack data, the FIRST packet of a flow reads whatever the entry was
+         INITIALISED to (the kernel: NEW — established/related bits clear), and a
+         fabricated packet can no longer report ESTABLISHED out of thin air: it can
+         only read what an entry for [pkt_flow p] holds.  See [ct_wf]/[Ct_Flow.v] for
+         the well-formedness invariant that pins the initial state to NEW.
+
+         The sole per-traversal exception is [CKstate] after a `notrack` statement:
+         nft_notrack_eval sets the skb's ctinfo to IP_CT_UNTRACKED, so the subsequent
+         nft_ct_get_eval NFT_CT_STATE read takes the `else if (ctinfo ==
+         IP_CT_UNTRACKED)` branch and returns the constant NF_CT_STATE_UNTRACKED_BIT
+         (= [0;0;0;64]); this is modelled by the per-traversal [pkt_untracked] flag
+         and overrides the flow-table read. *)
+      match k with
+      | CKstate => if pkt_untracked p then [0;0;0;64]
+                   else e_ct (pkt_env p) (pkt_flow p) k
+      | _ => e_ct (pkt_env p) (pkt_flow p) k
+      end
   | LRt k           => e_rt (pkt_env p) k
   | LSocket k       => pkt_sock p k
   | LNumgen spec    =>

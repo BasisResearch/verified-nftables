@@ -39,8 +39,24 @@ let verdict_str = function
 (* ---------- concrete packet construction (mirrors semtest.ml) ---------- *)
 
 let dummy0 _ = []
-let mk_pkt ~env ?(ct = dummy0) ?(protocol = []) ?(l4proto = []) ?(nfproto = [])
+(* Conntrack keys are now read from the SHARED, flow-keyed table [e_ct] at the
+   packet's flow (kernel nf_ct_get(skb) selects the entry by tuple), NOT a free
+   per-packet [pkt_ct] field.  So a test that wants `ct state X` on this packet must
+   record X in the env's [e_ct] at this packet's [flow]; [mk_pkt] does that by
+   wrapping the env's [e_ct] with an override at [flow].  ([pkt_ct] is retained on
+   the record only as dead state for backward source-compat; nothing reads it.) *)
+let mk_pkt ~env ?ct ?(protocol = []) ?(l4proto = []) ?(nfproto = [])
            ?(iifname = []) ?(th = []) ?(flow = []) () : Packet.packet =
+  (* Only override the env's flow-keyed [e_ct] when a per-packet ct map was
+     explicitly supplied (the legacy `~ct:(ct_state ...)` idiom); otherwise leave
+     the caller's env [e_ct] intact (some tests seed [e_ct] directly). *)
+  let env =
+    match ct with
+    | None -> env
+    | Some ct ->
+        { env with Packet.e_ct =
+            (fun fl k -> if fl = flow then ct k else env.Packet.e_ct fl k) } in
+  let ct = match ct with None -> dummy0 | Some ct -> ct in
   { Packet.pkt_env = env;
     pkt_meta = (fun k -> match k with
       | Packet.MKprotocol -> protocol | Packet.MKl4proto -> l4proto
@@ -907,6 +923,30 @@ let check_ct_state () =
     (Bytes.set_mem [0;0;0;6]
        [([0;0;0;8],[0;0;0;8]); ([0;0;0;2],[0;0;0;2]);
         ([0;0;0;4],[0;0;0;4]); ([0;0;0;64],[0;0;0;64])] = false);
+  (* FLOW-KEYED ct state (soundness): `ct state` is now read from the SHARED,
+     flow-keyed conntrack table e_ct at the packet's flow, NOT a free per-packet
+     oracle.  The kernel derives state from nf_ct_get(skb)'s entry, so the FIRST
+     packet of a flow is NEW (established/related bits clear) and a fabricated packet
+     CANNOT match `ct state established` with no flow history.  We model a NEW flow by
+     seeding e_ct[flow][CKstate] = new (8); the established match must then FAIL. *)
+  let mk_flow_state st flow =
+    let env_st = { env with Packet.e_ct =
+      (fun fl (k : Packet.ct_key) ->
+         match k with Packet.CKstate when fl = flow -> st | _ -> []) } in
+    mk_pkt ~env:env_st ~flow () in
+  let new_flow = mk_flow_state [0;0;0;8] [42] in
+  check "NEW-flow packet does NOT match `ct state established` (no flow history)"
+    (Semantics.eval_matchcond m_estab new_flow = false);
+  (* an ESTABLISHED flow (one a prior packet established) DOES match — not vacuous *)
+  let estab_flow = mk_flow_state [0;0;0;2] [42] in
+  check "ESTABLISHED-flow packet matches `ct state established`"
+    (Semantics.eval_matchcond m_estab estab_flow = true);
+  (* two packets of the SAME flow read CONSISTENT ct state (flow-keyed, not per-pkt) *)
+  let same_flow_a = mk_flow_state [0;0;0;2] [99] in
+  let same_flow_b = mk_pkt ~env:same_flow_a.Packet.pkt_env ~flow:[99] () in
+  check "two packets of the same flow read consistent `ct state`"
+    (Syntax.do_load (Syntax.LCt Packet.CKstate) same_flow_a
+       = Syntax.do_load (Syntax.LCt Packet.CKstate) same_flow_b);
   Printf.printf "\n"
 
 (* (I') `ct mark set V` PERSISTS across packets of a flow (cross-packet conntrack).
