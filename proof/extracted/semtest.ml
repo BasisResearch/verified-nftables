@@ -34,7 +34,8 @@ let empty_env : Packet.env =
   { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
     e_routes = []; e_rt = (fun _ -> []); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
     (* limiters default to 1 remaining token (0 < 1 -> the match passes) *)
-    e_limit = (fun _ -> 1); e_quota = (fun _ -> 1); e_connlimit = (fun _ -> 1) }
+    e_limit = (fun _ -> 1); e_quota = (fun _ -> 1); e_connlimit = (fun _ -> 1);
+    e_ct = (fun _ _ -> []) }
 (* an environment whose rate-limiter "lim" has [n] remaining tokens *)
 let env_limit n : Packet.env = { empty_env with Packet.e_limit = (fun _ -> n) }
 (* an environment where the set/vmap [name] has the given contents *)
@@ -62,7 +63,7 @@ let mk_pkt ?(env = empty_env) ?(l4proto = [6]) ?(nh = []) ?(th = []) ?(fibkey = 
     pkt_symhash = (fun _ _ -> []); pkt_xfrm = (fun _ _ _ -> []);
     pkt_ctdir = (fun _ _ -> []); pkt_inner = (fun _ _ _ _ -> []);
     (* well-formed, non-fragment, L4 header parsed: transport reads succeed *)
-    pkt_have_l4 = true; pkt_fragoff = 0 }
+    pkt_have_l4 = true; pkt_fragoff = 0; pkt_flow = [] }
 
 (* an IPv4 network header: src at offset 12, dst at offset 16 (4 bytes each) *)
 let nh ~saddr ~daddr = (Stdlib.List.init 12 (fun _ -> 0)) @ saddr @ daddr

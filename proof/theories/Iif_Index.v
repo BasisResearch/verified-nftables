@@ -21,7 +21,8 @@ Import ListNotations.
 Definition e0 : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
-     e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => []; e_connlimit := fun _ => 0 |}.
+     e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => []; e_connlimit := fun _ => 0;
+     e_ct := fun _ _ => [] |}.
 
 (* Build a packet whose numeric iif metadata is [idx]. *)
 Definition pkt_iif (idx : data) : packet :=
@@ -33,7 +34,7 @@ Definition pkt_iif (idx : data) : packet :=
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
      pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
-     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0 |}.
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0; pkt_flow := [] |}.
 
 (* The matchcond the parser now produces for `iif lo`: the 4-byte little-endian
    loopback index (1), NOT the ASCII "lo" = [108;111]. *)

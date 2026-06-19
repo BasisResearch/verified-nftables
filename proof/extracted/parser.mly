@@ -332,6 +332,7 @@ stmt:
   | MARK SET value            { StMetaSet ("mark", $3) }
   | META IDENT SET value      { StMetaSet ($2, $4) }
   | CT IDENT SET value        { StCtSet ($2, $4) }
+  | CT MARK SET value         { StCtSet ("mark", $4) }  (* `mark` lexes as MARK, not IDENT *)
 
 log_opts:
   | /* empty */        { "" }

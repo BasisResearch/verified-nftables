@@ -32,7 +32,8 @@ Import ListNotations.
 Definition syn_env : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => [];
-     e_limit := fun _ => 0; e_quota := fun _ => 0; e_connlimit := fun _ => 0 |}.
+     e_limit := fun _ => 0; e_quota := fun _ => 0; e_connlimit := fun _ => 0;
+     e_ct := fun _ _ => [] |}.
 
 (** A 20-byte TCP header whose flags byte (offset 13) is [fl]. *)
 Definition tcp_hdr (fl : nat) : list byte :=
@@ -48,7 +49,7 @@ Definition mk_tcp_pkt (fl : nat) : packet :=
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
      pkt_inner := fun _ _ _ _ => [];
      pkt_have_l4 := true;       (* a parsed TCP header *)
-     pkt_fragoff := 0 |}.
+     pkt_fragoff := 0; pkt_flow := [] |}.
 
 (** A non-TCP packet: no L4 header parsed (the kernel's NFT_BREAK arm). *)
 Definition non_tcp_pkt : packet :=
@@ -60,7 +61,7 @@ Definition non_tcp_pkt : packet :=
      pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
      pkt_inner := fun _ _ _ _ => [];
-     pkt_have_l4 := false; pkt_fragoff := 0 |}.
+     pkt_have_l4 := false; pkt_fragoff := 0; pkt_flow := [] |}.
 
 Definition syn_pkt  : packet := mk_tcp_pkt 2.   (* SYN  = 0x02 *)
 Definition ack_pkt  : packet := mk_tcp_pkt 16.  (* ACK  = 0x10 *)

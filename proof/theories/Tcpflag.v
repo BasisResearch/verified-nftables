@@ -38,7 +38,8 @@ Import ListNotations.
 Definition e0 : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
-     e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => []; e_connlimit := fun _ => 0 |}.
+     e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => []; e_connlimit := fun _ => 0;
+     e_ct := fun _ _ => [] |}.
 
 (* A TCP packet whose flags byte (transport header + 13) is [fl].
    FTcpFlags = LPayload PTransport 13 1 reads pkt_th at offset 13, length 1. *)
@@ -51,7 +52,7 @@ Definition pkt_tcpflags (fl : nat) : packet :=
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
      pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
-     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := true; pkt_fragoff := 0 |}.
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := true; pkt_fragoff := 0; pkt_flow := [] |}.
 
 (* fin=0x01 syn=0x02 rst=0x04 psh=0x08 ack=0x10 urg=0x20 ecn=0x40 cwr=0x80 *)
 

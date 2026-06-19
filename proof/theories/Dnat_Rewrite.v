@@ -335,7 +335,8 @@ Definition env0 : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
      e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => [];
-     e_connlimit := fun _ => 0 |}.
+     e_connlimit := fun _ => 0;
+     e_ct := fun _ _ => [] |}.
 Definition pkt4 : packet :=
   {| pkt_env := env0; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
@@ -343,7 +344,7 @@ Definition pkt4 : packet :=
      pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
      pkt_osf := []; pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
-     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := true; pkt_fragoff := 0 |}.
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := true; pkt_fragoff := 0; pkt_flow := [] |}.
 
 (* The dnat rewrites the destination 1.2.3.4 -> 10.0.0.1, so the IPv4 header
    checksum slot MUST change.  The red property [ip_csum out = ip_csum p] is FALSE. *)
@@ -388,7 +389,7 @@ Definition pkt4tcp : packet :=
      pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
      pkt_osf := []; pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
-     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := true; pkt_fragoff := 0 |}.
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := true; pkt_fragoff := 0; pkt_flow := [] |}.
 
 (* The dnat changes the destination 1.2.3.4 -> 10.0.0.1, so the TCP checksum slot
    MUST change (the pseudo-header covers the address).  The red property
@@ -438,7 +439,7 @@ Definition pkt4udp0 : packet :=
      pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
      pkt_osf := []; pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
-     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := true; pkt_fragoff := 0 |}.
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := true; pkt_fragoff := 0; pkt_flow := [] |}.
 
 (* CORRECTED behavior: the zero UDP checksum is LEFT ZERO after an address dnat
    (the kernel's do_csum=false path).  This is the property the old red probe
@@ -466,7 +467,7 @@ Definition pkt4udpc : packet :=
      pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
      pkt_osf := []; pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
-     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := true; pkt_fragoff := 0 |}.
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := true; pkt_fragoff := 0; pkt_flow := [] |}.
 
 Theorem dnat_updates_nonzero_udp_checksum :
   udp_csum (chain_out dnat_chain pkt4udpc) <> udp_csum pkt4udpc.

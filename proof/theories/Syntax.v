@@ -132,7 +132,13 @@ Definition all_fields : list field :=
 Definition do_load (ld : loaddesc) (p : packet) : data :=
   match ld with
   | LMeta k         => pkt_meta p k
-  | LCt k           => pkt_ct p k
+  | LCt k           =>
+      (* a WRITABLE+PERSISTENT conntrack key (mark/label) is read from the SHARED,
+         flow-keyed conntrack table at this packet's flow — so a `ct mark set V` on
+         an earlier packet of the same flow is observed here (kernel nft_ct_get_eval:
+         `ct = nf_ct_get(skb,&ctinfo); *dest = READ_ONCE(ct->mark)`).  Every other
+         (read-only, per-skb-computed) key stays a per-packet oracle [pkt_ct]. *)
+      if ct_writable k then e_ct (pkt_env p) (pkt_flow p) k else pkt_ct p k
   | LRt k           => e_rt (pkt_env p) k
   | LSocket k       => pkt_sock p k
   | LNumgen spec    => pkt_numgen p spec

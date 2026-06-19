@@ -40,7 +40,7 @@ let verdict_str = function
 
 let dummy0 _ = []
 let mk_pkt ~env ?(ct = dummy0) ?(protocol = []) ?(l4proto = []) ?(nfproto = [])
-           ?(iifname = []) ?(th = []) () : Packet.packet =
+           ?(iifname = []) ?(th = []) ?(flow = []) () : Packet.packet =
   { Packet.pkt_env = env;
     pkt_meta = (fun k -> match k with
       | Packet.MKprotocol -> protocol | Packet.MKl4proto -> l4proto
@@ -56,7 +56,7 @@ let mk_pkt ~env ?(ct = dummy0) ?(protocol = []) ?(l4proto = []) ?(nfproto = [])
     pkt_inner = (fun _ _ _ _ -> []);
     (* a well-formed (non-fragment) packet whose L4 header was parsed, so transport
        payload loads succeed; transport-reading tests pad [th] to its read width *)
-    pkt_have_l4 = true; pkt_fragoff = 0 }
+    pkt_have_l4 = true; pkt_fragoff = 0; pkt_flow = flow }
 
 (* wire constants, matching Example_Ruleset.v *)
 let cts_invalid = [0;0;0;1] and cts_established = [0;0;0;2]
@@ -813,6 +813,50 @@ let check_ct_state () =
         ([0;0;0;4],[0;0;0;4]); ([0;0;0;64],[0;0;0;64])] = false);
   Printf.printf "\n"
 
+(* (I') `ct mark set V` PERSISTS across packets of a flow (cross-packet conntrack).
+   Kernel nft_ct.c: nft_ct_set_eval writes V into the SHARED conntrack entry
+   (WRITE_ONCE(ct->mark)), so a later packet of the SAME flow reads it back
+   (nft_ct_get_eval: READ_ONCE(ct->mark)).  The model now stores writable ct keys
+   (mark/label) in the flow-keyed env table e_ct (keyed by pkt_flow), threaded across
+   packets by eval_chain_mut_env/set_env — so packet 2 of the flow observes packet 1's
+   `ct mark set`, and a DIFFERENT flow does not.  Mirrors Red_CtMark_Crosspkt.v. *)
+let check_ct_mark_crosspkt () =
+  Printf.printf "=== (I') ct mark set persists across packets of a flow ===\n";
+  let src =
+    "table ip t {\n\
+    \  chain c {\n\
+    \    type filter hook prerouting priority 0; policy drop;\n\
+    \    ct mark set 0x99 accept\n\
+    \  }\n\
+     }\n" in
+  let parsed = Nft_parse.parse_string src in
+  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_lower.p_env in
+  (* the rule lowers to a single ct-mark-set statement (writable key) *)
+  check "ct mark set 0x99 lowers to SCtSet CKmark (VImm 0x99-le)"
+    ((Stdlib.List.nth c.Syntax.c_rules 0).Syntax.r_body
+       = [Syntax.BStmt (Syntax.SCtSet (Packet.CKmark, Syntax.VImm mark99))]);
+  let flow_a = [10;0;0;1] and flow_b = [10;0;0;2] in
+  (* packet 1 of flow A runs the chain; capture the env it leaves *)
+  let p1 = mk_pkt ~env ~flow:flow_a () in
+  let (v1, e1) = Semantics.eval_chain_mut_env c p1 in
+  check "packet 1 of the flow is accepted (ct mark set; accept)" (v1 = Verdict.Accept);
+  check "ct mark set 0x99 is recorded in the shared flow table e_ct"
+    (data_eq (e1.Packet.e_ct flow_a Packet.CKmark) mark99);
+  (* packet 2 of the SAME flow, with its OWN per-packet ct oracle = 0x07, threaded
+     through e1: it reads back the flow mark 0x99 the kernel stored, NOT its oracle *)
+  let oracle7 k = (match k with Packet.CKmark -> [7;0;0;0] | _ -> []) in
+  let p2_same = Semantics.set_env (mk_pkt ~env ~ct:oracle7 ~flow:flow_a ()) e1 in
+  check "packet 2 of the SAME flow reads back the persisted ct mark 0x99 (kernel-correct)"
+    (data_eq (Syntax.field_value Syntax.FCtMark p2_same) mark99);
+  check "the persisted flow mark overrides packet 2's own ct oracle (0x07)"
+    (not (data_eq (Syntax.field_value Syntax.FCtMark p2_same) [7;0;0;0]));
+  (* a packet on a DIFFERENT flow does NOT inherit the mark (flow-scoped, not global) *)
+  let p2_other = Semantics.set_env (mk_pkt ~env ~ct:oracle7 ~flow:flow_b ()) e1 in
+  check "a packet on a DIFFERENT flow does NOT see the mark (flow-scoped persistence)"
+    (not (data_eq (Syntax.field_value Syntax.FCtMark p2_other) mark99));
+  Printf.printf "\n"
+
 (* (J) SINGLE POSITIVE `tcp flags X` BITMASK lowering.  tcp_flag_type has
    .basetype = &bitmask_type (proto.c:583-591); the OP_IMPLICIT->OP_EQ rewrite
    (evaluate.c:2792-2797) does NOT fire for it, so a bare `tcp flags X` stays an
@@ -1520,8 +1564,14 @@ let check_mark_set () =
      numerically inside [0x100,0x200].  The OLD bare-MConcatSet path compared the
      LE bound big-endian and REJECTED it (the proven divergence); with the hton
      transform the field becomes [0;0;1;80] BE and 0x100<=0x150<=0x200 -> match. *)
-  let mk_ctmark le = mk_pkt ~env:env_iv
-    ~ct:(fun (k : Packet.ct_key) -> match k with Packet.CKmark -> le | _ -> []) () in
+  (* ct mark is a WRITABLE/PERSISTENT key: a `ct mark` MATCH reads the SHARED
+     flow-keyed conntrack table e_ct (at the packet's flow), not the per-packet ct
+     oracle.  So seed the mark via e_ct for this packet's (default []) flow. *)
+  let mk_ctmark le =
+    let env_m = { env_iv with Packet.e_ct =
+      (fun fl (k : Packet.ct_key) ->
+         match k with Packet.CKmark when fl = [] -> le | _ -> []) } in
+    mk_pkt ~env:env_m () in
   check "ct mark 0x150 matches { 0x100-0x200 } (numeric, post-hton; old model REJECTED it)"
     (Semantics.eval_matchcond mc_iv (mk_ctmark [80;1;0;0]) = true);
   check "ct mark 0x80 does NOT match { 0x100-0x200 } (below low bound)"
@@ -1619,6 +1669,7 @@ let () =
     check_redir_hook ();
     check_iif_index ();
     check_ct_state ();
+    check_ct_mark_crosspkt ();
     check_tcp_flags ();
     check_meta_nfproto ();
     check_inet_nfproto_dep ();

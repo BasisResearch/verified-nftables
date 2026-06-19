@@ -33,7 +33,8 @@ Import ListNotations.
 Definition empty_env : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => [];
-     e_limit := fun _ => 0; e_quota := fun _ => 0; e_connlimit := fun _ => 0 |}.
+     e_limit := fun _ => 0; e_quota := fun _ => 0; e_connlimit := fun _ => 0;
+     e_ct := fun _ _ => [] |}.
 
 Definition bad_pkt : packet :=
   {| pkt_env := empty_env;
@@ -45,7 +46,7 @@ Definition bad_pkt : packet :=
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
      pkt_inner := fun _ _ _ _ => [];
      pkt_have_l4 := false;     (* NFT_PKTINFO_L4PROTO not set -> transport read BREAKs *)
-     pkt_fragoff := 0 |}.
+     pkt_fragoff := 0; pkt_flow := [] |}.
 
 (** The transport read fails (the kernel would NFT_BREAK). *)
 Lemma bad_pkt_th_breaks : read_payload_ok PTransport 2 2 bad_pkt = false.
@@ -104,7 +105,7 @@ Definition frag_pkt : packet :=
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
      pkt_inner := fun _ _ _ _ => [];
      pkt_have_l4 := true;
-     pkt_fragoff := 8 |}.   (* a non-first fragment *)
+     pkt_fragoff := 8; pkt_flow := [] |}.   (* a non-first fragment *)
 
 Theorem neq_dport_frag_no_match :
   eval_matchcond (MNeq FThDport [0; 22]) frag_pkt = false.

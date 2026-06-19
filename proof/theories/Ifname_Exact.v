@@ -29,7 +29,8 @@ Import ListNotations.
 Definition e0 : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
-     e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => []; e_connlimit := fun _ => 0 |}.
+     e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => []; e_connlimit := fun _ => 0;
+     e_ct := fun _ _ => [] |}.
 
 Definition pkt_ifn (nm : data) : packet :=
   {| pkt_env := e0;
@@ -39,7 +40,7 @@ Definition pkt_ifn (nm : data) : packet :=
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
      pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
-     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0 |}.
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0; pkt_flow := [] |}.
 
 (* "dummy0" as the FIXED fix now emits it: 16-byte zero-padded (IFNAMSIZ). *)
 Definition iif_dummy0_16 : data :=

@@ -33,6 +33,24 @@ Inductive ct_key : Type :=
 | CKavgpkt | CKbytes | CKhelper | CKl3proto | CKlabel | CKpackets
 | CKproto | CKzone | CKevent.
 
+(** Which conntrack keys are WRITABLE *and PERSISTENT* — i.e. a `ct <k> set V`
+    stores V into the SHARED per-flow conntrack entry (kernel nft_ct.c
+    nft_ct_set_eval: `ct = nf_ct_get(skb,&ctinfo); WRITE_ONCE(ct->mark/secmark, V)`,
+    `nf_ct_labels(...)`), so that EVERY later packet of the same flow reads V back
+    (nft_ct_get_eval: `ct = nf_ct_get(skb,&ctinfo); *dest = READ_ONCE(ct->mark)`).
+    These are [CKmark] (NFT_CT_MARK) and [CKlabel] (NFT_CT_LABELS); the model has no
+    separate secmark key (it folds into mark/label coverage).  Every OTHER key
+    ([CKstate], [CKdirection], [CKexpiration], counters, [CKzone], …) is computed
+    by the kernel PER-skb from the flow's current state and is NOT a value the rule
+    can store back, so it stays a per-packet oracle ([pkt_ct]).  [CKevent]
+    (NFT_CT_EVENTMASK) is settable but configures event delivery — it is never read
+    back by `ct ... get`, so it is not modelled as persistent state either. *)
+Definition ct_writable (k : ct_key) : bool :=
+  match k with
+  | CKmark | CKlabel => true
+  | _ => false
+  end.
+
 (** Routing-state keys ([rt load]) and socket keys ([socket load]); both read
     external state, modelled as packet oracles. *)
 Inductive rt_key : Type :=
@@ -129,6 +147,21 @@ Record env : Type := {
                                                 [eval_seq] (see Semantics) — so the
                                                 accumulation that a per-packet
                                                 oracle hid is now expressible. *)
+  e_ct : data -> ct_key -> data;             (* the SHARED, flow-keyed conntrack
+                                                table: the writable+persistent
+                                                conntrack keys ([ct_writable]: mark,
+                                                label) stored in each flow's
+                                                conntrack entry, keyed by a flow
+                                                identifier ([pkt_flow]).  A
+                                                `ct mark set V` on one packet writes
+                                                [e_ct flow CKmark := V] here, and a
+                                                later packet of the SAME flow reads it
+                                                back via [do_load (LCt CKmark)] —
+                                                mirroring the kernel's nf_ct_get(skb)
+                                                selecting the shared entry by tuple +
+                                                WRITE_ONCE/READ_ONCE(ct->mark).  This
+                                                is the cross-packet state a per-packet
+                                                [pkt_ct] oracle could not express. *)
 }.
 
 Record packet : Type := {
@@ -178,6 +211,15 @@ Record packet : Type := {
   pkt_fragoff : nat;        (* the IP fragment offset; a nonzero offset means this is
                                a non-first fragment with no usable transport header,
                                so a TRANSPORT-base load likewise BREAKs the rule. *)
+  pkt_flow : data;          (* the FLOW IDENTIFIER of this packet — the key under which
+                               the kernel's nf_ct_get(skb) selects the shared conntrack
+                               entry.  Two packets of the same connection (both
+                               directions: the kernel normalises by tuple) carry the
+                               SAME [pkt_flow], so a `ct mark set V` on one is read back
+                               as [e_ct (pkt_env p) (pkt_flow p) CKmark] by the other.
+                               Derived from the (direction-normalised) 5-tuple; modelled
+                               here as an opaque packet-determined value (the kernel
+                               computes the tuple from the headers). *)
 }.
 
 (** Read [len] bytes at [off] from a header byte string. *)

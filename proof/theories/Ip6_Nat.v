@@ -107,7 +107,8 @@ Qed.
 Definition e0 : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
-     e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => []; e_connlimit := fun _ => 0 |}.
+     e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => []; e_connlimit := fun _ => 0;
+     e_ct := fun _ _ => [] |}.
 Definition pkt6 : packet :=
   {| pkt_env := e0; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
@@ -115,7 +116,7 @@ Definition pkt6 : packet :=
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
      pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
-     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0 |}.
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0; pkt_flow := [] |}.
 
 Theorem ip6_dnat_dest_is_target :
   field_value FIp6Daddr (apply_nat Hprerouting ip6_dnat_rule pkt6) = tgt6.
@@ -158,7 +159,8 @@ Definition e6 : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
      e_quota := fun _ => 0; e_ifaddr := fun _ => [9;9;9;9];
-     e_ifaddr6 := fun _ => if6; e_connlimit := fun _ => 0 |}.
+     e_ifaddr6 := fun _ => if6; e_connlimit := fun _ => 0;
+     e_ct := fun _ _ => [] |}.
 
 (* A 40-byte IPv6 packet whose source slot (bytes 8..23) holds distinguishable
    markers 108..123 (as in the red probe). *)
@@ -169,7 +171,7 @@ Definition pkt6m : packet :=
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
      pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
-     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0 |}.
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0; pkt_flow := [] |}.
 
 (* THE FIX: an ip6 masquerade rewrites the whole 16-byte IPv6 source to the exit
    interface's IPv6 address [if6] (= ipv6_dev_get_saddr), reading back via

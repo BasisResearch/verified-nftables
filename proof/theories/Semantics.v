@@ -303,7 +303,8 @@ Definition env_with_sets (base : env) (d : set_decls) : env :=
      e_map  := fun n => assoc_str n (sd_maps d)  (e_map base n);
      e_routes := e_routes base; e_rt := e_rt base;
      e_ifaddr := e_ifaddr base; e_ifaddr6 := e_ifaddr6 base;
-     e_limit := e_limit base; e_quota := e_quota base; e_connlimit := e_connlimit base |}.
+     e_limit := e_limit base; e_quota := e_quota base; e_connlimit := e_connlimit base;
+     e_ct := e_ct base |}.
 
 (** A declared set's elements are exactly what `lookup @n` reads. *)
 Lemma e_set_declared : forall base d n,
@@ -574,7 +575,11 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | IMetaLoad k dst :: rest =>
       run_rule (set_reg rf dst (pkt_meta p k)) rest p
   | ICtLoad k dst :: rest =>
-      run_rule (set_reg rf dst (pkt_ct p k)) rest p
+      (* identical to [do_load (LCt k)]: a writable/persistent key reads the SHARED
+         flow-keyed conntrack table, a read-only key the per-packet oracle. *)
+      run_rule (set_reg rf dst
+                 (if ct_writable k then e_ct (pkt_env p) (pkt_flow p) k else pkt_ct p k))
+               rest p
   | IRtLoad k dst :: rest =>
       run_rule (set_reg rf dst (e_rt (pkt_env p) k)) rest p
   | ISocketLoad k dst :: rest =>
@@ -731,8 +736,40 @@ Definition set_meta (p : packet) (k : meta_key) (v : data) : packet :=
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p |}.
+(** Update the SHARED, flow-keyed conntrack table [e_ct] of an env: write [v] at
+    flow [fl], key [k], leaving every other (flow,key) entry — and every other env
+    component — unchanged.  This is the env analogue of [env_set_upd]/[env_map_upd]
+    for the conntrack-entry state, mirroring the kernel's
+    WRITE_ONCE(ct->mark/secmark, v) into the entry [nf_ct_get(skb)] selects. *)
+Definition env_ct_upd (e : env) (fl : data) (k : ct_key) (v : data) : env :=
+  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
+     e_routes := e_routes e; e_rt := e_rt e;
+     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
+     e_ct := (fun fl' k' =>
+                if andb (data_eqb fl fl') (ct_eqb k k') then v else e_ct e fl' k') |}.
+
+(** Set a conntrack key.  A WRITABLE+PERSISTENT key ([ct_writable]: mark/label) is
+    stored into the SHARED, flow-keyed conntrack table [e_ct] at THIS packet's flow
+    ([pkt_flow]), so a later packet of the same flow reads it back via [do_load]'s
+    [LCt] case — the cross-packet conntrack-mark persistence the kernel implements
+    with WRITE_ONCE(ct->mark)/READ_ONCE(ct->mark).  A read-only key (state, counters,
+    …) the kernel never stores back is updated in the per-packet oracle [pkt_ct]
+    (used by nothing downstream but kept so the write is at least locally visible and
+    the DSL/VM remain in lock-step). *)
 Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
+  if ct_writable k
+  then
+  {| pkt_env := env_ct_upd (pkt_env p) (pkt_flow p) k v; pkt_meta := pkt_meta p;
+     pkt_ct := pkt_ct p;
+     pkt_sock := pkt_sock p;
+     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p |}
+  else
   {| pkt_env := pkt_env p; pkt_meta := pkt_meta p;
      pkt_ct := (fun k' => if ct_eqb k k' then v else pkt_ct p k');
      pkt_sock := pkt_sock p;
@@ -740,7 +777,7 @@ Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p |}.
 
 (** Overwrite [len] bytes at offset [off] of a byte list (a header), keeping the
     rest — the payload-write primitive. *)
@@ -762,7 +799,7 @@ Definition set_nh_field (p : packet) (off len : nat) (v : data) : packet :=
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p |}.
 
 (** Rewrite [len] bytes of the TRANSPORT header at [off] to [v], leaving every
     other packet component intact — the L4-port-NAT write primitive.  This is the
@@ -778,7 +815,7 @@ Definition set_th_field (p : packet) (off len : nat) (v : data) : packet :=
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p |}.
 
 (** Source-port-NAT a packet: rewrite the L4 SOURCE port ([FThSport] = transport
     bytes 0..1) to [v].  This is the port half of a `snat ... :PORT` /
@@ -953,7 +990,7 @@ Definition set_nh_addr_ip4 (p : packet) (off len : nat) (v : data) : packet :=
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p |}.
 
 (** [set_nh_addr_ip4] leaves the transport header untouched. *)
 Lemma set_nh_addr_ip4_th : forall p off len v,
@@ -1191,7 +1228,8 @@ Definition env_set_upd (e : env) (op name : String.string) (key : data) : env :=
      e_vmap := e_vmap e; e_map := e_map e;
      e_routes := e_routes e; e_rt := e_rt e;
      e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
-     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e |}.
+     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
+     e_ct := e_ct e |}.
 
 Definition set_env_dynset (p : packet) (op name : String.string) (key : data) : packet :=
   {| pkt_env := env_set_upd (pkt_env p) op name key;
@@ -1201,7 +1239,7 @@ Definition set_env_dynset (p : packet) (op name : String.string) (key : data) : 
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p |}.
 
 (** The map analogue: a `dynset` whose target is a MAP (`add @m {key : data}`)
     learns the entry [key -> data] in the named value-map [e_map], so a later
@@ -1218,7 +1256,8 @@ Definition env_map_upd (e : env) (op name : String.string) (key dat : data) : en
        else e_map e n);
      e_routes := e_routes e; e_rt := e_rt e;
      e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
-     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e |}.
+     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
+     e_ct := e_ct e |}.
 
 Definition set_env_dynset_map (p : packet) (op name : String.string) (key dat : data) : packet :=
   {| pkt_env := env_map_upd (pkt_env p) op name key dat;
@@ -1228,7 +1267,7 @@ Definition set_env_dynset_map (p : packet) (op name : String.string) (key dat : 
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p |}.
 
 (** The VM's meta/ct effect of running one rule's bytecode: mirrors [run_rule]'s
     register threading, but instead of a verdict it returns the packet with the
@@ -1239,7 +1278,7 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
   match is with
   | [] => p
   | IMetaLoad k dst :: rest => run_rule_writes (set_reg rf dst (pkt_meta p k)) rest p
-  | ICtLoad k dst :: rest => run_rule_writes (set_reg rf dst (pkt_ct p k)) rest p
+  | ICtLoad k dst :: rest => run_rule_writes (set_reg rf dst (if ct_writable k then e_ct (pkt_env p) (pkt_flow p) k else pkt_ct p k)) rest p
   | IRtLoad k dst :: rest => run_rule_writes (set_reg rf dst (e_rt (pkt_env p) k)) rest p
   | ISocketLoad k dst :: rest => run_rule_writes (set_reg rf dst (pkt_sock p k)) rest p
   | INumgen spec dst :: rest => run_rule_writes (set_reg rf dst (pkt_numgen p spec)) rest p
@@ -1879,7 +1918,7 @@ Definition set_env (p : packet) (e : env) : packet :=
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p; pkt_numgen := pkt_numgen p;
      pkt_osf := pkt_osf p; pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p;
      pkt_xfrm := pkt_xfrm p; pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p |}.
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p |}.
 
 (** Run a sequence of packets against a shared, evolving environment [e]: each
     packet is evaluated by [ev] against the current [e], then [step] updates [e]
