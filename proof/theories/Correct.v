@@ -19,6 +19,8 @@ Proof.
   intros f dst rf rest p Hl. unfold field_value, do_load, compile_load.
   unfold field_loadable, load_ok in Hl.
   destruct (field_load f) eqn:E; simpl; try reflexivity.
+  - (* LCt: the VM guards on the same load_ok, which [Hl] establishes *)
+    unfold load_ok in *. rewrite Hl. reflexivity.
   - (* LExthdr: the VM guards on the same load_ok, which [Hl] establishes *)
     unfold load_ok. rewrite Hl. reflexivity.
   - (* LPayload: the VM guards on read_payload_ok, which [Hl] establishes *)
@@ -38,6 +40,8 @@ Lemma compile_load_break : forall f dst rf rest p,
 Proof.
   intros f dst rf rest p Hl. unfold field_loadable, load_ok in Hl.
   unfold compile_load. destruct (field_load f) eqn:E; cbn [run_rule] in *; try discriminate Hl.
+  - (* LCt: VM guard load_ok is false, so the rule breaks (None) *)
+    unfold load_ok. rewrite Hl. reflexivity.
   - (* LExthdr: VM guard load_ok is false, so the rule breaks (None) *)
     unfold load_ok. rewrite Hl. reflexivity.
   - rewrite Hl. reflexivity.
@@ -49,6 +53,8 @@ Lemma compile_load_break_writes : forall f dst rf rest p,
 Proof.
   intros f dst rf rest p Hl. unfold field_loadable, load_ok in Hl.
   unfold compile_load. destruct (field_load f) eqn:E; cbn [run_rule_writes] in *; try discriminate Hl.
+  - (* LCt: VM guard load_ok is false, so the rule breaks (packet unchanged) *)
+    unfold load_ok. rewrite Hl. reflexivity.
   - (* LExthdr: VM guard load_ok is false, so the rule breaks (packet unchanged) *)
     unfold load_ok. rewrite Hl. reflexivity.
   - rewrite Hl. reflexivity.
@@ -645,6 +651,8 @@ Proof.
   intros f dst rf rest p Hl. unfold field_value, do_load, compile_load.
   unfold field_loadable, load_ok in Hl.
   destruct (field_load f) eqn:E; simpl; try reflexivity.
+  - (* LCt: VM guards on the same load_ok, established by [Hl] *)
+    unfold load_ok in *. rewrite Hl. reflexivity.
   - (* LExthdr: VM guards on the same load_ok, established by [Hl] *)
     unfold load_ok. rewrite Hl. reflexivity.
   - rewrite Hl. reflexivity.
@@ -1227,6 +1235,7 @@ Definition loads_ok_instr (i : instr) (p : packet) : bool :=
   match i with
   | IPayloadLoad b o l _ => read_payload_ok b o l p
   | IExthdrLoad ep h o l pr _ => load_ok (LExthdr ep h o l pr) p
+  | ICtLoad k _ => load_ok (LCt k) p
   | _ => true
   end.
 Definition loads_ok (is : list instr) (p : packet) : bool :=

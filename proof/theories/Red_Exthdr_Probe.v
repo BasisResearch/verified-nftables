@@ -56,7 +56,7 @@ Definition pkt_no_maxseg : packet :=
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
      pkt_inner := fun _ _ _ _ => [];
      pkt_have_l2 := true; pkt_have_l4 := true; pkt_fragoff := 0;
-     pkt_flow := [1;2;3;4]; pkt_untracked := false; pkt_ctdir_orig := true |}.
+     pkt_flow := [1;2;3;4]; pkt_untracked := false; pkt_ctdir_orig := true; pkt_ct_present := true |}.
 
 (* A packet WITH a maxseg option present and value 1460: existence oracle returns
    [1] (present), value oracle returns the bytes.  The kernel matches -> DROP. *)
@@ -70,7 +70,7 @@ Definition pkt_with_maxseg : packet :=
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
      pkt_inner := fun _ _ _ _ => [];
      pkt_have_l2 := true; pkt_have_l4 := true; pkt_fragoff := 0;
-     pkt_flow := [1;2;3;4]; pkt_untracked := false; pkt_ctdir_orig := true |}.
+     pkt_flow := [1;2;3;4]; pkt_untracked := false; pkt_ctdir_orig := true; pkt_ct_present := true |}.
 
 (* The not-present guard: a VALUE load of the ABSENT option is NOT loadable. *)
 Lemma exthdr_value_not_loadable_when_absent :

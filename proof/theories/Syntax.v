@@ -180,9 +180,19 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
          the selector and the NAT decision can never disagree, exactly as in the kernel.
          The byte is the kernel's [nft_reg_store8] single byte:
          IP_CT_DIR_ORIGINAL = 0 -> [0], IP_CT_DIR_REPLY = 1 -> [1]. *)
+      (* [CKstate] is the ONLY key that yields a value when there is no conntrack
+         entry (nft_ct.c:68-76): UNTRACKED packet -> NF_CT_STATE_UNTRACKED_BIT
+         ([0;0;0;64]), any other no-entry/INVALID packet -> NF_CT_STATE_INVALID_BIT
+         (= 1<<5 = [0;0;0;32]); a tracked packet reads the flow entry's state.  EVERY
+         OTHER key is reached only past `if (ct == NULL) goto err` (nft_ct.c:81-82),
+         so on a no-entry packet ([pkt_ct_present = false]) the load BREAKs — that
+         break is enforced by [load_ok] below, which makes the enclosing match FAIL;
+         the value computed here is only ever consumed when [load_ok] held (the entry
+         is present), so the [CKdirection]/[_] branches read the live entry/direction. *)
       match k with
       | CKstate => if pkt_untracked p then [0;0;0;64]
-                   else e_ct (pkt_env p) (pkt_flow p) k
+                   else if pkt_ct_present p then e_ct (pkt_env p) (pkt_flow p) k
+                   else [0;0;0;32]
       | CKdirection => if pkt_ctdir_orig p then [0] else [1]
       | _ => e_ct (pkt_env p) (pkt_flow p) k
       end
@@ -233,6 +243,19 @@ Definition load_ok (ld : loaddesc) (p : packet) : bool :=
   match ld with
   | LPayload b off len => read_payload_ok b off len p
   | LExthdr ep h _ _ pr => if pr then true else exthdr_present p ep h
+  (* A conntrack load BREAKs when there is NO conntrack entry, for EVERY key
+     EXCEPT [CKstate].  Kernel nft_ct.c:81-82 `if (ct == NULL) goto err;` (err sets
+     NFT_BREAK, :220-221) — reached for direction/status/mark/expiration/id/zone/...;
+     NFT_CT_STATE returns before that guard (:68-76), so it is the lone key that still
+     yields a value (UNTRACKED/INVALID bits) on a no-entry packet.  Entry presence is
+     [pkt_ct_present]: it is [false] for a packet with NO entry — an UNTRACKED packet
+     (`nf_ct_set(skb, NULL, IP_CT_UNTRACKED)`, so [pkt_untracked] implies
+     [pkt_ct_present = false] for a well-formed packet, see [ct_present_wf]) or a
+     genuinely INVALID / no-entry packet.  On such a packet a non-state ct match must
+     FAIL (the rule does not apply), so it can never spuriously match — mirroring the
+     kernel's NFT_BREAK. *)
+  | LCt CKstate => true
+  | LCt _ => pkt_ct_present p
   | _ => true
   end.
 

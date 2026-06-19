@@ -74,7 +74,7 @@ let mk_pkt ~env ?ct ?(protocol = []) ?(l4proto = []) ?(nfproto = [])
        payload loads succeed; transport-reading tests pad [th] to its read width *)
     pkt_have_l2 = true;
     pkt_have_l4 = true; pkt_fragoff = 0; pkt_flow = flow; pkt_untracked = false;
-    pkt_ctdir_orig = true }
+    pkt_ctdir_orig = true; pkt_ct_present = true }
 
 (* wire constants, matching Example_Ruleset.v *)
 let cts_invalid = [0;0;0;1] and cts_established = [0;0;0;2]
@@ -2086,6 +2086,45 @@ let check_connlimit_conn () =
     (v1 = Verdict.Accept && v3 = Verdict.Drop);
   Printf.printf "\n"
 
+(* A conntrack key (other than `ct state`) read on a packet with NO conntrack entry
+   BREAKs the rule (kernel nft_ct.c:81-82 `if (ct == NULL) goto err`).  Drives the
+   extracted DSL semantics over a `ct mark 0x10 accept`, policy DROP, chain on a
+   no-entry packet ([pkt_ct_present = false]): the rule must NOT match, so the policy
+   DROP stands — exactly as the kernel lets such a packet fall through. *)
+let check_ct_no_entry () =
+  Printf.printf "=== (M') ct non-state key on a NO-ENTRY packet BREAKs the rule ===\n";
+  let env0 =
+    (Nft_parse.parse_string
+       "table ip t { chain c { type filter hook input priority 0; policy accept; } }\n")
+      .Nft_lower.p_env in
+  (* an env whose flow-keyed conntrack table WOULD report ct mark = 0x10 *)
+  let base_env =
+    { env0 with Packet.e_ct =
+        (fun _ (k : Packet.ct_key) -> match k with Packet.CKmark -> [0;0;0;16] | _ -> []) } in
+  (* `ct mark 0x10 accept`, policy DROP *)
+  let m_mark = Syntax.MEq (Syntax.FCtMark, [0;0;0;16]) in
+  let rule = { Syntax.r_body = [Syntax.BMatch m_mark]; r_verdict = Verdict.Accept;
+               r_vmap = None; r_nat = None; r_tproxy = None; r_fwd = None;
+               r_queue = None; r_after = [] } in
+  let chain = { Syntax.c_policy = Verdict.Drop; c_rules = [rule] } in
+  (* TRACKED packet (entry present): rule matches -> ACCEPT *)
+  let p_tracked = mk_pkt ~env:base_env ~flow:[1;1] () in
+  let v_tracked = Semantics.eval_chain_mut chain p_tracked in
+  (* NO-ENTRY packet (untracked / INVALID): the same env, but pkt_ct_present = false *)
+  let p_noentry = { p_tracked with Packet.pkt_ct_present = false } in
+  let v_noentry = Semantics.eval_chain_mut chain p_noentry in
+  check "ct mark 0x10: a TRACKED packet (entry present) MATCHES -> ACCEPT"
+    (v_tracked = Verdict.Accept);
+  check "ct mark 0x10: a NO-ENTRY packet BREAKs the rule -> policy DROP"
+    (v_noentry = Verdict.Drop);
+  check "ct mark load_ok = false on a no-entry packet (kernel NFT_BREAK)"
+    (not (Syntax.load_ok (Syntax.LCt Packet.CKmark) p_noentry));
+  check "ct state load_ok = true on a no-entry packet (the lone always-readable key)"
+    (Syntax.load_ok (Syntax.LCt Packet.CKstate) p_noentry);
+  check "ct state reads NF_CT_STATE_INVALID_BIT (0x20) on a no-entry packet"
+    (data_eq (Syntax.do_load (Syntax.LCt Packet.CKstate) p_noentry) [0;0;0;32]);
+  Printf.printf "\n"
+
 let () =
   if Stdlib.Array.length Sys.argv > 1 then cli Sys.argv.(1)
   else begin
@@ -2112,6 +2151,7 @@ let () =
     check_ifname_exact ();
     check_limit_over ();
     check_connlimit_conn ();
+  check_ct_no_entry ();
     check_fib_type ();
     check_mark_range ();
     check_mark_set ();

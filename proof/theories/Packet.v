@@ -400,6 +400,27 @@ Record packet : Type := {
                                net/netfilter/nf_nat_core.c.  Every freshly-built packet
                                in the proofs defaults to [true]; a reply packet sets it
                                [false]. *)
+  pkt_ct_present : bool;    (* whether a conntrack ENTRY exists for this packet, i.e.
+                               whether the kernel's `ct = nf_ct_get(skb, &ctinfo)`
+                               returns a NON-NULL pointer (net/netfilter/nft_ct.c
+                               nft_ct_get_eval).  [true] for a normal TRACKED packet that
+                               has a conntrack entry; [false] for a packet with NO entry —
+                               an UNTRACKED packet (after `notrack`/loopback: nf_ct_get
+                               returns NULL with ctinfo == IP_CT_UNTRACKED) or a genuinely
+                               INVALID / no-entry packet (NULL with ctinfo == 0).  In the
+                               kernel, NFT_CT_STATE is the ONLY key that yields a value when
+                               ct == NULL (UNTRACKED -> NF_CT_STATE_UNTRACKED_BIT, else
+                               NF_CT_STATE_INVALID_BIT); EVERY OTHER key does
+                               `if (ct == NULL) goto err` -> NFT_BREAK, so the rule does NOT
+                               match (nft_ct.c:81-82, 220-221).  This flag therefore gates
+                               [load_ok (LCt k)] for every non-state key: a `ct mark` /
+                               `ct direction` / `ct status` / `ct expiration` / `ct id` / ...
+                               match on a packet with [pkt_ct_present = false] BREAKs, exactly
+                               as the kernel does.  The [pkt_untracked] latch (set by
+                               `notrack`) is a SPECIAL CASE of no-entry that additionally
+                               fixes `ct state` to UNTRACKED; both force a no-entry packet.
+                               Every freshly-built test packet defaults to [true] (a tracked
+                               packet with an entry). *)
 }.
 
 (** Read [len] bytes at [off] from a header byte string. *)

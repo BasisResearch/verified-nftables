@@ -57,10 +57,11 @@ Theorem ct_state_flow_keyed :
     e_ct (pkt_env p) = e_ct (pkt_env q) ->
     pkt_flow p = pkt_flow q ->
     pkt_untracked p = pkt_untracked q ->
+    pkt_ct_present p = pkt_ct_present q ->
     do_load (LCt CKstate) p = do_load (LCt CKstate) q.
 Proof.
-  intros p q Hct Hflow Hunt. unfold do_load. cbn.
-  rewrite Hunt, Hflow, Hct. reflexivity.
+  intros p q Hct Hflow Hunt Hpres. unfold do_load. cbn.
+  rewrite Hunt, Hpres, Hflow, Hct. reflexivity.
 Qed.
 
 (* The same holds for every other read-only ct key (expiration/counters/zone/...)
@@ -73,11 +74,12 @@ Theorem ct_key_flow_keyed :
     e_ct (pkt_env p) = e_ct (pkt_env q) ->
     pkt_flow p = pkt_flow q ->
     pkt_untracked p = pkt_untracked q ->
+    pkt_ct_present p = pkt_ct_present q ->
     pkt_ctdir_orig p = pkt_ctdir_orig q ->
     do_load (LCt k) p = do_load (LCt k) q.
 Proof.
-  intros k p q Hct Hflow Hunt Hdir. unfold do_load. cbn.
-  destruct k; rewrite ?Hunt, ?Hdir, ?Hflow, ?Hct; reflexivity.
+  intros k p q Hct Hflow Hunt Hpres Hdir. unfold do_load. cbn.
+  destruct k; rewrite ?Hunt, ?Hpres, ?Hdir, ?Hflow, ?Hct; reflexivity.
 Qed.
 
 (** ── ct DIRECTION is the SAME value as the NAT manip direction (kernel CTINFO2DIR).
@@ -132,10 +134,13 @@ Theorem same_flow_same_state :
     pkt_flow p = pkt_flow q ->
     pkt_untracked p = false ->
     pkt_untracked q = false ->
+    pkt_ct_present p = true ->
+    pkt_ct_present q = true ->
     do_load (LCt CKstate) p = do_load (LCt CKstate) q.
 Proof.
-  intros p q Hct Hflow Hp Hq.
-  apply ct_state_flow_keyed; [exact Hct | exact Hflow | rewrite Hp, Hq; reflexivity].
+  intros p q Hct Hflow Hp Hq Hpp Hqp.
+  apply ct_state_flow_keyed;
+    [exact Hct | exact Hflow | rewrite Hp, Hq; reflexivity | rewrite Hpp, Hqp; reflexivity].
 Qed.
 
 (** ── 3. Well-formedness: a flow whose conntrack entry is NEW.
@@ -145,14 +150,15 @@ Qed.
     (no prior packet -> entry just created -> NF_CT_STATE_BIT(IP_CT_NEW): only the
     new bit set).  It is now EXPRESSIBLE because the state lives in the flow table. *)
 Definition flow_is_new (p : packet) : Prop :=
-  pkt_untracked p = false /\ e_ct (pkt_env p) (pkt_flow p) CKstate = st_new.
+  pkt_untracked p = false /\ pkt_ct_present p = true
+  /\ e_ct (pkt_env p) (pkt_flow p) CKstate = st_new.
 
 (* Under [flow_is_new], reading `ct state` (= [field_value FCtState]) yields NEW. *)
 Lemma flow_is_new_reads_new :
   forall p, flow_is_new p -> field_value FCtState p = st_new.
 Proof.
-  intros p [Hunt Hentry]. unfold field_value, field_load, do_load. cbn.
-  rewrite Hunt. exact Hentry.
+  intros p [Hunt [Hpres Hentry]]. unfold field_value, field_load, do_load. cbn.
+  rewrite Hunt, Hpres. exact Hentry.
 Qed.
 
 (* THE KEY SOUNDNESS FACT: a NEW-flow packet does NOT match `ct state established`.
@@ -194,13 +200,14 @@ Qed.
 (* Conversely, an ESTABLISHED-flow packet (a flow a prior packet established) IS
    accepted — the rule is not vacuous. *)
 Definition flow_is_established (p : packet) : Prop :=
-  pkt_untracked p = false /\ e_ct (pkt_env p) (pkt_flow p) CKstate = st_estab.
+  pkt_untracked p = false /\ pkt_ct_present p = true
+  /\ e_ct (pkt_env p) (pkt_flow p) CKstate = st_estab.
 
 Theorem established_flow_accepted :
   forall p, flow_is_established p -> eval_chain_mut stateful_chain p = Accept.
 Proof.
-  intros p [Hunt Hentry]. unfold eval_chain_mut, stateful_chain. cbn [c_rules].
+  intros p [Hunt [Hpres Hentry]]. unfold eval_chain_mut, stateful_chain. cbn [c_rules].
   unfold estab_accept_rule. cbn [c_policy]. cbn - [eval_matchcond].
   unfold m_estab, eval_matchcond, field_value.
-  unfold do_load. cbn. rewrite Hunt, Hentry. vm_compute. reflexivity.
+  unfold do_load. cbn. rewrite Hunt, Hpres, Hentry. vm_compute. reflexivity.
 Qed.

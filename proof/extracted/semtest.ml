@@ -65,7 +65,7 @@ let mk_pkt ?(env = empty_env) ?(l4proto = [6]) ?(nh = []) ?(th = []) ?(fibkey = 
     (* well-formed, non-fragment, L4 header parsed: transport reads succeed *)
     pkt_have_l2 = true;
     pkt_have_l4 = true; pkt_fragoff = 0; pkt_flow = []; pkt_untracked = false;
-    pkt_ctdir_orig = true }
+    pkt_ctdir_orig = true; pkt_ct_present = true }
 
 (* an IPv4 network header: src at offset 12, dst at offset 16 (4 bytes each) *)
 let nh ~saddr ~daddr = (Stdlib.List.init 12 (fun _ -> 0)) @ saddr @ daddr

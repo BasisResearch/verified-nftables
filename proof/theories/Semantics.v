@@ -288,7 +288,7 @@ Definition set_untracked (p : packet) : packet :=
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
      pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
-     pkt_untracked := true; pkt_ctdir_orig := pkt_ctdir_orig p |}.
+     pkt_untracked := true; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
 
 (** Update the SHARED `numgen inc` counter [e_numgen] for instance [spec]: INCREMENT
     it by one, leaving every other instance's counter — and every other env
@@ -379,7 +379,7 @@ Definition set_numgen (p : packet) (spec : numgen_spec) : packet :=
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
      pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
-     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
+     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
 
 (** [set_numgen] only changes [pkt_env]'s [e_numgen]; it leaves payload / meta / ct /
     flow / oracle components intact.  Hence loadability predicates and every read
@@ -402,7 +402,7 @@ Definition set_limit (p : packet) (spec : limit_spec) : packet :=
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
      pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
-     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
+     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
 
 (** CONSUME the packet's byte length ([quota_cost p], = skb->len) from a `quota`
     UNCONDITIONALLY (the kernel accumulates skb->len on every evaluation). *)
@@ -415,7 +415,7 @@ Definition set_quota (p : packet) (spec : quota_spec) : packet :=
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
      pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
-     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
+     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
 
 (** ACCOUNT for the packet's connection in a `connlimit` instance: IDEMPOTENTLY insert
     [pkt_flow p] into the instance's distinct-connection set on EVERY evaluation (the
@@ -433,7 +433,7 @@ Definition set_connlimit (p : packet) (spec : connlimit_spec) : packet :=
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
      pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
-     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
+     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
 
 Lemma read_payload_ok_limit : forall b o l p spec,
   read_payload_ok b o l (set_limit p spec) = read_payload_ok b o l p.
@@ -1096,8 +1096,14 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | ICtLoad k dst :: rest =>
       (* identical to [do_load (LCt k)]: a writable/persistent key reads the SHARED
          flow-keyed conntrack table, a read-only key the per-packet oracle, EXCEPT
-         a `ct state` read after a `notrack` returns NF_CT_STATE_UNTRACKED_BIT. *)
-      run_rule (set_reg rf dst (do_load (LCt k) p)) rest p
+         a `ct state` read after a `notrack` returns NF_CT_STATE_UNTRACKED_BIT.  A
+         conntrack load on a packet with NO entry ([pkt_ct_present = false]) BREAKs the
+         rule for EVERY key except [CKstate] (kernel nft_ct.c:81-82 `if (ct == NULL)
+         goto err`); gate on the same [load_ok] predicate the DSL uses so DSL/VM stay
+         in lock-step. *)
+      if load_ok (LCt k) p
+      then run_rule (set_reg rf dst (do_load (LCt k) p)) rest p
+      else None
   | IRtLoad k dst :: rest =>
       run_rule (set_reg rf dst (e_rt (pkt_env p) k)) rest p
   | ISocketLoad k dst :: rest =>
@@ -1270,7 +1276,7 @@ Definition set_meta (p : packet) (k : meta_key) (v : data) : packet :=
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
 (** Update the SHARED, flow-keyed conntrack table [e_ct] of an env: write [v] at
     flow [fl], key [k], leaving every other (flow,key) entry — and every other env
     component — unchanged.  This is the env analogue of [env_set_upd]/[env_map_upd]
@@ -1318,7 +1324,7 @@ Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
 
 (** Overwrite [len] bytes at offset [off] of a byte list (a header), keeping the
     rest — the payload-write primitive. *)
@@ -1340,7 +1346,7 @@ Definition set_nh_field (p : packet) (off len : nat) (v : data) : packet :=
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
 
 (** Rewrite [len] bytes of the TRANSPORT header at [off] to [v], leaving every
     other packet component intact — the L4-port-NAT write primitive.  This is the
@@ -1356,7 +1362,7 @@ Definition set_th_field (p : packet) (off len : nat) (v : data) : packet :=
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
 
 (** Source-port-NAT a packet: rewrite the L4 SOURCE port ([FThSport] = transport
     bytes 0..1) to [v].  This is the port half of a `snat ... :PORT` /
@@ -1531,7 +1537,7 @@ Definition set_nh_addr_ip4 (p : packet) (off len : nat) (v : data) : packet :=
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
 
 (** [set_nh_addr_ip4] leaves the transport header untouched. *)
 Lemma set_nh_addr_ip4_th : forall p off len v,
@@ -1780,7 +1786,7 @@ Definition set_env_dynset (p : packet) (op name : String.string) (key : data) : 
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
 
 (** The map analogue: a `dynset` whose target is a MAP (`add @m {key : data}`)
     learns the entry [key -> data] in the named value-map [e_map], so a later
@@ -1808,7 +1814,7 @@ Definition set_env_dynset_map (p : packet) (op name : String.string) (key dat : 
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
 
 (** The VM's meta/ct effect of running one rule's bytecode: mirrors [run_rule]'s
     register threading, but instead of a verdict it returns the packet with the
@@ -1819,7 +1825,13 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
   match is with
   | [] => p
   | IMetaLoad k dst :: rest => run_rule_writes (set_reg rf dst (pkt_meta p k)) rest p
-  | ICtLoad k dst :: rest => run_rule_writes (set_reg rf dst (do_load (LCt k) p)) rest p
+  | ICtLoad k dst :: rest =>
+      (* a conntrack load on a no-entry packet ([pkt_ct_present = false]) breaks the
+         rule for every key except [CKstate] (NFT_BREAK): no later statement runs and
+         the packet is returned unchanged — mirrors [run_rule] and the payload guard. *)
+      if load_ok (LCt k) p
+      then run_rule_writes (set_reg rf dst (do_load (LCt k) p)) rest p
+      else p
   | IRtLoad k dst :: rest => run_rule_writes (set_reg rf dst (e_rt (pkt_env p) k)) rest p
   | ISocketLoad k dst :: rest => run_rule_writes (set_reg rf dst (pkt_sock p k)) rest p
   | INumgen spec dst :: rest =>
@@ -2338,7 +2350,7 @@ Definition store_nat_mapping (p : packet) (m : option data * option data * optio
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
 
 (** The data-plane NAT effect of a terminal rule at hook [h], now FLOW-STATEFUL,
     mirroring [nf_nat_setup_info]/[nft_nat_eval]:
@@ -2625,7 +2637,7 @@ Definition set_env (p : packet) (e : env) : packet :=
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p; pkt_numgen := pkt_numgen p;
      pkt_osf := pkt_osf p; pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p;
      pkt_xfrm := pkt_xfrm p; pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
 
 (** Run a sequence of packets against a shared, evolving environment [e]: each
     packet is evaluated by [ev] against the current [e], then [step] updates [e]

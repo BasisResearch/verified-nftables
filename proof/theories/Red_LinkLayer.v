@@ -82,7 +82,7 @@ Definition locally_generated : packet :=
      pkt_inner := fun _ _ _ _ => [];
      pkt_have_l2 := false;                     (* no MAC header built *)
      pkt_have_l4 := false; pkt_fragoff := 0;
-     pkt_flow := [1;2;3;4]; pkt_untracked := false; pkt_ctdir_orig := true |}.
+     pkt_flow := [1;2;3;4]; pkt_untracked := false; pkt_ctdir_orig := true; pkt_ct_present := true |}.
 
 (* The SAME packet but WITH a built MAC header (e.g. a forwarded/ingress packet at
    prerouting/forward): the `ether saddr` load succeeds and the rule DROPS. *)
@@ -97,7 +97,7 @@ Definition has_l2 : packet :=
      pkt_inner := fun _ _ _ _ => [];
      pkt_have_l2 := true;                      (* MAC header present *)
      pkt_have_l4 := false; pkt_fragoff := 0;
-     pkt_flow := [1;2;3;4]; pkt_untracked := false; pkt_ctdir_orig := true |}.
+     pkt_flow := [1;2;3;4]; pkt_untracked := false; pkt_ctdir_orig := true; pkt_ct_present := true |}.
 
 (* The `ether saddr` load BREAKs on a packet with no MAC header — it is NOT
    loadable in the model, mirroring the kernel's goto-err. *)
