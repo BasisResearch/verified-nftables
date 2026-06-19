@@ -229,6 +229,17 @@ Record packet : Type := {
   pkt_fragoff : nat;        (* the IP fragment offset; a nonzero offset means this is
                                a non-first fragment with no usable transport header,
                                so a TRANSPORT-base load likewise BREAKs the rule. *)
+  pkt_untracked : bool;     (* whether a `notrack` statement has run earlier in THIS
+                               packet's traversal, forcing the conntrack state to
+                               IP_CT_UNTRACKED for the rest of the traversal (kernel
+                               nft_notrack_eval: nf_ct_set(skb, NULL, IP_CT_UNTRACKED)).
+                               A SUBSEQUENT `ct state` read then returns
+                               NF_CT_STATE_UNTRACKED_BIT (= 64) (nft_ct_get_eval's
+                               NFT_CT_STATE `else if (ctinfo == IP_CT_UNTRACKED)` branch),
+                               not the per-packet oracle.  Per-packet-traversal state:
+                               every packet starts FALSE (tracked); the flag is set by
+                               [set_untracked] and read by [do_load (LCt CKstate)].  It is
+                               NOT cross-packet — the kernel re-runs conntrack per skb. *)
   pkt_flow : data;          (* the FLOW IDENTIFIER of this packet — the key under which
                                the kernel's nf_ct_get(skb) selects the shared conntrack
                                entry.  Two packets of the same connection (both

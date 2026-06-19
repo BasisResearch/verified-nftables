@@ -56,7 +56,7 @@ let mk_pkt ~env ?(ct = dummy0) ?(protocol = []) ?(l4proto = []) ?(nfproto = [])
     pkt_inner = (fun _ _ _ _ -> []);
     (* a well-formed (non-fragment) packet whose L4 header was parsed, so transport
        payload loads succeed; transport-reading tests pad [th] to its read width *)
-    pkt_have_l4 = true; pkt_fragoff = 0; pkt_flow = flow }
+    pkt_have_l4 = true; pkt_fragoff = 0; pkt_flow = flow; pkt_untracked = false }
 
 (* wire constants, matching Example_Ruleset.v *)
 let cts_invalid = [0;0;0;1] and cts_established = [0;0;0;2]
@@ -912,6 +912,57 @@ let check_ct_mark_crosspkt () =
     (not (data_eq (Syntax.field_value Syntax.FCtMark p2_other) mark99));
   Printf.printf "\n"
 
+(* (I'') `notrack` forces ct state to UNTRACKED for the rest of the traversal, so a
+   LATER `ct state` read observes NF_CT_STATE_UNTRACKED_BIT (= 64).  Kernel nft_ct.c:
+   nft_notrack_eval calls nf_ct_set(skb, NULL, IP_CT_UNTRACKED); nft_ct_get_eval's
+   NFT_CT_STATE case then returns NF_CT_STATE_UNTRACKED_BIT.  The model now applies
+   set_untracked on SNotrack/INotrack (body_writes/run_rule_writes), threaded across
+   rules by eval_chain_mut, and do_load (LCt CKstate) returns [0;0;0;64] when
+   pkt_untracked.  So `notrack ; ct state untracked accept` ACCEPTS every packet, even
+   one whose ct-state oracle was a tracked state (new = 8).  Mirrors Red_Notrack.v. *)
+let check_notrack () =
+  Printf.printf "=== (I'') notrack forces ct state untracked (later ct state read sees it) ===\n";
+  let untracked = [0;0;0;64] in   (* NF_CT_STATE_UNTRACKED_BIT *)
+  (* `ct state untracked`: single-positive bitmask form (state & 64) != 0 *)
+  let m_untracked =
+    Syntax.MMasked (Syntax.FCtState, true, untracked, [0;0;0;0], [0;0;0;0]) in
+  let notrack_only : Syntax.rule =
+    { Syntax.r_body = [ Syntax.BStmt Syntax.SNotrack ]; r_verdict = Verdict.Continue;
+      r_vmap = None; r_nat = None; r_tproxy = None; r_fwd = None; r_queue = None;
+      r_after = [] } in
+  let ctstate_rule : Syntax.rule =
+    { Syntax.r_body = [ Syntax.BMatch m_untracked ]; r_verdict = Verdict.Accept;
+      r_vmap = None; r_nat = None; r_tproxy = None; r_fwd = None; r_queue = None;
+      r_after = [] } in
+  let chain : Syntax.chain =
+    { Syntax.c_policy = Verdict.Drop; c_rules = [ notrack_only; ctstate_rule ] } in
+  let env = { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
+              e_routes = []; e_rt = (fun _ -> []); e_limit = (fun _ -> 0);
+              e_quota = (fun _ -> 0); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
+              e_connlimit = (fun _ -> 0); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None) } in
+  (* a packet whose ct-state ORACLE is `new` (= 8): genuinely tracked.  The notrack
+     in rule 1 overrides this before rule 2's `ct state untracked` match. *)
+  let oracle_new k = (match k with Packet.CKstate -> [0;0;0;8] | _ -> []) in
+  let p = mk_pkt ~env ~ct:oracle_new ~flow:[7;7] () in
+  (* the notrack write threads into rule 2: the threaded packet reads UNTRACKED *)
+  let p1 = Semantics.dsl_writes notrack_only p in
+  check "notrack sets pkt_untracked := true" (p1.Packet.pkt_untracked);
+  check "after notrack, ct state read returns NF_CT_STATE_UNTRACKED_BIT (64)"
+    (data_eq (Syntax.do_load (Syntax.LCt Packet.CKstate) p1) untracked);
+  check "the `ct state untracked` match SUCCEEDS on the threaded packet"
+    (Semantics.eval_matchcond m_untracked p1);
+  (* the threading evaluator ACCEPTS the originally-`new` packet (kernel-correct);
+     without the fix it DROPPED it (notrack a no-op, stale oracle read) *)
+  check "notrack ; ct state untracked accept ACCEPTS a `new` packet (kernel-correct)"
+    (Semantics.eval_chain_mut chain p = Verdict.Accept);
+  (* and the same chain DROPS the packet if rule 1 is removed (no notrack => oracle 8,
+     (8 & 64) = 0 => no match => Drop policy): the acceptance is DUE TO notrack *)
+  let chain_no_notrack : Syntax.chain =
+    { Syntax.c_policy = Verdict.Drop; c_rules = [ ctstate_rule ] } in
+  check "without the preceding notrack the same packet is DROPPED (effect is real)"
+    (Semantics.eval_chain_mut chain_no_notrack p = Verdict.Drop);
+  Printf.printf "\n"
+
 (* (J) SINGLE POSITIVE `tcp flags X` BITMASK lowering.  tcp_flag_type has
    .basetype = &bitmask_type (proto.c:583-591); the OP_IMPLICIT->OP_EQ rewrite
    (evaluate.c:2792-2797) does NOT fire for it, so a bare `tcp flags X` stays an
@@ -1725,6 +1776,7 @@ let () =
     check_iif_index ();
     check_ct_state ();
     check_ct_mark_crosspkt ();
+    check_notrack ();
     check_tcp_flags ();
     check_meta_nfproto ();
     check_inet_nfproto_dep ();

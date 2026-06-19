@@ -28,3 +28,5 @@ theories/Ifname_Exact.v
 theories/Limit_Over.v
 theories/Extract.v
 theories/Red_CtMark_Crosspkt.v
+theories/Red_NatPerPacket.v
+theories/Red_Notrack.v

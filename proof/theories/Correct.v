@@ -576,7 +576,7 @@ Qed.
     and the mutation semantics conservatively extends [compile_chain_correct]. *)
 Definition writes_instr (i : instr) : bool :=
   match i with
-  | IMetaSet _ _ | ICtSet _ _
+  | IMetaSet _ _ | ICtSet _ _ | INotrack
   | IDynset _ _ _ None _ | IDynset _ _ _ (Some _) true => true
   | _ => false end.
 Definition no_writes (is : list instr) : bool :=
@@ -1140,7 +1140,7 @@ Definition straight_instr (i : instr) : bool :=
   | ILimit _ | IQuota _ | IConnlimit _
   | INat _ _ _ _ _ _ _ | ITproxy _ _ _ | IFwd _ _ _ | IQueueSreg _ _ _
   | IReject _ _ | IQueue _ _ _ _ | IImmediate _
-  | IMetaSet _ _ | ICtSet _ _
+  | IMetaSet _ _ | ICtSet _ _ | INotrack
   | ISynproxy _ _   (* can BREAK (non-TCP) or STOP (SYN/ACK) the rule *)
   | IDynset _ _ _ None _ | IDynset _ _ _ (Some _) true => false
   | _ => true
@@ -1345,7 +1345,7 @@ Qed.
     (mutates the named-set state).  These are the statements the mutation
     threading handles specially; every other statement is meta/ct- and env-neutral. *)
 Definition is_mut_stmt (s : stmt) : bool :=
-  match s with SMetaSet _ _ | SCtSet _ _ | SDynset _ _ _ _ => true | _ => false end.
+  match s with SMetaSet _ _ | SCtSet _ _ | SDynset _ _ _ _ | SNotrack => true | _ => false end.
 (** A SYN-proxy statement: write-neutral but NOT straight — it can BREAK (non-TCP)
     or STOP (SYN/ACK) the rule, so it is excluded from the straight-line scaffolding
     and handled explicitly (cf. [run_compile_body_writes]). *)
@@ -1356,7 +1356,6 @@ Lemma straight_compile_stmt : forall s,
 Proof.
   destruct s; intros H Hsp; try discriminate H; try discriminate Hsp; cbn [compile_stmt].
   - reflexivity.                                          (* SCounter *)
-  - reflexivity.                                          (* SNotrack *)
   - reflexivity.                                          (* SLog *)
   - rewrite str_app, str_vsrc; reflexivity.               (* SMangle *)
   - rewrite str_app, str_vsrc; reflexivity.               (* SCtSetDir *)
@@ -1594,7 +1593,9 @@ Proof.
           destruct s; cbn [is_mut_stmt body_writes];
             try (rewrite Hsl; reflexivity);
             (* mutating-stmt + synproxy cases: body_writes guards on the same loadability *)
-            cbn [stmt_loadable] in Hsl.
+            cbn [stmt_loadable] in Hsl;
+            (* SNotrack is always loadable, so this break case is vacuous *)
+            try discriminate Hsl.
           - rewrite Hsl; reflexivity.                           (* SMetaSet *)
           - rewrite Hsl; reflexivity.                           (* SCtSet *)
           - rewrite Hsl; reflexivity.                           (* SSynproxy *)
@@ -1606,6 +1607,9 @@ Proof.
       * (* the genuine mutating statements: meta/ct set (packet) or dynset (env) *)
         destruct s; cbn [is_mut_stmt] in Es; try discriminate Es;
           cbn [stmt_loadable] in Hsl.
+        -- (* SNotrack: compiles to [INotrack], both sides apply [set_untracked] *)
+           cbn [compile_stmt] in Hit |- *. cbn [app run_rule_writes].
+           cbn [body_writes]. apply IH; [exact Htail | exact Hsb'].
         -- (* SMetaSet k vs *)
            cbn [compile_stmt] in Hit |- *; rewrite <- !app_assoc.
            edestruct (writes_vsrc_simple vs rf

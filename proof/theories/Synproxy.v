@@ -49,7 +49,7 @@ Definition mk_tcp_pkt (fl : nat) : packet :=
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
      pkt_inner := fun _ _ _ _ => [];
      pkt_have_l4 := true;       (* a parsed TCP header *)
-     pkt_fragoff := 0; pkt_flow := [] |}.
+     pkt_fragoff := 0; pkt_flow := []; pkt_untracked := false |}.
 
 (** A non-TCP packet: no L4 header parsed (the kernel's NFT_BREAK arm). *)
 Definition non_tcp_pkt : packet :=
@@ -61,7 +61,7 @@ Definition non_tcp_pkt : packet :=
      pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
      pkt_inner := fun _ _ _ _ => [];
-     pkt_have_l4 := false; pkt_fragoff := 0; pkt_flow := [] |}.
+     pkt_have_l4 := false; pkt_fragoff := 0; pkt_flow := []; pkt_untracked := false |}.
 
 Definition syn_pkt  : packet := mk_tcp_pkt 2.   (* SYN  = 0x02 *)
 Definition ack_pkt  : packet := mk_tcp_pkt 16.  (* ACK  = 0x10 *)
