@@ -31,3 +31,4 @@ theories/Red_CtMark_Crosspkt.v
 theories/Red_NatPerPacket.v
 theories/Red_Notrack.v
 theories/Red_NotrackIntra.v
+theories/Red_NatReplyDir.v

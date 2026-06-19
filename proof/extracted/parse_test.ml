@@ -56,7 +56,8 @@ let mk_pkt ~env ?(ct = dummy0) ?(protocol = []) ?(l4proto = []) ?(nfproto = [])
     pkt_inner = (fun _ _ _ _ -> []);
     (* a well-formed (non-fragment) packet whose L4 header was parsed, so transport
        payload loads succeed; transport-reading tests pad [th] to its read width *)
-    pkt_have_l4 = true; pkt_fragoff = 0; pkt_flow = flow; pkt_untracked = false }
+    pkt_have_l4 = true; pkt_fragoff = 0; pkt_flow = flow; pkt_untracked = false;
+    pkt_ctdir_orig = true }
 
 (* wire constants, matching Example_Ruleset.v *)
 let cts_invalid = [0;0;0;1] and cts_established = [0;0;0;2]
@@ -516,7 +517,8 @@ let check_dnat_rewrite () =
   check "dnat to ip saddr: packet 1 dnat's dst to its own saddr (1.1.1.1)"
     (data_eq d1 [1;1;1;1]);
   check "the NAT mapping is STORED in the flow-keyed e_nat after packet 1"
-    ((f1_out.Packet.pkt_env).Packet.e_nat flow0 = Some (Some [1;1;1;1], None));
+    ((f1_out.Packet.pkt_env).Packet.e_nat flow0
+       = Some ((Some [9;9;9;9], Some [1;1;1;1]), None));
   (* packet 2 of the SAME flow: DIFFERENT saddr 2.2.2.2, threaded through the env
      packet 1 left — it must reuse packet 1's STORED destination (1.1.1.1), NOT its
      own saddr.  This is the property that was UNSOUND (provably divergent) before. *)
@@ -538,6 +540,44 @@ let check_dnat_rewrite () =
     Semantics.eval_chain_trace Semantics.Hprerouting dnat_saddr_chain g in
   check "a DIFFERENT flow establishes its own mapping (dnat dst = its own saddr 2.2.2.2)"
     (data_eq (Syntax.field_value Syntax.FIp4Daddr g_out) [2;2;2;2]);
+  (* REPLY-DIRECTION un-NAT (Round-5 fix): a fixed `dnat to 8.8.8.8` establishes the
+     mapping on the original-direction packet (client 1.1.1.1 -> router 9.9.9.9 =>
+     dst 8.8.8.8).  The REPLY packet of the SAME flow (server 8.8.8.8 -> client
+     1.1.1.1, pkt_ctdir_orig = false) must have its SOURCE un-DNAT'd back to 9.9.9.9
+     and its DESTINATION left untouched — the kernel's nf_nat_packet direction
+     inversion.  Before the fix the model re-applied the forward dnat forward (reply
+     dst -> 8.8.8.8) and left the reply src stale. *)
+  let dnat88_spec : Syntax.nat_spec =
+    { Syntax.nat_imms = [(1, [8;8;8;8])]; nat_field = None; nat_map = None;
+      nat_src = None; nat_kind = Syntax.nat_dnat_kind; nat_family = Syntax.nat_fam_ip4;
+      nat_amin = None; nat_amax = None; nat_pmin = None; nat_pmax = None; nat_flags = 0 } in
+  let dnat88_rule : Syntax.rule =
+    { Syntax.r_body = []; r_verdict = Verdict.Accept; r_vmap = None;
+      r_nat = Some dnat88_spec; r_tproxy = None; r_fwd = None;
+      r_queue = None; r_after = [] } in
+  let dnat88_chain : Syntax.chain =
+    { Syntax.c_policy = Verdict.Drop; c_rules = [dnat88_rule] } in
+  let rflow = [3;3] in
+  let fwd_in = { (mk_pkt ~env ~flow:rflow ())
+                 with Packet.pkt_nh = mk_nh [1;1;1;1]; pkt_have_l4 = false } in
+  let (_, fwd_out) =
+    Semantics.eval_chain_trace Semantics.Hprerouting dnat88_chain fwd_in in
+  check "reply-dir: forward packet dnat's dst 9.9.9.9 -> 8.8.8.8"
+    (data_eq (Syntax.field_value Syntax.FIp4Daddr fwd_out) [8;8;8;8]);
+  (* reply packet, threaded through the env the forward packet established *)
+  let rep_in = { (mk_pkt ~env:(fwd_out.Packet.pkt_env) ~flow:rflow ())
+                 with Packet.pkt_nh = mk_nh [8;8;8;8];
+                 pkt_have_l4 = false; pkt_ctdir_orig = false } in
+  (* mk_nh appends [9;9;9;9] as the dst; the reply's dst should be the client. Build
+     the reply with dst = client 1.1.1.1 explicitly. *)
+  let rep_in = { rep_in with Packet.pkt_nh =
+                 [0x45;0;0;20; 0;0;0;0; 64;6;0;0] @ [8;8;8;8] @ [1;1;1;1] } in
+  let (_, rep_out) =
+    Semantics.eval_chain_trace Semantics.Hprerouting dnat88_chain rep_in in
+  check "reply-dir: reply SOURCE un-DNAT'd 8.8.8.8 -> 9.9.9.9 (inverse manip)"
+    (data_eq (Syntax.field_value Syntax.FIp4Saddr rep_out) [9;9;9;9]);
+  check "reply-dir: reply DESTINATION left untouched (1.1.1.1)"
+    (data_eq (Syntax.field_value Syntax.FIp4Daddr rep_out) [1;1;1;1]);
   Printf.printf "\n"
 
 (* (G) FAMILY-AWARE NAT: an ip6 dnat/snat rewrites the 128-bit IPv6 address slot

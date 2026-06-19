@@ -52,7 +52,7 @@ Definition pkt_new : packet :=
      pkt_osf := []; pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
      pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0;
-     pkt_flow := [7;7]; pkt_untracked := false |}.
+     pkt_flow := [7;7]; pkt_untracked := false; pkt_ctdir_orig := true |}.
 
 (* The intra-rule `notrack` now latches IP_CT_UNTRACKED before the SAME rule's
    `ct state untracked` match, which therefore SUCCEEDS — the rule applies. *)
@@ -82,7 +82,7 @@ Definition pkt_est : packet :=
      pkt_osf := []; pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
      pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0;
-     pkt_flow := [9;9]; pkt_untracked := false |}.
+     pkt_flow := [9;9]; pkt_untracked := false; pkt_ctdir_orig := true |}.
 
 Theorem model_accepts_regardless_of_prior_state :
   eval_chain intra_chain pkt_est = Accept.

@@ -165,7 +165,7 @@ Definition set_untracked (p : packet) : packet :=
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
      pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
-     pkt_untracked := true |}.
+     pkt_untracked := true; pkt_ctdir_orig := pkt_ctdir_orig p |}.
 
 (** [set_untracked] only flips [pkt_untracked]; it leaves every payload / meta /
     env / oracle component intact.  Hence every loadability predicate (which reads
@@ -873,7 +873,7 @@ Definition set_meta (p : packet) (k : meta_key) (v : data) : packet :=
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p |}.
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
 (** Update the SHARED, flow-keyed conntrack table [e_ct] of an env: write [v] at
     flow [fl], key [k], leaving every other (flow,key) entry — and every other env
     component — unchanged.  This is the env analogue of [env_set_upd]/[env_map_upd]
@@ -895,7 +895,7 @@ Definition env_ct_upd (e : env) (fl : data) (k : ct_key) (v : data) : env :=
     nf_conntrack_alter_reply / store-into-conntrack-entry in [nf_nat_setup_info]
     that records the translation on the FIRST (unconfirmed) packet of a flow. *)
 Definition env_nat_upd (e : env) (fl : data)
-                       (m : option data * option nat) : env :=
+                       (m : option data * option data * option nat) : env :=
   {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
      e_routes := e_routes e; e_rt := e_rt e;
      e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
@@ -921,7 +921,7 @@ Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p |}
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}
   else
   {| pkt_env := pkt_env p; pkt_meta := pkt_meta p;
      pkt_ct := (fun k' => if ct_eqb k k' then v else pkt_ct p k');
@@ -930,7 +930,7 @@ Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p |}.
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
 
 (** Overwrite [len] bytes at offset [off] of a byte list (a header), keeping the
     rest — the payload-write primitive. *)
@@ -952,7 +952,7 @@ Definition set_nh_field (p : packet) (off len : nat) (v : data) : packet :=
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p |}.
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
 
 (** Rewrite [len] bytes of the TRANSPORT header at [off] to [v], leaving every
     other packet component intact — the L4-port-NAT write primitive.  This is the
@@ -968,7 +968,7 @@ Definition set_th_field (p : packet) (off len : nat) (v : data) : packet :=
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p |}.
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
 
 (** Source-port-NAT a packet: rewrite the L4 SOURCE port ([FThSport] = transport
     bytes 0..1) to [v].  This is the port half of a `snat ... :PORT` /
@@ -1143,7 +1143,7 @@ Definition set_nh_addr_ip4 (p : packet) (off len : nat) (v : data) : packet :=
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p |}.
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
 
 (** [set_nh_addr_ip4] leaves the transport header untouched. *)
 Lemma set_nh_addr_ip4_th : forall p off len v,
@@ -1392,7 +1392,7 @@ Definition set_env_dynset (p : packet) (op name : String.string) (key : data) : 
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p |}.
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
 
 (** The map analogue: a `dynset` whose target is a MAP (`add @m {key : data}`)
     learns the entry [key -> data] in the named value-map [e_map], so a later
@@ -1420,7 +1420,7 @@ Definition set_env_dynset_map (p : packet) (op name : String.string) (key dat : 
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p |}.
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
 
 (** The VM's meta/ct effect of running one rule's bytecode: mirrors [run_rule]'s
     register threading, but instead of a verdict it returns the packet with the
@@ -1866,28 +1866,50 @@ Definition apply_nat_port_val (is_src : bool) (port_opt : option nat) (p : packe
   | None => p
   end.
 
-(** Apply an ESTABLISHED translation [(addr_opt, port_opt)] to packet [p] for a NAT
-    of kind [ns]: rewrite the L3 address (source for a source NAT, destination for a
-    destination NAT) when [addr_opt = Some a], then the L4 port when
-    [port_opt = Some pmin].  This is the kernel's [nf_nat_manip_pkt] applying the
-    STORED tuple — it never re-reads the rule operand, so it is shared verbatim by
-    the first packet (where the tuple was just computed) and every later confirmed
-    packet of the flow. *)
+(** Apply an ESTABLISHED translation [(orig_addr_opt, new_addr_opt, port_opt)] to
+    packet [p] for a NAT of kind [ns], in the conntrack DIRECTION-AWARE way the
+    kernel's [nf_nat_packet]/[nf_nat_manip_pkt] does (net/netfilter/nf_nat_core.c):
+
+    - ORIGINAL direction ([pkt_ctdir_orig p = true]): apply the manip FORWARD.
+      Rewrite the L3 address of the manip slot (SOURCE for a source NAT, DESTINATION
+      for a destination NAT) to [new_addr_opt], then the L4 port of that slot to
+      [port_opt].  This is the translation the rule established on packet 1, reused
+      verbatim on every later confirmed ORIGINAL-direction packet (it never re-reads
+      the rule operand).
+
+    - REPLY direction ([pkt_ctdir_orig p = false]): apply the INVERSE manip.  The
+      kernel inverts the manip target for reply packets
+      (`if (dir == IP_CT_DIR_REPLY) statusbit ^= IPS_NAT_MASK`), so a source NAT
+      un-rewrites the reply's DESTINATION and a destination NAT un-rewrites the
+      reply's SOURCE — restoring the ORIGINAL (pre-NAT) address [orig_addr_opt] that
+      the peer originally addressed.  (A dnat's reply has its SOURCE = the dnat target
+      un-DNAT'd back to [orig_addr]; its DESTINATION is left untouched.)  Ports are
+      left untouched on reply: the model stores only the forward port, so it does not
+      fabricate a reply-port rewrite. *)
 Definition apply_nat_tuple (ns : nat_spec) (p : packet)
-                           (m : option data * option nat) : packet :=
+                           (m : option data * option data * option nat) : packet :=
   let fam := nat_addrfamily ns in
   let is_src := nat_is_src ns in
-  let p1 := match fst m with
-            | Some a => if is_src then set_saddr fam p a else set_daddr fam p a
-            | None => p
-            end in
-  apply_nat_port_val is_src (snd m) p1.
+  let '(orig_addr_opt, new_addr_opt, port_opt) := m in
+  if pkt_ctdir_orig p then
+    (* forward (original direction): rewrite the manip slot to the NAT target *)
+    let p1 := match new_addr_opt with
+              | Some a => if is_src then set_saddr fam p a else set_daddr fam p a
+              | None => p
+              end in
+    apply_nat_port_val is_src port_opt p1
+  else
+    (* reply direction: un-NAT the OPPOSITE slot back to the original address *)
+    match orig_addr_opt with
+    | Some o => if is_src then set_daddr fam p o else set_saddr fam p o
+    | None => p
+    end.
 
 (** Replace packet [p]'s environment with the flow-keyed NAT mapping [m] STORED at
     [p]'s flow ([env_nat_upd]).  Every set_*/address rewrite preserves [pkt_env], so
     this records the established translation into the shared, threaded env exactly
     where the kernel writes it into the conntrack entry. *)
-Definition store_nat_mapping (p : packet) (m : option data * option nat) : packet :=
+Definition store_nat_mapping (p : packet) (m : option data * option data * option nat) : packet :=
   {| pkt_env := env_nat_upd (pkt_env p) (pkt_flow p) m; pkt_meta := pkt_meta p;
      pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
@@ -1895,7 +1917,7 @@ Definition store_nat_mapping (p : packet) (m : option data * option nat) : packe
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p |}.
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
 
 (** The data-plane NAT effect of a terminal rule at hook [h], now FLOW-STATEFUL,
     mirroring [nf_nat_setup_info]/[nft_nat_eval]:
@@ -1918,17 +1940,37 @@ Definition store_nat_mapping (p : packet) (m : option data * option nat) : packe
     This is the exact analogue of the Round-1 conntrack-mark fix, now for the NAT
     tuple.  The verdict side is untouched (NAT is terminal-Accept), so
     [compile_chain_correct] is unaffected. *)
+
+(** The ORIGINAL (pre-NAT) address of the slot a NAT of kind [ns] rewrites — read
+    from the CURRENT packet before any rewrite: the SOURCE slot for a source NAT
+    ([nat_is_src]: snat/masquerade), the DESTINATION slot for a destination NAT
+    (dnat/redirect).  This is the address the kernel records as the OTHER tuple of
+    the conntrack entry (nf_conntrack_alter_reply), so a reply-direction packet can
+    be un-NAT'd back to it (the reply's opposite slot is restored to this value). *)
+Definition nat_orig_addr (ns : nat_spec) (p : packet) : data :=
+  let fam := nat_addrfamily ns in
+  let '(off, len) := if nat_is_src ns then saddr_slot fam else daddr_slot fam in
+  slice (pkt_nh p) off len.
 Definition apply_nat (h : hook_id) (r : rule) (p : packet) : packet :=
   match r_nat r with
   | Some ns =>
       match e_nat (pkt_env p) (pkt_flow p) with
       | Some m =>
-          (* confirmed flow: reuse the stored tuple, do NOT re-read the operand *)
+          (* confirmed flow: reuse the stored tuple (direction-aware), do NOT re-read
+             the operand *)
           apply_nat_tuple ns p m
       | None =>
-          (* first packet of the flow: compute the tuple, apply it, and STORE it *)
-          let m := (nat_operand_addr h ns p, nat_pmin ns) in
-          store_nat_mapping (apply_nat_tuple ns p m) m
+          (* No mapping established yet.  The kernel establishes the NAT tuple only on
+             the connection's ORIGINAL-direction packet (nf_nat_setup_info runs on the
+             unconfirmed, original-direction skb).  A reply-direction packet with no
+             established mapping is NOT translated. *)
+          if pkt_ctdir_orig p then
+            (* first packet of the flow (original direction): capture the original
+               address, compute the tuple, apply it FORWARD, and STORE it *)
+            let m := (Some (nat_orig_addr ns p), nat_operand_addr h ns p, nat_pmin ns) in
+            store_nat_mapping (apply_nat_tuple ns p m) m
+          else
+            p
       end
   | None => p
   end.
@@ -2162,7 +2204,7 @@ Definition set_env (p : packet) (e : env) : packet :=
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p; pkt_numgen := pkt_numgen p;
      pkt_osf := pkt_osf p; pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p;
      pkt_xfrm := pkt_xfrm p; pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p |}.
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
 
 (** Run a sequence of packets against a shared, evolving environment [e]: each
     packet is evaluated by [ev] against the current [e], then [step] updates [e]

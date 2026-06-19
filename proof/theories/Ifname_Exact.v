@@ -40,7 +40,7 @@ Definition pkt_ifn (nm : data) : packet :=
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
      pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
-     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0; pkt_flow := []; pkt_untracked := false |}.
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0; pkt_flow := []; pkt_untracked := false; pkt_ctdir_orig := true |}.
 
 (* "dummy0" as the FIXED fix now emits it: 16-byte zero-padded (IFNAMSIZ). *)
 Definition iif_dummy0_16 : data :=

@@ -22,7 +22,8 @@
 
     ── Model (AFTER the Round-2 fix) ────────────────────────────────────────────
     NAT is now FLOW-STATEFUL.  [env] carries a shared, flow-keyed NAT-mapping table
-    [e_nat : data -> option (option data * option nat)].  [apply_nat] (Semantics.v)
+    [e_nat : data -> option (option data * option data * option nat)] (orig addr,
+    new addr, port).  [apply_nat] (Semantics.v)
     looks up [e_nat (pkt_flow p)]:
       - [None]  (first packet of the flow): compute the tuple from the operand
         ([nat_operand_addr]/[nat_pmin]), apply it, AND store it into [e_nat] —
@@ -79,7 +80,7 @@ Definition mkpkt (e : env) (saddr : data) : packet :=
      pkt_osf := []; pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
      pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0;
-     pkt_flow := [7;7]; pkt_untracked := false |}.
+     pkt_flow := [7;7]; pkt_untracked := false; pkt_ctdir_orig := true |}.
 
 (* Packet 1 of the flow, evaluated against the fresh (no-mapping) env. *)
 Definition p1 : packet := mkpkt env0 [1;1;1;1].
@@ -104,7 +105,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 (* The mapping really was stored at flow [7;7] after packet 1. *)
 Lemma mapping_stored_after_p1 :
-  e_nat env_after_p1 [7;7] = Some (Some [1;1;1;1], None).
+  e_nat env_after_p1 [7;7] = Some (Some [9;9;9;9], Some [1;1;1;1], None).
 Proof. vm_compute. reflexivity. Qed.
 
 (* KERNEL-CORRECT, and now PROVABLE: packet 2 of the SAME flow gets packet 1's

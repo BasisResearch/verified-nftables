@@ -43,23 +43,31 @@ Definition ip6_snat_rule : rule :=
    packet of a flow ([e_nat .. = None]) the address rewrite is exactly as before AND
    the mapping is stored; the network header is unchanged by that env write. *)
 Lemma ip6_dnat_apply : forall h p,
+  pkt_ctdir_orig p = true ->
   e_nat (pkt_env p) (pkt_flow p) = None ->
   apply_nat h ip6_dnat_rule p
-    = store_nat_mapping (set_daddr "ip6" p tgt6) (Some tgt6, None).
+    = store_nat_mapping (set_daddr "ip6" p tgt6)
+        (Some (slice (pkt_nh p) 24 16), Some tgt6, None).
 Proof.
-  intros h p Hnone. unfold apply_nat, ip6_dnat_rule, ip6_dnat_spec.
-  cbn -[set_daddr store_nat_mapping e_nat pkt_env pkt_flow tgt6]. rewrite Hnone.
-  reflexivity.
+  intros h p Horig Hnone. unfold apply_nat, ip6_dnat_rule, ip6_dnat_spec.
+  cbn -[set_daddr store_nat_mapping e_nat pkt_env pkt_flow tgt6 slice pkt_nh].
+  rewrite Hnone.
+  unfold apply_nat_tuple, nat_orig_addr, nat_is_src, nat_addrfamily, nat_operand_addr.
+  cbn -[set_daddr store_nat_mapping tgt6 slice pkt_nh]. rewrite ?Horig; reflexivity.
 Qed.
 
 Lemma ip6_snat_apply : forall h p,
+  pkt_ctdir_orig p = true ->
   e_nat (pkt_env p) (pkt_flow p) = None ->
   apply_nat h ip6_snat_rule p
-    = store_nat_mapping (set_saddr "ip6" p tgt6) (Some tgt6, None).
+    = store_nat_mapping (set_saddr "ip6" p tgt6)
+        (Some (slice (pkt_nh p) 8 16), Some tgt6, None).
 Proof.
-  intros h p Hnone. unfold apply_nat, ip6_snat_rule, ip6_snat_spec.
-  cbn -[set_saddr store_nat_mapping e_nat pkt_env pkt_flow tgt6]. rewrite Hnone.
-  reflexivity.
+  intros h p Horig Hnone. unfold apply_nat, ip6_snat_rule, ip6_snat_spec.
+  cbn -[set_saddr store_nat_mapping e_nat pkt_env pkt_flow tgt6 slice pkt_nh].
+  rewrite Hnone.
+  unfold apply_nat_tuple, nat_orig_addr, nat_is_src, nat_addrfamily, nat_operand_addr.
+  cbn -[set_saddr store_nat_mapping tgt6 slice pkt_nh]. rewrite ?Horig; reflexivity.
 Qed.
 
 (* Reading the IPv6 destination back: after the ip6 dnat, `ip6 daddr` IS the
@@ -132,7 +140,7 @@ Definition pkt6 : packet :=
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
      pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
-     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0; pkt_flow := []; pkt_untracked := false |}.
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0; pkt_flow := []; pkt_untracked := false; pkt_ctdir_orig := true |}.
 
 Theorem ip6_dnat_dest_is_target :
   field_value FIp6Daddr (apply_nat Hprerouting ip6_dnat_rule pkt6) = tgt6.
@@ -187,7 +195,7 @@ Definition pkt6m : packet :=
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
      pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
-     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0; pkt_flow := []; pkt_untracked := false |}.
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := false; pkt_fragoff := 0; pkt_flow := []; pkt_untracked := false; pkt_ctdir_orig := true |}.
 
 (* THE FIX: an ip6 masquerade rewrites the whole 16-byte IPv6 source to the exit
    interface's IPv6 address [if6] (= ipv6_dev_get_saddr), reading back via

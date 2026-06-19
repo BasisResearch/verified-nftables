@@ -162,7 +162,7 @@ Record env : Type := {
                                                 WRITE_ONCE/READ_ONCE(ct->mark).  This
                                                 is the cross-packet state a per-packet
                                                 [pkt_ct] oracle could not express. *)
-  e_nat : data -> option (option data * option nat);
+  e_nat : data -> option (option data * option data * option nat);
                             (* the SHARED, flow-keyed NAT-mapping table: the
                                translation tuple the kernel ESTABLISHES ONCE on the
                                first (unconfirmed) packet of a flow and STORES in the
@@ -173,13 +173,20 @@ Record env : Type := {
                                rewrite comes from the stored tuple via
                                nf_nat_manip_pkt).  [e_nat flow = None] means no mapping
                                is established for the flow yet (the first packet
-                               computes + stores one); [Some (addr_opt, port_opt)] is
-                               the established translation — the new L3 address (if a
-                               NAT_REG_ADDR operand was present) and the new L4 port (if
-                               a NAT_REG_PROTO operand was present).  This is the
-                               flow-keyed NAT state a per-packet pure [apply_nat] could
-                               not express — the exact analogue of [e_ct] for the NAT
-                               tuple. *)
+                               computes + stores one); [Some (orig_addr_opt, new_addr_opt,
+                               port_opt)] is the established translation — the ORIGINAL
+                               (pre-NAT) L3 address of the manip slot (needed to apply the
+                               INVERSE manip on reply-direction packets, mirroring the
+                               kernel storing both tuples of the conntrack entry), the new
+                               L3 address (if a NAT_REG_ADDR operand was present), and the
+                               new L4 port (if a NAT_REG_PROTO operand was present).  This
+                               is the flow-keyed NAT state a per-packet pure [apply_nat]
+                               could not express — the exact analogue of [e_ct] for the
+                               NAT tuple.  [apply_nat] applies [new_addr_opt] FORWARD on an
+                               original-direction packet ([pkt_ctdir_orig = true]) and
+                               restores [orig_addr_opt] on the OPPOSITE slot for a reply
+                               ([pkt_ctdir_orig = false]) — nf_nat_packet's direction
+                               inversion. *)
 }.
 
 Record packet : Type := {
@@ -248,7 +255,33 @@ Record packet : Type := {
                                as [e_ct (pkt_env p) (pkt_flow p) CKmark] by the other.
                                Derived from the (direction-normalised) 5-tuple; modelled
                                here as an opaque packet-determined value (the kernel
-                               computes the tuple from the headers). *)
+                               computes the tuple from the headers).
+
+                               NOTE on direction: [pkt_flow] is direction-NORMALISED, so
+                               BOTH directions of a connection share it.  This is correct
+                               for the conntrack-entry state that is itself
+                               direction-INDEPENDENT (ct mark / ct label, stored in
+                               [e_ct]).  But the NAT translation tuple [e_nat] is
+                               direction-SPECIFIC: the kernel applies it FORWARD on the
+                               original-direction packet and the INVERSE on the reply
+                               (nf_nat_packet: `if (dir==IP_CT_DIR_REPLY) statusbit ^=
+                               IPS_NAT_MASK`).  So consumers of [e_nat] (i.e. [apply_nat])
+                               MUST consult [pkt_ctdir_orig] below to decide forward vs
+                               inverse — keying by the shared [pkt_flow] alone is not
+                               enough. *)
+  pkt_ctdir_orig : bool;    (* the conntrack DIRECTION of this packet: [true] on the
+                               ORIGINAL-direction packet of the flow (client->server, the
+                               direction that ESTABLISHED the connection and the NAT
+                               mapping), [false] on a REPLY-direction packet
+                               (server->client).  This is the kernel's
+                               CTINFO2DIR(ctinfo) (IP_CT_DIR_ORIGINAL vs IP_CT_DIR_REPLY).
+                               It is packet-determined (the kernel decides it from which
+                               tuple of the conntrack entry the skb matched) and is what
+                               [apply_nat] uses to apply a stored NAT tuple FORWARD (orig
+                               dir) or INVERTED (reply dir) — see nf_nat_packet in
+                               net/netfilter/nf_nat_core.c.  Every freshly-built packet
+                               in the proofs defaults to [true]; a reply packet sets it
+                               [false]. *)
 }.
 
 (** Read [len] bytes at [off] from a header byte string. *)
