@@ -120,7 +120,18 @@ Record env : Type := {
   e_set  : string -> list (data * data);    (* a named set's elements as closed
                                                intervals [lo,hi] (exact = [x,x],
                                                CIDR/range = [lo,hi]); see [set_mem] *)
-  e_vmap : string -> list (data * verdict);  (* a named verdict map's entries *)
+  e_vmap : string -> list (data * data * verdict);
+                            (* a named verdict map's entries, each a closed-interval
+                               KEY [lo,hi] paired with its verdict.  A point key is the
+                               degenerate [x,x]; an interval/prefix key (the kernel
+                               rbtree set is NFT_SET_INTERVAL | NFT_SET_MAP, so
+                               `ip hdrlength vmap { 0-4 : drop, 5 : accept }` and
+                               `ip6 saddr vmap { ::/64 : accept }` are valid) is the
+                               full [lo,hi].  Lookup ([assoc_verdict]) returns the
+                               verdict of the first entry whose interval CONTAINS the
+                               key (lo <= key <= hi, big-endian) — an LPM/interval
+                               search matching nft_set_rbtree, symmetric with the
+                               named-set [set_mem] which already does intervals. *)
   e_map  : string -> list (data * data);     (* a named value map's entries *)
   e_routes : list (data * data * (fib_result -> data));
                             (* the ROUTING TABLE a `fib` lookup consults: a list of

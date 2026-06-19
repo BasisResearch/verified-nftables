@@ -349,7 +349,7 @@ let bor  a b = L.map2 (lor)  a b
 type state = {
   defines : (string, Nft_ast.value) Hashtbl.t;
   mutable sets  : (string * (Bytes.data * Bytes.data) list) list;
-  mutable vmaps : (string * (Bytes.data * Verdict.verdict) list) list;
+  mutable vmaps : (string * ((Bytes.data * Bytes.data) * Verdict.verdict) list) list;
   mutable maps  : (string * (Bytes.data * Bytes.data) list) list;
   mutable counter : int;
 }
@@ -762,8 +762,12 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
         if !vmap <> None then raise (Unsupported "more than one verdict map in a rule");
         let (f, k, dep) = key_field kp in ensure_dep dep;
         let name = fresh st "__map" in
+        (* A vmap key may be a range/prefix (the kernel rbtree set is
+           NFT_SET_INTERVAL | NFT_SET_MAP): emit the key as a closed interval
+           [lo,hi] (a point key is the degenerate [b,b]), mirroring the named-set
+           interval encoding [interval_of_value]. *)
         let ents = L.map (fun (v, sv) ->
-          (enc_atom k (resolve_var st v), lower_verdict sv)) entries in
+          (interval_of_value st k v, lower_verdict sv)) entries in
         st.vmaps <- (name, ents) :: st.vmaps;
         vmap := Some { Syntax.vm_fields = []; vm_keyf = Some (f, []); vm_name = name }
     | Nft_ast.CVmapRef (kp, name) ->
@@ -797,8 +801,10 @@ let lower_setdecl st (sd : Nft_ast.setdecl) : unit =
       | Some _ -> true | None -> false) sd.Nft_ast.sd_elements in
     if is_vmap then
       let ents = L.map (fun (key, d) ->
-        let (lo, _) = interval_of_decl_elem st sd.Nft_ast.sd_type key in
-        (lo, match d with Some v -> lower_verdict v | None -> Verdict.Continue))
+        (* keep the FULL [lo,hi] interval key so range/prefix vmap keys do an
+           interval lookup (NFT_SET_INTERVAL | NFT_SET_MAP), not exact-only. *)
+        (interval_of_decl_elem st sd.Nft_ast.sd_type key,
+         match d with Some v -> lower_verdict v | None -> Verdict.Continue))
         sd.Nft_ast.sd_elements in
       st.vmaps <- (sd.Nft_ast.sd_name, ents) :: st.vmaps
     else if sd.Nft_ast.sd_elements = [] then
@@ -831,7 +837,7 @@ type parsed = {
   (* the raw declared/anonymous set & map contents, so a Coq emitter can
      serialise them as a [set_decls] record (the env is then [env_with_sets]) *)
   p_sets   : (string * (Bytes.data * Bytes.data) list) list;
-  p_vmaps  : (string * (Bytes.data * Verdict.verdict) list) list;
+  p_vmaps  : (string * ((Bytes.data * Bytes.data) * Verdict.verdict) list) list;
   p_maps   : (string * (Bytes.data * Bytes.data) list) list;
 }
 

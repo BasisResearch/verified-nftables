@@ -952,6 +952,54 @@ let check_ct_mark_crosspkt () =
     (not (data_eq (Syntax.field_value Syntax.FCtMark p2_other) mark99));
   Printf.printf "\n"
 
+(* (V) INTERVAL/range verdict-map keys.  A real nftables verdict map is the
+   rbtree set type, declared NFT_SET_INTERVAL | NFT_SET_MAP
+   (net/netfilter/nft_set_rbtree.c), so a vmap key may be a RANGE/prefix and the
+   lookup is an interval search: `tcp dport vmap { 0-100 : drop, 101 : accept }`
+   DROPS a packet with dport INSIDE [0,100] (e.g. 80) — it does NOT need an exact
+   key match.  Before the fix [e_vmap] held POINT (key,verdict) pairs and
+   [assoc_verdict] did exact equality, so an interior key MISSED and the parser
+   could not even parse a range vmap key.  Now [e_vmap] entries are [lo,hi,verdict]
+   intervals and [assoc_verdict] returns the verdict of the first entry whose
+   interval contains the key (symmetric with the named-set [set_mem]). *)
+let check_interval_vmap () =
+  Printf.printf "=== (V) interval/range verdict-map keys (NFT_SET_INTERVAL | NFT_SET_MAP) ===\n";
+  let src =
+    "table inet t {\n\
+    \  chain c {\n\
+    \    type filter hook input priority 0; policy accept;\n\
+    \    tcp dport vmap { 0-100 : drop, 101 : accept }\n\
+    \  }\n\
+     }\n" in
+  (* (1) it PARSES — the old point-only grammar raised a syntax error on `0-100`. *)
+  let parsed = Nft_parse.parse_string src in
+  check "an interval (range) vmap key PARSES (0-100 : drop)" true;
+  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_lower.p_env in
+  (* (2) the lowered vmap carries a genuine INTERVAL entry: lo=[0;0] hi=[0;100],
+     i.e. a non-degenerate [lo,hi] (not a point [k,k]). *)
+  let vm_name = match (Stdlib.List.hd c.Syntax.c_rules).Syntax.r_vmap with
+    | Some vm -> vm.Syntax.vm_name | None -> failwith "no vmap lowered" in
+  let ents = env.Packet.e_vmap vm_name in
+  let has_iv = Stdlib.List.exists (fun ((lo, hi), _) -> lo <> hi) ents in
+  check "the range key lowers to a non-degenerate [lo,hi] interval entry" has_iv;
+  (* (3) behaviour: dport 80 is INSIDE [0,100] -> Drop (the unsound case the model
+     previously got wrong: it fell through to the accept policy). *)
+  let pkt dport = mk_pkt ~env ~l4proto:l4_tcp ~th:(th_dport dport) () in
+  check "dport 80 (inside 0-100) -> DROP (interval lookup; was wrongly accepted)"
+    (Semantics.eval_chain c (pkt 80) = Verdict.Drop);
+  check "dport 0 (lower bound) -> DROP"
+    (Semantics.eval_chain c (pkt 0) = Verdict.Drop);
+  check "dport 100 (upper bound) -> DROP"
+    (Semantics.eval_chain c (pkt 100) = Verdict.Drop);
+  (* (4) the point key 101 still matches exactly -> Accept. *)
+  check "dport 101 (exact point key) -> ACCEPT"
+    (Semantics.eval_chain c (pkt 101) = Verdict.Accept);
+  (* (5) a key OUTSIDE every interval misses -> falls through to accept policy. *)
+  check "dport 200 (outside all keys) -> falls through to accept policy"
+    (Semantics.eval_chain c (pkt 200) = Verdict.Accept);
+  Printf.printf "\n"
+
 (* (I'') `notrack` forces ct state to UNTRACKED for the rest of the traversal, so a
    LATER `ct state` read observes NF_CT_STATE_UNTRACKED_BIT (= 64).  Kernel nft_ct.c:
    nft_notrack_eval calls nf_ct_set(skb, NULL, IP_CT_UNTRACKED); nft_ct_get_eval's
@@ -1858,6 +1906,7 @@ let () =
     check_ct_mark_crosspkt ();
     check_notrack ();
     check_notrack_intra ();
+    check_interval_vmap ();
     check_tcp_flags ();
     check_meta_nfproto ();
     check_inet_nfproto_dep ();

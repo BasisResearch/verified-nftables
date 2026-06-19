@@ -184,13 +184,16 @@ let chain (c : Syntax.chain) : string =
 (* ---------- set/map declarations -> a set_decls record ---------- *)
 
 let iv (lo, hi) = spf "(%s, %s)" (data lo) (data hi)
-let kv (k, v) = spf "(%s, %s)" (data k) (verdict v)
+(* a verdict-map entry is an interval KEY [lo,hi] paired with its verdict
+   (NFT_SET_INTERVAL | NFT_SET_MAP); emit the Coq triple [(lo, hi, v)] which
+   parses as [((lo,hi),v) : data * data * verdict]. *)
+let kv ((lo, hi), v) = spf "(%s, %s, %s)" (data lo) (data hi) (verdict v)
 
 let assoc_ivs (l : (string * (Bytes.data * Bytes.data) list) list) : string =
   "[" ^ S.concat ";\n   "
     (L.map (fun (n, ivs) ->
        spf "(%s, [%s])" (qstring n) (S.concat "; " (L.map iv ivs))) l) ^ "]"
-let assoc_kvs (l : (string * (Bytes.data * Verdict.verdict) list) list) : string =
+let assoc_kvs (l : (string * ((Bytes.data * Bytes.data) * Verdict.verdict) list) list) : string =
   "[" ^ S.concat ";\n   "
     (L.map (fun (n, kvs) ->
        spf "(%s, [%s])" (qstring n) (S.concat "; " (L.map kv kvs))) l) ^ "]"

@@ -87,10 +87,15 @@ Definition nd_types_set : list (data * data) :=
   [ (icmp6_nd_nsol, icmp6_nd_nsol)
   ; (icmp6_nd_radv, icmp6_nd_radv)
   ; (icmp6_nd_nadv, icmp6_nd_nadv) ].
-Definition ctstate_vmap : list (data * verdict) :=
-  [ (cts_established, Accept); (cts_related, Accept); (cts_invalid, Drop) ].
-Definition protocol_vmap : list (data * verdict) :=
-  [ (eth_ip, Jump "inbound_ipv4"); (eth_ip6, Jump "inbound_ipv6") ].
+(* Point verdict-map entries: a point key [k] is stored as the degenerate
+   interval [k,k] in the (lo,hi,verdict) entry layout. *)
+Definition ctstate_vmap : list (data * data * verdict) :=
+  [ (cts_established, cts_established, Accept)
+  ; (cts_related, cts_related, Accept)
+  ; (cts_invalid, cts_invalid, Drop) ].
+Definition protocol_vmap : list (data * data * verdict) :=
+  [ (eth_ip, eth_ip, Jump "inbound_ipv4")
+  ; (eth_ip6, eth_ip6, Jump "inbound_ipv6") ].
 
 (** The evaluation environment: the sets/maps above, looked up by name; the
     other state (routes, limiters) is irrelevant to these rules. *)

@@ -443,7 +443,7 @@ Definition terminal_loadable (r : rule) (p : packet) : bool :=
     lookup sees the change (witnessed in semtest). *)
 Record set_decls : Type := {
   sd_sets  : list (String.string * list (data * data));     (* set name -> interval elements *)
-  sd_vmaps : list (String.string * list (data * verdict));  (* verdict-map name -> entries *)
+  sd_vmaps : list (String.string * list (data * data * verdict));  (* verdict-map name -> [lo,hi]-key entries *)
   sd_maps  : list (String.string * list (data * data));     (* value-map name -> entries *)
 }.
 Fixpoint assoc_str {A} (n : String.string) (l : list (String.string * A)) (d : A) : A :=
@@ -538,11 +538,20 @@ Definition eval_vsrc (vs : vsrc) (p : packet) : data :=
         (e_map (pkt_env p) name)
   end.
 
-(** Look up a key in a verdict map's entries. *)
-Fixpoint assoc_verdict (key : data) (entries : list (data * verdict)) : option verdict :=
+(** Look up a key in a verdict map's entries.  Each entry carries a closed
+    interval KEY [lo,hi]: the kernel verdict-map set is the rbtree type
+    NFT_SET_INTERVAL | NFT_SET_MAP (net/netfilter/nft_set_rbtree.c), so a vmap
+    key may be a range/prefix and the lookup is an interval search returning the
+    associated verdict of the FIRST entry whose interval contains [key]
+    (lo <= key <= hi, big-endian via [data_in_iv]).  A POINT key is stored as the
+    degenerate [k,k]: [data_in_iv k (k,k) = true] and only [key=k] matches (by
+    [data_le_antisym]), so point vmaps are unchanged.  This mirrors the named-set
+    [set_mem]/[data_in_iv] interval test — closing the set/vmap asymmetry. *)
+Fixpoint assoc_verdict (key : data) (entries : list (data * data * verdict)) : option verdict :=
   match entries with
   | [] => None
-  | (k, v) :: rest => if data_eqb key k then Some v else assoc_verdict key rest
+  | (lo, hi, v) :: rest =>
+      if data_in_iv key (lo, hi) then Some v else assoc_verdict key rest
   end.
 
 (** The terminal outcome of a rule once any verdict map has fallen through: a

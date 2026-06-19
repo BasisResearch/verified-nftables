@@ -12,8 +12,8 @@ Open Scope string_scope.
 Definition decls : set_decls :=
   {| sd_sets := [("__set0", [([135], [135]); ([134], [134]); ([136], [136])]);
    ("__set3", [([0; 22], [0; 22]); ([0; 80], [0; 80]); ([1; 187], [1; 187])])];
-   sd_vmaps := [("__map1", [([0; 0; 0; 2], Accept); ([0; 0; 0; 4], Accept); ([0; 0; 0; 1], Drop)]);
-   ("__map2", [([8; 0], (Jump "inbound_ipv4")); ([134; 221], (Jump "inbound_ipv6"))])];
+   sd_vmaps := [("__map1", [([0; 0; 0; 2], [0; 0; 0; 2], Accept); ([0; 0; 0; 4], [0; 0; 0; 4], Accept); ([0; 0; 0; 1], [0; 0; 0; 1], Drop)]);
+   ("__map2", [([8; 0], [8; 0], (Jump "inbound_ipv4")); ([134; 221], [134; 221], (Jump "inbound_ipv6"))])];
    sd_maps := [] |}.
 
 Definition base_env : env :=

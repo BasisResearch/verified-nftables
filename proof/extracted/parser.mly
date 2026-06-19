@@ -298,7 +298,11 @@ vmapseq:
   | vmapentry                          { [$1] }
   | vmapseq nls COMMA nls vmapentry    { $1 @ [$5] }
 vmapentry:
-  | value COLON verdict { ($1, $3) }
+  (* a vmap key may be a point, a range (`0-4`) or a prefix (`10.0.0.0/8`):
+     the kernel verdict-map set is NFT_SET_INTERVAL | NFT_SET_MAP, so reuse
+     [elem] (the same value grammar set elements use) rather than the
+     point-only [value], and let the lowering build the [lo,hi] key. *)
+  | elem COLON verdict { ($1, $3) }
 
 (* ---- verdicts ---- *)
 verdict:
