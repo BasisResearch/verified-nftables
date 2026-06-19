@@ -1351,6 +1351,11 @@ Definition is_mut_stmt (s : stmt) : bool :=
     and handled explicitly (cf. [run_compile_body_writes]). *)
 Definition is_synproxy_stmt (s : stmt) : bool :=
   match s with SSynproxy _ _ => true | _ => false end.
+(** A `notrack` statement: write-neutral but NOT straight in the [run_compile_body]
+    sense — it threads [set_untracked] into the running packet, so it is handled
+    explicitly (like synproxy) rather than by the straight-line scaffolding. *)
+Definition is_notrack_stmt (s : stmt) : bool :=
+  match s with SNotrack => true | _ => false end.
 Lemma straight_compile_stmt : forall s,
   is_mut_stmt s = false -> is_synproxy_stmt s = false -> straight (compile_stmt s) = true.
 Proof.
@@ -1649,12 +1654,14 @@ Proof.
 Qed.
 
 Lemma run_stmt_exists : forall s rf rest p,
+  is_notrack_stmt s = false ->
   is_synproxy_stmt s = false ->
   stmt_loadable s p = true ->
   exists rf', run_rule rf (compile_stmt s ++ rest) p = run_rule rf' rest p.
 Proof.
-  destruct s; intros rf rest p Hsp Hl; cbn [stmt_loadable is_synproxy_stmt] in Hsp, Hl;
-    try discriminate Hsp; try (exists rf; reflexivity).
+  destruct s; intros rf rest p Hnt Hsp Hl;
+    cbn [stmt_loadable is_synproxy_stmt is_notrack_stmt] in Hnt, Hsp, Hl;
+    try discriminate Hsp; try discriminate Hnt; try (exists rf; reflexivity).
   - (* SMangle *) edestruct (run_vsrc_exists vs rf
       (IPayloadWrite 1 b off len ctype coff cflags :: rest) p Hl) as [rf' Hr].
     exists rf'. cbn [compile_stmt]. rewrite <- app_assoc. cbn [app].
@@ -1869,19 +1876,25 @@ Lemma run_stmts_after : forall ss rf p,
 Proof.
   induction ss as [| s ss IH]; intros rf p; [reflexivity|].
   cbn [flat_map].
-  destruct (is_synproxy_stmt s) eqn:Hsp.
-  - (* SSynproxy: break / stop / continue, mirroring run_rule's ISynproxy *)
-    destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp.
+  destruct (is_notrack_stmt s) eqn:Hnt.
+  - (* SNotrack: VM threads [set_untracked]; verdict-neutral, and
+       [stmts_after_outcome] is invariant under it *)
+    destruct s; cbn [is_notrack_stmt] in Hnt; try discriminate Hnt.
     cbn [compile_stmt app run_rule stmts_after_outcome].
-    destruct (synproxy_loadable p) eqn:Hld.
-    + destruct (synproxy_stops p) eqn:Hstop; [reflexivity | apply IH].
-    + reflexivity.
-  - (* any other statement: verdict-neutral when loadable, else BREAK to None *)
-    rewrite stmts_after_outcome_nonsyn by exact Hsp.
-    destruct (stmt_loadable s p) eqn:Hl.
-    + edestruct (run_stmt_exists s rf (flat_map compile_stmt ss) p Hsp Hl) as [rf' Hr].
-      rewrite Hr. apply IH.
-    + rewrite run_stmt_break by exact Hl. reflexivity.
+    rewrite IH, stmts_after_outcome_untracked. reflexivity.
+  - destruct (is_synproxy_stmt s) eqn:Hsp.
+    + (* SSynproxy: break / stop / continue, mirroring run_rule's ISynproxy *)
+      destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp.
+      cbn [compile_stmt app run_rule stmts_after_outcome].
+      destruct (synproxy_loadable p) eqn:Hld.
+      * destruct (synproxy_stops p) eqn:Hstop; [reflexivity | apply IH].
+      * reflexivity.
+    + (* any other statement: verdict-neutral when loadable, else BREAK to None *)
+      rewrite stmts_after_outcome_nonsyn by exact Hsp.
+      destruct (stmt_loadable s p) eqn:Hl.
+      * edestruct (run_stmt_exists s rf (flat_map compile_stmt ss) p Hnt Hsp Hl) as [rf' Hr].
+        rewrite Hr. apply IH.
+      * rewrite run_stmt_break by exact Hl. reflexivity.
 Qed.
 
 (** A static verdict tail followed by trailing statements: a terminal verdict
@@ -1897,66 +1910,134 @@ Proof. destruct v; cbn [verdict_tail app run_rule]; reflexivity. Qed.
     to [Some Drop] (matches after it never run), so the result is exactly
     [if rule_applies_walk body then (if body_synproxy_stops body then Some Drop else res) else None].
     (On a loadable body — the hypothesis — synproxy never BREAKs here.) *)
-Lemma run_compile_body : forall body tail res p,
-  (body_synproxy_stops body p = false -> forall rf, run_rule rf tail p = res) ->
+(** [body_thread] of a cons: a [notrack] head latches [set_untracked] (collapsing
+    with the rest by idempotence), any other head leaves the latch to the rest. *)
+Lemma body_thread_cons_notrack : forall body p,
+  body_thread (BStmt SNotrack :: body) p = body_thread body (set_untracked p).
+Proof.
+  intros body p. unfold body_thread.
+  cbn [body_has_notrack existsb]. cbn [orb].
+  destruct (body_has_notrack body); [rewrite set_untracked_idem|]; reflexivity.
+Qed.
+
+Lemma body_thread_cons_other : forall it body p,
+  (match it with BStmt SNotrack => false | _ => true end) = true ->
+  body_thread (it :: body) p = body_thread body p.
+Proof.
+  intros it body p Hit. unfold body_thread.
+  destruct it as [m | s]; cbn [body_has_notrack existsb].
+  - reflexivity.
+  - destruct s; cbn [orb]; try reflexivity; discriminate Hit.
+Qed.
+
+(** [synproxy_stops] is invariant under [set_untracked]: needed to discharge the
+    synproxy-continue case's hypothesis at the threaded packet [set_untracked p]. *)
+Lemma synproxy_stops_untracked_or : forall p q,
+  (q = p \/ q = set_untracked p) -> synproxy_stops q = synproxy_stops p.
+Proof.
+  intros p q [-> | ->]; [reflexivity | apply synproxy_stops_untracked].
+Qed.
+
+(** [res] is now a FUNCTION of the running packet, and the tail is run at the
+    body-threaded packet [body_thread body p] (the latch a reached [notrack]
+    leaves).  [Hc] quantifies over the running packet [q] — which the induction only
+    ever instantiates at [p] or (past a [notrack]) at [set_untracked p], so [Hc]
+    carries that [q ∈ {p, set_untracked p}] restriction. *)
+Lemma run_compile_body : forall body tail (res : packet -> option verdict) p,
+  (forall q, (q = p \/ q = set_untracked p) ->
+             body_synproxy_stops body q = false -> forall rf, run_rule rf tail q = res q) ->
   body_loadable_walk body p = true ->
   forall rf, run_rule rf (flat_map compile_body_item body ++ tail) p =
     if rule_applies_walk body p
-    then (if body_synproxy_stops body p then Some Drop else res)
+    then (if body_synproxy_stops body p then Some Drop else res (body_thread body p))
     else None.
 Proof.
   induction body as [| it body IH]; intros tail res p Hc Hld rf.
-  - cbn [flat_map app rule_applies_walk body_synproxy_stops existsb]. apply Hc. reflexivity.
+  - cbn [flat_map app rule_applies_walk body_synproxy_stops existsb].
+    unfold body_thread; cbn [body_has_notrack existsb]. apply Hc; [left; reflexivity | reflexivity].
   - destruct it as [m | s]; cbn [flat_map compile_body_item]; rewrite <- app_assoc.
     + (* BMatch m: a single-match step, then the rest of the body *)
       cbn [body_loadable_walk] in Hld. apply Bool.andb_true_iff in Hld. destruct Hld as [Hitl Hldr].
-      assert (Hrelay : body_synproxy_stops body p = false -> forall rf0, run_rule rf0 tail p = res).
-      { intros Hb rf0. apply Hc.
+      assert (Hrelay : forall q, (q = p \/ q = set_untracked p) ->
+                  body_synproxy_stops body q = false -> forall rf0, run_rule rf0 tail q = res q).
+      { intros q Hq Hb rf0. apply Hc; [exact Hq|].
         unfold body_synproxy_stops. cbn [existsb]. cbn [orb]. exact Hb. }
       replace (compile_match m ++ (flat_map compile_body_item body ++ tail))
         with (flat_map compile_match [m] ++ (flat_map compile_body_item body ++ tail))
         by (cbn [flat_map app]; rewrite app_nil_r; reflexivity).
       rewrite (run_compile_matches_const [m] (flat_map compile_body_item body ++ tail)
                  (if rule_applies_walk body p
-                  then (if body_synproxy_stops body p then Some Drop else res) else None)
+                  then (if body_synproxy_stops body p then Some Drop else res (body_thread body p)) else None)
                  p (fun rf0 => IH tail res p Hrelay Hldr rf0)).
       cbn [flat_map app forallb]. rewrite Bool.andb_true_r.
       cbn [rule_applies_walk body_synproxy_stops existsb]. cbn [orb].
+      rewrite (body_thread_cons_other (BMatch m) body p eq_refl).
       destruct (eval_matchcond m p); reflexivity.
-    + (* BStmt s: synproxy decides (stop => Some Drop); any other statement threads *)
-      destruct (is_synproxy_stmt s) eqn:Hsp.
-      * (* SSynproxy: stop => Some Drop, else continue *)
-        destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp.
-        cbn [body_loadable_walk] in Hld. apply Bool.andb_true_iff in Hld. destruct Hld as [Hitl Hldr'].
-        cbn [compile_stmt app run_rule]. rewrite Hitl.
-        change (body_synproxy_stops (BStmt (SSynproxy mss wscale) :: body) p)
-          with (synproxy_stops p || body_synproxy_stops body p).
-        change (rule_applies_walk (BStmt (SSynproxy mss wscale) :: body) p)
-          with (if synproxy_stops p then true else rule_applies_walk body p).
-        destruct (synproxy_stops p) eqn:Hstop; cbn [orb].
-        -- reflexivity.
-        -- (* continue: Hldr' is [body_loadable_walk body] *)
-           apply IH; [| exact Hldr']. intros Hb rf0. apply Hc.
+    + (* BStmt s: notrack threads [set_untracked]; synproxy decides; others thread *)
+      destruct (is_notrack_stmt s) eqn:Hnt.
+      * (* SNotrack: VM threads [set_untracked p]; DSL walk threads it too *)
+        destruct s; cbn [is_notrack_stmt] in Hnt; try discriminate Hnt.
+        cbn [body_loadable_walk body_item_loadable stmt_loadable] in Hld.
+        cbn [andb] in Hld.
+        cbn [compile_stmt app run_rule].
+        change (rule_applies_walk (BStmt SNotrack :: body) p)
+          with (rule_applies_walk body (set_untracked p)).
+        assert (Hss : body_synproxy_stops (BStmt SNotrack :: body) p
+                      = body_synproxy_stops body p)
+          by (unfold body_synproxy_stops; cbn [existsb]; reflexivity).
+        rewrite Hss, body_thread_cons_notrack.
+        rewrite <- (body_synproxy_stops_untracked body p).
+        assert (Hc' : forall q, (q = set_untracked p \/ q = set_untracked (set_untracked p)) ->
+                       body_synproxy_stops body q = false ->
+                       forall rf0, run_rule rf0 tail q = res q).
+        { intros q Hq Hb rf0. apply Hc.
+          - rewrite set_untracked_idem in Hq. destruct Hq; right; assumption.
+          - unfold body_synproxy_stops; cbn [existsb]; exact Hb. }
+        rewrite (IH tail res (set_untracked p) Hc'
+                   ltac:(rewrite body_loadable_walk_untracked; exact Hld)).
+        reflexivity.
+      * destruct (is_synproxy_stmt s) eqn:Hsp.
+        -- (* SSynproxy: stop => Some Drop, else continue *)
+           destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp.
+           cbn [body_loadable_walk] in Hld. apply Bool.andb_true_iff in Hld. destruct Hld as [Hitl Hldr'].
+           cbn [compile_stmt app run_rule]. rewrite Hitl.
            change (body_synproxy_stops (BStmt (SSynproxy mss wscale) :: body) p)
              with (synproxy_stops p || body_synproxy_stops body p).
-           rewrite Hstop. cbn [orb]. exact Hb.
-      * (* verdict-neutral statement: threads, drops out of the walk/existsb *)
-        assert (Hbw : body_loadable_walk (BStmt s :: body) p =
-                  body_item_loadable (BStmt s) p && body_loadable_walk body p)
-          by (destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp; reflexivity).
-        rewrite Hbw in Hld. apply Bool.andb_true_iff in Hld. destruct Hld as [Hitl Hldr].
-        cbn [body_item_loadable] in Hitl.
-        edestruct (run_stmt_exists s rf (flat_map compile_body_item body ++ tail) p Hsp Hitl)
-          as [rf' Hr].
-        rewrite Hr.
-        assert (Hh : (match BStmt s with BStmt (SSynproxy _ _) => synproxy_stops p | _ => false end) = false)
-          by (destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp; reflexivity).
-        assert (Hhead : body_synproxy_stops (BStmt s :: body) p = body_synproxy_stops body p)
-          by (unfold body_synproxy_stops; cbn [existsb]; rewrite Hh; reflexivity).
-        assert (Hwalk : rule_applies_walk (BStmt s :: body) p = rule_applies_walk body p)
-          by (destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp; reflexivity).
-        rewrite Hhead, Hwalk. apply IH; [| exact Hldr].
-        intros Hb rf0. apply Hc. rewrite Hhead. exact Hb.
+           change (rule_applies_walk (BStmt (SSynproxy mss wscale) :: body) p)
+             with (if synproxy_stops p then true else rule_applies_walk body p).
+           rewrite (body_thread_cons_other (BStmt (SSynproxy mss wscale)) body p eq_refl).
+           destruct (synproxy_stops p) eqn:Hstop; cbn [orb].
+           ++ reflexivity.
+           ++ (* continue: Hldr' is [body_loadable_walk body] *)
+              apply IH; [| exact Hldr']. intros q Hq Hb rf0. apply Hc; [exact Hq|].
+              change (body_synproxy_stops (BStmt (SSynproxy mss wscale) :: body) q)
+                with (synproxy_stops q || body_synproxy_stops body q).
+              rewrite (synproxy_stops_untracked_or p q Hq), Hstop. cbn [orb]. exact Hb.
+        -- (* verdict-neutral statement (not notrack, not synproxy): threads straight *)
+           assert (Hbw : body_loadable_walk (BStmt s :: body) p =
+                     body_item_loadable (BStmt s) p && body_loadable_walk body p)
+             by (destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp; reflexivity).
+           rewrite Hbw in Hld. apply Bool.andb_true_iff in Hld. destruct Hld as [Hitl Hldr].
+           cbn [body_item_loadable] in Hitl.
+           edestruct (run_stmt_exists s rf (flat_map compile_body_item body ++ tail) p Hnt Hsp Hitl)
+             as [rf' Hr].
+           rewrite Hr.
+           assert (Hh : (match BStmt s with BStmt (SSynproxy _ _) => synproxy_stops p | _ => false end) = false)
+             by (destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp; reflexivity).
+           assert (Hhead : body_synproxy_stops (BStmt s :: body) p = body_synproxy_stops body p)
+             by (unfold body_synproxy_stops; cbn [existsb]; rewrite Hh; reflexivity).
+           assert (Hwalk : rule_applies_walk (BStmt s :: body) p = rule_applies_walk body p)
+             by (destruct s; cbn [is_synproxy_stmt] in Hsp, Hnt; cbn [is_notrack_stmt] in Hnt;
+                 try discriminate Hsp; try discriminate Hnt; reflexivity).
+           rewrite Hhead, Hwalk.
+           rewrite (body_thread_cons_other (BStmt s) body p
+                      ltac:(destruct s; cbn [is_notrack_stmt] in Hnt;
+                            try discriminate Hnt; reflexivity)).
+           apply IH; [| exact Hldr].
+           intros q Hq Hb rf0. apply Hc; [exact Hq|].
+           assert (Hheadq : body_synproxy_stops (BStmt s :: body) q = body_synproxy_stops body q)
+             by (destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp; reflexivity).
+           rewrite Hheadq. exact Hb.
 Qed.
 
 (** A single compiled match whose field is unloadable BREAKs the rule. *)
@@ -1997,24 +2078,31 @@ Proof.
                  None p (fun rf0 => IH tail p Hbr rf0)).
       destruct (forallb (fun m0 => eval_matchcond m0 p) [m]); reflexivity.
     + apply compile_match_break; exact Hm.
-  - (* BStmt *) destruct (is_synproxy_stmt s) eqn:Hsp.
-    + (* SSynproxy: walk = synproxy_loadable && (if stops then true else walk rest) *)
+  - (* BStmt *) destruct (is_notrack_stmt s) eqn:Hnt.
+    + (* SNotrack: VM threads [set_untracked]; the break is in the rest, and
+         [body_loadable_walk] is invariant under [set_untracked] *)
+      destruct s; cbn [is_notrack_stmt] in Hnt; try discriminate Hnt.
+      cbn [body_loadable_walk body_item_loadable stmt_loadable] in Hl. cbn [andb] in Hl.
+      cbn [compile_stmt app run_rule].
+      apply IH. rewrite body_loadable_walk_untracked. exact Hl.
+    + destruct (is_synproxy_stmt s) eqn:Hsp.
+    * (* SSynproxy: walk = synproxy_loadable && (if stops then true else walk rest) *)
       destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp.
       cbn [body_loadable_walk] in Hl. cbn [compile_stmt app run_rule].
       apply Bool.andb_false_iff in Hl. destruct (synproxy_loadable p) eqn:Hld.
-      * (* loadable: the break must be in the unreachable rest only when NOT stopping *)
+      -- (* loadable: the break must be in the unreachable rest only when NOT stopping *)
         destruct Hl as [Hd | Hr]; [discriminate Hd|].
         destruct (synproxy_stops p) eqn:Hstop; [discriminate Hr | apply IH; exact Hr].
-      * reflexivity.
-    + (* other statement *)
+      -- reflexivity.
+    * (* other statement *)
       assert (Hbw : body_loadable_walk (BStmt s :: body) p =
                 body_item_loadable (BStmt s) p && body_loadable_walk body p)
         by (destruct s; cbn [is_synproxy_stmt] in Hsp; try discriminate Hsp; reflexivity).
       rewrite Hbw in Hl. apply Bool.andb_false_iff in Hl.
       cbn [body_item_loadable] in Hl. destruct (stmt_loadable s p) eqn:Hs.
-      * edestruct (run_stmt_exists s rf (flat_map compile_body_item body ++ tail) p Hsp Hs) as [rf' Hr].
+      -- edestruct (run_stmt_exists s rf (flat_map compile_body_item body ++ tail) p Hnt Hsp Hs) as [rf' Hr].
         rewrite Hr. apply IH. destruct Hl as [Hd | Hr']; [congruence | exact Hr'].
-      * apply run_stmt_break; exact Hs.
+      -- apply run_stmt_break; exact Hs.
 Qed.
 
 (** The terminal of a rule (nat/tproxy/fwd/queue/verdict) runs, from any register
@@ -2130,17 +2218,6 @@ Proof.
     cbn [app]. apply run_terminal; exact Hel.
 Qed.
 
-Lemma run_rule_compile_rule : forall r p,
-  rule_loadable r p = true ->
-  run_rule empty_rf (compile_rule r) p =
-  if rule_applies r p then outcome r p else None.
-Proof.
-  intros r p Hl. unfold rule_loadable in Hl. apply Bool.andb_true_iff in Hl. destruct Hl as [Hbody Hend].
-  unfold compile_rule, rule_applies, outcome.
-  apply run_compile_body; [| exact Hbody].
-  intro Hns. rewrite Hns in Hend. intro rf. apply run_compile_end; exact Hend.
-Qed.
-
 (** When a rule is NOT loadable, the compiled rule BREAKs: the VM hits the first
     failing payload load (always on the evaluated path, by construction of
     [rule_loadable]) and returns [None].  We prove this via the body and end
@@ -2186,6 +2263,28 @@ Proof.
   - cbn [app]. apply run_terminal_break; exact Hel.
 Qed.
 
+Lemma run_rule_compile_rule : forall r p,
+  rule_loadable r p = true ->
+  run_rule empty_rf (compile_rule r) p =
+  if rule_applies r p then outcome r p else None.
+Proof.
+  intros r p Hl. unfold rule_loadable in Hl. apply Bool.andb_true_iff in Hl. destruct Hl as [Hbody Hend].
+  unfold compile_rule, rule_applies, outcome.
+  rewrite (run_compile_body (r_body r) _
+             (fun q => if end_loadable r q then outcome_core r q else None) p).
+  - destruct (rule_applies_walk (r_body r) p); [| reflexivity].
+    destruct (body_synproxy_stops (r_body r) p) eqn:Hbs.
+    + reflexivity.
+    + (* the synproxy-free branch: [Hend] is end-loadability at the threaded packet *)
+      cbn match in Hend. rewrite Hend. reflexivity.
+  - (* [Hc]: at any reachable packet [q] the compiled tail runs to the loadability-
+       guarded outcome ([run_compile_end] when loadable, else [run_compile_end_break]). *)
+    intros q Hq Hns rf. destruct (end_loadable r q) eqn:He.
+    + apply run_compile_end; exact He.
+    + apply run_compile_end_break; exact He.
+  - exact Hbody.
+Qed.
+
 Lemma run_rule_compile_rule_break : forall r p,
   rule_loadable r p = false ->
   run_rule empty_rf (compile_rule r) p = None.
@@ -2198,12 +2297,16 @@ Proof.
     assert (Hns : body_synproxy_stops (r_body r) p = false).
     { destruct (body_synproxy_stops (r_body r) p) eqn:Hbs; [|reflexivity].
       destruct Hl as [Hd | He]; [congruence | discriminate He]. }
+    assert (Hend : end_loadable r (body_thread (r_body r) p) = false).
+    { rewrite Hns in Hl. destruct Hl as [Hd | He]; [congruence | exact He]. }
     rewrite (run_compile_body (r_body r)
-              (compile_end r ++ flat_map compile_stmt (r_after r)) None p).
-    + rewrite Hns. rewrite (rule_applies_walk_no_synproxy _ _ Hns).
-      destruct (forallb (fun m => eval_matchcond m p) (body_matches (r_body r))); reflexivity.
-    + intros _ rf. apply run_compile_end_break.
-      rewrite Hns in Hl. destruct Hl as [Hd | He]; [congruence | exact He].
+              (compile_end r ++ flat_map compile_stmt (r_after r))
+              (fun q => if end_loadable r q then outcome_core r q else None) p).
+    + rewrite Hns. rewrite Hend.
+      destruct (rule_applies_walk (r_body r) p); reflexivity.
+    + intros q Hq Hns' rf. destruct (end_loadable r q) eqn:He.
+      * apply run_compile_end; exact He.
+      * apply run_compile_end_break; exact He.
     + exact Hbody.
   - (* a body item on the reachable path breaks *)
     apply run_compile_body_break; exact Hbody.

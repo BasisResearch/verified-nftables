@@ -146,6 +146,62 @@ Definition eval_matchcond_body (m : matchcond) (p : packet) : bool :=
 Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
   andb (match_loadable m p) (eval_matchcond_body m p).
 
+(** A `notrack` statement: force this packet's conntrack state to IP_CT_UNTRACKED for
+    the rest of its traversal, so a LATER `ct state` read returns
+    NF_CT_STATE_UNTRACKED_BIT (handled in [Syntax.do_load]'s [LCt CKstate] case).
+    Mirrors the kernel nft_notrack_eval: `nf_ct_set(skb, NULL, IP_CT_UNTRACKED)`.
+    Only [pkt_untracked] changes (set to [true]); every other packet component —
+    including the per-packet [pkt_ct] oracle and the shared env — is preserved, so
+    that a `ct mark`/other-key read is unaffected.  This is the per-packet-traversal
+    state both the DSL ([body_writes]/[rule_applies_walk]) and the VM
+    ([run_rule_writes]/[run_rule]) apply on [SNotrack]/[INotrack], keeping the two
+    in lock-step. *)
+Definition set_untracked (p : packet) : packet :=
+  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p;
+     pkt_sock := pkt_sock p;
+     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
+     pkt_untracked := true |}.
+
+(** [set_untracked] only flips [pkt_untracked]; it leaves every payload / meta /
+    env / oracle component intact.  Hence every loadability predicate (which reads
+    only payload geometry) is invariant under it, and [field_value]/[eval_matchcond]
+    change ONLY for a `ct state` read.  These invariance facts let the correctness
+    proof thread [set_untracked] past a [notrack] on both the DSL and the VM side
+    without disturbing the loadability/synproxy bookkeeping. *)
+Lemma read_payload_ok_untracked : forall b o l p,
+  read_payload_ok b o l (set_untracked p) = read_payload_ok b o l p.
+Proof. reflexivity. Qed.
+
+Lemma synproxy_loadable_untracked : forall p,
+  synproxy_loadable (set_untracked p) = synproxy_loadable p.
+Proof. reflexivity. Qed.
+
+Lemma synproxy_stops_untracked : forall p,
+  synproxy_stops (set_untracked p) = synproxy_stops p.
+Proof. reflexivity. Qed.
+
+(** Whether a body contains a `notrack` statement (the latch source).  When [false]
+    the [set_untracked] threading in [rule_applies_walk] never fires, so the walk is
+    exactly the original [forallb eval_matchcond (body_matches …)] over [p]. *)
+Definition body_has_notrack (body : list body_item) : bool :=
+  existsb (fun it => match it with BStmt SNotrack => true | _ => false end) body.
+
+(** [set_untracked] is idempotent — it only ever forces the latch to [true]. *)
+Lemma set_untracked_idem : forall p,
+  set_untracked (set_untracked p) = set_untracked p.
+Proof. reflexivity. Qed.
+
+(** [match_loadable] reads only payload geometry, so it is invariant under the
+    latch flip. *)
+Lemma match_loadable_untracked : forall m p,
+  match_loadable m (set_untracked p) = match_loadable m p.
+Proof. intros m p. destruct m; reflexivity. Qed.
+
 (** Whether a rule's body contains a SYN-proxy statement that STOPS traversal on
     this packet (a TCP packet with SYN or ACK set; see [synproxy_stops]).  Such a
     synproxy is a terminal action — it short-circuits the verdict map / terminal —
@@ -173,29 +229,44 @@ Fixpoint rule_applies_walk (body : list body_item) (p : packet) : bool :=
   | BMatch m :: rest => eval_matchcond m p && rule_applies_walk rest p
   | BStmt (SSynproxy _ _) :: rest =>
       if synproxy_stops p then true else rule_applies_walk rest p
+  (* `notrack` forces IP_CT_UNTRACKED for the rest of THIS rule's traversal, so a
+     LATER `ct state` MATCH in the SAME rule reads NF_CT_STATE_UNTRACKED_BIT
+     (kernel runs a rule's expressions left-to-right: nft_notrack_eval sets the
+     untracked latch, a subsequent nft_ct_get_eval NFT_CT_STATE observes it).  We
+     thread [set_untracked] into the rest of the walk so the model is faithful for
+     the intra-rule `notrack; ct state untracked accept` idiom.  [set_untracked]
+     only flips [pkt_untracked]; every loadability/synproxy predicate is invariant
+     under it, so the VM stays in lock-step (the compiled [INotrack] threads the
+     same [set_untracked]). *)
+  | BStmt SNotrack :: rest => rule_applies_walk rest (set_untracked p)
   | BStmt _ :: rest => rule_applies_walk rest p
   end.
 Definition rule_applies (r : rule) (p : packet) : bool :=
   rule_applies_walk (r_body r) p.
 
-(** When the body contains no stopping synproxy, [rule_applies_walk] is exactly
-    [forallb eval_matchcond] over the body's matches. *)
+(** When the body contains no stopping synproxy AND no `notrack` (so the
+    [set_untracked] threading never fires), [rule_applies_walk] is exactly
+    [forallb eval_matchcond] over the body's matches against the ORIGINAL [p]. *)
 Lemma rule_applies_walk_no_synproxy : forall body p,
   body_synproxy_stops body p = false ->
+  body_has_notrack body = false ->
   rule_applies_walk body p = forallb (fun m => eval_matchcond m p) (body_matches body).
 Proof.
-  induction body as [| it body IH]; intro p; [reflexivity|].
+  induction body as [| it body IH]; intros p Hsp Hnt; [reflexivity|].
   assert (Hcons : forall it0 b, body_synproxy_stops (it0 :: b) p =
             (match it0 with BStmt (SSynproxy _ _) => synproxy_stops p | _ => false end)
             || body_synproxy_stops b p) by reflexivity.
-  rewrite Hcons. destruct it as [m | s].
-  - cbn [orb]. cbn [rule_applies_walk body_matches flat_map app forallb]. intro H.
-    rewrite IH by exact H. reflexivity.
-  - destruct s; cbn [rule_applies_walk body_matches flat_map app];
-      try (cbn [orb]; intro H; apply IH; exact H).
-    (* SSynproxy: the [orb] head is [synproxy_stops p]; the hypothesis forces it false *)
-    destruct (synproxy_stops p) eqn:Hs; cbn [orb];
-      [discriminate | intro H; apply IH; exact H].
+  assert (Hntcons : forall it0 b, body_has_notrack (it0 :: b) =
+            (match it0 with BStmt SNotrack => true | _ => false end)
+            || body_has_notrack b) by reflexivity.
+  rewrite Hcons in Hsp. rewrite Hntcons in Hnt. destruct it as [m | s].
+  - cbn [orb] in Hsp, Hnt. cbn [rule_applies_walk body_matches flat_map app forallb].
+    rewrite IH by assumption. reflexivity.
+  - destruct s; cbn [orb] in Hsp, Hnt; cbn [rule_applies_walk body_matches flat_map app];
+      try (apply IH; assumption); try discriminate Hnt.
+    (* SSynproxy: the [orb] head is [synproxy_stops p]; Hsp forces it false *)
+    destruct (synproxy_stops p) eqn:Hs;
+      [discriminate Hsp | apply IH; assumption].
 Qed.
 
 (** ** Whole-rule loadability.
@@ -241,6 +312,19 @@ Definition body_item_loadable (it : body_item) (p : packet) : bool :=
   | BMatch m => match_loadable m p
   | BStmt s => stmt_loadable s p
   end.
+
+(** Statement / body-item loadability read only payload geometry, so they too are
+    invariant under the latch flip ([set_untracked]). *)
+Lemma stmt_loadable_untracked : forall s p,
+  stmt_loadable s (set_untracked p) = stmt_loadable s p.
+Proof. intros s p. destruct s; reflexivity. Qed.
+
+Lemma body_item_loadable_untracked : forall it p,
+  body_item_loadable it (set_untracked p) = body_item_loadable it p.
+Proof.
+  intros it p. destruct it as [m | s];
+    [apply match_loadable_untracked | apply stmt_loadable_untracked].
+Qed.
 
 Definition vmap_loadable (ov : option vmap_spec) (p : packet) : bool :=
   match ov with
@@ -329,6 +413,16 @@ Fixpoint stmts_after_outcome (ss : list stmt) (p : packet) : option verdict :=
       else None
   | s :: rest => if stmt_loadable s p then stmts_after_outcome rest p else None
   end.
+
+(** [stmts_after_outcome] reads only loadability / synproxy (all invariant under the
+    latch flip), so it is invariant under [set_untracked].  This lets a [notrack] in
+    [r_after] thread [set_untracked] on the VM side without changing the verdict. *)
+Lemma stmts_after_outcome_untracked : forall ss p,
+  stmts_after_outcome ss (set_untracked p) = stmts_after_outcome ss p.
+Proof.
+  induction ss as [| s ss IH]; intro p; [reflexivity|].
+  destruct s; cbn [stmts_after_outcome]; rewrite ?IH; reflexivity.
+Qed.
 
 (** The *value* a value-source computes into register 1 — the operand of a
     set/mangle/NAT statement.  This is the value-level meaning the verdict proof
@@ -429,8 +523,19 @@ Definition outcome_core (r : rule) (p : packet) : option verdict :=
   | None => terminal_outcome r p
   end.
 
+(** The packet the rule's TERMINAL/verdict-map part (its [outcome_core]) sees: when
+    the rule applies, every body item — including any [notrack] — was reached, so a
+    `notrack` in the body has latched IP_CT_UNTRACKED before the terminal runs.  As
+    [set_untracked] only flips the (monotone, idempotent) [pkt_untracked] latch,
+    threading it through the whole body collapses to: untracked iff the body has a
+    [notrack].  This is exactly what the VM's [run_rule] sees after threading
+    [set_untracked] past [INotrack] into the compiled terminal/vmap tail. *)
+Definition body_thread (body : list body_item) (p : packet) : packet :=
+  if body_has_notrack body then set_untracked p else p.
+
 Definition outcome (r : rule) (p : packet) : option verdict :=
-  if body_synproxy_stops (r_body r) p then Some Drop else outcome_core r p.
+  if body_synproxy_stops (r_body r) p then Some Drop
+  else outcome_core r (body_thread (r_body r) p).
 
 (** ** Whole-rule loadability (NFT_BREAK reachability).
 
@@ -511,9 +616,39 @@ Proof.
       [discriminate | intro H; rewrite IH by exact H; reflexivity].
 Qed.
 
+(** [body_synproxy_stops] and [body_loadable_walk] read only [synproxy_stops] /
+    loadability, both invariant under the latch flip, so they are invariant under
+    [set_untracked].  This lets the correctness proof carry the loadability /
+    synproxy bookkeeping unchanged across a [notrack]'s [set_untracked]. *)
+Lemma body_synproxy_stops_untracked : forall body p,
+  body_synproxy_stops body (set_untracked p) = body_synproxy_stops body p.
+Proof.
+  intros body p. unfold body_synproxy_stops. induction body as [| it b IH]; [reflexivity|].
+  cbn [existsb]. rewrite IH. destruct it as [m | s]; [reflexivity|].
+  destruct s; reflexivity.
+Qed.
+
+Lemma body_loadable_walk_untracked : forall body p,
+  body_loadable_walk body (set_untracked p) = body_loadable_walk body p.
+Proof.
+  intros body p. induction body as [| it b IH]; [reflexivity|].
+  destruct it as [m | s].
+  - cbn [body_loadable_walk]. rewrite body_item_loadable_untracked, IH. reflexivity.
+  - destruct s; cbn [body_loadable_walk];
+      try (rewrite body_item_loadable_untracked, IH; reflexivity).
+    (* SSynproxy *)
+    rewrite synproxy_loadable_untracked, synproxy_stops_untracked, IH. reflexivity.
+Qed.
+
+(** The END (verdict-map / terminal) part is reached AFTER the body, so — like
+    [outcome_core] — it sees the body-threaded packet: a `notrack` in the body has
+    latched IP_CT_UNTRACKED, which a vmap KEY that reads `ct state` would observe.
+    The VM threads the same [set_untracked] into the compiled tail, so end-loadability
+    is taken at [body_thread (r_body r) p] on both sides. *)
 Definition rule_loadable (r : rule) (p : packet) : bool :=
   body_loadable_walk (r_body r) p &&
-  (if body_synproxy_stops (r_body r) p then true else end_loadable r p).
+  (if body_synproxy_stops (r_body r) p then true
+   else end_loadable r (body_thread (r_body r) p)).
 
 (** Evaluate a rule list.  [None] means "fell through every rule"; [Some v]
     means a terminal verdict [v] was reached.  A [Continue] verdict on an
@@ -668,7 +803,10 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       if xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (Nat.ltb 0 (e_connlimit (pkt_env p) spec))
       then run_rule rf rest p else None
   | ICounter _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)
-  | INotrack :: rest      => run_rule rf rest p
+  (* `notrack` is verdict-neutral but forces IP_CT_UNTRACKED for the rest of this
+     rule's traversal: thread [set_untracked] so a later [ICtLoad CKstate] reads
+     the untracked bit (lock-step with [rule_applies_walk]'s [SNotrack]). *)
+  | INotrack :: rest      => run_rule rf rest (set_untracked p)
   | ILog _ :: rest        => run_rule rf rest p
   | IObjref _ _ :: rest   => run_rule rf rest p   (* verdict-neutral *)
   | ISynproxy _ _ :: rest =>
@@ -793,26 +931,6 @@ Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
      pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p |}.
-
-(** A `notrack` statement: force this packet's conntrack state to IP_CT_UNTRACKED for
-    the rest of its traversal, so a LATER `ct state` read returns
-    NF_CT_STATE_UNTRACKED_BIT (handled in [Syntax.do_load]'s [LCt CKstate] case).
-    Mirrors the kernel nft_notrack_eval: `nf_ct_set(skb, NULL, IP_CT_UNTRACKED)`.
-    Only [pkt_untracked] changes (set to [true]); every other packet component —
-    including the per-packet [pkt_ct] oracle and the shared env — is preserved, so
-    that a `ct mark`/other-key read is unaffected.  This is the per-packet-traversal
-    state both the DSL ([body_writes]) and the VM ([run_rule_writes]) apply on
-    [SNotrack]/[INotrack], keeping the two in lock-step. *)
-Definition set_untracked (p : packet) : packet :=
-  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p;
-     pkt_sock := pkt_sock p;
-     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
-     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
-     pkt_untracked := true |}.
 
 (** Overwrite [len] bytes at offset [off] of a byte list (a header), keeping the
     rest — the payload-write primitive. *)

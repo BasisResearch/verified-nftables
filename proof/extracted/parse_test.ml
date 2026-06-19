@@ -963,6 +963,46 @@ let check_notrack () =
     (Semantics.eval_chain_mut chain_no_notrack p = Verdict.Drop);
   Printf.printf "\n"
 
+(* (I''') INTRA-RULE notrack->ct-state: `ct notrack ct state untracked accept` in ONE
+   rule.  The kernel runs a rule's expressions left-to-right (nf_tables_core.c
+   nft_rule_dp_for_each_expr): nft_notrack_eval latches IP_CT_UNTRACKED, then the SAME
+   rule's `ct state untracked` (nft_ct_get_eval NFT_CT_STATE) reads
+   NF_CT_STATE_UNTRACKED_BIT and matches -> ACCEPT.  The model now threads
+   set_untracked into a rule's OWN later matches/terminal (rule_applies_walk/outcome/
+   run_rule), so the single-rule idiom ACCEPTS, matching the kernel.  Before the fix
+   the match was evaluated against the original (still-tracked, oracle=8) packet, the
+   match FAILED, and the model PROVED a kernel-false Drop. *)
+let check_notrack_intra () =
+  Printf.printf "=== (I''') intra-rule notrack ; ct state untracked accept (same rule) ===\n";
+  let untracked = [0;0;0;64] in
+  let m_untracked =
+    Syntax.MMasked (Syntax.FCtState, true, untracked, [0;0;0;0], [0;0;0;0]) in
+  (* ONE rule: SNotrack statement BEFORE the ct-state match. *)
+  let intra_rule : Syntax.rule =
+    { Syntax.r_body = [ Syntax.BStmt Syntax.SNotrack; Syntax.BMatch m_untracked ];
+      r_verdict = Verdict.Accept; r_vmap = None; r_nat = None; r_tproxy = None;
+      r_fwd = None; r_queue = None; r_after = [] } in
+  let chain : Syntax.chain =
+    { Syntax.c_policy = Verdict.Drop; c_rules = [ intra_rule ] } in
+  let env = { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
+              e_routes = []; e_rt = (fun _ -> []); e_limit = (fun _ -> 0);
+              e_quota = (fun _ -> 0); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
+              e_connlimit = (fun _ -> 0); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None) } in
+  let oracle_new k = (match k with Packet.CKstate -> [0;0;0;8] | _ -> []) in
+  let p = mk_pkt ~env ~ct:oracle_new ~flow:[7;7] () in
+  (* the rule's own statement->match ordering: the match now SUCCEEDS *)
+  check "intra-rule: the rule APPLIES (notrack latch seen by its own later match)"
+    (Semantics.rule_applies intra_rule p);
+  check "intra-rule: eval_chain ACCEPTS a `new` packet (kernel-correct)"
+    (Semantics.eval_chain chain p = Verdict.Accept);
+  check "intra-rule: eval_chain_mut ACCEPTS too"
+    (Semantics.eval_chain_mut chain p = Verdict.Accept);
+  (* the verified compiler agrees: the compiled bytecode runs to the same verdict *)
+  check "intra-rule: the COMPILED chain ACCEPTS (compile_chain_correct instance)"
+    (Semantics.run_chain (Compile.compile_chain chain) chain.Syntax.c_policy p
+       = Verdict.Accept);
+  Printf.printf "\n"
+
 (* (J) SINGLE POSITIVE `tcp flags X` BITMASK lowering.  tcp_flag_type has
    .basetype = &bitmask_type (proto.c:583-591); the OP_IMPLICIT->OP_EQ rewrite
    (evaluate.c:2792-2797) does NOT fire for it, so a bare `tcp flags X` stays an
@@ -1777,6 +1817,7 @@ let () =
     check_ct_state ();
     check_ct_mark_crosspkt ();
     check_notrack ();
+    check_notrack_intra ();
     check_tcp_flags ();
     check_meta_nfproto ();
     check_inet_nfproto_dep ();
