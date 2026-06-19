@@ -386,7 +386,7 @@ Proof.
     + (* MLimit: no load, a stateful break (over-bit XORed into the test) *)
       cbn [run_rule andb].
       destruct (xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1)
-                     (Nat.ltb 0 (e_limit (pkt_env p) spec))); cbn [andb];
+                     (lim_under p spec)); cbn [andb];
         [apply IH; exact Hc | reflexivity].
     + (* MQuota: no load, a stateful break (over-bit XORed into the test) *)
       cbn [run_rule andb].
@@ -1022,7 +1022,7 @@ Proof.
       [apply Hc | reflexivity].
   - (* MLimit *) cbn [run_rule_writes andb].
     destruct (xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1)
-                   (Nat.ltb 0 (e_limit (pkt_env p) spec))); [apply Hc | reflexivity].
+                   (lim_under p spec)); [apply Hc | reflexivity].
   - (* MQuota *) cbn [run_rule_writes andb].
     destruct (xorb (Nat.eqb (Nat.land (q_flags qspec) 1) 1)
                    (Nat.ltb 0 (e_quota (pkt_env p) qspec))); [apply Hc | reflexivity].

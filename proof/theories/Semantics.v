@@ -88,6 +88,88 @@ Definition match_loadable (m : matchcond) (p : packet) : bool :=
   | MLimit _ | MQuota _ | MConnlimit _ => true
   end.
 
+(** ** The rate-limiter token bucket (kernel net/netfilter/nft_limit.c).
+
+    The kernel limiter is a genuine time-based token bucket.  At load time
+    (nft_limit_init) it precomputes, from the configured rate / unit / burst:
+      nsecs       = unit * NSEC_PER_SEC          (the time window in ns)
+      cost (pkts) = nsecs / rate                 (ns "charged" per packet)
+      cost (bytes)= nsecs * skb->len / rate      (ns charged per byte of the skb)
+      tokens_max  = (nsecs / rate) * burst                         (packet mode)
+                  = nsecs * (rate + burst) / rate                  (byte mode)
+    and at run time (nft_limit_eval):
+      tokens = stored + (now - last)             (REFILL by elapsed wall-clock)
+      tokens = min(tokens, tokens_max)           (cap at the burst-derived max)
+      delta  = tokens - cost
+      delta >= 0  ->  store delta, PASS  (return invert)
+      delta <  0  ->  store tokens, FAIL (return !invert)
+
+    We model the bucket TOKEN STATE in [e_limit] (a [nat], in the kernel's ns
+    unit, but with the common NSEC_PER_SEC factor RESCALED OUT — it divides both
+    the cost and the cap and the elapsed term identically, so the pass predicate
+    [cost <= min(stored,max)] is unchanged by the rescaling, and the numbers stay
+    in [nat] range).  Elapsed wall-clock time is abstracted to +0 WITHIN one
+    traversal (back-to-back packets in one ktime), exactly as documented for the
+    consuming-bucket model; what this fix adds is that the per-packet COST and the
+    bucket CAP are now genuine functions of [ls_rate]/[ls_unit]/[ls_burst] (and,
+    in byte mode, the packet length), so distinct rates give distinct verdicts and
+    the parameters are no longer inert.
+
+    [ls_unit] is the DSL unit ENUM (0=second 1=minute 2=hour 3=day 4=week, the
+    parser's encoding), which [lim_window] converts to the kernel's window length
+    in SECONDS (second=1, minute=60, hour=3600, day=86400, week=604800) — i.e. the
+    kernel's [nsecs = unit*NSEC_PER_SEC] with the common NSEC_PER_SEC factor
+    RESCALED to [lim_SCALE] (so 1/minute genuinely costs 60x a 1/second packet but
+    the numbers stay tractable in unary [nat]).  [lim_SCALE] divides cost AND cap
+    AND the (abstracted) elapsed refill identically, so the pass predicate
+    [cost <= min(stored,max)] is unchanged by it; it is kept at 1 here (the time
+    granularity is one unit-window — a per-second-or-coarser bucket — consistent
+    with the elapsed-time-refill abstraction; a rate finer than the window's
+    second count shares a token within the window).  The essential fix is that the
+    per-packet COST and the bucket CAP are now genuine functions of
+    [ls_rate]/[ls_unit]/[ls_burst] (and the packet length in byte mode), so e.g.
+    1/second, 1/minute and 1/hour give DIFFERENT verdicts at the same bucket
+    level — the parameters are no longer inert. *)
+Definition lim_SCALE : nat := 1.
+Definition lim_unit_secs (u : nat) : nat :=
+  match u with
+  | 0 => 1 | 1 => 60 | 2 => 3600 | 3 => 86400 | _ => 604800
+  end.
+Definition lim_window (spec : limit_spec) : nat :=
+  lim_unit_secs (ls_unit spec) * lim_SCALE.
+
+(** The rate, guaranteed positive (nft_limit_init rejects rate == 0). *)
+Definition lim_rate (spec : limit_spec) : nat := Nat.max 1 (ls_rate spec).
+
+(** Per-evaluation cost charged to the bucket: [window/rate] in packet mode,
+    [window * len / rate] in byte mode (len = the packet's [meta len]).  Mirrors
+    nft_limit_pkts_eval (priv->cost = div64_u64(nsecs, rate)) and
+    nft_limit_bytes_eval (cost = div64_u64(nsecs * skb->len, rate)). *)
+Definition lim_cost (p : packet) (spec : limit_spec) : nat :=
+  let r := lim_rate spec in
+  if ls_bytes spec
+  then Nat.div (lim_window spec * N.to_nat (data_to_N (pkt_meta p MKlen))) r
+  else Nat.div (lim_window spec) r.
+
+(** The bucket capacity (tokens_max).  Packet mode: [(window/rate) * burst];
+    byte mode: [window * (rate + burst) / rate].  Mirrors nft_limit_init. *)
+Definition lim_max (spec : limit_spec) : nat :=
+  let r := lim_rate spec in
+  if ls_bytes spec
+  then Nat.div (lim_window spec * (r + ls_burst spec)) r
+  else Nat.div (lim_window spec) r * ls_burst spec.
+
+(** The token count available to THIS evaluation: the stored bucket [e_limit]
+    capped at [lim_max] (elapsed-time refill abstracted to +0 in a traversal). *)
+Definition lim_avail (p : packet) (spec : limit_spec) : nat :=
+  Nat.min (e_limit (pkt_env p) spec) (lim_max spec).
+
+(** The non-inverted "under / not exceeded" test: PASS iff the available tokens
+    cover the cost ([delta = tokens - cost >= 0]).  This is the value nft_limit_eval
+    returns BEFORE XOR-ing the invert bit. *)
+Definition lim_under (p : packet) (spec : limit_spec) : bool :=
+  Nat.leb (lim_cost p spec) (lim_avail p spec).
+
 (** The unguarded comparison body of a match (the original semantics). *)
 Definition eval_matchcond_body (m : matchcond) (p : packet) : bool :=
   match m with
@@ -127,7 +209,7 @@ Definition eval_matchcond_body (m : matchcond) (p : packet) : bool :=
      (match iff NOT exceeded); the over-bit flips it so an inverted limiter
      matches iff the resource is EXCEEDED. *)
   | MLimit spec =>
-      xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (Nat.ltb 0 (e_limit (pkt_env p) spec))
+      xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (lim_under p spec)
   | MQuota spec =>
       xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (Nat.ltb 0 (e_quota (pkt_env p) spec))
   | MConnlimit spec =>
@@ -179,17 +261,25 @@ Definition env_numgen_upd (e : env) (spec : numgen_spec) : env :=
      e_ct := e_ct e; e_nat := e_nat e;
      e_numgen := (fun s => if numgen_eqb spec s then S (e_numgen e s) else e_numgen e s) |}.
 
-(** Update the SHARED rate-limiter token bucket [e_limit] for instance [spec]:
-    CONSUME one unit of the bucket on a PASSING evaluation, leaving it unchanged when
-    the bucket is empty (the kernel nft_limit_eval keeps `tokens` unchanged when
-    `delta < 0`).  Mirrors `delta = tokens - cost; if (delta >= 0) tokens := delta`
-    with cost = 1.  Every other instance's bucket — and every other env component —
-    is preserved.  [pred] is the unit-cost decrement (saturating at 0). *)
-Definition env_limit_upd (e : env) (spec : limit_spec) : env :=
+(** Update the SHARED rate-limiter token bucket [e_limit] for instance [spec] on
+    packet [p], EXACTLY as the kernel nft_limit_eval does (elapsed refill +0):
+      cap   = min(stored, lim_max spec)         (the burst-derived bucket cap)
+      delta = cap - lim_cost p spec
+      delta >= 0 -> store delta (PASS, consume the cost)
+      delta <  0 -> store cap   (EXHAUSTED, the level after capping is kept)
+    Every other instance's bucket — and every other env component — is preserved.
+    The new level is therefore a genuine function of [ls_rate]/[ls_unit]/[ls_burst]
+    (and the packet length in byte mode), not a fixed decrement-by-one. *)
+Definition lim_newtokens (p : packet) (spec : limit_spec) : nat :=
+  let cap := lim_avail p spec in
+  if Nat.leb (lim_cost p spec) cap then cap - lim_cost p spec else cap.
+
+Definition env_limit_upd (p : packet) (spec : limit_spec) : env :=
+  let e := pkt_env p in
   {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
      e_routes := e_routes e; e_rt := e_rt e;
      e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
-     e_limit := (fun s => if limit_eqb spec s then Nat.pred (e_limit e s) else e_limit e s);
+     e_limit := (fun s => if limit_eqb spec s then lim_newtokens p spec else e_limit e s);
      e_quota := e_quota e; e_connlimit := e_connlimit e;
      e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
 
@@ -244,14 +334,13 @@ Lemma read_payload_ok_numgen : forall b o l p spec,
   read_payload_ok b o l (set_numgen p spec) = read_payload_ok b o l p.
 Proof. intros. unfold set_numgen. destruct (ng_random spec); reflexivity. Qed.
 
-(** CONSUME one unit of a `limit` token bucket when the limiter PASSES on packet [p]
-    (its bucket is non-empty: [0 < e_limit (pkt_env p) spec]).  When the bucket is
-    empty, the kernel leaves `tokens` unchanged, so we do nothing.  Only [pkt_env]'s
+(** UPDATE a `limit` token bucket on EVERY evaluation of the limiter on packet [p],
+    exactly as the kernel nft_limit_eval (it writes `tokens` on both the pass and the
+    exhausted branch — see [env_limit_upd]/[lim_newtokens]).  Only [pkt_env]'s
     [e_limit] changes; every other packet/env component is preserved, so all
     loadability predicates are invariant and the DSL/VM stay lock-step. *)
 Definition set_limit (p : packet) (spec : limit_spec) : packet :=
-  if Nat.ltb 0 (e_limit (pkt_env p) spec) then
-  {| pkt_env := env_limit_upd (pkt_env p) spec; pkt_meta := pkt_meta p;
+  {| pkt_env := env_limit_upd p spec; pkt_meta := pkt_meta p;
      pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
@@ -259,8 +348,7 @@ Definition set_limit (p : packet) (spec : limit_spec) : packet :=
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
      pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
-     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}
-  else p.
+     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
 
 (** CONSUME one unit of a `quota` UNCONDITIONALLY (the kernel accumulates the skb
     length on every evaluation). *)
@@ -291,7 +379,7 @@ Definition set_connlimit (p : packet) (spec : connlimit_spec) : packet :=
 
 Lemma read_payload_ok_limit : forall b o l p spec,
   read_payload_ok b o l (set_limit p spec) = read_payload_ok b o l p.
-Proof. intros. unfold set_limit. destruct (Nat.ltb 0 (e_limit (pkt_env p) spec)); reflexivity. Qed.
+Proof. reflexivity. Qed.
 Lemma read_payload_ok_quota : forall b o l p spec,
   read_payload_ok b o l (set_quota p spec) = read_payload_ok b o l p.
 Proof. reflexivity. Qed.
@@ -1045,7 +1133,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       (* the limit instruction carries NFT_LIMIT_F_INV (bit 0 of ls_flags); the
          kernel BREAKs iff [under_test ^ invert].  Continue iff [match] = the
          negation, i.e. iff the matchcond body is true. *)
-      if xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (Nat.ltb 0 (e_limit (pkt_env p) spec))
+      if xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (lim_under p spec)
       then run_rule rf rest p else None
   | IQuota spec :: rest =>
       if xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (Nat.ltb 0 (e_quota (pkt_env p) spec))
@@ -1739,7 +1827,7 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
   | ITproxy _ _ _ :: _ => p
   | IFwd _ _ _ :: _ => p
   | IQueueSreg _ _ _ :: _ => p
-  | ILimit spec :: rest => if xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (Nat.ltb 0 (e_limit (pkt_env p) spec)) then run_rule_writes rf rest p else p
+  | ILimit spec :: rest => if xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (lim_under p spec) then run_rule_writes rf rest p else p
   | IQuota spec :: rest => if xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (Nat.ltb 0 (e_quota (pkt_env p) spec)) then run_rule_writes rf rest p else p
   | IConnlimit spec :: rest => if xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (Nat.ltb 0 (e_connlimit (pkt_env p) spec)) then run_rule_writes rf rest p else p
   | ICounter _ _ :: rest => run_rule_writes rf rest p

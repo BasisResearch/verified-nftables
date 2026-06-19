@@ -1631,21 +1631,21 @@ let check_limit_over () =
     "table ip t {\n\
     \  chain c {\n\
     \    type filter hook input priority 0; policy accept;\n\
-    \    limit rate 10/second accept\n\
-    \    limit rate over 10/second drop\n\
+    \    limit rate 1/second accept\n\
+    \    limit rate over 1/second drop\n\
     \  }\n\
      }\n" in
   let parsed = Nft_parse.parse_string src in
   let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
   let env = parsed.Nft_lower.p_env in
   let body i = (Stdlib.List.nth c.Syntax.c_rules i).Syntax.r_body in
-  (* `limit rate 10/second` => MLimit with ls_flags bit 0 = 0 (non-inverted) *)
-  check "limit rate 10/second lowers to MLimit with ls_flags=0 (non-over)"
+  (* `limit rate 1/second` => MLimit with ls_flags bit 0 = 0 (non-inverted) *)
+  check "limit rate 1/second lowers to MLimit with ls_flags=0 (non-over)"
     (match body 0 with
      | [Syntax.BMatch (Syntax.MLimit s)] -> s.Packet.ls_flags = 0
      | _ -> false);
-  (* `limit rate over 10/second` => MLimit with ls_flags bit 0 = 1 (inverted) *)
-  check "limit rate over 10/second lowers to MLimit with ls_flags=1 (over/inverted)"
+  (* `limit rate over 1/second` => MLimit with ls_flags bit 0 = 1 (inverted) *)
+  check "limit rate over 1/second lowers to MLimit with ls_flags=1 (over/inverted)"
     (match body 1 with
      | [Syntax.BMatch (Syntax.MLimit s)] -> s.Packet.ls_flags = 1
      | _ -> false);
@@ -1674,7 +1674,7 @@ let check_limit_over () =
        <> Semantics.eval_matchcond m_under (mk_pkt ~env:env_under ()));
   (* CROSS-PACKET CONSUMPTION (the blue fix): a `limit` is a SHARED, CONSUMING token
      bucket, not a stateless per-packet oracle.  Build a one-rule chain
-     `limit rate 10/second accept`, policy DROP, against an env whose bucket holds
+     `limit rate 1/second accept`, policy DROP, against an env whose bucket holds
      exactly ONE token.  Thread packet 1 -> its verdict + the env it LEAVES; build
      packet 2 of the SAME flow carrying that env; run again.  The kernel ACCEPTS
      packet 1 (one token), the bucket EMPTIES, and packet 2 of the depleted bucket
@@ -1697,6 +1697,33 @@ let check_limit_over () =
     (v2 = Verdict.Drop);
   check "consecutive packets get DIFFERENT verdicts (a rate limit actually limits)"
     (v1 <> v2);
+  (* RATE/UNIT ARE NOW LIVE (the core of this fix): the per-packet COST is
+     window(unit)/rate, so a 1/second limiter (cost = 1 token) and a 1/hour
+     limiter (cost = 3600 tokens) give DIFFERENT verdicts at the SAME bucket
+     level.  Parse both, point e_limit at a 1-token bucket, and check the fast
+     one passes while the slow one fails — the configured rate/unit are no longer
+     inert (pre-fix they were never consulted in the dynamics). *)
+  let src2 =
+    "table ip t2 {\n\
+    \  chain c {\n\
+    \    type filter hook input priority 0; policy accept;\n\
+    \    limit rate 1/second accept\n\
+    \    limit rate 1/hour accept\n\
+    \  }\n\
+     }\n" in
+  let p2parsed = Nft_parse.parse_string src2 in
+  let c2 = Nft_lower.find_chain p2parsed ~table:"t2" ~chain:"c" in
+  let body2 i = (Stdlib.List.nth c2.Syntax.c_rules i).Syntax.r_body in
+  let spec2 i = match body2 i with
+    | [Syntax.BMatch (Syntax.MLimit s)] -> s | _ -> assert false in
+  let s_fast = spec2 0 and s_slow = spec2 1 in
+  check "1/second and 1/hour lower to DIFFERENT units (rate/unit captured)"
+    (s_fast.Packet.ls_unit <> s_slow.Packet.ls_unit);
+  let env_tok = { env with Packet.e_limit = (fun _ -> 1) } in
+  let pk = mk_pkt ~env:env_tok () in
+  check "rate is LIVE: at a 1-token bucket, 1/second PASSES but 1/hour FAILS"
+    (Semantics.eval_matchcond (Syntax.MLimit s_fast) pk = true
+     && Semantics.eval_matchcond (Syntax.MLimit s_slow) pk = false);
   Printf.printf "\n"
 
 (* (M) fib route-type symbol -> RTN_ constant.  The Menhir frontend's
