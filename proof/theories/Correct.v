@@ -396,7 +396,7 @@ Proof.
     + (* MConnlimit: no load, a stateful break (over-bit XORed into the test) *)
       cbn [run_rule andb].
       destruct (xorb (Nat.eqb (Nat.land (cl_flags clspec) 1) 1)
-                     (Nat.ltb 0 (e_connlimit (pkt_env p) clspec))); cbn [andb];
+                     (connlimit_under p clspec)); cbn [andb];
         [apply IH; exact Hc | reflexivity].
     + (* MConcatSetT: transformed multi-register key, distinct registers per element *)
       change (match_loadable (MConcatSetT celems neg nm) p)
@@ -602,7 +602,6 @@ Proof.
   all: try (destruct (xorb _ _); [apply IH; exact Hno | reflexivity]).
   all: try (destruct (Nat.ltb 0 (e_limit _ _)); [apply IH; exact Hno | reflexivity]).
   all: try (destruct (Nat.ltb 0 (e_quota _ _)); [apply IH; exact Hno | reflexivity]).
-  all: try (destruct (Nat.ltb 0 (e_connlimit _ _)); [apply IH; exact Hno | reflexivity]).
   all: try (destruct (assoc_verdict _ _); [reflexivity | apply IH; exact Hno]).
   all: try (destruct (read_payload_ok _ _ _ _); [apply IH; exact Hno | reflexivity]).
   (* IExthdrLoad: the load_ok guard breaks the rule (returns [p]) when false;
@@ -1028,7 +1027,7 @@ Proof.
                    (quota_under p qspec)); [apply Hc | reflexivity].
   - (* MConnlimit *) cbn [run_rule_writes andb].
     destruct (xorb (Nat.eqb (Nat.land (cl_flags clspec) 1) 1)
-                   (Nat.ltb 0 (e_connlimit (pkt_env p) clspec))); [apply Hc | reflexivity].
+                   (connlimit_under p clspec)); [apply Hc | reflexivity].
   - (* MConcatSetT *)
     change (match_loadable (MConcatSetT celems neg nm) p)
       with (fields_loadable (map fst celems) p).

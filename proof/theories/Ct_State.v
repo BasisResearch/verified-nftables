@@ -34,7 +34,7 @@ Import ListNotations.
 Definition e0_st (st : data) : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
-     e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => []; e_connlimit := fun _ => 0;
+     e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => []; e_connlimit := fun _ => [];
      e_ct := fun _ k => match k with CKstate => st | _ => [] end;
      e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
 

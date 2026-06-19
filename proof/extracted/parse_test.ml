@@ -1068,7 +1068,7 @@ let check_notrack () =
   let env = { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
               e_routes = []; e_rt = (fun _ -> []); e_limit = (fun _ -> 0);
               e_quota = (fun _ -> 0); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
-              e_connlimit = (fun _ -> 0); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None); e_numgen = (fun _ -> 0) } in
+              e_connlimit = (fun _ -> []); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None); e_numgen = (fun _ -> 0) } in
   (* a packet whose ct-state ORACLE is `new` (= 8): genuinely tracked.  The notrack
      in rule 1 overrides this before rule 2's `ct state untracked` match. *)
   let oracle_new k = (match k with Packet.CKstate -> [0;0;0;8] | _ -> []) in
@@ -1111,7 +1111,7 @@ let check_exthdr_present () =
   let env = { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
               e_routes = []; e_rt = (fun _ -> []); e_limit = (fun _ -> 0);
               e_quota = (fun _ -> 0); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
-              e_connlimit = (fun _ -> 0); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None);
+              e_connlimit = (fun _ -> []); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None);
               e_numgen = (fun _ -> 0) } in
   (* ABSENT: existence oracle (present=true) returns [0]; the value oracle returns
      the matching bytes anyway (the impossible-in-kernel state the model used to
@@ -1159,7 +1159,7 @@ let check_notrack_intra () =
   let env = { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
               e_routes = []; e_rt = (fun _ -> []); e_limit = (fun _ -> 0);
               e_quota = (fun _ -> 0); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
-              e_connlimit = (fun _ -> 0); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None); e_numgen = (fun _ -> 0) } in
+              e_connlimit = (fun _ -> []); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None); e_numgen = (fun _ -> 0) } in
   let oracle_new k = (match k with Packet.CKstate -> [0;0;0;8] | _ -> []) in
   let p = mk_pkt ~env ~ct:oracle_new ~flow:[7;7] () in
   (* the rule's own statement->match ordering: the match now SUCCEEDS *)
@@ -2027,6 +2027,54 @@ let check_jump_aware () =
     (veval_chain = Verdict.Accept);
   Printf.printf "\n"
 
+(* ---------- (L') connlimit counts CONNECTIONS, not PACKETS ----------
+   Real nftables `connlimit`/`ct count` is a CONNECTION limiter: the kernel
+   nft_connlimit_do_eval calls nf_conncount_add_skb, which DEDUPLICATES by
+   connection tuple (returns -EEXIST and does NOT grow the count for an
+   already-counted connection), then BREAKs iff `count > limit` (STRICT >).
+   So `connlimit count 1` permits up to 2 DISTINCT connections, and ANY number
+   of packets of ONE connection read count = 1 and are NEVER throttled.
+   The OLD model decremented a per-PACKET bucket and BLOCKED the 2nd same-flow
+   packet under `connlimit 1`; the fix makes e_connlimit a flow-keyed SET. *)
+let check_connlimit_conn () =
+  Printf.printf "=== (L') connlimit counts CONNECTIONS not PACKETS ===\n";
+  let cl1 = { Packet.cl_count = 1; cl_flags = 0 } in
+  let m = Syntax.MConnlimit cl1 in
+  (* a one-rule chain `<conn under limit> accept`, policy DROP, starting from an
+     env whose connlimit set is EMPTY (no connection counted yet). *)
+  let rule = { Syntax.r_body = [Syntax.BMatch m]; r_verdict = Verdict.Accept;
+               r_vmap = None; r_nat = None; r_tproxy = None; r_fwd = None;
+               r_queue = None; r_after = [] } in
+  let chain = { Syntax.c_policy = Verdict.Drop; c_rules = [rule] } in
+  let env0 =
+    (Nft_parse.parse_string
+       "table ip t { chain c { type filter hook input priority 0; policy accept; } }\n")
+      .Nft_lower.p_env in
+  let base_env = { env0 with Packet.e_connlimit = (fun _ -> []) } in
+  (* TWO packets of the SAME connection (same flow id). *)
+  let flowA = [10;0;0;1] in
+  let p1 = mk_pkt ~env:base_env ~flow:flowA () in
+  let (v1, e_after1) = Semantics.eval_chain_mut_env chain p1 in
+  let p2 = mk_pkt ~env:e_after1 ~flow:flowA () in
+  let (v2, e_after2) = Semantics.eval_chain_mut_env chain p2 in
+  check "connlimit 1: packet 1 of a connection ACCEPTED (count 1 <= 1)"
+    (v1 = Verdict.Accept);
+  check "connlimit 1: packet 2 of the SAME connection ALSO ACCEPTED (dedup, count still 1)"
+    (v2 = Verdict.Accept);
+  check "connlimit 1: a single connection is NEVER throttled (both packets agree)"
+    (v1 = v2);
+  check "connlimit 1: same-flow re-add is a NO-OP (set holds exactly one connection)"
+    (Stdlib.List.length (e_after2.Packet.e_connlimit cl1) = 1);
+  (* a SECOND, DISTINCT connection: count becomes 2 > 1 -> BREAK -> policy DROP. *)
+  let flowB = [10;0;0;2] in
+  let p3 = mk_pkt ~env:e_after2 ~flow:flowB () in
+  let (v3, _) = Semantics.eval_chain_mut_env chain p3 in
+  check "connlimit 1: a 2nd DISTINCT connection makes count 2 > 1 -> DROPPED"
+    (v3 = Verdict.Drop);
+  check "connlimit 1: PERMITS up to N+1=2 distinct connections, blocks the 2nd's overflow"
+    (v1 = Verdict.Accept && v3 = Verdict.Drop);
+  Printf.printf "\n"
+
 let () =
   if Stdlib.Array.length Sys.argv > 1 then cli Sys.argv.(1)
   else begin
@@ -2052,6 +2100,7 @@ let () =
     check_concat_iv ();
     check_ifname_exact ();
     check_limit_over ();
+    check_connlimit_conn ();
     check_fib_type ();
     check_mark_range ();
     check_mark_set ();

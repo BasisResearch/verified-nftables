@@ -76,9 +76,10 @@ Theorem connlimit_over_flag_flips : forall p,
   eval_matchcond_body (MConnlimit c_over) p
     = negb (eval_matchcond_body (MConnlimit c_under) p).
 Proof.
-  intros p H. cbn [eval_matchcond_body c_under c_over].
-  rewrite H. cbn [Nat.land Nat.eqb].
-  destruct (Nat.ltb 0 (e_connlimit (pkt_env p) c_over)); reflexivity.
+  intros p H. cbn [eval_matchcond_body].
+  unfold connlimit_under, connlimit_count, connlimit_after.
+  rewrite <- H. unfold c_under, c_over. cbn [cl_count cl_flags Nat.land Nat.eqb].
+  destruct (negb (Nat.ltb 5 _)); reflexivity.
 Qed.
 
 (** Concretely: when the packet's byte length EXCEEDS the remaining quota
@@ -200,4 +201,72 @@ Proof.
   - cbn [eval_matchcond_body]. unfold lim_under, lim_avail, lim_cost, lim_max,
       lim_window, lim_rate, lim_unit_secs, lim_SCALE.
     rewrite Hq, Heq. unfold b_lim; cbn [ls_rate ls_unit ls_burst ls_bytes ls_flags]. reflexivity.
+Qed.
+
+(** ** `connlimit` is a CONNECTION limiter, not a PACKET limiter (the fix).
+
+    Before the fix [e_connlimit] was a per-instance REMAINING-slot counter that
+    [env_connlimit_upd] decremented by one on EVERY passing packet, ignoring the
+    flow entirely.  So N+1 packets of ONE connection exhausted a `connlimit N` and
+    the (N+1)-th same-flow packet was BLOCKED — something the kernel never does:
+    nft_connlimit.c calls nf_conncount_add_skb, which returns -EEXIST (no-op) for an
+    already-counted connection, so [count] is the number of DISTINCT live
+    connections and the rule BREAKs only when `count > limit` (STRICT >).
+
+    After the fix [e_connlimit] is the flow-keyed SET of distinct counted
+    connections, [set_connlimit] inserts [pkt_flow] IDEMPOTENTLY (the -EEXIST
+    dedup), and [connlimit_under] tests [count <= limit].  These theorems pin the
+    corrected, CONNECTION-keyed behaviour. *)
+Definition cl1 : connlimit_spec := {| cl_count := 1; cl_flags := 0 |}.
+
+(* Re-adding an already-counted connection is a NO-OP: the count is unchanged, so
+   set_connlimit on a same-flow packet does not grow the instance's set. *)
+Theorem connlimit_same_flow_idempotent : forall p,
+  data_mem (pkt_flow p) (e_connlimit (pkt_env p) cl1) = true ->
+  e_connlimit (pkt_env (set_connlimit p cl1)) cl1 = e_connlimit (pkt_env p) cl1.
+Proof.
+  intros p Hmem. unfold set_connlimit, env_connlimit_upd, connlimit_after; cbn [pkt_env e_connlimit].
+  replace (connlimit_eqb cl1 cl1) with true by (unfold connlimit_eqb, cl1; reflexivity).
+  rewrite Hmem. reflexivity.
+Qed.
+
+(* The kernel-faithful refutation of the red property: under `connlimit count 1`,
+   the FIRST packet of a flow is counted (count = 1 <= 1, passes); the SECOND
+   packet of the SAME connection reads the SAME count (the flow is already in the
+   set: dedup), so it ALSO passes.  One connection is NEVER throttled by
+   `connlimit 1`.  (In the old model the 2nd same-flow packet was BLOCKED.) *)
+Theorem connlimit1_same_flow_both_pass : forall p1 p2,
+  pkt_flow p1 = pkt_flow p2 ->
+  e_connlimit (pkt_env p1) cl1 = [] ->
+  (* p2 is evaluated AFTER p1's connection was accounted (shared, threaded env) *)
+  e_connlimit (pkt_env p2) cl1 = e_connlimit (pkt_env (set_connlimit p1 cl1)) cl1 ->
+  eval_matchcond_body (MConnlimit cl1) p1 = true /\
+  eval_matchcond_body (MConnlimit cl1) p2 = true.
+Proof.
+  intros p1 p2 Hflow Hseed Hthread. split.
+  - (* first packet: empty set -> count after insert = 1 <= 1 *)
+    cbn [eval_matchcond_body]. unfold connlimit_under, connlimit_count, connlimit_after.
+    rewrite Hseed. cbn [data_mem existsb List.length]. unfold cl1; cbn [cl_count cl_flags Nat.land Nat.eqb Nat.ltb]. reflexivity.
+  - (* second, SAME-flow packet: pkt_flow p2 already counted -> count still 1 <= 1 *)
+    cbn [eval_matchcond_body]. unfold connlimit_under, connlimit_count, connlimit_after.
+    rewrite Hthread. unfold set_connlimit, env_connlimit_upd, connlimit_after; cbn [pkt_env e_connlimit].
+    replace (connlimit_eqb cl1 cl1) with true by (unfold connlimit_eqb, cl1; reflexivity).
+    rewrite Hseed. cbn [data_mem existsb]. rewrite <- Hflow.
+    rewrite data_eqb_refl. cbn [List.length]. unfold cl1; cbn [cl_count cl_flags Nat.land Nat.eqb Nat.ltb]. reflexivity.
+Qed.
+
+(* `connlimit count 1` PERMITS 2 distinct connections (count <= limit at 1 and at
+   the moment a 2nd DISTINCT flow is inserted count = 2 > 1 breaks): the limiter is
+   a CONNECTION threshold, breaking strictly above N.  Here the set already holds
+   ONE distinct flow [f1] different from this packet's flow, so inserting this
+   packet's flow makes count = 2 > 1 -> the rule does NOT match (BREAK). *)
+Theorem connlimit1_breaks_on_second_distinct_flow : forall p f1,
+  data_eqb (pkt_flow p) f1 = false ->
+  e_connlimit (pkt_env p) cl1 = [f1] ->
+  eval_matchcond_body (MConnlimit cl1) p = false.
+Proof.
+  intros p f1 Hne Hset. cbn [eval_matchcond_body].
+  unfold connlimit_under, connlimit_count, connlimit_after.
+  rewrite Hset. cbn [data_mem existsb]. rewrite Hne. cbn [orb List.length].
+  unfold cl1; cbn [cl_count cl_flags Nat.land Nat.eqb Nat.ltb]. reflexivity.
 Qed.

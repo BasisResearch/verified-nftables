@@ -65,7 +65,7 @@ Definition env0 : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
      e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => [];
-     e_connlimit := fun _ => 0; e_ct := fun _ _ => []; e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
+     e_connlimit := fun _ => []; e_ct := fun _ _ => []; e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
 
 (* Two packets of the SAME flow (pkt_flow := [7;7]) but DIFFERENT source addresses
    (saddr @12..15): packet 1 = 1.1.1.1, packet 2 = 2.2.2.2.  A 20-byte IPv4 header;

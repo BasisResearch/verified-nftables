@@ -206,22 +206,30 @@ Record env : Type := {
                                                 (nf_nat_masquerade_ipv6); it is a
                                                 DIFFERENT value from the IPv4
                                                 e_ifaddr.  Shared host config. *)
-  e_connlimit : connlimit_spec -> nat;       (* a connlimit's remaining slots —
-                                                SHARED, CONSUMING state.  A `connlimit`
-                                                match passes iff [0 < remaining]; the
-                                                slot count is DECREMENTED on a passing
-                                                evaluation (the kernel nft_connlimit
-                                                adds the skb's connection to the list
-                                                and BREAKs once `count > limit`).  This
-                                                shared, mutable limiter state is now
-                                                ACTUALLY threaded+consumed across rules
-                                                and packets by [limit_sweep_prog] /
-                                                [limit_sweep_body] at the mutation-
-                                                evaluator boundary (exactly the
-                                                `numgen inc` / [e_limit] pattern), so
-                                                the accumulation a per-packet oracle
-                                                hid is now both expressible AND
-                                                exercised. *)
+  e_connlimit : connlimit_spec -> list data; (* the SHARED, flow-keyed set of DISTINCT
+                                                live CONNECTIONS currently counted for a
+                                                `connlimit`/`ct count` instance — the
+                                                analogue of the kernel's nf_conncount
+                                                per-instance `priv->list` (a list of
+                                                connection tuples).  Each element is a
+                                                [pkt_flow] (a connection identifier),
+                                                deduplicated.  `connlimit` is a CONNECTION
+                                                limiter, NOT a packet limiter: evaluating
+                                                it inserts the packet's [pkt_flow]
+                                                IDEMPOTENTLY (nf_conncount_add_skb returns
+                                                -EEXIST and does NOT grow the list when the
+                                                connection is already counted), so the
+                                                count = number of DISTINCT flows.  The rule
+                                                BREAKs iff `(count > limit) ^ invert`
+                                                (STRICT >, kernel nft_connlimit.c:47), hence
+                                                `connlimit count N` permits up to N+1 distinct
+                                                connections and ANY number of packets of ONE
+                                                connection always read the same count and are
+                                                never throttled by the connection itself.
+                                                Threaded+inserted across rules and packets by
+                                                [limit_sweep_prog] / [limit_sweep_body] at the
+                                                mutation-evaluator boundary (the same pattern
+                                                as the flow-keyed [e_ct] and [e_limit]). *)
   e_ct : data -> ct_key -> data;             (* the SHARED, flow-keyed conntrack
                                                 table: the writable+persistent
                                                 conntrack keys ([ct_writable]: mark,

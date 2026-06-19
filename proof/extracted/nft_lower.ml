@@ -847,7 +847,7 @@ let build_env st : Packet.env =
     e_vmap        = (fun n -> match L.assoc_opt n vmaps with Some e -> e | None -> []);
     e_map         = (fun n -> match L.assoc_opt n maps  with Some e -> e | None -> []);
     e_routes = []; e_rt = (fun _ -> []); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
-    e_limit = (fun _ -> 1); e_quota = (fun _ -> 1); e_connlimit = (fun _ -> 1);
+    e_limit = (fun _ -> 1); e_quota = (fun _ -> 1); e_connlimit = (fun _ -> []);
     e_ct = (fun _ _ -> []); e_nat = (fun _ -> None); e_numgen = (fun _ -> 0) }
 
 let lower (f : Nft_ast.sfile) : parsed =

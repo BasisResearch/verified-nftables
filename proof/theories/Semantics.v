@@ -185,6 +185,32 @@ Definition quota_cost (p : packet) : nat :=
 Definition quota_under (p : packet) (spec : quota_spec) : bool :=
   Nat.leb (quota_cost p) (e_quota (pkt_env p) spec).
 
+(** The list of distinct connection flow-ids counted for a `connlimit` instance
+    AFTER (idempotently) accounting for the current packet's connection
+    [pkt_flow p].  Mirrors the kernel nft_connlimit_do_eval:
+    [nf_conncount_add_skb] adds the skb's connection tuple to [priv->list], but
+    returns -EEXIST (and does NOT grow the list) when the connection is already
+    counted.  So re-adding an existing flow is a no-op (dedup), and the resulting
+    [count = priv->list->count] is the number of DISTINCT live connections. *)
+Definition connlimit_after (e : env) (spec : connlimit_spec) (flow : data) : list data :=
+  if data_mem flow (e_connlimit e spec) then e_connlimit e spec
+  else flow :: e_connlimit e spec.
+
+(** The connection COUNT a `connlimit` reads = number of distinct flows after the
+    idempotent insert (kernel [count = READ_ONCE(priv->list->count)]). *)
+Definition connlimit_count (p : packet) (spec : connlimit_spec) : nat :=
+  List.length (connlimit_after (pkt_env p) spec (pkt_flow p)).
+
+(** The non-inverted "under / not over the connection limit" test.  The kernel
+    BREAKs iff [(count > limit) ^ invert] (nft_connlimit.c:47, STRICT >), so the
+    non-inverted PASS test is [count <= limit], i.e. [negb (limit < count)].
+    Because a packet of an ALREADY-counted connection does not grow [count], ANY
+    number of packets of ONE connection read the SAME count and a `connlimit N`
+    with [N >= 1] never throttles a single connection; and [count <= N] permits up
+    to N+1 distinct connections (count breaks only at N+1 > N). *)
+Definition connlimit_under (p : packet) (spec : connlimit_spec) : bool :=
+  negb (Nat.ltb (cl_count spec) (connlimit_count p spec)).
+
 (** The unguarded comparison body of a match (the original semantics). *)
 Definition eval_matchcond_body (m : matchcond) (p : packet) : bool :=
   match m with
@@ -228,7 +254,7 @@ Definition eval_matchcond_body (m : matchcond) (p : packet) : bool :=
   | MQuota spec =>
       xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (quota_under p spec)
   | MConnlimit spec =>
-      xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (Nat.ltb 0 (e_connlimit (pkt_env p) spec))
+      xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (connlimit_under p spec)
   | MConcatSetT elems neg name =>
       (* like [MConcatSet] but each element is transformed before concatenation;
          contents read from the named set in [pkt_env p].  Per-field membership
@@ -315,15 +341,23 @@ Definition env_quota_upd (p : packet) (spec : quota_spec) : env :=
      e_connlimit := e_connlimit e;
      e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
 
-(** Update the SHARED connlimit slot count [e_connlimit] for instance [spec]: CONSUME
-    one slot on a PASSING evaluation (the kernel adds the skb's connection to the
-    conncount list and BREAKs once `count > limit`). *)
-Definition env_connlimit_upd (e : env) (spec : connlimit_spec) : env :=
+(** Update the SHARED connlimit connection set [e_connlimit] for instance [spec] on
+    packet [p]: IDEMPOTENTLY insert the packet's connection [pkt_flow p] into the
+    instance's set of distinct counted flows (the kernel nft_connlimit_do_eval:
+    [nf_conncount_add_skb] adds the skb's connection tuple, but is a no-op — returns
+    -EEXIST — when that connection is already counted).  So a SECOND packet of an
+    already-counted connection does NOT change the set (no double-counting), which is
+    why one connection can never exhaust a `connlimit`.  Every other instance's set —
+    and every other env component — is preserved. *)
+Definition env_connlimit_upd (p : packet) (spec : connlimit_spec) : env :=
+  let e := pkt_env p in
   {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
      e_routes := e_routes e; e_rt := e_rt e;
      e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
      e_limit := e_limit e; e_quota := e_quota e;
-     e_connlimit := (fun s => if connlimit_eqb spec s then Nat.pred (e_connlimit e s) else e_connlimit e s);
+     e_connlimit := (fun s => if connlimit_eqb spec s
+                              then connlimit_after e spec (pkt_flow p)
+                              else e_connlimit e s);
      e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
 
 (** Advance the shared `numgen inc` counter once: the side effect of EVALUATING a
@@ -383,10 +417,15 @@ Definition set_quota (p : packet) (spec : quota_spec) : packet :=
      pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
      pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
 
-(** CONSUME one `connlimit` slot when the limiter PASSES on packet [p]. *)
+(** ACCOUNT for the packet's connection in a `connlimit` instance: IDEMPOTENTLY insert
+    [pkt_flow p] into the instance's distinct-connection set on EVERY evaluation (the
+    kernel nft_connlimit_do_eval always calls [nf_conncount_add_skb] before reading the
+    count, regardless of whether the rule passes; re-adding a counted connection is the
+    -EEXIST no-op).  Only [pkt_env]'s [e_connlimit] changes; every other packet/env
+    component is preserved, so loadability predicates are invariant and the DSL/VM stay
+    lock-step. *)
 Definition set_connlimit (p : packet) (spec : connlimit_spec) : packet :=
-  if Nat.ltb 0 (e_connlimit (pkt_env p) spec) then
-  {| pkt_env := env_connlimit_upd (pkt_env p) spec; pkt_meta := pkt_meta p;
+  {| pkt_env := env_connlimit_upd p spec; pkt_meta := pkt_meta p;
      pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
@@ -394,8 +433,7 @@ Definition set_connlimit (p : packet) (spec : connlimit_spec) : packet :=
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
      pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
-     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}
-  else p.
+     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p |}.
 
 Lemma read_payload_ok_limit : forall b o l p spec,
   read_payload_ok b o l (set_limit p spec) = read_payload_ok b o l p.
@@ -405,7 +443,7 @@ Lemma read_payload_ok_quota : forall b o l p spec,
 Proof. reflexivity. Qed.
 Lemma read_payload_ok_connlimit : forall b o l p spec,
   read_payload_ok b o l (set_connlimit p spec) = read_payload_ok b o l p.
-Proof. intros. unfold set_connlimit. destruct (Nat.ltb 0 (e_connlimit (pkt_env p) spec)); reflexivity. Qed.
+Proof. reflexivity. Qed.
 
 (** The cross-packet `numgen inc` COUNTER ADVANCE of running a rule's bytecode: each
     incremental [INumgen] the program contains advances the instance's shared counter
@@ -1159,7 +1197,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       if xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (quota_under p spec)
       then run_rule rf rest p else None
   | IConnlimit spec :: rest =>
-      if xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (Nat.ltb 0 (e_connlimit (pkt_env p) spec))
+      if xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (connlimit_under p spec)
       then run_rule rf rest p else None
   | ICounter _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)
   (* `notrack` is verdict-neutral but forces IP_CT_UNTRACKED for the rest of this
@@ -1839,7 +1877,7 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
   | IQueueSreg _ _ _ :: _ => p
   | ILimit spec :: rest => if xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (lim_under p spec) then run_rule_writes rf rest p else p
   | IQuota spec :: rest => if xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (quota_under p spec) then run_rule_writes rf rest p else p
-  | IConnlimit spec :: rest => if xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (Nat.ltb 0 (e_connlimit (pkt_env p) spec)) then run_rule_writes rf rest p else p
+  | IConnlimit spec :: rest => if xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (connlimit_under p spec) then run_rule_writes rf rest p else p
   | ICounter _ _ :: rest => run_rule_writes rf rest p
   | INotrack :: rest => run_rule_writes rf rest (set_untracked p)
   | ILog _ :: rest => run_rule_writes rf rest p
