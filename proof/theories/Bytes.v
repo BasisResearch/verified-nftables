@@ -173,23 +173,56 @@ Definition data_jhash (len seed modulus offset : nat) (d : data) : data :=
     (N.of_nat offset +
      N.modulo (data_to_N d + N.of_nat seed) (N.of_nat (S modulus))).
 
-(** Byte-order conversion (ntoh/hton).  nftables' byteorder expression swaps the
-    bytes *within each [len]-byte element* across the [size]-byte value (ntoh and
-    hton are the same byte reversal for a single conversion).  We therefore
-    reverse each [len]-byte chunk of the register value.  [fuel] (= [length d])
-    bounds the recursion so it is structural even when [len = 0]. *)
-Fixpoint byteorder_chunks (fuel len : nat) (d : data) : data :=
+(** Byte-order conversion (ntoh/hton).  nftables' byteorder expression carries
+    TWO independent widths: [size], the per-element width to byte-swap (2, 4 or
+    8 bytes), and [len], the total number of bytes processed.  The kernel
+    (net/netfilter/nft_byteorder.c) byte-swaps each [size]-byte element and
+    iterates [len/size] times — e.g. a 16-byte IPv6 value with size=8 swaps two
+    8-byte halves; a 6-byte MAC with size=2 swaps three 2-byte elements.  ntoh
+    and hton are the same per-element byte reversal for a single conversion.  We
+    therefore reverse each [size]-byte chunk of the register value (the element
+    width), processing the first [len] bytes.  [fuel] (= [length d]) bounds the
+    recursion so it is structural even when [size = 0]. *)
+Fixpoint byteorder_chunks (fuel size : nat) (d : data) : data :=
   match fuel with
   | 0 => d
   | S f =>
       match d with
       | [] => []
-      | _ :: _ => rev (firstn len d) ++ byteorder_chunks f len (skipn len d)
+      | _ :: _ => rev (firstn size d) ++ byteorder_chunks f size (skipn size d)
       end
   end.
 
 Definition data_byteorder (hton : bool) (size len : nat) (d : data) : data :=
-  byteorder_chunks (length d) len d.
+  byteorder_chunks (length d) size d.
+
+(** Regression: a 4-byte value with size=len=4 (the only width the parser emits
+    today: host-endian KMark/KIfindex) is a single full 4-byte reversal —
+    unchanged by the size/len distinction. *)
+Lemma data_byteorder_4_4 :
+  data_byteorder true 4 4 [0;1;2;3] = [3;2;1;0].
+Proof. reflexivity. Qed.
+
+(** Regression / fidelity: a 16-byte IPv6 value at the kernel's widths
+    (size=8, len=16) swaps each 8-byte HALF independently (per-element swap,
+    len/size = 2 iterations), NOT the whole value.  This is the kernel's
+    nft_byteorder.c behaviour (case 8: be64 over len/8 elements). *)
+Lemma data_byteorder_ipv6_per_element :
+  data_byteorder true 8 16 [0;1;2;3;4;5;6;7;8;9;10;11;12;13;14;15]
+    = [7;6;5;4;3;2;1;0; 15;14;13;12;11;10;9;8].
+Proof. reflexivity. Qed.
+
+(** And it is NOT the full reversal the old [len]-chunking produced. *)
+Lemma data_byteorder_ipv6_not_full_reverse :
+  data_byteorder true 8 16 [0;1;2;3;4;5;6;7;8;9;10;11;12;13;14;15]
+    <> rev [0;1;2;3;4;5;6;7;8;9;10;11;12;13;14;15].
+Proof. vm_compute. discriminate. Qed.
+
+(** A 6-byte MAC at the kernel's widths (size=2, len=6) swaps each 2-byte
+    element (ntohs over len/2 = 3 elements). *)
+Lemma data_byteorder_mac_per_element :
+  data_byteorder true 2 6 [0;1;2;3;4;5] = [1;0; 3;2; 5;4].
+Proof. reflexivity. Qed.
 
 (** Big-endian (most-significant-byte-first) lexicographic order on byte
     strings; for equal-length network-order values this is numeric order.
