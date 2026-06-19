@@ -1298,7 +1298,7 @@ Definition env_ct_upd (e : env) (fl : data) (k : ct_key) (v : data) : env :=
     nf_conntrack_alter_reply / store-into-conntrack-entry in [nf_nat_setup_info]
     that records the translation on the FIRST (unconfirmed) packet of a flow. *)
 Definition env_nat_upd (e : env) (fl : data)
-                       (m : option data * option data * option nat) : env :=
+                       (m : option data * option data * option nat * option data) : env :=
   {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
      e_routes := e_routes e; e_rt := e_rt e;
      e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
@@ -2316,14 +2316,21 @@ Definition apply_nat_port_val (is_src : bool) (port_opt : option nat) (p : packe
       un-rewrites the reply's DESTINATION and a destination NAT un-rewrites the
       reply's SOURCE — restoring the ORIGINAL (pre-NAT) address [orig_addr_opt] that
       the peer originally addressed.  (A dnat's reply has its SOURCE = the dnat target
-      un-DNAT'd back to [orig_addr]; its DESTINATION is left untouched.)  Ports are
-      left untouched on reply: the model stores only the forward port, so it does not
-      fabricate a reply-port rewrite. *)
+      un-DNAT'd back to [orig_addr]; its DESTINATION is left untouched.)  The L4 PORT
+      is ALSO un-rewritten on reply when a port operand was present: the kernel's
+      [nf_nat_manip_pkt(REPLY)] inverts the maniptype and writes the reply tuple's
+      port into the OPPOSITE slot ([tcp_manip_pkt]/[__udp_manip_pkt]:
+      `*portptr = newport`, nf_nat_proto.c), so a dnat reply has its SOURCE port
+      restored to the connection's original (pre-DNAT) destination port, and an snat
+      reply has its DESTINATION port restored to the original source port.  The
+      stored [orig_port_opt] is exactly that original port; it is [None] when the
+      forward NAT carried no port operand (then the reply leaves the port unchanged,
+      matching the kernel's `if (priv->sreg_proto_min)` guard being false). *)
 Definition apply_nat_tuple (ns : nat_spec) (p : packet)
-                           (m : option data * option data * option nat) : packet :=
+                           (m : option data * option data * option nat * option data) : packet :=
   let fam := nat_addrfamily ns in
   let is_src := nat_is_src ns in
-  let '(orig_addr_opt, new_addr_opt, port_opt) := m in
+  let '(orig_addr_opt, new_addr_opt, port_opt, orig_port_opt) := m in
   if pkt_ctdir_orig p then
     (* forward (original direction): rewrite the manip slot to the NAT target *)
     let p1 := match new_addr_opt with
@@ -2332,17 +2339,25 @@ Definition apply_nat_tuple (ns : nat_spec) (p : packet)
               end in
     apply_nat_port_val is_src port_opt p1
   else
-    (* reply direction: un-NAT the OPPOSITE slot back to the original address *)
-    match orig_addr_opt with
-    | Some o => if is_src then set_daddr fam p o else set_saddr fam p o
-    | None => p
+    (* reply direction: un-NAT the OPPOSITE slot back to the original address AND,
+       when a port operand was present, restore that slot's PORT to the original.
+       The maniptype is inverted exactly as nf_nat_manip_pkt(REPLY): a SOURCE NAT
+       un-rewrites the reply's DESTINATION (addr + port), a DESTINATION NAT the
+       reply's SOURCE. *)
+    let p1 := match orig_addr_opt with
+              | Some o => if is_src then set_daddr fam p o else set_saddr fam p o
+              | None => p
+              end in
+    match orig_port_opt with
+    | Some op => if is_src then set_dport p1 op else set_sport p1 op
+    | None => p1
     end.
 
 (** Replace packet [p]'s environment with the flow-keyed NAT mapping [m] STORED at
     [p]'s flow ([env_nat_upd]).  Every set_*/address rewrite preserves [pkt_env], so
     this records the established translation into the shared, threaded env exactly
     where the kernel writes it into the conntrack entry. *)
-Definition store_nat_mapping (p : packet) (m : option data * option data * option nat) : packet :=
+Definition store_nat_mapping (p : packet) (m : option data * option data * option nat * option data) : packet :=
   {| pkt_env := env_nat_upd (pkt_env p) (pkt_flow p) m; pkt_meta := pkt_meta p;
      pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
@@ -2384,6 +2399,25 @@ Definition nat_orig_addr (ns : nat_spec) (p : packet) : data :=
   let fam := nat_addrfamily ns in
   let '(off, len) := if nat_is_src ns then saddr_slot fam else daddr_slot fam in
   slice (pkt_nh p) off len.
+
+(** The ORIGINAL (pre-NAT) L4 PORT of the slot a NAT of kind [ns] rewrites — read
+    from the CURRENT packet's transport header before any rewrite: the SOURCE port
+    (transport bytes 0..1) for a source NAT ([nat_is_src]: snat/masquerade), the
+    DESTINATION port (bytes 2..3) for a destination NAT (dnat/redirect).  Stored
+    ONLY when a port operand is present ([nat_pmin ns = Some _], the kernel's
+    `if (priv->sreg_proto_min)` guard, nft_nat.c:120) — otherwise [None], so the
+    reply leaves the port byte-for-byte unchanged.  This is the port half of the
+    reply tuple the kernel records (nf_conntrack_alter_reply), un-rewritten onto
+    the OPPOSITE slot of a reply-direction packet (mirroring nf_nat_manip_pkt's
+    inverted maniptype). *)
+Definition nat_orig_port (ns : nat_spec) (p : packet) : option data :=
+  match nat_pmin ns with
+  | Some _ =>
+      if nat_is_src ns
+      then Some (slice (pkt_th p) 0 2)   (* source NAT: original SOURCE port *)
+      else Some (slice (pkt_th p) 2 2)   (* dest   NAT: original DEST   port *)
+  | None => None
+  end.
 Definition apply_nat (h : hook_id) (r : rule) (p : packet) : packet :=
   match r_nat r with
   | Some ns =>
@@ -2400,7 +2434,8 @@ Definition apply_nat (h : hook_id) (r : rule) (p : packet) : packet :=
           if pkt_ctdir_orig p then
             (* first packet of the flow (original direction): capture the original
                address, compute the tuple, apply it FORWARD, and STORE it *)
-            let m := (Some (nat_orig_addr ns p), nat_operand_addr h ns p, nat_pmin ns) in
+            let m := (Some (nat_orig_addr ns p), nat_operand_addr h ns p, nat_pmin ns,
+                      nat_orig_port ns p) in
             store_nat_mapping (apply_nat_tuple ns p m) m
           else
             p

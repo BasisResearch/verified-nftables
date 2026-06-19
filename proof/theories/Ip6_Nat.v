@@ -47,7 +47,7 @@ Lemma ip6_dnat_apply : forall h p,
   e_nat (pkt_env p) (pkt_flow p) = None ->
   apply_nat h ip6_dnat_rule p
     = store_nat_mapping (set_daddr "ip6" p tgt6)
-        (Some (slice (pkt_nh p) 24 16), Some tgt6, None).
+        (Some (slice (pkt_nh p) 24 16), Some tgt6, None, None).
 Proof.
   intros h p Horig Hnone. unfold apply_nat, ip6_dnat_rule, ip6_dnat_spec.
   cbn -[set_daddr store_nat_mapping e_nat pkt_env pkt_flow tgt6 slice pkt_nh].
@@ -61,7 +61,7 @@ Lemma ip6_snat_apply : forall h p,
   e_nat (pkt_env p) (pkt_flow p) = None ->
   apply_nat h ip6_snat_rule p
     = store_nat_mapping (set_saddr "ip6" p tgt6)
-        (Some (slice (pkt_nh p) 8 16), Some tgt6, None).
+        (Some (slice (pkt_nh p) 8 16), Some tgt6, None, None).
 Proof.
   intros h p Horig Hnone. unfold apply_nat, ip6_snat_rule, ip6_snat_spec.
   cbn -[set_saddr store_nat_mapping e_nat pkt_env pkt_flow tgt6 slice pkt_nh].

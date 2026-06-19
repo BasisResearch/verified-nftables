@@ -22,8 +22,8 @@
 
     ── Model (AFTER the Round-2 fix) ────────────────────────────────────────────
     NAT is now FLOW-STATEFUL.  [env] carries a shared, flow-keyed NAT-mapping table
-    [e_nat : data -> option (option data * option data * option nat)] (orig addr,
-    new addr, port).  [apply_nat] (Semantics.v)
+    [e_nat : data -> option (option data * option data * option nat * option data)]
+    (orig addr, new addr, new port, orig port).  [apply_nat] (Semantics.v)
     looks up [e_nat (pkt_flow p)]:
       - [None]  (first packet of the flow): compute the tuple from the operand
         ([nat_operand_addr]/[nat_pmin]), apply it, AND store it into [e_nat] —
@@ -105,7 +105,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 (* The mapping really was stored at flow [7;7] after packet 1. *)
 Lemma mapping_stored_after_p1 :
-  e_nat env_after_p1 [7;7] = Some (Some [9;9;9;9], Some [1;1;1;1], None).
+  e_nat env_after_p1 [7;7] = Some (Some [9;9;9;9], Some [1;1;1;1], None, None).
 Proof. vm_compute. reflexivity. Qed.
 
 (* KERNEL-CORRECT, and now PROVABLE: packet 2 of the SAME flow gets packet 1's

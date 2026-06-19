@@ -43,7 +43,7 @@ Lemma dnat_apply : forall h p,
   e_nat (pkt_env p) (pkt_flow p) = None ->
   apply_nat h dnat_rule p
     = store_nat_mapping (set_daddr "ip" p [10;0;0;1])
-        (Some (slice (pkt_nh p) 16 4), Some [10;0;0;1], None).
+        (Some (slice (pkt_nh p) 16 4), Some [10;0;0;1], None, None).
 Proof.
   intros h p Horig Hnone. unfold apply_nat, dnat_rule, dnat_spec.
   cbn -[set_daddr store_nat_mapping e_nat pkt_env pkt_flow slice pkt_nh
@@ -75,7 +75,7 @@ Theorem dnat_output : forall h p,
   e_nat (pkt_env p) (pkt_flow p) = None ->
   eval_chain_trace h dnat_chain p
     = (Accept, store_nat_mapping (set_daddr "ip" p [10;0;0;1])
-                 (Some (slice (pkt_nh p) 16 4), Some [10;0;0;1], None)).
+                 (Some (slice (pkt_nh p) 16 4), Some [10;0;0;1], None, None)).
 Proof.
   intros h p Horig Hnone.
   assert (Hw : dsl_writes dnat_rule p = p) by reflexivity.
@@ -148,7 +148,7 @@ Theorem redir_output_ip4_loopback : forall p,
   e_nat (pkt_env p) (pkt_flow p) = None ->
   apply_nat Houtput (redir_rule "ip") p
     = store_nat_mapping (set_daddr "ip" p [127;0;0;1])
-        (Some (slice (pkt_nh p) 16 4), Some [127;0;0;1], None).
+        (Some (slice (pkt_nh p) 16 4), Some [127;0;0;1], None, None).
 Proof.
   intros p Horig Hnone. unfold apply_nat, redir_rule, redir_spec.
   cbn -[set_daddr store_nat_mapping e_nat pkt_env pkt_flow slice pkt_nh redir_daddr].
@@ -163,7 +163,7 @@ Theorem redir_output_ip6_loopback : forall p,
   e_nat (pkt_env p) (pkt_flow p) = None ->
   apply_nat Houtput (redir_rule "ip6") p
     = store_nat_mapping (set_daddr "ip6" p [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1])
-        (Some (slice (pkt_nh p) 24 16), Some [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1], None).
+        (Some (slice (pkt_nh p) 24 16), Some [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1], None, None).
 Proof.
   intros p Horig Hnone. unfold apply_nat, redir_rule, redir_spec.
   cbn -[set_daddr store_nat_mapping e_nat pkt_env pkt_flow slice pkt_nh redir_daddr].
@@ -181,7 +181,7 @@ Theorem redir_prerouting_iifaddr : forall p,
     = store_nat_mapping
         (set_daddr "ip" p (e_ifaddr (pkt_env p) (field_value FMetaIifname p)))
         (Some (slice (pkt_nh p) 16 4),
-         Some (e_ifaddr (pkt_env p) (field_value FMetaIifname p)), None).
+         Some (e_ifaddr (pkt_env p) (field_value FMetaIifname p)), None, None).
 Proof.
   intros p Horig Hnone. unfold apply_nat, redir_rule, redir_spec.
   cbn -[set_daddr store_nat_mapping e_nat pkt_env pkt_flow e_ifaddr field_value redir_daddr
@@ -254,7 +254,7 @@ Lemma dnat_port_apply : forall h p,
   e_nat (pkt_env p) (pkt_flow p) = None ->
   apply_nat h dnat_port_rule p
     = store_nat_mapping (set_dport (set_daddr "ip" p [10;0;0;1]) [31; 144])
-        (Some (slice (pkt_nh p) 16 4), Some [10;0;0;1], Some 8080).
+        (Some (slice (pkt_nh p) 16 4), Some [10;0;0;1], Some 8080, Some (slice (pkt_th p) 2 2)).
 Proof.
   intros h p Horig Hnone. unfold apply_nat, dnat_port_rule, dnat_port_spec.
   cbn -[set_dport set_daddr store_nat_mapping e_nat pkt_env pkt_flow slice pkt_nh].
@@ -269,7 +269,7 @@ Theorem dnat_port_output : forall h p,
   e_nat (pkt_env p) (pkt_flow p) = None ->
   eval_chain_trace h dnat_port_chain p
     = (Accept, store_nat_mapping (set_dport (set_daddr "ip" p [10;0;0;1]) [31; 144])
-                 (Some (slice (pkt_nh p) 16 4), Some [10;0;0;1], Some 8080)).
+                 (Some (slice (pkt_nh p) 16 4), Some [10;0;0;1], Some 8080, Some (slice (pkt_th p) 2 2))).
 Proof.
   intros h p Horig Hnone.
   assert (Hw : dsl_writes dnat_port_rule p = p) by reflexivity.
@@ -353,7 +353,7 @@ Theorem snat_port_writes_sport : forall h p,
   apply_nat h snat_port_rule p
     = store_nat_mapping
         (set_sport (set_saddr "ip" p [192;168;0;1]) (nat_port_bytes 4000))
-        (Some (slice (pkt_nh p) 12 4), Some [192;168;0;1], Some 4000).
+        (Some (slice (pkt_nh p) 12 4), Some [192;168;0;1], Some 4000, Some (slice (pkt_th p) 0 2)).
 Proof.
   intros h p Horig Hnone. unfold apply_nat, snat_port_rule, snat_port_spec.
   cbn -[set_sport set_saddr store_nat_mapping e_nat pkt_env pkt_flow slice pkt_nh].
@@ -416,7 +416,7 @@ Theorem dnat_portonly_apply : forall h p,
   e_nat (pkt_env p) (pkt_flow p) = None ->
   apply_nat h dnat_portonly_rule p
     = store_nat_mapping (set_dport p (nat_port_bytes 80))
-        (Some (slice (pkt_nh p) 16 4), None, Some 80).
+        (Some (slice (pkt_nh p) 16 4), None, Some 80, Some (slice (pkt_th p) 2 2)).
 Proof.
   intros h p Horig Hnone. unfold apply_nat, dnat_portonly_rule, dnat_portonly_spec.
   cbn -[set_dport store_nat_mapping e_nat pkt_env pkt_flow nat_port_bytes slice pkt_nh].

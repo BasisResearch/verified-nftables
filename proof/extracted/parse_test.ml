@@ -535,7 +535,7 @@ let check_dnat_rewrite () =
     (data_eq d1 [1;1;1;1]);
   check "the NAT mapping is STORED in the flow-keyed e_nat after packet 1"
     ((f1_out.Packet.pkt_env).Packet.e_nat flow0
-       = Some ((Some [9;9;9;9], Some [1;1;1;1]), None));
+       = Some (((Some [9;9;9;9], Some [1;1;1;1]), None), None));
   (* packet 2 of the SAME flow: DIFFERENT saddr 2.2.2.2, threaded through the env
      packet 1 left — it must reuse packet 1's STORED destination (1.1.1.1), NOT its
      own saddr.  This is the property that was UNSOUND (provably divergent) before. *)
@@ -595,6 +595,45 @@ let check_dnat_rewrite () =
     (data_eq (Syntax.field_value Syntax.FIp4Saddr rep_out) [9;9;9;9]);
   check "reply-dir: reply DESTINATION left untouched (1.1.1.1)"
     (data_eq (Syntax.field_value Syntax.FIp4Daddr rep_out) [1;1;1;1]);
+  (* REPLY-DIRECTION PORT un-NAT (Round-7 fix): `dnat to 8.8.8.8:8080` rewrites the
+     forward packet's DESTINATION port 80 -> 8080; the kernel's nf_nat_manip_pkt(REPLY)
+     un-rewrites the reply's SOURCE port from 8080 back to the original 80
+     (tcp_manip_pkt: `*portptr = newport`).  Before the fix the model left the reply
+     ports byte-for-byte unchanged, so the reply's source port stayed stuck at 8080. *)
+  let dnat_port_spec : Syntax.nat_spec =
+    { Syntax.nat_imms = [(1, [8;8;8;8])]; nat_field = None; nat_map = None;
+      nat_src = None; nat_kind = Syntax.nat_dnat_kind; nat_family = Syntax.nat_fam_ip4;
+      nat_amin = None; nat_amax = None; nat_pmin = Some 8080; nat_pmax = Some 8080;
+      nat_flags = 0 } in
+  let dnat_port_rule : Syntax.rule =
+    { Syntax.r_body = []; r_verdict = Verdict.Accept; r_vmap = None;
+      r_nat = Some dnat_port_spec; r_tproxy = None; r_fwd = None;
+      r_queue = None; r_after = [] } in
+  let dnat_port_chain : Syntax.chain =
+    { Syntax.c_policy = Verdict.Drop; c_rules = [dnat_port_rule] } in
+  let pflow = [5;5] in
+  (* th = sport ++ dport ++ payload; forward sport 4444 ([17;92]), dport 80 ([0;80]) *)
+  let mk_th sport dport = sport @ dport @ [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0] in
+  let pf_in = { (mk_pkt ~env ~flow:pflow ())
+                with Packet.pkt_nh = [0x45;0;0;20; 0;0;0;0; 64;6;0;0] @ [1;1;1;1] @ [9;9;9;9];
+                pkt_th = mk_th [17;92] [0;80]; pkt_have_l4 = false } in
+  let (_, pf_out) =
+    Semantics.eval_chain_trace Semantics.Hprerouting dnat_port_chain pf_in in
+  check "reply-dir port: forward packet dnat's DEST port 80 -> 8080"
+    (data_eq (Packet.slice pf_out.Packet.pkt_th 2 2) [31;144]);
+  (* reply: server 8.8.8.8:8080 -> client; sport = 8080 ([31;144]) *)
+  let pr_in = { (mk_pkt ~env:(pf_out.Packet.pkt_env) ~flow:pflow ())
+                with Packet.pkt_nh = [0x45;0;0;20; 0;0;0;0; 64;6;0;0] @ [8;8;8;8] @ [1;1;1;1];
+                pkt_th = mk_th [31;144] [17;92]; pkt_have_l4 = false;
+                pkt_ctdir_orig = false } in
+  let (_, pr_out) =
+    Semantics.eval_chain_trace Semantics.Hprerouting dnat_port_chain pr_in in
+  check "reply-dir port: reply SOURCE port un-DNAT'd 8080 -> 80 (inverse manip)"
+    (data_eq (Packet.slice pr_out.Packet.pkt_th 0 2) [0;80]);
+  check "reply-dir port: reply SOURCE port no longer stuck at dnat target 8080"
+    (not (data_eq (Packet.slice pr_out.Packet.pkt_th 0 2) [31;144]));
+  check "reply-dir port: reply DEST port left untouched (client port 4444)"
+    (data_eq (Packet.slice pr_out.Packet.pkt_th 2 2) [17;92]);
   (* ct DIRECTION selector == NAT manip direction (Round-6 fix): in the kernel both
      the `ct direction` selector (nft_ct.c:86) and the NAT forward/reply decision
      (nf_nat_core.c:872) are CTINFO2DIR(ctinfo) of the SAME skb, so they are EQUAL.

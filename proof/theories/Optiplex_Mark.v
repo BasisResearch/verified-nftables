@@ -240,7 +240,7 @@ Lemma post1_apply_masq : forall h p,
     = store_nat_mapping
         (set_saddr "ip" p (e_ifaddr (pkt_env p) (field_value FMetaOifname p)))
         (Some (slice (pkt_nh p) 12 4),
-         Some (e_ifaddr (pkt_env p) (field_value FMetaOifname p)), None).
+         Some (e_ifaddr (pkt_env p) (field_value FMetaOifname p)), None, None).
 Proof.
   intros h p Horig Hnone. unfold apply_nat, post1, filter_postrouting.
   cbn -[set_saddr e_ifaddr field_value pkt_env e_nat store_nat_mapping
@@ -261,7 +261,7 @@ Theorem masquerade_output : forall p ifaddr,
   e_ifaddr (pkt_env p) (field_value FMetaOifname p) = ifaddr ->
   eval_chain_trace Hpostrouting filter_postrouting p
     = (Accept, store_nat_mapping (set_saddr "ip" p ifaddr)
-                 (Some (slice (pkt_nh p) 12 4), Some ifaddr, None)).
+                 (Some (slice (pkt_nh p) 12 4), Some ifaddr, None, None)).
 Proof.
   intros p ifaddr Hmark Horig Hnone Hifa.
   unfold eval_chain_trace. rewrite postrouting_rules_eq. cbn [eval_rules_trace].

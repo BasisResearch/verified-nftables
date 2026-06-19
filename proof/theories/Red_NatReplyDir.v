@@ -19,7 +19,7 @@
     DESTINATION (the client 1.1.1.1) is left untouched by a dnat.
 
     ── Model (AFTER the Round-5 fix) ────────────────────────────────────────────
-    [e_nat] now stores the triple [(orig_addr, new_addr, port)] and the packet
+    [e_nat] now stores the tuple [(orig_addr, new_addr, new_port, orig_port)] and the packet
     carries a direction bit [pkt_ctdir_orig] (the kernel's CTINFO2DIR(ctinfo)).
     [apply_nat]/[apply_nat_tuple] apply the stored tuple FORWARD on an
     original-direction packet and the INVERSE on a reply: a dnat restores the
@@ -87,7 +87,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 (* Mapping stored at the flow after the forward packet: the ORIGINAL destination
    (9.9.9.9, captured for the inverse) and the new destination (8.8.8.8). *)
-Lemma mapping_stored : e_nat env_after_fwd [7;7] = Some (Some [9;9;9;9], Some [8;8;8;8], None).
+Lemma mapping_stored : e_nat env_after_fwd [7;7] = Some (Some [9;9;9;9], Some [8;8;8;8], None, None).
 Proof. vm_compute. reflexivity. Qed.
 
 (* REPLY packet of the SAME flow: server 8.8.8.8 -> client 1.1.1.1, direction =
@@ -136,3 +136,84 @@ Definition reply_no_mapping : packet := mkpkt env0 [8;8;8;8] [1;1;1;1] false.
 Theorem reply_unestablished_not_natted :
   out_saddr reply_no_mapping = [8;8;8;8] /\ out_daddr reply_no_mapping = [1;1;1;1].
 Proof. split; vm_compute; reflexivity. Qed.
+
+(** ── PORT-NAT REPLY (the Round-7 fix) ─────────────────────────────────────────
+
+    A `dnat to 8.8.8.8:8080` rewrites BOTH the destination address AND the
+    DESTINATION port on the forward packet.  The kernel's nf_nat_packet runs
+    nf_nat_manip_pkt(REPLY) on the reply, which (after inverting the maniptype)
+    rewrites the reply's SOURCE port from the dnat target (8080) back to the
+    connection's ORIGINAL (pre-DNAT) destination port — tcp_manip_pkt /
+    __udp_manip_pkt: `*portptr = newport` (nf_nat_proto.c).
+
+    BEFORE this fix the model stored only the forward port and left the reply's
+    ports byte-for-byte unchanged, so the reply's source port stayed stuck at the
+    dnat target 8080 — a packet the kernel can never emit on that flow.  Now the
+    model stores the original port in the reply tuple and un-rewrites it. *)
+
+(* `dnat to 8.8.8.8:8080`: dest addr 8.8.8.8 (reg 1) + dest port 8080. *)
+Definition dnat_port : nat_spec :=
+  {| nat_imms := [(1, [8;8;8;8])]; nat_field := None; nat_map := None;
+     nat_src := None; nat_kind := nat_dnat_kind; nat_family := nat_fam_ip4;
+     nat_amin := None; nat_amax := None; nat_pmin := Some 8080; nat_pmax := Some 8080;
+     nat_flags := 0 |}.
+Definition dnat_port_rule : rule :=
+  {| r_body := []; r_verdict := Accept; r_vmap := None;
+     r_nat := Some dnat_port; r_tproxy := None;
+     r_fwd := None; r_queue := None; r_after := [] |}.
+Definition dnat_port_chain : chain := {| c_policy := Drop; c_rules := [ dnat_port_rule ] |}.
+
+(* Build a TCP-bearing packet: a transport header with a real sport/dport
+   ([sport ++ dport ++ payload]).  pkt_have_l4 is irrelevant to the port splice. *)
+Definition mkpkt_p (e : env) (saddr daddr sport dport : data) (dir : bool) : packet :=
+  {| pkt_env := e; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
+     pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
+     pkt_lh := [];
+     pkt_nh := [69;0;0;20; 0;0;0;0; 64;6; 0;0] ++ saddr ++ daddr;
+     pkt_th := sport ++ dport ++ [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0];
+     pkt_ih := [];
+     pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
+     pkt_osf := []; pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
+     pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l2 := true; pkt_have_l4 := false; pkt_fragoff := 0;
+     pkt_flow := [7;7]; pkt_untracked := false; pkt_ctdir_orig := dir; pkt_ct_present := true |}.
+
+Definition out_sport (p : packet) : data :=
+  slice (pkt_th (snd (eval_chain_trace Hprerouting dnat_port_chain p))) 0 2.
+Definition out_dport (p : packet) : data :=
+  slice (pkt_th (snd (eval_chain_trace Hprerouting dnat_port_chain p))) 2 2.
+
+(* FORWARD packet: client (sport 4444) -> router:80 ([0;80]).  dnat to 8.8.8.8:8080
+   rewrites the DESTINATION port 80 -> 8080 ([31;144]). *)
+Definition fwd_p : packet := mkpkt_p env0 [1;1;1;1] [9;9;9;9] [17;92] [0;80] true.
+Lemma fwd_dport_rewritten : out_dport fwd_p = [31;144].   (* 8080 big-endian *)
+Proof. vm_compute. reflexivity. Qed.
+
+(* The env after the forward packet records the ORIGINAL dest port ([0;80]) as the
+   4th tuple component, alongside the new port 8080. *)
+Definition env_after_fwd_p : env := pkt_env (snd (eval_chain_trace Hprerouting dnat_port_chain fwd_p)).
+Lemma mapping_port_stored :
+  e_nat env_after_fwd_p [7;7]
+    = Some (Some [9;9;9;9], Some [8;8;8;8], Some 8080, Some [0;80]).
+Proof. vm_compute. reflexivity. Qed.
+
+(* REPLY packet of the SAME flow: server 8.8.8.8:8080 -> client.  Its SOURCE port
+   is the dnat target 8080 ([31;144]).  The kernel un-rewrites it back to the
+   original 80.  Carries the env established by the forward packet. *)
+Definition reply_p : packet :=
+  mkpkt_p env_after_fwd_p [8;8;8;8] [1;1;1;1] [31;144] [17;92] false.
+
+(* THE FIX: the reply's SOURCE port is un-DNAT'd from 8080 back to the original 80
+   ([0;80]).  This was PROVABLY [31;144] (= 8080, byte-for-byte unchanged) before. *)
+Theorem reply_sport_undone : out_sport reply_p = [0;80].
+Proof. vm_compute. reflexivity. Qed.
+
+(* The red property is REFUTED: the reply's source port is NO LONGER stuck at the
+   dnat target 8080. *)
+Theorem reply_sport_not_target : out_sport reply_p <> [31;144].
+Proof. rewrite reply_sport_undone. discriminate. Qed.
+
+(* A dnat never rewrites the reply's DESTINATION port: it is left untouched
+   ([17;92], the client's port). *)
+Theorem reply_dport_untouched : out_dport reply_p = [17;92].
+Proof. vm_compute. reflexivity. Qed.

@@ -245,7 +245,7 @@ Record env : Type := {
                                                 WRITE_ONCE/READ_ONCE(ct->mark).  This
                                                 is the cross-packet state a per-packet
                                                 [pkt_ct] oracle could not express. *)
-  e_nat : data -> option (option data * option data * option nat);
+  e_nat : data -> option (option data * option data * option nat * option data);
                             (* the SHARED, flow-keyed NAT-mapping table: the
                                translation tuple the kernel ESTABLISHES ONCE on the
                                first (unconfirmed) packet of a flow and STORES in the
@@ -261,15 +261,21 @@ Record env : Type := {
                                (pre-NAT) L3 address of the manip slot (needed to apply the
                                INVERSE manip on reply-direction packets, mirroring the
                                kernel storing both tuples of the conntrack entry), the new
-                               L3 address (if a NAT_REG_ADDR operand was present), and the
-                               new L4 port (if a NAT_REG_PROTO operand was present).  This
+                               L3 address (if a NAT_REG_ADDR operand was present), the
+                               new L4 port (if a NAT_REG_PROTO operand was present), and the
+                               ORIGINAL (pre-NAT) L4 port of the manip slot (also stored iff
+                               a NAT_REG_PROTO operand was present — needed to apply the
+                               INVERSE port manip on reply-direction packets, exactly as the
+                               kernel stores the original port in the reply tuple so
+                               nf_nat_manip_pkt(REPLY) un-rewrites the opposite slot's port).
+                               This
                                is the flow-keyed NAT state a per-packet pure [apply_nat]
                                could not express — the exact analogue of [e_ct] for the
                                NAT tuple.  [apply_nat] applies [new_addr_opt] FORWARD on an
                                original-direction packet ([pkt_ctdir_orig = true]) and
-                               restores [orig_addr_opt] on the OPPOSITE slot for a reply
-                               ([pkt_ctdir_orig = false]) — nf_nat_packet's direction
-                               inversion. *)
+                               restores [orig_addr_opt] (and the original port) on the
+                               OPPOSITE slot for a reply ([pkt_ctdir_orig = false]) —
+                               nf_nat_packet's direction inversion. *)
   e_numgen : numgen_spec -> nat;
                             (* the SHARED, persistent `numgen inc` counter, keyed by the
                                numgen instance ([numgen_spec]) — each `numgen inc`
