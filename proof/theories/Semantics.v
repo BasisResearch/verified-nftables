@@ -792,19 +792,107 @@ Definition set_sport (p : packet) (v : data) : packet := set_th_field p 0 2 v.
 Definition set_dport (p : packet) (v : data) : packet := set_th_field p 2 2 v.
 
 (** KNOWN APPROXIMATION (below resolution): the L4 (TCP/UDP) CHECKSUM is NOT
-    updated by [set_sport]/[set_dport] (nor by the L3 address rewrite, whose new
-    address the L4 pseudo-header covers).  The kernel's [tcp_manip_pkt]/
-    [udp_manip_pkt] run [inet_proto_csum_replace2(&hdr->check, oldport, newport)]
-    and [nf_csum_update] (nf_nat_proto.c:177/57).  Modelling that faithfully needs
-    the L4 PROTOCOL at the write site (TCP checksum @ transport bytes 16..17, UDP
-    @ 6..7 — a protocol-dependent slot the NAT statement does not itself carry),
-    so the L4 checksum is left as a documented gap, exactly like ICMP-error
-    emission.  CRUCIALLY, [set_sport]/[set_dport] only ever splice the 2-byte PORT
-    slot, so the model NEVER PROVES the L4 checksum is unchanged across a rewrite
-    that the kernel would update — it simply does not assert anything about those
-    bytes.  By contrast the IPv4 L3 header checksum IS a fixed slot (bytes 10..11)
-    and IS updated ([set_nh_addr_ip4], above), because the formerly-provable
-    "IP checksum unchanged after a rewrite" was a reachable CERTIFIED falsehood. *)
+    updated by [set_sport]/[set_dport] (the PORT-driven part).  The kernel's
+    [tcp_manip_pkt]/[udp_manip_pkt] run
+    [inet_proto_csum_replace2(&hdr->check, oldport, newport)] (nf_nat_proto.c:177/57)
+    for the port change too; modelling THAT faithfully would need the new port's
+    contribution folded into the same slot.  CRUCIALLY, [set_sport]/[set_dport]
+    only ever splice the 2-byte PORT slot, so the model NEVER PROVES the L4
+    checksum is unchanged across a PORT rewrite that the kernel would update — it
+    simply does not assert anything about those bytes.
+
+    By contrast the ADDRESS-driven part of the L4 checksum IS modelled (below,
+    [set_l4_csum_addr] threaded into [set_saddr]/[set_daddr]): the L4 (TCP/UDP)
+    checksum covers the IPv4/IPv6 pseudo-header, which includes the L3 addresses,
+    so a `dnat`/`snat` that changes ONLY the address still changes the L4 checksum
+    in real nftables — [nf_nat_ipv4_manip_pkt] ALWAYS runs [l4proto_manip_pkt]
+    (which calls [nf_csum_update] -> [inet_proto_csum_replace4(check,...,oldip,newip)])
+    BEFORE the address splice (nf_nat_proto.c:324,177,417), INDEPENDENT of any port
+    change.  Leaving the L4 checksum byte-for-byte stale after an address-only
+    rewrite was a reachable CERTIFIED falsehood (the model could prove the TCP
+    checksum unchanged), so the address part is now folded in, exactly like the
+    IPv4 L3 header checksum (bytes 10..11, [set_nh_addr_ip4]). *)
+
+(** The (offset, length) of the L4 (TCP/UDP) checksum slot inside the transport
+    header, chosen by the L4 protocol number ([pkt_meta MKl4proto], read via
+    [FMetaL4proto] = a 1-byte string): TCP (6) keeps its checksum at transport
+    bytes 16..17 (`struct tcphdr.check`), UDP (17) at 6..7 (`struct udphdr.check`).
+    Any other protocol (no L4 checksum the kernel's [l4proto_manip_pkt] would
+    fix — ICMP/GRE/…) yields [None], so the address rewrite leaves the transport
+    header untouched (the kernel's `default: return true` of [l4proto_manip_pkt]). *)
+Definition l4_csum_slot (l4proto : data) : option (nat * nat) :=
+  match l4proto with
+  | p :: nil =>
+      if Nat.eqb p 6 then Some (16, 2)        (* IPPROTO_TCP -> tcphdr.check @16 *)
+      else if Nat.eqb p 17 then Some (6, 2)   (* IPPROTO_UDP -> udphdr.check  @6 *)
+      else None
+  | _ => None
+  end.
+
+(** Whenever [l4_csum_slot] returns a slot, it starts at offset >= 6 (TCP @16,
+    UDP @6) and has length 2 — so it lies strictly after the L4 PORT slots and
+    the checksum is a 2-byte field. *)
+Lemma l4_csum_slot_geom : forall l4 coff clen,
+  l4_csum_slot l4 = Some (coff, clen) -> 6 <= coff /\ clen = 2.
+Proof.
+  intros l4 coff clen H. unfold l4_csum_slot in H.
+  destruct l4 as [|p [|b rest]]; try discriminate.
+  destruct (Nat.eqb p 6); [injection H as <- <-; split; lia|].
+  destruct (Nat.eqb p 17); [injection H as <- <-; split; lia| discriminate].
+Qed.
+
+(** Update the L4 (TCP/UDP) checksum for an L3-ADDRESS change [old -> new] (the
+    pseudo-header that the L4 checksum covers includes the addresses), mirroring
+    [nf_csum_update] -> [inet_proto_csum_replace4(check, skb, oldip, newip, true)]
+    (nf_nat_proto.c:417).  Applies ONLY when (a) the kernel actually has an L4
+    header to fix ([pkt_have_l4 p], i.e. NFT_PKTINFO_L4PROTO was set — the same
+    flag [read_payload_ok] gates a transport load on), (b) the L4 protocol has a
+    checksum slot ([l4_csum_slot] = Some), and (c) the transport header is long
+    enough to hold that slot.  Otherwise the transport header is left unchanged
+    (the kernel's `if (hdrsize < sizeof hdr) return true;` / unknown-proto
+    fall-through).  [old]/[new] are the address byte strings (4 bytes for IPv4,
+    16 for IPv6); [csum_update_field] folds every 16-bit word of the delta into
+    the slot, the RFC-1624 incremental update the kernel performs word by word. *)
+Definition set_l4_csum_addr (p : packet) (old new : data) : packet :=
+  match l4_csum_slot (pkt_meta p MKl4proto) with
+  | Some (coff, clen) =>
+      if andb (pkt_have_l4 p) (Nat.leb (coff + clen) (List.length (pkt_th p)))
+      then let ck0 := slice (pkt_th p) coff clen in
+           let ck1 := csum_update_field ck0 old new in
+           set_th_field p coff clen ck1
+      else p
+  | None => p
+  end.
+
+(** [set_l4_csum_addr] leaves the network header (and the L4 PORT slots 0..1/2..3,
+    disjoint from the TCP @16 / UDP @6 checksum slots) untouched: it only ever
+    splices the 2-byte checksum slot of the transport header. *)
+Lemma set_l4_csum_addr_nh : forall p old new,
+  pkt_nh (set_l4_csum_addr p old new) = pkt_nh p.
+Proof.
+  intros p old new. unfold set_l4_csum_addr.
+  destruct (l4_csum_slot (pkt_meta p MKl4proto)) as [[coff clen]|]; [|reflexivity].
+  destruct (pkt_have_l4 p && Nat.leb (coff + clen) (List.length (pkt_th p)));
+    reflexivity.
+Qed.
+
+(** [set_l4_csum_addr] preserves the LENGTH of the transport header: the only
+    write is a [splice] of a 2-byte checksum into a slot the guard proved fits,
+    and [splice] preserves length when the spliced region lies within bounds. *)
+Lemma set_l4_csum_addr_th_len : forall p old new,
+  List.length (pkt_th (set_l4_csum_addr p old new)) = List.length (pkt_th p).
+Proof.
+  intros p old new. unfold set_l4_csum_addr.
+  destruct (l4_csum_slot (pkt_meta p MKl4proto)) as [[coff clen]|] eqn:Hslot;
+    [|reflexivity].
+  destruct (pkt_have_l4 p && Nat.leb (coff + clen) (List.length (pkt_th p))) eqn:Hg;
+    [|reflexivity].
+  apply andb_true_iff in Hg as [_ Hlen]. apply PeanoNat.Nat.leb_le in Hlen.
+  apply l4_csum_slot_geom in Hslot as [_ Hclen]. subst clen.
+  cbn [set_th_field pkt_th]. unfold splice.
+  rewrite !length_app, length_firstn, length_skipn.
+  rewrite csum_update_field_length. lia.
+Qed.
 
 (** The (offset, length) of the L3 source / destination address slot for a NAT
     [family] ("ip" = IPv4: src @12 len 4 / dst @16 len 4, where [FIp4Saddr] /
@@ -891,8 +979,11 @@ Qed.
     [csum_replace4]); IPv6 has no L3 checksum so it is a bare slot splice. *)
 Definition set_saddr (family : String.string) (p : packet) (v : data) : packet :=
   let '(off, len) := saddr_slot family in
-  if String.eqb family nat_fam_ip6 then set_nh_field p off len v
-  else set_nh_addr_ip4 p off len v.
+  let old := slice (pkt_nh p) off len in
+  let p1 :=
+    if String.eqb family nat_fam_ip6 then set_nh_field p off len v
+    else set_nh_addr_ip4 p off len v in
+  set_l4_csum_addr p1 old v.
 
 (** Destination-NAT a packet: rewrite its destination address (the [daddr_slot]
     for the NAT [family]) to [v].  This is the data-plane effect a
@@ -901,21 +992,92 @@ Definition set_saddr (family : String.string) (p : packet) (v : data) : packet :
     [nf_nat_ipv4_manip_pkt] also runs [csum_replace4] on the IPv4 header checksum. *)
 Definition set_daddr (family : String.string) (p : packet) (v : data) : packet :=
   let '(off, len) := daddr_slot family in
-  if String.eqb family nat_fam_ip6 then set_nh_field p off len v
-  else set_nh_addr_ip4 p off len v.
+  let old := slice (pkt_nh p) off len in
+  let p1 :=
+    if String.eqb family nat_fam_ip6 then set_nh_field p off len v
+    else set_nh_addr_ip4 p off len v in
+  set_l4_csum_addr p1 old v.
 
-(** [set_saddr]/[set_daddr] leave the transport header untouched (for both
-    families): the L4 port and the rest of the transport stay byte-for-byte. *)
-Lemma set_saddr_th : forall fam p v, pkt_th (set_saddr fam p v) = pkt_th p.
+(** Reading a slot [poff..poff+plen) that ends at or before the splice offset
+    [soff] (i.e. [poff + plen <= soff]) is unaffected by [splice l soff slen w]
+    — the spliced region lies strictly after the read.  Used to show the L4 PORT
+    slots (0..1 / 2..3) survive the L4-checksum splice (TCP @16 / UDP @6). *)
+Lemma slice_splice_before : forall l w soff slen poff plen,
+  poff + plen <= soff ->
+  soff <= List.length l ->
+  slice (splice l soff slen w) poff plen = slice l poff plen.
 Proof.
-  intros fam p v. unfold set_saddr.
+  intros l w soff slen poff plen Hle Hsoff. unfold slice, splice.
+  (* The read [poff..poff+plen) lies inside [firstn soff l]: reduce both sides
+     to a read of that prefix.  Key: firstn (poff+plen) commutes with the splice
+     because poff+plen <= soff <= |firstn soff l ++ ...|. *)
+  rewrite (firstn_skipn_comm plen poff).
+  rewrite (firstn_skipn_comm plen poff l).
+  f_equal.
+  (* firstn (poff+plen) (firstn soff l ++ w ++ ...) = firstn (poff+plen) l *)
+  rewrite firstn_app, firstn_length_le by lia.
+  replace (poff + plen - soff) with 0 by lia. cbn [firstn]. rewrite app_nil_r.
+  rewrite firstn_firstn. f_equal. lia.
+Qed.
+
+(** [set_l4_csum_addr] preserves the L4 PORT slots: reading any [poff..poff+plen)
+    with [poff + plen <= 6] (covers sport @0..1 and dport @2..3) returns the same
+    bytes — the checksum splice (TCP @16 / UDP @6) lies after the ports. *)
+Lemma slice_set_l4_csum_addr_port : forall p old new poff plen,
+  poff + plen <= 6 ->
+  slice (pkt_th (set_l4_csum_addr p old new)) poff plen = slice (pkt_th p) poff plen.
+Proof.
+  intros p old new poff plen Hle. unfold set_l4_csum_addr.
+  destruct (l4_csum_slot (pkt_meta p MKl4proto)) as [[coff clen]|] eqn:Hslot;
+    [|reflexivity].
+  destruct (pkt_have_l4 p && Nat.leb (coff + clen) (List.length (pkt_th p))) eqn:Hg;
+    [|reflexivity].
+  cbn [set_th_field pkt_th].
+  apply andb_true_iff in Hg as [_ Hlen]. apply PeanoNat.Nat.leb_le in Hlen.
+  (* coff is 16 (TCP) or 6 (UDP); poff+plen <= 6 <= coff, and coff <= |pkt_th| *)
+  apply l4_csum_slot_geom in Hslot as [Hge Hclen]. subst clen.
+  apply slice_splice_before; lia.
+Qed.
+
+(** [set_saddr]/[set_daddr] preserve the L4 PORT slots (sport @0..1, dport @2..3):
+    the address rewrite + L4-checksum update only ever touch the network header,
+    the IPv4 header checksum, and the L4 CHECKSUM slot (TCP @16 / UDP @6) — never
+    the ports.  (Below the resolution where the kernel ALSO folds the port change
+    into the L4 checksum, see [set_sport]/[set_dport]'s note: the model's NAT-addr
+    rewrite leaves the port bytes themselves byte-for-byte, which is faithful.) *)
+Lemma set_saddr_th_port : forall fam p v poff plen,
+  poff + plen <= 6 ->
+  slice (pkt_th (set_saddr fam p v)) poff plen = slice (pkt_th p) poff plen.
+Proof.
+  intros fam p v poff plen Hle. unfold set_saddr.
   destruct (saddr_slot fam) as [off len].
+  rewrite slice_set_l4_csum_addr_port by lia.
   destruct (String.eqb fam nat_fam_ip6); reflexivity.
 Qed.
-Lemma set_daddr_th : forall fam p v, pkt_th (set_daddr fam p v) = pkt_th p.
+Lemma set_daddr_th_port : forall fam p v poff plen,
+  poff + plen <= 6 ->
+  slice (pkt_th (set_daddr fam p v)) poff plen = slice (pkt_th p) poff plen.
 Proof.
-  intros fam p v. unfold set_daddr.
+  intros fam p v poff plen Hle. unfold set_daddr.
   destruct (daddr_slot fam) as [off len].
+  rewrite slice_set_l4_csum_addr_port by lia.
+  destruct (String.eqb fam nat_fam_ip6); reflexivity.
+Qed.
+
+(** [set_saddr]/[set_daddr] preserve the LENGTH of the transport header (the
+    address splice never touches [pkt_th]; the L4-checksum splice is in-bounds). *)
+Lemma set_saddr_th_len : forall fam p v,
+  List.length (pkt_th (set_saddr fam p v)) = List.length (pkt_th p).
+Proof.
+  intros fam p v. unfold set_saddr. destruct (saddr_slot fam) as [off len].
+  rewrite set_l4_csum_addr_th_len.
+  destruct (String.eqb fam nat_fam_ip6); reflexivity.
+Qed.
+Lemma set_daddr_th_len : forall fam p v,
+  List.length (pkt_th (set_daddr fam p v)) = List.length (pkt_th p).
+Proof.
+  intros fam p v. unfold set_daddr. destruct (daddr_slot fam) as [off len].
+  rewrite set_l4_csum_addr_th_len.
   destruct (String.eqb fam nat_fam_ip6); reflexivity.
 Qed.
 
@@ -942,6 +1104,51 @@ Proof.
   rewrite firstn_app. rewrite Hv. replace (len - len) with 0 by lia.
   rewrite firstn_O, app_nil_r.
   apply firstn_all2. lia.
+Qed.
+
+(** The network header after [set_saddr]/[set_daddr] is EXACTLY the address-splice
+    result: the trailing L4-checksum update ([set_l4_csum_addr]) touches only the
+    transport header.  So a network-header read back through the full NAT rewrite
+    is the read back through the inner splice. *)
+Lemma set_saddr_nh : forall fam p v,
+  pkt_nh (set_saddr fam p v)
+    = (let '(off, len) := saddr_slot fam in
+       if String.eqb fam nat_fam_ip6 then pkt_nh (set_nh_field p off len v)
+       else pkt_nh (set_nh_addr_ip4 p off len v)).
+Proof.
+  intros fam p v. unfold set_saddr. destruct (saddr_slot fam) as [off len].
+  rewrite set_l4_csum_addr_nh.
+  destruct (String.eqb fam nat_fam_ip6); reflexivity.
+Qed.
+Lemma set_daddr_nh : forall fam p v,
+  pkt_nh (set_daddr fam p v)
+    = (let '(off, len) := daddr_slot fam in
+       if String.eqb fam nat_fam_ip6 then pkt_nh (set_nh_field p off len v)
+       else pkt_nh (set_nh_addr_ip4 p off len v)).
+Proof.
+  intros fam p v. unfold set_daddr. destruct (daddr_slot fam) as [off len].
+  rewrite set_l4_csum_addr_nh.
+  destruct (String.eqb fam nat_fam_ip6); reflexivity.
+Qed.
+
+(** IPv4 source/destination address read-back through the FULL NAT rewrite
+    (address splice + L3 checksum update + L4 checksum update): the address slot
+    survives byte-for-byte. *)
+Lemma slice_set_saddr_ip4_same : forall p v,
+  16 <= List.length (pkt_nh p) -> List.length v = 4 ->
+  slice (pkt_nh (set_saddr nat_fam_ip4 p v)) 12 4 = v.
+Proof.
+  intros p v Hlen Hv. rewrite set_saddr_nh. change (saddr_slot nat_fam_ip4) with (12, 4).
+  change (String.eqb nat_fam_ip4 nat_fam_ip6) with false; cbv iota.
+  apply slice_set_nh_addr_ip4_same; lia.
+Qed.
+Lemma slice_set_daddr_ip4_same : forall p v,
+  20 <= List.length (pkt_nh p) -> List.length v = 4 ->
+  slice (pkt_nh (set_daddr nat_fam_ip4 p v)) 16 4 = v.
+Proof.
+  intros p v Hlen Hv. rewrite set_daddr_nh. change (daddr_slot nat_fam_ip4) with (16, 4).
+  change (String.eqb nat_fam_ip4 nat_fam_ip6) with false; cbv iota.
+  apply slice_set_nh_addr_ip4_same; lia.
 Qed.
 
 (** ** Dynamic sets: the `dynset` feedback loop (`add`/`update`/`delete @s {key}`).

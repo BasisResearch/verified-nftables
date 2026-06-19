@@ -54,9 +54,8 @@ Lemma daddr_after_set : forall p v,
   field_value FIp4Daddr (set_daddr "ip" p v) = v.
 Proof.
   intros p v Hlen Hv.
-  unfold field_value; cbn [field_load do_load]; unfold read_payload, set_daddr;
-    change (daddr_slot "ip") with (16, 4); cbn [String.eqb].
-  apply slice_set_nh_addr_ip4_same; lia.
+  unfold field_value; cbn [field_load do_load]; unfold read_payload.
+  apply slice_set_daddr_ip4_same; [exact Hlen | exact Hv].
 Qed.
 
 Theorem dnat_dest_is_target : forall p,
@@ -201,8 +200,8 @@ Theorem dnat_port_dport_is_8080 : forall p,
   read_payload PTransport 2 2 (chain_out dnat_port_chain p) = [31; 144].
 Proof.
   intros p Hnh Hth. unfold chain_out. rewrite dnat_port_output. cbn [snd].
-  (* set_daddr touches pkt_nh only, so pkt_th length is preserved. *)
-  apply dport_after_set; [cbn [set_daddr set_nh_field pkt_th]; exact Hth | reflexivity].
+  (* set_daddr touches pkt_nh + (the disjoint L4 csum slot); pkt_th length preserved. *)
+  apply dport_after_set; [rewrite set_daddr_th_len; exact Hth | reflexivity].
 Qed.
 
 (* The infidelity is REFUTED: the dnat-with-port chain does NOT leave the transport
@@ -222,8 +221,10 @@ Qed.
 
 (** A `snat ... :PORT` rewrites the L4 SOURCE port (transport bytes 0..1), not the
     destination — the [NF_NAT_MANIP_SRC] half.  A dnat with NO port operand
-    ([nat_pmin] = None, the address-only case) leaves the transport header
-    untouched, mirroring `if (priv->sreg_proto_min)` (nft_nat.c:120). *)
+    ([nat_pmin] = None, the address-only case) leaves the transport-header PORT
+    bytes untouched (mirroring `if (priv->sreg_proto_min)`, nft_nat.c:120) — but
+    NOT the transport header in full: see below, the L4 CHECKSUM is still updated
+    for the address change. *)
 Definition snat_port_spec : nat_spec :=
   {| nat_imms := [(1, [192;168;0;1])]; nat_field := None; nat_map := None; nat_src := None;
      nat_kind := "snat"; nat_family := "ip";
@@ -239,10 +240,18 @@ Theorem snat_port_writes_sport : forall h p,
     = set_sport (set_saddr "ip" p [192;168;0;1]) (nat_port_bytes 4000).
 Proof. reflexivity. Qed.
 
-(* The address-only dnat ([nat_pmin]=None) is a pure L3 rewrite: pkt_th preserved. *)
-Theorem dnat_addronly_th_preserved : forall h p,
-  pkt_th (apply_nat h dnat_rule p) = pkt_th p.
-Proof. reflexivity. Qed.
+(* The address-only dnat ([nat_pmin]=None) leaves the L4 PORT bytes (transport
+   slots 0..1 / 2..3) byte-for-byte unchanged — the kernel's
+   `if (priv->sreg_proto_min)` is NOT taken — even though it does touch the L4
+   CHECKSUM slot for the address change (see [dnat_addronly_updates_l4_csum]). *)
+Theorem dnat_addronly_ports_preserved : forall h p poff plen,
+  poff + plen <= 6 ->
+  slice (pkt_th (apply_nat h dnat_rule p)) poff plen = slice (pkt_th p) poff plen.
+Proof.
+  intros h p poff plen Hle.
+  change (apply_nat h dnat_rule p) with (set_daddr "ip" p [10;0;0;1]).
+  apply set_daddr_th_port; exact Hle.
+Qed.
 
 (** * Port-only NAT preserves the L3 address (independent address/proto guards).
 
@@ -347,4 +356,58 @@ Proof. vm_compute. discriminate. Qed.
 Theorem dnat_ip_checksum_is_incremental :
   ip_csum (chain_out dnat_chain pkt4)
     = csum_update_field (ip_csum pkt4) [1;2;3;4] [10;0;0;1].
+Proof. vm_compute. reflexivity. Qed.
+
+(** * The L4 (TCP/UDP) checksum is NOT left stale after an ADDRESS-ONLY NAT.
+
+    The L4 (TCP/UDP) checksum covers the IPv4/IPv6 PSEUDO-HEADER, which includes
+    the L3 addresses, so a `dnat`/`snat` that changes ONLY the address still
+    changes the L4 checksum in real nftables.  The kernel's [nf_nat_ipv4_manip_pkt]
+    (nf_nat_proto.c:324) ALWAYS runs [l4proto_manip_pkt] BEFORE the address splice;
+    for TCP, [tcp_manip_pkt] (nf_nat_proto.c:177) calls [nf_csum_update] ->
+    [inet_proto_csum_replace4(&hdr->check, ..., oldip, newip, true)]
+    (nf_nat_proto.c:417), INDEPENDENT of any port change.  The model now mirrors
+    this: [set_daddr]/[set_saddr] thread [set_l4_csum_addr], which updates the L4
+    checksum slot (TCP @ transport 16..17, UDP @ 6..7) for the address delta.  A
+    red probe `tcp_csum (chain_out dnat_chain p) = tcp_csum p` — asserting the TCP
+    checksum is UNCHANGED after an address-only dnat — is now provably FALSE.
+
+    [tcp_csum] names the TCP checksum slot (transport bytes 16..17). *)
+Definition tcp_csum (p : packet) : data := slice (pkt_th p) 16 2.
+
+(* A TCP-bearing packet: l4proto = TCP (6) in the meta oracle, and a 20-byte
+   transport header so the TCP checksum slot (bytes 16..17) exists.  The checksum
+   field starts at [0;0] (bytes 16..17 of pkt_th). *)
+Definition pkt4tcp : packet :=
+  {| pkt_env := env0;
+     pkt_meta := fun k => if meta_eqb k MKl4proto then [6] else [];
+     pkt_ct := fun _ => [];
+     pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
+     pkt_lh := []; pkt_nh := ip4_hdr;
+     pkt_th := [ 0;80; 0;0; 0;0;0;0; 0;0;0;0; 0;0;0;0; 0;0; 0;0 ]; pkt_ih := [];
+     pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
+     pkt_osf := []; pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
+     pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
+     pkt_inner := fun _ _ _ _ => []; pkt_have_l4 := true; pkt_fragoff := 0 |}.
+
+(* The dnat changes the destination 1.2.3.4 -> 10.0.0.1, so the TCP checksum slot
+   MUST change (the pseudo-header covers the address).  The red property
+   [tcp_csum out = tcp_csum p] — the certified falsehood — is now FALSE. *)
+Theorem dnat_updates_tcp_checksum :
+  tcp_csum (chain_out dnat_chain pkt4tcp) <> tcp_csum pkt4tcp.
+Proof. vm_compute. discriminate. Qed.
+
+(* The new TCP checksum is exactly the RFC-1624 incremental update of the old
+   checksum for the (old daddr -> new daddr) change — i.e. the address delta
+   folded into the L4 checksum, modelling [inet_proto_csum_replace4]. *)
+Theorem dnat_tcp_checksum_is_incremental :
+  tcp_csum (chain_out dnat_chain pkt4tcp)
+    = csum_update_field (tcp_csum pkt4tcp) [1;2;3;4] [10;0;0;1].
+Proof. vm_compute. reflexivity. Qed.
+
+(* The L4 PORT bytes (transport slots 0..1 sport / 2..3 dport) are NOT disturbed
+   by the address-only dnat — only the address-driven L4 checksum is. *)
+Theorem dnat_addronly_tcp_ports_unchanged :
+  slice (pkt_th (chain_out dnat_chain pkt4tcp)) 0 4
+    = slice (pkt_th pkt4tcp) 0 4.
 Proof. vm_compute. reflexivity. Qed.

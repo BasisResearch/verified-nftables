@@ -53,7 +53,8 @@ Lemma ip6_daddr_after_set : forall p v,
   field_value FIp6Daddr (set_daddr "ip6" p v) = v.
 Proof.
   intros p v Hlen Hv.
-  unfold field_value; cbn [field_load do_load]; unfold read_payload, set_daddr;
+  unfold field_value; cbn [field_load do_load]; unfold read_payload.
+  rewrite set_daddr_nh;
     change (daddr_slot "ip6") with (24, 16);
     change (String.eqb "ip6" nat_fam_ip6) with true; cbv iota;
     cbn [set_nh_field pkt_nh].
@@ -72,7 +73,8 @@ Lemma ip6_saddr_after_set : forall p v,
   field_value FIp6Saddr (set_saddr "ip6" p v) = v.
 Proof.
   intros p v Hlen Hv.
-  unfold field_value; cbn [field_load do_load]; unfold read_payload, set_saddr;
+  unfold field_value; cbn [field_load do_load]; unfold read_payload.
+  rewrite set_saddr_nh;
     change (saddr_slot "ip6") with (8, 16);
     change (String.eqb "ip6" nat_fam_ip6) with true; cbv iota;
     cbn [set_nh_field pkt_nh].
@@ -93,7 +95,7 @@ Lemma ip6_dnat_nh_len_preserved : forall p,
   List.length (pkt_nh (set_daddr "ip6" p tgt6)) = List.length (pkt_nh p).
 Proof.
   intros p Hlen.
-  unfold set_daddr; change (daddr_slot "ip6") with (24, 16);
+  rewrite set_daddr_nh; change (daddr_slot "ip6") with (24, 16);
     change (String.eqb "ip6" nat_fam_ip6) with true; cbv iota;
     cbn [set_nh_field pkt_nh].
   unfold splice. rewrite !app_length, firstn_length_le by lia.

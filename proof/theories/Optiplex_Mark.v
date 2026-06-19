@@ -254,9 +254,8 @@ Lemma saddr_after_set : forall p v,
   field_value FIp4Saddr (set_saddr "ip" p v) = v.
 Proof.
   intros p v Hlen Hv.
-  unfold field_value; cbn [field_load do_load]; unfold read_payload, set_saddr;
-    change (saddr_slot "ip") with (12, 4); cbn [String.eqb].
-  apply slice_set_nh_addr_ip4_same; lia.
+  unfold field_value; cbn [field_load do_load]; unfold read_payload.
+  apply slice_set_saddr_ip4_same; [exact Hlen | exact Hv].
 Qed.
 
 Theorem masquerade_source_is_exit_iface : forall p ifaddr,
