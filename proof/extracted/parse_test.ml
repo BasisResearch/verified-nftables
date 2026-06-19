@@ -1043,6 +1043,40 @@ let check_ct_mark_crosspkt () =
     (not (data_eq (Syntax.field_value Syntax.FCtMark p2_other) mark99));
   Printf.printf "\n"
 
+(* (I'') ct/meta SET value width is KEY-SPECIFIC, not always the 4-byte mark
+   register.  The kernel stores `ct zone` as a u16 (nft_ct.c nft_reg_load16 ->
+   zone.id), `ct mark`/`ct event`/`meta mark`/`meta priority` as a u32, `ct
+   label` as a 128-bit value, and `meta pkttype` as a u8.  The parser used to
+   hardcode the 4-byte KMark shape for ALL of them, so `ct zone set 1` wrongly
+   stored 4 bytes.  After the fix each key encodes at its own register width. *)
+let check_ct_meta_set_width () =
+  Printf.printf "=== (I'') ct/meta set value width is key-specific (zone u16, mark u32) ===\n";
+  let body_of src ~table ~chain =
+    let parsed = Nft_parse.parse_string src in
+    let c = Nft_lower.find_chain parsed ~table ~chain in
+    (Stdlib.List.nth c.Syntax.c_rules 0).Syntax.r_body in
+  (* ct zone set 1 -> 2-byte (u16) host-endian value [1;0], NOT [1;0;0;0] *)
+  let zb = body_of
+    "table ip t {\n  chain c {\n    ct zone set 1\n  }\n}\n" ~table:"t" ~chain:"c" in
+  check "ct zone set 1 lowers to SCtSet CKzone (VImm [1;0]) (u16, 2 bytes)"
+    (zb = [Syntax.BStmt (Syntax.SCtSet (Packet.CKzone, Syntax.VImm [1;0]))]);
+  check "ct zone value is exactly 2 bytes wide (kernel u16, not the 4-byte mark)"
+    (match zb with
+     | [Syntax.BStmt (Syntax.SCtSet (Packet.CKzone, Syntax.VImm v))] ->
+         Stdlib.List.length v = 2
+     | _ -> false);
+  (* ct mark set 5 -> still 4-byte (u32) host-endian [5;0;0;0] *)
+  let mb = body_of
+    "table ip t {\n  chain c {\n    ct mark set 5\n  }\n}\n" ~table:"t" ~chain:"c" in
+  check "ct mark set 5 still lowers to a 4-byte u32 value [5;0;0;0]"
+    (mb = [Syntax.BStmt (Syntax.SCtSet (Packet.CKmark, Syntax.VImm [5;0;0;0]))]);
+  (* meta mark set 7 -> 4-byte (u32) host-endian [7;0;0;0] *)
+  let mmb = body_of
+    "table ip t {\n  chain c {\n    mark set 7\n  }\n}\n" ~table:"t" ~chain:"c" in
+  check "meta mark set 7 lowers to a 4-byte u32 value [7;0;0;0]"
+    (mmb = [Syntax.BStmt (Syntax.SMetaSet (Packet.MKmark, Syntax.VImm [7;0;0;0]))]);
+  Printf.printf "\n"
+
 (* (V) INTERVAL/range verdict-map keys.  A real nftables verdict map is the
    rbtree set type, declared NFT_SET_INTERVAL | NFT_SET_MAP
    (net/netfilter/nft_set_rbtree.c), so a vmap key may be a RANGE/prefix and the
@@ -2182,6 +2216,7 @@ let () =
     check_iif_index ();
     check_ct_state ();
     check_ct_mark_crosspkt ();
+    check_ct_meta_set_width ();
     check_notrack ();
     check_notrack_intra ();
     check_exthdr_present ();

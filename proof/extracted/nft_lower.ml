@@ -153,6 +153,11 @@ let lookup ctx tbl s =
 type kind =
   | KIfname | KIfindex | KIp4 | KIp6 | KPort | KL4proto | KNfproto | KEthertype
   | KCtstate | KMark | KIcmp | KIcmpv6 | KPkttype | KFibType | KTcpflag | KNum of int
+  (* host-endian (little-endian on x86) integer of [n] bytes; used for the value
+     of `ct <key> set` / `meta <key> set` where the kernel register width is
+     key-specific (e.g. ct zone is a u16 -> [KNumLe 2], ct label a 128-bit value
+     -> [KNumLe 16]).  [KMark] is the special case [KNumLe 4]. *)
+  | KNumLe of int
 
 (* fib route-type symbols (the RTN_ route types), as 4-byte words *)
 let sym_fibtype = [
@@ -204,13 +209,14 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
   | KFibType, Nft_ast.Vsym s -> lookup "fib type" sym_fibtype s
   | KFibType, Nft_ast.Vnum n -> bytes_of_int 4 n
   | KNum w, Nft_ast.Vnum n -> bytes_of_int w n
+  | KNumLe w, Nft_ast.Vnum n -> bytes_of_int_le w n
   | _, Nft_ast.Vvar n -> raise (Unsupported ("unresolved $" ^ n))
   | _ -> raise (Unsupported "value/selector type mismatch")
 
 (* the byte width a kind compares at (for building a prefix mask) *)
 let width_of_kind = function
   | KIp4 -> 4 | KIp6 -> 16 | KPort | KEthertype -> 2
-  | KCtstate | KMark | KIfindex -> 4 | KNum w -> w | _ -> 1
+  | KCtstate | KMark | KIfindex -> 4 | KNum w -> w | KNumLe w -> w | _ -> 1
 
 (* A kind stored HOST-ENDIAN (little-endian on x86) in the register, like the
    kernel holds `meta mark` / `ct mark` (BYTEORDER_HOST_ENDIAN).  For these,
@@ -652,6 +658,30 @@ let meta_key n = match Codec.meta_of_name n with
 let ct_key n = match Codec.ct_of_name n with
   | Some k -> k | None -> raise (Unsupported ("ct key: " ^ n))
 
+(* The register WIDTH (and byteorder) the kernel uses when STORING a value into a
+   ct/meta key — decoupled from `mark`'s 4-byte shape.  Mirrors the kernel set-eval
+   paths (net/netfilter/nft_ct.c nft_ct_set_eval / nft_ct_set_zone_eval and
+   nft_meta.c nft_meta_set_eval):
+     ct mark / secmark / eventmask : u32  (nft_ct.c:8 `u32 value = regs->data[..]`)
+     ct zone                       : u16  (nft_ct.c nft_reg_load16 -> zone.id)
+     ct label                      : 128-bit (16 bytes, nf_connlabels_replace)
+     meta mark / priority / secmark: u32  (skb->mark/priority/secmark = value)
+     meta pkttype / nftrace        : u8   (nft_reg_load8)
+   All are HOST-ENDIAN registers, so we encode little-endian (host order on x86),
+   exactly as `mark` (KMark = KNumLe 4) already does. *)
+let ct_set_kind (k : Packet.ct_key) : kind =
+  match k with
+  | Packet.CKzone   -> KNumLe 2
+  | Packet.CKlabel  -> KNumLe 16
+  | Packet.CKmark | Packet.CKevent -> KNumLe 4
+  | _ -> raise (Unsupported "ct key is not settable")
+
+let meta_set_kind (k : Packet.meta_key) : kind =
+  match k with
+  | Packet.MKmark | Packet.MKpriority -> KNumLe 4
+  | Packet.MKpkttype -> KNumLe 1
+  | _ -> raise (Unsupported "meta key is not settable")
+
 let lower_stmt st (s : Nft_ast.sstmt) : Syntax.stmt option =
   match s with
   | Nft_ast.StComment _ -> None              (* metadata; no verdict/bytecode effect *)
@@ -665,9 +695,11 @@ let lower_stmt st (s : Nft_ast.sstmt) : Syntax.stmt option =
       (* terminal NAT: the single-packet model treats it as a terminal Accept *)
       None
   | Nft_ast.StMetaSet (k, v) ->
-      Some (Syntax.SMetaSet (meta_key k, Syntax.VImm (enc_atom KMark (resolve_var st v))))
+      let key = meta_key k in
+      Some (Syntax.SMetaSet (key, Syntax.VImm (enc_atom (meta_set_kind key) (resolve_var st v))))
   | Nft_ast.StCtSet (k, v) ->
-      Some (Syntax.SCtSet (ct_key k, Syntax.VImm (enc_atom KMark (resolve_var st v))))
+      let key = ct_key k in
+      Some (Syntax.SCtSet (key, Syntax.VImm (enc_atom (ct_set_kind key) (resolve_var st v))))
 
 (* does a statement force a terminal Accept (NAT)? *)
 let stmt_is_terminal_accept = function
