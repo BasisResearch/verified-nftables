@@ -595,6 +595,17 @@ let check_dnat_rewrite () =
     (data_eq (Syntax.field_value Syntax.FIp4Saddr rep_out) [9;9;9;9]);
   check "reply-dir: reply DESTINATION left untouched (1.1.1.1)"
     (data_eq (Syntax.field_value Syntax.FIp4Daddr rep_out) [1;1;1;1]);
+  (* ct DIRECTION selector == NAT manip direction (Round-6 fix): in the kernel both
+     the `ct direction` selector (nft_ct.c:86) and the NAT forward/reply decision
+     (nf_nat_core.c:872) are CTINFO2DIR(ctinfo) of the SAME skb, so they are EQUAL.
+     The model now derives `ct direction` from pkt_ctdir_orig (the model's
+     CTINFO2DIR(ctinfo)), so the FORWARD packet reads ORIGINAL [0] and the REPLY
+     packet reads REPLY [1] — never decoupled.  Before the fix `ct direction` was a
+     free e_ct oracle byte that could disagree with the NAT layer. *)
+  check "ct direction: forward (NAT original-dir) packet reads ORIGINAL [0]"
+    (data_eq (Syntax.do_load (Syntax.LCt Packet.CKdirection) fwd_in) [0]);
+  check "ct direction: reply (NAT reply-dir, un-NAT'd) packet reads REPLY [1]"
+    (data_eq (Syntax.do_load (Syntax.LCt Packet.CKdirection) rep_in) [1]);
   Printf.printf "\n"
 
 (* (G) FAMILY-AWARE NAT: an ip6 dnat/snat rewrites the 128-bit IPv6 address slot

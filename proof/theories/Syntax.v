@@ -166,10 +166,24 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
          nft_ct_get_eval NFT_CT_STATE read takes the `else if (ctinfo ==
          IP_CT_UNTRACKED)` branch and returns the constant NF_CT_STATE_UNTRACKED_BIT
          (= [0;0;0;64]); this is modelled by the per-traversal [pkt_untracked] flag
-         and overrides the flow-table read. *)
+         and overrides the flow-table read.
+
+         [CKdirection] is the OTHER per-packet (not per-flow-entry) exception, and it is
+         NOT a free oracle: in the kernel the `ct direction` SELECTOR and the NAT manip
+         direction are LITERALLY THE SAME value — both are CTINFO2DIR(ctinfo) of the one
+         skb (nft_ct.c:86 `nft_reg_store8(dest, CTINFO2DIR(ctinfo))` for the selector;
+         nf_nat_core.c:872 `dir = CTINFO2DIR(ctinfo)` then `if (dir == IP_CT_DIR_REPLY)`
+         for the manip).  This model represents CTINFO2DIR(ctinfo) by the single bit
+         [pkt_ctdir_orig] (true = IP_CT_DIR_ORIGINAL, false = IP_CT_DIR_REPLY; see
+         Packet.v and [apply_nat]).  So the `ct direction` selector is DERIVED from that
+         same bit — NOT read as an independent free byte from [e_ct] — guaranteeing that
+         the selector and the NAT decision can never disagree, exactly as in the kernel.
+         The byte is the kernel's [nft_reg_store8] single byte:
+         IP_CT_DIR_ORIGINAL = 0 -> [0], IP_CT_DIR_REPLY = 1 -> [1]. *)
       match k with
       | CKstate => if pkt_untracked p then [0;0;0;64]
                    else e_ct (pkt_env p) (pkt_flow p) k
+      | CKdirection => if pkt_ctdir_orig p then [0] else [1]
       | _ => e_ct (pkt_env p) (pkt_flow p) k
       end
   | LRt k           => e_rt (pkt_env p) k

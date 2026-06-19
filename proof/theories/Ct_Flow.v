@@ -63,16 +63,66 @@ Proof.
   rewrite Hunt, Hflow, Hct. reflexivity.
 Qed.
 
-(* The same holds for every other read-only ct key (direction/expiration/...). *)
+(* The same holds for every other read-only ct key (expiration/counters/zone/...)
+   EXCEPT [CKdirection], which is NOT flow-keyed: it is the per-packet
+   CTINFO2DIR(ctinfo) bit, modelled by [pkt_ctdir_orig] (see [ct_direction_is_ctdir]
+   below).  So two packets that additionally agree on [pkt_ctdir_orig] read the same
+   value for EVERY key, direction included. *)
 Theorem ct_key_flow_keyed :
   forall (k : ct_key) (p q : packet),
     e_ct (pkt_env p) = e_ct (pkt_env q) ->
     pkt_flow p = pkt_flow q ->
     pkt_untracked p = pkt_untracked q ->
+    pkt_ctdir_orig p = pkt_ctdir_orig q ->
     do_load (LCt k) p = do_load (LCt k) q.
 Proof.
-  intros k p q Hct Hflow Hunt. unfold do_load. cbn.
-  destruct k; rewrite ?Hunt, Hflow, Hct; reflexivity.
+  intros k p q Hct Hflow Hunt Hdir. unfold do_load. cbn.
+  destruct k; rewrite ?Hunt, ?Hdir, ?Hflow, ?Hct; reflexivity.
+Qed.
+
+(** ── ct DIRECTION is the SAME value as the NAT manip direction (kernel CTINFO2DIR).
+
+    In the kernel both the `ct direction` SELECTOR (nft_ct.c:86) and the NAT manip
+    decision (nf_nat_core.c:872) are [CTINFO2DIR(ctinfo)] of the one skb, so they are
+    GUARANTEED EQUAL.  This model represents that single value by [pkt_ctdir_orig],
+    and [do_load (LCt CKdirection)] now DERIVES from it (Syntax.v), so the selector
+    and [apply_nat]'s forward/reply decision can never disagree.
+
+    Encoding (kernel nft_reg_store8, a single byte): IP_CT_DIR_ORIGINAL = 0 -> [0],
+    IP_CT_DIR_REPLY = 1 -> [1]. *)
+Definition ip_ct_dir_original : data := [0].
+Definition ip_ct_dir_reply    : data := [1].
+
+(* The selector reads ORIGINAL iff the packet is the NAT forward (original) direction. *)
+Theorem ct_direction_matches_nat_dir :
+  forall p,
+    pkt_ctdir_orig p = true <-> do_load (LCt CKdirection) p = ip_ct_dir_original.
+Proof.
+  intro p. unfold do_load, ip_ct_dir_original. cbn.
+  destruct (pkt_ctdir_orig p); split; intro H; congruence.
+Qed.
+
+(* Dually for the reply direction. *)
+Theorem ct_direction_matches_nat_dir_reply :
+  forall p,
+    pkt_ctdir_orig p = false <-> do_load (LCt CKdirection) p = ip_ct_dir_reply.
+Proof.
+  intro p. unfold do_load, ip_ct_dir_reply. cbn.
+  destruct (pkt_ctdir_orig p); split; intro H; congruence.
+Qed.
+
+(* THE REFUTATION of the red infidelity: a packet can NO LONGER be both NAT-reply
+   ([pkt_ctdir_orig = false]) and read `ct direction original` ([0]).  The state the
+   red probe constructed (pkt_ctdir_orig=false, e_ct ... CKdirection=[0]) is now
+   impossible, because the selector ignores [e_ct] and reads [1] (reply) whenever the
+   NAT layer treats the packet as reply.  The two are ONE source of truth. *)
+Theorem ctdir_selector_agrees_with_nat :
+  forall p,
+    (pkt_ctdir_orig p = false -> do_load (LCt CKdirection) p <> ip_ct_dir_original)
+    /\ (pkt_ctdir_orig p = true  -> do_load (LCt CKdirection) p <> ip_ct_dir_reply).
+Proof.
+  intro p. unfold do_load, ip_ct_dir_original, ip_ct_dir_reply. cbn.
+  split; intro H; rewrite H; discriminate.
 Qed.
 
 (** ── 2. Two TRACKED packets of the SAME flow read CONSISTENT ct state. *)
