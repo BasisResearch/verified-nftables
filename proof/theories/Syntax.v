@@ -183,7 +183,7 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
       (* [CKstate] is the ONLY key that yields a value when there is no conntrack
          entry (nft_ct.c:68-76): UNTRACKED packet -> NF_CT_STATE_UNTRACKED_BIT
          ([0;0;0;64]), any other no-entry/INVALID packet -> NF_CT_STATE_INVALID_BIT
-         (= 1<<5 = [0;0;0;32]); a tracked packet reads the flow entry's state.  EVERY
+         (= 1<<0 = [0;0;0;1]); a tracked packet reads the flow entry's state.  EVERY
          OTHER key is reached only past `if (ct == NULL) goto err` (nft_ct.c:81-82),
          so on a no-entry packet ([pkt_ct_present = false]) the load BREAKs — that
          break is enforced by [load_ok] below, which makes the enclosing match FAIL;
@@ -192,7 +192,7 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
       match k with
       | CKstate => if pkt_untracked p then [0;0;0;64]
                    else if pkt_ct_present p then e_ct (pkt_env p) (pkt_flow p) k
-                   else [0;0;0;32]
+                   else [0;0;0;1]
       | CKdirection => if pkt_ctdir_orig p then [0] else [1]
       | _ => e_ct (pkt_env p) (pkt_flow p) k
       end

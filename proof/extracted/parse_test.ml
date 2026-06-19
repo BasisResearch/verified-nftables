@@ -2160,8 +2160,13 @@ let check_ct_no_entry () =
     (not (Syntax.load_ok (Syntax.LCt Packet.CKmark) p_noentry));
   check "ct state load_ok = true on a no-entry packet (the lone always-readable key)"
     (Syntax.load_ok (Syntax.LCt Packet.CKstate) p_noentry);
-  check "ct state reads NF_CT_STATE_INVALID_BIT (0x20) on a no-entry packet"
-    (data_eq (Syntax.do_load (Syntax.LCt Packet.CKstate) p_noentry) [0;0;0;32]);
+  check "ct state reads NF_CT_STATE_INVALID_BIT (0x01) on a no-entry packet"
+    (data_eq (Syntax.do_load (Syntax.LCt Packet.CKstate) p_noentry) [0;0;0;1]);
+  (* and `ct state invalid` (immediate [0;0;0;1], same as the parser's `invalid`
+     keyword) MATCHES the no-entry packet, mirroring the kernel always-matching it *)
+  check "ct state invalid matches a no-entry packet (register 0x01 == immediate 0x01)"
+    (Semantics.eval_matchcond
+       (Syntax.MEq (Syntax.FCtState, [0;0;0;1])) p_noentry);
   Printf.printf "\n"
 
 let () =

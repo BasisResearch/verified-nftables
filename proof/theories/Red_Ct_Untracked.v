@@ -33,7 +33,7 @@
     BREAKs when there is no entry, exactly mirroring the kernel's NFT_BREAK.  The VM
     ([ICtLoad] in [run_rule]/[run_rule_writes]) gates on the SAME [load_ok], so DSL and
     VM stay in lock-step (the correctness proof is unchanged and still axiom-free).
-    [do_load (LCt CKstate)] returns NF_CT_STATE_INVALID_BIT ([0;0;0;32]) on a no-entry,
+    [do_load (LCt CKstate)] returns NF_CT_STATE_INVALID_BIT ([0;0;0;1]) on a no-entry,
     non-untracked packet and NF_CT_STATE_UNTRACKED_BIT ([0;0;0;64]) on an untracked one,
     matching nft_ct.c:68-76. *)
 
@@ -94,10 +94,21 @@ Theorem ct_state_still_readable_when_no_entry :
   load_ok (LCt CKstate) pkt_noentry = true.
 Proof. reflexivity. Qed.
 
-(** And it reads NF_CT_STATE_INVALID_BIT (1<<5 = [0;0;0;32]) on an INVALID/no-entry,
-    non-untracked packet — exactly nft_ct.c's `else state = NF_CT_STATE_INVALID_BIT`. *)
+(** And it reads NF_CT_STATE_INVALID_BIT (1<<0 = [0;0;0;1]) on an INVALID/no-entry,
+    non-untracked packet — exactly nft_ct.c's `else state = NF_CT_STATE_INVALID_BIT`
+    (nf_conntrack_common.h:37 NF_CT_STATE_INVALID_BIT = (1<<0)), agreeing with nft
+    userspace's ct_state_tbl (src/ct.c: SYMBOL("invalid", NF_CT_STATE_INVALID_BIT))
+    and the project parser (nft_lower.ml: "invalid",[0;0;0;1]). *)
 Theorem ct_state_reads_invalid_when_no_entry :
-  do_load (LCt CKstate) pkt_noentry = [0;0;0;32].
+  do_load (LCt CKstate) pkt_noentry = [0;0;0;1].
+Proof. reflexivity. Qed.
+
+(** REGRESSION (Round-8 fix): a no-entry / non-untracked packet provably MATCHES
+    `ct state invalid` — the state register [0;0;0;1] equals the immediate the parser
+    emits for the keyword `invalid` ([0;0;0;1]).  Before the fix the model produced
+    [0;0;0;32] (1<<5, a bit the kernel never assigns), so the rule could NEVER match. *)
+Theorem ctstate_invalid_matches_no_entry :
+  eval_matchcond (MEq FCtState [0;0;0;1]) pkt_noentry = true.
 Proof. reflexivity. Qed.
 
 (** ── 3. THE REFUTATION of the red infidelity.
@@ -148,5 +159,5 @@ Proof. reflexivity. Qed.
 Theorem vm_ctstate_load_proceeds_no_entry :
   forall dst rest rf,
     run_rule rf (ICtLoad CKstate dst :: rest) pkt_noentry
-    = run_rule (set_reg rf dst [0;0;0;32]) rest pkt_noentry.
+    = run_rule (set_reg rf dst [0;0;0;1]) rest pkt_noentry.
 Proof. reflexivity. Qed.
