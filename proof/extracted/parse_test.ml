@@ -1144,6 +1144,56 @@ let check_ct_mark_crosspkt () =
     (not (data_eq (Syntax.field_value Syntax.FCtMark p2_other) mark99));
   Printf.printf "\n"
 
+(* (I''') `ct mark set` is a NO-OP on a packet with NO conntrack entry.  Kernel
+   nft_ct_set_eval (net/netfilter/nft_ct.c:288-290) FIRST does
+   `ct = nf_ct_get(skb, &ctinfo); if (ct == NULL || nf_ct_is_template(ct)) return;`,
+   so when the packet has no entry the WRITE_ONCE(ct->mark, value) never runs and the
+   shared flow table is untouched.  The model gates [set_ct] on [pkt_ct_present]:
+   an entryless packet's `ct mark set` leaves e_ct unchanged, so a later same-flow
+   ENTRY-PRESENT packet reads its OWN entry's mark, NOT the bogus value — and a
+   `ct mark 0x99 accept` rule does NOT spuriously match in the model.  Dual of the
+   Round-1 notrack no-op fix. *)
+let check_ct_set_noop () =
+  Printf.printf "=== (I''') ct mark set is a NO-OP on a packet with no conntrack entry ===\n";
+  let src =
+    "table ip t {\n\
+    \  chain c {\n\
+    \    type filter hook prerouting priority 0; policy drop;\n\
+    \    ct mark set 0x99 accept\n\
+    \  }\n\
+     }\n" in
+  let parsed = Nft_parse.parse_string src in
+  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_lower.p_env in
+  let flow_a = [10;0;0;1] in
+  (* packet 1 of flow A has NO conntrack entry (pkt_ct_present = false): the kernel
+     no-op case.  Running the chain must NOT write the shared flow table. *)
+  let p1 = { (mk_pkt ~env ~flow:flow_a ()) with Packet.pkt_ct_present = false } in
+  let (v1, e1) = Semantics.eval_chain_mut_env c p1 in
+  check "entryless packet 1 is still accepted by the chain (ct mark set; accept)"
+    (v1 = Verdict.Accept);
+  check "ct mark set 0x99 on an ENTRYLESS packet leaves e_ct UNCHANGED (kernel no-op)"
+    (data_eq (e1.Packet.e_ct flow_a Packet.CKmark)
+             (p1.Packet.pkt_env.Packet.e_ct flow_a Packet.CKmark));
+  check "the bogus mark 0x99 was NOT recorded in the shared flow table"
+    (not (data_eq (e1.Packet.e_ct flow_a Packet.CKmark) mark99));
+  (* a later same-flow ENTRY-PRESENT packet 2, threaded through e1, reads ITS OWN
+     entry's mark (env default [], here oracle 0x07 is shadowed by the flow table) —
+     NOT the bogus 0x99 that the no-op write would have left. *)
+  let oracle7 k = (match k with Packet.CKmark -> [7;0;0;0] | _ -> []) in
+  let p2 = Semantics.set_env
+             { (mk_pkt ~env ~ct:oracle7 ~flow:flow_a ()) with Packet.pkt_ct_present = true }
+             e1 in
+  check "later same-flow entry packet does NOT read back the bogus 0x99 (kernel-correct)"
+    (not (data_eq (Syntax.field_value Syntax.FCtMark p2) mark99));
+  (* CONTROL: with an ENTRY-PRESENT packet 1, the write DOES land (the persistence
+     path is real, not disabled wholesale). *)
+  let p1e = { (mk_pkt ~env ~flow:flow_a ()) with Packet.pkt_ct_present = true } in
+  let (_, e1e) = Semantics.eval_chain_mut_env c p1e in
+  check "CONTROL: ct mark set on an ENTRY-PRESENT packet DOES record 0x99"
+    (data_eq (e1e.Packet.e_ct flow_a Packet.CKmark) mark99);
+  Printf.printf "\n"
+
 (* (I'') ct/meta SET value width is KEY-SPECIFIC, not always the 4-byte mark
    register.  The kernel stores `ct zone` as a u16 (nft_ct.c nft_reg_load16 ->
    zone.id), `ct mark`/`ct event`/`meta mark`/`meta priority` as a u32, `ct
@@ -2383,6 +2433,7 @@ let () =
     check_iif_index ();
     check_ct_state ();
     check_ct_mark_crosspkt ();
+    check_ct_set_noop ();
     check_ct_meta_set_width ();
     check_notrack ();
     check_notrack_intra ();

@@ -1425,8 +1425,18 @@ Definition env_nat_upd (e : env) (fl : data)
     The kernel only ever lets a rule WRITE the persistent keys ([ct_writable]:
     mark/label); a read-only key has no setter, so a [set_ct] on one would never be
     emitted by the parser — but routing it through the same flow table (rather than a
-    dead per-packet oracle) keeps the write faithful and the DSL/VM in lock-step. *)
+    dead per-packet oracle) keeps the write faithful and the DSL/VM in lock-step.
+
+    KERNEL GUARD (nft_ct.c:288-290, nft_ct_set_eval):
+    [ct = nf_ct_get(skb, &ctinfo); if (ct == NULL || nf_ct_is_template(ct)) return;]
+    — the SET is a NO-OP when the packet has no conntrack entry.  So we gate the
+    write on [pkt_ct_present p]: an entryless packet's `ct mark/label set` leaves
+    [e_ct] (and the whole packet) unchanged, exactly mirroring the Round-1 [notrack]
+    fix that gated [set_untracked] on the dual guard.  This rules out the
+    cross-packet bug where a later same-flow entry-bearing packet would read back a
+    mark the kernel never wrote. *)
 Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
+  if pkt_ct_present p then
   {| pkt_env := env_ct_upd (pkt_env p) (pkt_flow p) k v; pkt_meta := pkt_meta p;
      pkt_ct := pkt_ct p;
      pkt_sock := pkt_sock p;
@@ -1434,7 +1444,8 @@ Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
      pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
      pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}
+  else p.
 
 (** Overwrite [len] bytes at offset [off] of a byte list (a header), keeping the
     rest — the payload-write primitive. *)

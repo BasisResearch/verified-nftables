@@ -15,7 +15,16 @@
     [eval_chain_mut_env]/[set_env] (which already thread [pkt_env]) carry the mark
     to the next packet.  The three theorems below are the kernel-CORRECT facts the
     fix makes provable; the old (kernel-false) `..._leaves_env_unchanged` /
-    `packet2_ignores_packet1_ctmark_set` are now UNPROVABLE, as they should be. *)
+    `packet2_ignores_packet1_ctmark_set` are now UNPROVABLE, as they should be.
+
+    SECOND KERNEL GUARD (nft_ct.c:288-290): nft_ct_set_eval FIRST does
+    `ct = nf_ct_get(skb, &ctinfo); if (ct == NULL || ...) return;` — so the WRITE is a
+    NO-OP when the packet has NO conntrack entry.  [set_ct] gates on [pkt_ct_present];
+    the persistence theorems below therefore carry the hypothesis
+    [pkt_ct_present p1 = true] (an entry-present packet, the only case the kernel
+    writes), and [ctmark_set_no_entry_is_noop] proves the dual: an entryless packet's
+    `ct mark set` leaves [e_ct] unchanged, so a later same-flow read sees the original
+    mark, not a bogus value. *)
 
 From Stdlib Require Import List NArith String.
 From Nft Require Import Bytes Verdict Packet Syntax Semantics.
@@ -36,10 +45,12 @@ Definition ctmark_chain : chain :=
    (Before the fix this was [pkt_env p1] verbatim — no trace.) *)
 Theorem ctmark_set_persists_in_env :
   forall p1 : packet,
+    pkt_ct_present p1 = true ->
     let e1 := snd (eval_chain_mut_env ctmark_chain p1) in
     e_ct e1 (pkt_flow p1) CKmark = [1].
 Proof.
-  intro p1. cbn. rewrite data_eqb_refl. reflexivity.
+  intros p1 Hpres. cbn. unfold set_ct. rewrite Hpres. cbn.
+  rewrite data_eqb_refl. reflexivity.
 Qed.
 
 (* Therefore packet 2 of the SAME flow ([pkt_flow p2 = pkt_flow p1]), threaded
@@ -48,13 +59,14 @@ Qed.
    kernel's nf_ct_get(skb) selecting the shared entry by tuple and reading ct->mark. *)
 Theorem packet2_sees_packet1_ctmark_set :
   forall (p1 p2 : packet),
+    pkt_ct_present p1 = true ->
     pkt_flow p2 = pkt_flow p1 ->
     let e1 := snd (eval_chain_mut_env ctmark_chain p1) in
     field_value FCtMark (set_env p2 e1) = [1].
 Proof.
-  intros p1 p2 Hflow. cbn - [eval_chain_mut_env].
-  unfold field_value, do_load. cbn. rewrite Hflow.
-  rewrite data_eqb_refl. reflexivity.
+  intros p1 p2 Hpres Hflow. cbn - [eval_chain_mut_env].
+  unfold field_value, do_load. cbn. unfold set_ct. rewrite Hpres. cbn.
+  rewrite Hflow. rewrite data_eqb_refl. reflexivity.
 Qed.
 
 (* And the mark packet 1 set OVERRIDES packet 2's own (arbitrary) oracle: even if
@@ -63,15 +75,16 @@ Qed.
    could not express. *)
 Theorem flow_mark_overrides_packet2_oracle :
   forall (p1 p2 : packet),
+    pkt_ct_present p1 = true ->
     pkt_flow p2 = pkt_flow p1 ->
     pkt_ct p2 CKmark = [9] ->
     let e1 := snd (eval_chain_mut_env ctmark_chain p1) in
     field_value FCtMark (set_env p2 e1) = [1] /\
     field_value FCtMark (set_env p2 e1) <> [9].
 Proof.
-  intros p1 p2 Hflow _. split.
-  - apply (packet2_sees_packet1_ctmark_set p1 p2 Hflow).
-  - rewrite (packet2_sees_packet1_ctmark_set p1 p2 Hflow). discriminate.
+  intros p1 p2 Hpres Hflow _. split.
+  - apply (packet2_sees_packet1_ctmark_set p1 p2 Hpres Hflow).
+  - rewrite (packet2_sees_packet1_ctmark_set p1 p2 Hpres Hflow). discriminate.
 Qed.
 
 (* A DIFFERENT flow does NOT see packet 1's mark: a packet 2 on another flow reads
@@ -80,13 +93,47 @@ Qed.
    over-approximation (every packet inheriting every mark). *)
 Theorem other_flow_unaffected :
   forall (p1 p2 : packet),
+    pkt_ct_present p1 = true ->
     pkt_flow p2 <> pkt_flow p1 ->
     let e1 := snd (eval_chain_mut_env ctmark_chain p1) in
     field_value FCtMark (set_env p2 e1) = e_ct (pkt_env p1) (pkt_flow p2) CKmark.
 Proof.
-  intros p1 p2 Hflow. cbn - [eval_chain_mut_env].
-  unfold field_value, do_load. cbn.
+  intros p1 p2 Hpres Hflow. cbn - [eval_chain_mut_env].
+  unfold field_value, do_load. cbn. unfold set_ct. rewrite Hpres. cbn.
   destruct (data_eqb (pkt_flow p1) (pkt_flow p2)) eqn:Heq.
   - apply data_eqb_true_iff in Heq. symmetry in Heq. contradiction.
   - reflexivity.
+Qed.
+
+(* SECOND KERNEL GUARD — the actual Round-4 fix demonstration.  On a packet with NO
+   conntrack entry ([pkt_ct_present = false]), nft_ct_set_eval returns immediately
+   (`if (ct == NULL || ...) return;`), so `ct mark set` is a NO-OP: it must NOT write
+   the shared flow table.  Before the fix [set_ct] wrote unconditionally, so a later
+   same-flow entry-bearing packet read back a mark the kernel never wrote.  Now: *)
+
+(* (a) running the chain on an ENTRYLESS packet leaves e_ct at its prior value. *)
+Theorem ctmark_set_no_entry_is_noop :
+  forall p1 : packet,
+    pkt_ct_present p1 = false ->
+    let e1 := snd (eval_chain_mut_env ctmark_chain p1) in
+    e_ct e1 (pkt_flow p1) CKmark = e_ct (pkt_env p1) (pkt_flow p1) CKmark.
+Proof.
+  intros p1 Hpres. cbn. unfold set_ct. rewrite Hpres. cbn. reflexivity.
+Qed.
+
+(* (b) therefore a later same-flow ENTRY-PRESENT packet 2, threaded through the env
+   packet 1 left, reads ITS OWN entry's mark (the env default for that flow), NOT a
+   bogus [1] — exactly the kernel no-op behavior.  Here the env's e_ct default for the
+   flow is [], so the read is [] (not [1]); the verdict-level upshot is that a later
+   `ct mark 0x1 accept` does NOT spuriously match. *)
+Theorem no_entry_set_invisible_to_packet2 :
+  forall (p1 p2 : packet),
+    pkt_ct_present p1 = false ->
+    pkt_flow p2 = pkt_flow p1 ->
+    let e1 := snd (eval_chain_mut_env ctmark_chain p1) in
+    field_value FCtMark (set_env p2 e1) = e_ct (pkt_env p1) (pkt_flow p1) CKmark.
+Proof.
+  intros p1 p2 Hpres Hflow. cbn - [eval_chain_mut_env].
+  unfold field_value, do_load. cbn. unfold set_ct. rewrite Hpres. cbn.
+  rewrite Hflow. reflexivity.
 Qed.
