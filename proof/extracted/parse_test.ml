@@ -1130,9 +1130,12 @@ let check_interval_vmap () =
    nft_notrack_eval calls nf_ct_set(skb, NULL, IP_CT_UNTRACKED); nft_ct_get_eval's
    NFT_CT_STATE case then returns NF_CT_STATE_UNTRACKED_BIT.  The model now applies
    set_untracked on SNotrack/INotrack (body_writes/run_rule_writes), threaded across
-   rules by eval_chain_mut, and do_load (LCt CKstate) returns [0;0;0;64] when
-   pkt_untracked.  So `notrack ; ct state untracked accept` ACCEPTS every packet, even
-   one whose ct-state oracle was a tracked state (new = 8).  Mirrors Red_Notrack.v. *)
+   rules by eval_chain_mut.  set_untracked mirrors nft_notrack_eval's guard
+   `if (ct || ctinfo == IP_CT_UNTRACKED) return;`: it is a NO-OP when an entry already
+   exists (pkt_ct_present = true) and otherwise sets pkt_untracked, so do_load
+   (LCt CKstate) returns [0;0;0;64] only on a no-entry packet.  Thus
+   `notrack ; ct state untracked accept` ACCEPTS a NO-ENTRY packet and DROPS an
+   entry-present (e.g. ESTABLISHED) one.  Mirrors Red_Notrack.v. *)
 let check_notrack () =
   Printf.printf "=== (I'') notrack forces ct state untracked (later ct state read sees it) ===\n";
   let untracked = [0;0;0;64] in   (* NF_CT_STATE_UNTRACKED_BIT *)
@@ -1153,10 +1156,13 @@ let check_notrack () =
               e_routes = []; e_rt = (fun _ -> []); e_limit = (fun _ -> 0);
               e_quota = (fun _ -> 0); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
               e_connlimit = (fun _ -> []); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None); e_numgen = (fun _ -> 0) } in
-  (* a packet whose ct-state ORACLE is `new` (= 8): genuinely tracked.  The notrack
-     in rule 1 overrides this before rule 2's `ct state untracked` match. *)
+  (* a NO-ENTRY packet (pkt_ct_present = false): nf_ct_get returns NULL, the only
+     case where `notrack` has an effect (nft_notrack_eval's
+     `if (ct || ctinfo == IP_CT_UNTRACKED) return;` guard).  The notrack in rule 1
+     latches it untracked before rule 2's `ct state untracked` match. *)
   let oracle_new k = (match k with Packet.CKstate -> [0;0;0;8] | _ -> []) in
-  let p = mk_pkt ~env ~ct:oracle_new ~flow:[7;7] () in
+  let p = { (mk_pkt ~env ~ct:oracle_new ~flow:[7;7] ()) with
+            Packet.pkt_ct_present = false } in
   (* the notrack write threads into rule 2: the threaded packet reads UNTRACKED *)
   let p1 = Semantics.dsl_writes notrack_only p in
   check "notrack sets pkt_untracked := true" (p1.Packet.pkt_untracked);
@@ -1164,16 +1170,31 @@ let check_notrack () =
     (data_eq (Syntax.do_load (Syntax.LCt Packet.CKstate) p1) untracked);
   check "the `ct state untracked` match SUCCEEDS on the threaded packet"
     (Semantics.eval_matchcond m_untracked p1);
-  (* the threading evaluator ACCEPTS the originally-`new` packet (kernel-correct);
-     without the fix it DROPPED it (notrack a no-op, stale oracle read) *)
-  check "notrack ; ct state untracked accept ACCEPTS a `new` packet (kernel-correct)"
+  (* the threading evaluator ACCEPTS the no-entry packet (kernel-correct);
+     without the rule-walk fix it DROPPED it (notrack skipped, stale oracle read) *)
+  check "notrack ; ct state untracked accept ACCEPTS a no-entry packet (kernel-correct)"
     (Semantics.eval_chain_mut chain p = Verdict.Accept);
-  (* and the same chain DROPS the packet if rule 1 is removed (no notrack => oracle 8,
-     (8 & 64) = 0 => no match => Drop policy): the acceptance is DUE TO notrack *)
+  (* and the same chain DROPS the packet if rule 1 is removed (no notrack => no-entry
+     state INVALID = 1, (1 & 64) = 0 => no match => Drop policy): acceptance is DUE TO
+     notrack *)
   let chain_no_notrack : Syntax.chain =
     { Syntax.c_policy = Verdict.Drop; c_rules = [ ctstate_rule ] } in
   check "without the preceding notrack the same packet is DROPPED (effect is real)"
     (Semantics.eval_chain_mut chain_no_notrack p = Verdict.Drop);
+  (* KERNEL GUARD: on a packet that ALREADY has a conntrack ENTRY, notrack is a NO-OP.
+     With an ESTABLISHED entry the threaded `ct state` reads the live state [0;0;0;2],
+     the `ct state untracked` match FAILS, and the chain DROPS. *)
+  let env_est = { env with Packet.e_ct =
+                    (fun _ k -> match k with Packet.CKstate -> [0;0;0;2] | _ -> []) } in
+  let p_entry = { (mk_pkt ~env:env_est ~flow:[9;9] ()) with
+                  Packet.pkt_ct_present = true } in
+  let p_entry1 = Semantics.dsl_writes notrack_only p_entry in
+  check "notrack is a NO-OP on an entry-present packet (pkt_untracked stays false)"
+    (not p_entry1.Packet.pkt_untracked);
+  check "after a no-op notrack, ct state read returns the live ESTABLISHED state (2)"
+    (data_eq (Syntax.do_load (Syntax.LCt Packet.CKstate) p_entry1) [0;0;0;2]);
+  check "notrack ; ct state untracked DROPS an entry-present packet (kernel no-op)"
+    (Semantics.eval_chain_mut chain p_entry = Verdict.Drop);
   Printf.printf "\n"
 
 (* exthdr / TCP-option VALUE load not-present guard.  Kernel nft_exthdr_tcp_eval
@@ -1221,13 +1242,16 @@ let check_exthdr_present () =
 
 (* (I''') INTRA-RULE notrack->ct-state: `ct notrack ct state untracked accept` in ONE
    rule.  The kernel runs a rule's expressions left-to-right (nf_tables_core.c
-   nft_rule_dp_for_each_expr): nft_notrack_eval latches IP_CT_UNTRACKED, then the SAME
-   rule's `ct state untracked` (nft_ct_get_eval NFT_CT_STATE) reads
-   NF_CT_STATE_UNTRACKED_BIT and matches -> ACCEPT.  The model now threads
-   set_untracked into a rule's OWN later matches/terminal (rule_applies_walk/outcome/
-   run_rule), so the single-rule idiom ACCEPTS, matching the kernel.  Before the fix
-   the match was evaluated against the original (still-tracked, oracle=8) packet, the
-   match FAILED, and the model PROVED a kernel-false Drop. *)
+   nft_rule_dp_for_each_expr): on a NO-ENTRY packet nft_notrack_eval latches
+   IP_CT_UNTRACKED, then the SAME rule's `ct state untracked` (nft_ct_get_eval
+   NFT_CT_STATE) reads NF_CT_STATE_UNTRACKED_BIT and matches -> ACCEPT; on an
+   entry-present packet notrack is a no-op (its `if (ct || ...) return;` guard) so the
+   match reads the live state and FAILS -> the chain DROPS.  The model threads
+   set_untracked (which encodes that guard) into a rule's OWN later matches/terminal
+   (rule_applies_walk/outcome/run_rule), so the single-rule idiom ACCEPTS a no-entry
+   packet and DROPS an entry-present one, matching the kernel.  Before the rule-walk
+   fix the match was evaluated against the original packet and PROVED a kernel-false
+   Drop even on the no-entry packet. *)
 let check_notrack_intra () =
   Printf.printf "=== (I''') intra-rule notrack ; ct state untracked accept (same rule) ===\n";
   let untracked = [0;0;0;64] in
@@ -1245,11 +1269,13 @@ let check_notrack_intra () =
               e_quota = (fun _ -> 0); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
               e_connlimit = (fun _ -> []); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None); e_numgen = (fun _ -> 0) } in
   let oracle_new k = (match k with Packet.CKstate -> [0;0;0;8] | _ -> []) in
-  let p = mk_pkt ~env ~ct:oracle_new ~flow:[7;7] () in
+  (* NO-ENTRY packet (pkt_ct_present = false): the case where notrack has effect. *)
+  let p = { (mk_pkt ~env ~ct:oracle_new ~flow:[7;7] ()) with
+            Packet.pkt_ct_present = false } in
   (* the rule's own statement->match ordering: the match now SUCCEEDS *)
   check "intra-rule: the rule APPLIES (notrack latch seen by its own later match)"
     (Semantics.rule_applies intra_rule p);
-  check "intra-rule: eval_chain ACCEPTS a `new` packet (kernel-correct)"
+  check "intra-rule: eval_chain ACCEPTS a no-entry packet (kernel-correct)"
     (Semantics.eval_chain chain p = Verdict.Accept);
   check "intra-rule: eval_chain_mut ACCEPTS too"
     (Semantics.eval_chain_mut chain p = Verdict.Accept);
@@ -1257,6 +1283,19 @@ let check_notrack_intra () =
   check "intra-rule: the COMPILED chain ACCEPTS (compile_chain_correct instance)"
     (Semantics.run_chain (Compile.compile_chain chain) chain.Syntax.c_policy p
        = Verdict.Accept);
+  (* KERNEL GUARD: on an entry-present packet (ESTABLISHED), the intra-rule notrack is
+     a NO-OP, the same-rule `ct state untracked` match FAILS, and the chain DROPS. *)
+  let env_est = { env with Packet.e_ct =
+                    (fun _ k -> match k with Packet.CKstate -> [0;0;0;2] | _ -> []) } in
+  let p_entry = { (mk_pkt ~env:env_est ~flow:[9;9] ()) with
+                  Packet.pkt_ct_present = true } in
+  check "intra-rule: the rule does NOT apply on an entry-present packet (notrack no-op)"
+    (not (Semantics.rule_applies intra_rule p_entry));
+  check "intra-rule: eval_chain DROPS an entry-present packet (kernel no-op)"
+    (Semantics.eval_chain chain p_entry = Verdict.Drop);
+  check "intra-rule: the COMPILED chain DROPS the entry-present packet too"
+    (Semantics.run_chain (Compile.compile_chain chain) chain.Syntax.c_policy p_entry
+       = Verdict.Drop);
   Printf.printf "\n"
 
 (* (J) SINGLE POSITIVE `tcp flags X` BITMASK lowering.  tcp_flag_type has

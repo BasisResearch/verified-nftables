@@ -1,22 +1,26 @@
 (** RED probe (now BLUE-corrected): single-rule `ct notrack ct state untracked accept`.
 
     Kernel: a rule's expressions run LEFT TO RIGHT against the running packet
-    (nf_tables_core.c nft_rule_dp_for_each_expr).  `ct notrack` sets
-    ctinfo=IP_CT_UNTRACKED (nft_notrack_eval, nft_ct.c), then the SAME rule's
-    `ct state untracked` match (nft_ct_get_eval NFT_CT_STATE, nft_ct.c) reads
-    NF_CT_STATE_UNTRACKED_BIT (=64) and SUCCEEDS.  => the kernel ACCEPTS every
-    packet, regardless of its prior tracking state.
+    (nf_tables_core.c nft_rule_dp_for_each_expr).  `ct notrack` (nft_notrack_eval,
+    nft_ct.c:860-874) is GUARDED:
+        ct = nf_ct_get(pkt->skb, &ctinfo);
+        if (ct || ctinfo == IP_CT_UNTRACKED) return;   // entry present => NO-OP
+        nf_ct_set(skb, ct, IP_CT_UNTRACKED);
+    so it sets ctinfo=IP_CT_UNTRACKED ONLY on a packet that has NO conntrack entry
+    yet (ct == NULL).  On such a no-entry packet the SAME rule's `ct state untracked`
+    match (nft_ct_get_eval NFT_CT_STATE) then reads NF_CT_STATE_UNTRACKED_BIT (=64)
+    and SUCCEEDS, so the kernel ACCEPTS.  On a packet that ALREADY has an entry the
+    `notrack` is a no-op and `ct state untracked` reads the entry's real state.
 
-    BEFORE the fix the model SKIPPED the `notrack` statement when walking a rule's
-    matches ([rule_applies_walk]), so `ct state untracked` read the stale per-packet
-    ct oracle (here `new`=8), the match FAILED, and the chain fell through to its
-    Drop policy — a provable kernel-false DROP.
-
-    The fix threads [set_untracked] into a rule's OWN later matches/terminal
-    ([rule_applies_walk]/[outcome]/[run_rule] all thread it past [SNotrack]/[INotrack]),
-    so the model now ACCEPTS, matching the kernel.  The OLD Drop theorems are now
-    UNPROVABLE; below are the corrected kernel-faithful ACCEPT theorems, proved
-    axiom-free by [vm_compute]. *)
+    BEFORE the rule-walk fix the model SKIPPED the `notrack` statement when walking a
+    rule's matches ([rule_applies_walk]), so even on a no-entry packet `ct state
+    untracked` did not see the latch and the match FAILED — a provable kernel-false
+    DROP.  The fix threads [set_untracked] into a rule's OWN later matches/terminal
+    ([rule_applies_walk]/[outcome]/[run_rule] all thread it past [SNotrack]/[INotrack]).
+    [set_untracked] now mirrors the kernel guard exactly (it is a NO-OP when
+    [pkt_ct_present = true]), so the model ACCEPTS a NO-ENTRY packet and leaves an
+    entry-present packet's state untouched — matching the kernel.  All theorems below
+    are proved axiom-free by [vm_compute]. *)
 
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.
@@ -42,8 +46,11 @@ Definition env0 : env :=
      e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => [];
      e_connlimit := fun _ => []; e_ct := fun _ _ => []; e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
 
-(* ct oracle = new (8): a genuinely tracked, new connection. *)
-Definition pkt_new : packet :=
+(* A NO-ENTRY packet ([pkt_ct_present := false]): nf_ct_get returns NULL, so this
+   is exactly the case where `notrack` HAS an effect (ct == NULL).  Its ct-state
+   oracle is irrelevant on this branch (do_load's CKstate reads the UNTRACKED latch,
+   not the [pkt_ct_present = false] INVALID value, once notrack has run). *)
+Definition pkt_noentry : packet :=
   {| pkt_env := env0; pkt_meta := fun _ => [];
      pkt_ct := fun k => match k with CKstate => [0;0;0;8] | _ => [] end;
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
@@ -52,30 +59,43 @@ Definition pkt_new : packet :=
      pkt_osf := []; pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
      pkt_inner := fun _ _ _ _ => []; pkt_have_l2 := true; pkt_have_l4 := false; pkt_fragoff := 0;
-     pkt_flow := [7;7]; pkt_untracked := false; pkt_ctdir_orig := true; pkt_ct_present := true |}.
+     pkt_flow := [7;7]; pkt_untracked := false; pkt_ctdir_orig := true; pkt_ct_present := false |}.
 
-(* The intra-rule `notrack` now latches IP_CT_UNTRACKED before the SAME rule's
-   `ct state untracked` match, which therefore SUCCEEDS — the rule applies. *)
+(* On the NO-ENTRY packet the intra-rule `notrack` latches IP_CT_UNTRACKED before
+   the SAME rule's `ct state untracked` match, which therefore SUCCEEDS. *)
 Lemma intra_match_succeeds_after_notrack :
-  rule_applies intra_rule pkt_new = true.
+  rule_applies intra_rule pkt_noentry = true.
 Proof. vm_compute. reflexivity. Qed.
 
-(* KERNEL-FAITHFUL: the model now ACCEPTS the packet the kernel ACCEPTS. *)
+(* KERNEL-FAITHFUL: the model now ACCEPTS the no-entry packet the kernel ACCEPTS. *)
 Theorem model_accepts_like_kernel_eval_chain :
-  eval_chain intra_chain pkt_new = Accept.
+  eval_chain intra_chain pkt_noentry = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The stateful threading evaluator agrees. *)
 Theorem model_accepts_like_kernel_eval_chain_mut :
-  eval_chain_mut intra_chain pkt_new = Accept.
+  eval_chain_mut intra_chain pkt_noentry = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
-(* The accept holds REGARDLESS of the packet's prior ct-state oracle: even a packet
-   whose oracle is some arbitrary tracked value is accepted (the kernel forces
-   untracked).  We demonstrate with a second oracle value (`established`=2). *)
+(* KERNEL GUARD (the round's fix): on a packet that ALREADY has a conntrack ENTRY
+   ([pkt_ct_present := true], here ESTABLISHED=2), `notrack` is a NO-OP — the
+   `ct state untracked` match reads the entry's REAL state (not the UNTRACKED bit),
+   the match FAILS, and the chain falls through to its Drop policy.  This is exactly
+   nft_notrack_eval's `if (ct || ctinfo == IP_CT_UNTRACKED) return;`. *)
+(* Env recording the live conntrack entry's state as ESTABLISHED ([0;0;0;2]);
+   [do_load (LCt CKstate)] reads [e_ct (pkt_env p)], so the live state must live in
+   the env (not the [pkt_ct] oracle, which a present-entry CKstate read ignores). *)
+Definition env_est : env :=
+  {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
+     e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
+     e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => [];
+     e_connlimit := fun _ => [];
+     e_ct := fun _ k => match k with CKstate => [0;0;0;2] | _ => [] end;
+     e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
+
 Definition pkt_est : packet :=
-  {| pkt_env := env0; pkt_meta := fun _ => [];
-     pkt_ct := fun k => match k with CKstate => [0;0;0;2] | _ => [] end;
+  {| pkt_env := env_est; pkt_meta := fun _ => [];
+     pkt_ct := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := []; pkt_th := []; pkt_ih := [];
      pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
@@ -84,6 +104,12 @@ Definition pkt_est : packet :=
      pkt_inner := fun _ _ _ _ => []; pkt_have_l2 := true; pkt_have_l4 := false; pkt_fragoff := 0;
      pkt_flow := [9;9]; pkt_untracked := false; pkt_ctdir_orig := true; pkt_ct_present := true |}.
 
-Theorem model_accepts_regardless_of_prior_state :
-  eval_chain intra_chain pkt_est = Accept.
+(* notrack is a no-op on the entry-present packet: its ct state is read as the live
+   ESTABLISHED value, so `ct state untracked` does NOT match and the rule is skipped. *)
+Lemma intra_match_noop_on_entry :
+  rule_applies intra_rule pkt_est = false.
+Proof. vm_compute. reflexivity. Qed.
+
+Theorem model_drops_entry_present_packet :
+  eval_chain intra_chain pkt_est = Drop.
 Proof. vm_compute. reflexivity. Qed.

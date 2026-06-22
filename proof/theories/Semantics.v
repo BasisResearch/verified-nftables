@@ -272,14 +272,28 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
 (** A `notrack` statement: force this packet's conntrack state to IP_CT_UNTRACKED for
     the rest of its traversal, so a LATER `ct state` read returns
     NF_CT_STATE_UNTRACKED_BIT (handled in [Syntax.do_load]'s [LCt CKstate] case).
-    Mirrors the kernel nft_notrack_eval: `nf_ct_set(skb, NULL, IP_CT_UNTRACKED)`.
-    Only [pkt_untracked] changes (set to [true]); every other packet component —
-    including the per-packet [pkt_ct] oracle and the shared env — is preserved, so
-    that a `ct mark`/other-key read is unaffected.  This is the per-packet-traversal
-    state both the DSL ([body_writes]/[rule_applies_walk]) and the VM
-    ([run_rule_writes]/[run_rule]) apply on [SNotrack]/[INotrack], keeping the two
-    in lock-step. *)
+    Mirrors the kernel nft_notrack_eval (net/netfilter/nft_ct.c):
+
+      ct = nf_ct_get(pkt->skb, &ctinfo);
+      // Previously seen (loopback or untracked)?  Ignore.
+      if (ct || ctinfo == IP_CT_UNTRACKED)
+          return;                            // <-- NO-OP when an entry exists
+      nf_ct_set(skb, ct, IP_CT_UNTRACKED);
+
+    The kernel only latches IP_CT_UNTRACKED when there is NO conntrack entry yet
+    (ct == NULL).  On a packet that ALREADY has an entry ([pkt_ct_present = true],
+    e.g. an ESTABLISHED flow), `notrack` does NOTHING: a later `ct state` read sees
+    the entry's REAL state, not the UNTRACKED bit.  We mirror this by leaving the
+    packet UNCHANGED when [pkt_ct_present p = true].  Only when there is no entry
+    ([pkt_ct_present = false]) does [pkt_untracked] flip to [true]; every other
+    packet component — including the per-packet [pkt_ct] oracle and the shared env —
+    is preserved, so that a `ct mark`/other-key read is unaffected.  This is the
+    per-packet-traversal state both the DSL ([body_writes]/[rule_applies_walk]) and
+    the VM ([run_rule_writes]/[run_rule]) apply on [SNotrack]/[INotrack], keeping the
+    two in lock-step. *)
 Definition set_untracked (p : packet) : packet :=
+  if pkt_ct_present p then p
+  else
   {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p;
      pkt_sock := pkt_sock p;
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
@@ -547,17 +561,77 @@ Qed.
     change ONLY for a `ct state` read.  These invariance facts let the correctness
     proof thread [set_untracked] past a [notrack] on both the DSL and the VM side
     without disturbing the loadability/synproxy bookkeeping. *)
+(** [set_untracked] preserves EVERY packet component the loadability / value
+    predicates read — it only ever flips [pkt_untracked] (and only on a no-entry
+    packet).  These per-projection equalities drive the invariance facts below
+    uniformly, regardless of whether the [pkt_ct_present p] guard fires. *)
+Lemma set_untracked_proj : forall p,
+  pkt_env (set_untracked p) = pkt_env p /\
+  pkt_meta (set_untracked p) = pkt_meta p /\
+  pkt_have_l2 (set_untracked p) = pkt_have_l2 p /\
+  pkt_have_l4 (set_untracked p) = pkt_have_l4 p /\
+  pkt_fragoff (set_untracked p) = pkt_fragoff p /\
+  pkt_eh (set_untracked p) = pkt_eh p /\
+  pkt_lh (set_untracked p) = pkt_lh p /\
+  pkt_nh (set_untracked p) = pkt_nh p /\
+  pkt_th (set_untracked p) = pkt_th p /\
+  pkt_ih (set_untracked p) = pkt_ih p /\
+  pkt_tnl (set_untracked p) = pkt_tnl p /\
+  pkt_inner (set_untracked p) = pkt_inner p /\
+  pkt_ct_present (set_untracked p) = pkt_ct_present p /\
+  pkt_flow (set_untracked p) = pkt_flow p.
+Proof.
+  intros p. destruct (pkt_ct_present p) eqn:E; unfold set_untracked; rewrite E;
+    repeat split; rewrite ?E; reflexivity.
+Qed.
+
+(** [base_bytes] reads only the per-layer header projections, all preserved by
+    [set_untracked], so the byte string a base exposes is unchanged. *)
+Lemma base_bytes_untracked : forall b p,
+  base_bytes b (set_untracked p) = base_bytes b p.
+Proof. intros. unfold set_untracked. destruct (pkt_ct_present p); reflexivity. Qed.
+
 Lemma read_payload_ok_untracked : forall b o l p,
   read_payload_ok b o l (set_untracked p) = read_payload_ok b o l p.
-Proof. reflexivity. Qed.
+Proof. intros. unfold set_untracked. destruct (pkt_ct_present p); reflexivity. Qed.
 
 Lemma synproxy_loadable_untracked : forall p,
   synproxy_loadable (set_untracked p) = synproxy_loadable p.
-Proof. reflexivity. Qed.
+Proof. intros. unfold set_untracked. destruct (pkt_ct_present p); reflexivity. Qed.
 
 Lemma synproxy_stops_untracked : forall p,
   synproxy_stops (set_untracked p) = synproxy_stops p.
-Proof. reflexivity. Qed.
+Proof. intros. unfold set_untracked. destruct (pkt_ct_present p); reflexivity. Qed.
+
+(** A field's load succeeds on [set_untracked p] iff it does on [p]: the only
+    state-dependent leaf is the conntrack-entry presence ([LCt _ => pkt_ct_present]),
+    which [set_untracked] preserves; every other leaf reads payload geometry only. *)
+Lemma load_ok_untracked : forall ld p,
+  load_ok ld (set_untracked p) = load_ok ld p.
+Proof.
+  intros ld p.
+  destruct (set_untracked_proj p) as (Henv & Hmeta & Hl2 & Hl4 & Hfr & Heh & Hlh & Hnh
+    & Hth & Hih & Htnl & Hinner & Hctp & Hflow).
+  destruct ld; cbn [load_ok]; try reflexivity.
+  - (* LCt k *) destruct k; try reflexivity; rewrite Hctp; reflexivity.
+  - (* LExthdr ... present *)
+    match goal with
+    | |- (if ?b then _ else _) = _ => destruct b; [reflexivity|]
+    end.
+    unfold exthdr_present. rewrite Heh. reflexivity.
+  - (* LPayload b o l *) apply read_payload_ok_untracked.
+Qed.
+
+Lemma field_loadable_untracked : forall f p,
+  field_loadable f (set_untracked p) = field_loadable f p.
+Proof. intros. unfold field_loadable. apply load_ok_untracked. Qed.
+
+Lemma fields_loadable_untracked : forall fs p,
+  fields_loadable fs (set_untracked p) = fields_loadable fs p.
+Proof.
+  intros fs p. unfold fields_loadable. induction fs as [| f fs IH]; [reflexivity|].
+  cbn [forallb]. rewrite field_loadable_untracked, IH. reflexivity.
+Qed.
 
 (** Whether a body contains a `notrack` statement (the latch source).  When [false]
     the [set_untracked] threading in [rule_applies_walk] never fires, so the walk is
@@ -569,13 +643,26 @@ Definition body_has_notrack (body : list body_item) : bool :=
 (** [set_untracked] is idempotent — it only ever forces the latch to [true]. *)
 Lemma set_untracked_idem : forall p,
   set_untracked (set_untracked p) = set_untracked p.
-Proof. reflexivity. Qed.
+Proof.
+  intros p. destruct (pkt_ct_present p) eqn:E.
+  - assert (set_untracked p = p) as Heq by (unfold set_untracked; rewrite E; reflexivity).
+    rewrite Heq. exact Heq.
+  - remember (set_untracked p) as q eqn:Hq.
+    assert (pkt_ct_present q = false) as Hf
+      by (rewrite Hq; unfold set_untracked; rewrite E; reflexivity).
+    unfold set_untracked at 1. rewrite Hf.
+    rewrite Hq. unfold set_untracked. rewrite E. reflexivity.
+Qed.
 
 (** [match_loadable] reads only payload geometry, so it is invariant under the
     latch flip. *)
 Lemma match_loadable_untracked : forall m p,
   match_loadable m (set_untracked p) = match_loadable m p.
-Proof. intros m p. destruct m; reflexivity. Qed.
+Proof.
+  intros m p. destruct m; cbn [match_loadable];
+    try apply field_loadable_untracked; try reflexivity;
+    apply fields_loadable_untracked.
+Qed.
 
 (** Whether a rule's body contains a SYN-proxy statement that STOPS traversal on
     this packet (a TCP packet with SYN or ACK set; see [synproxy_stops]).  Such a
@@ -604,15 +691,20 @@ Fixpoint rule_applies_walk (body : list body_item) (p : packet) : bool :=
   | BMatch m :: rest => eval_matchcond m p && rule_applies_walk rest p
   | BStmt (SSynproxy _ _) :: rest =>
       if synproxy_stops p then true else rule_applies_walk rest p
-  (* `notrack` forces IP_CT_UNTRACKED for the rest of THIS rule's traversal, so a
-     LATER `ct state` MATCH in the SAME rule reads NF_CT_STATE_UNTRACKED_BIT
-     (kernel runs a rule's expressions left-to-right: nft_notrack_eval sets the
-     untracked latch, a subsequent nft_ct_get_eval NFT_CT_STATE observes it).  We
-     thread [set_untracked] into the rest of the walk so the model is faithful for
-     the intra-rule `notrack; ct state untracked accept` idiom.  [set_untracked]
-     only flips [pkt_untracked]; every loadability/synproxy predicate is invariant
-     under it, so the VM stays in lock-step (the compiled [INotrack] threads the
-     same [set_untracked]). *)
+  (* `notrack` forces IP_CT_UNTRACKED for the rest of THIS rule's traversal ONLY
+     WHEN no conntrack entry exists yet — exactly nft_notrack_eval's
+     `if (ct || ctinfo == IP_CT_UNTRACKED) return;` guard (it is a NO-OP on a
+     packet that already has an entry, e.g. an ESTABLISHED flow).  [set_untracked]
+     encodes that guard ([pkt_ct_present p = true] => unchanged), so a LATER
+     `ct state` MATCH in the SAME rule reads the entry's REAL state on a tracked
+     packet and NF_CT_STATE_UNTRACKED_BIT only on a no-entry packet (kernel runs a
+     rule's expressions left-to-right: nft_notrack_eval may set the untracked latch,
+     a subsequent nft_ct_get_eval NFT_CT_STATE observes the result).  We thread
+     [set_untracked] into the rest of the walk so the model is faithful for the
+     intra-rule `notrack; ct state untracked accept` idiom on a no-entry packet.
+     [set_untracked] preserves every loadability/synproxy predicate (it only flips
+     [pkt_untracked], and only on a no-entry packet), so the VM stays in lock-step
+     (the compiled [INotrack] threads the same [set_untracked]). *)
   | BStmt SNotrack :: rest => rule_applies_walk rest (set_untracked p)
   | BStmt _ :: rest => rule_applies_walk rest p
   end.
@@ -688,11 +780,27 @@ Definition body_item_loadable (it : body_item) (p : packet) : bool :=
   | BStmt s => stmt_loadable s p
   end.
 
+(** A value source reads only fields (payload geometry) plus immediates, all
+    invariant under the latch flip. *)
+Lemma vsrc_loadable_untracked : forall vs p,
+  vsrc_loadable vs (set_untracked p) = vsrc_loadable vs p.
+Proof.
+  intros vs p. destruct vs; cbn [vsrc_loadable];
+    try reflexivity;
+    try apply field_loadable_untracked; apply fields_loadable_untracked.
+Qed.
+
 (** Statement / body-item loadability read only payload geometry, so they too are
     invariant under the latch flip ([set_untracked]). *)
 Lemma stmt_loadable_untracked : forall s p,
   stmt_loadable s (set_untracked p) = stmt_loadable s p.
-Proof. intros s p. destruct s; reflexivity. Qed.
+Proof.
+  intros s p. destruct s; cbn [stmt_loadable];
+    try reflexivity;
+    try apply vsrc_loadable_untracked;
+    try apply fields_loadable_untracked;
+    apply synproxy_loadable_untracked.
+Qed.
 
 Lemma body_item_loadable_untracked : forall it p,
   body_item_loadable it (set_untracked p) = body_item_loadable it p.
@@ -796,7 +904,9 @@ Lemma stmts_after_outcome_untracked : forall ss p,
   stmts_after_outcome ss (set_untracked p) = stmts_after_outcome ss p.
 Proof.
   induction ss as [| s ss IH]; intro p; [reflexivity|].
-  destruct s; cbn [stmts_after_outcome]; rewrite ?IH; reflexivity.
+  destruct s; cbn [stmts_after_outcome];
+    rewrite ?stmt_loadable_untracked, ?synproxy_loadable_untracked,
+            ?synproxy_stops_untracked, ?IH; reflexivity.
 Qed.
 
 (** The *value* a value-source computes into register 1 — the operand of a
@@ -1009,7 +1119,7 @@ Lemma body_synproxy_stops_untracked : forall body p,
 Proof.
   intros body p. unfold body_synproxy_stops. induction body as [| it b IH]; [reflexivity|].
   cbn [existsb]. rewrite IH. destruct it as [m | s]; [reflexivity|].
-  destruct s; reflexivity.
+  destruct s; rewrite ?synproxy_stops_untracked; reflexivity.
 Qed.
 
 Lemma body_loadable_walk_untracked : forall body p,
