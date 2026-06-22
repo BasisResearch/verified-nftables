@@ -790,6 +790,46 @@ let check_redir_hook () =
   let d6 = Syntax.field_value Syntax.FIp6Daddr p6_out in
   check "ip6 output-hook redirect forces daddr to ::1"
     (data_eq d6 [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1]);
+  (* NAT-core NF_DROP when the interface has no usable address.  The kernel DROPS:
+     nf_nat_redirect_ipv4 PREROUTING `if (!newdst.ip) return NF_DROP;`
+     (nf_nat_redirect.c:71-74); nf_nat_masquerade_ipv4 `if (!newsrc) return NF_DROP;`
+     (nf_nat_masquerade.c:54-58).  e_ifaddr = [] is exactly that condition. *)
+  let env_noaddr = { env with Packet.e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []) } in
+  let p_noaddr = { (mk_pkt ~env:env_noaddr ()) with
+                   Packet.pkt_meta = (fun k -> match k with Packet.MKiifname -> eth0 | _ -> []);
+                   pkt_nh = nh } in
+  let redir_chain : Syntax.chain =
+    { Syntax.c_policy = Verdict.Drop;
+      c_rules = [ { (mk_rule (mk_spec Syntax.nat_fam_ip4)) with Syntax.r_verdict = Verdict.Accept } ] } in
+  let (vr_pre, pr_pre) = Semantics.eval_chain_trace Semantics.Hprerouting redir_chain p_noaddr in
+  check "prerouting redirect with NO inbound address DROPS (kernel NF_DROP)"
+    (vr_pre = Verdict.Drop);
+  check "the dropped redirect packet is left UNREWRITTEN (no empty-address splice)"
+    (data_eq (Syntax.field_value Syntax.FIp4Daddr pr_pre)
+             (Syntax.field_value Syntax.FIp4Daddr p_noaddr));
+  (* but the verified CONTROL-PLANE (mut) verdict is unaffected: the drop is a
+     data-plane-only refinement, so eval_chain_mut still Accepts. *)
+  check "control-plane eval_chain_mut still ACCEPTS the redirect (data-plane-only drop)"
+    (Semantics.eval_chain_mut redir_chain p_noaddr = Verdict.Accept);
+  (* output-hook redirect targets loopback, so it NEVER drops even with no address *)
+  check "output-hook redirect with no address still ACCEPTS (loopback target)"
+    (fst (Semantics.eval_chain_trace Semantics.Houtput redir_chain p_noaddr) = Verdict.Accept);
+  (* masquerade likewise drops at postrouting when the exit interface has no address *)
+  let masq_spec =
+    { Syntax.nat_imms = []; nat_field = None; nat_map = None; nat_src = None;
+      nat_kind = Syntax.nat_masq_kind; nat_family = Syntax.nat_fam_ip4;
+      nat_amin = None; nat_amax = None; nat_pmin = None; nat_pmax = None; nat_flags = 0 } in
+  let masq_chain : Syntax.chain =
+    { Syntax.c_policy = Verdict.Drop;
+      c_rules = [ { (mk_rule masq_spec) with Syntax.r_verdict = Verdict.Accept } ] } in
+  check "postrouting masquerade with NO exit address DROPS (kernel NF_DROP)"
+    (fst (Semantics.eval_chain_trace Semantics.Hpostrouting masq_chain p_noaddr) = Verdict.Drop);
+  (* with the address restored, both accept again *)
+  let env_addr = { env with Packet.e_ifaddr = (fun _ -> [203;0;113;5]) } in
+  let p_addr = { p_noaddr with Packet.pkt_env = env_addr } in
+  check "redirect/masquerade ACCEPT once the interface has an address"
+    (fst (Semantics.eval_chain_trace Semantics.Hprerouting redir_chain p_addr) = Verdict.Accept
+     && fst (Semantics.eval_chain_trace Semantics.Hpostrouting masq_chain p_addr) = Verdict.Accept);
   Printf.printf "\n"
 
 (* (H) iif/oif NUMERIC INTERFACE-INDEX lowering.  iif/oif read the numeric

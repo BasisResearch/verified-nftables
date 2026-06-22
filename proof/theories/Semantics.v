@@ -2553,17 +2553,71 @@ Definition apply_nat (h : hook_id) (r : rule) (p : packet) : packet :=
   | None => p
   end.
 
+(** The kernel's NAT CORE DROPS a packet when the interface it must take an
+    address FROM has no usable address — a data-plane drop that has NO control-plane
+    (compiler) analogue, so it lives only in the trace evaluator.  Two cases mirror
+    the kernel exactly:
+
+    - [redirect] (nf_nat_redirect_ipv4/ipv6): at the OUTPUT hook the new destination
+      is always the loopback address (`newdst.ip = htonl(INADDR_LOOPBACK)`), so it
+      NEVER drops there.  At PRE_ROUTING the new destination is the inbound device's
+      primary address; if that is empty (`if (!newdst.ip) return NF_DROP;`,
+      nf_nat_redirect.c:71-74) the packet is DROPPED.
+
+    - [masquerade] (nf_nat_masquerade_ipv4/ipv6): the new source is the exit
+      interface's selected address (inet_select_addr / ipv6_dev_get_saddr); if that
+      is empty (`if (!newsrc) { ...; return NF_DROP; }`, nf_nat_masquerade.c:54-58;
+      the IPv6 path likewise `return NF_DROP` on nat_ipv6_dev_get_saddr<0,
+      nf_nat_masquerade.c:254-256) the packet is DROPPED.
+
+    Like the kernel, this only fires when the NAT tuple is COMPUTED — i.e. on the
+    FIRST (unconfirmed) ORIGINAL-direction packet of the flow ([apply_nat]'s
+    [e_nat ... = None] && [pkt_ctdir_orig] branch).  On a confirmed/reply packet the
+    stored tuple is reused with no recompute (nf_nat_setup_info returns NF_ACCEPT
+    early, nf_nat_core.c:778-780), so no drop.  Address-carrying snat/dnat never hit
+    this path (their operand is an explicit value/map/field, not an interface
+    address), so [nat_drops] is false for them. *)
+Definition nat_iface_addr_absent (h : hook_id) (ns : nat_spec) (p : packet) : bool :=
+  if String.eqb (nat_kind ns) nat_masq_kind
+  then match masq_saddr (nat_addrfamily ns) p with [] => true | _ => false end
+  else if String.eqb (nat_kind ns) nat_redir_kind
+  then match h with
+       | Houtput => false   (* loopback: never empty, never drops *)
+       | _ => match redir_daddr h (nat_addrfamily ns) p with [] => true | _ => false end
+       end
+  else false.
+
+Definition nat_drops (h : hook_id) (r : rule) (p : packet) : bool :=
+  match r_nat r with
+  | Some ns =>
+      match e_nat (pkt_env p) (pkt_flow p) with
+      | Some _ => false                                  (* confirmed flow: reuse stored tuple, no recompute *)
+      | None => pkt_ctdir_orig p && nat_iface_addr_absent h ns p
+      end
+  | None => false
+  end.
+
 (** [eval_rules_trace]/[eval_chain_trace] take the netfilter hook [h] the base
     chain is attached to, because the data-plane NAT effect at a terminal verdict
     ([apply_nat]) is hook-dependent (an OUTPUT-hooked `redirect` rewrites the
-    destination to loopback, not the inbound-interface address). *)
+    destination to loopback, not the inbound-interface address), and because the NAT
+    core can DROP a packet whose interface has no usable address ([nat_drops]). *)
 Fixpoint eval_rules_trace (h : hook_id) (rs : list rule) (p : packet) : option verdict * packet :=
   match rs with
   | [] => (None, p)
   | r :: rest =>
       if rule_loadable r p && rule_applies r p then
         match outcome r p with
-        | Some v => if terminal v then (Some v, apply_nat h r (dsl_step r p))
+        | Some v => if terminal v then
+                      (* The NAT core DROPS (returns NF_DROP, overriding the rule's
+                         stated verdict) when the interface it must take an address
+                         from has no usable address ([nat_drops]); the drop happens
+                         BEFORE the address is spliced, so the packet is left
+                         unrewritten.  Otherwise the rule's verdict stands and the
+                         NAT rewrite is applied. *)
+                      if nat_drops h r (dsl_step r p)
+                      then (Some Drop, dsl_step r p)
+                      else (Some v, apply_nat h r (dsl_step r p))
                     else eval_rules_trace h rest (dsl_step r p)
         | None   => eval_rules_trace h rest (dsl_step r p)
         end
@@ -2574,21 +2628,72 @@ Definition eval_chain_trace (h : hook_id) (c : chain) (p : packet) : verdict * p
   match eval_rules_trace h (c_rules c) p with
   | (Some v, q) => (v, q) | (None, q) => (c_policy c, q) end.
 
+(** When does the trace traversal reach a NAT-drop?  This Fixpoint mirrors
+    [eval_rules_trace] step-for-step and is [true] exactly when the rule that
+    delivers the terminal verdict is a [nat_drops] rule — i.e. when the data-plane
+    NAT core overrides the verdict to [Drop].  It is the precise hypothesis under
+    which the trace verdict equals the (control-plane) [eval_rules_mut] verdict. *)
+Fixpoint trace_nat_drops (h : hook_id) (rs : list rule) (p : packet) : bool :=
+  match rs with
+  | [] => false
+  | r :: rest =>
+      if rule_loadable r p && rule_applies r p then
+        match outcome r p with
+        | Some v => if terminal v then nat_drops h r (dsl_step r p)
+                    else trace_nat_drops h rest (dsl_step r p)
+        | None   => trace_nat_drops h rest (dsl_step r p)
+        end
+      else trace_nat_drops h rest (dsl_step r p)
+  end.
+
+(** The trace verdict equals the verified [eval_rules_mut] verdict EXCEPT when the
+    data-plane NAT core fires a drop ([trace_nat_drops]); in that case the trace
+    verdict is [Some Drop], faithfully overriding the rule's stated verdict exactly
+    as the kernel's NF_DROP overrides the rule outcome.  This replaces the old
+    UNCONDITIONAL equality, which is now genuinely false in the model: the kernel
+    DROPS a redirect/masquerade whose interface has no usable address even though
+    the rule's stated verdict is Accept. *)
 Lemma eval_rules_trace_verdict : forall h rs p,
-  fst (eval_rules_trace h rs p) = eval_rules_mut rs p.
+  fst (eval_rules_trace h rs p)
+    = (if trace_nat_drops h rs p then Some Drop else eval_rules_mut rs p).
 Proof.
   induction rs as [|r rest IH]; intros p; simpl; [reflexivity|].
   destruct (rule_loadable r p && rule_applies r p).
-  - destruct (outcome r p) as [v|]; [destruct (terminal v); simpl; auto|]; auto.
+  - destruct (outcome r p) as [v|]; [|auto].
+    destruct (terminal v); [|auto].
+    destruct (nat_drops h r (dsl_step r p)); reflexivity.
   - auto.
 Qed.
 
+(** Specialisation: when no NAT-drop fires, the trace verdict is exactly the
+    verified [eval_rules_mut] verdict — the original (now conditional) equality. *)
+Corollary eval_rules_trace_verdict_no_drop : forall h rs p,
+  trace_nat_drops h rs p = false ->
+  fst (eval_rules_trace h rs p) = eval_rules_mut rs p.
+Proof.
+  intros h rs p Hnd. rewrite eval_rules_trace_verdict, Hnd. reflexivity.
+Qed.
+
 Lemma eval_chain_trace_verdict : forall h c p,
-  fst (eval_chain_trace h c p) = eval_chain_mut c p.
+  fst (eval_chain_trace h c p)
+    = (if trace_nat_drops h (c_rules c) p then Drop else eval_chain_mut c p).
 Proof.
   intros h c p. unfold eval_chain_trace, eval_chain_mut.
-  rewrite <- (eval_rules_trace_verdict h (c_rules c) p).
-  destruct (eval_rules_trace h (c_rules c) p) as [[v|] q]; reflexivity.
+  pose proof (eval_rules_trace_verdict h (c_rules c) p) as Hv.
+  destruct (eval_rules_trace h (c_rules c) p) as [[v|] q];
+    simpl in Hv;
+    destruct (trace_nat_drops h (c_rules c) p).
+  - inversion Hv; reflexivity.
+  - rewrite <- Hv; reflexivity.
+  - discriminate Hv.
+  - destruct (eval_rules_mut (c_rules c) p); [discriminate Hv | reflexivity].
+Qed.
+
+Corollary eval_chain_trace_verdict_no_drop : forall h c p,
+  trace_nat_drops h (c_rules c) p = false ->
+  fst (eval_chain_trace h c p) = eval_chain_mut c p.
+Proof.
+  intros h c p Hnd. rewrite eval_chain_trace_verdict, Hnd. reflexivity.
 Qed.
 
 (** Run a whole chain on a packet and return the packet it leaves (the

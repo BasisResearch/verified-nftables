@@ -254,18 +254,43 @@ Qed.
 (* THE OUTPUT PACKET of the postrouting chain (first packet of the flow): the input
    with its source address set to the exit interface's address (= what masquerade
    does), and the mapping recorded in [e_nat]. *)
+(* The masquerade does NOT NAT-drop precisely when the exit interface HAS an
+   address (ifaddr <> []) — mirroring the kernel's `if (!newsrc) return NF_DROP;`
+   (nf_nat_masquerade.c:54-58).  Since post1's body is a no-op on a mark99 packet,
+   [nat_drops] reads the exit-interface address straight off [p]. *)
+Lemma post1_nat_no_drop : forall p ifaddr,
+  field_value FMetaMark p = mark99 ->
+  pkt_ctdir_orig p = true ->
+  e_nat (pkt_env p) (pkt_flow p) = None ->
+  e_ifaddr (pkt_env p) (field_value FMetaOifname p) = ifaddr ->
+  ifaddr <> [] ->
+  nat_drops Hpostrouting post1 (dsl_step post1 p) = false.
+Proof.
+  intros p ifaddr Hmark Horig Hnone Hifa Hne.
+  rewrite (dsl_step_limit_free post1 p) by reflexivity.
+  rewrite (post1_dsl_noop p Hmark).
+  unfold nat_drops, post1, filter_postrouting.
+  cbn -[e_nat e_ifaddr field_value pkt_env masq_saddr].
+  rewrite Hnone, Horig. cbn [andb].
+  unfold nat_iface_addr_absent. cbn -[e_ifaddr field_value pkt_env masq_saddr].
+  unfold masq_saddr, nat_addrfamily. cbn -[e_ifaddr field_value pkt_env].
+  rewrite Hifa. destruct ifaddr; [contradiction|reflexivity].
+Qed.
+
 Theorem masquerade_output : forall p ifaddr,
   field_value FMetaMark p = mark99 ->
   pkt_ctdir_orig p = true ->
   e_nat (pkt_env p) (pkt_flow p) = None ->
   e_ifaddr (pkt_env p) (field_value FMetaOifname p) = ifaddr ->
+  ifaddr <> [] ->
   eval_chain_trace Hpostrouting filter_postrouting p
     = (Accept, store_nat_mapping (set_saddr "ip" p ifaddr)
                  (Some (slice (pkt_nh p) 12 4), Some ifaddr, None, None)).
 Proof.
-  intros p ifaddr Hmark Horig Hnone Hifa.
+  intros p ifaddr Hmark Horig Hnone Hifa Hne.
   unfold eval_chain_trace. rewrite postrouting_rules_eq. cbn [eval_rules_trace].
   rewrite (masquerade_gated_on_mark p Hmark), post1_outcome_accept. cbn [terminal].
+  rewrite (post1_nat_no_drop p ifaddr Hmark Horig Hnone Hifa Hne).
   rewrite (dsl_step_limit_free post1 p) by reflexivity.
   rewrite (post1_dsl_noop p Hmark), (post1_apply_masq Hpostrouting p Horig Hnone), Hifa.
   reflexivity.
@@ -292,7 +317,8 @@ Theorem masquerade_source_is_exit_iface : forall p ifaddr,
   field_value FIp4Saddr (snd (eval_chain_trace Hpostrouting filter_postrouting p)) = ifaddr.
 Proof.
   intros p ifaddr Hmark Horig Hnone Hifa Hlen Hnh.
-  rewrite (masquerade_output p ifaddr Hmark Horig Hnone Hifa). cbn [snd].
+  assert (Hne : ifaddr <> []) by (destruct ifaddr; [discriminate Hlen | discriminate]).
+  rewrite (masquerade_output p ifaddr Hmark Horig Hnone Hifa Hne). cbn [snd].
   (* [store_nat_mapping] preserves pkt_nh, so saddr read-back is the spliced value *)
   unfold field_value; cbn [field_load do_load]; unfold read_payload.
   cbn [store_nat_mapping pkt_nh].

@@ -67,6 +67,17 @@ Proof.
   rewrite store_nat_nh. reflexivity.
 Qed.
 
+(* A dnat (kind "dnat", an explicit register-1 operand, NOT an interface address)
+   never hits the kernel's "interface has no usable address" NF_DROP path, so the
+   data-plane drop predicate [nat_drops] is false for it on any packet. *)
+Lemma dnat_no_drop : forall h q, nat_drops h dnat_rule q = false.
+Proof.
+  intros h q. unfold nat_drops, dnat_rule.
+  destruct (e_nat (pkt_env q) (pkt_flow q)); [reflexivity|].
+  unfold nat_iface_addr_absent, dnat_spec; cbn [nat_kind r_nat].
+  destruct (pkt_ctdir_orig q); reflexivity.
+Qed.
+
 (* THE OUTPUT PACKET of the dnat chain (first packet of the flow): the input with
    its destination address set to the target (= what dnat does), plus the stored
    mapping in [e_nat]. *)
@@ -81,7 +92,8 @@ Proof.
   assert (Hw : dsl_writes dnat_rule p = p) by reflexivity.
   unfold eval_chain_trace, dnat_chain. cbn [c_rules eval_rules_trace].
   rewrite (dsl_step_limit_free dnat_rule p) by reflexivity.
-  cbn -[apply_nat dnat_rule dsl_writes]. rewrite Hw.
+  cbn -[apply_nat dnat_rule dsl_writes nat_drops]. rewrite Hw.
+  rewrite dnat_no_drop.
   rewrite (dnat_apply h p Horig Hnone). reflexivity.
 Qed.
 
@@ -263,6 +275,14 @@ Proof.
   cbn -[set_dport set_daddr store_nat_mapping slice pkt_nh]. rewrite ?Horig; reflexivity.
 Qed.
 
+Lemma dnat_port_no_drop : forall h q, nat_drops h dnat_port_rule q = false.
+Proof.
+  intros h q. unfold nat_drops, dnat_port_rule.
+  destruct (e_nat (pkt_env q) (pkt_flow q)); [reflexivity|].
+  unfold nat_iface_addr_absent, dnat_port_spec; cbn [nat_kind r_nat].
+  destruct (pkt_ctdir_orig q); reflexivity.
+Qed.
+
 (* THE OUTPUT PACKET: dnat to A:PORT sets both the destination address and dport. *)
 Theorem dnat_port_output : forall h p,
   pkt_ctdir_orig p = true ->
@@ -275,7 +295,8 @@ Proof.
   assert (Hw : dsl_writes dnat_port_rule p = p) by reflexivity.
   unfold eval_chain_trace, dnat_port_chain. cbn [c_rules eval_rules_trace].
   rewrite (dsl_step_limit_free dnat_port_rule p) by reflexivity.
-  cbn -[apply_nat dnat_port_rule dsl_writes]. rewrite Hw.
+  cbn -[apply_nat dnat_port_rule dsl_writes nat_drops]. rewrite Hw.
+  rewrite dnat_port_no_drop.
   rewrite (dnat_port_apply h p Horig Hnone). reflexivity.
 Qed.
 
