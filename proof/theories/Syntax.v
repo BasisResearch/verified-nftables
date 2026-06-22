@@ -483,6 +483,15 @@ Definition nat_redir_kind : string := "redir".
 Definition nat_fam_ip4 : string := "ip".
 Definition nat_fam_ip6 : string := "ip6".
 
+(** The [inet] family is a RUNTIME-DISPATCHED sentinel: an `inet` table has ONE
+    NAT rule that processes BOTH IPv4 and IPv6 packets, and the kernel dispatches
+    on the PACKET's L3 family at runtime (nft_masq_inet_eval: `switch (nft_pf(pkt))`
+    -> NFPROTO_IPV4 -> nf_nat_masquerade_ipv4 (4-byte IPv4 slot) vs NFPROTO_IPV6 ->
+    nf_nat_masquerade_ipv6 (16-byte IPv6 slot)).  No STATIC family can be correct,
+    so a NAT statement in an inet table carries [nat_fam_inet], which the data-plane
+    NAT functions resolve per-packet ([Semantics.nat_addrfamily_pkt]). *)
+Definition nat_fam_inet : string := "inet".
+
 (** A rule: an ordered body (matches + verdict-neutral statements) then an
     outcome — a static verdict, a verdict-map lookup ([r_vmap]), or a terminal
     redirect ([r_nat] / [r_tproxy]). *)

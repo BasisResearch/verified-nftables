@@ -729,9 +729,13 @@ let limit_spec rate unit_ over : Packet.limit_spec =
    NFPROTO_IPV4 -> nf_nat_masquerade_ipv4 vs NFPROTO_IPV6 -> nf_nat_masquerade_ipv6),
    so the address geometry (4-byte IPv4 slot vs 16-byte IPv6 slot) and the source
    value (IPv4 e_ifaddr vs IPv6 e_ifaddr6) must follow the table family.  An ip6
-   table -> "ip6"; ip/inet/everything else -> "ip" (inet masquerade defaults to
-   IPv4 geometry — the corpus ip6 masquerade case is in an `ip6` table). *)
-let nat_l3_family = function "ip6" -> "ip6" | _ -> "ip"
+   table -> "ip6"; ip table -> "ip".  An `inet` table has ONE NAT rule serving BOTH
+   IPv4 and IPv6 packets, and the kernel dispatches on the PACKET's L3 family at
+   RUNTIME (nft_masq_inet_eval: `switch (nft_pf(pkt))` -> NFPROTO_IPV4 vs
+   NFPROTO_IPV6); NO static family is correct, so an inet-table NAT carries the
+   runtime-dispatched sentinel "inet" (Semantics.nat_addrfamily_pkt resolves it
+   per-packet to the packet's L3 family). *)
+let nat_l3_family = function "ip6" -> "ip6" | "inet" -> "inet" | _ -> "ip"
 
 (* a `masquerade` NAT spec: source-NAT to the exit interface's address, in the
    address family of the enclosing table ([nat_l3_family]) so an `ip6 masquerade`

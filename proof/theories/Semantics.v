@@ -2274,7 +2274,28 @@ Definition nat_addr (ns : nat_spec) (p : packet) : data :=
     ([nat_pmin]/[nat_pmax]) is a separate obligation.  An unrecognised kind
     leaves the packet unchanged. *)
 Definition nat_addrfamily (ns : nat_spec) : String.string :=
-  if String.eqb (nat_family ns) nat_fam_ip6 then nat_fam_ip6 else nat_fam_ip4.
+  if String.eqb (nat_family ns) nat_fam_ip6 then nat_fam_ip6
+  else if String.eqb (nat_family ns) nat_fam_inet then nat_fam_inet
+  else nat_fam_ip4.
+
+(** The PACKET's L3 protocol family — exactly the bit [nft_pf(pkt)] encodes — read
+    from the [meta nfproto] byte: NFPROTO_IPV6 = 10 -> "ip6", everything else (incl.
+    NFPROTO_IPV4 = 2) -> "ip".  This is what the kernel's [nft_masq_inet_eval]
+    `switch (nft_pf(pkt))` dispatches on. *)
+Definition pkt_l3_family (p : packet) : String.string :=
+  if N.eqb (data_to_N (pkt_meta p MKnfproto)) 10 then nat_fam_ip6 else nat_fam_ip4.
+
+(** The L3 NAT address family to USE for [p]: for a STATIC family ("ip"/"ip6", e.g.
+    an `ip`/`ip6` table or an explicit-literal snat/dnat) the rule's own family; for
+    the RUNTIME-DISPATCHED [nat_fam_inet] (an inet-table masquerade/redirect/snat-by-
+    iface, which sees both protocols) the PACKET's L3 family ([pkt_l3_family]).  This
+    is the precise model of the kernel's runtime `switch (nft_pf(pkt))`: an IPv6
+    packet through an inet-table masquerade gets the 16-byte IPv6 geometry + IPv6
+    interface address, an IPv4 packet the 4-byte IPv4 geometry — instead of a single
+    statically-pinned family that corrupts the other protocol. *)
+Definition nat_addrfamily_pkt (ns : nat_spec) (p : packet) : String.string :=
+  if String.eqb (nat_addrfamily ns) nat_fam_inet then pkt_l3_family p
+  else nat_addrfamily ns.
 
 (** The netfilter hook a base chain is attached to.  This is the SAME [hook_id]
     used by the hook-registration metadata below ([hooked_chain]); it is named
@@ -2389,9 +2410,9 @@ Definition nat_is_src (ns : nat_spec) : bool :=
     the flow's first packet. *)
 Definition nat_operand_addr (h : hook_id) (ns : nat_spec) (p : packet) : option data :=
   if String.eqb (nat_kind ns) nat_masq_kind
-  then Some (masq_saddr (nat_addrfamily ns) p)
+  then Some (masq_saddr (nat_addrfamily_pkt ns p) p)
   else if String.eqb (nat_kind ns) nat_redir_kind
-  then Some (redir_daddr h (nat_addrfamily ns) p)
+  then Some (redir_daddr h (nat_addrfamily_pkt ns p) p)
   else if String.eqb (nat_kind ns) nat_snat_kind
        || String.eqb (nat_kind ns) nat_dnat_kind
   then if nat_has_addr ns then Some (nat_addr ns p) else None
@@ -2438,7 +2459,7 @@ Definition apply_nat_port_val (is_src : bool) (port_opt : option nat) (p : packe
       matching the kernel's `if (priv->sreg_proto_min)` guard being false). *)
 Definition apply_nat_tuple (ns : nat_spec) (p : packet)
                            (m : option data * option data * option nat * option data) : packet :=
-  let fam := nat_addrfamily ns in
+  let fam := nat_addrfamily_pkt ns p in
   let is_src := nat_is_src ns in
   let '(orig_addr_opt, new_addr_opt, port_opt, orig_port_opt) := m in
   if pkt_ctdir_orig p then
@@ -2506,7 +2527,7 @@ Definition store_nat_mapping (p : packet) (m : option data * option data * optio
     the conntrack entry (nf_conntrack_alter_reply), so a reply-direction packet can
     be un-NAT'd back to it (the reply's opposite slot is restored to this value). *)
 Definition nat_orig_addr (ns : nat_spec) (p : packet) : data :=
-  let fam := nat_addrfamily ns in
+  let fam := nat_addrfamily_pkt ns p in
   let '(off, len) := if nat_is_src ns then saddr_slot fam else daddr_slot fam in
   slice (pkt_nh p) off len.
 
@@ -2579,11 +2600,11 @@ Definition apply_nat (h : hook_id) (r : rule) (p : packet) : packet :=
     address), so [nat_drops] is false for them. *)
 Definition nat_iface_addr_absent (h : hook_id) (ns : nat_spec) (p : packet) : bool :=
   if String.eqb (nat_kind ns) nat_masq_kind
-  then match masq_saddr (nat_addrfamily ns) p with [] => true | _ => false end
+  then match masq_saddr (nat_addrfamily_pkt ns p) p with [] => true | _ => false end
   else if String.eqb (nat_kind ns) nat_redir_kind
   then match h with
        | Houtput => false   (* loopback: never empty, never drops *)
-       | _ => match redir_daddr h (nat_addrfamily ns) p with [] => true | _ => false end
+       | _ => match redir_daddr h (nat_addrfamily_pkt ns p) p with [] => true | _ => false end
        end
   else false.
 

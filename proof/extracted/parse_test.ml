@@ -738,6 +738,67 @@ let check_ip6_nat () =
     (Stdlib.List.length p6_out.Packet.pkt_nh = Stdlib.List.length nh);
   check "ip6 masquerade does NOT use the 4-byte IPv4 e_ifaddr"
     (not (data_eq src6_out [9;9;9;9]));
+  Printf.printf "\n";
+  (* --- inet-table masquerade is RUNTIME-DISPATCHED by the PACKET's L3 family.
+     ONE inet-table masquerade rule serves BOTH IPv4 and IPv6 packets; the kernel
+     dispatches at runtime (nft_masq_inet_eval: `switch (nft_pf(pkt))` ->
+     NFPROTO_IPV4 -> nf_nat_masquerade_ipv4 (4-byte slot) vs NFPROTO_IPV6 ->
+     nf_nat_masquerade_ipv6 (16-byte slot via ipv6_dev_get_saddr)).  Before this fix
+     the parser STATICALLY pinned nat_family = "ip" for inet, so an IPv6 packet got
+     the 4-byte IPv4 address spliced into the MIDDLE of its 16-byte source (bytes
+     10..15 mangled) and a no-IPv4-addr interface SPURIOUSLY DROPPED the IPv6 packet.
+     The fix lowers inet-table masquerade to nat_family = "inet", which the data-plane
+     resolves per-packet via [pkt_l3_family]. --- *)
+  let parsed_inet =
+    Nft_parse.parse_string
+      "table inet nat {\n\
+      \  chain post {\n\
+      \    type nat hook postrouting priority srcnat; policy accept;\n\
+      \    masquerade\n\
+      \  }\n\
+       }\n" in
+  let post_inet = Nft_lower.find_chain parsed_inet ~table:"nat" ~chain:"post" in
+  let mr_inet = Stdlib.List.nth post_inet.Syntax.c_rules 0 in
+  (match mr_inet.Syntax.r_nat with
+   | Some ns ->
+       check "inet masquerade lowers to nat_family = \"inet\" (runtime-dispatched, NOT pinned \"ip\")"
+         (ns.Syntax.nat_family = Syntax.nat_fam_inet)
+   | None -> check "inet masquerade lowers to a nat_spec" false);
+  (* exit interface: IPv4 = 9.9.9.9, IPv6 = 0xBB*16 (a DIFFERENT value) *)
+  let inet_if6 = Stdlib.List.init 16 (fun _ -> 0xBB) in
+  let env_inet = parsed_inet.Nft_lower.p_env in
+  let env_inet = { env_inet with Packet.e_ifaddr = (fun _ -> [9;9;9;9]);
+                                 e_ifaddr6 = (fun _ -> inet_if6) } in
+  (* (a) IPv6 packet (nfproto = NFPROTO_IPV6 = 10): full 16-byte IPv6 rewrite. *)
+  let p_inet6 = { (mk_pkt ~env:env_inet ~nfproto:[10] ()) with Packet.pkt_nh = nh } in
+  let s6_in  = Syntax.field_value Syntax.FIp6Saddr p_inet6 in
+  let (_, p_inet6_out) = Semantics.eval_chain_trace Semantics.Hpostrouting post_inet p_inet6 in
+  let s6_out = Syntax.field_value Syntax.FIp6Saddr p_inet6_out in
+  Printf.printf "    inet masquerade, IPv6 pkt: ip6 saddr %s -> %s\n" (show s6_in) (show s6_out);
+  check "inet masquerade on an IPv6 packet rewrites the FULL 16-byte IPv6 source to e_ifaddr6"
+    (data_eq s6_out inet_if6);
+  check "inet masquerade on an IPv6 packet does NOT splice the 4-byte IPv4 addr"
+    (not (data_eq (Stdlib.List.filteri (fun i _ -> i >= 10 && i < 16) s6_out) [9;9;9;9]));
+  check "inet masquerade preserves the IPv6 network-header length"
+    (Stdlib.List.length p_inet6_out.Packet.pkt_nh = Stdlib.List.length nh);
+  (* (b) IPv4 packet (nfproto = NFPROTO_IPV4 = 2) through the SAME rule: 4-byte slot. *)
+  let nh4 = [0x45;0;0;0; 0;0;0;0; 64;6;0;0; 1;2;3;4; 192;168;0;9] in
+  let p_inet4 = { (mk_pkt ~env:env_inet ~nfproto:[2] ()) with Packet.pkt_nh = nh4 } in
+  let (_, p_inet4_out) = Semantics.eval_chain_trace Semantics.Hpostrouting post_inet p_inet4 in
+  let s4_out = Syntax.field_value Syntax.FIp4Daddr p_inet4_out in
+  ignore s4_out;
+  check "inet masquerade on an IPv4 packet rewrites the 4-byte IPv4 source to e_ifaddr"
+    (data_eq (Syntax.field_value Syntax.FIp4Saddr p_inet4_out) [9;9;9;9]);
+  (* (c) interface with an IPv6 address but NO IPv4 address: an IPv6 packet must be
+     MASQUERADED (kernel uses the IPv6 address), NOT dropped. *)
+  let env_noip4 = { env_inet with Packet.e_ifaddr = (fun _ -> []);
+                                  e_ifaddr6 = (fun _ -> inet_if6) } in
+  let p_noip4 = { (mk_pkt ~env:env_noip4 ~nfproto:[10] ()) with Packet.pkt_nh = nh } in
+  let (v_noip4, p_noip4_out) = Semantics.eval_chain_trace Semantics.Hpostrouting post_inet p_noip4 in
+  check "inet masquerade: no-IPv4-addr iface does NOT drop an IPv6 packet (kernel masqs via IPv6)"
+    (v_noip4 <> Verdict.Drop);
+  check "inet masquerade: that IPv6 packet IS masqueraded to the IPv6 addr"
+    (data_eq (Syntax.field_value Syntax.FIp6Saddr p_noip4_out) inet_if6);
   Printf.printf "\n"
 
 (* (G') HOOK-DEPENDENT redirect.  `redirect` is a destination-NAT whose target
