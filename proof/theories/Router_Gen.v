@@ -82,3 +82,8 @@ Definition global_chains : list (string * chain) :=
    ("forward", global_forward);
    ("postrouting", global_postrouting)].
 
+Definition global_hooks : list hooked_chain :=
+  [{| hc_hook := Hinput; hc_prio := 0; hc_env := global_chains; hc_base := global_inbound |};
+   {| hc_hook := Hforward; hc_prio := 0; hc_env := global_chains; hc_base := global_forward |};
+   {| hc_hook := Hpostrouting; hc_prio := 100; hc_env := global_chains; hc_base := global_postrouting |}].
+

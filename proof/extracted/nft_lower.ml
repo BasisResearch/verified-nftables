@@ -893,9 +893,14 @@ let lower_setdecl st (sd : Nft_ast.setdecl) : unit =
     st.sets <- (sd.Nft_ast.sd_name, elems) :: st.sets
   end
 
-let lower_chain st ~family (sc : Nft_ast.schain) : string * Syntax.chain =
-  let is_base = L.exists (function Nft_ast.ITypeHook _ -> true | _ -> false)
-                  sc.Nft_ast.sc_items in
+(* the (hook, priority) registration of a base chain, if it has a `type _ hook _
+   priority _` declaration; [None] for a regular (jumpable) chain. *)
+let lower_chain st ~family (sc : Nft_ast.schain)
+  : (string * Syntax.chain) * (string * int) option =
+  let hookinfo = L.fold_left (fun acc -> function
+    | Nft_ast.ITypeHook { hook; priority; _ } -> Some (hook, priority)
+    | _ -> acc) None sc.Nft_ast.sc_items in
+  let is_base = hookinfo <> None in
   let policy = ref None and rules = ref [] in
   L.iter (function
     | Nft_ast.ITypeHook _ -> ()
@@ -904,12 +909,15 @@ let lower_chain st ~family (sc : Nft_ast.schain) : string * Syntax.chain =
     sc.Nft_ast.sc_items;
   let c_policy = match !policy with
     | Some v -> v | None -> if is_base then Verdict.Accept else Verdict.Continue in
-  (sc.Nft_ast.sc_name, { Syntax.c_policy; c_rules = L.rev !rules })
+  ((sc.Nft_ast.sc_name, { Syntax.c_policy; c_rules = L.rev !rules }), hookinfo)
 
 (* ---------- top level ---------- *)
 
 type parsed = {
   p_tables : (string * string * (string * Syntax.chain) list) list;
+  (* per table: the base-chain hook registrations (chain-name, hook, priority),
+     in source order.  Empty for tables with no base chains. *)
+  p_hooks  : (string * string * (string * string * int) list) list;
   p_env    : Packet.env;
   (* the raw declared/anonymous set & map contents, so a Coq emitter can
      serialise them as a [set_decls] record (the env is then [env_with_sets]) *)
@@ -938,16 +946,23 @@ let lower (f : Nft_ast.sfile) : parsed =
         L.iter (function Nft_ast.TSet sd -> lower_setdecl st sd | _ -> ()) t.Nft_ast.st_items
     | _ -> ()) f;
   (* pass 3: chains *)
-  let tables = L.filter_map (function
+  let tables_with_hooks = L.filter_map (function
     | Nft_ast.TopTable t ->
         let family = t.Nft_ast.st_family in
-        let chains = L.filter_map (function
+        let lowered = L.filter_map (function
           | Nft_ast.TChain sc -> Some (lower_chain st ~family sc)
           | Nft_ast.TSet _ | Nft_ast.TObj _ -> None) t.Nft_ast.st_items in
-        Some (t.Nft_ast.st_family, t.Nft_ast.st_name, chains)
+        let chains = L.map fst lowered in
+        let hooks = L.filter_map (fun ((cname, _), hi) -> match hi with
+          | Some (hook, prio) -> Some (cname, hook, prio)
+          | None -> None) lowered in
+        Some ((t.Nft_ast.st_family, t.Nft_ast.st_name, chains),
+              (t.Nft_ast.st_family, t.Nft_ast.st_name, hooks))
     | _ -> None) f
   in
-  { p_tables = tables; p_env = build_env st;
+  { p_tables = L.map fst tables_with_hooks;
+    p_hooks  = L.map snd tables_with_hooks;
+    p_env = build_env st;
     p_sets = L.rev st.sets; p_vmaps = L.rev st.vmaps; p_maps = L.rev st.maps }
 
 (* ---------- lookups ---------- *)

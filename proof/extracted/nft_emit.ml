@@ -204,6 +204,19 @@ let assoc_kvs (l : (string * ((Bytes.data * Bytes.data) * Verdict.verdict) list)
     (L.map (fun (n, kvs) ->
        spf "(%s, [%s])" (qstring n) (S.concat "; " (L.map kv kvs))) l) ^ "]"
 
+(* ---------- hook registration ---------- *)
+
+(* map an nftables hook name to the Coq [hook_id] constructor.  Fail loudly on an
+   unknown hook so a base chain is never silently dropped from dispatch. *)
+let hook_id (h : string) : string = match S.lowercase_ascii h with
+  | "prerouting"  -> "Hprerouting"
+  | "input"       -> "Hinput"
+  | "forward"     -> "Hforward"
+  | "output"      -> "Houtput"
+  | "postrouting" -> "Hpostrouting"
+  | "ingress"     -> "Hingress"
+  | other -> raise (Unsupported ("unknown netfilter hook: " ^ other))
+
 (* ---------- whole-file emission ---------- *)
 
 let sanitize (s : string) : string =
@@ -240,6 +253,16 @@ let emit (src_path : string) (p : Nft_lower.parsed) : string =
     pr "Definition %s_chains : list (string * chain) :=\n  [%s].\n\n" pfx
       (S.concat ";\n   "
          (L.map (fun (cname, _) ->
-            spf "(%s, %s_%s)" (qstring cname) pfx (sanitize cname)) chains)))
+            spf "(%s, %s_%s)" (qstring cname) pfx (sanitize cname)) chains));
+    (* hook registration for this table's base chains: emit a [hooked_chain] per
+       `type _ hook H priority P` declaration, so dispatch (eval_hook/select_hook)
+       runs the PARSER-chosen chain at each hook — not a chain the prover named. *)
+    let hooks = match L.find_opt (fun (_, n, _) -> n = tname) p.Nft_lower.p_hooks with
+      | Some (_, _, hs) -> hs | None -> [] in
+    pr "Definition %s_hooks : list hooked_chain :=\n  [%s].\n\n" pfx
+      (S.concat ";\n   "
+         (L.map (fun (cname, hook, prio) ->
+            spf "{| hc_hook := %s; hc_prio := %d; hc_env := %s_chains; hc_base := %s_%s |}"
+              (hook_id hook) prio pfx pfx (sanitize cname)) hooks)))
     p.Nft_lower.p_tables;
   Buffer.contents b
