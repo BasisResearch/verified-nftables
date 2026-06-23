@@ -661,10 +661,44 @@ OCaml shim that emits real netlink via libnftnl, then round-trip
 tested, like `glue.ml`.
 
 ### TODO 7 — More optimization passes (each needs `optimize_chain_correct` extended)
-- Consecutive-duplicate-*rule* elimination: needs `rule_eq_dec`; a monolithic
-  `decide equality` is too costly, so build a bottom-up `vsrc`/`stmt`/spec `eq_dec`
-  hierarchy. - Rule→vmap/set consolidation (the classic nft optimisation; harder to
-  verify — a set of single-match accept rules becomes one `@set` lookup).
+**The `nft -o` / `nft --optimize` consolidation passes are now ported and proved
+in `theories/Optimize_Merge.v` (all axiom-free, `Print Assumptions` clean):**
+- **Abstract adjacent-rule merge** `eval_rules_merge2`: replacing two adjacent
+  rules `r1; r2` by one `r12` preserves `eval_rules` on every packet, given that
+  `r12` is loadable / outcomes exactly as each original and **applies iff EITHER
+  original applies** (the head selector is the *disjunction* of the two). This is
+  the soundness core of every `nft -o` value/vmap merge (`MERGE_BY_VERDICT` in
+  upstream `src/optimize.c`).
+- **Value-merge from a disjunction certificate** `eval_rules_value_merge`: two
+  rules `mk_head m1 rest r1` / `mk_head m2 rest r1` (identical but for the head
+  match value) collapse to `mk_head m12 rest r1` when `m12` loads the same field
+  and `eval_matchcond m12 = eval_matchcond m1 || eval_matchcond m2` — exactly the
+  anonymous-set merge `tcp dport 22 accept` + `tcp dport 80 accept` ⇒
+  `tcp dport { 22, 80 } accept`, at the matchcond level.
+- **Concrete contiguous-range certificate** `eval_rules_range_value_merge`
+  (GUARDED): the value-merge instantiated to a single range —
+  `f 6, f 7 ⇒ f 6-7` — discharged via `range_byte_split` for a **single-byte**
+  selector (guard: `length (field_value f p) = 1`, since a multi-byte bound is a
+  prefix test for which a contiguous two-element set is *not* one range). This is
+  the env-free, no-new-constructor instance `nft` itself coalesces a contiguous
+  anonymous set into.
+- **Consecutive-duplicate-rule elimination** `dedup_adj` / `eval_rules_dedup_adj`:
+  a full bottom-up `verdict`/`vsrc`/`stmt`/spec `eq_dec` hierarchy up to
+  `rule_eq_dec` is built; dropping the second of two byte-identical adjacent rules
+  is the `r1=r2` instance of `eval_rules_merge2`. Folded into the runnable
+  top-level `optimize_chain2` (= `optimize_chain` then `dedup_adj`), proved
+  verdict-preserving by `optimize_chain2_correct`.
+
+NOT yet ported (honest gaps): the **general** anonymous-set/vmap merge over a
+*multi-byte* or non-contiguous value set, and the **verdict-map** (`vmap`) and
+**concatenation** merges as *runnable chain rewrites*. The model represents sets
+only as named runtime objects (`e_set`/`e_vmap` in `pkt_env`), so a chain-only
+pass cannot synthesise the set declaration the merged rule would reference; and an
+inline-set/disjunction `matchcond` constructor would ripple through
+`Compile`/`Correct`/the corpus codec/parser (risking the 2532-case corpus gate).
+The *soundness* of those merges is nonetheless captured by `eval_rules_merge2` /
+`eval_rules_value_merge` (supply the per-value disjunction certificate and they
+follow); only the executable rewrite + set-synthesis is deferred.
 
 ### TODO 8 — (future, per `../instructions.org`) Data-plane interpreter + VST
 A data-plane bytecode *interpreter* spec (what the C engine does to a packet) and

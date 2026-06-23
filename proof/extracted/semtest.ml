@@ -140,7 +140,8 @@ let () =
   (* (2) a verdict map with REAL entries, then a terminal redirect on a miss;
      tests the vmap lookup (hit -> mapped verdict) and the vmap-then-terminal
      fall-through (miss -> redirect = Accept) that the corpus cannot exercise. *)
-  let vm_env = env_vmap "portmap" [ ([0; 22], Verdict.Drop); ([0; 80], Verdict.Accept) ] in
+  let vm_env = env_vmap "portmap" [ (([0; 22], [0; 22]), Verdict.Drop);
+                                    (([0; 80], [0; 80]), Verdict.Accept) ] in
   run_battery fails
     "verdict map portmap={22:drop,80:accept} (entries in the ENV) then redirect"
     (chain Verdict.Continue [ vmap_rule ~nat:redirect Syntax.FThDport ])
@@ -381,6 +382,68 @@ let () =
   (match dsl_seq with
    | [ a; b ] when a <> b -> ()   (* first dropped, second accepted: cross-packet learning *)
    | _ -> Printf.printf "    (warning: no cross-packet difference observed)\n");
+  Printf.printf "\n";
+  (* (6) nft -o CONSOLIDATION passes (Optimize_Merge).  Two batteries:
+       (6a) the contiguous-range VALUE-MERGE certificate (eval_rules_range_value_merge):
+            `ip protocol 6` + `ip protocol 7` (single-byte field) accept
+            =>  `ip protocol 6-7 accept`.  The hand-merged chain must agree with the
+            two-rule chain on every single-byte-protocol packet.
+       (6b) the consecutive-duplicate-rule pass (optimize_chain2 = optimize_chain
+            then dedup_adj): an adjacent duplicate rule is removed (length shrinks)
+            and the verdict is preserved on every packet. *)
+  Printf.printf "=== (6a) nft -o value-merge: ip protocol {6,7} -> 6-7 (range, single byte) ===\n";
+  let ipproto = Syntax.FMetaL4proto in   (* a single-byte selector *)
+  let two_rule = chain Verdict.Drop [
+    rule [ Syntax.MRange (ipproto, false, [6], [6]) ] Verdict.Accept;
+    rule [ Syntax.MRange (ipproto, false, [7], [7]) ] Verdict.Accept;
+  ] in
+  let merged = chain Verdict.Drop [
+    rule [ Syntax.MRange (ipproto, false, [6], [7]) ] Verdict.Accept;
+  ] in
+  Stdlib.List.iter (fun (_name, proto) ->
+    let p = mk_pkt ~l4proto:[proto] () in
+    let a = Semantics.eval_chain two_rule p in
+    let b = Semantics.eval_chain merged  p in
+    let ok = a = b in
+    Printf.printf "  proto=%-3d  two-rule=%-7s merged=%-7s %s\n"
+      proto (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
+    if not ok then incr fails)
+    [ "5", 5; "6", 6; "7", 7; "8", 8 ];
+  Printf.printf "\n";
+  Printf.printf "=== (6b) nft -o dedup: adjacent duplicate rule removed (dedup_adj) ===\n";
+  (* [dedup_adj]/[optimize_chain2] (verified in Optimize_Merge.v, axiom-free) are
+     kept OUT of the extracted library: their [rule_eq_dec] (a bottom-up
+     [decide equality] hierarchy) extracts to a multi-megabyte OCaml term.  We
+     re-create the SAME pass here with OCaml's structural equality on the extracted
+     [rule] type — the verified [eval_rules_dedup_adj] guarantees this drop is
+     verdict-preserving; this witness just exercises it on concrete packets. *)
+  let rec dedup_adj : Syntax.rule list -> Syntax.rule list = function
+    | r1 :: (r2 :: _ as rest) -> if r1 = r2 then dedup_adj rest else r1 :: dedup_adj rest
+    | rs -> rs in
+  let optimize_chain2 (c : Syntax.chain) : Syntax.chain =
+    let c1 = Optimize.optimize_chain c in
+    { c1 with Syntax.c_rules = dedup_adj c1.Syntax.c_rules } in
+  let dup_chain = chain Verdict.Drop [
+    rule [ l4_tcp; meq Syntax.FThDport [0; 22] ] Verdict.Accept;
+    rule [ l4_tcp; meq Syntax.FThDport [0; 22] ] Verdict.Accept;   (* exact duplicate *)
+    rule [ meq Syntax.FIp4Saddr [10; 0; 0; 1] ] Verdict.Drop;
+  ] in
+  let dup_opt = optimize_chain2 dup_chain in
+  let len_before = Stdlib.List.length dup_chain.Syntax.c_rules in
+  let len_after  = Stdlib.List.length dup_opt.Syntax.c_rules in
+  Printf.printf "  rules: %d -> %d (%s)\n" len_before len_after
+    (if len_after < len_before then "shrunk: duplicate removed" else "NOT shrunk");
+  if not (len_after < len_before) then incr fails;
+  Stdlib.List.iter (fun (name, p) ->
+    let a = Semantics.eval_chain dup_chain p in
+    let b = Semantics.eval_chain dup_opt  p in
+    let ok = a = b in
+    Printf.printf "  %-22s orig=%-7s opt2=%-7s %s\n"
+      name (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
+    if not ok then incr fails)
+    [ "tcp dport 22",       mk_pkt ~th:(th ~dport:[0; 22]) ();
+      "tcp dport 80",       mk_pkt ~th:(th ~dport:[0; 80]) ();
+      "saddr 10.0.0.1",     mk_pkt ~nh:(nh ~saddr:[10;0;0;1] ~daddr:[8;8;8;8]) () ];
   Printf.printf "\n";
   Printf.printf "%s: compile & optimize preserve the DSL verdict on every packet\n"
     (if !fails = 0 then "PASS" else Printf.sprintf "FAIL (%d mismatches)" !fails);
