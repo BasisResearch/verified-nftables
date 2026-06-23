@@ -712,14 +712,38 @@ in `theories/Optimize_Merge.v` (all axiom-free, `Print Assumptions` clean):**
   modelled `6,7 ⇒ 6-7` as a RANGE, but `nft -o` emits a discrete SET `{ 6, 7 }`;
   the value→set pass is the faithful consolidation (discrete elements).
 
-NOT yet ported (honest gaps): the **verdict-map** (`vmap`) and **concatenation**
-merges as runnable rewrites (the `e_vmap` / multi-field `MConcatSet` analogues of
-the value→set pass — the same `eval_rules_merge2` backbone and named-object
-synthesis apply, only the certificate changes); and the value→set pass on
-*variable-width* selectors (guarded out, since a prefix `MCmp` is not full-width
-set membership there). The earlier "sets can't be synthesised by a chain pass"
-claim was **wrong** and is now retired: anonymous sets ARE named sets, and the
-table-level `set_decls` rewrite synthesises them with no new constructor.
+- **Value+verdict → VERDICT MAP, as an EXECUTABLE table-level rewrite** (the
+  `nft -o` vmap pass) `optimize_rules_vmap` / `optimize_chain_vmap` in
+  `theories/Optimize_Vmap.v`, proved `optimize_chain_vmap_correct` (axiom-free).
+  On an adjacent pair `tcp dport 22 accept` / `tcp dport 80 drop` (same selector,
+  **differing terminal verdicts**) it **mints a fresh `__vmapN`**, **emits its
+  key→verdict declaration** `[(22,22,accept);(80,80,drop)]` into `sd_vmaps`, and
+  rewrites the pair into ONE rule whose terminal is `r_vmap` keyed on `dport`
+  against `__vmapN` (with a `Continue` fall-through so a vmap MISS proceeds to the
+  next rule) — exactly `nft -o`'s `tcp dport vmap { 22 : accept, 80 : drop }`.
+  Correctness is end-to-end over the table semantics WITH the synthesised vmap in
+  scope (`eval_chain c' (set_env p (env_with_sets base d')) = eval_chain c (set_env
+  p (env_with_sets base d))`), discharged via the two-point vmap certificate
+  `vmap_two_points` (`assoc_verdict` over two point keys = `w1`/`w2`) and the
+  dedicated first-match collapse `eval_rules_vmap_merge2` (the merged rule applies
+  on more packets, but on the extra ones the vmap MISSES → outcome `None` → treated
+  exactly as "did not apply"). **Guards** (both fire on the real `nft -o` example):
+  the differing selector is `MCmp f CEq` over a **fixed-width payload field**
+  (`field_fixed_len`), the two verdicts are **terminal** and **distinct**, the two
+  rules are otherwise the identical pure-terminal `orig_rule` shells, and the
+  minted `__vmapN` names are fresh (`vmapname_inj` + the prepend-only stability
+  lemma). A `semtest` witness (6d) runs it on the demanded input: `2 → 1` rules,
+  vmap `__vmap0 = { 22 : accept, 80 : drop }` synthesised, verdict preserved on
+  every packet (22→accept, 80→drop, miss→policy).
+
+NOT yet ported (honest gaps): the **concatenation** merge as a runnable rewrite
+(the multi-field `MConcatSetT` analogue — same `eval_rules_merge2`/named-object
+backbone, a cross-product membership certificate over `saddr . dport`); and the
+value→set / vmap passes on *variable-width* selectors (guarded out, since a prefix
+`MCmp` is not full-width set membership there). The earlier "sets can't be
+synthesised by a chain pass" claim was **wrong** and is now retired: anonymous
+sets and verdict maps ARE named objects, and the table-level `set_decls` rewrite
+synthesises them with no new constructor.
 
 ### TODO 8 — (future, per `../instructions.org`) Data-plane interpreter + VST
 A data-plane bytecode *interpreter* spec (what the C engine does to a packet) and

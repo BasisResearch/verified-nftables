@@ -534,6 +534,112 @@ let () =
       "tcp dport 443 (not in)", [1; 187];
       "tcp dport 1   (not in)", [0; 1] ];
   Printf.printf "\n";
+  (* (6d) THE VMAP nft -o pass — value+verdict -> VERDICT MAP (Optimize_Vmap.v
+     `optimize_rules_vmap` / `optimize_chain_vmap_correct`, axiom-free).  The
+     verified pass mints a fresh `__vmapN`, emits its (v1,v1,w1)/(v2,v2,w2)
+     declaration, and rewrites the adjacent pair (same field, DIFFERING verdicts)
+     into ONE rule whose terminal is a vmap keyed on `f` against `__vmapN`.  We
+     re-create the SAME rewrite in OCaml (as in 6c); `optimize_rules_vmap_correct`
+     guarantees it is verdict-preserving WITH the synthesised vmap in scope.
+
+       INPUT  (nft -o oracle: `tcp dport 22 accept` + `tcp dport 80 drop`):
+         => OUTPUT  `tcp dport vmap { 22 : accept, 80 : drop }`  (vmap __vmap0).
+
+     The witness shows it FIRES (2 rules -> 1, a vmap declaration is synthesised)
+     and that `eval_chain` of the rewritten rule UNDER the synthesised vmap agrees
+     with the two-rule original on every packet (dport 22 -> accept, 80 -> drop,
+     miss -> policy). *)
+  Printf.printf "=== (6d) nft -o value+verdict->VMAP: tcp dport vmap { 22:accept, 80:drop } ===\n";
+  let vcounter = ref 0 in
+  let vmapname () = let n = !vcounter in incr vcounter; Printf.sprintf "__vmap%d" n in
+  let is_terminal = function
+    | Verdict.Accept | Verdict.Drop | Verdict.Reject _ | Verdict.Queue _ -> true
+    | _ -> false in
+  (* the verified `vmap_merge_pair`/`optimize_rules_vmap` rewrite, mirrored: on an
+     adjacent pair `MCmp f CEq v1 :: rest` / `MCmp f CEq v2 :: rest` (same field,
+     same rest, f fixed-width payload, DIFFERING terminal verdicts), mint a vmap
+     and rewrite the pair to one rule whose terminal is `r_vmap` keyed on f. *)
+  let head_value (r : Syntax.rule) =
+    match r.Syntax.r_body with
+    | Syntax.BMatch (Syntax.MCmp (f, Bytecode.CEq, v)) :: rest -> Some (f, v, rest)
+    | _ -> None in
+  let fixed_len (f : Syntax.field) =
+    match Syntax.field_load f with
+    | Syntax.LPayload (_, _, len) -> Some len | _ -> None in
+  let orig_rule (f : Syntax.field) v body w : Syntax.rule =
+    { Syntax.r_body = Syntax.BMatch (Syntax.MCmp (f, Bytecode.CEq, v)) :: body;
+      r_verdict = w; r_vmap = None; r_nat = None; r_tproxy = None;
+      r_fwd = None; r_queue = None; r_after = [] } in
+  let vmerge_pair (r1 : Syntax.rule) (r2 : Syntax.rule) =
+    match head_value r1, head_value r2 with
+    | Some (f1, v1, rest1), Some (f2, v2, rest2) ->
+        let w1 = r1.Syntax.r_verdict and w2 = r2.Syntax.r_verdict in
+        if f1 = f2 && rest1 = rest2
+           && fixed_len f1 = Some (Stdlib.List.length v1)
+           && fixed_len f1 = Some (Stdlib.List.length v2)
+           && is_terminal w1 && is_terminal w2 && w1 <> w2
+           && r1 = orig_rule f1 v1 rest1 w1
+           && r2 = orig_rule f1 v2 rest1 w2
+        then Some (f1, v1, v2, w1, w2, rest1) else None
+    | _ -> None in
+  let rec opt_vrules vmaps (rs : Syntax.rule list) =
+    match rs with
+    | r1 :: (r2 :: rest) ->
+        (match vmerge_pair r1 r2 with
+         | Some (f, v1, v2, w1, w2, body) ->
+             let name = vmapname () in
+             let vmaps' = (name, [ ((v1, v1), w1); ((v2, v2), w2) ]) :: vmaps in
+             let merged : Syntax.rule =
+               { Syntax.r_body = body; r_verdict = Verdict.Continue;
+                 r_vmap = Some { Syntax.vm_fields = [f]; vm_keyf = Some (f, []);
+                                 vm_name = name };
+                 r_nat = None; r_tproxy = None; r_fwd = None; r_queue = None;
+                 r_after = [] } in
+             let (vmaps'', rest') = opt_vrules vmaps' rest in
+             (vmaps'', merged :: rest')
+         | None -> let (vmaps'', rest') = opt_vrules vmaps (r2 :: rest) in
+                   (vmaps'', r1 :: rest'))
+    | _ -> (vmaps, rs) in
+  let vrs_in = [
+    rule [ mcmp Syntax.FThDport Bytecode.CEq [0; 22] ] Verdict.Accept;
+    rule [ mcmp Syntax.FThDport Bytecode.CEq [0; 80] ] Verdict.Drop;
+  ] in
+  let (vmaps_out, vrs_out) = opt_vrules [] vrs_in in
+  let vlen_in = Stdlib.List.length vrs_in and vlen_out = Stdlib.List.length vrs_out in
+  Printf.printf "  rules: %d -> %d (%s)\n" vlen_in vlen_out
+    (if vlen_out < vlen_in then "shrunk: vmap-merge fired" else "NOT shrunk");
+  if not (vlen_out < vlen_in) then incr fails;
+  Stdlib.List.iter (fun (nm, ents) ->
+    Printf.printf "  synthesised vmap %s = { %s }\n" nm
+      (Stdlib.String.concat ", "
+         (Stdlib.List.map (fun ((lo, _hi), w) ->
+            Printf.sprintf "%d : %s"
+              (Stdlib.List.fold_left (fun a b -> a*256+b) 0 lo)
+              (string_of_verdict w)) ents)))
+    vmaps_out;
+  if vmaps_out = [] then (Printf.printf "  NO vmap synthesised\n"; incr fails);
+  (* verdict equivalence: original two-rule chain (policy continue->drop fallthrough
+     modelled as policy Drop) vs the rewritten ONE-rule chain WITH the synthesised
+     vmap declared in scope. *)
+  let vdecls : Semantics.set_decls =
+    { Semantics.sd_sets = []; sd_vmaps = vmaps_out; sd_maps = [] } in
+  let venv_out = Semantics.env_with_sets empty_env vdecls in
+  let vc_in  = chain Verdict.Drop vrs_in in
+  let vc_out = chain Verdict.Drop vrs_out in
+  Stdlib.List.iter (fun (name, dport) ->
+    let p_in  = mk_pkt ~th:(th ~dport) () in
+    let p_out = mk_pkt ~env:venv_out ~th:(th ~dport) () in
+    let a = Semantics.eval_chain vc_in  p_in in
+    let b = Semantics.eval_chain vc_out p_out in
+    let ok = a = b in
+    Printf.printf "  %-28s two-rule=%-7s vmap-merged=%-7s %s\n"
+      name (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
+    if not ok then incr fails)
+    [ "tcp dport 22 -> accept",  [0; 22];
+      "tcp dport 80 -> drop",    [0; 80];
+      "tcp dport 443 -> policy", [1; 187];
+      "tcp dport 1   -> policy", [0; 1] ];
+  Printf.printf "\n";
   Printf.printf "%s: compile & optimize preserve the DSL verdict on every packet\n"
     (if !fails = 0 then "PASS" else Printf.sprintf "FAIL (%d mismatches)" !fails);
   if !fails > 0 then exit 1

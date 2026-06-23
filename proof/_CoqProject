@@ -41,3 +41,4 @@ theories/Red_LimitProbe.v
 theories/Red_NatNoAddrDrop.v
 
 theories/Optimize_Merge.v
+theories/Optimize_Vmap.v
