@@ -736,14 +736,40 @@ in `theories/Optimize_Merge.v` (all axiom-free, `Print Assumptions` clean):**
   vmap `__vmap0 = { 22 : accept, 80 : drop }` synthesised, verdict preserved on
   every packet (22→accept, 80→drop, miss→policy).
 
-NOT yet ported (honest gaps): the **concatenation** merge as a runnable rewrite
-(the multi-field `MConcatSetT` analogue — same `eval_rules_merge2`/named-object
-backbone, a cross-product membership certificate over `saddr . dport`); and the
-value→set / vmap passes on *variable-width* selectors (guarded out, since a prefix
-`MCmp` is not full-width set membership there). The earlier "sets can't be
-synthesised by a chain pass" claim was **wrong** and is now retired: anonymous
-sets and verdict maps ARE named objects, and the table-level `set_decls` rewrite
-synthesises them with no new constructor.
+- **Two selectors → CONCATENATION SET, as an EXECUTABLE table-level rewrite** (the
+  third headline `nft -o` pass) `optimize_rules_concat` / `optimize_chain_concat`
+  in `theories/Optimize_Concat.v`, proved `optimize_chain_concat_correct`
+  (axiom-free). On an adjacent pair `ip saddr 1.1.1.1 tcp dport 22 accept` /
+  `ip saddr 2.2.2.2 tcp dport 80 accept` (differing in **two** selectors, same
+  verdict) it **mints a fresh `__setN`**, **emits its packed per-field point
+  tuples** `[(pack2 1.1.1.1 22, …);(pack2 2.2.2.2 80, …)]` into `sd_sets` (each
+  field in its 4-byte register slot, the last field taking the remainder, exactly
+  the kernel's NFT_SET_CONCAT layout), and rewrites the pair into ONE
+  `MConcatSet [saddr;dport] false __setN accept` — exactly `nft -o`'s
+  `ip saddr . tcp dport { 1.1.1.1 . 22, 2.2.2.2 . 80 } accept` (confirmed by the
+  live `unshare -rn nft -o -f` oracle). Correctness is end-to-end over the table
+  semantics WITH the synthesised set in scope, discharged via the two-field
+  cross-product membership certificate `concat_in_iv_two_points`
+  (`concat_in_iv [va;vb] (pack2 a b, pack2 a b) = data_eqb va a && data_eqb vb b`)
+  lifted to `concat_two_fields_certificate` (the merged head = `orb` of the two
+  per-row conjunctions `f1=a_i AND f2=b_i`) + the two-field merge backbone
+  `eval_rules_concat_merge2` (over `eval_rules_merge2`). **Guards** (fire on the
+  real `nft -o` example): BOTH differing dimensions are `MCmp f CEq` over
+  **fixed-width payload fields** (`field_fixed_len`), the two rules are otherwise
+  the identical `orig_rule2` shells, the two tuples are distinct (not a duplicate),
+  and the minted `__setN` names are fresh (`setname_inj` + the prepend-only
+  stability lemma). A `semtest` witness (6e) runs it on the demanded input:
+  `2 → 1` rules, concat set `__set0 = { 1.1.1.1 . 22, 2.2.2.2 . 80 }` synthesised,
+  verdict preserved on hits, a cross-miss, and a saddr-miss (→ policy).
+
+NOT yet ported (honest gaps): the value→set / vmap / concat passes on
+*variable-width* selectors (guarded out, since a prefix `MCmp` is not full-width
+set membership there). The earlier "sets can't be synthesised by a chain pass"
+claim was **wrong** and is now retired: anonymous sets, verdict maps, AND
+concatenation sets ARE named objects, and the table-level `set_decls` rewrite
+synthesises them with no new constructor. All three headline `nft -o` merge
+families (value→set, value+verdict→vmap, two-selector→concat-set) are now ported
+as runnable, verdict-preserving, axiom-free passes.
 
 ### TODO 8 — (future, per `../instructions.org`) Data-plane interpreter + VST
 A data-plane bytecode *interpreter* spec (what the C engine does to a packet) and

@@ -640,6 +640,110 @@ let () =
       "tcp dport 443 -> policy", [1; 187];
       "tcp dport 1   -> policy", [0; 1] ];
   Printf.printf "\n";
+  (* (6e) THE CONCAT nft -o pass — two selectors -> CONCATENATION SET
+     (Optimize_Concat.v `optimize_rules_concat` / `optimize_chain_concat_correct`,
+     axiom-free).  The verified pass mints a fresh `__setN`, emits its packed
+     two-field point tuples (each field in its 4-byte register slot, last field
+     taking the remainder), and rewrites the adjacent pair (differing in BOTH
+     selectors, same verdict) into ONE `MConcatSet [f1;f2] false __setN` rule.  We
+     re-create the SAME rewrite in OCaml (as in 6c/6d); `optimize_rules_concat_correct`
+     guarantees it is verdict-preserving WITH the synthesised concat set in scope.
+
+       INPUT  (nft -o oracle, ran via `unshare -rn nft -o -f`):
+         ip saddr 1.1.1.1 tcp dport 22 accept
+         ip saddr 2.2.2.2 tcp dport 80 accept
+       => OUTPUT
+         ip saddr . tcp dport { 1.1.1.1 . 22, 2.2.2.2 . 80 } accept
+
+     The witness shows it FIRES (2 rules -> 1, a concat set is synthesised) and that
+     `eval_chain` of the rewritten rule UNDER the synthesised set agrees with the
+     two-rule original on the matching tuples and on a miss (-> policy). *)
+  Printf.printf "=== (6e) nft -o concat->SET: ip saddr . tcp dport { 1.1.1.1 . 22, 2.2.2.2 . 80 } accept ===\n";
+  let ccounter = ref 0 in
+  let csetname () = let n = !ccounter in incr ccounter; Printf.sprintf "__set%d" n in
+  let reg_slot n = 4 * ((n + 3) / 4) in
+  let pad_slot v = v @ (Stdlib.List.init (reg_slot (Stdlib.List.length v) - Stdlib.List.length v)
+                          (fun _ -> 0)) in
+  let pack2 a b = pad_slot a @ b in
+  (* the verified `head_value2`/`concat_merge_pair`/`optimize_rules_concat` rewrite,
+     mirrored: on an adjacent pair whose heads are
+       MCmp f1 CEq a_i :: MCmp f2 CEq b_i :: rest
+     over the SAME two fixed-width fields, same rest, same end-fields, distinct
+     tuples, mint a concat set and rewrite the pair to one MConcatSet [f1;f2]. *)
+  let head_value2 (r : Syntax.rule) =
+    match r.Syntax.r_body with
+    | Syntax.BMatch (Syntax.MCmp (f1, Bytecode.CEq, a))
+      :: Syntax.BMatch (Syntax.MCmp (f2, Bytecode.CEq, b)) :: rest -> Some (f1, a, f2, b, rest)
+    | _ -> None in
+  let fixed_len (f : Syntax.field) =
+    match Syntax.field_load f with
+    | Syntax.LPayload (_, _, len) -> Some len | _ -> None in
+  let cmerge_pair (r1 : Syntax.rule) (r2 : Syntax.rule) =
+    match head_value2 r1, head_value2 r2 with
+    | Some (f1, a1, g1, b1, rest1), Some (f2, a2, g2, b2, rest2) ->
+        let shell v1 v2 (r : Syntax.rule) =
+          { r with Syntax.r_body =
+                     Syntax.BMatch (Syntax.MCmp (f1, Bytecode.CEq, v1))
+                     :: Syntax.BMatch (Syntax.MCmp (g1, Bytecode.CEq, v2)) :: rest1 } in
+        if f1 = f2 && g1 = g2 && rest1 = rest2
+           && fixed_len f1 = Some (Stdlib.List.length a1)
+           && fixed_len f1 = Some (Stdlib.List.length a2)
+           && fixed_len g1 = Some (Stdlib.List.length b1)
+           && fixed_len g1 = Some (Stdlib.List.length b2)
+           && not (a1 = a2 && b1 = b2)
+           && shell a1 b1 r1 = shell a1 b1 r2
+        then Some (f1, g1, a1, b1, a2, b2, rest1) else None
+    | _ -> None in
+  let rec opt_crules sets (rs : Syntax.rule list) =
+    match rs with
+    | r1 :: (r2 :: rest) ->
+        (match cmerge_pair r1 r2 with
+         | Some (f1, f2, a1, b1, a2, b2, body) ->
+             let name = csetname () in
+             let sets' = (name, [ (pack2 a1 b1, pack2 a1 b1);
+                                  (pack2 a2 b2, pack2 a2 b2) ]) :: sets in
+             let merged = { r1 with Syntax.r_body =
+                              Syntax.BMatch (Syntax.MConcatSet ([f1; f2], false, name)) :: body } in
+             let (sets'', rest') = opt_crules sets' rest in
+             (sets'', merged :: rest')
+         | None -> let (sets'', rest') = opt_crules sets (r2 :: rest) in (sets'', r1 :: rest'))
+    | _ -> (sets, rs) in
+  let crule a b w : Syntax.rule =
+    rule [ mcmp Syntax.FIp4Saddr Bytecode.CEq a;
+           mcmp Syntax.FThDport Bytecode.CEq b ] w in
+  let crs_in = [ crule [1;1;1;1] [0;22] Verdict.Accept;
+                 crule [2;2;2;2] [0;80] Verdict.Accept ] in
+  let (csets_out, crs_out) = opt_crules [] crs_in in
+  let clen_in = Stdlib.List.length crs_in and clen_out = Stdlib.List.length crs_out in
+  Printf.printf "  rules: %d -> %d (%s)\n" clen_in clen_out
+    (if clen_out < clen_in then "shrunk: concat-merge fired" else "NOT shrunk");
+  if not (clen_out < clen_in) then incr fails;
+  Stdlib.List.iter (fun (nm, els) ->
+    Printf.printf "  synthesised concat set %s = { %s }\n" nm
+      (Stdlib.String.concat ", "
+         (Stdlib.List.map (fun (lo, _hi) ->
+            Stdlib.String.concat "." (Stdlib.List.map string_of_int lo)) els)))
+    csets_out;
+  if csets_out = [] then (Printf.printf "  NO concat set synthesised\n"; incr fails);
+  let cdecls : Semantics.set_decls =
+    { Semantics.sd_sets = csets_out; sd_vmaps = []; sd_maps = [] } in
+  let cenv_out = Semantics.env_with_sets empty_env cdecls in
+  let cc_in  = chain Verdict.Drop crs_in in
+  let cc_out = chain Verdict.Drop crs_out in
+  Stdlib.List.iter (fun (name, saddr, dport) ->
+    let p_in  = mk_pkt ~nh:(nh ~saddr ~daddr:[8;8;8;8]) ~th:(th ~dport) () in
+    let p_out = mk_pkt ~env:cenv_out ~nh:(nh ~saddr ~daddr:[8;8;8;8]) ~th:(th ~dport) () in
+    let a = Semantics.eval_chain cc_in  p_in in
+    let b = Semantics.eval_chain cc_out p_out in
+    let ok = a = b in
+    Printf.printf "  %-40s two-rule=%-7s concat-merged=%-7s %s\n"
+      name (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
+    if not ok then incr fails)
+    [ "1.1.1.1 . 22  (in set -> accept)", [1;1;1;1], [0;22];
+      "2.2.2.2 . 80  (in set -> accept)", [2;2;2;2], [0;80];
+      "1.1.1.1 . 80  (cross miss -> policy)", [1;1;1;1], [0;80];
+      "3.3.3.3 . 22  (saddr miss -> policy)", [3;3;3;3], [0;22] ];
+  Printf.printf "\n";
   Printf.printf "%s: compile & optimize preserve the DSL verdict on every packet\n"
     (if !fails = 0 then "PASS" else Printf.sprintf "FAIL (%d mismatches)" !fails);
   if !fails > 0 then exit 1
