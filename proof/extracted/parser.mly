@@ -198,8 +198,8 @@ clauses:
 
 clause:
   | matchc                       { CMatch $1 }
-  | keyatom VMAP vmapset         { CVmap ($1, $3) }
-  | keyatom VMAP AT              { CVmapRef ($1, $3) }   (* vmap @named_map *)
+  | concat_keys VMAP vmapset     { CVmap ($1, $3) }
+  | concat_keys VMAP AT          { CVmapRef ($1, $3) }   (* vmap @named_map *)
   | verdict                      { CVerdict $1 }
   | stmt                         { CStmt $1 }
 

@@ -79,8 +79,11 @@ type sstmt =
 
 type clause =
   | CMatch   of smatch
-  | CVmap    of keypath * (value * verdict) list   (* `<key> vmap { v : verdict, ... }` *)
-  | CVmapRef of keypath * string                   (* `<key> vmap @named_map` *)
+  | CVmap    of keypath list * (value * verdict) list
+                          (* `<key> [. <key> ...] vmap { v : verdict, ... }`; the
+                             keys list has length >1 for a CONCATENATED-key vmap
+                             (`ip protocol . th dport vmap {tcp.22:accept,...}`) *)
+  | CVmapRef of keypath list * string              (* `<key>[.<key>...] vmap @named_map` *)
   | CVerdict of verdict
   | CStmt    of sstmt
 

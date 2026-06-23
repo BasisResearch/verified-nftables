@@ -808,23 +808,50 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
     | Nft_ast.CMatch m ->
         let (dep, mc) = lower_match st m in
         ensure_dep dep; push (Syntax.BMatch mc)
-    | Nft_ast.CVmap (kp, entries) ->
+    | Nft_ast.CVmap (kps, entries) ->
         if !vmap <> None then raise (Unsupported "more than one verdict map in a rule");
-        let (f, k, dep) = key_field kp in ensure_dep dep;
+        let triples = L.map key_field kps in
+        let fields = L.map (fun (f,_,_) -> f) triples in
+        let kinds  = L.map (fun (_,k,_) -> k) triples in
+        ensure_dep (L.concat (L.map (fun (_,_,d) -> d) triples));
         let name = fresh st "__map" in
-        (* A vmap key may be a range/prefix (the kernel rbtree set is
-           NFT_SET_INTERVAL | NFT_SET_MAP): emit the key as a closed interval
-           [lo,hi] (a point key is the degenerate [b,b]), mirroring the named-set
-           interval encoding [interval_of_value]. *)
-        let ents = L.map (fun (v, sv) ->
-          (interval_of_value st k v, lower_verdict sv)) entries in
+        let ents = (match kinds with
+          | [k] ->
+              (* single-field vmap key: a range/prefix becomes a closed interval
+                 [lo,hi] (a point key is the degenerate [b,b]); the kernel rbtree
+                 set is NFT_SET_INTERVAL | NFT_SET_MAP. *)
+              L.map (fun (v, sv) ->
+                (interval_of_value st k v, lower_verdict sv)) entries
+          | _ ->
+              (* CONCATENATED-key vmap (`ip protocol . th dport vmap {tcp.22:...}`):
+                 the lookup key the model builds is the FLAT byte concatenation of
+                 the per-field values [List.concat (map field_value vm_fields)] —
+                 raw field bytes, NOT register-slot padded (assoc_verdict tests the
+                 flat key with data_in_iv).  So each element's stored [lo,hi] bound
+                 is the FLAT concatenation of the per-field encodings, matching the
+                 model's key byte-for-byte. *)
+              L.map (fun (v, sv) ->
+                let per_field = match resolve_var st v with
+                  | Nft_ast.Vconcat vs when L.length vs = L.length kinds ->
+                      L.map2 (fun k v -> interval_of_value st k v) kinds vs
+                  | _ -> raise (Unsupported
+                           "concatenated vmap element arity does not match the key") in
+                let lo = L.concat (L.map fst per_field) in
+                let hi = L.concat (L.map snd per_field) in
+                ((lo, hi), lower_verdict sv)) entries) in
         st.vmaps <- (name, ents) :: st.vmaps;
-        vmap := Some { Syntax.vm_fields = []; vm_keyf = Some (f, []); vm_name = name }
-    | Nft_ast.CVmapRef (kp, name) ->
-        (* `<key> vmap @name`: entries come from the named map declared in the env *)
+        (match fields with
+         | [f] -> vmap := Some { Syntax.vm_fields = []; vm_keyf = Some (f, []); vm_name = name }
+         | _   -> vmap := Some { Syntax.vm_fields = fields; vm_keyf = None; vm_name = name })
+    | Nft_ast.CVmapRef (kps, name) ->
+        (* `<key>[.<key>...] vmap @name`: entries come from the named map in the env *)
         if !vmap <> None then raise (Unsupported "more than one verdict map in a rule");
-        let (f, _, dep) = key_field kp in ensure_dep dep;
-        vmap := Some { Syntax.vm_fields = []; vm_keyf = Some (f, []); vm_name = name }
+        let triples = L.map key_field kps in
+        let fields = L.map (fun (f,_,_) -> f) triples in
+        ensure_dep (L.concat (L.map (fun (_,_,d) -> d) triples));
+        (match fields with
+         | [f] -> vmap := Some { Syntax.vm_fields = []; vm_keyf = Some (f, []); vm_name = name }
+         | _   -> vmap := Some { Syntax.vm_fields = fields; vm_keyf = None; vm_name = name })
     | Nft_ast.CStmt (Nft_ast.StLimit (r, u, over)) ->
         push (Syntax.BMatch (Syntax.MLimit (limit_spec r u over)))
     | Nft_ast.CStmt s ->
