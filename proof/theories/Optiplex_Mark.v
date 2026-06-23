@@ -151,18 +151,82 @@ Proof.
   cbn -[read_payload_ok]. rewrite ?Hok. reflexivity.
 Qed.
 
-(* the prerouting streaming rule is a dnat, not a masquerade — so the trace's
-   source-NAT step [apply_masq] is a no-op on it *)
-Lemma pre2_no_masq : r_nat pre2 = None.
-Proof. reflexivity. Qed.
-Lemma apply_masq_none : forall h r p, r_nat r = None -> apply_nat h r p = p.
-Proof. intros h r p H. unfold apply_nat. rewrite H. reflexivity. Qed.
+(* the prerouting streaming rule carries a real terminal `dnat ip to $windows`
+   (= 192.168.51.186); the `define windows` line is live again, so the parser now
+   lowers it to a destination-NAT.  These helpers characterise what that dnat does
+   and show the firewall mark set by the body SURVIVES it. *)
+Definition windows_ip : data := [192; 168; 51; 186].
+
+(* [set_l4_csum_addr] / [set_daddr] touch only header bytes (+ the env), never the
+   metadata, so a `meta mark` set before a dnat is read back intact. *)
+Lemma set_l4_csum_addr_meta : forall p old new k,
+  pkt_meta (set_l4_csum_addr p old new) k = pkt_meta p k.
+Proof.
+  intros p old new k. unfold set_l4_csum_addr.
+  destruct (l4_csum_slot (pkt_meta p MKl4proto)) as [[[coff clen] mand]|]; [|reflexivity].
+  destruct (andb (pkt_have_l4 p) (Nat.leb (coff + clen) (List.length (pkt_th p)))); [|reflexivity].
+  destruct (andb (negb mand) (N.eqb (data_to_N (slice (pkt_th p) coff clen)) 0)); reflexivity.
+Qed.
+
+Lemma set_daddr_meta : forall fam p v k, pkt_meta (set_daddr fam p v) k = pkt_meta p k.
+Proof.
+  intros fam p v k. unfold set_daddr.
+  destruct (daddr_slot fam) as [off len].
+  rewrite set_l4_csum_addr_meta.
+  destruct (String.eqb fam nat_fam_ip6); reflexivity.
+Qed.
+
+(* applying pre2's dnat to a FIRST-flow, original-direction packet rewrites the
+   DESTINATION address to the windows box and records the flow-keyed mapping. *)
+Lemma pre2_apply_dnat : forall h p,
+  pkt_ctdir_orig p = true ->
+  e_nat (pkt_env p) (pkt_flow p) = None ->
+  apply_nat h pre2 p
+    = store_nat_mapping (set_daddr "ip" p windows_ip)
+        (Some (slice (pkt_nh p) 16 4), Some windows_ip, None, None).
+Proof.
+  intros h p Horig Hnone. unfold apply_nat, pre2, filter_prerouting.
+  cbn -[set_daddr field_value pkt_env e_nat store_nat_mapping
+        apply_nat_tuple nat_orig_addr nat_operand_addr nat_pmin nat_orig_port slice pkt_nh].
+  rewrite Hnone, Horig.
+  unfold apply_nat_tuple, nat_is_src, nat_operand_addr, nat_addrfamily_pkt,
+    nat_addrfamily, nat_orig_addr, nat_addr, nat_has_addr, nat_orig_port.
+  cbn -[set_daddr field_value pkt_env store_nat_mapping slice pkt_nh].
+  rewrite Horig. reflexivity.
+Qed.
+
+(* the firewall mark set by the body survives the terminal dnat. *)
+Lemma mark_through_dnat : forall h p,
+  pkt_ctdir_orig p = true ->
+  e_nat (pkt_env p) (pkt_flow p) = None ->
+  field_value FMetaMark (apply_nat h pre2 p) = field_value FMetaMark p.
+Proof.
+  intros h p Horig Hnone. rewrite (pre2_apply_dnat h p Horig Hnone).
+  unfold field_value. cbn [field_load do_load pkt_meta store_nat_mapping].
+  apply set_daddr_meta.
+Qed.
+
+(* pre2's dnat never NAT-drops: [nat_iface_addr_absent] only fires for
+   masquerade/redirect (a source/dest taken from an interface); a `dnat` to an
+   explicit address has no interface to lack, so [nat_drops] is unconditionally
+   [false] and the trace takes the apply-NAT branch, not the NF_DROP one. *)
+Lemma pre2_no_natdrop : forall p, nat_drops Hprerouting pre2 p = false.
+Proof.
+  intros p. unfold nat_drops, pre2, filter_prerouting.
+  cbn -[e_nat pkt_ctdir_orig nat_iface_addr_absent].
+  unfold nat_iface_addr_absent. cbn -[e_nat pkt_ctdir_orig].
+  destruct (e_nat (pkt_env p) (pkt_flow p)); [reflexivity | apply Bool.andb_false_r].
+Qed.
 
 (** ** What comes out of the prerouting chain.
 
     Run the WHOLE prerouting chain on a streaming packet: it traverses rule 1
-    (skipped, packet unchanged) and is marked by rule 2 (terminal accept).  The
-    output is [(Accept, p with meta mark := 0x99)] — packet in, packet out. *)
+    (skipped, packet unchanged) and is matched by rule 2 (terminal accept), which
+    BOTH sets the mark (the body) AND destination-NATs the packet (the terminal
+    `dnat ip to $windows`).  The output is [(Accept, dnat applied to the marked
+    packet)] — packet in, packet out.  [pre2_apply_dnat] characterises the dnat
+    (daddr rewritten to [windows_ip]); [streaming_prerouting_mark] shows the mark
+    survives it. *)
 Theorem streaming_prerouting_io : forall p,
   pkt_env p = gen_env ->
   field_value FMetaIifname p = if_home ->
@@ -170,7 +234,8 @@ Theorem streaming_prerouting_io : forall p,
   field_value FMetaL4proto p = l4_tcp ->
   field_value FThDport p = port48010 ->
   read_payload_ok PTransport 2 2 p = true ->
-  eval_chain_trace Hprerouting filter_prerouting p = (Accept, set_meta p MKmark mark99).
+  eval_chain_trace Hprerouting filter_prerouting p
+    = (Accept, apply_nat Hprerouting pre2 (set_meta p MKmark mark99)).
 Proof.
   intros p Henv Hiif Hfib Hl4 Hdport Hok.
   unfold eval_chain_trace. rewrite prerouting_rules_eq.
@@ -179,14 +244,33 @@ Proof.
   rewrite Bool.andb_false_r.
   rewrite (dsl_step_limit_free pre1 p) by reflexivity.
   rewrite pre1_streaming_noop by assumption.
-  (* rule 2: matches, terminal accept, leaves the marked packet (it is a dnat,
-     so apply_masq is a no-op — the source rewrite happens at postrouting) *)
+  (* rule 2: matches, terminal accept; the body marks the packet and the terminal
+     dnat rewrites the destination — the output is [apply_nat pre2 (marked packet)] *)
   cbn [eval_rules_trace]. rewrite pre2_streaming_applies by assumption.
   rewrite (pre2_loadable p Hok).
   rewrite pre2_outcome_accept. cbn [terminal].
+  rewrite pre2_no_natdrop.
   rewrite (dsl_step_limit_free pre2 p) by reflexivity.
-  rewrite (apply_masq_none Hprerouting pre2 _ pre2_no_masq).
   rewrite pre2_streaming_marks by assumption. reflexivity.
+Qed.
+
+(** The firewall mark survives the terminal dnat: the packet leaving prerouting
+    still has `meta mark` = 0x99 (so the postrouting masquerade still fires). *)
+Theorem streaming_prerouting_mark : forall p,
+  pkt_env p = gen_env ->
+  field_value FMetaIifname p = if_home ->
+  field_value (FFib "daddr" FRtype) p = fib_local ->
+  field_value FMetaL4proto p = l4_tcp ->
+  field_value FThDport p = port48010 ->
+  read_payload_ok PTransport 2 2 p = true ->
+  pkt_ctdir_orig p = true ->
+  e_nat (pkt_env p) (pkt_flow p) = None ->
+  field_value FMetaMark (snd (eval_chain_trace Hprerouting filter_prerouting p)) = mark99.
+Proof.
+  intros p Henv Hiif Hfib Hl4 Hdport Hok Horig Hnone.
+  rewrite (streaming_prerouting_io p Henv Hiif Hfib Hl4 Hdport Hok). cbn [snd].
+  rewrite (mark_through_dnat Hprerouting (set_meta p MKmark mark99) Horig Hnone).
+  apply mark_after_set.
 Qed.
 
 (** ** The mark is read by the postrouting masquerade rule. *)
@@ -233,7 +317,12 @@ Qed.
    FLOW-STATEFUL (Round-2 fix): on the FIRST packet of a flow ([e_nat .. = None])
    the mapping is computed from the exit interface and STORED; the source address
    is rewritten exactly as before. *)
+(* The masquerade is in an `inet` table, so its [nat_family] is "inet" and the L3
+   family is resolved PER PACKET ([nat_addrfamily_pkt] = [pkt_l3_family p], the
+   audit's inet-runtime-dispatch fidelity fix).  For the IPv4 streaming flow
+   [pkt_l3_family p = "ip"], so the masquerade rewrites the IPv4 source slot. *)
 Lemma post1_apply_masq : forall h p,
+  pkt_l3_family p = "ip"%string ->
   pkt_ctdir_orig p = true ->
   e_nat (pkt_env p) (pkt_flow p) = None ->
   apply_nat h post1 p
@@ -242,11 +331,14 @@ Lemma post1_apply_masq : forall h p,
         (Some (slice (pkt_nh p) 12 4),
          Some (e_ifaddr (pkt_env p) (field_value FMetaOifname p)), None, None).
 Proof.
-  intros h p Horig Hnone. unfold apply_nat, post1, filter_postrouting.
+  intros h p Hfam Horig Hnone. unfold apply_nat, post1, filter_postrouting.
   cbn -[set_saddr e_ifaddr field_value pkt_env e_nat store_nat_mapping
-        apply_nat_tuple nat_orig_addr nat_operand_addr nat_pmin].
+        apply_nat_tuple nat_orig_addr nat_operand_addr nat_pmin pkt_l3_family].
   rewrite Hnone, Horig.
-  unfold apply_nat_tuple, nat_is_src, nat_operand_addr, nat_addrfamily, nat_orig_addr.
+  unfold apply_nat_tuple, nat_is_src, nat_operand_addr, nat_addrfamily_pkt,
+    nat_addrfamily, nat_orig_addr, masq_saddr, saddr_slot.
+  cbn -[set_saddr e_ifaddr field_value pkt_env store_nat_mapping slice pkt_nh pkt_l3_family].
+  rewrite !Hfam.
   cbn -[set_saddr e_ifaddr field_value pkt_env store_nat_mapping slice pkt_nh].
   rewrite Horig. reflexivity.
 Qed.
@@ -259,6 +351,7 @@ Qed.
    (nf_nat_masquerade.c:54-58).  Since post1's body is a no-op on a mark99 packet,
    [nat_drops] reads the exit-interface address straight off [p]. *)
 Lemma post1_nat_no_drop : forall p ifaddr,
+  pkt_l3_family p = "ip"%string ->
   field_value FMetaMark p = mark99 ->
   pkt_ctdir_orig p = true ->
   e_nat (pkt_env p) (pkt_flow p) = None ->
@@ -266,18 +359,20 @@ Lemma post1_nat_no_drop : forall p ifaddr,
   ifaddr <> [] ->
   nat_drops Hpostrouting post1 (dsl_step post1 p) = false.
 Proof.
-  intros p ifaddr Hmark Horig Hnone Hifa Hne.
+  intros p ifaddr Hfam Hmark Horig Hnone Hifa Hne.
   rewrite (dsl_step_limit_free post1 p) by reflexivity.
   rewrite (post1_dsl_noop p Hmark).
   unfold nat_drops, post1, filter_postrouting.
-  cbn -[e_nat e_ifaddr field_value pkt_env masq_saddr].
+  cbn -[e_nat e_ifaddr field_value pkt_env masq_saddr pkt_l3_family].
   rewrite Hnone, Horig. cbn [andb].
-  unfold nat_iface_addr_absent. cbn -[e_ifaddr field_value pkt_env masq_saddr].
-  unfold masq_saddr, nat_addrfamily. cbn -[e_ifaddr field_value pkt_env].
+  unfold nat_iface_addr_absent. cbn -[e_ifaddr field_value pkt_env masq_saddr pkt_l3_family].
+  unfold masq_saddr, nat_addrfamily_pkt, nat_addrfamily. cbn -[e_ifaddr field_value pkt_env pkt_l3_family].
+  rewrite Hfam. cbn -[e_ifaddr field_value pkt_env].
   rewrite Hifa. destruct ifaddr; [contradiction|reflexivity].
 Qed.
 
 Theorem masquerade_output : forall p ifaddr,
+  pkt_l3_family p = "ip"%string ->
   field_value FMetaMark p = mark99 ->
   pkt_ctdir_orig p = true ->
   e_nat (pkt_env p) (pkt_flow p) = None ->
@@ -287,12 +382,12 @@ Theorem masquerade_output : forall p ifaddr,
     = (Accept, store_nat_mapping (set_saddr "ip" p ifaddr)
                  (Some (slice (pkt_nh p) 12 4), Some ifaddr, None, None)).
 Proof.
-  intros p ifaddr Hmark Horig Hnone Hifa Hne.
+  intros p ifaddr Hfam Hmark Horig Hnone Hifa Hne.
   unfold eval_chain_trace. rewrite postrouting_rules_eq. cbn [eval_rules_trace].
   rewrite (masquerade_gated_on_mark p Hmark), post1_outcome_accept. cbn [terminal].
-  rewrite (post1_nat_no_drop p ifaddr Hmark Horig Hnone Hifa Hne).
+  rewrite (post1_nat_no_drop p ifaddr Hfam Hmark Horig Hnone Hifa Hne).
   rewrite (dsl_step_limit_free post1 p) by reflexivity.
-  rewrite (post1_dsl_noop p Hmark), (post1_apply_masq Hpostrouting p Horig Hnone), Hifa.
+  rewrite (post1_dsl_noop p Hmark), (post1_apply_masq Hpostrouting p Hfam Horig Hnone), Hifa.
   reflexivity.
 Qed.
 
@@ -309,6 +404,7 @@ Proof.
 Qed.
 
 Theorem masquerade_source_is_exit_iface : forall p ifaddr,
+  pkt_l3_family p = "ip"%string ->
   field_value FMetaMark p = mark99 ->
   pkt_ctdir_orig p = true ->
   e_nat (pkt_env p) (pkt_flow p) = None ->
@@ -316,9 +412,9 @@ Theorem masquerade_source_is_exit_iface : forall p ifaddr,
   List.length ifaddr = 4 -> 16 <= List.length (pkt_nh p) ->
   field_value FIp4Saddr (snd (eval_chain_trace Hpostrouting filter_postrouting p)) = ifaddr.
 Proof.
-  intros p ifaddr Hmark Horig Hnone Hifa Hlen Hnh.
+  intros p ifaddr Hfam Hmark Horig Hnone Hifa Hlen Hnh.
   assert (Hne : ifaddr <> []) by (destruct ifaddr; [discriminate Hlen | discriminate]).
-  rewrite (masquerade_output p ifaddr Hmark Horig Hnone Hifa Hne). cbn [snd].
+  rewrite (masquerade_output p ifaddr Hfam Hmark Horig Hnone Hifa Hne). cbn [snd].
   (* [store_nat_mapping] preserves pkt_nh, so saddr read-back is the spliced value *)
   unfold field_value; cbn [field_load do_load]; unfold read_payload.
   cbn [store_nat_mapping pkt_nh].
@@ -341,16 +437,23 @@ Theorem streaming_flow_whole_ruleset : forall p,
   field_value FMetaL4proto p = l4_tcp ->
   field_value FThDport p = port48010 ->
   read_payload_ok PTransport 2 2 p = true ->
-  (* prerouting: packet in p -> (Accept, p with mark 0x99) out *)
-  eval_chain_trace Hprerouting filter_prerouting p = (Accept, set_meta p MKmark mark99)
-  (* postrouting reads the mark and masquerades (terminal accept) *)
-  /\ rule_applies post1 (set_meta p MKmark mark99) = true
-  /\ eval_chain_mut filter_postrouting (set_meta p MKmark mark99) = Accept.
+  pkt_ctdir_orig p = true ->
+  e_nat (pkt_env p) (pkt_flow p) = None ->
+  (* [q] is the packet that leaves prerouting: the input marked AND dnat'd *)
+  let q := snd (eval_chain_trace Hprerouting filter_prerouting p) in
+  (* prerouting: packet in p -> (Accept, q) out, with q still carrying mark 0x99 *)
+  fst (eval_chain_trace Hprerouting filter_prerouting p) = Accept
+  /\ field_value FMetaMark q = mark99
+  (* postrouting reads the surviving mark and masquerades (terminal accept) *)
+  /\ rule_applies post1 q = true
+  /\ eval_chain_mut filter_postrouting q = Accept.
 Proof.
-  intros p Henv Hiif Hfib Hl4 Hdport Hok.
-  assert (Hmark : field_value FMetaMark (set_meta p MKmark mark99) = mark99)
-    by apply mark_after_set.
-  split; [ now apply streaming_prerouting_io | split ].
+  intros p Henv Hiif Hfib Hl4 Hdport Hok Horig Hnone q.
+  assert (Hmark : field_value FMetaMark q = mark99)
+    by (apply streaming_prerouting_mark; assumption).
+  split; [| split; [exact Hmark | split]].
+  - unfold q. rewrite (streaming_prerouting_io p Henv Hiif Hfib Hl4 Hdport Hok).
+    reflexivity.
   - now apply masquerade_gated_on_mark.
   - unfold eval_chain_mut, filter_postrouting. cbn -[field_value].
     rewrite Hmark. vm_compute. reflexivity.

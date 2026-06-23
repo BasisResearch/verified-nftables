@@ -158,12 +158,18 @@ let vmap_spec (vm : Syntax.vmap_spec) : string =
 let opt_int = function None -> "None" | Some n -> spf "(Some %d)" n
 
 let nat_spec (ns : Syntax.nat_spec) : string =
-  (* the lowering only produces `masquerade` (no explicit operand); fail loudly if
-     a richer NAT operand (snat/dnat address/map/field) ever needs emitting *)
-  (match ns.Syntax.nat_field, ns.Syntax.nat_map, ns.Syntax.nat_src, ns.Syntax.nat_imms with
-   | None, None, None, [] -> ()
+  (* the lowering produces `masquerade` (no operand) and immediate-address
+     `snat`/`dnat to <ipv4>` (nat_imms = [(reg, addr)]).  Field/map/src-sourced NAT
+     operands are not produced by the lowering; fail loudly if one ever appears. *)
+  (match ns.Syntax.nat_field, ns.Syntax.nat_map, ns.Syntax.nat_src with
+   | None, None, None -> ()
    | _ -> raise (Unsupported "nat operand emission (extend nft_emit.nat_spec)"));
-  spf "{| nat_imms := []; nat_field := None; nat_map := None; nat_src := None; nat_kind := %s; nat_family := %s; nat_amin := %s; nat_amax := %s; nat_pmin := %s; nat_pmax := %s; nat_flags := %d |}"
+  let nat_imms =
+    "[" ^ S.concat "; "
+            (L.map (fun (r, d) -> spf "(%d, %s)" r (data d)) ns.Syntax.nat_imms)
+    ^ "]" in
+  spf "{| nat_imms := %s; nat_field := None; nat_map := None; nat_src := None; nat_kind := %s; nat_family := %s; nat_amin := %s; nat_amax := %s; nat_pmin := %s; nat_pmax := %s; nat_flags := %d |}"
+    nat_imms
     (qstring ns.Syntax.nat_kind) (qstring ns.Syntax.nat_family)
     (opt_int ns.Syntax.nat_amin) (opt_int ns.Syntax.nat_amax)
     (opt_int ns.Syntax.nat_pmin) (opt_int ns.Syntax.nat_pmax) ns.Syntax.nat_flags

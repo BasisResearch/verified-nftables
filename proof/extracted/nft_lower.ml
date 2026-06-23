@@ -37,9 +37,10 @@ let bytes_of_int_le (width : int) (n : int) : Bytes.data =
    time via nft_if_nametoindex() against the live host, so it is host-specific.
    We only know the loopback index for certain: the kernel always assigns "lo"
    index 1 (it is the first device registered).  Any other name cannot be
-   faithfully resolved without the live interface table, so we degrade to
-   [Unsupported] rather than guess (mirroring how unresolvable NAT targets and
-   $-vars degrade).  A numeric form `iif 2` is always exact. *)
+   faithfully resolved without the live interface table, so we raise
+   [Unsupported] rather than guess (the same fail-loud discipline an undefined
+   `$var` gets; a resolvable-but-non-literal NAT target instead degrades to a bare
+   terminal).  A numeric form `iif 2` is always exact. *)
 let nametoindex (s : string) : int =
   match s with
   | "lo" -> 1
@@ -751,10 +752,13 @@ let masq_spec ~family : Syntax.nat_spec =
    (`addr:port`) populates nat_pmin/nat_pmax (= NFTNL_EXPR_NAT_REG_PROTO_MIN/MAX),
    which the kernel loads into range.min_proto/max_proto (nft_nat.c:57-60) and
    nf_nat_setup_info writes into the TCP/UDP header (nf_nat_proto.c).  Only an
-   explicit IPv4 literal target is modelled here; a non-literal address stays a
-   bare terminal Accept (nat = None). *)
+   explicit IPv4 literal target is modelled here; a RESOLVABLE non-literal address
+   (a defined symbol/map/concat we don't lower) stays a bare terminal Accept
+   (nat = None).  An UNDEFINED `$var` is NOT swallowed: [resolve_var] raises
+   [Unsupported] and the parse fails loudly, exactly as `nft -f` rejects an
+   unqualified name — we never silently drop a NAT to a dangling define. *)
 let addr_nat_spec st kind ?(port=None) (v : Nft_ast.value) : Syntax.nat_spec option =
-  match (try resolve_var st v with Unsupported _ -> v) with
+  match resolve_var st v with
   | Nft_ast.Vip4 b ->
       Some { Syntax.nat_imms = [(1, b)]; nat_field = None; nat_map = None;
              nat_src = None; nat_kind = kind; nat_family = "ip";

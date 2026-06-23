@@ -54,7 +54,7 @@ Definition filter_prerouting : chain :=
              (BStmt (SMetaSet MKmark (VImm [153; 0; 0; 0])));
              (BStmt (SLog "[nft:rdppre]"))];
      r_verdict := Accept; r_vmap := None;
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
+     r_nat := (Some {| nat_imms := [(1, [192; 168; 51; 186])]; nat_field := None; nat_map := None; nat_src := None; nat_kind := "dnat"; nat_family := "ip"; nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
    {| r_body := [(BMatch (MConcatSet [FMetaIifname] false "__set1"));
              (BMatch (MEq (FFib "daddr" FRtype) [2; 0; 0; 0]));
@@ -63,7 +63,7 @@ Definition filter_prerouting : chain :=
              (BStmt (SMetaSet MKmark (VImm [153; 0; 0; 0])));
              (BStmt (SLog "[nft:rdppre]"))];
      r_verdict := Accept; r_vmap := None;
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
+     r_nat := (Some {| nat_imms := [(1, [192; 168; 51; 186])]; nat_field := None; nat_map := None; nat_src := None; nat_kind := "dnat"; nat_family := "ip"; nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
    {| r_body := [(BMatch (MConcatSet [FMetaIifname] false "__set4"));
              (BMatch (MEq (FFib "daddr" FRtype) [2; 0; 0; 0]));
@@ -72,14 +72,14 @@ Definition filter_prerouting : chain :=
              (BStmt (SMetaSet MKmark (VImm [153; 0; 0; 0])));
              (BStmt (SLog "[nft:rdppre]"))];
      r_verdict := Accept; r_vmap := None;
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
+     r_nat := (Some {| nat_imms := [(1, [192; 168; 51; 186])]; nat_field := None; nat_map := None; nat_src := None; nat_kind := "dnat"; nat_family := "ip"; nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
 
 Definition filter_postrouting : chain :=
   {| c_policy := Accept;
    c_rules := [{| r_body := [(BMatch (MEq FMetaMark [153; 0; 0; 0]));
              (BStmt (SLog "[nft:rdppost]"))];
      r_verdict := Accept; r_vmap := None;
-     r_nat := (Some {| nat_imms := []; nat_field := None; nat_map := None; nat_src := None; nat_kind := "masq"; nat_family := "ip"; nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
+     r_nat := (Some {| nat_imms := []; nat_field := None; nat_map := None; nat_src := None; nat_kind := "masq"; nat_family := "inet"; nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
 
 Definition filter_input : chain :=
   {| c_policy := Drop;
