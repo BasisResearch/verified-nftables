@@ -688,17 +688,38 @@ in `theories/Optimize_Merge.v` (all axiom-free, `Print Assumptions` clean):**
   is the `r1=r2` instance of `eval_rules_merge2`. Folded into the runnable
   top-level `optimize_chain2` (= `optimize_chain` then `dedup_adj`), proved
   verdict-preserving by `optimize_chain2_correct`.
+- **Value → anonymous SET, as an EXECUTABLE table-level rewrite** (the headline
+  `nft -o` pass) `optimize_rules_sets` / `optimize_chain_sets`, proved
+  `optimize_chain_sets_correct` (axiom-free). On an adjacent pair
+  `tcp dport 22 accept` / `tcp dport 80 accept` it **mints a fresh `__setN`**,
+  **emits its element declaration** `[(22,22);(80,80)]` into `sd_sets`, and rewrites
+  the pair into ONE `MConcatSet [dport] false __setN accept` — exactly
+  `nft -o`'s `tcp dport { 22, 80 } accept` (the anonymous set interned by name, the
+  way the parser's `intern_anon_set` already does it; the corpus round-trips
+  `__setN`). Correctness is end-to-end over the *table* semantics WITH the
+  synthesised set in scope: `eval_chain c' (set_env p (env_with_sets base d')) =
+  eval_chain c (set_env p (env_with_sets base d))`, discharged via the disjunction
+  certificate `concat_set_two_points` (`set_mem = existsb data_in_iv` over two point
+  intervals = `orb` of the two `MCmp f CEq`) + `eval_rules_merge2`. **Guards** (both
+  fire on the real `nft -o` examples): the differing dimension is a single
+  `MCmp f CEq` over a **fixed-width payload field** (`field_fixed_len f = Some
+  (length v)`, so `MCmp`'s prefix equality coincides with the set's full-width
+  membership), the rest of the two rules is syntactically equal, and the minted
+  `__setN` names are fresh (`setname_inj` + the prepend-only freshness lemma). A
+  `semtest` witness (6c) runs it on the demanded input: `2 → 1` rules, set
+  `__set0 = { 22, 80 }` synthesised, verdict preserved on every packet.
+  NOTE: this corrects an earlier *infidelity* — `eval_rules_range_value_merge`
+  modelled `6,7 ⇒ 6-7` as a RANGE, but `nft -o` emits a discrete SET `{ 6, 7 }`;
+  the value→set pass is the faithful consolidation (discrete elements).
 
-NOT yet ported (honest gaps): the **general** anonymous-set/vmap merge over a
-*multi-byte* or non-contiguous value set, and the **verdict-map** (`vmap`) and
-**concatenation** merges as *runnable chain rewrites*. The model represents sets
-only as named runtime objects (`e_set`/`e_vmap` in `pkt_env`), so a chain-only
-pass cannot synthesise the set declaration the merged rule would reference; and an
-inline-set/disjunction `matchcond` constructor would ripple through
-`Compile`/`Correct`/the corpus codec/parser (risking the 2532-case corpus gate).
-The *soundness* of those merges is nonetheless captured by `eval_rules_merge2` /
-`eval_rules_value_merge` (supply the per-value disjunction certificate and they
-follow); only the executable rewrite + set-synthesis is deferred.
+NOT yet ported (honest gaps): the **verdict-map** (`vmap`) and **concatenation**
+merges as runnable rewrites (the `e_vmap` / multi-field `MConcatSet` analogues of
+the value→set pass — the same `eval_rules_merge2` backbone and named-object
+synthesis apply, only the certificate changes); and the value→set pass on
+*variable-width* selectors (guarded out, since a prefix `MCmp` is not full-width
+set membership there). The earlier "sets can't be synthesised by a chain pass"
+claim was **wrong** and is now retired: anonymous sets ARE named sets, and the
+table-level `set_decls` rewrite synthesises them with no new constructor.
 
 ### TODO 8 — (future, per `../instructions.org`) Data-plane interpreter + VST
 A data-plane bytecode *interpreter* spec (what the C engine does to a packet) and

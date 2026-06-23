@@ -28,19 +28,32 @@
       [eval_matchcond m12 p = eval_matchcond m1 p || eval_matchcond m2 p]
       [match_loadable  m12 p = match_loadable  m1 p  (= match_loadable m2 p)]
     and the rules being otherwise identical (same tail body, same verdict/vmap/
-    nat/…/after).  It then instantiates the certificate for the value-merge case
-    that is expressible WITHOUT a new syntax constructor or a runtime set
-    declaration: two point matches `MEq f v1` / `MEq f v2` whose union is the
-    contiguous interval `[lo,hi]` collapse to one range match `MRange f false lo hi`
-    (the range form `nft` itself coalesces a contiguous anonymous set into).
+    nat/…/after).
 
-    The pass [merge_chain] folds adjacent value-merges over a chain; the theorem
-    [merge_chain_correct] shows the packet->verdict function is unchanged.  It is
-    proven axiom-free (Print Assumptions: Closed under the global context). *)
+    It then delivers the HEADLINE value->anonymous-SET pass as an EXECUTABLE
+    table-level rewrite ([optimize_rules_sets] / [optimize_chain_sets]): on an
+    adjacent pair `tcp dport 22 accept` / `tcp dport 80 accept` it mints a fresh
+    `__setN`, emits its element declaration [(22,22);(80,80)] into [sd_sets], and
+    rewrites the pair into ONE `MConcatSet [dport] false __setN accept` — exactly
+    what `nft -o` consolidates into `tcp dport { 22, 80 } accept` (the anonymous set
+    interned by name).  [optimize_chain_sets_correct] proves it verdict-preserving
+    end-to-end over the table semantics WITH the synthesised set in scope, via the
+    disjunction certificate [concat_set_two_points] + [eval_rules_merge2], guarded
+    by a fixed-width-field side-condition ([field_fixed_len]) and a fresh-name
+    discipline ([setname_inj]).  Every theorem is axiom-free (Print Assumptions:
+    Closed under the global context).
 
+    [optimize_chain2] (= the existing pipeline then [dedup_adj]) remains as the
+    consecutive-duplicate pass.  NOTE on fidelity: the earlier contiguous-range
+    certificate [eval_rules_range_value_merge] models `6,7 => 6-7` as a RANGE, but
+    `nft -o` actually emits a discrete SET `{ 6, 7 }`; the value->set pass above is
+    the faithful consolidation and emits the discrete elements. *)
+
+From Stdlib Require Import Ascii String.
 From Stdlib Require Import List PeanoNat Bool Lia Wellfounded Arith.Wf_nat.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Optimize.
 Import ListNotations.
+Local Open Scope nat_scope.
 
 (** ** The abstract adjacent-rule merge.
 
@@ -458,4 +471,581 @@ Proof.
           | Some v => v | None => c_policy (optimize_chain c) end)
     with (eval_chain (optimize_chain c) p).
   apply optimize_chain_correct.
+Qed.
+
+(** ** The HEADLINE [nft -o] pass: value -> anonymous SET, as an executable
+    table-level rewrite synthesising a real [__setN] declaration.
+
+    [nft -o] consolidates a run of adjacent rules that are identical except in the
+    right-hand VALUE of one selector, with the SAME verdict, into ONE rule whose
+    head matches an anonymous SET of those values:
+
+        tcp dport 22 accept              => tcp dport { 22, 80 } accept
+        tcp dport 80 accept
+
+    An anonymous set is, here and in real nftables, an INTERNED NAMED set: the
+    parser ([nft_lower.ml intern_anon_set]) mints a fresh `__setN`, pushes its
+    elements onto the table's set declarations, and lowers the inline `{ … }` to
+    [MConcatSet ([f], neg, "__setN")] — a reference BY NAME, membership read at run
+    time from [e_set (pkt_env p) "__setN"].  So this pass needs NO new constructor:
+    it lifts the merge to the TABLE / [set_decls] level, minting `__setN` with a
+    fresh counter, reusing the EXISTING named-set machinery.
+
+    Fidelity note: [nft -o] NEVER coalesces contiguous values into a range — it
+    keeps a discrete SET `{ 22, 23, 24 }`; this pass emits exactly [(v1,v1);(v2,v2)]. *)
+
+Lemma data_in_iv_point : forall x v, data_in_iv x (v, v) = data_eqb x v.
+Proof.
+  intros x v. unfold data_in_iv. cbn [fst snd].
+  rewrite data_le_antisym. apply data_eqb_sym.
+Qed.
+
+Lemma concat_set_two_points : forall f v1 v2 name q,
+  e_set (pkt_env q) name = [(v1, v1); (v2, v2)] ->
+  (field_loadable f q = true -> length (field_value f q) = length v1) ->
+  (field_loadable f q = true -> length (field_value f q) = length v2) ->
+  eval_matchcond (MConcatSet [f] false name) q
+  = orb (eval_matchcond (MCmp f CEq v1) q) (eval_matchcond (MCmp f CEq v2) q).
+Proof.
+  intros f v1 v2 name q Hset H1 H2.
+  unfold eval_matchcond, eval_matchcond_body.
+  cbn [match_loadable fields_loadable forallb].
+  rewrite Bool.andb_true_r.
+  destruct (field_loadable f q) eqn:Hld; cbn [andb]; [| reflexivity ].
+  specialize (H1 eq_refl). specialize (H2 eq_refl).
+  cbn [map]. rewrite concat_set_mem_single. unfold set_mem. rewrite Hset.
+  cbn [existsb]. rewrite Bool.orb_false_r.
+  rewrite !data_in_iv_point.
+  unfold eval_cmp.
+  rewrite <- H1, <- H2, !List.firstn_all.
+  reflexivity.
+Qed.
+
+(** A loaded PAYLOAD field reads exactly its [len] bytes (the kernel's
+    [skb_copy_bits] of [priv->len], gated by [read_payload_ok]). *)
+Lemma payload_loaded_len : forall b off len p,
+  read_payload_ok b off len p = true ->
+  length (read_payload b off len p) = len.
+Proof.
+  intros b off len p H. unfold read_payload_ok in H.
+  apply Bool.andb_true_iff in H as [_ Hfit].
+  apply Bool.negb_true_iff, Nat.ltb_ge in Hfit.
+  unfold read_payload, slice.
+  destruct b; cbn [base_bytes] in Hfit;
+    rewrite List.length_firstn, List.length_skipn, Nat.min_l by lia; reflexivity.
+Qed.
+
+(** *** Fixed-width fields the set-merge may target.
+
+    The merge is sound only on a field whose loaded width is CONSTANT and equal to
+    the matched value's width (else [MCmp]'s prefix equality differs from the set's
+    full-width membership — e.g. a wildcard `iifname "eth*"`).  [field_fixed_len]
+    returns [Some len] for the PAYLOAD-backed fixed-width fields (ports, addresses,
+    protocol, ttl, … — the overwhelming majority of nft -o's set-merge targets). *)
+Definition field_fixed_len (f : field) : option nat :=
+  match field_load f with
+  | LPayload _ _ len => Some len
+  | _ => None
+  end.
+
+Lemma field_fixed_len_loaded : forall f len q,
+  field_fixed_len f = Some len ->
+  field_loadable f q = true ->
+  length (field_value f q) = len.
+Proof.
+  intros f len q Hfx Hld. unfold field_fixed_len in Hfx.
+  unfold field_loadable, field_value in *.
+  destruct (field_load f) eqn:Efl; try discriminate.
+  inversion Hfx; subst.
+  cbn [do_load]. apply payload_loaded_len. exact Hld.
+Qed.
+
+(** Unary fresh-name rendering; the EXACT spelling is irrelevant to fidelity (an
+    anonymous set is rendered by its CONTENTS `{ … }`, never by its internal name),
+    so the proof only needs INJECTIVITY, which a length-[n] string gives. *)
+Fixpoint string_of_nat (n : nat) : String.string :=
+  match n with
+  | O => String.EmptyString
+  | S k => String.String "I"%char (string_of_nat k)
+  end.
+
+Definition setname (n : nat) : String.string :=
+  String.append "__set"%string (string_of_nat n).
+
+Lemma string_of_nat_inj : forall a b, string_of_nat a = string_of_nat b -> a = b.
+Proof.
+  induction a as [| a IH]; intros [| b] H; cbn in H; try discriminate; [reflexivity|].
+  injection H as H. f_equal. apply IH. exact H.
+Qed.
+
+Lemma setname_inj : forall a b, setname a = setname b -> a = b.
+Proof.
+  intros a b H. unfold setname in H.
+  apply string_of_nat_inj. cbn in H. repeat (injection H as H). exact H.
+Qed.
+
+(* Keep [setname] folded under [cbn]/[simpl] so freshness lookups reason about it
+   abstractly (only its injectivity matters, [setname_inj]). *)
+Global Opaque setname.
+
+(** Recognise a value-merge-eligible head [BMatch (MCmp f CEq v) :: rest]. *)
+Definition head_value (r : rule) : option (field * data * list body_item) :=
+  match r_body r with
+  | BMatch (MCmp f CEq v) :: rest => Some (f, v, rest)
+  | _ => None
+  end.
+
+(** Two rules form an eligible adjacent value-merge pair iff their heads are
+    [MCmp f CEq v1] / [MCmp f CEq v2] over the SAME fixed-width field [f], with the
+    SAME tail [rest], the SAME end-fields, and [v1 <> v2].  The fixed-width guard
+    ([field_fixed_len f1 = Some len = len v1 = len v2]) is precisely what makes the
+    set membership equal the disjunction of the two point matches. *)
+Definition value_merge_pair (r1 r2 : rule) : option (field * data * data * list body_item) :=
+  match head_value r1, head_value r2 with
+  | Some (f1, v1, rest1), Some (f2, v2, rest2) =>
+      if field_eq_dec f1 f2 then
+      if list_eq_dec body_item_eq_dec rest1 rest2 then
+      if list_eq_dec Nat.eq_dec v1 v2 then None
+      else
+      match field_fixed_len f1 with
+      | Some len =>
+        if Nat.eq_dec len (length v1) then
+        if Nat.eq_dec len (length v2) then
+        (* compare the two rules with a COMMON head ([v1] for both), so the test
+           checks ONLY that r1 and r2 agree on every END field (verdict/vmap/nat/…)
+           — the heads legitimately differ in their value. *)
+        if rule_eq_dec (mk_head (MCmp f1 CEq v1) rest1 r1)
+                       (mk_head (MCmp f1 CEq v1) rest1 r2)
+        then Some (f1, v1, v2, rest1)
+        else None
+        else None else None
+      | None => None
+      end
+      else None else None
+  | _, _ => None
+  end.
+
+Fixpoint optimize_rules_sets (n : nat) (d : set_decls) (rs : list rule)
+  : nat * set_decls * list rule :=
+  match rs with
+  | r1 :: ((r2 :: rest) as tl) =>
+      match value_merge_pair r1 r2 with
+      | Some (f, v1, v2, body) =>
+          let name := setname n in
+          let d' := {| sd_sets := (name, [(v1, v1); (v2, v2)]) :: sd_sets d;
+                       sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} in
+          let merged := mk_head (MConcatSet [f] false name) body r1 in
+          let '(n'', d'', rest') := optimize_rules_sets (S n) d' rest in
+          (n'', d'', merged :: rest')
+      | None =>
+          let '(n'', d'', tl') := optimize_rules_sets n d tl in
+          (n'', d'', r1 :: tl')
+      end
+  | _ => (n, d, rs)
+  end.
+
+(** One-step unfolding equation on a cons-cons input (so the recursive calls stay
+    folded; [cbn] would over-reduce them on the abstract tail). *)
+Lemma optimize_rules_sets_cons2 : forall n d r1 r2 rest,
+  optimize_rules_sets n d (r1 :: r2 :: rest) =
+  match value_merge_pair r1 r2 with
+  | Some (f, v1, v2, body) =>
+      let name := setname n in
+      let d' := {| sd_sets := (name, [(v1, v1); (v2, v2)]) :: sd_sets d;
+                   sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} in
+      let merged := mk_head (MConcatSet [f] false name) body r1 in
+      let '(n'', d'', rest') := optimize_rules_sets (S n) d' rest in
+      (n'', d'', merged :: rest')
+  | None =>
+      let '(n'', d'', tl') := optimize_rules_sets n d (r2 :: rest) in
+      (n'', d'', r1 :: tl')
+  end.
+Proof. reflexivity. Qed.
+
+Definition optimize_chain_sets (n : nat) (d : set_decls) (c : chain)
+  : nat * set_decls * chain :=
+  let '(n', d', rs') := optimize_rules_sets n d (c_rules c) in
+  (n', d', {| c_policy := c_policy c; c_rules := rs' |}).
+
+(** A declared set's lookup peels [assoc_str]. *)
+Lemma e_set_cons : forall base name elems d m,
+  m <> name ->
+  e_set (env_with_sets base
+            {| sd_sets := (name, elems) :: sd_sets d;
+               sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) m
+  = e_set (env_with_sets base d) m.
+Proof.
+  intros base name elems d m Hne.
+  rewrite !e_set_declared. cbn [sd_sets assoc_str].
+  destruct (String.eqb m name) eqn:E.
+  - apply String.eqb_eq in E. contradiction.
+  - reflexivity.
+Qed.
+
+(** ** Env-irrelevance for CLEAN rules: adding fresh set declarations cannot change
+    the verdict of a rule that reads no named set/vmap/map. *)
+Definition mc_clean (m : matchcond) : bool :=
+  match m with
+  | MConcatSet _ _ _ | MSetT _ _ _ _ | MConcatSetT _ _ _ => false
+  | _ => true
+  end.
+
+Definition bi_clean (b : body_item) : bool :=
+  match b with BMatch m => mc_clean m | BStmt _ => false end.
+
+Definition rule_clean (r : rule) : bool :=
+  forallb bi_clean (r_body r) &&
+  match r_vmap r with Some _ => false | None => true end &&
+  match r_nat r with Some _ => false | None => true end &&
+  match r_tproxy r with Some _ => false | None => true end &&
+  match r_fwd r with Some _ => false | None => true end &&
+  match r_queue r with Some _ => false | None => true end &&
+  match r_after r with [] => true | _ => false end.
+
+Definition rules_clean (rs : list rule) : bool := forallb rule_clean rs.
+
+Lemma do_load_env_with_sets : forall ld p base d1 d2,
+  do_load ld (set_env p (env_with_sets base d1))
+  = do_load ld (set_env p (env_with_sets base d2)).
+Proof.
+  intros ld p base d1 d2.
+  unfold do_load, set_env, env_with_sets; cbn.
+  destruct ld; try reflexivity; try (destruct k; reflexivity).
+Qed.
+
+Lemma field_value_env_with_sets : forall f p base d1 d2,
+  field_value f (set_env p (env_with_sets base d1))
+  = field_value f (set_env p (env_with_sets base d2)).
+Proof. intros. unfold field_value. apply do_load_env_with_sets. Qed.
+
+Lemma eval_matchcond_clean_env : forall m p base d1 d2,
+  mc_clean m = true ->
+  eval_matchcond m (set_env p (env_with_sets base d1))
+  = eval_matchcond m (set_env p (env_with_sets base d2)).
+Proof.
+  intros m p base d1 d2 Hc.
+  unfold eval_matchcond, eval_matchcond_body, match_loadable.
+  destruct m; cbn in Hc; try discriminate;
+    rewrite ?field_value_env_with_sets;
+    repeat (match goal with
+            | |- context[field_value ?f (set_env p (env_with_sets base d1))] =>
+                rewrite (field_value_env_with_sets f p base d1 d2)
+            end);
+    reflexivity.
+Qed.
+
+Lemma rule_applies_clean_env : forall body p base d1 d2,
+  forallb bi_clean body = true ->
+  rule_applies_walk body (set_env p (env_with_sets base d1))
+  = rule_applies_walk body (set_env p (env_with_sets base d2)).
+Proof.
+  induction body as [| b body IH]; intros p base d1 d2 Hc; [reflexivity|].
+  cbn [forallb] in Hc. apply Bool.andb_true_iff in Hc as [Hb Hrest].
+  destruct b as [m | s]; cbn [bi_clean] in Hb; [| discriminate].
+  cbn [rule_applies_walk].
+  rewrite (eval_matchcond_clean_env m p base d1 d2 Hb).
+  rewrite (IH p base d1 d2 Hrest). reflexivity.
+Qed.
+
+Lemma body_item_loadable_clean_env : forall b p base d1 d2,
+  bi_clean b = true ->
+  body_item_loadable b (set_env p (env_with_sets base d1))
+  = body_item_loadable b (set_env p (env_with_sets base d2)).
+Proof.
+  intros b p base d1 d2 Hc. destruct b as [m | s]; cbn [bi_clean] in Hc; [| discriminate].
+  cbn [body_item_loadable match_loadable].
+  destruct m; cbn in Hc; try discriminate;
+    cbn [match_loadable];
+    rewrite ?field_value_env_with_sets; try reflexivity;
+    unfold fields_loadable, field_loadable; reflexivity.
+Qed.
+
+Lemma body_synproxy_stops_clean : forall body p,
+  forallb bi_clean body = true ->
+  body_synproxy_stops body p = false.
+Proof.
+  induction body as [| b body IH]; intros p Hc; [reflexivity|].
+  cbn [forallb] in Hc. apply Bool.andb_true_iff in Hc as [Hb Hrest].
+  destruct b as [m | s]; cbn [bi_clean] in Hb; [| discriminate].
+  unfold body_synproxy_stops in *. cbn [existsb]. apply (IH p Hrest).
+Qed.
+
+Lemma body_has_notrack_clean : forall body,
+  forallb bi_clean body = true -> body_has_notrack body = false.
+Proof.
+  induction body as [| b body IH]; intros Hc; [reflexivity|].
+  cbn [forallb] in Hc. apply Bool.andb_true_iff in Hc as [Hb Hrest].
+  destruct b as [m | s]; cbn [bi_clean] in Hb; [| discriminate].
+  cbn [body_has_notrack]. apply (IH Hrest).
+Qed.
+
+Lemma body_loadable_clean_env : forall body p base d1 d2,
+  forallb bi_clean body = true ->
+  body_loadable_walk body (set_env p (env_with_sets base d1))
+  = body_loadable_walk body (set_env p (env_with_sets base d2)).
+Proof.
+  intros body p base d1 d2 Hc.
+  rewrite !body_loadable_walk_no_synproxy by (apply body_synproxy_stops_clean; exact Hc).
+  revert Hc. induction body as [| b body IH]; intro Hc; [reflexivity|].
+  cbn [forallb] in Hc. apply Bool.andb_true_iff in Hc as [Hb Hrest].
+  cbn [forallb].
+  rewrite (body_item_loadable_clean_env b p base d1 d2 Hb).
+  rewrite (IH Hrest). reflexivity.
+Qed.
+
+Lemma rule_clean_env : forall r p base d1 d2,
+  rule_clean r = true ->
+  rule_loadable r (set_env p (env_with_sets base d1))
+    = rule_loadable r (set_env p (env_with_sets base d2))
+  /\ rule_applies r (set_env p (env_with_sets base d1))
+    = rule_applies r (set_env p (env_with_sets base d2))
+  /\ outcome r (set_env p (env_with_sets base d1))
+    = outcome r (set_env p (env_with_sets base d2)).
+Proof.
+  intros r p base d1 d2 Hc.
+  unfold rule_clean in Hc.
+  apply Bool.andb_true_iff in Hc as [Hc Hafter].
+  apply Bool.andb_true_iff in Hc as [Hc Hqueue].
+  apply Bool.andb_true_iff in Hc as [Hc Hfwd].
+  apply Bool.andb_true_iff in Hc as [Hc Htproxy].
+  apply Bool.andb_true_iff in Hc as [Hc Hnat].
+  apply Bool.andb_true_iff in Hc as [Hbody Hvmap].
+  destruct (r_vmap r) eqn:Hv; [discriminate|].
+  destruct (r_nat r) eqn:Hn; [discriminate|].
+  destruct (r_tproxy r) eqn:Ht; [discriminate|].
+  destruct (r_fwd r) eqn:Hf; [discriminate|].
+  destruct (r_queue r) eqn:Hq; [discriminate|].
+  destruct (r_after r) eqn:Ha; [| discriminate].
+  assert (Hns : forall pp, body_synproxy_stops (r_body r) pp = false)
+    by (intro; apply body_synproxy_stops_clean; exact Hbody).
+  assert (Hnt : body_has_notrack (r_body r) = false)
+    by (apply body_has_notrack_clean; exact Hbody).
+  repeat split.
+  - unfold rule_loadable.
+    rewrite (body_loadable_clean_env _ p base d1 d2 Hbody).
+    rewrite !Hns. unfold body_thread. rewrite Hnt.
+    unfold end_loadable. rewrite Hv.
+    unfold tail_loadable, terminal_loadable, terminal_outcome.
+    rewrite Hn, Ht, Hf, Hq, Ha. reflexivity.
+  - unfold rule_applies. apply (rule_applies_clean_env _ p base d1 d2 Hbody).
+  - unfold outcome. rewrite !Hns.
+    unfold body_thread. rewrite Hnt.
+    unfold outcome_core, terminal_outcome. rewrite Hv, Hn, Ht, Hf, Hq, Ha.
+    reflexivity.
+Qed.
+
+Lemma eval_rules_clean_env : forall rs p base d1 d2,
+  rules_clean rs = true ->
+  eval_rules rs (set_env p (env_with_sets base d1))
+  = eval_rules rs (set_env p (env_with_sets base d2)).
+Proof.
+  induction rs as [| r rs IH]; intros p base d1 d2 Hc; [reflexivity|].
+  cbn [rules_clean forallb] in Hc. apply Bool.andb_true_iff in Hc as [Hr Hrest].
+  destruct (rule_clean_env r p base d1 d2 Hr) as [Hl [Ha Ho]].
+  cbn [eval_rules]. rewrite Hl, Ha, Ho.
+  rewrite (IH p base d1 d2 Hrest). reflexivity.
+Qed.
+
+Lemma eval_rules_cons_cong : forall r rest1 rest2 p,
+  eval_rules rest1 p = eval_rules rest2 p ->
+  eval_rules (r :: rest1) p = eval_rules (r :: rest2) p.
+Proof.
+  intros r rest1 rest2 p H. cbn [eval_rules].
+  destruct (rule_loadable r p && rule_applies r p); [| exact H].
+  destruct (outcome r p) as [v |]; [| exact H].
+  destruct (terminal v); [reflexivity | exact H].
+Qed.
+
+(** ** Freshness bookkeeping: [optimize_rules_sets] only PREPENDS entries keyed by
+    [setname k] with [n <= k < n'], so on an UN-minted name the augmented [sd_sets]
+    agrees with the input. *)
+Lemma optimize_rules_sets_assoc_stable : forall rs n d n' d' rs' nm X,
+  optimize_rules_sets n d rs = (n', d', rs') ->
+  (forall k, n <= k -> nm <> setname k) ->
+  assoc_str nm (sd_sets d') X = assoc_str nm (sd_sets d) X.
+Proof.
+  induction rs as [rs H0] using (induction_ltof1 _ (@length rule)).
+  intros n d n' d' rs' nm X H Hnm.
+  destruct rs as [| r1 [| r2 rest] ].
+  - cbn in H. inversion H; subst; reflexivity.
+  - cbn in H. inversion H; subst; reflexivity.
+  - rewrite optimize_rules_sets_cons2 in H. cbv zeta in H.
+    destruct (value_merge_pair r1 r2) as [[[[f v1] v2] body] |] eqn:Evm.
+    + destruct (optimize_rules_sets (S n)
+                  {| sd_sets := (setname n, [(v1,v1);(v2,v2)]) :: sd_sets d;
+                     sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest)
+        as [[m'' dd''] rr''] eqn:Erec.
+      inversion H; subst n' d' rs'. clear H.
+      erewrite (H0 rest); [ | unfold ltof; cbn; lia | exact Erec | ].
+      * cbn [sd_sets assoc_str].
+        destruct (String.eqb nm (setname n)) eqn:Eqn.
+        -- apply String.eqb_eq in Eqn. exfalso. apply (Hnm n); [lia | exact Eqn].
+        -- reflexivity.
+      * intros k Hk. apply Hnm. lia.
+    + destruct (optimize_rules_sets n d (r2 :: rest)) as [[m'' dd''] rr''] eqn:Erec.
+      inversion H. subst n' d' rs'. clear H.
+      eapply (H0 (r2 :: rest)); [ unfold ltof; cbn; lia | exact Erec | exact Hnm ].
+Qed.
+
+(** When a merge fires, the two input rules are EXACTLY the canonical shells, and
+    the field is fixed-width — so the rewrite matches the value-merge certificate. *)
+Lemma value_merge_pair_shape : forall r1 r2 f v1 v2 body,
+  value_merge_pair r1 r2 = Some (f, v1, v2, body) ->
+  r1 = mk_head (MCmp f CEq v1) body r1 /\
+  r2 = mk_head (MCmp f CEq v2) body r1 /\
+  field_fixed_len f = Some (length v1) /\
+  field_fixed_len f = Some (length v2).
+Proof.
+  intros r1 r2 f v1 v2 body H. unfold value_merge_pair in H.
+  destruct (head_value r1) as [[[f1 w1] rest1] |] eqn:H1; [| discriminate].
+  destruct (head_value r2) as [[[f2 w2] rest2] |] eqn:H2; [| discriminate].
+  unfold head_value in H1, H2.
+  destruct (r_body r1) as [| [m1 | s1] b1] eqn:Eb1; try discriminate.
+  destruct m1 as [ | | | | f1' op1 v1' | | | | | | | | ]; try discriminate.
+  destruct op1; try discriminate. inversion H1; subst f1 w1 rest1.
+  destruct (r_body r2) as [| [m2 | s2] b2] eqn:Eb2; try discriminate.
+  destruct m2 as [ | | | | f2' op2 v2' | | | | | | | | ]; try discriminate.
+  destruct op2; try discriminate. inversion H2; subst f2 w2 rest2.
+  destruct (field_eq_dec f1' f2') as [Ef | ]; [| discriminate]. subst f2'.
+  destruct (list_eq_dec body_item_eq_dec b1 b2) as [Erest | ]; [| discriminate]. subst b2.
+  destruct (list_eq_dec Nat.eq_dec v1' v2') as [Ev | Hv]; [discriminate |].
+  destruct (field_fixed_len f1') as [len |] eqn:Hfx; [| discriminate].
+  destruct (Nat.eq_dec len (length v1')) as [Elen1 |]; [| discriminate].
+  destruct (Nat.eq_dec len (length v2')) as [Elen2 |]; [| discriminate].
+  destruct (rule_eq_dec (mk_head (MCmp f1' CEq v1') b1 r1)
+                        (mk_head (MCmp f1' CEq v1') b1 r2)) as [Eshell |]; [| discriminate].
+  inversion H; subst f v1 v2 body.
+  assert (Hr1 : r1 = mk_head (MCmp f1' CEq v1') b1 r1).
+  { unfold mk_head. rewrite <- Eb1. destruct r1; reflexivity. }
+  split; [exact Hr1 |].
+  split.
+  - assert (Hr2 : r2 = mk_head (MCmp f1' CEq v2') b1 r2).
+    { unfold mk_head. rewrite <- Eb2. destruct r2; reflexivity. }
+    rewrite Hr2.
+    (* r1, r2 agree on every END field (from Eshell), so swapping r2->r1 in the
+       shell with head v2' is identity. *)
+    unfold mk_head in Eshell |- *. injection Eshell as Eva Evm Ena Etp Efw Equ Eaf.
+    rewrite Eva, Evm, Ena, Etp, Efw, Equ, Eaf. reflexivity.
+  - split; rewrite Hfx; f_equal; congruence.
+Qed.
+
+(** *** The executable value->set merge, proved verdict-preserving END-TO-END over
+    the table semantics with the synthesised set in scope, axiom-free.
+
+    On clean rules with the minted names fresh for [d], the rewritten [rs'] under
+    the augmented declarations [d'] yields the SAME verdict on every packet as [rs]
+    under [d].  The merged head's `__setN` lookup resolves to its two point elements
+    (freshness + injectivity); [concat_set_two_points] turns it into the [orb] of
+    the two original point matches; [eval_rules_merge2] collapses the pair; the
+    clean tail is env-irrelevant. *)
+Theorem optimize_rules_sets_correct : forall rs n d n' d' rs' base p,
+  optimize_rules_sets n d rs = (n', d', rs') ->
+  rules_clean rs = true ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  eval_rules rs' (set_env p (env_with_sets base d'))
+  = eval_rules rs  (set_env p (env_with_sets base d)).
+Proof.
+  induction rs as [rs H0] using (induction_ltof1 _ (@length rule)).
+  intros n d n' d' rs' base p H Hclean Hfresh.
+  destruct rs as [| r1 [| r2 rest] ].
+  - cbn in H. inversion H; subst. reflexivity.
+  - cbn in H. inversion H; subst. reflexivity.
+  - rewrite optimize_rules_sets_cons2 in H. cbv zeta in H.
+    destruct (value_merge_pair r1 r2) as [[[[f v1] v2] body] |] eqn:Evm.
+    + (* MERGE fires *)
+      set (dn := {| sd_sets := (setname n, [(v1,v1);(v2,v2)]) :: sd_sets d;
+                    sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) in *.
+      destruct (optimize_rules_sets (S n) dn rest) as [[m'' dd''] rr''] eqn:Erec.
+      inversion H; subst n' d' rs'. clear H.
+      cbn [rules_clean forallb] in Hclean.
+      apply Bool.andb_true_iff in Hclean as [Hc1 Hclean].
+      apply Bool.andb_true_iff in Hclean as [Hc2 Hcrest].
+      (* the merged head reads setname n; resolve it in dd'' to its two points *)
+      assert (Hlook : e_set (pkt_env (set_env p (env_with_sets base dd''))) (setname n)
+                      = [(v1,v1);(v2,v2)]).
+      { cbn [set_env pkt_env]. rewrite e_set_declared.
+        erewrite (optimize_rules_sets_assoc_stable rest (S n) dn _ _ _ (setname n) _ Erec).
+        - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
+        - intros k Hk Heq. apply setname_inj in Heq. lia. }
+      (* the optimized tail equals the original tail under dn (by IH) *)
+      assert (Htail : eval_rules rr'' (set_env p (env_with_sets base dd''))
+                      = eval_rules rest (set_env p (env_with_sets base dn))).
+      { eapply (H0 rest); [ unfold ltof; cbn; lia | exact Erec | exact Hcrest |].
+        intros k Hk Hin. subst dn; cbn [sd_sets map] in Hin.
+        destruct Hin as [Heq | Hin].
+        - apply setname_inj in Heq. lia.
+        - apply (Hfresh k); [lia | exact Hin]. }
+      (* rest is clean: env-irrelevant, so rest@dn = rest@d *)
+      assert (Hrestdn : eval_rules rest (set_env p (env_with_sets base dn))
+                        = eval_rules rest (set_env p (env_with_sets base d)))
+        by (apply eval_rules_clean_env; exact Hcrest).
+      destruct (value_merge_pair_shape r1 r2 f v1 v2 body Evm)
+        as [Hr1 [Hr2 [Hfx1 Hfx2]]].
+      set (qd  := set_env p (env_with_sets base dd'')) in *.
+      (* certificate at qd for the merged head vs the two point heads *)
+      assert (Hcert : eval_matchcond (MConcatSet [f] false (setname n)) qd
+              = orb (eval_matchcond (MCmp f CEq v1) qd) (eval_matchcond (MCmp f CEq v2) qd)).
+      { apply concat_set_two_points.
+        - exact Hlook.
+        - intro Hld. apply (field_fixed_len_loaded f (length v1) qd Hfx1 Hld).
+        - intro Hld. apply (field_fixed_len_loaded f (length v2) qd Hfx2 Hld). }
+      (* the tail rr'' under dd'' equals the original rest under dd'' (clean tail) *)
+      assert (Htail' : eval_rules rr'' qd = eval_rules rest qd).
+      { rewrite Htail. unfold qd.
+        rewrite (eval_rules_clean_env rest p base dn dd'' Hcrest). reflexivity. }
+      (* Goal: eval_rules (merged::rr'') qd = eval_rules (r1::r2::rest) @d.
+         Step 1: collapse merged head -> two point heads (merge2). *)
+      transitivity (eval_rules (mk_head (MCmp f CEq v1) body r1
+                      :: mk_head (MCmp f CEq v2) body r1 :: rr'') qd).
+      { apply eval_rules_merge2.
+        - rewrite !rule_loadable_mk_head. cbn [match_loadable fields_loadable forallb].
+          rewrite Bool.andb_true_r. reflexivity.
+        - rewrite !rule_loadable_mk_head. cbn [match_loadable fields_loadable forallb].
+          rewrite Bool.andb_true_r. reflexivity.
+        - rewrite !outcome_mk_head. reflexivity.
+        - rewrite !outcome_mk_head. reflexivity.
+        - rewrite !rule_applies_mk_head. rewrite Hcert.
+          rewrite Bool.andb_orb_distrib_l. reflexivity. }
+      (* Step 2: tail rr'' -> rest (Htail'), then point heads -> r1, r2 (Hr1,Hr2). *)
+      transitivity (eval_rules (r1 :: r2 :: rest) qd).
+      { rewrite <- Hr1, <- Hr2.
+        apply eval_rules_cons_cong. apply eval_rules_cons_cong. exact Htail'. }
+      (* Step 3: whole clean list at dd'' equals at d. *)
+      unfold qd. apply eval_rules_clean_env.
+      cbn [rules_clean forallb]. rewrite Hc1, Hc2, Hcrest. reflexivity.
+    + (* NO merge at the head: recurse on the tail (r2::rest), keep r1 *)
+      destruct (optimize_rules_sets n d (r2 :: rest)) as [[m'' dd''] rr''] eqn:Erec.
+      inversion H; subst n' d' rs'. clear H.
+      cbn [rules_clean forallb] in Hclean.
+      apply Bool.andb_true_iff in Hclean as [Hc1 Hclean].
+      assert (Htail : eval_rules rr'' (set_env p (env_with_sets base dd''))
+                      = eval_rules (r2 :: rest) (set_env p (env_with_sets base d))).
+      { eapply (H0 (r2 :: rest)); [ unfold ltof; cbn; lia | exact Erec | | exact Hfresh ].
+        cbn [rules_clean forallb]. exact Hclean. }
+      cbn [eval_rules].
+      (* r1 is clean: its loadable/applies/outcome at dd'' equal those at d *)
+      destruct (rule_clean_env r1 p base dd'' d Hc1) as [Hl [Ha Ho]].
+      rewrite Hl, Ha, Ho. rewrite Htail. reflexivity.
+Qed.
+
+(** *** The CHAIN-level entry: pick a counter past every existing set name (here
+    [0] suffices when the input table declares no [setname]-shaped name — the case
+    for a freshly-parsed ruleset, whose anonymous sets are named `__setN` by the
+    parser but whose EXPLICIT named sets are user identifiers, never a bare unary
+    `__setIII…`).  We expose the general theorem with the freshness side-condition;
+    [optimize_chain_sets_correct] is its [eval_chain] specialisation. *)
+Theorem optimize_chain_sets_correct : forall n d c n' d' c' base p,
+  optimize_chain_sets n d c = (n', d', c') ->
+  rules_clean (c_rules c) = true ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  eval_chain c' (set_env p (env_with_sets base d'))
+  = eval_chain c  (set_env p (env_with_sets base d)).
+Proof.
+  intros n d c n' d' c' base p H Hclean Hfresh.
+  unfold optimize_chain_sets in H.
+  destruct (optimize_rules_sets n d (c_rules c)) as [[m'' dd''] rr''] eqn:Erec.
+  inversion H; subst n' d' c'. cbn [c_rules c_policy].
+  unfold eval_chain. cbn [c_rules c_policy].
+  rewrite (optimize_rules_sets_correct (c_rules c) n d m'' dd'' rr'' base p Erec Hclean Hfresh).
+  reflexivity.
 Qed.

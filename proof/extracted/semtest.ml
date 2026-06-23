@@ -445,6 +445,95 @@ let () =
       "tcp dport 80",       mk_pkt ~th:(th ~dport:[0; 80]) ();
       "saddr 10.0.0.1",     mk_pkt ~nh:(nh ~saddr:[10;0;0;1] ~daddr:[8;8;8;8]) () ];
   Printf.printf "\n";
+  (* (6c) THE HEADLINE nft -o pass — value -> anonymous SET (Optimize_Merge.v
+     `optimize_rules_sets` / `optimize_chain_sets_correct`, axiom-free).  The
+     verified pass mints a fresh `__setN`, emits its (v1,v1)/(v2,v2) declaration,
+     and rewrites the adjacent pair into one `MConcatSet [f] false __setN` rule.
+     We re-create the SAME rewrite in OCaml (the verified term's `rule_eq_dec`
+     extracts to a multi-MB OCaml value, so — exactly as (6b) — we mirror it with
+     structural equality; `optimize_rules_sets_correct` guarantees the rewrite is
+     verdict-preserving WITH the synthesised set in scope).
+
+       INPUT  (nft -o oracle: `tcp dport 22 accept` + `tcp dport 80 accept`):
+         => OUTPUT  `tcp dport { 22, 80 } accept`  (anonymous set __set0={22,80}).
+
+     The witness shows it FIRES (2 rules -> 1, a set declaration is synthesised)
+     and that `eval_chain` of the rewritten rule UNDER the synthesised set agrees
+     with the two-rule original on every packet. *)
+  Printf.printf "=== (6c) nft -o value->SET: tcp dport {22,80} (anonymous set, the headline pass) ===\n";
+  let counter = ref 0 in
+  let setname () = let n = !counter in incr counter; Printf.sprintf "__set%d" n in
+  (* the verified `value_merge_pair`/`optimize_rules_sets` rewrite, mirrored: on an
+     adjacent pair `MCmp f CEq v1 :: rest` / `MCmp f CEq v2 :: rest` (same field,
+     same rest, same end-fields, v1<>v2, f a fixed-width payload field), mint a set
+     and rewrite the pair to one `MConcatSet [f] false name`. *)
+  let head_value (r : Syntax.rule) =
+    match r.Syntax.r_body with
+    | Syntax.BMatch (Syntax.MCmp (f, Bytecode.CEq, v)) :: rest -> Some (f, v, rest)
+    | _ -> None in
+  let fixed_len (f : Syntax.field) =
+    match Syntax.field_load f with
+    | Syntax.LPayload (_, _, len) -> Some len | _ -> None in
+  let merge_pair (r1 : Syntax.rule) (r2 : Syntax.rule) =
+    match head_value r1, head_value r2 with
+    | Some (f1, v1, rest1), Some (f2, v2, rest2) ->
+        if f1 = f2 && rest1 = rest2 && v1 <> v2
+           && fixed_len f1 = Some (Stdlib.List.length v1)
+           && fixed_len f1 = Some (Stdlib.List.length v2)
+           && { r1 with Syntax.r_body = Syntax.BMatch (Syntax.MCmp (f1, Bytecode.CEq, v1)) :: rest1 }
+            = { r2 with Syntax.r_body = Syntax.BMatch (Syntax.MCmp (f1, Bytecode.CEq, v1)) :: rest1 }
+        then Some (f1, v1, v2, rest1) else None
+    | _ -> None in
+  let rec opt_rules sets (rs : Syntax.rule list) =
+    match rs with
+    | r1 :: (r2 :: rest) ->
+        (match merge_pair r1 r2 with
+         | Some (f, v1, v2, body) ->
+             let name = setname () in
+             let sets' = (name, [ (v1, v1); (v2, v2) ]) :: sets in
+             let merged = { r1 with Syntax.r_body =
+                              Syntax.BMatch (Syntax.MConcatSet ([f], false, name)) :: body } in
+             let (sets'', rest') = opt_rules sets' rest in
+             (sets'', merged :: rest')
+         | None -> let (sets'', rest') = opt_rules sets (r2 :: rest) in (sets'', r1 :: rest'))
+    | _ -> (sets, rs) in
+  let rs_in = [
+    rule [ mcmp Syntax.FThDport Bytecode.CEq [0; 22] ] Verdict.Accept;
+    rule [ mcmp Syntax.FThDport Bytecode.CEq [0; 80] ] Verdict.Accept;
+  ] in
+  let (sets_out, rs_out) = opt_rules [] rs_in in
+  let len_in = Stdlib.List.length rs_in and len_out = Stdlib.List.length rs_out in
+  Printf.printf "  rules: %d -> %d (%s)\n" len_in len_out
+    (if len_out < len_in then "shrunk: value-merge fired" else "NOT shrunk");
+  if not (len_out < len_in) then incr fails;
+  Stdlib.List.iter (fun (nm, els) ->
+    Printf.printf "  synthesised set %s = { %s }\n" nm
+      (Stdlib.String.concat ", "
+         (Stdlib.List.map (fun (lo, _hi) ->
+            string_of_int (Stdlib.List.fold_left (fun a b -> a*256+b) 0 lo)) els)))
+    sets_out;
+  if sets_out = [] then (Printf.printf "  NO set synthesised\n"; incr fails);
+  (* verdict equivalence: original two-rule chain (policy drop) vs the rewritten
+     ONE-rule chain evaluated WITH the synthesised set declared in scope. *)
+  let decls : Semantics.set_decls =
+    { Semantics.sd_sets = sets_out; sd_vmaps = []; sd_maps = [] } in
+  let env_out = Semantics.env_with_sets empty_env decls in
+  let c_in  = chain Verdict.Drop rs_in in
+  let c_out = chain Verdict.Drop rs_out in
+  Stdlib.List.iter (fun (name, dport) ->
+    let p_in  = mk_pkt ~th:(th ~dport) () in
+    let p_out = mk_pkt ~env:env_out ~th:(th ~dport) () in
+    let a = Semantics.eval_chain c_in  p_in in
+    let b = Semantics.eval_chain c_out p_out in
+    let ok = a = b in
+    Printf.printf "  %-26s two-rule=%-7s set-merged=%-7s %s\n"
+      name (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
+    if not ok then incr fails)
+    [ "tcp dport 22 (in set)",  [0; 22];
+      "tcp dport 80 (in set)",  [0; 80];
+      "tcp dport 443 (not in)", [1; 187];
+      "tcp dport 1   (not in)", [0; 1] ];
+  Printf.printf "\n";
   Printf.printf "%s: compile & optimize preserve the DSL verdict on every packet\n"
     (if !fails = 0 then "PASS" else Printf.sprintf "FAIL (%d mismatches)" !fails);
   if !fails > 0 then exit 1
