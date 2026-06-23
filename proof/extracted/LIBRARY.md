@@ -11,7 +11,7 @@ functions are extracted from machine-checked Rocq proofs:
 
 Only `to_netlink_text` (rendering bytecode to `nft --debug=netlink` text) is
 untrusted glue, and it is differentially tested **byte-identical** against the
-upstream nftables corpus (2290/2532 rule-blocks, 0 mismatches) and live `nft`.
+upstream nftables corpus (2532/2532 rule-blocks, 100%, 0 mismatches) and live `nft`.
 
 ## Build
 

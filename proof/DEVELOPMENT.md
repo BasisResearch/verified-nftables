@@ -23,6 +23,21 @@ the model against a real corpus rather than hand-written examples.
 > populates a set, never uses a jump, always abstracts stateful values), and
 > declaring the work "complete" on it was premature — see `../issues.org`.
 
+> **Data-plane fidelity audit (2026-06) — many gaps below are now CLOSED.** After the
+> work logged here, the data-plane semantics was hardened by an **adversarial red/blue
+> audit** against the linux-6.18.33 kernel source: a red agent substantiates an
+> infidelity (kernel C source, or a property the model wrongly proves / cannot prove), a
+> blue agent fixes the *specification* keeping every gate green and axiom-free, looping
+> until red can find nothing more. It **converged** after **52 fidelity fixes**. Full
+> write-up + the complete fix list: [`../adversarial.md`](../adversarial.md). The audit
+> closed, among others: the **flow-keyed conntrack table** (TODO 1), **NAT
+> address/port rewrite + checksums + reply un-NAT** (the "NAT modelled as accept" gap),
+> **concat-key register-slot padding** (TODO 4), **`numgen inc`** (part of TODO 5),
+> live **limit/quota/connlimit** token buckets, and many match/encoding/byteorder
+> infidelities. The sections below are the *pre-audit* design log; ✅/⛔/🔶 markers and
+> TODO statuses have been updated where the audit changed them, but read them together
+> with `../adversarial.md`, which is authoritative for current data-plane fidelity.
+
 ## Known semantic gaps (audit against the nftables manual, not the corpus)
 
 The data-plane semantics (`eval_chain` / `run_rule`) that the correctness
@@ -45,10 +60,14 @@ theorem is stated against is **not** faithful in these areas. Grouped by kind:
   DEFINITION lines the corpus emits (`__set%d … / element …`, previously skipped by
   `blocks_of_file`) now round-trip through the data model **642/651 byte-identical**
   (the 9 out are interval sets carrying a `userdata` annotation).
-- ⛔ STILL OPEN — **routing table (`fib`)**, **conntrack table (`ct`)**, and
-  **stateful objects** (counter/quota/limit/meter; MAP-dynset feedback) remain
-  per-packet oracles, not the explicit FIB/conntrack/object state they should be.
-  (SET-dynset feedback is now modelled — see B below.)
+- ✅ **Conntrack table (`ct`)** *(FIXED by the 2026-06 audit)*: now a shared,
+  flow-keyed table `e_ct : data -> ct_key -> data` in `env`, keyed by the packet's
+  `pkt_flow`. Writable keys (mark/label/secmark) persist across a flow's packets; the
+  read-only keys (state/status/direction/expiration/…) are flow-derived too. See TODO 1
+  and `../adversarial.md`.
+- ⛔ STILL OPEN — `meter` and immediate-data MAP-dynset feedback remain per-packet
+  oracles / verdict-neutral. (SET-dynset feedback, FIB, conntrack, and `numgen inc` are
+  now modelled — see B below, the `fib` bullets, and `../adversarial.md`.)
 - **Routing table (`fib`/`rt`)** *(relocated to shared state, 2026-06)*: `fib` and
   `rt` now read from the evaluation environment (`e_fib : selector -> result ->
   data`, `e_rt : rt_key -> data` in `env`), NOT from the packet — so the routing
@@ -63,8 +82,11 @@ theorem is stated against is **not** faithful in these areas. Grouped by kind:
   semtest (4d): route `10.0.0.0/8 -> oif 3`, `fib saddr oif 3 accept` accepts
   `10.1.2.3`, drops `192.168.1.1`, VM=DSL. (Selector→key parsing is abstracted into
   `pkt_fibkey`; exact ECMP/scope tie-breaking not modelled.)
-- **Conntrack table (`ct …`)**: `pkt_ct` is a per-packet oracle; really the ct
-  table is keyed by flow and accumulates across packets (`ct count`, `ct state`).
+- ✅ **Conntrack table (`ct …`)** *(FIXED by the 2026-06 audit)*: the old per-packet
+  `pkt_ct` oracle is replaced by the flow-keyed `e_ct` table (see the bullet above and
+  TODO 1). `ct mark set V` on packet 1 is read back by a later packet of the same
+  `pkt_flow`; `ct state`/direction are flow-derived; `notrack` and `ct … set` follow the
+  kernel's entry-present/absent guards.
 - ✅ **Stateful limiters `limit`/`quota`/`connlimit`** *(FIXED 2026-06)*: relocated
   from per-packet bool oracles into the shared `env` as **remaining-resource counts**
   (`e_limit`/`e_quota`/`e_connlimit : spec -> nat`); the match passes iff
@@ -110,11 +132,15 @@ theorem is stated against is **not** faithful in these areas. Grouped by kind:
   `SDynsetImm` — the `fdata=false` form) and `meter`/`numgen` increments.
 - **flowtables, incremental `numgen`, `osf`**: stateful; oracle'd or ignored.
 
-**B. In-traversal mutation ignored ("verdict-neutral" overused)** — a statement
-that doesn't change *this* rule's verdict still mutates state later rules read:
-- `meta mark set`, `ct mark set`, `ip dscp set`, ttl/hoplimit, payload mangle,
-  NAT address/port rewrite, exthdr/tcpopt write are all modelled as no-ops/
-  terminal-Accept. **Concrete mis-model:** `meta mark set 0x1 ; meta mark 0x1
+**B. In-traversal mutation ignored ("verdict-neutral" overused)** *(originally; now
+mostly closed — see the per-item markers and TODO 3)* — a statement that doesn't change
+*this* rule's verdict still mutates state later rules read:
+- *(Originally)* `meta mark set`, `ct mark set`, `ip dscp set`, ttl/hoplimit, payload
+  mangle, NAT address/port rewrite, exthdr/tcpopt write were all modelled as no-ops/
+  terminal-Accept. **`meta`/`ct` set are now threaded** (Status below); **NAT
+  address/port rewrite is now modelled** (2026-06 audit — see TODO 3); payload-mangle and
+  exthdr/tcpopt write remain verdict-neutral. **Concrete mis-model (the original bug):**
+  `meta mark set 0x1 ; meta mark 0x1
   accept` — the second rule reads the *original* (oracle) mark, not `0x1`. The
   compiler theorem still proves because BOTH the DSL semantics and the VM no-op
   the set — a textbook vacuous-theorem case.
@@ -191,7 +217,7 @@ that doesn't change *this* rule's verdict still mutates state later rules read:
   values, a prefix match for a short (wildcard) value. The conflicting
   singleton-range→equality optimisation (a full-width range-eq diverges from a
   prefix `MEq`) is dropped (`simplify_match` is now the identity) — only a minor
-  bytecode-shrinking pass is foregone; all ten theorems and corpus 2532/2532 are
+  bytecode-shrinking pass is foregone; all theorems and corpus 2532/2532 are
   unaffected. semtest (4e): `iifname "eth"` accepts eth0/eth1, drops wlan0, VM=DSL.
 - **Operand *value* semantics** *(largely FIXED 2026-06; see B)*: `eval_vsrc` is now
   proved equal to the register the compiled operand leaves for immediate, field,
@@ -220,26 +246,28 @@ The gap-closing program was tracked as C→A→B→D. Status as of 2026-06:
   **field-data map-`dynset`** (`add @m {key : field}`) are threaded across rules so
   a later lookup sees the learned element/entry (`compile_chain_mut_correct`); the
   learned env also persists ACROSS packets (`compile_seq_mut_correct`).
-  **STILL OPEN:** payload-mangle, NAT address/port rewrite, and IMMEDIATE-data
+  **NAT address/port rewrite is now modelled** by the 2026-06 audit — flow-stateful
+  mapping in `e_nat`, L3+L4 checksum updates, reply-direction un-NAT, NF_DROP on
+  no-usable-address — observed across hooks by the whole-chain trace evaluator
+  (`eval_chain_trace`). **STILL OPEN:** payload-mangle (`SMangle`) and IMMEDIATE-data
   dynsets are threaded only as state-*neutral* (their own writes are not yet visible
   to later rules).
-- 🔶 **(4) Explicit tables** (D-ish): FIB done (`lpm_fib`); **STILL OPEN:** the
-  conntrack table is still a per-packet oracle, not a flow-keyed table that
-  accumulates across packets (`ct count`, `ct state`).  This is a subsystem-level
-  relocation (per-packet `pkt_ct` → flow-keyed shared env), not a contained
-  addition — deferred rather than half-done.
-- 🔶 **(5) Data fidelity** (D): interval/prefix sets and wildcard ifnames done;
-  **STILL OPEN:** concat-key sub-4-byte register-slot padding.  This is
-  *unvalidatable* in the current harness — the corpus never populates a set and
-  `make validate` checks offsets, not set-membership byte layout — so a padding
-  model would be an unverified guess (the exact Goodhart trap `issues.org` warns
-  against); left documented rather than faked, pending a data-plane membership oracle.
+- ✅ **(4) Explicit tables** (D-ish): FIB done (`lpm_fib`); the **conntrack table is
+  now flow-keyed** (`e_ct`, keyed by `pkt_flow`) by the 2026-06 audit — `ct
+  mark`/`state`/`direction`/`connlimit` accumulate across a flow's packets. (See TODO 1
+  and `../adversarial.md`.)
+- ✅ **(5) Data fidelity** (D): interval/prefix sets, wildcard ifnames, and **concat-key
+  register-slot padding** are done — the 2026-06 audit's `13ee781` splits a stored
+  concat element by 4-byte register slots (ifname = 16) rather than raw field widths, so
+  sub-4-byte concatenated fields now match the kernel layout (this underpins the
+  anti-spoofing proof's `ip daddr . oifname` key).
 
-So the headline honest gaps remaining are: **payload/NAT and immediate-data-dynset
-mutation threading**, the **flow-keyed conntrack table**,
-and **concat-key padding** — plus the standing framing caveat that this is internal
-consistency against a self-authored semantics, with kernel fidelity resting on
-`make validate` (28/28) rather than the corpus round-trip.
+So the headline honest gaps remaining are: **payload-mangle and immediate-data-dynset
+mutation threading**, **`meter`** state, the **netlink emitter shim** (TODO 6), and the
+**VST data-plane layer** (TODO 8) — plus the standing framing caveat that this is internal
+consistency against a self-authored semantics, with kernel fidelity now resting on the
+2026-06 adversarial audit (`../adversarial.md`) and `make validate` (28/28) rather than the
+corpus round-trip.
 
 ## What exists
 
@@ -272,7 +300,7 @@ consistency against a self-authored semantics, with kernel fidelity resting on
 Build & check proofs: `make proofs`. Forward test: `make difftest`. Corpus
 coverage: `make corpus` (clones nftables' `tests/py` once into a cache dir).
 
-## The theorems (all ten `Closed under the global context` — no axioms)
+## The theorems (all twelve `Closed under the global context` — no axioms)
 
 The two headline statements:
 
@@ -291,7 +319,7 @@ as the DSL specifies; the second says the optimizer never changes a verdict.
 
 The verified core has grown well past those two. The full set of top-level
 theorems in `Correct.v`/`Optimize.v`, each verified axiom-free by
-`Print Assumptions` (10 × "Closed under the global context"):
+`Print Assumptions` (12 × "Closed under the global context"):
 
 | theorem | what it preserves |
 |---|---|
@@ -301,6 +329,8 @@ theorems in `Correct.v`/`Optimize.v`, each verified axiom-free by
 | `compile_chain_mut_correct` | in-traversal **mutation** (meta/ct `set`, set-`dynset` learning, field-data map-`dynset` learning) is visible to later rules; holds for *every* rule under `mut_wf` well-formedness |
 | `compile_chain_mut_env_correct` | the **env a chain leaves** (its dynset-learned sets/maps) is preserved too — basis for cross-packet learning |
 | `compile_table_correct` | **control flow**: `jump`/`goto`/`return` + user chains (fuel-bounded) |
+| `compile_chain_faithful_jumpfree` | the single-chain `compile_chain` agrees with the faithful jump-aware `eval_table` on jump-free chains (bridges the two engines) |
+| `compiled_table_jump_drops` | a `jump` into a chain that drops is honoured end-to-end (jump-aware drop is not lost) |
 | `compile_ruleset_correct` | multi-table/multi-hook dispatch with netfilter verdict combination |
 | `compile_hook_correct` | hook → priority-ordered base-chain selection |
 | `compile_seq_correct` | **stateful accumulation** across a packet sequence (limiters threaded between packets) |
@@ -333,8 +363,10 @@ Coverage grew as the verified core grew (each step kept both theorems axiom-free
 Coverage has since grown well past the table — **2532/2532 (100%)**, still
 zero mismatches. Beyond the table: ranges, prefixes, sets, ct/exthdr (incl. the
 `present` existence test), transform chains (bitwise shift, byteorder, jhash),
-statements (counter/notrack/log), reject/queue verdicts, stateful `limit` via an
-oracle, all meta keys, rt/socket/numgen/osf oracle loads, **verified
+statements (counter/notrack/log), reject/queue verdicts, stateful
+`limit`/`quota`/`connlimit` (rendered here; their *semantics* are now live consuming
+token buckets, not oracles — 2026-06 audit), all meta keys, rt/socket/osf oracle loads
+and `numgen` (whose `inc` form is now a persistent counter in `env`), **verified
 multi-register concatenation** (a real register-allocation proof: distinct
 registers via `NoDup`, non-clobbering loads, concat lookup), **sets/ranges over
 transformed values** (`MSetT`/`MRangeT`), and **verified verdict maps** (`vmap`:
@@ -378,11 +410,14 @@ ICMP / userspace hand-off; sets carry their elements inside the `lookup`
 instruction (the real set lives in a separate NEWSET object; dynamic SET mutation
 is verdict-neutral in this single-packet model but IS modelled by the
 mutation-aware `run_chain_mut`/`eval_chain_mut` — see "B" above — so a learned
-element is visible to later rules); `notrack` is verdict-neutral here (its conntrack side effect is
-outside the single-packet model). `nat`/`masq`/`redir` model only their terminal
-control-flow (accept + stop traversal); the address/port translation loaded into
-registers 1–4 is carried for byte-identical rendering but is outside the
-single-packet verdict model — exactly like reject's ICMP emission. Concatenation now uses multiple registers with
+element is visible to later rules); `notrack` now sets the flow's ct state to UNTRACKED
+with the kernel's entry-present guard (no-op when an entry exists), observed by later ct
+reads (2026-06 audit). `nat`/`masq`/`redir` now **rewrite the packet** — the
+address/port translation (flow-stateful in `e_nat`, with L3+L4 checksum fix-up and
+reply-direction un-NAT) is applied by the whole-chain trace evaluator and observed by
+later hooks, not merely carried for rendering (2026-06 audit; see TODO 3 and
+`../adversarial.md`). `reject`/`queue` still model only their control-flow (stop
+traversal), not the emitted ICMP / userspace hand-off. Concatenation now uses multiple registers with
 a verified distinct-register allocation; nft's debug register *numbering* (the
 128-bit alias for 16-byte-aligned slots) is a tested-glue presentation map
 (`nreg`), validated byte-identically — the dataflow correctness is verified.
@@ -476,11 +511,11 @@ verdict-preserving (`optimize_chain_correct`, axiom-free):
 | `make semtest` | executable witnesses: DSL = VM = optimized on packet batteries (incl. the mutation / sequence witnesses) |
 | `make parse-test` | `.nft` frontend (TODO 9 M1): parses `../ruleset.nft`, checks parsed-AST verdicts vs `Example_Ruleset.v`; difftest ruleset → `glue.ml`'s AST; live-`nft` round-trip |
 
-Axiom-freedom (must stay at **10**), re-check with:
+Axiom-freedom (must stay at **12**), re-check with:
 ```
-cd theories && printf 'From Nft Require Import Correct Optimize.\nPrint Assumptions compile_chain_correct.\n... (all 10) ...\n' | coqtop -R . Nft | grep -c "Closed under the global context"
+cd theories && printf 'From Nft Require Import Correct Optimize.\nPrint Assumptions compile_chain_correct.\n... (all 12) ...\n' | coqtop -R . Nft | grep -c "Closed under the global context"
 ```
-The 10 theorems are listed in "The theorems" table above. Any new top-level
+The 12 theorems are listed in "The theorems" table above. Any new top-level
 theorem must also print `Closed under the global context`.
 
 **Where things live:**
@@ -562,8 +597,17 @@ are *not* carried across packets (they are local), only `env` is.
 Each item says what's missing, why it matters, a concrete plan, the risks, and how
 to validate. Ordered roughly by value × tractability.
 
-### TODO 1 — Flow-keyed conntrack table  (HIGH value, LARGE, the main open gap)
-**Missing.** `ct` is a per-packet oracle: `Syntax.do_load`'s `LCt k => pkt_ct p k`,
+### TODO 1 — Flow-keyed conntrack table  ✅ DONE (2026-06 adversarial audit)
+**Status: DONE.** The plan below was executed by the audit (`../adversarial.md`): `env`
+now carries `e_ct : data -> ct_key -> data` keyed by `pkt_flow`; `Syntax.do_load`'s `LCt`
+and the VM `ICtLoad` read it; `set_ct` writes the flow entry for writable keys
+(mark/label/secmark); read-only keys (state/status/direction/expiration) are flow-derived;
+`notrack` and `ct … set` follow the kernel's entry-present/absent guards; ct-state INVALID
+bit fixed; `connlimit` is a flow-keyed conncount. A `ct mark set` on one packet is read
+back by a later packet of the same flow (and reply direction). Kept for the original
+problem framing / plan:
+
+**Missing (original).** `ct` was a per-packet oracle: `Syntax.do_load`'s `LCt k => pkt_ct p k`,
 and `ct set` mutates the *packet* (`set_ct`, threaded within one packet only). The
 real conntrack table is keyed by flow (5-tuple) and accumulates across packets
 (`ct count`, `ct state`, `ct mark` learned on packet 1 seen on packet 2 of the same
@@ -615,11 +659,16 @@ and add it to `is_mut_stmt`; flip its `IDynset … (Some _) false` to a write in
 **Risk.** Low–moderate; the only new lemma is fold-independence. **Validate.**
 semtest: `add @m {ip saddr : 0x1}; meta mark set ip saddr map @m; meta mark 0x1 accept`.
 
-### TODO 3 — Payload-mangle / NAT address-port rewrite, visible to later rules
-**Missing.** `payload set` (mangle), `ip dscp set`, ttl/hoplimit, and NAT
-address/port rewrites are modelled as verdict-neutral / terminal-Accept; their
-write to packet bytes is not threaded, so a later rule reading the mangled bytes
-sees the original. (`SMangle`, `nat_spec`, `SExthdrWrite` are the statements.)
+### TODO 3 — Payload-mangle visible to later rules  🔶 NAT done, payload-mangle open
+**NAT: DONE (2026-06 audit).** NAT address/port rewrite is now modelled — flow-stateful
+mapping in `e_nat`, L3 (IPv4 header) + L4 (TCP/UDP) checksum updates, zero-UDP-csum
+untouched (RFC 768), reply-direction un-NAT of address *and* port, `NF_DROP` on a
+no-usable-address interface, ip6-family geometry, inet-table runtime L3 dispatch. Because
+NAT is terminal, its rewrite is observed across hooks by the whole-chain trace evaluator
+`eval_chain_trace` (see `Optiplex_Mark.v`'s `streaming_flow_whole_ruleset`).
+**STILL OPEN — payload-mangle.** `payload set` (mangle), `ip dscp set`, ttl/hoplimit are
+still verdict-neutral straight-line statements (`SMangle` is not an `is_mut_stmt`), so a
+later rule reading the mangled bytes sees the original.
 **Plan.** Add a `set_payload p base off len v` packet mutator (like `set_meta`),
 extend `run_rule_writes`/`body_writes` for `SMangle`/`IPayloadWrite` (the value is
 already `compile_vsrc`/`eval_vsrc`, reuse `writes_vsrc_simple`). NAT is *terminal*,
@@ -629,29 +678,24 @@ chain) rather than within one chain. **Risk.** Moderate; `read_payload`/`slice`
 readback after a partial-overwrite needs a small byte-splice lemma. **Validate.**
 semtest: `ip daddr set 1.2.3.4 ; ip daddr 1.2.3.4 accept`.
 
-### TODO 4 — Concat-key 4-byte register-slot padding  (BLOCKED on an oracle)
-**Missing.** The kernel pads each concatenated set-key field to its 4-byte register
-slot; `set_mem`/`ILookup` concatenate raw field bytes, so membership is wrong for
-sub-4-byte concatenated fields. **Why it is BLOCKED, not just undone.** There is no
-data-plane set-membership oracle in this harness: the corpus never populates a set
-(its round-trip shares whatever padding convention we pick and cannot catch a wrong
-one), and `make validate` checks `field_load` offsets, not membership byte layout.
-So implementing padding would be a self-consistent **but unvalidated guess** — the
-exact "optimise a proxy metric instead of the specification" trap in `../issues.org`.
-**Unblock first, THEN fix.** Build a data-plane oracle: a small harness that installs
-a set + a rule into a network namespace, sends a crafted packet (`scapy`/`nfqueue`),
-and observes accept/drop — then a differential test of `set_mem` against it. Only
-once that exists should padding be added to `set_mem` (pad each field value to
-`4 * field_slots`) and to the declared-set elements, and checked against the oracle.
+### TODO 4 — Concat-key 4-byte register-slot padding  ✅ DONE (2026-06 audit)
+**Status: DONE.** The 2026-06 audit (`13ee781`, with `43202ed`) modelled concat-set
+membership as per-field cross-product with each stored element split by its 4-byte
+register slot (ifname = 16), not raw field widths — matching the kernel's register layout
+for sub-4-byte concatenated fields. This was substantiated against the kernel source
+rather than the (set-blind) corpus, and it underpins the anti-spoofing proof's
+`ip daddr . oifname @vmantispoof` key. A live data-plane set-membership oracle
+(netns + crafted packet) remains desirable as an independent check, but the byte layout is
+no longer an unvalidated guess.
 
-### TODO 5 — Meters / `numgen` incremental state
-**Missing.** `meter` (per-key dynamic rate limiting that mutates set state to rate-
-limit) and `numgen inc` (a global incrementing counter) are per-packet oracles
-(`pkt_numgen`), so two firings of the "same" packet can't differ. **Plan.** `meter`
-composes TODO-1-style env state with the dynset feedback already built (a meter is a
-dynset with a per-key limiter); `numgen inc` needs a counter in `env` threaded by
-`seq_eval`/`seq_eval_env`. **Risk.** Low once TODO 1 lands. **Validate.** semtest
-sequence showing the counter advance / the meter rate-limit per key.
+### TODO 5 — Meters / `numgen` incremental state  🔶 numgen done, meter open
+**`numgen inc`: DONE (2026-06 audit, `ee5193a`).** Modelled as a shared persistent
+round-robin counter `e_numgen : numgen_spec -> nat` in `env` (a `numgen` reads
+`(e_numgen spec mod ng_mod) + ng_offset`), not a per-packet oracle — so successive
+packets advance it. **STILL OPEN — `meter`.** Per-key dynamic rate limiting (a meter =
+a dynset with a per-key limiter) is not yet modelled; it composes the now-built flow/env
+state (TODO 1) with the dynset feedback. **Validate.** semtest sequence showing the meter
+rate-limit per key.
 
 ### TODO 6 — Netlink emitter shim (libnftnl), end-to-end to a live kernel
 **Missing.** The pipeline stops at byte-identical netlink *text*. Add an untrusted
@@ -716,14 +760,23 @@ renderer).
     by `eval_chain_trace` (a packet-returning whole-chain evaluator added to
     `Semantics.v`, proven verdict-identical to the verified `eval_chain_mut` by
     `eval_chain_trace_verdict`): it flows PAST rule 1 (the 3389 rule, which does
-    not match — `pre1_streaming_noop`) and is marked by rule 2.  The headline
-    `streaming_prerouting_io` characterises **what comes out**:
-    `eval_chain_trace filter_prerouting p = (Accept, set_meta p MKmark 0x99)` —
-    the input packet with exactly the mark changed.  `streaming_flow_whole_ruleset`
-    then carries that packet to the postrouting hook, where the mark drives the
-    masquerade rule (`masquerade_gated_on_mark`) and the chain accepts; the
-    cross-hook skb mark is threaded explicitly (the model evaluates per base chain).
-    (Parsing these rules added `fib daddr type` matches.)
+    not match — `pre1_streaming_noop`) and is matched by rule 2, which BOTH marks
+    the packet (the body) AND destination-NATs it (the terminal `dnat ip to
+    $windows` = 192.168.51.186).  The headline `streaming_prerouting_io`
+    characterises **what comes out**: `eval_chain_trace filter_prerouting p =
+    (Accept, apply_nat … pre2 (set_meta p MKmark 0x99))` — the marked packet with
+    the terminal dnat applied; `pre2_apply_dnat` shows the dnat rewrites the
+    destination address to the windows box, and `streaming_prerouting_mark` shows
+    the mark SURVIVES it.  `streaming_flow_whole_ruleset` then carries that packet
+    to the postrouting hook, where the (surviving) mark drives the masquerade rule
+    (`masquerade_gated_on_mark`) and the chain accepts; the cross-hook skb mark is
+    threaded explicitly (the model evaluates per base chain).  The postrouting
+    masquerade is in an `inet` table, so its L3 family is resolved per-packet
+    (`nat_addrfamily_pkt = pkt_l3_family`, the audit's inet-runtime-dispatch fix);
+    the IPv4-flow masquerade lemmas carry `pkt_l3_family p = "ip"`.  (Parsing these
+    rules added `fib daddr type` matches; the live `define windows` makes the dnat
+    target a real IPv4 literal — an UNDEFINED `$var` in a NAT target now fails the
+    parse loudly, mirroring `nft -f`, rather than being silently dropped.)
 
 **Validation (`make parse-test`, all green):** (A) parsed `ruleset.nft` run
 through the extracted `eval_table` reproduces the 8 proven verdicts; (D) parsed
