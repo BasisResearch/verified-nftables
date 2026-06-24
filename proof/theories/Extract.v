@@ -11,9 +11,21 @@ From Stdlib Require Import ExtrOcamlBasic.
 From Stdlib Require Import ExtrOcamlNatInt.
 From Stdlib Require Import ExtrOcamlNativeString.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile Optimize.
+From Nft Require Import Optimize_Merge Optimize_Vmap Optimize_Concat Optimize_Table.
 
 Extraction Language OCaml.
 Set Extraction Output Directory "extracted".
+
+(* [string_of_nat n] is, by definition, the [n]-fold repetition of the char 'I'
+   (see [Optimize_Merge.string_of_nat]).  The default [ExtrOcamlNativeString]
+   realisation of the per-char [String.String] constructor emits [String.make 1 c
+   ^ s], which resolves [String] to the (empty) extracted [String] module rather
+   than [Stdlib.String], breaking the build.  We realise it directly and
+   faithfully with the native equivalent — this is the SAME string value, used
+   only to mint the fresh `__setN`/`__vmapN` names (whose only proved property is
+   injectivity), so the realisation does not enter any trusted proof. *)
+Extract Constant Optimize_Merge.string_of_nat =>
+  "(fun n -> Stdlib.String.make n 'I')".
 
 (* The control-plane compiler/optimizer and the field table are what the glue
    needs; we also extract the packet semantics ([eval_chain] and the bytecode VM
@@ -22,6 +34,10 @@ Set Extraction Output Directory "extracted".
 Separate Extraction
   compile_chain
   optimize_chain
+  optimize_table_sets
+  optimize_chain_setsN
+  optimize_chain_vmapN
+  optimize_chain_concatN
   field_load
   all_fields
   eval_chain

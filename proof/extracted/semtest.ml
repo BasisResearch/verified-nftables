@@ -384,14 +384,19 @@ let () =
    | _ -> Printf.printf "    (warning: no cross-packet difference observed)\n");
   Printf.printf "\n";
   (* (6) nft -o CONSOLIDATION passes (Optimize_Merge).  Two batteries:
-       (6a) the contiguous-range VALUE-MERGE certificate (eval_rules_range_value_merge):
-            `ip protocol 6` + `ip protocol 7` (single-byte field) accept
-            =>  `ip protocol 6-7 accept`.  The hand-merged chain must agree with the
-            two-rule chain on every single-byte-protocol packet.
+       (6a) the contiguous-RANGE value-merge CERTIFICATE
+            (eval_rules_range_value_merge): two adjacent point matches over a
+            CONTIGUOUS pair `ip protocol 6` + `ip protocol 7` are verdict-equivalent
+            to ONE `ip protocol 6-7` range rule.  NOTE: this is a soundness
+            certificate for the RANGE form, NOT the shape `nft -o` actually emits —
+            `nft -o` consolidates `{6,7}` into a DISCRETE anonymous SET
+            `ip protocol { 6, 7 }`, which is the VERIFIED extracted pass exercised in
+            (6c) below.  This battery only witnesses that the range merge (when it is
+            applicable, i.e. the values happen to be contiguous) preserves verdicts.
        (6b) the consecutive-duplicate-rule pass (optimize_chain2 = optimize_chain
             then dedup_adj): an adjacent duplicate rule is removed (length shrinks)
             and the verdict is preserved on every packet. *)
-  Printf.printf "=== (6a) nft -o value-merge: ip protocol {6,7} -> 6-7 (range, single byte) ===\n";
+  Printf.printf "=== (6a) range-merge certificate (NOT nft -o's shape): ip protocol 6 + 7 == 6-7 ===\n";
   let ipproto = Syntax.FMetaL4proto in   (* a single-byte selector *)
   let two_rule = chain Verdict.Drop [
     rule [ Syntax.MRange (ipproto, false, [6], [6]) ] Verdict.Accept;
@@ -445,82 +450,40 @@ let () =
       "tcp dport 80",       mk_pkt ~th:(th ~dport:[0; 80]) ();
       "saddr 10.0.0.1",     mk_pkt ~nh:(nh ~saddr:[10;0;0;1] ~daddr:[8;8;8;8]) () ];
   Printf.printf "\n";
-  (* (6c) THE HEADLINE nft -o pass — value -> anonymous SET (Optimize_Merge.v
-     `optimize_rules_sets` / `optimize_chain_sets_correct`, axiom-free).  The
-     verified pass mints a fresh `__setN`, emits its (v1,v1)/(v2,v2) declaration,
-     and rewrites the adjacent pair into one `MConcatSet [f] false __setN` rule.
-     We re-create the SAME rewrite in OCaml (the verified term's `rule_eq_dec`
-     extracts to a multi-MB OCaml value, so — exactly as (6b) — we mirror it with
-     structural equality; `optimize_rules_sets_correct` guarantees the rewrite is
-     verdict-preserving WITH the synthesised set in scope).
+  (* (6c) THE HEADLINE nft -o pass — value -> anonymous SET, now run as the ACTUAL
+     extracted VERIFIED term (Optimize_Table.optimize_table_sets, composing base
+     dedup/DCE then the N-WAY value->anonymous-SET consolidation
+     optimize_chain_setsN).  Previously this was a hand-OCaml mirror because the
+     verified term's rule_eq_dec extracted to a multi-MB OCaml value; that bloat is
+     now eliminated (compact boolean rule_end_eqb), so the verified term extracts to
+     a few KB and runs directly below.
 
-       INPUT  (nft -o oracle: `tcp dport 22 accept` + `tcp dport 80 accept`):
-         => OUTPUT  `tcp dport { 22, 80 } accept`  (anonymous set __set0={22,80}).
+       INPUT  (nft -o oracle): `tcp dport 22|80|443 accept` (three adjacent rules)
+         => OUTPUT  `tcp dport { 22, 80, 443 } accept`  (one anonymous-set rule).
 
-     The witness shows it FIRES (2 rules -> 1, a set declaration is synthesised)
+     The witness shows it FIRES (3 rules -> 1, the N-element set is synthesised)
      and that `eval_chain` of the rewritten rule UNDER the synthesised set agrees
-     with the two-rule original on every packet. *)
-  Printf.printf "=== (6c) nft -o value->SET: tcp dport {22,80} (anonymous set, the headline pass) ===\n";
-  let counter = ref 0 in
-  let setname () = let n = !counter in incr counter; Printf.sprintf "__set%d" n in
-  (* the verified `value_merge_pair`/`optimize_rules_sets` rewrite, mirrored: on an
-     adjacent pair `MCmp f CEq v1 :: rest` / `MCmp f CEq v2 :: rest` (same field,
-     same rest, same end-fields, v1<>v2, f a fixed-width payload field), mint a set
-     and rewrite the pair to one `MConcatSet [f] false name`. *)
-  let head_value (r : Syntax.rule) =
-    match r.Syntax.r_body with
-    | Syntax.BMatch (Syntax.MCmp (f, Bytecode.CEq, v)) :: rest -> Some (f, v, rest)
-    | _ -> None in
-  let fixed_len (f : Syntax.field) =
-    match Syntax.field_load f with
-    | Syntax.LPayload (_, _, len) -> Some len | _ -> None in
-  let merge_pair (r1 : Syntax.rule) (r2 : Syntax.rule) =
-    match head_value r1, head_value r2 with
-    | Some (f1, v1, rest1), Some (f2, v2, rest2) ->
-        if f1 = f2 && rest1 = rest2 && v1 <> v2
-           && fixed_len f1 = Some (Stdlib.List.length v1)
-           && fixed_len f1 = Some (Stdlib.List.length v2)
-           && { r1 with Syntax.r_body = Syntax.BMatch (Syntax.MCmp (f1, Bytecode.CEq, v1)) :: rest1 }
-            = { r2 with Syntax.r_body = Syntax.BMatch (Syntax.MCmp (f1, Bytecode.CEq, v1)) :: rest1 }
-        then Some (f1, v1, v2, rest1) else None
-    | _ -> None in
-  (* N-WAY mirror of the verified `take_value_run` / `optimize_rules_setsN`: collect
-     the MAXIMAL run of rules that each value-merge with the canonical first rule, and
-     fold the WHOLE run into ONE rule over an N-element set (matching nft -o, which
-     consolidates a run of N single-dimension-differing rules into ONE N-element set,
-     NOT pairwise).  `optimize_rules_setsN_correct` (axiom-free) proves verdict-
-     preservation end-to-end with the synthesised N-element set in scope. *)
-  let rec take_run (r1 : Syntax.rule) (rest : Syntax.rule list) =
-    match rest with
-    | r2 :: tl ->
-        (match merge_pair r1 r2 with
-         | Some (_, _, v2, _) -> let (vs, rest') = take_run r1 tl in (v2 :: vs, rest')
-         | None -> ([], rest))
-    | [] -> ([], []) in
-  let rec opt_rules sets (rs : Syntax.rule list) =
-    match rs with
-    | r1 :: (_ :: _ as rest) ->
-        (match head_value r1 with
-         | Some (f, v1, body) ->
-             (match take_run r1 rest with
-              | ([], _) ->
-                  let (sets'', rest') = opt_rules sets rest in (sets'', r1 :: rest')
-              | (vs, rest') ->
-                  let name = setname () in
-                  let vals = v1 :: vs in
-                  let sets' = (name, Stdlib.List.map (fun v -> (v, v)) vals) :: sets in
-                  let merged = { r1 with Syntax.r_body =
-                                   Syntax.BMatch (Syntax.MConcatSet ([f], false, name)) :: body } in
-                  let (sets'', rest'') = opt_rules sets' rest' in
-                  (sets'', merged :: rest''))
-         | None -> let (sets'', rest') = opt_rules sets rest in (sets'', r1 :: rest'))
-    | _ -> (sets, rs) in
+     with the original on every packet. *)
+  Printf.printf "=== (6c) nft -o value->SET: tcp dport {22,80,443} (anonymous set, the headline pass) ===\n";
+  (* This now runs the ACTUAL extracted VERIFIED term — the composed optimizer
+     [Optimize_Table.optimize_table_sets] (base dedup/DCE then the N-WAY
+     value->anonymous-SET consolidation [optimize_chain_setsN]).  Its whole-pipeline
+     correctness is the axiom-free [optimize_table_sets_correct]; the per-pass
+     [optimize_chain_setsN_correct] proves verdict-preservation with the synthesised
+     N-element set in scope.  No hand-OCaml mirror: the [rule_eq_dec] extraction
+     bloat was eliminated by the compact boolean [rule_end_eqb] (see Optimize_Merge.v),
+     so the verified term extracts to a few KB and runs here directly. *)
   let rs_in = [
     rule [ mcmp Syntax.FThDport Bytecode.CEq [0; 22] ] Verdict.Accept;
     rule [ mcmp Syntax.FThDport Bytecode.CEq [0; 80] ] Verdict.Accept;
     rule [ mcmp Syntax.FThDport Bytecode.CEq [1; 187] ] Verdict.Accept;
   ] in
-  let (sets_out, rs_out) = opt_rules [] rs_in in
+  let empty_decls : Semantics.set_decls =
+    { Semantics.sd_sets = []; sd_vmaps = []; sd_maps = [] } in
+  let ((_n_out, decls_out), c_out_v) =
+    Optimize_Table.optimize_table_sets 0 empty_decls (chain Verdict.Drop rs_in) in
+  let sets_out = decls_out.Semantics.sd_sets in
+  let rs_out = c_out_v.Syntax.c_rules in
   let len_in = Stdlib.List.length rs_in and len_out = Stdlib.List.length rs_out in
   Printf.printf "  rules: %d -> %d (%s)\n" len_in len_out
     (if len_out < len_in then "shrunk: N-way value-merge fired" else "NOT shrunk");
@@ -578,84 +541,22 @@ let () =
      with the two-rule original on every packet (dport 22 -> accept, 80 -> drop,
      miss -> policy). *)
   Printf.printf "=== (6d) nft -o value+verdict->VMAP: tcp dport vmap { 22:accept, 80:drop } ===\n";
-  let vcounter = ref 0 in
-  let vmapname () = let n = !vcounter in incr vcounter; Printf.sprintf "__vmap%d" n in
-  let is_terminal = function
-    | Verdict.Accept | Verdict.Drop | Verdict.Reject _ | Verdict.Queue _ -> true
-    | _ -> false in
-  (* the verified `vmap_merge_pair`/`optimize_rules_vmap` rewrite, mirrored: on an
-     adjacent pair `MCmp f CEq v1 :: rest` / `MCmp f CEq v2 :: rest` (same field,
-     same rest, f fixed-width payload, DIFFERING terminal verdicts), mint a vmap
-     and rewrite the pair to one rule whose terminal is `r_vmap` keyed on f. *)
-  let head_value (r : Syntax.rule) =
-    match r.Syntax.r_body with
-    | Syntax.BMatch (Syntax.MCmp (f, Bytecode.CEq, v)) :: rest -> Some (f, v, rest)
-    | _ -> None in
-  let fixed_len (f : Syntax.field) =
-    match Syntax.field_load f with
-    | Syntax.LPayload (_, _, len) -> Some len | _ -> None in
-  let orig_rule (f : Syntax.field) v body w : Syntax.rule =
-    { Syntax.r_body = Syntax.BMatch (Syntax.MCmp (f, Bytecode.CEq, v)) :: body;
-      r_verdict = w; r_vmap = None; r_nat = None; r_tproxy = None;
-      r_fwd = None; r_queue = None; r_after = [] } in
-  (* N-WAY mirror of the verified `take_vmap_run` / `optimize_rules_vmapN`: collect
-     the maximal run of same-field/same-body/terminal-verdict rules, and fold the
-     WHOLE run into ONE rule whose terminal is a vmap with N entries (matching nft -o,
-     which consolidates a run of N rules into ONE vmap, NOT pairwise).  Fires only
-     when the run carries >= 2 DISTINCT verdicts (else it is a SET, not a vmap).
-     `optimize_rules_vmapN_correct` (axiom-free) proves verdict-preservation. *)
-  let vrun_pair (r1 : Syntax.rule) (r2 : Syntax.rule) =
-    match head_value r1, head_value r2 with
-    | Some (f1, v1, rest1), Some (f2, v2, rest2) ->
-        let w1 = r1.Syntax.r_verdict and w2 = r2.Syntax.r_verdict in
-        if f1 = f2 && rest1 = rest2
-           && fixed_len f1 = Some (Stdlib.List.length v1)
-           && fixed_len f1 = Some (Stdlib.List.length v2)
-           && is_terminal w1 && is_terminal w2
-           && r1 = orig_rule f1 v1 rest1 w1
-           && r2 = orig_rule f1 v2 rest1 w2
-        then Some (f1, v2, w2, rest1) else None
-    | _ -> None in
-  let rec take_vrun (r1 : Syntax.rule) (rest : Syntax.rule list) =
-    match rest with
-    | r2 :: tl ->
-        (match vrun_pair r1 r2 with
-         | Some (_, v2, w2, _) -> let (es, rest') = take_vrun r1 tl in ((v2, w2) :: es, rest')
-         | None -> ([], rest))
-    | [] -> ([], []) in
-  let rec opt_vrules vmaps (rs : Syntax.rule list) =
-    match rs with
-    | r1 :: (_ :: _ as rest) ->
-        (match head_value r1 with
-         | Some (f, v1, body) ->
-             let (es, rest') = take_vrun r1 rest in
-             let w1 = r1.Syntax.r_verdict in
-             let distinct = Stdlib.List.exists (fun (_, w) -> w <> w1) es in
-             (match es with
-              | _ :: _ when distinct ->
-                  let name = vmapname () in
-                  let entries = (v1, w1) :: es in
-                  let vmaps' =
-                    (name, Stdlib.List.map (fun (v, w) -> ((v, v), w)) entries) :: vmaps in
-                  let merged : Syntax.rule =
-                    { Syntax.r_body = body; r_verdict = Verdict.Continue;
-                      r_vmap = Some { Syntax.vm_fields = [f]; vm_keyf = Some (f, []);
-                                      vm_name = name };
-                      r_nat = None; r_tproxy = None; r_fwd = None; r_queue = None;
-                      r_after = [] } in
-                  let (vmaps'', rest'') = opt_vrules vmaps' rest' in
-                  (vmaps'', merged :: rest'')
-              | _ -> let (vmaps'', rest'') = opt_vrules vmaps rest in
-                     (vmaps'', r1 :: rest''))
-         | None -> let (vmaps'', rest'') = opt_vrules vmaps rest in
-                   (vmaps'', r1 :: rest''))
-    | _ -> (vmaps, rs) in
+  (* Runs the ACTUAL extracted VERIFIED term [Optimize_Vmap.optimize_chain_vmapN]
+     (the N-WAY value+verdict->VERDICT-MAP consolidation), whose correctness is the
+     axiom-free [optimize_chain_vmapN_correct].  No hand-OCaml mirror — the verified
+     term now extracts compactly (the [rule_eq_dec] bloat was replaced by the boolean
+     [rule_end_eqb], see Optimize_Vmap.v / Optimize_Merge.v). *)
   let vrs_in = [
     rule [ mcmp Syntax.FThDport Bytecode.CEq [0; 22] ] Verdict.Accept;
     rule [ mcmp Syntax.FThDport Bytecode.CEq [0; 80] ] Verdict.Drop;
     rule [ mcmp Syntax.FThDport Bytecode.CEq [1; 187] ] Verdict.Accept;
   ] in
-  let (vmaps_out, vrs_out) = opt_vrules [] vrs_in in
+  let vempty_decls : Semantics.set_decls =
+    { Semantics.sd_sets = []; sd_vmaps = []; sd_maps = [] } in
+  let ((_vn, vdecls_out), vc_out_v) =
+    Optimize_Vmap.optimize_chain_vmapN 0 vempty_decls (chain Verdict.Drop vrs_in) in
+  let vmaps_out = vdecls_out.Semantics.sd_vmaps in
+  let vrs_out = vc_out_v.Syntax.c_rules in
   let vlen_in = Stdlib.List.length vrs_in and vlen_out = Stdlib.List.length vrs_out in
   Printf.printf "  rules: %d -> %d (%s)\n" vlen_in vlen_out
     (if vlen_out < vlen_in then "shrunk: N-way vmap-merge fired" else "NOT shrunk");
@@ -715,80 +616,22 @@ let () =
      `eval_chain` of the rewritten rule UNDER the synthesised set agrees with the
      two-rule original on the matching tuples and on a miss (-> policy). *)
   Printf.printf "=== (6e) nft -o concat->SET: ip saddr . tcp dport { 1.1.1.1 . 22, 2.2.2.2 . 80 } accept ===\n";
-  let ccounter = ref 0 in
-  let csetname () = let n = !ccounter in incr ccounter; Printf.sprintf "__set%d" n in
-  let reg_slot n = 4 * ((n + 3) / 4) in
-  let pad_slot v = v @ (Stdlib.List.init (reg_slot (Stdlib.List.length v) - Stdlib.List.length v)
-                          (fun _ -> 0)) in
-  let pack2 a b = pad_slot a @ b in
-  (* the verified `head_value2`/`concat_merge_pair`/`optimize_rules_concat` rewrite,
-     mirrored: on an adjacent pair whose heads are
-       MCmp f1 CEq a_i :: MCmp f2 CEq b_i :: rest
-     over the SAME two fixed-width fields, same rest, same end-fields, distinct
-     tuples, mint a concat set and rewrite the pair to one MConcatSet [f1;f2]. *)
-  let head_value2 (r : Syntax.rule) =
-    match r.Syntax.r_body with
-    | Syntax.BMatch (Syntax.MCmp (f1, Bytecode.CEq, a))
-      :: Syntax.BMatch (Syntax.MCmp (f2, Bytecode.CEq, b)) :: rest -> Some (f1, a, f2, b, rest)
-    | _ -> None in
-  let fixed_len (f : Syntax.field) =
-    match Syntax.field_load f with
-    | Syntax.LPayload (_, _, len) -> Some len | _ -> None in
-  let cmerge_pair (r1 : Syntax.rule) (r2 : Syntax.rule) =
-    match head_value2 r1, head_value2 r2 with
-    | Some (f1, a1, g1, b1, rest1), Some (f2, a2, g2, b2, rest2) ->
-        let shell v1 v2 (r : Syntax.rule) =
-          { r with Syntax.r_body =
-                     Syntax.BMatch (Syntax.MCmp (f1, Bytecode.CEq, v1))
-                     :: Syntax.BMatch (Syntax.MCmp (g1, Bytecode.CEq, v2)) :: rest1 } in
-        if f1 = f2 && g1 = g2 && rest1 = rest2
-           && fixed_len f1 = Some (Stdlib.List.length a1)
-           && fixed_len f1 = Some (Stdlib.List.length a2)
-           && fixed_len g1 = Some (Stdlib.List.length b1)
-           && fixed_len g1 = Some (Stdlib.List.length b2)
-           && not (a1 = a2 && b1 = b2)
-           && shell a1 b1 r1 = shell a1 b1 r2
-        then Some (f1, g1, a1, b1, a2, b2, rest1) else None
-    | _ -> None in
-  (* N-WAY mirror of the verified `take_concat_run` / `optimize_rules_concatN`:
-     collect the maximal run of two-selector-differing rules and fold the WHOLE run
-     into ONE MConcatSet over N packed tuples (matching nft -o, NOT pairwise).
-     `optimize_rules_concatN_correct` (axiom-free) proves verdict-preservation. *)
-  let rec take_crun (r1 : Syntax.rule) (rest : Syntax.rule list) =
-    match rest with
-    | r2 :: tl ->
-        (match cmerge_pair r1 r2 with
-         | Some (_, _, _, _, a2, b2, _) ->
-             let (ts, rest') = take_crun r1 tl in ((a2, b2) :: ts, rest')
-         | None -> ([], rest))
-    | [] -> ([], []) in
-  let rec opt_crules sets (rs : Syntax.rule list) =
-    match rs with
-    | r1 :: (_ :: _ as rest) ->
-        (match head_value2 r1 with
-         | Some (f1, a1, f2, b1, body) ->
-             (match take_crun r1 rest with
-              | (_ :: _ as ts, rest') ->
-                  let name = csetname () in
-                  let tuples = (a1, b1) :: ts in
-                  let sets' =
-                    (name, Stdlib.List.map (fun (a, b) -> (pack2 a b, pack2 a b)) tuples)
-                    :: sets in
-                  let merged = { r1 with Syntax.r_body =
-                                   Syntax.BMatch (Syntax.MConcatSet ([f1; f2], false, name)) :: body } in
-                  let (sets'', rest'') = opt_crules sets' rest' in
-                  (sets'', merged :: rest'')
-              | ([], _) -> let (sets'', rest'') = opt_crules sets rest in
-                           (sets'', r1 :: rest''))
-         | None -> let (sets'', rest'') = opt_crules sets rest in (sets'', r1 :: rest''))
-    | _ -> (sets, rs) in
+  (* Runs the ACTUAL extracted VERIFIED term [Optimize_Concat.optimize_chain_concatN]
+     (the N-WAY two-selector->CONCATENATION-SET consolidation), whose correctness is
+     the axiom-free [optimize_chain_concatN_correct].  No hand-OCaml mirror — the
+     verified term now extracts compactly. *)
   let crule a b w : Syntax.rule =
     rule [ mcmp Syntax.FIp4Saddr Bytecode.CEq a;
            mcmp Syntax.FThDport Bytecode.CEq b ] w in
   let crs_in = [ crule [1;1;1;1] [0;22] Verdict.Accept;
                  crule [2;2;2;2] [0;80] Verdict.Accept;
                  crule [3;3;3;3] [1;187] Verdict.Accept ] in
-  let (csets_out, crs_out) = opt_crules [] crs_in in
+  let cempty_decls : Semantics.set_decls =
+    { Semantics.sd_sets = []; sd_vmaps = []; sd_maps = [] } in
+  let ((_cn, cdecls_out), cc_out_v) =
+    Optimize_Concat.optimize_chain_concatN 0 cempty_decls (chain Verdict.Drop crs_in) in
+  let csets_out = cdecls_out.Semantics.sd_sets in
+  let crs_out = cc_out_v.Syntax.c_rules in
   let clen_in = Stdlib.List.length crs_in and clen_out = Stdlib.List.length crs_out in
   Printf.printf "  rules: %d -> %d (%s)\n" clen_in clen_out
     (if clen_out < clen_in then "shrunk: N-way concat-merge fired" else "NOT shrunk");
