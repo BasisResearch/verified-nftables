@@ -705,10 +705,115 @@ OCaml shim that emits real netlink via libnftnl, then round-trip
 tested, like `glue.ml`.
 
 ### TODO 7 — More optimization passes (each needs `optimize_chain_correct` extended)
-- Consecutive-duplicate-*rule* elimination: needs `rule_eq_dec`; a monolithic
-  `decide equality` is too costly, so build a bottom-up `vsrc`/`stmt`/spec `eq_dec`
-  hierarchy. - Rule→vmap/set consolidation (the classic nft optimisation; harder to
-  verify — a set of single-match accept rules becomes one `@set` lookup).
+**The `nft -o` / `nft --optimize` consolidation passes are now ported and proved
+in `theories/Optimize_Merge.v` (all axiom-free, `Print Assumptions` clean):**
+- **Abstract adjacent-rule merge** `eval_rules_merge2`: replacing two adjacent
+  rules `r1; r2` by one `r12` preserves `eval_rules` on every packet, given that
+  `r12` is loadable / outcomes exactly as each original and **applies iff EITHER
+  original applies** (the head selector is the *disjunction* of the two). This is
+  the soundness core of every `nft -o` value/vmap merge (`MERGE_BY_VERDICT` in
+  upstream `src/optimize.c`).
+- **Value-merge from a disjunction certificate** `eval_rules_value_merge`: two
+  rules `mk_head m1 rest r1` / `mk_head m2 rest r1` (identical but for the head
+  match value) collapse to `mk_head m12 rest r1` when `m12` loads the same field
+  and `eval_matchcond m12 = eval_matchcond m1 || eval_matchcond m2` — exactly the
+  anonymous-set merge `tcp dport 22 accept` + `tcp dport 80 accept` ⇒
+  `tcp dport { 22, 80 } accept`, at the matchcond level.
+- **Concrete contiguous-range certificate** `eval_rules_range_value_merge`
+  (GUARDED): the value-merge instantiated to a single range —
+  `f 6, f 7 ⇒ f 6-7` — discharged via `range_byte_split` for a **single-byte**
+  selector (guard: `length (field_value f p) = 1`, since a multi-byte bound is a
+  prefix test for which a contiguous two-element set is *not* one range). This is
+  the env-free, no-new-constructor instance `nft` itself coalesces a contiguous
+  anonymous set into.
+- **Consecutive-duplicate-rule elimination** `dedup_adj` / `eval_rules_dedup_adj`:
+  a full bottom-up `verdict`/`vsrc`/`stmt`/spec `eq_dec` hierarchy up to
+  `rule_eq_dec` is built; dropping the second of two byte-identical adjacent rules
+  is the `r1=r2` instance of `eval_rules_merge2`. Folded into the runnable
+  top-level `optimize_chain2` (= `optimize_chain` then `dedup_adj`), proved
+  verdict-preserving by `optimize_chain2_correct`.
+- **Value → anonymous SET, as an EXECUTABLE table-level rewrite** (the headline
+  `nft -o` pass) `optimize_rules_sets` / `optimize_chain_sets`, proved
+  `optimize_chain_sets_correct` (axiom-free). On an adjacent pair
+  `tcp dport 22 accept` / `tcp dport 80 accept` it **mints a fresh `__setN`**,
+  **emits its element declaration** `[(22,22);(80,80)]` into `sd_sets`, and rewrites
+  the pair into ONE `MConcatSet [dport] false __setN accept` — exactly
+  `nft -o`'s `tcp dport { 22, 80 } accept` (the anonymous set interned by name, the
+  way the parser's `intern_anon_set` already does it; the corpus round-trips
+  `__setN`). Correctness is end-to-end over the *table* semantics WITH the
+  synthesised set in scope: `eval_chain c' (set_env p (env_with_sets base d')) =
+  eval_chain c (set_env p (env_with_sets base d))`, discharged via the disjunction
+  certificate `concat_set_two_points` (`set_mem = existsb data_in_iv` over two point
+  intervals = `orb` of the two `MCmp f CEq`) + `eval_rules_merge2`. **Guards** (both
+  fire on the real `nft -o` examples): the differing dimension is a single
+  `MCmp f CEq` over a **fixed-width payload field** (`field_fixed_len f = Some
+  (length v)`, so `MCmp`'s prefix equality coincides with the set's full-width
+  membership), the rest of the two rules is syntactically equal, and the minted
+  `__setN` names are fresh (`setname_inj` + the prepend-only freshness lemma). A
+  `semtest` witness (6c) runs it on the demanded input: `2 → 1` rules, set
+  `__set0 = { 22, 80 }` synthesised, verdict preserved on every packet.
+  NOTE: this corrects an earlier *infidelity* — `eval_rules_range_value_merge`
+  modelled `6,7 ⇒ 6-7` as a RANGE, but `nft -o` emits a discrete SET `{ 6, 7 }`;
+  the value→set pass is the faithful consolidation (discrete elements).
+
+- **Value+verdict → VERDICT MAP, as an EXECUTABLE table-level rewrite** (the
+  `nft -o` vmap pass) `optimize_rules_vmap` / `optimize_chain_vmap` in
+  `theories/Optimize_Vmap.v`, proved `optimize_chain_vmap_correct` (axiom-free).
+  On an adjacent pair `tcp dport 22 accept` / `tcp dport 80 drop` (same selector,
+  **differing terminal verdicts**) it **mints a fresh `__vmapN`**, **emits its
+  key→verdict declaration** `[(22,22,accept);(80,80,drop)]` into `sd_vmaps`, and
+  rewrites the pair into ONE rule whose terminal is `r_vmap` keyed on `dport`
+  against `__vmapN` (with a `Continue` fall-through so a vmap MISS proceeds to the
+  next rule) — exactly `nft -o`'s `tcp dport vmap { 22 : accept, 80 : drop }`.
+  Correctness is end-to-end over the table semantics WITH the synthesised vmap in
+  scope (`eval_chain c' (set_env p (env_with_sets base d')) = eval_chain c (set_env
+  p (env_with_sets base d))`), discharged via the two-point vmap certificate
+  `vmap_two_points` (`assoc_verdict` over two point keys = `w1`/`w2`) and the
+  dedicated first-match collapse `eval_rules_vmap_merge2` (the merged rule applies
+  on more packets, but on the extra ones the vmap MISSES → outcome `None` → treated
+  exactly as "did not apply"). **Guards** (both fire on the real `nft -o` example):
+  the differing selector is `MCmp f CEq` over a **fixed-width payload field**
+  (`field_fixed_len`), the two verdicts are **terminal** and **distinct**, the two
+  rules are otherwise the identical pure-terminal `orig_rule` shells, and the
+  minted `__vmapN` names are fresh (`vmapname_inj` + the prepend-only stability
+  lemma). A `semtest` witness (6d) runs it on the demanded input: `2 → 1` rules,
+  vmap `__vmap0 = { 22 : accept, 80 : drop }` synthesised, verdict preserved on
+  every packet (22→accept, 80→drop, miss→policy).
+
+- **Two selectors → CONCATENATION SET, as an EXECUTABLE table-level rewrite** (the
+  third headline `nft -o` pass) `optimize_rules_concat` / `optimize_chain_concat`
+  in `theories/Optimize_Concat.v`, proved `optimize_chain_concat_correct`
+  (axiom-free). On an adjacent pair `ip saddr 1.1.1.1 tcp dport 22 accept` /
+  `ip saddr 2.2.2.2 tcp dport 80 accept` (differing in **two** selectors, same
+  verdict) it **mints a fresh `__setN`**, **emits its packed per-field point
+  tuples** `[(pack2 1.1.1.1 22, …);(pack2 2.2.2.2 80, …)]` into `sd_sets` (each
+  field in its 4-byte register slot, the last field taking the remainder, exactly
+  the kernel's NFT_SET_CONCAT layout), and rewrites the pair into ONE
+  `MConcatSet [saddr;dport] false __setN accept` — exactly `nft -o`'s
+  `ip saddr . tcp dport { 1.1.1.1 . 22, 2.2.2.2 . 80 } accept` (confirmed by the
+  live `unshare -rn nft -o -f` oracle). Correctness is end-to-end over the table
+  semantics WITH the synthesised set in scope, discharged via the two-field
+  cross-product membership certificate `concat_in_iv_two_points`
+  (`concat_in_iv [va;vb] (pack2 a b, pack2 a b) = data_eqb va a && data_eqb vb b`)
+  lifted to `concat_two_fields_certificate` (the merged head = `orb` of the two
+  per-row conjunctions `f1=a_i AND f2=b_i`) + the two-field merge backbone
+  `eval_rules_concat_merge2` (over `eval_rules_merge2`). **Guards** (fire on the
+  real `nft -o` example): BOTH differing dimensions are `MCmp f CEq` over
+  **fixed-width payload fields** (`field_fixed_len`), the two rules are otherwise
+  the identical `orig_rule2` shells, the two tuples are distinct (not a duplicate),
+  and the minted `__setN` names are fresh (`setname_inj` + the prepend-only
+  stability lemma). A `semtest` witness (6e) runs it on the demanded input:
+  `2 → 1` rules, concat set `__set0 = { 1.1.1.1 . 22, 2.2.2.2 . 80 }` synthesised,
+  verdict preserved on hits, a cross-miss, and a saddr-miss (→ policy).
+
+NOT yet ported (honest gaps): the value→set / vmap / concat passes on
+*variable-width* selectors (guarded out, since a prefix `MCmp` is not full-width
+set membership there). The earlier "sets can't be synthesised by a chain pass"
+claim was **wrong** and is now retired: anonymous sets, verdict maps, AND
+concatenation sets ARE named objects, and the table-level `set_decls` rewrite
+synthesises them with no new constructor. All three headline `nft -o` merge
+families (value→set, value+verdict→vmap, two-selector→concat-set) are now ported
+as runnable, verdict-preserving, axiom-free passes.
 
 ### TODO 8 — (future, per `../instructions.org`) Data-plane interpreter + VST
 A data-plane bytecode *interpreter* spec (what the C engine does to a packet) and
