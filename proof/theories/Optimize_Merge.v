@@ -354,6 +354,68 @@ Proof.
          || apply fwd_spec_eq_dec || apply queue_spec_eq_dec).
 Defined.
 
+(** ** Compact boolean equality on a rule's END fields (everything except the body).
+
+    [value_merge_pair] compares two rules that share a freshly-built head/body
+    ([mk_head m rest r1] vs [mk_head m rest r2]); such a comparison reduces to the
+    END fields (verdict / vmap / nat / tproxy / fwd / queue / after) agreeing.
+    Using the monolithic [rule_eq_dec] here forces extraction to inline the
+    [list body_item]/[matchcond] decidable equality, which blows the extracted
+    OCaml up to ~42 MB.  We instead test ONLY the END fields with a small boolean
+    [rule_end_eqb], built from the (small) per-field [eq_dec]s, and prove it
+    characterises the [mk_head] equality.  This is what the extracted optimizer
+    actually runs. *)
+Definition sumbool_eqb {A} (dec : forall x y : A, {x = y} + {x <> y}) (x y : A) : bool :=
+  if dec x y then true else false.
+
+Lemma sumbool_eqb_true_iff : forall A dec (x y : A),
+  sumbool_eqb dec x y = true <-> x = y.
+Proof.
+  intros A dec x y. unfold sumbool_eqb. destruct (dec x y) as [E | Ne]; split;
+    intro H; (exact E || discriminate H || (subst; exfalso; apply Ne; reflexivity) || reflexivity).
+Qed.
+
+Definition opt_eqb {A} (dec : forall x y : A, {x = y} + {x <> y})
+  (x y : option A) : bool :=
+  match x, y with
+  | None, None => true
+  | Some a, Some b => sumbool_eqb dec a b
+  | _, _ => false
+  end.
+
+Lemma opt_eqb_true_iff : forall A dec (x y : option A),
+  opt_eqb dec x y = true <-> x = y.
+Proof.
+  intros A dec [a|] [b|]; cbn; try (split; intro H; discriminate H || reflexivity).
+  rewrite sumbool_eqb_true_iff. split; intro H; [subst; reflexivity | injection H; auto].
+Qed.
+
+Definition rule_end_eqb (a b : rule) : bool :=
+  sumbool_eqb verdict_eq_dec (r_verdict a) (r_verdict b) &&
+  opt_eqb vmap_spec_eq_dec (r_vmap a) (r_vmap b) &&
+  opt_eqb nat_spec_eq_dec (r_nat a) (r_nat b) &&
+  opt_eqb tproxy_spec_eq_dec (r_tproxy a) (r_tproxy b) &&
+  opt_eqb fwd_spec_eq_dec (r_fwd a) (r_fwd b) &&
+  opt_eqb queue_spec_eq_dec (r_queue a) (r_queue b) &&
+  sumbool_eqb (list_eq_dec stmt_eq_dec) (r_after a) (r_after b).
+
+(** [rule_end_eqb] characterises exactly equality of two [mk_head]-built shells with
+    the same head/body: the bodies coincide by construction, so the records are equal
+    iff the END fields are. *)
+Lemma rule_end_eqb_mk_head : forall m rest r1 r2,
+  rule_end_eqb r1 r2 = true <->
+  mk_head m rest r1 = mk_head m rest r2.
+Proof.
+  intros m rest r1 r2. unfold rule_end_eqb.
+  rewrite !Bool.andb_true_iff.
+  rewrite !sumbool_eqb_true_iff, !opt_eqb_true_iff.
+  unfold mk_head. split.
+  - intros [[[[[[Hv Hvm] Hn] Ht] Hf] Hq] Ha].
+    rewrite Hv, Hvm, Hn, Ht, Hf, Hq, Ha. reflexivity.
+  - intro H. injection H as Hvm Hn Ht Hf Hq Ha Hv.
+    repeat split; assumption.
+Qed.
+
 (** ** Pass: consecutive-duplicate-rule elimination.
 
     Drop the SECOND of two byte-for-byte identical adjacent rules.  This is the
@@ -613,9 +675,10 @@ Definition value_merge_pair (r1 r2 : rule) : option (field * data * data * list 
         if Nat.eq_dec len (length v2) then
         (* compare the two rules with a COMMON head ([v1] for both), so the test
            checks ONLY that r1 and r2 agree on every END field (verdict/vmap/nat/…)
-           — the heads legitimately differ in their value. *)
-        if rule_eq_dec (mk_head (MCmp f1 CEq v1) rest1 r1)
-                       (mk_head (MCmp f1 CEq v1) rest1 r2)
+           — the heads legitimately differ in their value.  [rule_end_eqb] is the
+           compact boolean equivalent of [rule_eq_dec] on these shells (see
+           [rule_end_eqb_mk_head]); it keeps the extracted optimizer small. *)
+        if rule_end_eqb r1 r2
         then Some (f1, v1, v2, rest1)
         else None
         else None else None
@@ -912,8 +975,8 @@ Proof.
   destruct (field_fixed_len f1') as [len |] eqn:Hfx; [| discriminate].
   destruct (Nat.eq_dec len (length v1')) as [Elen1 |]; [| discriminate].
   destruct (Nat.eq_dec len (length v2')) as [Elen2 |]; [| discriminate].
-  destruct (rule_eq_dec (mk_head (MCmp f1' CEq v1') b1 r1)
-                        (mk_head (MCmp f1' CEq v1') b1 r2)) as [Eshell |]; [| discriminate].
+  destruct (rule_end_eqb r1 r2) as [|] eqn:Eeqb; [| discriminate].
+  pose proof (proj1 (rule_end_eqb_mk_head (MCmp f1' CEq v1') b1 r1 r2) Eeqb) as Eshell.
   inversion H; subst f v1 v2 body.
   assert (Hr1 : r1 = mk_head (MCmp f1' CEq v1') b1 r1).
   { unfold mk_head. rewrite <- Eb1. destruct r1; reflexivity. }

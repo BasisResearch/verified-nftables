@@ -272,6 +272,32 @@ Qed.
 
 Global Opaque vmapname.
 
+(** ** Compact boolean recognition of the [orig_rule] shell.
+
+    The shell test [r = orig_rule f v rest (r_verdict r)] (used inside the vmap
+    merge-pair recognisers) was previously done with the monolithic [rule_eq_dec],
+    which extracts to ~42 MB of OCaml.  Given [head_value r = Some (f, v, rest)] the
+    body of [r] already equals that of [orig_rule], so the test reduces to the END
+    fields, which [rule_end_eqb r (mk_vmap_base (r_verdict r))] checks compactly.
+    [mk_vmap_base (r_verdict r)] carries the END fields of [orig_rule] (an empty
+    body / no vmap / no nat / ... / empty after), so this is exactly the shell test. *)
+Lemma rule_end_eqb_orig_rule : forall r f v rest,
+  head_value r = Some (f, v, rest) ->
+  (rule_end_eqb r (mk_vmap_base (r_verdict r)) = true
+   <-> r = orig_rule f v rest (r_verdict r)).
+Proof.
+  intros r f v rest Hhd.
+  (* r_body r = BMatch (MCmp f CEq v) :: rest, so mk_head (MCmp f CEq v) rest r = r *)
+  unfold head_value in Hhd.
+  destruct (r_body r) as [| [m | s] b] eqn:Eb; try discriminate.
+  destruct m as [ | | | | f' op v' | | | | | | | | ]; try discriminate.
+  destruct op; try discriminate. inversion Hhd; subst f' v' b. clear Hhd.
+  assert (Hself : mk_head (MCmp f CEq v) rest r = r).
+  { unfold mk_head. rewrite <- Eb. destruct r; reflexivity. }
+  rewrite (rule_end_eqb_mk_head (MCmp f CEq v) rest r (mk_vmap_base (r_verdict r))).
+  unfold orig_rule. rewrite Hself. reflexivity.
+Qed.
+
 (** ** Recognise a vmap-merge-eligible adjacent pair.
 
     Heads [MCmp f CEq v1] / [MCmp f CEq v2] over the SAME fixed-width field [f],
@@ -295,9 +321,11 @@ Definition vmap_merge_pair (r1 r2 : rule)
         if verdict_eq_dec (r_verdict r1) (r_verdict r2) then None
         else
         (* the two rules are EXACTLY the pure-terminal shells differing only in head
-           value and verdict — check by reconstructing each from [orig_rule]. *)
-        if rule_eq_dec r1 (orig_rule f1 v1 rest1 (r_verdict r1)) then
-        if rule_eq_dec r2 (orig_rule f1 v2 rest1 (r_verdict r2)) then
+           value and verdict — check by reconstructing each from [orig_rule].
+           [rule_end_eqb] is the compact boolean shell test (see
+           [rule_end_eqb_orig_rule]); it keeps the extracted optimizer small. *)
+        if rule_end_eqb r1 (mk_vmap_base (r_verdict r1)) then
+        if rule_end_eqb r2 (mk_vmap_base (r_verdict r2)) then
           Some (f1, v1, v2, r_verdict r1, r_verdict r2, rest1)
         else None else None
         else None else None else None else None
@@ -324,8 +352,8 @@ Definition vmap_run_pair (r1 r2 : rule)
         if Nat.eq_dec len (length v2) then
         if terminal (r_verdict r1) then
         if terminal (r_verdict r2) then
-        if rule_eq_dec r1 (orig_rule f1 v1 rest1 (r_verdict r1)) then
-        if rule_eq_dec r2 (orig_rule f1 v2 rest1 (r_verdict r2)) then
+        if rule_end_eqb r1 (mk_vmap_base (r_verdict r1)) then
+        if rule_end_eqb r2 (mk_vmap_base (r_verdict r2)) then
           Some (f1, v2, r_verdict r2, rest1)
         else None else None
         else None else None else None else None
@@ -354,8 +382,10 @@ Proof.
   destruct (Nat.eq_dec len (length u2)) as [El2 |]; [| discriminate].
   destruct (terminal (r_verdict r1)) eqn:Ew1; [| discriminate].
   destruct (terminal (r_verdict r2)) eqn:Ew2; [| discriminate].
-  destruct (rule_eq_dec r1 (orig_rule f1 u1 s1 (r_verdict r1))) as [Esh1 |]; [| discriminate].
-  destruct (rule_eq_dec r2 (orig_rule f1 u2 s1 (r_verdict r2))) as [Esh2 |]; [| discriminate].
+  destruct (rule_end_eqb r1 (mk_vmap_base (r_verdict r1))) eqn:Eb1; [| discriminate].
+  destruct (rule_end_eqb r2 (mk_vmap_base (r_verdict r2))) eqn:Eb2; [| discriminate].
+  pose proof (proj1 (rule_end_eqb_orig_rule r1 f1 u1 s1 H1) Eb1) as Esh1.
+  pose proof (proj1 (rule_end_eqb_orig_rule r2 f1 u2 s1 H2) Eb2) as Esh2.
   injection H as Ef' Ev2 Ew2' Ebody. subst f w2 body v2.
   assert (Hfx1 : field_fixed_len f1 = Some (length u1)) by (rewrite Hfx; f_equal; exact El1).
   assert (Hfx2 : field_fixed_len f1 = Some (length u2)) by (rewrite Hfx; f_equal; exact El2).
@@ -385,8 +415,10 @@ Proof.
   destruct (terminal (r_verdict r1)) eqn:Ht1; [| discriminate].
   destruct (terminal (r_verdict r2)) eqn:Ht2; [| discriminate].
   destruct (verdict_eq_dec (r_verdict r1) (r_verdict r2)) as [|Hvne]; [discriminate|].
-  destruct (rule_eq_dec r1 (orig_rule f1 u1 s1 (r_verdict r1))) as [Er1 |]; [| discriminate].
-  destruct (rule_eq_dec r2 (orig_rule f1 u2 s1 (r_verdict r2))) as [Er2 |]; [| discriminate].
+  destruct (rule_end_eqb r1 (mk_vmap_base (r_verdict r1))) eqn:Eb1; [| discriminate].
+  destruct (rule_end_eqb r2 (mk_vmap_base (r_verdict r2))) eqn:Eb2; [| discriminate].
+  pose proof (proj1 (rule_end_eqb_orig_rule r1 f1 u1 s1 H1) Eb1) as Er1.
+  pose proof (proj1 (rule_end_eqb_orig_rule r2 f1 u2 s1 H2) Eb2) as Er2.
   inversion H; subst f v1 v2 w1 w2 body. clear H.
   repeat split.
   - exact Er1.

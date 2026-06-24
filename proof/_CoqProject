@@ -37,7 +37,6 @@ theories/Concat_Iv.v
 theories/Ifname_Exact.v
 theories/Limit_Over.v
 theories/Nftval.v
-theories/Extract.v
 theories/Red_CtMark_Crosspkt.v
 theories/Red_NatPerPacket.v
 theories/Red_Notrack.v
@@ -52,3 +51,5 @@ theories/Red_NatNoAddrDrop.v
 theories/Optimize_Merge.v
 theories/Optimize_Vmap.v
 theories/Optimize_Concat.v
+theories/Optimize_Table.v
+theories/Extract.v

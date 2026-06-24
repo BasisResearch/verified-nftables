@@ -295,9 +295,11 @@ Definition concat_merge_pair (r1 r2 : rule)
         else
         (* compare the two rules with a COMMON head (r1's values for both), so the
            test checks ONLY that r1 and r2 agree on every END field (verdict/vmap/
-           nat/…) — the heads legitimately differ in their two values. *)
-        if rule_eq_dec (orig_rule2 f1 g1 a1 b1 rest1 r1)
-                       (orig_rule2 f1 g1 a1 b1 rest1 r2)
+           nat/…) — the heads legitimately differ in their two values.
+           [rule_end_eqb] is the compact boolean equivalent of [rule_eq_dec] on the
+           two [orig_rule2] shells (both are [mk_head] of the SAME head/body over
+           r1 / r2; see [rule_end_eqb_mk_head]); it keeps extraction small. *)
+        if rule_end_eqb r1 r2
         then Some (f1, g1, a1, b1, a2, b2, rest1)
         else None
         else None else None else None else None
@@ -344,8 +346,10 @@ Proof.
   destruct (if list_eq_dec Nat.eq_dec v1' v2' then
               if list_eq_dec Nat.eq_dec v1b' v2b' then true else false else false);
     [discriminate |].
-  destruct (rule_eq_dec (orig_rule2 f1' g1' v1' v1b' b1'' r1)
-                        (orig_rule2 f1' g1' v1' v1b' b1'' r2)) as [Eshell |]; [| discriminate].
+  destruct (rule_end_eqb r1 r2) eqn:Eeqb; [| discriminate].
+  pose proof (proj1 (rule_end_eqb_mk_head (MCmp f1' CEq v1')
+                       (BMatch (MCmp g1' CEq v1b') :: b1'') r1 r2) Eeqb) as Eshell.
+  unfold orig_rule2 in Eshell.
   inversion H; subst f1 f2 a1 b1 a2 b2 body. clear H.
   assert (Hr1 : r1 = orig_rule2 f1' g1' v1' v1b' b1'' r1).
   { unfold orig_rule2, mk_head. rewrite <- Eb1. destruct r1; reflexivity. }
