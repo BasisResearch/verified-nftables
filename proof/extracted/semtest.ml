@@ -484,27 +484,46 @@ let () =
             = { r2 with Syntax.r_body = Syntax.BMatch (Syntax.MCmp (f1, Bytecode.CEq, v1)) :: rest1 }
         then Some (f1, v1, v2, rest1) else None
     | _ -> None in
+  (* N-WAY mirror of the verified `take_value_run` / `optimize_rules_setsN`: collect
+     the MAXIMAL run of rules that each value-merge with the canonical first rule, and
+     fold the WHOLE run into ONE rule over an N-element set (matching nft -o, which
+     consolidates a run of N single-dimension-differing rules into ONE N-element set,
+     NOT pairwise).  `optimize_rules_setsN_correct` (axiom-free) proves verdict-
+     preservation end-to-end with the synthesised N-element set in scope. *)
+  let rec take_run (r1 : Syntax.rule) (rest : Syntax.rule list) =
+    match rest with
+    | r2 :: tl ->
+        (match merge_pair r1 r2 with
+         | Some (_, _, v2, _) -> let (vs, rest') = take_run r1 tl in (v2 :: vs, rest')
+         | None -> ([], rest))
+    | [] -> ([], []) in
   let rec opt_rules sets (rs : Syntax.rule list) =
     match rs with
-    | r1 :: (r2 :: rest) ->
-        (match merge_pair r1 r2 with
-         | Some (f, v1, v2, body) ->
-             let name = setname () in
-             let sets' = (name, [ (v1, v1); (v2, v2) ]) :: sets in
-             let merged = { r1 with Syntax.r_body =
-                              Syntax.BMatch (Syntax.MConcatSet ([f], false, name)) :: body } in
-             let (sets'', rest') = opt_rules sets' rest in
-             (sets'', merged :: rest')
-         | None -> let (sets'', rest') = opt_rules sets (r2 :: rest) in (sets'', r1 :: rest'))
+    | r1 :: (_ :: _ as rest) ->
+        (match head_value r1 with
+         | Some (f, v1, body) ->
+             (match take_run r1 rest with
+              | ([], _) ->
+                  let (sets'', rest') = opt_rules sets rest in (sets'', r1 :: rest')
+              | (vs, rest') ->
+                  let name = setname () in
+                  let vals = v1 :: vs in
+                  let sets' = (name, Stdlib.List.map (fun v -> (v, v)) vals) :: sets in
+                  let merged = { r1 with Syntax.r_body =
+                                   Syntax.BMatch (Syntax.MConcatSet ([f], false, name)) :: body } in
+                  let (sets'', rest'') = opt_rules sets' rest' in
+                  (sets'', merged :: rest''))
+         | None -> let (sets'', rest') = opt_rules sets rest in (sets'', r1 :: rest'))
     | _ -> (sets, rs) in
   let rs_in = [
     rule [ mcmp Syntax.FThDport Bytecode.CEq [0; 22] ] Verdict.Accept;
     rule [ mcmp Syntax.FThDport Bytecode.CEq [0; 80] ] Verdict.Accept;
+    rule [ mcmp Syntax.FThDport Bytecode.CEq [1; 187] ] Verdict.Accept;
   ] in
   let (sets_out, rs_out) = opt_rules [] rs_in in
   let len_in = Stdlib.List.length rs_in and len_out = Stdlib.List.length rs_out in
   Printf.printf "  rules: %d -> %d (%s)\n" len_in len_out
-    (if len_out < len_in then "shrunk: value-merge fired" else "NOT shrunk");
+    (if len_out < len_in then "shrunk: N-way value-merge fired" else "NOT shrunk");
   if not (len_out < len_in) then incr fails;
   Stdlib.List.iter (fun (nm, els) ->
     Printf.printf "  synthesised set %s = { %s }\n" nm
@@ -513,8 +532,16 @@ let () =
             string_of_int (Stdlib.List.fold_left (fun a b -> a*256+b) 0 lo)) els)))
     sets_out;
   if sets_out = [] then (Printf.printf "  NO set synthesised\n"; incr fails);
-  (* verdict equivalence: original two-rule chain (policy drop) vs the rewritten
-     ONE-rule chain evaluated WITH the synthesised set declared in scope. *)
+  (* must consolidate the WHOLE 3-rule run into ONE rule with a 3-element set
+     (nft -o oracle: `tcp dport { 22, 80, 443 } accept`), NOT a 2-element set with a
+     leftover. *)
+  if len_out <> 1 then
+    (Printf.printf "  EXPECTED 1 merged rule (N-way), got %d\n" len_out; incr fails);
+  (match sets_out with
+   | [ (_, els) ] when Stdlib.List.length els = 3 -> ()
+   | _ -> Printf.printf "  EXPECTED ONE 3-element set (N-way consolidation)\n"; incr fails);
+  (* verdict equivalence: original three-rule chain (policy drop) vs the rewritten
+     ONE-rule chain evaluated WITH the synthesised 3-element set declared in scope. *)
   let decls : Semantics.set_decls =
     { Semantics.sd_sets = sets_out; sd_vmaps = []; sd_maps = [] } in
   let env_out = Semantics.env_with_sets empty_env decls in
@@ -526,13 +553,14 @@ let () =
     let a = Semantics.eval_chain c_in  p_in in
     let b = Semantics.eval_chain c_out p_out in
     let ok = a = b in
-    Printf.printf "  %-26s two-rule=%-7s set-merged=%-7s %s\n"
+    Printf.printf "  %-26s three-rule=%-7s set-merged=%-7s %s\n"
       name (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
     if not ok then incr fails)
-    [ "tcp dport 22 (in set)",  [0; 22];
-      "tcp dport 80 (in set)",  [0; 80];
-      "tcp dport 443 (not in)", [1; 187];
-      "tcp dport 1   (not in)", [0; 1] ];
+    [ "tcp dport 22  (in set)", [0; 22];
+      "tcp dport 80  (in set)", [0; 80];
+      "tcp dport 443 (in set)", [1; 187];
+      "tcp dport 1   (not in)", [0; 1];
+      "tcp dport 8080(not in)", [31; 144] ];
   Printf.printf "\n";
   (* (6d) THE VMAP nft -o pass — value+verdict -> VERDICT MAP (Optimize_Vmap.v
      `optimize_rules_vmap` / `optimize_chain_vmap_correct`, axiom-free).  The

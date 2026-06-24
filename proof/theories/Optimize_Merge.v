@@ -1049,3 +1049,587 @@ Proof.
   rewrite (optimize_rules_sets_correct (c_rules c) n d m'' dd'' rr'' base p Erec Hclean Hfresh).
   reflexivity.
 Qed.
+
+
+(** * N-WAY consolidation: a whole RUN of adjacent value-merge-eligible rules folds
+      into ONE rule with an N-element anonymous set.
+
+    The pairwise pass above merges exactly two rules and recurses past the second,
+    so a run [dport 22 accept; dport 80 accept; dport 443 accept] became a 2-element
+    set [{22,80}] plus a leftover [dport 443 accept] — strictly LESS consolidated
+    than [nft -o], which emits ONE rule [dport { 22, 80, 443 } accept].  This
+    section delivers the faithful N-way pass: it scans the MAXIMAL run of rules that
+    all share the same fixed-width field [f], the same tail [body], and the same
+    end-fields (verdict/…), differing only in their head value, and folds the WHOLE
+    run into one [MConcatSet [f] false __setN] whose set carries one point element
+    per rule.  [nft -o] keeps the values discrete (never range-coalesced), so the
+    synthesised set is [map (fun v => (v,v)) vals]. *)
+
+Lemma existsb_map_eq : forall (A B : Type) (f : B -> bool) (g : A -> B) (l : list A),
+  existsb f (map g l) = existsb (fun x => f (g x)) l.
+Proof.
+  induction l as [| a l IH]; intros; [reflexivity|].
+  cbn [map existsb]. rewrite IH. reflexivity.
+Qed.
+
+Lemma existsb_ext : forall (A : Type) (f g : A -> bool) (l : list A),
+  (forall x, In x l -> f x = g x) -> existsb f l = existsb g l.
+Proof.
+  induction l as [| a l IH]; intros H; [reflexivity|].
+  cbn [existsb]. rewrite (H a (or_introl eq_refl)).
+  rewrite IH; [reflexivity|]. intros x Hx. apply H. right; exact Hx.
+Qed.
+
+Lemma existsb_false_forall : forall (A : Type) (f : A -> bool) (l : list A),
+  (forall x, In x l -> f x = false) -> existsb f l = false.
+Proof.
+  induction l as [| a l IH]; intros H; [reflexivity|].
+  cbn [existsb]. rewrite (H a (or_introl eq_refl)). cbn [orb].
+  apply IH. intros x Hx. apply H. right; exact Hx.
+Qed.
+
+(** ** The N-element membership certificate.
+
+    A single-field set [map (fun v => (v,v)) vals] (each value at the field's full
+    width when loadable) is matched by [MConcatSet [f] false name] iff SOME value
+    matches the point test [MCmp f CEq v] — i.e. the [existsb] disjunction over the
+    run.  Generalises [concat_set_two_points] from 2 to N elements. *)
+(** A point [MCmp f CEq v] over a field loaded at the value's full width is exactly
+    [data_eqb (field_value f q) v] (no [firstn] truncation). *)
+Lemma eval_mcmp_point : forall f v q,
+  field_loadable f q = true ->
+  length (field_value f q) = length v ->
+  eval_matchcond (MCmp f CEq v) q = data_eqb (field_value f q) v.
+Proof.
+  intros f v q Hld Hlen.
+  unfold eval_matchcond, eval_matchcond_body, match_loadable.
+  rewrite Hld. cbn [andb]. unfold eval_cmp.
+  rewrite <- Hlen, List.firstn_all. reflexivity.
+Qed.
+
+Lemma eval_mcmp_point_unload : forall f v q,
+  field_loadable f q = false ->
+  eval_matchcond (MCmp f CEq v) q = false.
+Proof.
+  intros f v q Hld.
+  unfold eval_matchcond, match_loadable. rewrite Hld. reflexivity.
+Qed.
+
+Lemma concat_set_existsb : forall f vals name q,
+  e_set (pkt_env q) name = map (fun v => (v, v)) vals ->
+  (forall v, In v vals -> field_loadable f q = true -> length (field_value f q) = length v) ->
+  eval_matchcond (MConcatSet [f] false name) q
+  = existsb (fun v => eval_matchcond (MCmp f CEq v) q) vals.
+Proof.
+  intros f vals name q Hset Hlen.
+  unfold eval_matchcond at 1, eval_matchcond_body at 1.
+  cbn [match_loadable fields_loadable forallb].
+  rewrite Bool.andb_true_r.
+  destruct (field_loadable f q) eqn:Hld; cbn [andb].
+  - cbn [map]. rewrite concat_set_mem_single. unfold set_mem. rewrite Hset.
+    rewrite existsb_map_eq.
+    apply existsb_ext. intros v Hv.
+    rewrite data_in_iv_point.
+    rewrite (eval_mcmp_point f v q Hld (Hlen v Hv eq_refl)). reflexivity.
+  - symmetry. apply existsb_false_forall. intros v Hv.
+    apply (eval_mcmp_point_unload f v q Hld).
+Qed.
+
+
+(** ** The N-way run merge over [eval_rules], proved DIRECTLY.
+
+    Every rule in the run [map (fun m => mk_head m body r1) ms] shares the SAME
+    loadability path, the SAME outcome, and the SAME applies-walk tail (all read off
+    the shared record [r1] / shared [body]); they differ ONLY in the head match's
+    [eval_matchcond] (and every head shares [match_loadable = ML]).  We unfold
+    [eval_rules] directly: in first-match order the run fires iff SOME rule loads &
+    applies, with the common outcome — exactly the disjunction
+    [existsb (eval_matchcond .) ms] that the merged head realises. *)
+Lemma eval_rules_run_merge_abs :
+  forall (ms : list matchcond) (ML : packet -> bool) body r1 m12 rest p,
+  ms <> [] ->
+  (forall m, In m ms -> match_loadable m p = ML p) ->
+  match_loadable m12 p = ML p ->
+  eval_matchcond m12 p = existsb (fun m => eval_matchcond m p) ms ->
+  eval_rules (mk_head m12 body r1 :: rest) p
+  = eval_rules (map (fun m => mk_head m body r1) ms ++ rest) p.
+Proof.
+  intros ms ML body r1 m12 rest p Hne HmlAll Hml Hev.
+  (* Abbreviations for the shared loadability path, applies-walk, outcome. *)
+  set (L := body_loadable_walk body p &&
+            (if body_synproxy_stops body p then true
+             else end_loadable r1 (body_thread body p))).
+  set (A := rule_applies_walk body p).
+  set (O := if body_synproxy_stops body p then Some Drop
+            else outcome_core r1 (body_thread body p)).
+  (* Each [mk_head m body r1] has loadable = match_loadable m p && L,
+     applies = eval_matchcond m p && A, outcome = O. *)
+  assert (Hload : forall m, rule_loadable (mk_head m body r1) p
+                            = match_loadable m p && L).
+  { intro m. rewrite rule_loadable_mk_head. reflexivity. }
+  assert (Happ : forall m, rule_applies (mk_head m body r1) p
+                           = eval_matchcond m p && A).
+  { intro m. rewrite rule_applies_mk_head. reflexivity. }
+  assert (Hout : forall m, outcome (mk_head m body r1) p = O).
+  { intro m. rewrite outcome_mk_head. reflexivity. }
+  (* The merged single rule: *)
+  cbn [eval_rules]. rewrite (Hload m12), (Happ m12), (Hout m12).
+  rewrite Hml, Hev.
+  (* Now the RHS: the run. We characterise eval_rules (run ++ rest) p by induction
+     on ms, exposing that ML and L and A and O are shared across the run. *)
+  (* Generalise: prove eval_rules (run ++ rest) p depends only on existsb. *)
+  assert (Hrun :
+    eval_rules (map (fun m => mk_head m body r1) ms ++ rest) p
+    = if ((ML p && L) && (existsb (fun m => eval_matchcond m p) ms && A)) then
+        match O with
+        | Some v => if terminal v then Some v else eval_rules rest p
+        | None => eval_rules rest p
+        end
+      else eval_rules rest p).
+  { clear Hev Hml m12.
+    (* CASE on the common outcome O: if it is non-terminal (or None), the run NEVER
+       terminates, so the WHOLE [run ++ rest] reduces to [eval_rules rest p] (and so
+       does the target's [match O] branch, on either side of the [if]).  Only a
+       TERMINAL [Some v] makes first-match position matter. *)
+    assert (Hterm : (match O with
+                     | Some v => terminal v
+                     | None => false
+                     end) = false \/
+                    (exists v, O = Some v /\ terminal v = true)).
+    { destruct O as [v |]; [destruct (terminal v) eqn:Et; [right; eauto | left; reflexivity]
+                          | left; reflexivity]. }
+    destruct Hterm as [Hnt | [v [EO Ev]]].
+    - (* non-terminal / None: both sides are eval_rules rest p *)
+      assert (Htarget :
+        match O with
+        | Some w => if terminal w then Some w else eval_rules rest p
+        | None => eval_rules rest p
+        end = eval_rules rest p).
+      { clearbody O. destruct O as [w |]; [ destruct (terminal w) eqn:Etw;
+          [ exfalso; clear -Hnt Etw; cbn in Hnt; congruence | reflexivity ]
+          | reflexivity ]. }
+      transitivity (eval_rules rest p).
+      2:{ rewrite Htarget. destruct ((ML p && L) && _); reflexivity. }
+      (* LHS: induct, every rule falls through to eval_rules rest p *)
+      clear Hne Hnt. revert HmlAll. induction ms as [| m ms IH]; intro HmlAll.
+      + reflexivity.
+      + cbn [map app eval_rules].
+        rewrite (Hload m), (Happ m), (Hout m).
+        rewrite (IH (fun mm Hmm => HmlAll mm (or_intror Hmm))).
+        destruct (match_loadable m p && L && (eval_matchcond m p && A));
+          [ rewrite Htarget; reflexivity | reflexivity ].
+    - (* terminal Some v: first-match position matters *)
+      rewrite EO. clear Hne. revert HmlAll. induction ms as [| m ms IH]; intro HmlAll.
+      + (* empty: existsb [] = false, both sides eval_rules rest p *)
+        cbn [map app eval_rules existsb]. rewrite Bool.andb_false_r. reflexivity.
+      + cbn [map app eval_rules].
+        rewrite (Hload m), (Happ m), (Hout m).
+        rewrite (HmlAll m (or_introl eq_refl)). cbn [existsb].
+        rewrite (IH (fun mm Hmm => HmlAll mm (or_intror Hmm))).
+        rewrite EO, Ev.
+        (* boolean case split: ML p && L, A, eval_matchcond m p, existsb ms *)
+        destruct (ML p && L); cbn [andb]; [| reflexivity].
+        destruct A; [| rewrite !Bool.andb_false_r; reflexivity ].
+        rewrite !Bool.andb_true_r.
+        destruct (eval_matchcond m p); cbn [orb andb]; reflexivity. }
+  rewrite Hrun. reflexivity.
+Qed.
+
+(** ** The executable N-WAY value->set pass.
+
+    [take_value_run r1 rest] scans the MAXIMAL prefix of [rest] of rules that each
+    form a value-merge pair with the canonical first rule [r1] (same fixed-width
+    field, same tail body, same end-fields, differing value), returning their values
+    [vs] (in source order) and the LEFTOVER suffix [rest'].  [optimize_rules_setsN]
+    then folds the whole run [r1 :: matched] into ONE rule whose head is
+    [MConcatSet [f] false __setN] over the N-element set
+    [map (fun v => (v,v)) (v1 :: vs)] — exactly the consolidation [nft -o] emits
+    for a run of >= 2 single-dimension-differing rules. *)
+Fixpoint take_value_run (r1 : rule) (rest : list rule)
+  : list data * list rule :=
+  match rest with
+  | [] => ([], [])
+  | r2 :: tl =>
+      match value_merge_pair r1 r2 with
+      | Some (_, _, v2, _) =>
+          let '(vs, rest') := take_value_run r1 tl in
+          (v2 :: vs, rest')
+      | None => ([], rest)
+      end
+  end.
+
+Lemma take_value_run_len : forall r1 rest vs rest',
+  take_value_run r1 rest = (vs, rest') ->
+  length vs + length rest' = length rest.
+Proof.
+  intros r1 rest. induction rest as [| r2 tl IH]; intros vs rest' H.
+  - cbn in H. inversion H; subst. reflexivity.
+  - cbn in H. destruct (value_merge_pair r1 r2) as [[[[f v] v2] body] |] eqn:Evm.
+    + destruct (take_value_run r1 tl) as [vs0 rest0] eqn:Erec.
+      inversion H; subst vs rest'. cbn [length].
+      rewrite <- (IH vs0 rest0 eq_refl). cbn [length]. lia.
+    + inversion H; subst vs rest'. cbn [length]. reflexivity.
+Qed.
+
+(** Fuel-bounded driver ([fuel] >= [length rs] suffices; the chain wrapper passes
+    [length (c_rules c)]).  Each productive recursive call consumes at least one rule
+    from the front, so the fuel is never the limiting factor. *)
+Fixpoint optimize_rules_setsN (fuel : nat) (n : nat) (d : set_decls) (rs : list rule)
+  : nat * set_decls * list rule :=
+  match fuel with
+  | O => (n, d, rs)
+  | S fuel' =>
+    match rs with
+    | r1 :: ((_ :: _) as rest) =>
+        match head_value r1 with
+        | Some (f, v1, body) =>
+            match take_value_run r1 rest with
+            | ([], _) =>
+                let '(n'', d'', rest') := optimize_rules_setsN fuel' n d rest in
+                (n'', d'', r1 :: rest')
+            | ((_ :: _) as vs, rest') =>
+                let name := setname n in
+                let elems := map (fun v => (v, v)) (v1 :: vs) in
+                let d' := {| sd_sets := (name, elems) :: sd_sets d;
+                             sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} in
+                let merged := mk_head (MConcatSet [f] false name) body r1 in
+                let '(n'', d'', rest'') := optimize_rules_setsN fuel' (S n) d' rest' in
+                (n'', d'', merged :: rest'')
+            end
+        | None =>
+            let '(n'', d'', rest') := optimize_rules_setsN fuel' n d rest in
+            (n'', d'', r1 :: rest')
+        end
+    | _ => (n, d, rs)
+    end
+  end.
+
+Definition optimize_chain_setsN (n : nat) (d : set_decls) (c : chain)
+  : nat * set_decls * chain :=
+  let '(n', d', rs') := optimize_rules_setsN (length (c_rules c)) n d (c_rules c) in
+  (n', d', {| c_policy := c_policy c; c_rules := rs' |}).
+
+
+(** [value_merge_pair] returns [r1]'s field/value/body in slots 1/2/4 (the differing
+    slot 3 is [r2]'s value), so when [head_value r1 = Some (f,v1,body)] the result is
+    [Some (f, v1, v2, body)] and [r2] is the canonical shell over [v2]. *)
+Lemma value_merge_pair_with_head : forall r1 r2 f v1 body f' v1' v2 body',
+  head_value r1 = Some (f, v1, body) ->
+  value_merge_pair r1 r2 = Some (f', v1', v2, body') ->
+  f' = f /\ v1' = v1 /\ body' = body /\
+  r2 = mk_head (MCmp f CEq v2) body r1 /\
+  field_fixed_len f = Some (length v2).
+Proof.
+  intros r1 r2 f v1 body f' v1' v2 body' Hhd Hvm.
+  destruct (value_merge_pair_shape r1 r2 f' v1' v2 body' Hvm) as [Hr1 [Hr2 [Hfx1 Hfx2]]].
+  (* head_value r1 = Some (f', v1', body') by Hr1 unfolding, and = Some (f,v1,body) *)
+  assert (Hhd' : head_value r1 = Some (f', v1', body')).
+  { rewrite Hr1 at 1. unfold head_value, mk_head. cbn [r_body]. reflexivity. }
+  rewrite Hhd in Hhd'. inversion Hhd'; subst f' v1' body'.
+  repeat split; [ exact Hr2 | exact Hfx2 ].
+Qed.
+
+(** When the run is NONEMPTY, [r1]'s own value is also field-width (the first pair
+    fired [value_merge_pair], whose shape forces [field_fixed_len f = Some (len v1)]). *)
+Lemma take_value_run_head_width : forall r1 f v1 body r2 rest vs rest',
+  head_value r1 = Some (f, v1, body) ->
+  take_value_run r1 (r2 :: rest) = (vs, rest') ->
+  vs <> [] ->
+  field_fixed_len f = Some (length v1).
+Proof.
+  intros r1 f v1 body r2 rest vs rest' Hhd Hrun Hne.
+  cbn in Hrun. destruct (value_merge_pair r1 r2) as [[[[fa va] v2] bd] |] eqn:Evm.
+  - destruct (value_merge_pair_shape r1 r2 fa va v2 bd Evm) as [Hr1 [_ [Hfx1 _]]].
+    assert (Hhd' : head_value r1 = Some (fa, va, bd)).
+    { rewrite Hr1 at 1. unfold head_value, mk_head. cbn [r_body]. reflexivity. }
+    rewrite Hhd in Hhd'. inversion Hhd'; subst fa va bd. exact Hfx1.
+  - destruct (take_value_run r1 rest) as [vs0 rest0] eqn:Erec0.
+    inversion Hrun; subst. contradiction.
+Qed.
+
+(** Shape of the collected run: the matched prefix of [rest] is exactly the canonical
+    shells [map (fun v => mk_head (MCmp f CEq v) body r1) vs], [rest] splits as that
+    prefix ++ [rest'], and every collected value is field-width. *)
+Lemma take_value_run_shape : forall r1 f v1 body rest vs rest',
+  head_value r1 = Some (f, v1, body) ->
+  take_value_run r1 rest = (vs, rest') ->
+  rest = map (fun v => mk_head (MCmp f CEq v) body r1) vs ++ rest'
+  /\ (forall v, In v vs -> field_fixed_len f = Some (length v)).
+Proof.
+  intros r1 f v1 body rest. induction rest as [| r2 tl IH]; intros vs rest' Hhd H.
+  - cbn in H. inversion H; subst. split; [reflexivity| intros v []].
+  - cbn in H. destruct (value_merge_pair r1 r2) as [[[[fa va] v2] bd] |] eqn:Evm.
+    + destruct (take_value_run r1 tl) as [vs0 rest0] eqn:Erec.
+      inversion H; subst vs rest'. clear H.
+      destruct (value_merge_pair_with_head r1 r2 f v1 body fa va v2 bd Hhd Evm)
+        as [_ [_ [_ [Hr2 Hfx]]]].
+      destruct (IH vs0 rest0 Hhd eq_refl) as [Hsplit Hall].
+      split.
+      * cbn [map app]. rewrite <- Hr2, <- Hsplit. reflexivity.
+      * intros v [Hv | Hv]; [ subst v; exact Hfx | apply Hall; exact Hv ].
+    + inversion H; subst vs rest'. split; [reflexivity| intros v []].
+Qed.
+
+(** One-step unfolding on a cons-cons input under [S fuel] (recursive calls stay
+    folded). *)
+Lemma optimize_rules_setsN_consSS : forall fuel n d r1 r2 rest,
+  optimize_rules_setsN (S fuel) n d (r1 :: r2 :: rest) =
+  match head_value r1 with
+  | Some (f, v1, body) =>
+      match take_value_run r1 (r2 :: rest) with
+      | ([], _) =>
+          let '(n'', d'', rest') := optimize_rules_setsN fuel n d (r2 :: rest) in
+          (n'', d'', r1 :: rest')
+      | ((_ :: _) as vs, rest') =>
+          let name := setname n in
+          let elems := map (fun v => (v, v)) (v1 :: vs) in
+          let d' := {| sd_sets := (name, elems) :: sd_sets d;
+                       sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} in
+          let merged := mk_head (MConcatSet [f] false name) body r1 in
+          let '(n'', d'', rest'') := optimize_rules_setsN fuel (S n) d' rest' in
+          (n'', d'', merged :: rest'')
+      end
+  | None =>
+      let '(n'', d'', rest') := optimize_rules_setsN fuel n d (r2 :: rest) in
+      (n'', d'', r1 :: rest')
+  end.
+Proof. reflexivity. Qed.
+
+(** Freshness bookkeeping for the N-way pass: it only PREPENDS [sd_sets] entries keyed
+    [setname k] with [n <= k < n'], so an un-minted name's lookup is preserved. *)
+Lemma optimize_rules_setsN_assoc_stable : forall fuel n d rs n' d' rs' nm X,
+  optimize_rules_setsN fuel n d rs = (n', d', rs') ->
+  (forall k, n <= k -> nm <> setname k) ->
+  assoc_str nm (sd_sets d') X = assoc_str nm (sd_sets d) X.
+Proof.
+  induction fuel as [| fuel IH]; intros n d rs n' d' rs' nm X H Hnm.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_setsN_consSS in H.
+      destruct (head_value r1) as [[[f v1] body] |] eqn:Ehd.
+      * destruct (take_value_run r1 (r2 :: rest)) as [vs rest'] eqn:Erun.
+        destruct vs as [| v vs'].
+        -- remember (optimize_rules_setsN fuel n d (r2 :: rest)) as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst d'. clear Hn' Hr'.
+           eapply (IH n d (r2 :: rest)); [symmetry; exact Erec | exact Hnm].
+        -- cbv zeta in H.
+           remember (optimize_rules_setsN fuel (S n)
+                       {| sd_sets := (setname n, map (fun v => (v,v)) (v1 :: v :: vs'))
+                                     :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst d'. clear Hn' Hr'.
+           erewrite (IH (S n) _ rest'); [ | symmetry; exact Erec | intros k Hk; apply Hnm; lia ].
+           cbn [sd_sets assoc_str].
+           destruct (String.eqb nm (setname n)) eqn:Eqn.
+           ++ apply String.eqb_eq in Eqn. exfalso. apply (Hnm n); [lia | exact Eqn].
+           ++ reflexivity.
+      * remember (optimize_rules_setsN fuel n d (r2 :: rest)) as t eqn:Erec.
+        destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst d'. clear Hn' Hr'.
+        eapply (IH n d (r2 :: rest)); [symmetry; exact Erec | exact Hnm].
+Qed.
+
+(** [head_value r1 = Some (f,v1,body)] means [r1] IS the canonical value-head shell. *)
+Lemma head_value_canon : forall r1 f v1 body,
+  head_value r1 = Some (f, v1, body) ->
+  r1 = mk_head (MCmp f CEq v1) body r1.
+Proof.
+  intros r1 f v1 body H. unfold head_value in H.
+  destruct (r_body r1) as [| [m | s] b] eqn:Eb; try discriminate.
+  destruct m as [ | | | | f' op v' | | | | | | | | ]; try discriminate.
+  destruct op; try discriminate. inversion H; subst f' v' b.
+  unfold mk_head. rewrite <- Eb. destruct r1; reflexivity.
+Qed.
+
+(** Congruence of [eval_rules] under a shared prefix. *)
+Lemma eval_rules_app_cong : forall pre t1 t2 p,
+  eval_rules t1 p = eval_rules t2 p ->
+  eval_rules (pre ++ t1) p = eval_rules (pre ++ t2) p.
+Proof.
+  induction pre as [| r pre IH]; intros t1 t2 p H; [exact H|].
+  cbn [app eval_rules].
+  destruct (rule_loadable r p && rule_applies r p); [| apply IH; exact H].
+  destruct (outcome r p) as [v |]; [| apply IH; exact H].
+  destruct (terminal v); [reflexivity | apply IH; exact H].
+Qed.
+
+(** The merged head [MConcatSet [f] false name] and the canonical point heads
+    [MCmp f CEq w] all share [match_loadable = fields_loadable [f]]. *)
+Lemma match_loadable_mconcat1 : forall f name q,
+  match_loadable (MConcatSet [f] false name) q = fields_loadable [f] q.
+Proof. reflexivity. Qed.
+
+Lemma match_loadable_mcmp_fields : forall f w q,
+  match_loadable (MCmp f CEq w) q = fields_loadable [f] q.
+Proof.
+  intros. cbn [match_loadable fields_loadable forallb]. rewrite Bool.andb_true_r.
+  reflexivity.
+Qed.
+
+(** Every head in [map (MCmp f CEq) vals] shares [match_loadable = fields_loadable [f]]. *)
+Lemma match_loadable_run : forall f vals q m,
+  In m (map (fun w => MCmp f CEq w) vals) ->
+  match_loadable m q = fields_loadable [f] q.
+Proof.
+  intros f vals q m Hin. apply in_map_iff in Hin as [w [Hw _]]. subst m.
+  apply match_loadable_mcmp_fields.
+Qed.
+
+(** *** The executable N-WAY value->set merge, proved verdict-preserving END-TO-END
+    over the table semantics with the synthesised N-element set in scope, axiom-free.
+
+    A whole adjacent RUN of >= 2 value-merge-eligible rules folds into ONE rule whose
+    `__setN` resolves to its N point elements (freshness + [optimize_..._assoc_stable]);
+    [concat_set_existsb] turns the merged head into the [existsb] disjunction of the N
+    point matches; [eval_rules_run_merge_abs] collapses the whole run; the clean
+    leftover tail is env-irrelevant.  This matches [nft -o]'s consolidation of an
+    N-rule run into a single N-element anonymous set. *)
+Theorem optimize_rules_setsN_correct : forall fuel rs n d n' d' rs' base p,
+  optimize_rules_setsN fuel n d rs = (n', d', rs') ->
+  rules_clean rs = true ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  eval_rules rs' (set_env p (env_with_sets base d'))
+  = eval_rules rs  (set_env p (env_with_sets base d)).
+Proof.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' base p H Hclean Hfresh.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_setsN_consSS in H.
+      cbn [rules_clean forallb] in Hclean.
+      apply Bool.andb_true_iff in Hclean as [Hc1 Hclrest].
+      destruct (head_value r1) as [[[f v1] body] |] eqn:Ehd.
+      * destruct (take_value_run r1 (r2 :: rest)) as [vs rest'] eqn:Erun.
+        destruct (take_value_run_shape r1 f v1 body (r2 :: rest) vs rest' Ehd Erun)
+          as [Hsplit Hwidth].
+        destruct vs as [| v vs'].
+        -- (* no eligible neighbour: keep r1, recurse on r2::rest *)
+           remember (optimize_rules_setsN fuel n d (r2 :: rest)) as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           cbn [eval_rules].
+           rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p
+                       (eq_sym Erec) Hclrest Hfresh).
+           destruct (rule_clean_env r1 p base dd'' d Hc1) as [Hl [Ha Ho]].
+           rewrite Hl, Ha, Ho. reflexivity.
+        -- (* RUN of >= 2 rules: fold them all into one __setN *)
+           cbv zeta in H.
+           remember (optimize_rules_setsN fuel (S n)
+                       {| sd_sets := (setname n, map (fun w => (w,w)) (v1 :: v :: vs'))
+                                     :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           set (vals := v1 :: v :: vs') in *.
+           set (elems := map (fun w => (w, w)) vals) in *.
+           set (dn := {| sd_sets := (setname n, elems) :: sd_sets d;
+                         sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) in *.
+           (* rest = (the run minus r1) ++ rest'; r1 :: that = the whole run *)
+           assert (Hrun_eq : r1 :: r2 :: rest
+                   = map (fun w => mk_head (MCmp f CEq w) body r1) vals ++ rest').
+           { subst vals. cbn [map app]. f_equal.
+             - apply (head_value_canon r1 f v1 body Ehd).
+             - exact Hsplit. }
+           (* the optimized tail equals the original rest' under dn (by IH on fuel) *)
+           assert (Htail : eval_rules rr'' (set_env p (env_with_sets base dd''))
+                           = eval_rules rest' (set_env p (env_with_sets base dn))).
+           { (* rest' is clean: it is a suffix of the clean (r2::rest) *)
+             assert (Hcrest' : rules_clean rest' = true).
+             { assert (Hsub : rules_clean (r2 :: rest) = true)
+                 by (cbn [rules_clean forallb]; exact Hclrest).
+               rewrite Hsplit in Hsub. unfold rules_clean in Hsub.
+               rewrite forallb_app in Hsub.
+               apply Bool.andb_true_iff in Hsub. exact (proj2 Hsub). }
+             eapply (IH rest' (S n) dn m'' dd'' rr'' base p (eq_sym Erec) Hcrest').
+             intros k Hk Hin. subst dn; cbn [sd_sets map] in Hin.
+             destruct Hin as [Heq | Hin].
+             - apply setname_inj in Heq. lia.
+             - apply (Hfresh k); [lia | exact Hin]. }
+           (* resolve the minted set name to its N elements in dd'' *)
+           assert (Hlook : e_set (pkt_env (set_env p (env_with_sets base dd''))) (setname n)
+                           = elems).
+           { cbn [set_env pkt_env]. rewrite e_set_declared.
+             erewrite (optimize_rules_setsN_assoc_stable fuel (S n) dn _ _ _ _
+                         (setname n) _ (eq_sym Erec)).
+             - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
+             - intros k Hk Heq. apply setname_inj in Heq. lia. }
+           set (qd := set_env p (env_with_sets base dd'')) in *.
+           (* membership certificate: merged head = existsb of the N point matches *)
+           assert (Hcert : eval_matchcond (MConcatSet [f] false (setname n)) qd
+                   = existsb (fun w => eval_matchcond (MCmp f CEq w) qd) vals).
+           { apply (concat_set_existsb f vals (setname n) qd).
+             - subst elems. exact Hlook.
+             - intros w Hw Hld.
+               assert (Hfxw : field_fixed_len f = Some (length w)).
+               { subst vals. destruct Hw as [Hw | Hw].
+                 - subst w. apply (take_value_run_head_width r1 f v1 body r2 rest
+                                     (v :: vs') rest' Ehd Erun). discriminate.
+                 - apply (Hwidth w Hw). }
+               apply (field_fixed_len_loaded f (length w) qd Hfxw Hld). }
+           (* collapse the merged rule into the whole run via run_merge_abs *)
+           transitivity (eval_rules
+             (map (fun m => mk_head m body r1) (map (fun w => MCmp f CEq w) vals)
+              ++ rr'') qd).
+           { apply (eval_rules_run_merge_abs
+                      (map (fun w => MCmp f CEq w) vals)
+                      (fun q => fields_loadable [f] q) body r1
+                      (MConcatSet [f] false (setname n)) rr'' qd).
+             - subst vals. discriminate.
+             - intros m Hm. apply (match_loadable_run f vals qd m Hm).
+             - apply match_loadable_mconcat1.
+             - rewrite Hcert. rewrite existsb_map_eq. reflexivity. }
+           rewrite List.map_map.
+           (* tail rr'' -> rest' (clean, env-stable), then point heads = the originals *)
+           assert (Htail' : eval_rules rr'' qd = eval_rules rest' qd).
+           { rewrite Htail. unfold qd.
+             apply (eval_rules_clean_env rest' p base dn dd'').
+             (* rest' clean (proved above) *)
+             clear -Hclrest Hsplit.
+             assert (Hsub : rules_clean (r2 :: rest) = true)
+               by (cbn [rules_clean forallb]; exact Hclrest).
+             rewrite Hsplit in Hsub. unfold rules_clean in Hsub.
+             rewrite forallb_app in Hsub.
+             apply Bool.andb_true_iff in Hsub. exact (proj2 Hsub). }
+           (* now both sides over qd: replace rr'' by rest', then map heads by run *)
+           rewrite (eval_rules_app_cong
+                      (map (fun w => mk_head (MCmp f CEq w) body r1) vals)
+                      rr'' rest' qd Htail').
+           rewrite <- Hrun_eq.
+           (* whole clean list at dd'' equals at d *)
+           unfold qd. apply (eval_rules_clean_env (r1 :: r2 :: rest) p base dd'' d).
+           cbn [rules_clean forallb]. rewrite Hc1, Hclrest. reflexivity.
+      * (* head not value-eligible: keep r1, recurse *)
+        remember (optimize_rules_setsN fuel n d (r2 :: rest)) as t eqn:Erec.
+        destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        cbn [eval_rules].
+        rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hclrest Hfresh).
+        destruct (rule_clean_env r1 p base dd'' d Hc1) as [Hl [Ha Ho]].
+        rewrite Hl, Ha, Ho. reflexivity.
+Qed.
+
+(** *** Chain-level N-WAY value->set: verdict-preserving end-to-end, axiom-free. *)
+Theorem optimize_chain_setsN_correct : forall n d c n' d' c' base p,
+  optimize_chain_setsN n d c = (n', d', c') ->
+  rules_clean (c_rules c) = true ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  eval_chain c' (set_env p (env_with_sets base d'))
+  = eval_chain c  (set_env p (env_with_sets base d)).
+Proof.
+  intros n d c n' d' c' base p H Hclean Hfresh.
+  unfold optimize_chain_setsN in H.
+  destruct (optimize_rules_setsN (length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:Erec.
+  inversion H; subst n' d' c'. cbn [c_rules c_policy].
+  unfold eval_chain. cbn [c_rules c_policy].
+  rewrite (optimize_rules_setsN_correct (length (c_rules c)) (c_rules c) n d
+             m'' dd'' rr'' base p Erec Hclean Hfresh).
+  reflexivity.
+Qed.
