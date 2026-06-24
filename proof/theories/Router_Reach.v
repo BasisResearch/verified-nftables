@@ -219,12 +219,12 @@ Proof.
   rewrite (nat_masquerade_fires_output p wan Hpriv Hppp Horig Hnone Hwan Hne).
   cbn [snd]. split.
   - (* source slot = wan, read back through store_nat_mapping (env-only) + set_saddr *)
-    unfold store_nat_mapping at 1; cbn [pkt_nh].
+    unfold store_nat_mapping at 1; cbn [with_pkt_env pkt_nh].
     apply slice_set_saddr_ip4_same; assumption.
   - (* the stored mapping is recorded at this flow *)
-    unfold store_nat_mapping at 1; cbn [pkt_env pkt_flow].
+    unfold store_nat_mapping at 1; cbn [with_pkt_env pkt_env pkt_flow].
     rewrite set_saddr_env, set_saddr_flow.
-    unfold env_nat_upd; cbn [e_nat]. now rewrite data_eqb_refl.
+    unfold env_nat_upd; cbn [with_e_nat e_nat]. now rewrite data_eqb_refl.
 Qed.
 
 (* ------------------------------------------------------------ *)

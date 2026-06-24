@@ -307,7 +307,7 @@ Lemma dport_after_set : forall p v,
   read_payload PTransport 2 2 (set_dport p v) = v.
 Proof.
   intros p v Hlen Hv.
-  unfold read_payload, set_dport, set_th_field; cbn [pkt_th].
+  unfold read_payload, set_dport, set_th_field; cbn [with_pkt_th pkt_th].
   unfold slice, splice.
   assert (H2 : List.length (firstn 2 (pkt_th p)) = 2)
     by (rewrite firstn_length_le; [reflexivity | lia]).

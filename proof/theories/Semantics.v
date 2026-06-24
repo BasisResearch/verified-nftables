@@ -293,28 +293,15 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
     two in lock-step. *)
 Definition set_untracked (p : packet) : packet :=
   if pkt_ct_present p then p
-  else
-  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p;
-     pkt_sock := pkt_sock p;
-     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
-     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
-     pkt_untracked := true; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+  else with_pkt_untracked p true.
 
 (** Update the SHARED `numgen inc` counter [e_numgen] for instance [spec]: INCREMENT
     it by one, leaving every other instance's counter — and every other env
     component — unchanged.  Mirrors the kernel's atomic_cmpxchg advancing the
     instance's [atomic_t *counter] by one per evaluation (nft_ng_inc_gen). *)
 Definition env_numgen_upd (e : env) (spec : numgen_spec) : env :=
-  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
-     e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
-     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
-     e_ct := e_ct e; e_nat := e_nat e;
-     e_numgen := (fun s => if numgen_eqb spec s then S (e_numgen e s) else e_numgen e s) |}.
+  with_e_numgen e
+    (fun s => if numgen_eqb spec s then S (e_numgen e s) else e_numgen e s).
 
 (** Update the SHARED rate-limiter token bucket [e_limit] for instance [spec] on
     packet [p], EXACTLY as the kernel nft_limit_eval does (elapsed refill +0):
@@ -331,12 +318,8 @@ Definition lim_newtokens (p : packet) (spec : limit_spec) : nat :=
 
 Definition env_limit_upd (p : packet) (spec : limit_spec) : env :=
   let e := pkt_env p in
-  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
-     e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
-     e_limit := (fun s => if limit_eqb spec s then lim_newtokens p spec else e_limit e s);
-     e_quota := e_quota e; e_connlimit := e_connlimit e;
-     e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
+  with_e_limit e
+    (fun s => if limit_eqb spec s then lim_newtokens p spec else e_limit e s).
 
 (** Update the SHARED quota counter [e_quota] for instance [spec] on packet [p]:
     CONSUME the packet's byte length ([quota_cost p], = skb->len) UNCONDITIONALLY
@@ -347,13 +330,8 @@ Definition env_limit_upd (p : packet) (spec : limit_spec) : env :=
     likewise takes [p] and charges [lim_cost p]). *)
 Definition env_quota_upd (p : packet) (spec : quota_spec) : env :=
   let e := pkt_env p in
-  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
-     e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
-     e_limit := e_limit e;
-     e_quota := (fun s => if quota_eqb spec s then e_quota e s - quota_cost p else e_quota e s);
-     e_connlimit := e_connlimit e;
-     e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
+  with_e_quota e
+    (fun s => if quota_eqb spec s then e_quota e s - quota_cost p else e_quota e s).
 
 (** Update the SHARED connlimit connection set [e_connlimit] for instance [spec] on
     packet [p]: IDEMPOTENTLY insert the packet's connection [pkt_flow p] into the
@@ -365,14 +343,10 @@ Definition env_quota_upd (p : packet) (spec : quota_spec) : env :=
     and every other env component — is preserved. *)
 Definition env_connlimit_upd (p : packet) (spec : connlimit_spec) : env :=
   let e := pkt_env p in
-  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
-     e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
-     e_limit := e_limit e; e_quota := e_quota e;
-     e_connlimit := (fun s => if connlimit_eqb spec s
-                              then connlimit_after e spec (pkt_flow p)
-                              else e_connlimit e s);
-     e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
+  with_e_connlimit e
+    (fun s => if connlimit_eqb spec s
+              then connlimit_after e spec (pkt_flow p)
+              else e_connlimit e s).
 
 (** Advance the shared `numgen inc` counter once: the side effect of EVALUATING a
     `numgen inc` expression.  The value the eval RETURNS is read by [do_load] BEFORE
@@ -384,16 +358,7 @@ Definition env_connlimit_upd (p : packet) (spec : connlimit_spec) : env :=
     component is preserved, so all loadability predicates are invariant under it and
     the DSL/VM stay in lock-step. *)
 Definition set_numgen (p : packet) (spec : numgen_spec) : packet :=
-  if ng_random spec then p else
-  {| pkt_env := env_numgen_upd (pkt_env p) spec; pkt_meta := pkt_meta p;
-     pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
-     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
-     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
-     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+  if ng_random spec then p else with_pkt_env p (env_numgen_upd (pkt_env p) spec).
 
 (** [set_numgen] only changes [pkt_env]'s [e_numgen]; it leaves payload / meta / ct /
     flow / oracle components intact.  Hence loadability predicates and every read
@@ -408,28 +373,12 @@ Proof. intros. unfold set_numgen. destruct (ng_random spec); reflexivity. Qed.
     [e_limit] changes; every other packet/env component is preserved, so all
     loadability predicates are invariant and the DSL/VM stay lock-step. *)
 Definition set_limit (p : packet) (spec : limit_spec) : packet :=
-  {| pkt_env := env_limit_upd p spec; pkt_meta := pkt_meta p;
-     pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
-     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
-     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
-     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+  with_pkt_env p (env_limit_upd p spec).
 
 (** CONSUME the packet's byte length ([quota_cost p], = skb->len) from a `quota`
     UNCONDITIONALLY (the kernel accumulates skb->len on every evaluation). *)
 Definition set_quota (p : packet) (spec : quota_spec) : packet :=
-  {| pkt_env := env_quota_upd p spec; pkt_meta := pkt_meta p;
-     pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
-     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
-     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
-     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+  with_pkt_env p (env_quota_upd p spec).
 
 (** ACCOUNT for the packet's connection in a `connlimit` instance: IDEMPOTENTLY insert
     [pkt_flow p] into the instance's distinct-connection set on EVERY evaluation (the
@@ -439,15 +388,7 @@ Definition set_quota (p : packet) (spec : quota_spec) : packet :=
     component is preserved, so loadability predicates are invariant and the DSL/VM stay
     lock-step. *)
 Definition set_connlimit (p : packet) (spec : connlimit_spec) : packet :=
-  {| pkt_env := env_connlimit_upd p spec; pkt_meta := pkt_meta p;
-     pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
-     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
-     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p;
-     pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+  with_pkt_env p (env_connlimit_upd p spec).
 
 Lemma read_payload_ok_limit : forall b o l p spec,
   read_payload_ok b o l (set_limit p spec) = read_payload_ok b o l p.
@@ -581,7 +522,8 @@ Lemma set_untracked_proj : forall p,
   pkt_ct_present (set_untracked p) = pkt_ct_present p /\
   pkt_flow (set_untracked p) = pkt_flow p.
 Proof.
-  intros p. destruct (pkt_ct_present p) eqn:E; unfold set_untracked; rewrite E;
+  intros p. destruct (pkt_ct_present p) eqn:E;
+    unfold set_untracked, with_pkt_untracked; rewrite E;
     repeat split; rewrite ?E; reflexivity.
 Qed.
 
@@ -649,7 +591,7 @@ Proof.
     rewrite Heq. exact Heq.
   - remember (set_untracked p) as q eqn:Hq.
     assert (pkt_ct_present q = false) as Hf
-      by (rewrite Hq; unfold set_untracked; rewrite E; reflexivity).
+      by (rewrite Hq; unfold set_untracked, with_pkt_untracked; rewrite E; reflexivity).
     unfold set_untracked at 1. rewrite Hf.
     rewrite Hq. unfold set_untracked. rewrite E. reflexivity.
 Qed.
@@ -1379,27 +1321,16 @@ Definition ct_eqb (a b : ct_key) : bool := if ct_eq_dec a b then true else false
 (** Update one metadata / conntrack key, leaving every other field of the packet
     (incl. the named-set environment) unchanged. *)
 Definition set_meta (p : packet) (k : meta_key) (v : data) : packet :=
-  {| pkt_env := pkt_env p;
-     pkt_meta := (fun k' => if meta_eqb k k' then v else pkt_meta p k');
-     pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
-     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
-     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+  with_pkt_meta p (fun k' => if meta_eqb k k' then v else pkt_meta p k').
 (** Update the SHARED, flow-keyed conntrack table [e_ct] of an env: write [v] at
     flow [fl], key [k], leaving every other (flow,key) entry — and every other env
     component — unchanged.  This is the env analogue of [env_set_upd]/[env_map_upd]
     for the conntrack-entry state, mirroring the kernel's
     WRITE_ONCE(ct->mark/secmark, v) into the entry [nf_ct_get(skb)] selects. *)
 Definition env_ct_upd (e : env) (fl : data) (k : ct_key) (v : data) : env :=
-  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
-     e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
-     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
-     e_ct := (fun fl' k' =>
-                if andb (data_eqb fl fl') (ct_eqb k k') then v else e_ct e fl' k');
-     e_nat := e_nat e; e_numgen := e_numgen e |}.
+  with_e_ct e
+    (fun fl' k' =>
+       if andb (data_eqb fl fl') (ct_eqb k k') then v else e_ct e fl' k').
 
 (** Update the SHARED, flow-keyed NAT-mapping table [e_nat] of an env: STORE the
     established translation [m] at flow [fl], leaving every other flow's mapping —
@@ -1409,13 +1340,7 @@ Definition env_ct_upd (e : env) (fl : data) (k : ct_key) (v : data) : env :=
     that records the translation on the FIRST (unconfirmed) packet of a flow. *)
 Definition env_nat_upd (e : env) (fl : data)
                        (m : option data * option data * option nat * option data) : env :=
-  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
-     e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
-     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
-     e_ct := e_ct e;
-     e_nat := (fun fl' => if data_eqb fl fl' then Some m else e_nat e fl');
-     e_numgen := e_numgen e |}.
+  with_e_nat e (fun fl' => if data_eqb fl fl' then Some m else e_nat e fl').
 
 (** Set a conntrack key.  The value is stored into the SHARED, flow-keyed
     conntrack table [e_ct] at THIS packet's flow ([pkt_flow]), so a later packet of
@@ -1436,15 +1361,7 @@ Definition env_nat_upd (e : env) (fl : data)
     cross-packet bug where a later same-flow entry-bearing packet would read back a
     mark the kernel never wrote. *)
 Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
-  if pkt_ct_present p then
-  {| pkt_env := env_ct_upd (pkt_env p) (pkt_flow p) k v; pkt_meta := pkt_meta p;
-     pkt_ct := pkt_ct p;
-     pkt_sock := pkt_sock p;
-     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
-     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}
+  if pkt_ct_present p then with_pkt_env p (env_ct_upd (pkt_env p) (pkt_flow p) k v)
   else p.
 
 (** Overwrite [len] bytes at offset [off] of a byte list (a header), keeping the
@@ -1460,14 +1377,7 @@ Definition splice (l : list byte) (off len : nat) (v : data) : list byte :=
     [nat_addrlen]) is modelled exactly, with the header length preserved
     ([splice]'s [len] = the family addr length). *)
 Definition set_nh_field (p : packet) (off len : nat) (v : data) : packet :=
-  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p;
-     pkt_sock := pkt_sock p; pkt_eh := pkt_eh p; pkt_lh := pkt_lh p;
-     pkt_nh := splice (pkt_nh p) off len v; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
-     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+  with_pkt_nh p (splice (pkt_nh p) off len v).
 
 (** Rewrite [len] bytes of the TRANSPORT header at [off] to [v], leaving every
     other packet component intact — the L4-port-NAT write primitive.  This is the
@@ -1476,14 +1386,7 @@ Definition set_nh_field (p : packet) (off len : nat) (v : data) : packet :=
     (`*portptr = newport`) while [set_nh_field] handled the L3 address.  Callers
     pass the L4 port slot ([FThSport] @0 len 2 / [FThDport] @2 len 2). *)
 Definition set_th_field (p : packet) (off len : nat) (v : data) : packet :=
-  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p;
-     pkt_sock := pkt_sock p; pkt_eh := pkt_eh p; pkt_lh := pkt_lh p;
-     pkt_nh := pkt_nh p; pkt_th := splice (pkt_th p) off len v;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
-     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+  with_pkt_th p (splice (pkt_th p) off len v).
 
 (** Source-port-NAT a packet: rewrite the L4 SOURCE port ([FThSport] = transport
     bytes 0..1) to [v].  This is the port half of a `snat ... :PORT` /
@@ -1611,7 +1514,7 @@ Proof.
     [reflexivity|].
   apply andb_true_iff in Hg as [_ Hlen]. apply PeanoNat.Nat.leb_le in Hlen.
   apply l4_csum_slot_geom in Hslot as [_ Hclen]. subst clen.
-  cbn [set_th_field pkt_th]. unfold splice.
+  cbn [set_th_field with_pkt_th pkt_th]. unfold splice.
   rewrite !length_app, length_firstn, length_skipn.
   rewrite csum_update_field_length. lia.
 Qed.
@@ -1651,14 +1554,7 @@ Definition set_nh_addr_ip4 (p : packet) (off len : nat) (v : data) : packet :=
   let ck0  := slice nh1 ip_check_off ip_check_len in
   let ck1  := csum_update_field ck0 old v in
   let nh2  := splice nh1 ip_check_off ip_check_len ck1 in
-  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p;
-     pkt_sock := pkt_sock p; pkt_eh := pkt_eh p; pkt_lh := pkt_lh p;
-     pkt_nh := nh2; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
-     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+  with_pkt_nh p nh2.
 
 (** [set_nh_addr_ip4] leaves the transport header untouched. *)
 Lemma set_nh_addr_ip4_th : forall p off len v,
@@ -1816,7 +1712,7 @@ Lemma slice_set_nh_addr_ip4_same : forall p off len v,
   slice (pkt_nh (set_nh_addr_ip4 p off len v)) off len = v.
 Proof.
   intros p off len v Hoff Hv Hlen.
-  unfold set_nh_addr_ip4; cbn [pkt_nh].
+  unfold set_nh_addr_ip4; cbn [with_pkt_nh pkt_nh].
   rewrite slice_splice_after
     by (unfold ip_check_off, ip_check_len; try apply csum_update_field_length; lia).
   unfold slice, splice.
@@ -1886,28 +1782,17 @@ Qed.
     drops the exact [key,key] elements.  Every other component of the env (maps,
     routes, limiters) and of the packet is unchanged. *)
 Definition env_set_upd (e : env) (op name : String.string) (key : data) : env :=
-  {| e_set := (fun n =>
+  with_e_set e
+    (fun n =>
        if String.eqb n name
        then if String.eqb op op_delete
             then filter (fun lh => negb (andb (data_eqb (fst lh) key) (data_eqb (snd lh) key)))
                         (e_set e n)
             else (key, key) :: e_set e n
-       else e_set e n);
-     e_vmap := e_vmap e; e_map := e_map e;
-     e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
-     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
-     e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
+       else e_set e n).
 
 Definition set_env_dynset (p : packet) (op name : String.string) (key : data) : packet :=
-  {| pkt_env := env_set_upd (pkt_env p) op name key;
-     pkt_meta := pkt_meta p; pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
-     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
-     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+  with_pkt_env p (env_set_upd (pkt_env p) op name key).
 
 (** The map analogue: a `dynset` whose target is a MAP (`add @m {key : data}`)
     learns the entry [key -> data] in the named value-map [e_map], so a later
@@ -1915,27 +1800,16 @@ Definition set_env_dynset (p : packet) (op name : String.string) (key : data) : 
     entry (so [map_lookup_data] finds the freshest first), delete drops entries
     with that key. *)
 Definition env_map_upd (e : env) (op name : String.string) (key dat : data) : env :=
-  {| e_set := e_set e; e_vmap := e_vmap e;
-     e_map := (fun n =>
+  with_e_map e
+    (fun n =>
        if String.eqb n name
        then if String.eqb op op_delete
             then filter (fun kv => negb (data_eqb (fst kv) key)) (e_map e n)
             else (key, dat) :: e_map e n
-       else e_map e n);
-     e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
-     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
-     e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
+       else e_map e n).
 
 Definition set_env_dynset_map (p : packet) (op name : String.string) (key dat : data) : packet :=
-  {| pkt_env := env_map_upd (pkt_env p) op name key dat;
-     pkt_meta := pkt_meta p; pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
-     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
-     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+  with_pkt_env p (env_map_upd (pkt_env p) op name key dat).
 
 (** The VM's meta/ct effect of running one rule's bytecode: mirrors [run_rule]'s
     register threading, but instead of a verdict it returns the packet with the
@@ -2500,14 +2374,7 @@ Definition apply_nat_tuple (ns : nat_spec) (p : packet)
     this records the established translation into the shared, threaded env exactly
     where the kernel writes it into the conntrack entry. *)
 Definition store_nat_mapping (p : packet) (m : option data * option data * option nat * option data) : packet :=
-  {| pkt_env := env_nat_upd (pkt_env p) (pkt_flow p) m; pkt_meta := pkt_meta p;
-     pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
-     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
-     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+  with_pkt_env p (env_nat_upd (pkt_env p) (pkt_flow p) m).
 
 (** The data-plane NAT effect of a terminal rule at hook [h], now FLOW-STATEFUL,
     mirroring [nf_nat_setup_info]/[nft_nat_eval]:
@@ -2914,12 +2781,7 @@ Definition eval_hook (fuel : nat) (rs : list hooked_chain) (h : hook_id) (p : pa
     packet's own [pkt_env] (limiter/quota/conntrack/set state is shared, not
     per-packet). *)
 Definition set_env (p : packet) (e : env) : packet :=
-  {| pkt_env := e; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
-     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p; pkt_numgen := pkt_numgen p;
-     pkt_osf := pkt_osf p; pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p;
-     pkt_xfrm := pkt_xfrm p; pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p; pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p; pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+  with_pkt_env p e.
 
 (** Run a sequence of packets against a shared, evolving environment [e]: each
     packet is evaluated by [ev] against the current [e], then [step] updates [e]

@@ -963,7 +963,7 @@ Proof.
       (* the merged head reads setname n; resolve it in dd'' to its two points *)
       assert (Hlook : e_set (pkt_env (set_env p (env_with_sets base dd''))) (setname n)
                       = [(v1,v1);(v2,v2)]).
-      { cbn [set_env pkt_env]. rewrite e_set_declared.
+      { cbn [set_env with_pkt_env pkt_env]. rewrite e_set_declared.
         erewrite (optimize_rules_sets_assoc_stable rest (S n) dn _ _ _ (setname n) _ Erec).
         - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
         - intros k Hk Heq. apply setname_inj in Heq. lia. }
@@ -1612,7 +1612,7 @@ Proof.
            (* resolve the minted set name to its N elements in dd'' *)
            assert (Hlook : e_set (pkt_env (set_env p (env_with_sets base dd''))) (setname n)
                            = elems).
-           { cbn [set_env pkt_env]. rewrite e_set_declared.
+           { cbn [set_env with_pkt_env pkt_env]. rewrite e_set_declared.
              erewrite (optimize_rules_setsN_assoc_stable fuel (S n) dn _ _ _ _
                          (setname n) _ (eq_sym Erec)).
              - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.

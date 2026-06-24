@@ -81,7 +81,7 @@ Proof.
   rewrite set_daddr_nh;
     change (daddr_slot "ip6") with (24, 16);
     change (String.eqb "ip6" nat_fam_ip6) with true; cbv iota;
-    cbn [set_nh_field pkt_nh].
+    cbn [set_nh_field with_pkt_nh pkt_nh].
     unfold slice, splice.
   assert (H24 : List.length (firstn 24 (pkt_nh p)) = 24)
     by (rewrite firstn_length_le; [reflexivity | lia]).
@@ -101,7 +101,7 @@ Proof.
   rewrite set_saddr_nh;
     change (saddr_slot "ip6") with (8, 16);
     change (String.eqb "ip6" nat_fam_ip6) with true; cbv iota;
-    cbn [set_nh_field pkt_nh].
+    cbn [set_nh_field with_pkt_nh pkt_nh].
     unfold slice, splice.
   assert (H8 : List.length (firstn 8 (pkt_nh p)) = 8)
     by (rewrite firstn_length_le; [reflexivity | lia]).
@@ -121,7 +121,7 @@ Proof.
   intros p Hlen.
   rewrite set_daddr_nh; change (daddr_slot "ip6") with (24, 16);
     change (String.eqb "ip6" nat_fam_ip6) with true; cbv iota;
-    cbn [set_nh_field pkt_nh].
+    cbn [set_nh_field with_pkt_nh pkt_nh].
   unfold splice. rewrite !app_length, firstn_length_le by lia.
   rewrite skipn_length. unfold tgt6. rewrite repeat_length. lia.
 Qed.

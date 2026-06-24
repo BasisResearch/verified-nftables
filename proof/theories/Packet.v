@@ -429,6 +429,134 @@ Record packet : Type := {
                                packet with an entry). *)
 }.
 
+(** ** Single-field record-update combinators ("withers").
+
+    [coq-record-update] is not available in-tree, so we provide the handful of
+    per-field functional setters the semantics actually mutate, each defined ONCE
+    as a full record literal.  Every semantic setter (set_meta / set_ct /
+    set_nh_field / set_th_field / set_untracked / set_env / ...) is then a thin
+    composition over these, instead of re-listing all 25 packet (resp. 13 env)
+    fields.  Records are non-primitive, so [pkt_X (with_pkt_Y p v)] reduces by
+    [cbn]/[simpl]/[vm_compute] to exactly the same normal form as the old inline
+    literal (a projection of a constructor) — the refactor is definitionally
+    transparent and every proof is preserved verbatim.  Adding a field to
+    [packet]/[env] now forces editing ONE literal per record (the wither group
+    below) rather than ~14 setters. *)
+
+(** Replace just the named env field, copying the other 12. *)
+Definition with_e_set (e : env) (v : string -> list (data * data)) : env :=
+  {| e_set := v; e_vmap := e_vmap e; e_map := e_map e;
+     e_routes := e_routes e; e_rt := e_rt e;
+     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
+     e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
+
+Definition with_e_map (e : env) (v : string -> list (data * data)) : env :=
+  {| e_set := e_set e; e_vmap := e_vmap e; e_map := v;
+     e_routes := e_routes e; e_rt := e_rt e;
+     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
+     e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
+
+Definition with_e_limit (e : env) (v : limit_spec -> nat) : env :=
+  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
+     e_routes := e_routes e; e_rt := e_rt e;
+     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_limit := v; e_quota := e_quota e; e_connlimit := e_connlimit e;
+     e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
+
+Definition with_e_quota (e : env) (v : quota_spec -> nat) : env :=
+  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
+     e_routes := e_routes e; e_rt := e_rt e;
+     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_limit := e_limit e; e_quota := v; e_connlimit := e_connlimit e;
+     e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
+
+Definition with_e_connlimit (e : env) (v : connlimit_spec -> list data) : env :=
+  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
+     e_routes := e_routes e; e_rt := e_rt e;
+     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := v;
+     e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
+
+Definition with_e_ct (e : env) (v : data -> ct_key -> data) : env :=
+  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
+     e_routes := e_routes e; e_rt := e_rt e;
+     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
+     e_ct := v; e_nat := e_nat e; e_numgen := e_numgen e |}.
+
+Definition with_e_nat (e : env)
+    (v : data -> option (option data * option data * option nat * option data)) : env :=
+  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
+     e_routes := e_routes e; e_rt := e_rt e;
+     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
+     e_ct := e_ct e; e_nat := v; e_numgen := e_numgen e |}.
+
+Definition with_e_numgen (e : env) (v : numgen_spec -> nat) : env :=
+  {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
+     e_routes := e_routes e; e_rt := e_rt e;
+     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
+     e_ct := e_ct e; e_nat := e_nat e; e_numgen := v |}.
+
+(** Replace just the named packet field, copying the other 24. *)
+Definition with_pkt_env (p : packet) (v : env) : packet :=
+  {| pkt_env := v; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
+     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p;
+     pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p;
+     pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+
+Definition with_pkt_meta (p : packet) (v : meta_key -> data) : packet :=
+  {| pkt_env := pkt_env p; pkt_meta := v; pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
+     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p;
+     pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p;
+     pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+
+Definition with_pkt_nh (p : packet) (v : list byte) : packet :=
+  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
+     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := v; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p;
+     pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p;
+     pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+
+Definition with_pkt_th (p : packet) (v : list byte) : packet :=
+  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
+     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := v;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p;
+     pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p;
+     pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+
+Definition with_pkt_untracked (p : packet) (v : bool) : packet :=
+  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
+     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
+     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
+     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
+     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
+     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
+     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p;
+     pkt_flow := pkt_flow p; pkt_untracked := v;
+     pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
+
 (** Read [len] bytes at [off] from a header byte string. *)
 Definition slice (bs : list byte) (off len : nat) : data :=
   firstn len (skipn off bs).

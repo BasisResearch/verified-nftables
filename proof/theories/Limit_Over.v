@@ -128,7 +128,8 @@ Theorem quota_consumes_packet_len : forall p,
   e_quota (pkt_env (set_quota p q_bytes100)) q_bytes100
     = e_quota (pkt_env p) q_bytes100 - N.to_nat (data_to_N (pkt_meta p MKlen)).
 Proof.
-  intro p. unfold set_quota, env_quota_upd, quota_cost; cbn [pkt_env e_quota].
+  intro p. unfold set_quota, env_quota_upd, quota_cost;
+    cbn [with_pkt_env with_e_quota pkt_env e_quota].
   rewrite quota_eqb_b100. reflexivity.
 Qed.
 
@@ -225,7 +226,8 @@ Theorem connlimit_same_flow_idempotent : forall p,
   data_mem (pkt_flow p) (e_connlimit (pkt_env p) cl1) = true ->
   e_connlimit (pkt_env (set_connlimit p cl1)) cl1 = e_connlimit (pkt_env p) cl1.
 Proof.
-  intros p Hmem. unfold set_connlimit, env_connlimit_upd, connlimit_after; cbn [pkt_env e_connlimit].
+  intros p Hmem. unfold set_connlimit, env_connlimit_upd, connlimit_after;
+    cbn [with_pkt_env with_e_connlimit pkt_env e_connlimit].
   replace (connlimit_eqb cl1 cl1) with true by (unfold connlimit_eqb, cl1; reflexivity).
   rewrite Hmem. reflexivity.
 Qed.
@@ -249,7 +251,8 @@ Proof.
     rewrite Hseed. cbn [data_mem existsb List.length]. unfold cl1; cbn [cl_count cl_flags Nat.land Nat.eqb Nat.ltb]. reflexivity.
   - (* second, SAME-flow packet: pkt_flow p2 already counted -> count still 1 <= 1 *)
     cbn [eval_matchcond_body]. unfold connlimit_under, connlimit_count, connlimit_after.
-    rewrite Hthread. unfold set_connlimit, env_connlimit_upd, connlimit_after; cbn [pkt_env e_connlimit].
+    rewrite Hthread. unfold set_connlimit, env_connlimit_upd, connlimit_after;
+      cbn [with_pkt_env with_e_connlimit pkt_env e_connlimit].
     replace (connlimit_eqb cl1 cl1) with true by (unfold connlimit_eqb, cl1; reflexivity).
     rewrite Hseed. cbn [data_mem existsb]. rewrite <- Hflow.
     rewrite data_eqb_refl. cbn [List.length]. unfold cl1; cbn [cl_count cl_flags Nat.land Nat.eqb Nat.ltb]. reflexivity.
