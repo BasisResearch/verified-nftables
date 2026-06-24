@@ -508,7 +508,7 @@ Proof.
       (* the merged rule reads vmapname n; resolve it in dd'' to its two points *)
       assert (Hlook : e_vmap (pkt_env (set_env p (env_with_sets base dd''))) (vmapname n)
                       = [(v1,v1,w1);(v2,v2,w2)]).
-      { cbn [set_env pkt_env]. rewrite e_vmap_env_with_sets.
+      { cbn [set_env with_pkt_env pkt_env]. rewrite e_vmap_env_with_sets.
         erewrite (optimize_rules_vmap_assoc_stable rest (S n) dn _ _ _ (vmapname n) _ Erec).
         - subst dn; cbn [sd_vmaps assoc_str]. rewrite String.eqb_refl. reflexivity.
         - intros k Hk Heq. apply vmapname_inj in Heq. lia. }
@@ -995,7 +995,7 @@ Proof.
              - apply (Hfresh k); [lia | exact Hin]. }
            assert (Hlook : e_vmap (pkt_env (set_env p (env_with_sets base dd'')))
                              (vmapname n) = map vmap_pt entries).
-           { cbn [set_env pkt_env]. rewrite e_vmap_env_with_sets.
+           { cbn [set_env with_pkt_env pkt_env]. rewrite e_vmap_env_with_sets.
              erewrite (optimize_rules_vmapN_assoc_stable fuel (S n) dn _ _ _ _
                          (vmapname n) _ (eq_sym Erec)).
              - subst dn; cbn [sd_vmaps assoc_str]. rewrite String.eqb_refl. reflexivity.

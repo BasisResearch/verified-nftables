@@ -202,7 +202,7 @@ Lemma mark_through_dnat : forall h p,
   field_value FMetaMark (apply_nat h pre2 p) = field_value FMetaMark p.
 Proof.
   intros h p Horig Hnone. rewrite (pre2_apply_dnat h p Horig Hnone).
-  unfold field_value. cbn [field_load do_load pkt_meta store_nat_mapping].
+  unfold field_value. cbn [field_load do_load pkt_meta store_nat_mapping with_pkt_env].
   apply set_daddr_meta.
 Qed.
 
@@ -417,7 +417,7 @@ Proof.
   rewrite (masquerade_output p ifaddr Hfam Hmark Horig Hnone Hifa Hne). cbn [snd].
   (* [store_nat_mapping] preserves pkt_nh, so saddr read-back is the spliced value *)
   unfold field_value; cbn [field_load do_load]; unfold read_payload.
-  cbn [store_nat_mapping pkt_nh].
+  cbn [store_nat_mapping with_pkt_env pkt_nh].
   fold (read_payload PNetwork 12 4 (set_saddr "ip" p ifaddr)).
   fold (field_value FIp4Saddr (set_saddr "ip" p ifaddr)).
   apply saddr_after_set; assumption.
