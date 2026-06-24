@@ -1145,6 +1145,63 @@ Qed.
     [eval_rules] directly: in first-match order the run fires iff SOME rule loads &
     applies, with the common outcome — exactly the disjunction
     [existsb (eval_matchcond .) ms] that the merged head realises. *)
+(** *** Fully general N-way run collapse (rule-list level, family-agnostic).
+
+    A nonempty run [rs] of rules that all share the SAME loadability [LL] and the SAME
+    outcome [O] on [p] collapses to ONE merged rule [rm] whose loadability is [LL] and
+    whose [rule_applies] is the [existsb] of the run's applicabilities.  Used by the
+    value->set and concat-set N-way passes (both have a single shared verdict); the
+    vmap pass needs the value-DEPENDENT analogue and is handled separately. *)
+Lemma eval_rules_run_collapse :
+  forall (rs : list rule) (LL : bool) (O : option verdict) rm rest p,
+  rs <> [] ->
+  (forall r, In r rs -> rule_loadable r p = LL) ->
+  (forall r, In r rs -> outcome r p = O) ->
+  rule_loadable rm p = LL ->
+  outcome rm p = O ->
+  rule_applies rm p = existsb (fun r => rule_applies r p) rs ->
+  eval_rules (rm :: rest) p = eval_rules (rs ++ rest) p.
+Proof.
+  intros rs LL O rm rest p Hne HL HO Hrl Hro Hra.
+  cbn [eval_rules]. rewrite Hrl, Hro, Hra.
+  (* characterise eval_rules (rs ++ rest) p *)
+  assert (Hrun :
+    eval_rules (rs ++ rest) p
+    = if (LL && existsb (fun r => rule_applies r p) rs) then
+        match O with
+        | Some v => if terminal v then Some v else eval_rules rest p
+        | None => eval_rules rest p
+        end
+      else eval_rules rest p).
+  { assert (Hterm :
+        (match O with Some w => if terminal w then Some w else eval_rules rest p
+                    | None => eval_rules rest p end = eval_rules rest p)
+        \/ (exists v, O = Some v /\ terminal v = true)).
+    { destruct O as [v |]; [destruct (terminal v) eqn:Et;
+        [ right; eauto | left; reflexivity ] | left; reflexivity ]. }
+    destruct Hterm as [Htarget | [v [EO Ev]]].
+    - transitivity (eval_rules rest p).
+      2:{ rewrite Htarget. destruct (LL && _); reflexivity. }
+      clear Hne Hra Hrl Hro. revert HL HO.
+      induction rs as [| r rs IH]; intros HL HO; [reflexivity|].
+      cbn [app eval_rules].
+      rewrite (HL r (or_introl eq_refl)), (HO r (or_introl eq_refl)).
+      rewrite (IH (fun r' Hr' => HL r' (or_intror Hr'))
+                  (fun r' Hr' => HO r' (or_intror Hr'))).
+      destruct (LL && rule_applies r p); [ rewrite Htarget; reflexivity | reflexivity ].
+    - rewrite EO. clear Hne Hra Hrl Hro. revert HL HO.
+      induction rs as [| r rs IH]; intros HL HO.
+      + cbn [app eval_rules existsb]. rewrite Bool.andb_false_r. reflexivity.
+      + cbn [app eval_rules].
+        rewrite (HL r (or_introl eq_refl)), (HO r (or_introl eq_refl)).
+        rewrite (IH (fun r' Hr' => HL r' (or_intror Hr'))
+                    (fun r' Hr' => HO r' (or_intror Hr'))).
+        cbn [existsb]. rewrite EO, Ev.
+        destruct LL; cbn [andb]; [| reflexivity].
+        destruct (rule_applies r p); cbn [orb]; reflexivity. }
+  rewrite Hrun. reflexivity.
+Qed.
+
 Lemma eval_rules_run_merge_abs :
   forall (ms : list matchcond) (ML : packet -> bool) body r1 m12 rest p,
   ms <> [] ->
