@@ -13,6 +13,18 @@ adversary can no longer substantiate a divergence.
 The audit converged on 2026-06-22: after a final round of diligent, C-source-grounded
 search, the red agent could not substantiate any new infidelity (`satisfied=true`).
 
+> **As-of note (snapshot).** This document is a historical record of that audit run: its
+> commit references (`75df26b` baseline, `1a17d10` HEAD) and "52 fixes" tally are accurate
+> *as of 2026-06-22 on the then-current `verified-nft-compiler` branch*. That branch has
+> since been merged into `main`, which has moved on: as of 2026-06-25, `main` is ~47 commits
+> past `1a17d10` and carries later objectives that postdate this audit — the table optimizer
+> (`optimize_table_correct`), multi-address NAT primary selection
+> (`masq_saddr_is_selected_primary`), fib precision (`fib_local_hostwide_crossiface`), and
+> the per-datatype validity layer. To verify a single fix from the list below, read it in its
+> historical context; the *current* headline guarantees live in `proof/DEVELOPMENT.md`. The
+> audit narrative itself (which infidelities were found and how each was made faithful)
+> remains valid.
+
 ---
 
 ## The workflow
