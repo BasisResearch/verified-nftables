@@ -670,3 +670,222 @@ Proof.
     as [[m'' dd''] rr''] eqn:E.
   inversion H; subst. apply (optimize_rules_concatN_vmaps _ _ _ _ _ _ _ E).
 Qed.
+
+(** ** Part 3: generalized vmapN / concatN correctness (weaker-than-[rules_clean]
+    precondition true of a PARTIALLY-MERGED chain).
+
+    A merge pass emits two kinds of rules: CLEAN (untouched) rules with a value head
+    [MCmp f CEq v] ([head_value/head_value2 = Some]), and LOOKUP rules ([MConcatSet]
+    head / vmap rule) which are NOT clean but whose body is matches-only and which —
+    for the NEXT pass — are non-mergeable ([head_value/head_value2 = None]) and read
+    only set names (no vmap name).  [rule_lookup_ok] captures exactly this. *)
+
+Definition rule_lookup_vmapN_ok (r : rule) : Prop :=
+  rule_clean r = true
+  \/ (head_value r = None
+      /\ body_only_matches (r_body r) = true
+      /\ rule_vmap_name r = []).
+
+Definition rs_vmapN_ok (rs : list rule) : Prop := Forall rule_lookup_vmapN_ok rs.
+
+(** A run-head rule ([head_value = Some]) under the ok-predicate is CLEAN. *)
+Lemma rule_lookup_vmapN_ok_head_clean : forall r f v body,
+  rule_lookup_vmapN_ok r -> head_value r = Some (f, v, body) -> rule_clean r = true.
+Proof.
+  intros r f v body [Hcl | [Hnone _]] Hhd; [exact Hcl |].
+  rewrite Hhd in Hnone; discriminate.
+Qed.
+
+(** Two decls with the SAME [sd_sets] give the same lookup at every set name. *)
+Lemma e_set_eq_of_sd_sets_eq : forall base d1 d2 nm,
+  sd_sets d1 = sd_sets d2 ->
+  e_set (env_with_sets base d1) nm = e_set (env_with_sets base d2) nm.
+Proof.
+  intros base d1 d2 nm Hs. rewrite !e_set_declared. rewrite Hs. reflexivity.
+Qed.
+
+(** A single ok-rule evaluates IDENTICALLY under two decls with equal [sd_sets]:
+    clean rules are env-stable everywhere; lookup rules read only [e_set]. *)
+Lemma rule_lookup_vmapN_ok_agree : forall r p base d1 d2,
+  rule_lookup_vmapN_ok r -> sd_sets d1 = sd_sets d2 ->
+  rule_loadable r (set_env p (env_with_sets base d1))
+    = rule_loadable r (set_env p (env_with_sets base d2))
+  /\ rule_applies r (set_env p (env_with_sets base d1))
+    = rule_applies r (set_env p (env_with_sets base d2))
+  /\ outcome r (set_env p (env_with_sets base d1))
+    = outcome r (set_env p (env_with_sets base d2)).
+Proof.
+  intros r p base d1 d2 [Hcl | [Hnone [Hbm Hvn]]] Hs.
+  - apply (rule_clean_env r p base d1 d2 Hcl).
+  - assert (Hda : decls_agree_rule base d1 d2 r).
+    { split.
+      - intros nm _. apply e_set_eq_of_sd_sets_eq; exact Hs.
+      - intros nm Hnm. rewrite Hvn in Hnm. destruct Hnm. }
+    repeat split.
+    + apply (rule_loadable_agree r p base d1 d2 Hbm Hda).
+    + apply (rule_applies_agree r p base d1 d2 Hbm Hda).
+    + apply (outcome_agree r p base d1 d2 Hbm Hda).
+Qed.
+
+Lemma eval_rules_vmapN_ok_env : forall rs p base d1 d2,
+  rs_vmapN_ok rs -> sd_sets d1 = sd_sets d2 ->
+  eval_rules rs (set_env p (env_with_sets base d1))
+  = eval_rules rs (set_env p (env_with_sets base d2)).
+Proof.
+  induction rs as [| r rs IH]; intros p base d1 d2 Hok Hs; [reflexivity|].
+  inversion Hok as [| ? ? Hr Hrest]; subst.
+  destruct (rule_lookup_vmapN_ok_agree r p base d1 d2 Hr Hs) as [Hl [Ha Ho]].
+  cbn [eval_rules]. rewrite Hl, Ha, Ho.
+  rewrite (IH p base d1 d2 Hrest Hs). reflexivity.
+Qed.
+
+(** ok-ness of a suffix and of [take_vmap_run]'s leftover. *)
+Lemma rs_vmapN_ok_tl : forall r rs, rs_vmapN_ok (r :: rs) -> rs_vmapN_ok rs.
+Proof. intros r rs H. inversion H; assumption. Qed.
+
+(** *** GENERALIZED N-WAY vmap merge correctness: precondition [rs_vmapN_ok]
+    (clean cmp-rules merge; pre-existing matches-only lookup rules eval-stable). *)
+Theorem optimize_rules_vmapN_correct_gen : forall fuel rs n d n' d' rs' base p,
+  optimize_rules_vmapN fuel n d rs = (n', d', rs') ->
+  rs_vmapN_ok rs ->
+  (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
+  eval_rules rs' (set_env p (env_with_sets base d'))
+  = eval_rules rs  (set_env p (env_with_sets base d)).
+Proof.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' base p H Hok Hfresh.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_vmapN_consSS in H.
+      pose proof Hok as Hok0.
+      inversion Hok as [| ? ? Hr1ok Hrest_ok]; subst.
+      destruct (head_value r1) as [[[f v1] body] |] eqn:Ehd.
+      * pose proof (rule_lookup_vmapN_ok_head_clean r1 f v1 body Hr1ok Ehd) as Hc1.
+        destruct (take_vmap_run r1 (r2 :: rest)) as [es rest'] eqn:Erun.
+        destruct (take_vmap_run_shape r1 f v1 body (r2 :: rest) es rest' Ehd Erun)
+          as [Hsplit [HwK HwT]].
+        (* rest' is ok: it is a suffix of (r2 :: rest) via Hsplit *)
+        assert (Hokrest' : rs_vmapN_ok rest').
+        { unfold rs_vmapN_ok in *. rewrite Hsplit in Hrest_ok.
+          apply Forall_app in Hrest_ok. exact (proj2 Hrest_ok). }
+        destruct es as [| e es'].
+        -- remember (optimize_rules_vmapN fuel n d (r2 :: rest)) as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           cbn [eval_rules].
+           rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hrest_ok Hfresh).
+           destruct (rule_clean_env r1 p base dd'' d Hc1) as [Hl [Ha Ho]].
+           rewrite Hl, Ha, Ho. reflexivity.
+        -- destruct (take_vmap_run_head r1 f v1 body r2 rest (e :: es') rest' Ehd Erun
+                       ltac:(discriminate)) as [Hr1eq [HwK1 HwT1]].
+           destruct (has_distinct_verdict (r_verdict r1) (e :: es')) eqn:Hdv.
+           2:{ remember (optimize_rules_vmapN fuel n d (r2 :: rest)) as tt eqn:Erec.
+               destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+               injection H as Hn' Hd' Hr'. subst n' d' rs'.
+               cbn [eval_rules].
+               rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hrest_ok Hfresh).
+               destruct (rule_clean_env r1 p base dd'' d Hc1) as [Hl [Ha Ho]].
+               rewrite Hl, Ha, Ho. reflexivity. }
+           cbv zeta in H.
+           remember (optimize_rules_vmapN fuel (S n)
+                       {| sd_sets := sd_sets d;
+                          sd_vmaps := (vmapname n,
+                            map vmap_pt ((v1, r_verdict r1) :: e :: es')) :: sd_vmaps d;
+                          sd_maps := sd_maps d |} rest')
+             as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           set (entries := (v1, r_verdict r1) :: e :: es') in *.
+           set (dn := {| sd_sets := sd_sets d;
+                         sd_vmaps := (vmapname n, map vmap_pt entries) :: sd_vmaps d;
+                         sd_maps := sd_maps d |}) in *.
+           assert (Hrun_eq : r1 :: r2 :: rest
+                   = map (fun vw => orig_rule f (fst vw) body (snd vw)) entries ++ rest').
+           { subst entries. cbn [map app fst snd]. f_equal; [exact Hr1eq | exact Hsplit]. }
+           (* sd_sets unchanged across the whole vmap recursion *)
+           assert (Hsets_dd : sd_sets dd'' = sd_sets dn)
+             by (apply (optimize_rules_vmapN_sets _ _ _ _ _ _ _ (eq_sym Erec))).
+           assert (Hsets_dn : sd_sets dn = sd_sets d) by (subst dn; reflexivity).
+           assert (Htail : eval_rules rr'' (set_env p (env_with_sets base dd''))
+                           = eval_rules rest' (set_env p (env_with_sets base dn))).
+           { eapply (IH rest' (S n) dn m'' dd'' rr'' base p (eq_sym Erec) Hokrest').
+             intros k Hk Hin. subst dn; cbn [sd_vmaps map] in Hin.
+             destruct Hin as [Heq | Hin].
+             - apply vmapname_inj in Heq. lia.
+             - apply (Hfresh k); [lia | exact Hin]. }
+           assert (Hlook : e_vmap (pkt_env (set_env p (env_with_sets base dd'')))
+                             (vmapname n) = map vmap_pt entries).
+           { cbn [set_env with_pkt_env pkt_env]. rewrite e_vmap_env_with_sets.
+             erewrite (optimize_rules_vmapN_assoc_stable fuel (S n) dn _ _ _ _
+                         (vmapname n) _ (eq_sym Erec)).
+             - subst dn; cbn [sd_vmaps assoc_str]. rewrite String.eqb_refl. reflexivity.
+             - intros k Hk Heq. apply vmapname_inj in Heq. lia. }
+           set (qd := set_env p (env_with_sets base dd'')) in *.
+           transitivity (eval_rules
+             (map (fun vw => orig_rule f (fst vw) body (snd vw)) entries ++ rr'') qd).
+           { unfold qd. apply (eval_rules_vmap_mergeN f (vmapname n) entries body rr''
+                                 (set_env p (env_with_sets base dd''))).
+             - exact Hlook.
+             - intros v w Hin. subst entries. destruct Hin as [Hvw | Hin];
+                 [ inversion Hvw; subst; exact HwK1 | apply (HwK v w Hin) ].
+             - intros v w Hin. subst entries. destruct Hin as [Hvw | Hin];
+                 [ inversion Hvw; subst; exact HwT1 | apply (HwT v w Hin) ].
+             - apply body_synproxy_stops_clean.
+               clear -Hc1 Ehd. unfold head_value in Ehd.
+               destruct (r_body r1) as [| [m | s] bb] eqn:Eb; try discriminate.
+               destruct m as [ | | | | g op u | | | | | | | | ]; try discriminate.
+               destruct op; try discriminate. inversion Ehd; subst g u bb.
+               unfold rule_clean in Hc1. rewrite Eb in Hc1.
+               cbn [forallb bi_clean] in Hc1.
+               repeat (apply Bool.andb_true_iff in Hc1 as [Hc1 ?]).
+               match goal with H : forallb bi_clean body = true |- _ => exact H end.
+             - apply body_has_notrack_clean.
+               clear -Hc1 Ehd. unfold head_value in Ehd.
+               destruct (r_body r1) as [| [m | s] bb] eqn:Eb; try discriminate.
+               destruct m as [ | | | | g op u | | | | | | | | ]; try discriminate.
+               destruct op; try discriminate. inversion Ehd; subst g u bb.
+               unfold rule_clean in Hc1. rewrite Eb in Hc1.
+               cbn [forallb bi_clean] in Hc1.
+               repeat (apply Bool.andb_true_iff in Hc1 as [Hc1 ?]).
+               match goal with H : forallb bi_clean body = true |- _ => exact H end. }
+           assert (Htail' : eval_rules rr'' qd = eval_rules rest' qd).
+           { rewrite Htail. unfold qd.
+             apply (eval_rules_vmapN_ok_env rest' p base dn dd'' Hokrest').
+             rewrite Hsets_dd. reflexivity. }
+           rewrite (eval_rules_app_cong
+                      (map (fun vw => orig_rule f (fst vw) body (snd vw)) entries)
+                      rr'' rest' qd Htail').
+           rewrite <- Hrun_eq.
+           unfold qd. apply (eval_rules_vmapN_ok_env (r1 :: r2 :: rest) p base dd'' d Hok0).
+           rewrite Hsets_dd, Hsets_dn. reflexivity.
+      * remember (optimize_rules_vmapN fuel n d (r2 :: rest)) as tt eqn:Erec.
+        destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        cbn [eval_rules].
+        rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hrest_ok Hfresh).
+        (* r1 is a no-op lookup rule (head_value = None): env-stable via ok-agree *)
+        destruct (rule_lookup_vmapN_ok_agree r1 p base dd'' d Hr1ok
+                    (optimize_rules_vmapN_sets _ _ _ _ _ _ _ (eq_sym Erec)))
+          as [Hl [Ha Ho]].
+        rewrite Hl, Ha, Ho. reflexivity.
+Qed.
+
+(** Chain-level generalized vmap correctness. *)
+Theorem optimize_chain_vmapN_correct_gen : forall n d c n' d' c' base p,
+  optimize_chain_vmapN n d c = (n', d', c') ->
+  rs_vmapN_ok (c_rules c) ->
+  (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
+  eval_chain c' (set_env p (env_with_sets base d'))
+  = eval_chain c  (set_env p (env_with_sets base d)).
+Proof.
+  intros n d c n' d' c' base p H Hok Hfresh.
+  unfold optimize_chain_vmapN in H.
+  destruct (optimize_rules_vmapN (List.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:Erec.
+  inversion H; subst n' d' c'. cbn [c_rules c_policy].
+  unfold eval_chain. cbn [c_rules c_policy].
+  rewrite (optimize_rules_vmapN_correct_gen (List.length (c_rules c)) (c_rules c) n d
+             m'' dd'' rr'' base p Erec Hok Hfresh).
+  reflexivity.
+Qed.
