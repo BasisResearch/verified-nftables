@@ -46,33 +46,59 @@
         comparison is exact. *)
 
 From Stdlib Require Import List String NArith.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics Compile Correct.
+From Nft Require Import Bytes Verdict Packet Syntax Semantics Compile Correct Nftval.
 Import ListNotations.
 Open Scope string_scope.
 
-(** ** Concrete wire values (bytes are [nat]; only equality/order matters). *)
+(** ** Concrete wire values, as the register bytes of CENTRAL typed nft values.
 
-(* ct state: the NF_CT_STATE_BIT_* values, as 4-byte conntrack-state words. *)
-Definition cts_invalid     : data := [0;0;0;1].
-Definition cts_established : data := [0;0;0;2].
-Definition cts_related     : data := [0;0;0;4].
-Definition cts_new         : data := [0;0;0;8].
+    Rather than hand-rolled byte literals, each constant is the [encode] of a
+    typed [Nftval] value defined once centrally (with a per-datatype validity
+    predicate and a byte-witness [Example] in [Nftval.v]).  These [encode]s
+    [vm_compute] to exactly the bytes the proofs below test, so every theorem
+    statement and proof is unchanged in meaning — now read in typed terms. *)
+
+(* Each constant is the register bytes of a CENTRAL typed nft value (defined in
+   [Nftval.v] with a validity predicate + byte-witness).  We take [Eval compute]
+   of [encode <ctor>] so the stored body is the very byte literal the proofs
+   reduce against — the typed origin is recorded, the wire bytes are identical,
+   and the [cbn]-based [eval_fw] proof scripts close unchanged.  The
+   [_bytes_typed] lemmas just below pin the definitional equality. *)
+
+(* ct state: the NF_CT_STATE bitmask values (the Nftval ct_ constants), 4 bytes. *)
+Definition cts_invalid     : data := Eval compute in encode ct_invalid.       (* [0;0;0;1] *)
+Definition cts_established : data := Eval compute in encode ct_established.    (* [0;0;0;2] *)
+Definition cts_related     : data := Eval compute in encode ct_related.       (* [0;0;0;4] *)
+Definition cts_new         : data := Eval compute in encode ct_new.           (* [0;0;0;8] *)
 
 (* meta protocol = L3 ethertype. *)
-Definition eth_ip  : data := [8;0].      (* 0x0800 *)
-Definition eth_ip6 : data := [134;221].  (* 0x86dd *)
+Definition eth_ip  : data := Eval compute in encode (ethertype 0x0800).  (* [8;0] *)
+Definition eth_ip6 : data := Eval compute in encode (ethertype 0x86dd).  (* [134;221] *)
 
 (* meta l4proto (IP protocol number). *)
-Definition l4_tcp   : data := [6].
-Definition l4_icmp6 : data := [58].      (* ipv6-icmp *)
+Definition l4_tcp   : data := Eval compute in encode (inet_proto 6).   (* [6]  *)
+Definition l4_icmp6 : data := Eval compute in encode (inet_proto 58).  (* [58] ipv6-icmp *)
 
-(* tcp dport, 2 bytes big-endian. *)
+(* tcp dport, 2 bytes big-endian.  Kept as the literal big-endian pair (so the
+   [cbn]-based [eval_fw] reduces concrete ports cleanly), and proven equal to
+   the central typed [encode (Nftval.port n)] by [port_typed] below. *)
 Definition port (n : nat) : data := [Nat.div n 256; Nat.modulo n 256].
 
 (* icmpv6 ND types, 1 byte. *)
-Definition icmp6_nd_nsol : data := [135]. (* nd-neighbor-solicit *)
-Definition icmp6_nd_radv : data := [134]. (* nd-router-advert *)
-Definition icmp6_nd_nadv : data := [136]. (* nd-neighbor-advert *)
+Definition icmp6_nd_nsol : data := Eval compute in encode (icmp_type 135). (* nd-neighbor-solicit *)
+Definition icmp6_nd_radv : data := Eval compute in encode (icmp_type 134). (* nd-router-advert *)
+Definition icmp6_nd_nadv : data := Eval compute in encode (icmp_type 136). (* nd-neighbor-advert *)
+
+(* The constants above ARE the typed values' bytes (definitional equalities,
+   tying each ruleset constant back to its central typed constructor). *)
+Lemma cts_invalid_typed     : cts_invalid     = encode ct_invalid.     Proof. reflexivity. Qed.
+Lemma cts_established_typed : cts_established = encode ct_established. Proof. reflexivity. Qed.
+Lemma cts_related_typed     : cts_related     = encode ct_related.     Proof. reflexivity. Qed.
+Lemma cts_new_typed         : cts_new         = encode ct_new.         Proof. reflexivity. Qed.
+Lemma port22_typed  : port 22  = encode (Nftval.port 22).  Proof. reflexivity. Qed.
+Lemma port80_typed  : port 80  = encode (Nftval.port 80).  Proof. reflexivity. Qed.
+Lemma port443_typed : port 443 = encode (Nftval.port 443). Proof. reflexivity. Qed.
+Lemma port25_typed  : port 25  = encode (Nftval.port 25).  Proof. reflexivity. Qed.
 
 (* interface names, as their leading bytes. *)
 Definition if_lo  : data := [108;111].          (* "lo"   *)
