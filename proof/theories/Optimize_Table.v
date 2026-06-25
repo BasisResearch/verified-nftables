@@ -14,7 +14,13 @@
 
       3. proves an axiom-free top-level theorem [optimize_table_correct] that the
          WHOLE pipeline is [eval_chain]-preserving over the synthesised
-         declarations, with NO new axioms.
+         declarations, with NO new axioms;
+
+      4. composes (3) with [Correct.compile_chain_sets_correct] into the END-TO-END
+         theorem [optimize_table_compile_correct] (and its fresh-table corollary
+         [optimize_table_compile_correct_init]): the COMPILED BYTECODE of the
+         OPTIMISED chain, run against the synthesised set declarations, yields
+         EXACTLY the verdict of the ORIGINAL source chain under the DSL semantics.
 
     The composed optimizer is what [Extract.v] extracts and what the [glue.ml]
     CLI invokes, so the shipped tool RUNS the verified term. *)
@@ -25,7 +31,7 @@ From Stdlib Require Import Arith.
 From Stdlib Require Import Lia.
 Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
-  Compile Optimize Optimize_Merge Optimize_Vmap Optimize_Concat Optimize_Table_Inv.
+  Compile Correct Optimize Optimize_Merge Optimize_Vmap Optimize_Concat Optimize_Table_Inv.
 
 (** ** Step 1: the base pass preserves [rules_clean].
 
@@ -257,4 +263,42 @@ Proof.
   rewrite (optimize_chain_concatN_correct_gen n1 d1 c1 n2 d2 c2 base p E2 Hcc1 Hfs1).
   rewrite (optimize_chain_setsN_correct n d (optimize_chain c) n1 d1 c1 base p E1 Hc0clean Hfs).
   apply optimize_chain_correct.
+Qed.
+
+(** ** END-TO-END: compile ∘ optimize is correct down to the bytecode.
+
+    [optimize_table_correct] is a DSL->DSL statement; [Correct.compile_chain_sets_correct]
+    is the DSL->bytecode statement.  Their transitive composition is the headline
+    result a user actually wants: running the COMPILED BYTECODE of the OPTIMIZED
+    chain — against the synthesised set declarations [d'] — yields EXACTLY the
+    verdict the ORIGINAL source chain [c] has under the DSL semantics.  So every
+    optimisation pass is sound all the way to the wire, with no new axioms. *)
+Theorem optimize_table_compile_correct : forall n d c n' d' c' base p,
+  optimize_table n d c = (n', d', c') ->
+  rules_clean (c_rules c) = true ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
+  run_chain (compile_chain c') (c_policy c') (set_env p (env_with_sets base d'))
+  = eval_chain c (set_env p (env_with_sets base d)).
+Proof.
+  intros n d c n' d' c' base p H Hclean Hfs Hfv.
+  rewrite (compile_chain_sets_correct c' base d' p).
+  exact (optimize_table_correct n d c n' d' c' base p H Hclean Hfs Hfv).
+Qed.
+
+(** The same end-to-end result for the actual entry point — optimising a fresh
+    table (counter 0, no pre-existing declarations): the freshness side-conditions
+    hold vacuously (the initial set/vmap namespaces are empty), so this is the
+    clean, hypothesis-light statement.  [eval_chain c] does not read any set object
+    (the raw source chain has no [@s] lookups), so the right-hand side is just the
+    DSL verdict of [c]. *)
+Corollary optimize_table_compile_correct_init : forall c base p n' d' c',
+  rules_clean (c_rules c) = true ->
+  optimize_table 0 {| sd_sets := []; sd_vmaps := []; sd_maps := [] |} c = (n', d', c') ->
+  run_chain (compile_chain c') (c_policy c') (set_env p (env_with_sets base d'))
+  = eval_chain c (set_env p (env_with_sets base {| sd_sets := []; sd_vmaps := []; sd_maps := [] |})).
+Proof.
+  intros c base p n' d' c' Hclean H.
+  apply (optimize_table_compile_correct 0 _ c n' d' c' base p H Hclean);
+    intros k _ Hin; cbn in Hin; exact Hin.
 Qed.
