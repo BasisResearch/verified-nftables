@@ -36,7 +36,7 @@
                       [forward_unsolicited_dropped] rules out. *)
 
 From Stdlib Require Import List String NArith.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen.
+From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen Eval_Fw.
 Import ListNotations.
 Open Scope string_scope.
 
@@ -68,33 +68,9 @@ Definition map3 : list (data * data * verdict) :=
    (cts_related, cts_related, Accept);
    (cts_invalid, cts_invalid, Drop)].
 
-(** One-step unfolding lemmas for the fuel-recursive interpreter (kept opaque so
-    [cbn] reduces only the current rule).  Identical to [Ruleset_Verified]. *)
-Lemma erj_nil : forall n cs p, eval_rules_j (S n) cs [] p = None.
-Proof. reflexivity. Qed.
-
-Lemma erj_cons : forall n cs r rest p,
-  eval_rules_j (S n) cs (r :: rest) p =
-  (if andb (rule_loadable r p) (rule_applies r p)
-   then match outcome r p with
-        | None => eval_rules_j n cs rest p
-        | Some Return => None
-        | Some (Jump m) =>
-            match chain_lookup cs m with
-            | Some ch => match eval_rules_j n cs (c_rules ch) p with
-                         | Some v => Some v | None => eval_rules_j n cs rest p end
-            | None => eval_rules_j n cs rest p
-            end
-        | Some (Goto m) =>
-            match chain_lookup cs m with
-            | Some ch => eval_rules_j n cs (c_rules ch) p | None => None end
-        | Some Continue => eval_rules_j n cs rest p
-        | Some v => Some v
-        end
-   else eval_rules_j n cs rest p).
-Proof. reflexivity. Qed.
-
-Opaque eval_rules_j.
+(** The one-step unfolding lemmas [erj_nil]/[erj_cons] for the fuel-recursive
+    interpreter (and [Global Opaque eval_rules_j], so [cbn] reduces only the
+    current rule) come from [Eval_Fw] — the single shared source of truth. *)
 
 (** ** A clean classification of the ct-state vmap [__map3].
 
@@ -102,12 +78,8 @@ Opaque eval_rules_j.
     [data_eqb k key] (by [data_le_antisym]).  Hence the whole lookup is a cascade of
     byte-equality tests — no concrete-byte case analysis on the key is needed. *)
 
-(* A point interval's membership test IS byte equality. *)
-Lemma data_in_iv_point : forall k key, data_in_iv key (k, k) = data_eqb k key.
-Proof.
-  intros k key. unfold data_in_iv; cbn [fst snd].
-  rewrite data_le_antisym. reflexivity.
-Qed.
+(* [data_in_iv_point] — a point interval's membership test IS byte equality —
+   comes from [Eval_Fw] (shared with [Router_Input]). *)
 
 (* The vmap lookup expressed as a cascade of equality tests against the keys: the
    ONLY possible results are [Some Accept] (estab/related), [Some Drop] (invalid),

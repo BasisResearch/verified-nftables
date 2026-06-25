@@ -40,7 +40,7 @@
                             out. *)
 
 From Stdlib Require Import List String NArith.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen.
+From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen Eval_Fw.
 Import ListNotations.
 Open Scope string_scope.
 
@@ -62,43 +62,11 @@ Definition dport_ssh : data := [0;22].
 
 Definition in_fuel : nat := 8.
 
-(** One-step unfolding lemmas for the fuel-recursive interpreter (kept opaque so
-    [cbn] reduces only the current rule).  Identical to [Ruleset_Verified]. *)
-Lemma erj_nil : forall n cs p, eval_rules_j (S n) cs [] p = None.
-Proof. reflexivity. Qed.
-
-Lemma erj_cons : forall n cs r rest p,
-  eval_rules_j (S n) cs (r :: rest) p =
-  (if andb (rule_loadable r p) (rule_applies r p)
-   then match outcome r p with
-        | None => eval_rules_j n cs rest p
-        | Some Return => None
-        | Some (Jump m) =>
-            match chain_lookup cs m with
-            | Some ch => match eval_rules_j n cs (c_rules ch) p with
-                         | Some v => Some v | None => eval_rules_j n cs rest p end
-            | None => eval_rules_j n cs rest p
-            end
-        | Some (Goto m) =>
-            match chain_lookup cs m with
-            | Some ch => eval_rules_j n cs (c_rules ch) p | None => None end
-        | Some Continue => eval_rules_j n cs rest p
-        | Some v => Some v
-        end
-   else eval_rules_j n cs rest p).
-Proof. reflexivity. Qed.
-
-Lemma erj_empty : forall m cs p, eval_rules_j m cs [] p = None.
-Proof. destruct m; reflexivity. Qed.
-
-Opaque eval_rules_j.
-
-(** ** Point-interval vmap classification (as in [Router_Forward]). *)
-Lemma data_in_iv_point : forall k key, data_in_iv key (k, k) = data_eqb k key.
-Proof.
-  intros k key. unfold data_in_iv; cbn [fst snd].
-  rewrite data_le_antisym. reflexivity.
-Qed.
+(** The one-step unfolding lemmas [erj_nil]/[erj_cons]/[erj_empty] for the
+    fuel-recursive interpreter (and [Global Opaque eval_rules_j], so [cbn] reduces
+    only the current rule), plus the point-interval classifier [data_in_iv_point],
+    come from [Eval_Fw] — the single shared source of truth (also used by
+    [Router_Forward]). *)
 
 (* The ct-state vmap [__map1] (== [__map3]) the parser emitted. *)
 Definition map1 : list (data * data * verdict) :=

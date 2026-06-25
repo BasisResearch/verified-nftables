@@ -16,7 +16,7 @@
     by [eval_fw_core]. *)
 
 From Stdlib Require Import List.
-From Nft Require Import Verdict Packet Syntax Semantics.
+From Nft Require Import Bytes Verdict Packet Syntax Semantics.
 Import ListNotations.
 
 (** One-step unfolding lemmas for the fuel-recursive chain interpreter.  We keep
@@ -47,7 +47,22 @@ Lemma erj_cons : forall n cs r rest p,
    else eval_rules_j n cs rest p).
 Proof. reflexivity. Qed.
 
+(** Empty rule list returns [None] regardless of fuel (covers the [O] fuel case
+    that [erj_nil] does not). *)
+Lemma erj_empty : forall m cs p, eval_rules_j m cs [] p = None.
+Proof. destruct m; reflexivity. Qed.
+
 Global Opaque eval_rules_j.
+
+(** A point interval's membership test [data_in_iv key (k, k)] IS byte equality
+    [data_eqb k key] (the [<=] both ways collapse by [data_le_antisym]).  Used by
+    the router vmap classifications to turn point-interval lookups into a cascade
+    of byte-equality tests without any concrete-byte case analysis on the key. *)
+Lemma data_in_iv_point : forall k key, data_in_iv key (k, k) = data_eqb k key.
+Proof.
+  intros k key. unfold data_in_iv; cbn [fst snd].
+  rewrite data_le_antisym. reflexivity.
+Qed.
 
 (** The shared engine: step one rule at a time, rewriting the per-packet field
     values from the hypotheses as each match is reached.  [field_value] /

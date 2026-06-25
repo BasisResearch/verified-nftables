@@ -41,7 +41,7 @@
         property set could not see). *)
 
 From Stdlib Require Import List String NArith.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen Router_Input.
+From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen Router_Input Eval_Fw.
 Import ListNotations.
 Open Scope string_scope.
 
