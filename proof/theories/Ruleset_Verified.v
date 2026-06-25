@@ -9,15 +9,19 @@
     the installed netlink bytecode too. *)
 
 From Stdlib Require Import List String NArith.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics Ruleset_Gen Eval_Fw.
+From Nft Require Import Bytes Verdict Packet Syntax Semantics Ruleset_Gen Nftval Eval_Fw.
 Import ListNotations.
 Open Scope string_scope.
 
-(** Concrete wire values (only equality/order matters). *)
-Definition cts_invalid     : data := [0;0;0;1].
-Definition cts_established : data := [0;0;0;2].
-Definition cts_related     : data := [0;0;0;4].
-Definition cts_new         : data := [0;0;0;8].
+(** Concrete wire values (only equality/order matters).  The ct-state values are
+    routed through the central typed nft constructors + [encode] (as
+    [Example_Ruleset]/[Nftval] do) so the byte literals cannot drift from the
+    central conntrack-state encoding; [Eval compute] reduces each to the very
+    literal the [cbn]-based proofs match against. *)
+Definition cts_invalid     : data := Eval compute in encode ct_invalid.      (* [0;0;0;1] *)
+Definition cts_established : data := Eval compute in encode ct_established.   (* [0;0;0;2] *)
+Definition cts_related     : data := Eval compute in encode ct_related.      (* [0;0;0;4] *)
+Definition cts_new         : data := Eval compute in encode ct_new.          (* [0;0;0;8] *)
 Definition eth_ip  : data := [8;0].
 Definition eth_ip6 : data := [134;221].
 Definition l4_tcp   : data := [6].

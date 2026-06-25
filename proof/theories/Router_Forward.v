@@ -36,15 +36,19 @@
                       [forward_unsolicited_dropped] rules out. *)
 
 From Stdlib Require Import List String NArith.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen Eval_Fw.
+From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen Nftval Eval_Fw.
 Import ListNotations.
 Open Scope string_scope.
 
-(** Concrete ct-state wire values (only equality matters; big-endian 32-bit). *)
-Definition cts_invalid     : data := [0;0;0;1].
-Definition cts_established : data := [0;0;0;2].
-Definition cts_related     : data := [0;0;0;4].
-Definition cts_new         : data := [0;0;0;8].
+(** Concrete ct-state wire values (only equality matters; big-endian 32-bit).
+    Routed through the central typed nft constructors + [encode] (as
+    [Example_Ruleset]/[Nftval] do) so the byte literals cannot drift from the
+    central conntrack-state encoding; [Eval compute] reduces each to the very
+    literal the [cbn]-based proofs match against. *)
+Definition cts_invalid     : data := Eval compute in encode ct_invalid.      (* [0;0;0;1] *)
+Definition cts_established : data := Eval compute in encode ct_established.   (* [0;0;0;2] *)
+Definition cts_related     : data := Eval compute in encode ct_related.      (* [0;0;0;4] *)
+Definition cts_new         : data := Eval compute in encode ct_new.          (* [0;0;0;8] *)
 
 (* The LAN ingress interface "eth1" as the 16-byte zero-padded ASCII the parser
    emitted in the `iifname eth1 accept` rule. *)
