@@ -1198,3 +1198,80 @@ Proof.
              m'' dd'' rr'' base p Erec Hok Hfresh).
   reflexivity.
 Qed.
+
+(** ** Part 4: OUTPUT structure of the merge passes — each output rule is clean or a
+    matches-only lookup rule reading only DECLARED names — feeding the next stage's
+    [rs_concatN_ok] / [rs_vmapN_ok] precondition. *)
+
+Lemma rule_clean_r_vmap_none : forall r, rule_clean r = true -> r_vmap r = None.
+Proof.
+  intros r Hc. unfold rule_clean in Hc.
+  apply Bool.andb_true_iff in Hc as [Hc _].
+  apply Bool.andb_true_iff in Hc as [Hc _].
+  apply Bool.andb_true_iff in Hc as [Hc _].
+  apply Bool.andb_true_iff in Hc as [Hc _].
+  apply Bool.andb_true_iff in Hc as [Hc _].
+  apply Bool.andb_true_iff in Hc as [_ Hvm].
+  destruct (r_vmap r) eqn:E; [cbn in Hvm; discriminate Hvm | reflexivity].
+Qed.
+
+(** The clean tail exposed by [head_value] is matches-only, set-name-free, and the
+    rule carries no vmap. *)
+Lemma head_value_clean_tail : forall r f v body,
+  rule_clean r = true -> head_value r = Some (f, v, body) ->
+  body_only_matches body = true /\ body_set_names body = [] /\ r_vmap r = None.
+Proof.
+  intros r f v body Hc Hhd.
+  pose proof (rule_clean_forallb_bi_clean r Hc) as Hb.
+  unfold head_value in Hhd.
+  destruct (r_body r) as [| [m | s] tl] eqn:Eb; try discriminate.
+  destruct m as [ | | | | g op u | | | | | | | | ]; try discriminate.
+  destruct op; try discriminate. injection Hhd as Hf Hv Htl. subst f v body.
+  cbn [forallb] in Hb. apply Bool.andb_true_iff in Hb as [_ Hbody].
+  split; [| split].
+  - unfold body_only_matches.
+    clear -Hbody. induction tl as [| it b IH]; [reflexivity|].
+    cbn [forallb] in Hbody. apply Bool.andb_true_iff in Hbody as [Hit Hrest].
+    destruct it as [mm | ss]; [| discriminate]. cbn. apply IH. exact Hrest.
+  - unfold body_set_names. apply body_set_names_nil_of_clean_matches.
+    apply forallb_bi_clean_matches_clean. exact Hbody.
+  - apply (rule_clean_r_vmap_none r Hc).
+Qed.
+
+(** A [mk_head (MConcatSet fields false name) body r1] merged lookup rule is
+    [rule_lookup_concatN_ok] when [r1] is clean and [body] is clean-tail. *)
+Lemma merged_MConcatSet_concatN_ok : forall fields name body r1,
+  body_only_matches body = true -> r_vmap r1 = None ->
+  rule_lookup_concatN_ok (mk_head (MConcatSet fields false name) body r1).
+Proof.
+  intros fields name body r1 Hbm Hvn. right. split; [| split].
+  - reflexivity.
+  - unfold body_only_matches, mk_head; cbn [r_body forallb]. exact Hbm.
+  - unfold rule_vmap_name, mk_head; cbn [r_vmap]. rewrite Hvn. reflexivity.
+Qed.
+
+Lemma merged_MConcatSet_vmapN_ok : forall fields name body r1,
+  body_only_matches body = true -> r_vmap r1 = None ->
+  rule_lookup_vmapN_ok (mk_head (MConcatSet fields false name) body r1).
+Proof.
+  intros fields name body r1 Hbm Hvn. right. split; [| split].
+  - reflexivity.
+  - unfold body_only_matches, mk_head; cbn [r_body forallb]. exact Hbm.
+  - unfold rule_vmap_name, mk_head; cbn [r_vmap]. rewrite Hvn. reflexivity.
+Qed.
+
+(** [body_set_names] of [mk_head (MConcatSet fields false name) body] = [name] when
+    [body] reads no set name. *)
+Lemma body_set_names_mk_head_MConcatSet : forall fields name body r1,
+  body_set_names body = [] ->
+  body_set_names (r_body (mk_head (MConcatSet fields false name) body r1)) = [name].
+Proof.
+  intros fields name body r1 Hbn.
+  assert (Hbm : body_set_names (r_body (mk_head (MConcatSet fields false name) body r1))
+              = [name] ++ body_set_names body).
+  { unfold mk_head, body_set_names; cbn [r_body].
+    replace (body_matches (BMatch (MConcatSet fields false name) :: body))
+      with (MConcatSet fields false name :: body_matches body) by reflexivity.
+    cbn [flat_map mc_set_name app]. reflexivity. }
+  rewrite Hbm, Hbn. reflexivity.
+Qed.
