@@ -470,3 +470,162 @@ Proof.
         rewrite (rule_applies_agree_gen r1 p base dd'' d Hda1).
         rewrite (outcome_agree_gen r1 p base dd'' d Hda1). reflexivity.
 Qed.
+
+(** *** concatN. *)
+Theorem optimize_rules_concatN_correct_uncond : forall fuel rs n d n' d' rs' base p,
+  optimize_rules_concatN fuel n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  Forall (rule_set_fresh n) rs ->
+  eval_rules rs' (set_env p (env_with_sets base d'))
+  = eval_rules rs  (set_env p (env_with_sets base d)).
+Proof.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' base p H Hfresh Hrf.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_concatN_consSS in H.
+      inversion Hrf as [| ? ? Hf1 Hrf_tail]; subst.
+      destruct (head_value2 r1) as [[[[[f1 a1] f2] b1] body] |] eqn:Ehd.
+      * destruct (take_concat_run r1 (r2 :: rest)) as [ts rest'] eqn:Erun.
+        destruct (take_concat_run_shape r1 f1 a1 f2 b1 body (r2 :: rest) ts rest' Ehd Erun)
+          as [Hsplit [HwA HwB]].
+        destruct ts as [| t ts'].
+        -- remember (optimize_rules_concatN fuel n d (r2 :: rest)) as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           cbn [eval_rules].
+           rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
+           assert (Hda1 : decls_agree_rule base dd'' d r1).
+           { apply (decls_agree_rule_setseam base d dd'' r1 n).
+             - apply (optimize_rules_concatN_vmaps fuel n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec)).
+             - intros nm X Hf. apply (optimize_rules_concatN_assoc_stable fuel n d (r2 :: rest)
+                                       m'' dd'' rr'' nm X (eq_sym Erec) Hf).
+             - exact Hf1. }
+           rewrite (rule_loadable_agree_gen r1 p base dd'' d Hda1).
+           rewrite (rule_applies_agree_gen r1 p base dd'' d Hda1).
+           rewrite (outcome_agree_gen r1 p base dd'' d Hda1). reflexivity.
+        -- cbv zeta in H.
+           remember (optimize_rules_concatN fuel (S n)
+                       {| sd_sets := (setname n, map pack_tuple ((a1,b1) :: t :: ts'))
+                                     :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           set (tuples := (a1, b1) :: t :: ts') in *.
+           set (dn := {| sd_sets := (setname n, map pack_tuple tuples) :: sd_sets d;
+                         sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) in *.
+           assert (Hrun_eq : r1 :: r2 :: rest
+                   = map (fun ab => orig_rule2 f1 f2 (fst ab) (snd ab) body r1) tuples
+                     ++ rest').
+           { subst tuples. cbn [map app fst snd]. f_equal.
+             - apply (head_value2_canon r1 f1 a1 f2 b1 body Ehd).
+             - exact Hsplit. }
+           assert (Hrf_rest' : Forall (rule_set_fresh (S n)) rest').
+           { eapply Forall_impl; [intros r Hr; apply (rule_set_fresh_mono n (S n) r); [lia | exact Hr] |].
+             assert (Hsub : Forall (rule_set_fresh n) rest').
+             { rewrite Hsplit in Hrf_tail. apply Forall_app in Hrf_tail. exact (proj2 Hrf_tail). }
+             exact Hsub. }
+           assert (Hvm_dd : sd_vmaps dd'' = sd_vmaps d).
+           { rewrite (optimize_rules_concatN_vmaps fuel (S n) dn rest' m'' dd'' rr'' (eq_sym Erec)).
+             subst dn; reflexivity. }
+           assert (Hassoc_dd : forall nm X, (forall k, n <= k -> nm <> setname k) ->
+                     assoc_str nm (sd_sets dd'') X = assoc_str nm (sd_sets d) X).
+           { intros nm X Hf.
+             rewrite (optimize_rules_concatN_assoc_stable fuel (S n) dn rest' m'' dd'' rr'' nm X
+                        (eq_sym Erec) (fun k Hk => Hf k ltac:(lia))).
+             subst dn; cbn [sd_sets assoc_str].
+             destruct (String.eqb nm (setname n)) eqn:Eq.
+             - apply String.eqb_eq in Eq. exfalso. apply (Hf n (Nat.le_refl n) Eq).
+             - reflexivity. }
+           assert (Htail : eval_rules rr'' (set_env p (env_with_sets base dd''))
+                           = eval_rules rest' (set_env p (env_with_sets base dn))).
+           { eapply (IH rest' (S n) dn m'' dd'' rr'' base p (eq_sym Erec)); [| exact Hrf_rest'].
+             intros k Hk Hin. subst dn; cbn [sd_sets map] in Hin.
+             destruct Hin as [Heq | Hin].
+             - apply setname_inj in Heq. lia.
+             - apply (Hfresh k); [lia | exact Hin]. }
+           assert (Hlook : e_set (pkt_env (set_env p (env_with_sets base dd'')))
+                             (setname n) = map pack_tuple tuples).
+           { cbn [set_env with_pkt_env pkt_env]. rewrite e_set_declared.
+             erewrite (optimize_rules_concatN_assoc_stable fuel (S n) dn rest' _ _ _
+                         (setname n) _ (eq_sym Erec)).
+             - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
+             - intros k Hk Heq. apply setname_inj in Heq. lia. }
+           set (qd := set_env p (env_with_sets base dd'')) in *.
+           assert (Hcert : eval_matchcond (MConcatSet [f1; f2] false (setname n)) qd
+                   = existsb (fun ab => andb (eval_matchcond (MCmp f1 CEq (fst ab)) qd)
+                                             (eval_matchcond (MCmp f2 CEq (snd ab)) qd))
+                             tuples).
+           { apply (concat_two_fields_certificate_N f1 f2 tuples (setname n) qd).
+             - exact Hlook.
+             - intros a b Hin Hld.
+               assert (Hfx : field_fixed_len f1 = Some (Datatypes.length a)).
+               { destruct (take_concat_run_head_width r1 f1 a1 f2 b1 body r2 rest
+                             (t :: ts') rest' Ehd Erun ltac:(discriminate)) as [Hh1 _].
+                 subst tuples. destruct Hin as [Hab | Hin].
+                 - injection Hab as -> ->. exact Hh1.
+                 - apply (HwA a b Hin). }
+               apply (field_fixed_len_loaded f1 (Datatypes.length a) qd Hfx Hld).
+             - intros a b Hin Hld.
+               assert (Hfx : field_fixed_len f2 = Some (Datatypes.length b)).
+               { destruct (take_concat_run_head_width r1 f1 a1 f2 b1 body r2 rest
+                             (t :: ts') rest' Ehd Erun ltac:(discriminate)) as [_ Hh2].
+                 subst tuples. destruct Hin as [Hab | Hin].
+                 - injection Hab as -> ->. exact Hh2.
+                 - apply (HwB a b Hin). }
+               apply (field_fixed_len_loaded f2 (Datatypes.length b) qd Hfx Hld). }
+           transitivity (eval_rules
+             (map (fun ab => orig_rule2 f1 f2 (fst ab) (snd ab) body r1) tuples ++ rr'') qd).
+           { apply (eval_rules_run_collapse
+                      (map (fun ab => orig_rule2 f1 f2 (fst ab) (snd ab) body r1) tuples)
+                      (rule_loadable (merged_rule2 f1 f2 (setname n) body r1) qd)
+                      (outcome (merged_rule2 f1 f2 (setname n) body r1) qd)
+                      (merged_rule2 f1 f2 (setname n) body r1) rr'' qd).
+             - subst tuples. discriminate.
+             - intros r Hr. apply in_map_iff in Hr as [ab [Hab _]]. subst r.
+               symmetry. apply merged_rule2_loadable_eq_orig.
+             - intros r Hr. apply in_map_iff in Hr as [ab [Hab _]]. subst r.
+               symmetry. apply merged_rule2_outcome_eq_orig.
+             - reflexivity.
+             - reflexivity.
+             - rewrite merged_rule2_applies. rewrite Hcert.
+               rewrite existsb_map_eq.
+               transitivity (existsb (fun ab =>
+                   andb (andb (eval_matchcond (MCmp f1 CEq (fst ab)) qd)
+                              (eval_matchcond (MCmp f2 CEq (snd ab)) qd))
+                        (rule_applies_walk body qd)) tuples).
+               + rewrite existsb_andb_const. reflexivity.
+               + apply existsb_ext. intros ab _. symmetry. apply orig_rule2_applies. }
+           assert (Htail' : eval_rules rr'' qd = eval_rules rest' qd).
+           { rewrite Htail. unfold qd.
+             apply (eval_rules_agree_gen rest' p base dn dd'').
+             intros r Hr. apply decls_agree_rule_sym.
+             apply (decls_agree_rule_setseam base dn dd'' r (S n)).
+             - apply (optimize_rules_concatN_vmaps fuel (S n) dn rest' m'' dd'' rr'' (eq_sym Erec)).
+             - intros nm X Hf. apply (optimize_rules_concatN_assoc_stable fuel (S n) dn rest'
+                                       m'' dd'' rr'' nm X (eq_sym Erec) Hf).
+             - rewrite Forall_forall in Hrf_rest'. apply Hrf_rest'; exact Hr. }
+           rewrite (eval_rules_app_cong
+                      (map (fun ab => orig_rule2 f1 f2 (fst ab) (snd ab) body r1) tuples)
+                      rr'' rest' qd Htail').
+           rewrite <- Hrun_eq.
+           unfold qd. apply (eval_rules_agree_gen (r1 :: r2 :: rest) p base dd'' d).
+           intros r Hr. apply (decls_agree_rule_setseam base d dd'' r n Hvm_dd Hassoc_dd).
+           rewrite Forall_forall in Hrf. apply Hrf; exact Hr.
+      * remember (optimize_rules_concatN fuel n d (r2 :: rest)) as tt eqn:Erec.
+        destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        cbn [eval_rules].
+        rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
+        assert (Hda1 : decls_agree_rule base dd'' d r1).
+        { apply (decls_agree_rule_setseam base d dd'' r1 n).
+          - apply (optimize_rules_concatN_vmaps fuel n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec)).
+          - intros nm X Hf. apply (optimize_rules_concatN_assoc_stable fuel n d (r2 :: rest)
+                                    m'' dd'' rr'' nm X (eq_sym Erec) Hf).
+          - exact Hf1. }
+        rewrite (rule_loadable_agree_gen r1 p base dd'' d Hda1).
+        rewrite (rule_applies_agree_gen r1 p base dd'' d Hda1).
+        rewrite (outcome_agree_gen r1 p base dd'' d Hda1). reflexivity.
+Qed.
