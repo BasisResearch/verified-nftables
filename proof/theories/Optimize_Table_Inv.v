@@ -531,7 +531,7 @@ Proof.
         -- remember (optimize_rules_vmapN fuel n d (r2 :: rest)) as t eqn:Erec.
            destruct t as [[m'' dd''] rr'']. cbv zeta in H. inversion H; subst.
            eapply (IH n d (r2 :: rest)); symmetry; exact Erec.
-        -- destruct (has_distinct_verdict (r_verdict r1) (e :: es')) eqn:Hdv.
+        -- destruct (has_distinct_verdict (r_verdict r1) (e :: es') && body_vmap_safe body) eqn:Hdv.
            ++ cbv zeta in H.
               remember (optimize_rules_vmapN fuel (S n) _ rest') as t eqn:Erec.
               destruct t as [[m'' dd''] rr'']. cbv zeta in H.
@@ -561,7 +561,7 @@ Proof.
         -- remember (optimize_rules_vmapN fuel n d (r2 :: rest)) as t eqn:Erec.
            destruct t as [[m'' dd''] rr'']. cbv zeta in H. inversion H; subst.
            eapply (IH n d (r2 :: rest)); symmetry; exact Erec.
-        -- destruct (has_distinct_verdict (r_verdict r1) (e :: es')) eqn:Hdv.
+        -- destruct (has_distinct_verdict (r_verdict r1) (e :: es') && body_vmap_safe body) eqn:Hdv.
            ++ cbv zeta in H.
               remember (optimize_rules_vmapN fuel (S n)
                           {| sd_sets := sd_sets d;
@@ -833,7 +833,7 @@ Proof.
            rewrite Hl, Ha, Ho. reflexivity.
         -- destruct (take_vmap_run_head r1 f v1 body r2 rest (e :: es') rest' Ehd Erun
                        ltac:(discriminate)) as [Hr1eq [HwK1 HwT1]].
-           destruct (has_distinct_verdict (r_verdict r1) (e :: es')) eqn:Hdv.
+           destruct (has_distinct_verdict (r_verdict r1) (e :: es') && body_vmap_safe body) eqn:Hdv.
            2:{ remember (optimize_rules_vmapN fuel n d (r2 :: rest)) as tt eqn:Erec.
                destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
                injection H as Hn' Hd' Hr'. subst n' d' rs'.

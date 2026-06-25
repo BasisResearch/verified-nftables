@@ -132,11 +132,13 @@ let () =
   in
   match mode with
   | "optimize" ->
-      (* Run the VERIFIED FULL composed optimizer [optimize_table]: base dedup/DCE,
-         then the N-WAY value->SET, two-selector->CONCAT, and value+verdict->VMAP
-         consolidations, whose whole-pipeline correctness is the axiom-free
-         [optimize_table_correct]. *)
-      let (_, c') = Optimize_Table.optimize_table 0 empty_decls c in
+      (* Run the VERIFIED FULL composed optimizer via the UNCONDITIONAL entry
+         [optimize_table_uncond]: base dedup/DCE, then the N-WAY value->SET,
+         two-selector->CONCAT, and value+verdict->VMAP consolidations.  Its
+         whole-pipeline correctness ([optimize_table_uncond_correct]) holds for an
+         ARBITRARY input chain with NO [rules_clean] precondition — the fresh-name
+         counter is seeded past every name the input reads. *)
+      let (_, c') = Optimize_Uncond.optimize_table_uncond c in
       print_compiled c'
   | "optsets" ->
       (* A realistic multi-rule ruleset where three adjacent rules differ ONLY in

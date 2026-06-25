@@ -11,7 +11,7 @@ From Stdlib Require Import ExtrOcamlBasic.
 From Stdlib Require Import ExtrOcamlNatInt.
 From Stdlib Require Import ExtrOcamlNativeString.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile Optimize.
-From Nft Require Import Optimize_Merge Optimize_Vmap Optimize_Concat Optimize_Table.
+From Nft Require Import Optimize_Merge Optimize_Vmap Optimize_Concat Optimize_Table Optimize_Uncond.
 
 Extraction Language OCaml.
 Set Extraction Output Directory "extracted".
@@ -35,6 +35,7 @@ Separate Extraction
   compile_chain
   optimize_chain
   optimize_table
+  optimize_table_uncond
   optimize_table_sets
   optimize_chain_setsN
   optimize_chain_vmapN
