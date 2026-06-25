@@ -23,18 +23,25 @@
     [eval_chain_trace_verdict]); [chain_out] is the packet it leaves. *)
 
 From Stdlib Require Import List String Ascii NArith Lia.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics Optiplex_Gen.
+From Nft Require Import Bytes Verdict Packet Syntax Semantics Optiplex_Gen Nftval.
 Import ListNotations.
 
 (** ** Wire constants (literal bytes, so [cbn] fully reduces the matches). *)
 Definition mark99    : data := [153; 0; 0; 0].   (* the 0x99 firewall mark, host-endian (LE) *)
 (* "home" in a 16-byte IFNAMSIZ zero-padded ifname register (the kernel
    compares the full 16-byte buffer for an exact name match). *)
-Definition if_home   : data := [104; 111; 109; 101; 0;0;0;0; 0;0;0;0; 0;0;0;0].
-Definition fib_local : data := [2; 0; 0; 0].      (* fib … type local (RTN_LOCAL); host-endian u32 on LE *)
-Definition l4_tcp    : data := [6].
-Definition port3389  : data := [13; 61].          (* 0x0d3d — RDP *)
-Definition port48010 : data := [187; 138].        (* 0xbb8a — a Sunshine stream port *)
+Definition if_home   : data := Eval vm_compute in encode (ifname "home"%string).
+Definition fib_local : data := Eval vm_compute in encode (fib_type_val FAlocal). (* fib… type local (RTN_LOCAL); host-endian u32 on LE *)
+Definition l4_tcp    : data := Eval vm_compute in encode (inet_proto 6).
+Definition port3389  : data := Eval vm_compute in encode (Nftval.port 3389). (* 0x0d3d— RDP *)
+Definition port48010 : data := Eval vm_compute in encode (Nftval.port 48010). (* 0xbb8a— a Sunshine stream port *)
+
+(** Each wire constant IS the register bytes of its central typed nft value. *)
+Lemma fib_local_typed : fib_local = encode (fib_type_val FAlocal). Proof. reflexivity. Qed.
+Lemma l4_tcp_typed    : l4_tcp    = encode (inet_proto 6).         Proof. reflexivity. Qed.
+Lemma port3389_typed  : port3389  = encode (Nftval.port 3389).     Proof. reflexivity. Qed.
+Lemma port48010_typed : port48010 = encode (Nftval.port 48010).    Proof. reflexivity. Qed.
+Lemma if_home_typed   : if_home   = encode (ifname "home"%string). Proof. reflexivity. Qed.
 
 (** The rules of interest, taken straight from the generated chains. *)
 Definition dflt : rule :=
