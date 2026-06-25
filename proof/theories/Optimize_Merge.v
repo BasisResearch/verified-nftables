@@ -36,7 +36,7 @@
     `__setN`, emits its element declaration [(22,22);(80,80)] into [sd_sets], and
     rewrites the pair into ONE `MConcatSet [dport] false __setN accept` — exactly
     what `nft -o` consolidates into `tcp dport { 22, 80 } accept` (the anonymous set
-    interned by name).  [optimize_chain_sets_correct] proves it verdict-preserving
+    interned by name).  Its correctness — verdict-preserving
     end-to-end over the table semantics WITH the synthesised set in scope, via the
     disjunction certificate [concat_set_two_points] + [eval_rules_merge2], guarded
     by a fixed-width-field side-condition ([field_fixed_len]) and a fresh-name
@@ -1004,118 +1004,11 @@ Qed.
     (freshness + injectivity); [concat_set_two_points] turns it into the [orb] of
     the two original point matches; [eval_rules_merge2] collapses the pair; the
     clean tail is env-irrelevant. *)
-Theorem optimize_rules_sets_correct : forall rs n d n' d' rs' base p,
-  optimize_rules_sets n d rs = (n', d', rs') ->
-  rules_clean rs = true ->
-  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
-  eval_rules rs' (set_env p (env_with_sets base d'))
-  = eval_rules rs  (set_env p (env_with_sets base d)).
-Proof.
-  induction rs as [rs H0] using (induction_ltof1 _ (@length rule)).
-  intros n d n' d' rs' base p H Hclean Hfresh.
-  destruct rs as [| r1 [| r2 rest] ].
-  - cbn in H. inversion H; subst. reflexivity.
-  - cbn in H. inversion H; subst. reflexivity.
-  - rewrite optimize_rules_sets_cons2 in H. cbv zeta in H.
-    destruct (value_merge_pair r1 r2) as [[[[f v1] v2] body] |] eqn:Evm.
-    + (* MERGE fires *)
-      set (dn := {| sd_sets := (setname n, [(v1,v1);(v2,v2)]) :: sd_sets d;
-                    sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) in *.
-      destruct (optimize_rules_sets (S n) dn rest) as [[m'' dd''] rr''] eqn:Erec.
-      inversion H; subst n' d' rs'. clear H.
-      cbn [rules_clean forallb] in Hclean.
-      apply Bool.andb_true_iff in Hclean as [Hc1 Hclean].
-      apply Bool.andb_true_iff in Hclean as [Hc2 Hcrest].
-      (* the merged head reads setname n; resolve it in dd'' to its two points *)
-      assert (Hlook : e_set (pkt_env (set_env p (env_with_sets base dd''))) (setname n)
-                      = [(v1,v1);(v2,v2)]).
-      { cbn [set_env with_pkt_env pkt_env]. rewrite e_set_declared.
-        erewrite (optimize_rules_sets_assoc_stable rest (S n) dn _ _ _ (setname n) _ Erec).
-        - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
-        - intros k Hk Heq. apply setname_inj in Heq. lia. }
-      (* the optimized tail equals the original tail under dn (by IH) *)
-      assert (Htail : eval_rules rr'' (set_env p (env_with_sets base dd''))
-                      = eval_rules rest (set_env p (env_with_sets base dn))).
-      { eapply (H0 rest); [ unfold ltof; cbn; lia | exact Erec | exact Hcrest |].
-        intros k Hk Hin. subst dn; cbn [sd_sets map] in Hin.
-        destruct Hin as [Heq | Hin].
-        - apply setname_inj in Heq. lia.
-        - apply (Hfresh k); [lia | exact Hin]. }
-      (* rest is clean: env-irrelevant, so rest@dn = rest@d *)
-      assert (Hrestdn : eval_rules rest (set_env p (env_with_sets base dn))
-                        = eval_rules rest (set_env p (env_with_sets base d)))
-        by (apply eval_rules_clean_env; exact Hcrest).
-      destruct (value_merge_pair_shape r1 r2 f v1 v2 body Evm)
-        as [Hr1 [Hr2 [Hfx1 Hfx2]]].
-      set (qd  := set_env p (env_with_sets base dd'')) in *.
-      (* certificate at qd for the merged head vs the two point heads *)
-      assert (Hcert : eval_matchcond (MConcatSet [f] false (setname n)) qd
-              = orb (eval_matchcond (MCmp f CEq v1) qd) (eval_matchcond (MCmp f CEq v2) qd)).
-      { apply concat_set_two_points.
-        - exact Hlook.
-        - intro Hld. apply (field_fixed_len_loaded f (length v1) qd Hfx1 Hld).
-        - intro Hld. apply (field_fixed_len_loaded f (length v2) qd Hfx2 Hld). }
-      (* the tail rr'' under dd'' equals the original rest under dd'' (clean tail) *)
-      assert (Htail' : eval_rules rr'' qd = eval_rules rest qd).
-      { rewrite Htail. unfold qd.
-        rewrite (eval_rules_clean_env rest p base dn dd'' Hcrest). reflexivity. }
-      (* Goal: eval_rules (merged::rr'') qd = eval_rules (r1::r2::rest) @d.
-         Step 1: collapse merged head -> two point heads (merge2). *)
-      transitivity (eval_rules (mk_head (MCmp f CEq v1) body r1
-                      :: mk_head (MCmp f CEq v2) body r1 :: rr'') qd).
-      { apply eval_rules_merge2.
-        - rewrite !rule_loadable_mk_head. cbn [match_loadable fields_loadable forallb].
-          rewrite Bool.andb_true_r. reflexivity.
-        - rewrite !rule_loadable_mk_head. cbn [match_loadable fields_loadable forallb].
-          rewrite Bool.andb_true_r. reflexivity.
-        - rewrite !outcome_mk_head. reflexivity.
-        - rewrite !outcome_mk_head. reflexivity.
-        - rewrite !rule_applies_mk_head. rewrite Hcert.
-          rewrite Bool.andb_orb_distrib_l. reflexivity. }
-      (* Step 2: tail rr'' -> rest (Htail'), then point heads -> r1, r2 (Hr1,Hr2). *)
-      transitivity (eval_rules (r1 :: r2 :: rest) qd).
-      { rewrite <- Hr1, <- Hr2.
-        apply eval_rules_cons_cong. apply eval_rules_cons_cong. exact Htail'. }
-      (* Step 3: whole clean list at dd'' equals at d. *)
-      unfold qd. apply eval_rules_clean_env.
-      cbn [rules_clean forallb]. rewrite Hc1, Hc2, Hcrest. reflexivity.
-    + (* NO merge at the head: recurse on the tail (r2::rest), keep r1 *)
-      destruct (optimize_rules_sets n d (r2 :: rest)) as [[m'' dd''] rr''] eqn:Erec.
-      inversion H; subst n' d' rs'. clear H.
-      cbn [rules_clean forallb] in Hclean.
-      apply Bool.andb_true_iff in Hclean as [Hc1 Hclean].
-      assert (Htail : eval_rules rr'' (set_env p (env_with_sets base dd''))
-                      = eval_rules (r2 :: rest) (set_env p (env_with_sets base d))).
-      { eapply (H0 (r2 :: rest)); [ unfold ltof; cbn; lia | exact Erec | | exact Hfresh ].
-        cbn [rules_clean forallb]. exact Hclean. }
-      cbn [eval_rules].
-      (* r1 is clean: its loadable/applies/outcome at dd'' equal those at d *)
-      destruct (rule_clean_env r1 p base dd'' d Hc1) as [Hl [Ha Ho]].
-      rewrite Hl, Ha, Ho. rewrite Htail. reflexivity.
-Qed.
-
 (** *** The CHAIN-level entry: pick a counter past every existing set name (here
     [0] suffices when the input table declares no [setname]-shaped name — the case
     for a freshly-parsed ruleset, whose anonymous sets are named `__setN` by the
     parser but whose EXPLICIT named sets are user identifiers, never a bare unary
-    `__setIII…`).  We expose the general theorem with the freshness side-condition;
-    [optimize_chain_sets_correct] is its [eval_chain] specialisation. *)
-Theorem optimize_chain_sets_correct : forall n d c n' d' c' base p,
-  optimize_chain_sets n d c = (n', d', c') ->
-  rules_clean (c_rules c) = true ->
-  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
-  eval_chain c' (set_env p (env_with_sets base d'))
-  = eval_chain c  (set_env p (env_with_sets base d)).
-Proof.
-  intros n d c n' d' c' base p H Hclean Hfresh.
-  unfold optimize_chain_sets in H.
-  destruct (optimize_rules_sets n d (c_rules c)) as [[m'' dd''] rr''] eqn:Erec.
-  inversion H; subst n' d' c'. cbn [c_rules c_policy].
-  unfold eval_chain. cbn [c_rules c_policy].
-  rewrite (optimize_rules_sets_correct (c_rules c) n d m'' dd'' rr'' base p Erec Hclean Hfresh).
-  reflexivity.
-Qed.
-
+    `__setIII…`).  We expose the general theorem with the freshness side-condition. *)
 
 (** * N-WAY consolidation: a whole RUN of adjacent value-merge-eligible rules folds
       into ONE rule with an N-element anonymous set.

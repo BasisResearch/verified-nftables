@@ -217,16 +217,14 @@ Qed.
     the synthesised declarations, UNCONDITIONALLY — is proved in [Optimize_Uncond.v];
     this file provides the composition seam lemmas it builds on.
 
-    The seam between passes is the crux: the conditional pipeline lemmas take
-    [rules_clean] input (preserved by [optimize_chain_clean]); the setsN OUTPUT is no
-    longer clean (it carries merged [MConcatSet] lookup rules), so the [concat]/[vmap]
-    stages run under the WEAKER
-    [rs_concatN_ok] / [rs_vmapN_ok] preconditions, which the setsN-output invariants
-    ([optimize_chain_setsN_output_concatN_ok] / [_output_vmapN_ok]) and the
-    [concatN]-preserves-[vmapN_ok] lemma establish.  Fresh-name discipline is
-    threaded by [optimize_chain_setsN_fresh_setname] (setname namespace) and the
-    cross-namespace stability lemmas (setsN/concatN leave [sd_vmaps] fixed, so the
-    initial [vmapname] freshness survives to the vmap stage). *)
+    The seam between passes is the crux: each pass runs on the PREVIOUS pass's output,
+    which is no longer [rules_clean] (it carries merged [MConcatSet] lookup rules).
+    [Optimize_Uncond.v] discharges this without any input precondition — a
+    passed-through rule stays env-stable because the synthesised names are minted
+    fresh past every name the input declares/reads (read-freshness), and fresh-name
+    discipline is threaded by [optimize_chain_setsN_fresh_setname] and the
+    cross-namespace stability lemmas (setsN/concatN leave [sd_vmaps] fixed) — the
+    seam lemmas this file provides. *)
 Definition optimize_table (n : nat) (d : set_decls) (c : chain)
   : nat * set_decls * chain :=
   let '(n1, d1, c1) := optimize_chain_setsN n d (optimize_chain c) in
