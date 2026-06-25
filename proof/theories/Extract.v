@@ -34,6 +34,7 @@ Extract Constant Optimize_Merge.string_of_nat =>
 Separate Extraction
   compile_chain
   optimize_chain
+  optimize_table
   optimize_table_sets
   optimize_chain_setsN
   optimize_chain_vmapN
