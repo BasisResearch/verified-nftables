@@ -1,10 +1,13 @@
 (** * Optimize_Uncond: UNCONDITIONAL correctness of the [nft -o] consolidation
     pipeline.
 
-    The per-pass [_correct] theorems (and the composed [optimize_table_correct])
-    require their INPUT chain to be [rules_clean].  That hypothesis was only ever
-    used for ONE thing: the env-stability of a PASSED-THROUGH rule when a sibling
-    merge prepends a fresh set/vmap declaration.  The N-way run-merge lemmas
+    The earlier per-pass [_correct] theorems (and the composed pipeline) required
+    their INPUT chain to be [rules_clean].  That hypothesis was only ever used for
+    ONE thing: the env-stability of a PASSED-THROUGH rule when a sibling merge
+    prepends a fresh set/vmap declaration.  (The clean-input-only composed theorems
+    have since been removed as strictly redundant: the unconditional results below
+    subsume them, since [rules_clean] implies the read-freshness obligations.)
+    The N-way run-merge lemmas
     themselves ([eval_rules_run_merge_abs], [eval_rules_run_collapse],
     [eval_rules_vmap_mergeN]) are body-agnostic — they collapse a run of
     [mk_head]/[orig_rule] shells with ANY shared body/end-fields, clean or not.

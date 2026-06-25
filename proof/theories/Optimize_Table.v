@@ -12,17 +12,14 @@
          two-selector->concat passes into [optimize_table], threading a fresh
          counter and a [set_decls] accumulator across the table semantics;
 
-      3. proves an axiom-free top-level theorem [optimize_table_correct] that the
-         WHOLE pipeline is [eval_chain]-preserving over the synthesised
-         declarations, with NO new axioms;
+      3. proves [optimize_chain_clean] and the pipeline-composition seam lemmas
+         that the UNCONDITIONAL correctness proofs build on.
 
-      4. composes (3) with [Correct.compile_chain_sets_correct] into the END-TO-END
-         theorem [optimize_table_compile_correct] (and its fresh-table corollary
-         [optimize_table_compile_correct_init]): the COMPILED BYTECODE of the
-         OPTIMISED chain, run against the synthesised set declarations, yields
-         EXACTLY the verdict of the ORIGINAL source chain under the DSL semantics.
-
-    The composed optimizer is what [Extract.v] extracts and what the [glue.ml]
+    The whole-pipeline correctness of [optimize_table] is proved — with NO
+    [rules_clean] and NO freshness precondition on the input — in [Optimize_Uncond.v]
+    ([optimize_table_correct_uncond_gen], [optimize_table_uncond_correct],
+    [optimize_table_uncond_compile_correct]).  That UNCONDITIONAL optimizer
+    ([optimize_table_uncond]) is what [Extract.v] extracts and what the [glue.ml]
     CLI invokes, so the shipped tool RUNS the verified term. *)
 
 From Stdlib Require Import List.
@@ -216,12 +213,14 @@ Qed.
     [optimize_table] runs the base dedup/DCE pass, then the N-way value->set
     merge, the two-selector->concat merge, and finally the value+verdict->vmap
     merge, threading the fresh-name counter and [set_decls] accumulator across the
-    table semantics.  [optimize_table_correct] proves the WHOLE pipeline preserves
-    [eval_chain] over the synthesised declarations — axiom-free.
+    table semantics.  Its whole-pipeline correctness — preserving [eval_chain] over
+    the synthesised declarations, UNCONDITIONALLY — is proved in [Optimize_Uncond.v];
+    this file provides the composition seam lemmas it builds on.
 
-    The seam between passes is the crux: [setsN] needs [rules_clean] input (supplied
-    by [optimize_chain_clean]); its OUTPUT is no longer clean (it carries merged
-    [MConcatSet] lookup rules), so the [concat]/[vmap] stages run under the WEAKER
+    The seam between passes is the crux: the conditional pipeline lemmas take
+    [rules_clean] input (preserved by [optimize_chain_clean]); the setsN OUTPUT is no
+    longer clean (it carries merged [MConcatSet] lookup rules), so the [concat]/[vmap]
+    stages run under the WEAKER
     [rs_concatN_ok] / [rs_vmapN_ok] preconditions, which the setsN-output invariants
     ([optimize_chain_setsN_output_concatN_ok] / [_output_vmapN_ok]) and the
     [concatN]-preserves-[vmapN_ok] lemma establish.  Fresh-name discipline is
@@ -234,77 +233,16 @@ Definition optimize_table (n : nat) (d : set_decls) (c : chain)
   let '(n2, d2, c2) := optimize_chain_concatN n1 d1 c1 in
   optimize_chain_vmapN n2 d2 c2.
 
-Theorem optimize_table_correct : forall n d c n' d' c' base p,
-  optimize_table n d c = (n', d', c') ->
-  rules_clean (c_rules c) = true ->
-  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
-  (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
-  eval_chain c' (set_env p (env_with_sets base d'))
-  = eval_chain c  (set_env p (env_with_sets base d)).
-Proof.
-  intros n d c n' d' c' base p H Hclean Hfs Hfv.
-  unfold optimize_table in H.
-  destruct (optimize_chain_setsN n d (optimize_chain c)) as [[n1 d1] c1] eqn:E1.
-  destruct (optimize_chain_concatN n1 d1 c1) as [[n2 d2] c2] eqn:E2.
-  assert (Hc0clean : rules_clean (c_rules (optimize_chain c)) = true)
-    by (apply optimize_chain_clean; exact Hclean).
-  pose proof (optimize_chain_setsN_fresh_setname n d (optimize_chain c) n1 d1 c1 E1 Hfs) as Hfs1.
-  pose proof (optimize_chain_setsN_output_concatN_ok n d (optimize_chain c) n1 d1 c1 E1 Hc0clean) as Hcc1.
-  pose proof (optimize_chain_setsN_output_vmapN_ok n d (optimize_chain c) n1 d1 c1 E1 Hc0clean) as Hv1.
-  pose proof (optimize_chain_concatN_preserves_vmapN_ok n1 d1 c1 n2 d2 c2 E2 Hv1) as Hv2.
-  assert (Hvm2 : sd_vmaps d2 = sd_vmaps d).
-  { rewrite (optimize_chain_concatN_vmaps n1 d1 c1 n2 d2 c2 E2).
-    apply (optimize_chain_setsN_vmaps n d (optimize_chain c) n1 d1 c1 E1). }
-  pose proof (optimize_chain_setsN_mono n d (optimize_chain c) n1 d1 c1 E1) as Hm1.
-  pose proof (optimize_chain_concatN_mono n1 d1 c1 n2 d2 c2 E2) as Hm2.
-  assert (Hfv2 : forall k, n2 <= k -> ~ In (vmapname k) (map fst (sd_vmaps d2))).
-  { intros k Hk. rewrite Hvm2. apply Hfv. lia. }
-  rewrite (optimize_chain_vmapN_correct_gen n2 d2 c2 n' d' c' base p H Hv2 Hfv2).
-  rewrite (optimize_chain_concatN_correct_gen n1 d1 c1 n2 d2 c2 base p E2 Hcc1 Hfs1).
-  rewrite (optimize_chain_setsN_correct n d (optimize_chain c) n1 d1 c1 base p E1 Hc0clean Hfs).
-  apply optimize_chain_correct.
-Qed.
+(** ** Correctness of [optimize_table] lives in [Optimize_Uncond.v], where it is
+    proved UNCONDITIONALLY — with NO [rules_clean] and NO caller-supplied freshness
+    side-condition on the input chain:
 
-(** ** END-TO-END: compile ∘ optimize is correct down to the bytecode.
+      [optimize_table_correct_uncond_gen] : general (n,d) form, freshness obligations
+        only (which a clean input would also satisfy — [rules_clean] is subsumed);
+      [optimize_table_uncond_correct] / [optimize_table_uncond_compile_correct] :
+        the fresh-table entry [optimize_table_uncond c], with NO hypothesis on [c].
 
-    [optimize_table_correct] is a DSL->DSL statement; [Correct.compile_chain_sets_correct]
-    is the DSL->bytecode statement.  Their transitive composition is the headline
-    result a user actually wants: running the COMPILED BYTECODE of the OPTIMIZED
-    chain — against the synthesised set declarations [d'] — yields EXACTLY the
-    verdict the ORIGINAL source chain [c] has under the DSL semantics.  So every
-    optimisation pass is sound all the way to the wire, with no new axioms. *)
-Theorem optimize_table_compile_correct : forall n d c n' d' c' base p,
-  optimize_table n d c = (n', d', c') ->
-  rules_clean (c_rules c) = true ->
-  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
-  (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
-  run_chain (compile_chain c') (c_policy c') (set_env p (env_with_sets base d'))
-  = eval_chain c (set_env p (env_with_sets base d)).
-Proof.
-  intros n d c n' d' c' base p H Hclean Hfs Hfv.
-  rewrite (compile_chain_sets_correct c' base d' p).
-  exact (optimize_table_correct n d c n' d' c' base p H Hclean Hfs Hfv).
-Qed.
+    The freshness is discharged internally by seeding the fresh-name counter past
+    every name the input declares/reads (see [seed_start]).  The earlier
+    clean-input-only theorems were removed as strictly redundant. *)
 
-(** The same end-to-end result for the actual entry point — optimising a fresh
-    table (counter 0, no pre-existing declarations): the freshness side-conditions
-    hold vacuously (the initial set/vmap namespaces are empty), so this is the
-    clean, hypothesis-light statement.  [eval_chain c] does not read any set object
-    (the raw source chain has no [@s] lookups), so the right-hand side is just the
-    DSL verdict of [c]. *)
-Corollary optimize_table_compile_correct_init : forall c base p n' d' c',
-  rules_clean (c_rules c) = true ->
-  optimize_table 0 {| sd_sets := []; sd_vmaps := []; sd_maps := [] |} c = (n', d', c') ->
-  run_chain (compile_chain c') (c_policy c') (set_env p (env_with_sets base d'))
-  = eval_chain c (set_env p (env_with_sets base {| sd_sets := []; sd_vmaps := []; sd_maps := [] |})).
-Proof.
-  intros c base p n' d' c' Hclean H.
-  apply (optimize_table_compile_correct 0 _ c n' d' c' base p H Hclean);
-    intros k _ Hin; cbn in Hin; exact Hin.
-Qed.
-
-(** ** Axiom-freedom audit (build-time guard; mirrors Fib_Local.v).
-    Prints "Closed under the global context"; a future regression that pulls in
-    an axiom/admit would show up in the build log here. *)
-Print Assumptions optimize_table_correct.
-Print Assumptions optimize_table_compile_correct.

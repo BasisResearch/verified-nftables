@@ -7,8 +7,10 @@ semantics-preserving compiler** from the declarative nftables DSL to the control
 ## The verified compiler (`proof/`)
 
 - **Semantics-preserving compilation + a verified DSL optimizer**, machine-checked in Rocq.
-  `compile_chain_correct` / `optimize_table_correct` say the bytecode VM agrees with the
-  DSL semantics, and the optimizer preserves every packet's verdict.
+  `compile_chain_correct` says the bytecode VM agrees with the DSL semantics, and
+  `optimize_table_uncond_compile_correct` says the compiled bytecode of the *optimized*
+  ruleset preserves every packet's verdict — for **any** input ruleset, with no
+  `rules_clean` or freshness precondition.
 - **Differential-tested against the upstream nftables test corpus.** Extracted to OCaml, it
   reproduces the real tool's bytecode on **2532/2532 (100%)** of the corpus's rule-blocks
   with zero mismatches (`cd proof && make corpus`), and validates field offsets / meta-ct
