@@ -1245,3 +1245,10 @@ Proof.
   rewrite (compile_chain_sets_correct c' base d' p).
   exact (optimize_table_uncond_correct c base p n' d' c' H).
 Qed.
+
+(** ** Axiom-freedom audit (build-time guard; mirrors Fib_Local.v / Optimize_Table.v).
+    The two UNCONDITIONAL headline results — no hypothesis on the input chain.
+    Prints "Closed under the global context"; an introduced axiom/admit would
+    surface in the build log here. *)
+Print Assumptions optimize_table_uncond_correct.
+Print Assumptions optimize_table_uncond_compile_correct.
