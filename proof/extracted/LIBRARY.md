@@ -9,9 +9,15 @@ functions are extracted from machine-checked Rocq proofs:
 - **`optimize`** never changes any packet's verdict
   (`optimize_chain_correct`).
 
-Only `to_netlink_text` (rendering bytecode to `nft --debug=netlink` text) is
-untrusted glue, and it is differentially tested **byte-identical** against the
-upstream nftables corpus (2532/2532 rule-blocks, 100%, 0 mismatches) and live `nft`.
+The only untrusted step of the verified compile/optimize/render pipeline is
+`to_netlink_text` (rendering bytecode to `nft --debug=netlink` text); it is
+differentially tested **byte-identical** against the upstream nftables corpus
+(2532/2532 rule-blocks, 100%, 0 mismatches) and live `nft`. The DSL builders
+(`eq`/`neq`/`range`/`cmp`/`masked`/`rule`/`chain`) are trivial structural
+wrappers around the `Syntax` constructors the proof reasons about. The optional
+`.nft` text frontend (`parse_string`/`parse_file`) is also untrusted glue,
+validated externally against live `nft` rather than part of the proof TCB — see
+`nftc.mli` and `proof/DEVELOPMENT.md`'s TCB section for the per-symbol labels.
 
 ## Build
 

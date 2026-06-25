@@ -3,8 +3,15 @@
    `compile` and `optimize` are EXTRACTED from machine-checked Rocq proofs
    (compile_chain_correct: the emitted bytecode filters every packet exactly as
    the DSL says; optimize_chain_correct: the optimizer never changes a verdict).
-   Only `to_netlink_text` is untrusted glue, and it is itself differentially
-   tested byte-identical against upstream `nft --debug=netlink`. *)
+
+   The only untrusted step of this verified compile/optimize/render pipeline is
+   the renderer `to_netlink_text`, differentially tested byte-identical against
+   upstream `nft --debug=netlink`. The DSL builders below (eq/neq/range/cmp/
+   masked/rule/chain) are trivial structural wrappers around the `Syntax`
+   constructors the proof reasons about. The optional `.nft` text frontend
+   (parse_string/parse_file, see below) is likewise untrusted glue, validated
+   externally against live `nft` rather than part of the proof TCB. See nftc.mli
+   for the per-symbol trust labels. *)
 
 module Verdict = Verdict
 module Packet = Packet
