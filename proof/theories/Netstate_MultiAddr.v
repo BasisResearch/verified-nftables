@@ -268,3 +268,65 @@ Proof.
   unfold field_value. cbn [field_load do_load].
   rewrite Hroutes. now apply fib_local_of_host_local.
 Qed.
+
+(** ** Non-vacuity witnesses: the multi-address state is LOAD-BEARING.
+
+    These concrete computations show the selection genuinely DISCRIMINATES on the
+    new [ifa_secondary]/[ifa_scope] fields — it is NOT a one-address oracle wearing
+    a list costume.  A single-address model could not produce any of these. *)
+
+(* An interface eth0 with THREE addresses: a SECONDARY 10.0.0.1, a HOST-scoped
+   (loopback-only, scope 254) 127.0.0.2, and a global PRIMARY 203.0.113.5.
+   inet_select_addr must SKIP the first two and pick the third. *)
+Definition eth0_list : list ifaddr :=
+  [ {| ifa_local := [10;0;0;1];   ifa_secondary := true;  ifa_scope := 0   |};
+    {| ifa_local := [127;0;0;2];  ifa_secondary := false; ifa_scope := 254 |};
+    {| ifa_local := [203;0;113;5];ifa_secondary := false; ifa_scope := 0   |} ].
+
+(* Selection skips the secondary AND the out-of-scope address, picking the global
+   primary — a result NO single-address oracle and NO "just take the head" model
+   could give. *)
+Example select_skips_secondary_and_scope :
+  inet_select_addr eth0_list scope_universe = [203;0;113;5].
+Proof. reflexivity. Qed.
+
+(* If we make the global primary a SECONDARY too, every address is now ineligible
+   (secondary or out-of-scope) and selection is [] => NF_DROP — even though the
+   interface HAS three configured addresses.  This is the precise drop the
+   single-"is it []" oracle could only fake. *)
+Definition eth0_all_unusable : list ifaddr :=
+  [ {| ifa_local := [10;0;0;1];   ifa_secondary := true;  ifa_scope := 0   |};
+    {| ifa_local := [127;0;0;2];  ifa_secondary := false; ifa_scope := 254 |};
+    {| ifa_local := [203;0;113;5];ifa_secondary := true;  ifa_scope := 0   |} ].
+
+Example select_empty_when_all_unusable :
+  inet_select_addr eth0_all_unusable scope_universe = [].
+Proof. reflexivity. Qed.
+
+(* The host-local UNION genuinely spans MULTIPLE interfaces' MULTIPLE addresses:
+   eth0 contributes all three of its addresses (incl. the secondary, which
+   fib_add_ifaddr DOES insert as a local route), lo contributes 127.0.0.1. *)
+Definition demo_env : env :=
+  {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
+     e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
+     e_quota := fun _ => 0;
+     e_ifaddrs := fun n => if data_eqb n [101;116;104;48] (* "eth0" *)
+                           then eth0_list
+                           else [ mk_primary [127;0;0;1] ];
+     e_ifaddrs6 := fun _ => [];
+     e_connlimit := fun _ => []; e_ct := fun _ _ => []; e_nat := fun _ => None;
+     e_numgen := fun _ => 0 |}.
+
+Example host_local_union_spans_interfaces :
+  host_local_addrs demo_env [ [101;116;104;48]; [108;111] (* "lo" *) ]
+  = [ [10;0;0;1]; [127;0;0;2]; [203;0;113;5]; [127;0;0;1] ].
+Proof. reflexivity. Qed.
+
+(* And every one of those union members resolves `fib daddr type` to LOCAL. *)
+Example fib_local_for_each_union_member :
+  Forall (fun a => lpm_fib (local_routes demo_env
+                              [ [101;116;104;48]; [108;111] ]) a FRtype = fib_local_type)
+         (host_local_addrs demo_env [ [101;116;104;48]; [108;111] ]).
+Proof.
+  repeat constructor.
+Qed.
