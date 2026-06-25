@@ -21,22 +21,28 @@
     property transports to the installed netlink bytecode. *)
 
 From Stdlib Require Import List String Ascii NArith.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics Optiplex_Gen.
+From Nft Require Import Bytes Verdict Packet Syntax Semantics Optiplex_Gen Nftval.
 Import ListNotations.
 Open Scope string_scope.
 
 (** ** Wire-value notation, only to *state* the hypotheses about a packet.
     These do not define the ruleset (that comes from [Optiplex_Gen]); they only
-    name the bytes a given packet's fields hold. *)
-Definition ip4 (a b c d : nat) : data := [a; b; c; d].
-Fixpoint sbytes (s : string) : data :=
-  match s with EmptyString => [] | String c r => nat_of_ascii c :: sbytes r end.
+    name the bytes a given packet's fields hold.  Both are now the register bytes
+    of the CENTRAL typed nft values defined in [Nftval.v] (with validity
+    predicates [ipv4_valid] / [ifname_valid] and byte-witnesses): [ip4 a b c d]
+    is [encode (Nftval.ip4 a b c d)] and [ifreg s] is [encode (Nftval.ifname s)]
+    — the IFNAMSIZ-padded 16-byte register the kernel compares.  Each reduces to
+    the same bytes the [vm_compute] proofs use; the [*_typed] lemmas pin it. *)
+Definition ip4 (a b c d : nat) : data := encode (Nftval.ip4 a b c d).
 
 (* An interface-name register is a fixed 16-byte (IFNAMSIZ) zero-padded buffer;
-   the kernel compares the full 16 bytes for an exact name match.  [ifreg]
-   names the bytes such a register holds for a given interface name. *)
-Definition pad16 (d : data) : data := List.app d (List.repeat 0 (16 - List.length d)).
-Definition ifreg (s : string) : data := pad16 (sbytes s).
+   the kernel compares the full 16 bytes for an exact name match. *)
+Definition ifreg (s : string) : data := encode (Nftval.ifname s).
+
+Lemma ip4_typed : forall a b c d, ip4 a b c d = encode (Nftval.ip4 a b c d).
+Proof. reflexivity. Qed.
+Lemma ifreg_typed : forall s, ifreg s = encode (Nftval.ifname s).
+Proof. reflexivity. Qed.
 
 (* the field a `meta obrname` match reads (output bridge-port name) *)
 Definition Fobrname : field := FMetaGen MKbri_oifname.
