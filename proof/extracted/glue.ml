@@ -2,9 +2,17 @@
 
    Responsibilities (all untrusted, all small and testable):
      - build concrete DSL chains;
-     - render a compiled [Bytecode.program] in the exact textual format of
-       `nft --debug=netlink`, so the two can be diffed (differential testing);
+     - render a compiled [Bytecode.program] in the exact textual format of a LIVE
+       `nft --debug=netlink` dump (little-endian, 4-byte-padded 0x%08x register
+       words — see [render_data] below), so the two can be diffed (differential
+       testing);
      - a tiny demo [main] used by ../difftest.sh.
+
+   NB: this is a DIFFERENT layout from codec.ml's [render_program], which targets
+   the upstream corpus representation (tests/py/*.t.payload: big-endian register
+   chunks with a short last chunk).  The two renderers are deliberately separate —
+   live debug output here vs the stored corpus payloads there — and are checked by
+   different gates (difftest.sh here, the corpus round-trip there).  Don't merge them.
 
    The trusted core (compile_chain / optimize_chain and their correctness) lives
    in the extracted modules; nothing here is trusted for the correctness theorem. *)

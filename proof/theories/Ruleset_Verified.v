@@ -9,15 +9,19 @@
     the installed netlink bytecode too. *)
 
 From Stdlib Require Import List String NArith.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics Ruleset_Gen.
+From Nft Require Import Bytes Verdict Packet Syntax Semantics Ruleset_Gen Nftval Eval_Fw.
 Import ListNotations.
 Open Scope string_scope.
 
-(** Concrete wire values (only equality/order matters). *)
-Definition cts_invalid     : data := [0;0;0;1].
-Definition cts_established : data := [0;0;0;2].
-Definition cts_related     : data := [0;0;0;4].
-Definition cts_new         : data := [0;0;0;8].
+(** Concrete wire values (only equality/order matters).  The ct-state values are
+    routed through the central typed nft constructors + [encode] (as
+    [Example_Ruleset]/[Nftval] do) so the byte literals cannot drift from the
+    central conntrack-state encoding; [Eval compute] reduces each to the very
+    literal the [cbn]-based proofs match against. *)
+Definition cts_invalid     : data := Eval compute in encode ct_invalid.      (* [0;0;0;1] *)
+Definition cts_established : data := Eval compute in encode ct_established.   (* [0;0;0;2] *)
+Definition cts_related     : data := Eval compute in encode ct_related.      (* [0;0;0;4] *)
+Definition cts_new         : data := Eval compute in encode ct_new.          (* [0;0;0;8] *)
 Definition eth_ip  : data := [8;0].
 Definition eth_ip6 : data := [134;221].
 Definition l4_tcp   : data := [6].
@@ -31,53 +35,24 @@ Definition if_eth : data := [101;116;104;48; 0;0;0;0; 0;0;0;0; 0;0;0;0].  (* "et
 
 Definition fw_fuel : nat := 8.
 
-(** One-step unfolding lemmas for the fuel-recursive interpreter (kept opaque
-    during evaluation so [cbn] reduces only the current rule). *)
-Lemma erj_nil : forall n cs p, eval_rules_j (S n) cs [] p = None.
-Proof. reflexivity. Qed.
-
-Lemma erj_cons : forall n cs r rest p,
-  eval_rules_j (S n) cs (r :: rest) p =
-  (if andb (rule_loadable r p) (rule_applies r p)
-   then match outcome r p with
-        | None => eval_rules_j n cs rest p
-        | Some Return => None
-        | Some (Jump m) =>
-            match chain_lookup cs m with
-            | Some ch => match eval_rules_j n cs (c_rules ch) p with
-                         | Some v => Some v | None => eval_rules_j n cs rest p end
-            | None => eval_rules_j n cs rest p
-            end
-        | Some (Goto m) =>
-            match chain_lookup cs m with
-            | Some ch => eval_rules_j n cs (c_rules ch) p | None => None end
-        | Some Continue => eval_rules_j n cs rest p
-        | Some v => Some v
-        end
-   else eval_rules_j n cs rest p).
-Proof. reflexivity. Qed.
-
-Opaque eval_rules_j.
-
-(** Symbolically evaluate the parsed table, stepping one rule at a time and
-    rewriting field values from the hypotheses as each match is reached. *)
+(** Symbolically evaluate the parsed table: unfold this module's parser-emitted
+    chain definitions, then run the shared [eval_fw_core] engine (Eval_Fw.v).
+    [erj_nil]/[erj_cons] and [Global Opaque eval_rules_j] live in Eval_Fw.v. *)
 Ltac eval_fw Hpe :=
   unfold eval_table, fw_fuel, firewall_chains,
          firewall_inbound, firewall_inbound_ipv4, firewall_inbound_ipv6,
          firewall_forward;
-  repeat first
-    [ rewrite Hpe
-    | rewrite erj_nil
-    | rewrite erj_cons
-    | match goal with H : field_value _ _ = _ |- _ => rewrite H end
-    | match goal with H : read_payload_ok _ _ _ _ = _ |- _ => rewrite H end
-    | progress unfold rule_loadable, rule_applies, end_loadable, tail_loadable,
-        terminal_loadable, vmap_loadable, body_item_loadable, match_loadable,
-        fields_loadable, field_loadable, load_ok, eval_matchcond, eval_matchcond_body
-    | progress cbn -[eval_rules_j field_value read_payload_ok pkt_env] ];
-  reflexivity.
+  eval_fw_core Hpe.
 
-(** ** The properties (each universally quantified over the packet). *)
+(** ** The properties (each universally quantified over the packet).
+
+    NOTE — twin theorem names: [established_accepted], [invalid_dropped] and
+    [loopback_accepted] also exist in [Example_Ruleset.v].  These are NOT
+    duplicates: the [Example_Ruleset.v] copies are the hand-written baseline
+    (eval_table over [fw_chains]/[inbound]); the copies HERE are over the
+    parser-emitted chains ([firewall_chains]/[firewall_inbound], from
+    [Ruleset_Gen.v]).  A grep by name finds both — this one is the
+    parser-output witness. *)
 
 (* Established connections are accepted (the ct-state vmap hit). *)
 Theorem established_accepted : forall p,

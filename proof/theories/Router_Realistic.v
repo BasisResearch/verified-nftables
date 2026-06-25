@@ -36,7 +36,7 @@
       - [inbound_world_ssh_accept_real] : the one allowed world flow, realistic + witness. *)
 
 From Stdlib Require Import List String NArith.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen.
+From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen Eval_Fw.
 From Nft Require Router_Forward Router_Input Router_Private Router_Hooks.
 Import ListNotations.
 Open Scope string_scope.
@@ -80,7 +80,7 @@ Proof.
   intros p Hvm.
   unfold eval_table, fw_fuel, global_forward, global_chains.
   cbn [c_rules c_policy].
-  rewrite Router_Forward.erj_cons.
+  rewrite Eval_Fw.erj_cons.
   unfold rule_loadable, rule_applies, outcome, outcome_core;
     cbn -[eval_rules_j assoc_verdict pkt_env field_value iif_eth1].
   (* The ct vmap key is [field_value FCtState p]; the lookup table is
@@ -94,7 +94,7 @@ Proof.
   destruct (data_eqb cts_invalid (field_value FCtState p)) eqn:Hi;
     [ cbn -[eval_rules_j]; reflexivity | ].
   cbn -[eval_rules_j data_eqb field_value eval_matchcond_body iif_eth1].
-  rewrite Router_Forward.erj_cons.
+  rewrite Eval_Fw.erj_cons.
   change {| r_body := [BMatch (MEq FMetaIifname
               [101;116;104;49;0;0;0;0;0;0;0;0;0;0;0;0])];
             r_verdict := Accept; r_vmap := None; r_nat := None;
@@ -102,7 +102,7 @@ Proof.
     with r2_fwd.
   rewrite r2_loadable, r2_applies, r2_outcome. cbn [andb].
   destruct (iif_eth1 p) eqn:Heq;
-    cbn -[eval_rules_j iif_eth1]; rewrite ?Router_Forward.erj_nil; reflexivity.
+    cbn -[eval_rules_j iif_eth1]; rewrite ?Eval_Fw.erj_nil; reflexivity.
 Qed.
 
 (** The realistic, NON-VACUOUS forward characterisation: the forward chain accepts
@@ -194,7 +194,7 @@ Proof.
   intros p Hvm1 Hvm2 Hct Hiif Hwl.
   unfold eval_table, in_fuel. rewrite c_rules_inbound.
   (* rule 1: ct vmap *)
-  rewrite Router_Input.erj_cons.
+  rewrite Eval_Fw.erj_cons.
   rewrite (r_ct_loadable p Hct), r_ct_applies. cbn [andb].
   rewrite r_ct_outcome.
   rewrite Hvm1. rewrite assoc_map1_eq.
@@ -203,7 +203,7 @@ Proof.
   destruct (data_eqb cts_related (field_value FCtState p)) eqn:Hr; [ reflexivity | ].
   destruct (data_eqb cts_invalid (field_value FCtState p)) eqn:Hi; [ reflexivity | ].
   (* ct vmap MISS: fall through to rule 2 (iif vmap) *)
-  rewrite Router_Input.erj_cons.
+  rewrite Eval_Fw.erj_cons.
   rewrite (r_iif_loadable p Hiif), r_iif_applies. cbn [andb].
   rewrite r_iif_outcome.
   rewrite Hvm2. rewrite assoc_map2_eq.
@@ -214,12 +214,12 @@ Proof.
     replace (eval_rules_j 6 global_chains (c_rules global_inbound_world) p)
       with (if world_ssh p then Some Accept else None)
       by (symmetry; apply (inbound_world_eval 5 p Hwl)).
-    destruct (world_ssh p); rewrite ?Router_Input.erj_empty; reflexivity. }
+    destruct (world_ssh p); rewrite ?Eval_Fw.erj_empty; reflexivity. }
   destruct (data_eqb if_eth1 (field_value FMetaIifname p)) eqn:Heth1.
   { rewrite lookup_private.
     destruct (eval_rules_j 6 global_chains (c_rules global_inbound_private) p) eqn:Hpriv;
-      [ reflexivity | rewrite ?Router_Input.erj_empty; reflexivity ]. }
-  rewrite ?Router_Input.erj_empty. reflexivity.
+      [ reflexivity | rewrite ?Eval_Fw.erj_empty; reflexivity ]. }
+  rewrite ?Eval_Fw.erj_empty. reflexivity.
 Qed.
 
 (** THE CRUX, realistic + non-vacuous: a NEW packet on ppp0 (the world) that is NOT
@@ -317,11 +317,11 @@ Lemma inbound_private_eval_real : forall n p,
 Proof.
   intros n p Hvm Hil Hsl.
   rewrite c_rules_private.
-  rewrite Router_Input.erj_cons.
+  rewrite Eval_Fw.erj_cons.
   rewrite (r_icmp_loadable p Hil), (r_icmp_applies p Hil). cbn [andb].
   destruct (icmp_ok p) eqn:Hok.
   { rewrite r_icmp_outcome. reflexivity. }
-  rewrite Router_Input.erj_cons.
+  rewrite Eval_Fw.erj_cons.
   rewrite (r_svc_loadable p Hsl), r_svc_applies. cbn [andb].
   rewrite r_svc_outcome.
   rewrite Hvm.
@@ -331,7 +331,7 @@ Proof.
               map0) eqn:Hhit.
   { assert (Hv : v = Accept) by (apply (svc_hit_accept p); unfold svc_hit, svc_key; exact Hhit).
     subst v. reflexivity. }
-  rewrite Router_Input.erj_empty. reflexivity.
+  rewrite Eval_Fw.erj_empty. reflexivity.
 Qed.
 
 Lemma inbound_eth1_eval_real : forall p,

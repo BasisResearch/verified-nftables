@@ -36,15 +36,19 @@
                       [forward_unsolicited_dropped] rules out. *)
 
 From Stdlib Require Import List String NArith.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen.
+From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen Nftval Eval_Fw.
 Import ListNotations.
 Open Scope string_scope.
 
-(** Concrete ct-state wire values (only equality matters; big-endian 32-bit). *)
-Definition cts_invalid     : data := [0;0;0;1].
-Definition cts_established : data := [0;0;0;2].
-Definition cts_related     : data := [0;0;0;4].
-Definition cts_new         : data := [0;0;0;8].
+(** Concrete ct-state wire values (only equality matters; big-endian 32-bit).
+    Routed through the central typed nft constructors + [encode] (as
+    [Example_Ruleset]/[Nftval] do) so the byte literals cannot drift from the
+    central conntrack-state encoding; [Eval compute] reduces each to the very
+    literal the [cbn]-based proofs match against. *)
+Definition cts_invalid     : data := Eval compute in encode ct_invalid.      (* [0;0;0;1] *)
+Definition cts_established : data := Eval compute in encode ct_established.   (* [0;0;0;2] *)
+Definition cts_related     : data := Eval compute in encode ct_related.      (* [0;0;0;4] *)
+Definition cts_new         : data := Eval compute in encode ct_new.          (* [0;0;0;8] *)
 
 (* The LAN ingress interface "eth1" as the 16-byte zero-padded ASCII the parser
    emitted in the `iifname eth1 accept` rule. *)
@@ -68,33 +72,9 @@ Definition map3 : list (data * data * verdict) :=
    (cts_related, cts_related, Accept);
    (cts_invalid, cts_invalid, Drop)].
 
-(** One-step unfolding lemmas for the fuel-recursive interpreter (kept opaque so
-    [cbn] reduces only the current rule).  Identical to [Ruleset_Verified]. *)
-Lemma erj_nil : forall n cs p, eval_rules_j (S n) cs [] p = None.
-Proof. reflexivity. Qed.
-
-Lemma erj_cons : forall n cs r rest p,
-  eval_rules_j (S n) cs (r :: rest) p =
-  (if andb (rule_loadable r p) (rule_applies r p)
-   then match outcome r p with
-        | None => eval_rules_j n cs rest p
-        | Some Return => None
-        | Some (Jump m) =>
-            match chain_lookup cs m with
-            | Some ch => match eval_rules_j n cs (c_rules ch) p with
-                         | Some v => Some v | None => eval_rules_j n cs rest p end
-            | None => eval_rules_j n cs rest p
-            end
-        | Some (Goto m) =>
-            match chain_lookup cs m with
-            | Some ch => eval_rules_j n cs (c_rules ch) p | None => None end
-        | Some Continue => eval_rules_j n cs rest p
-        | Some v => Some v
-        end
-   else eval_rules_j n cs rest p).
-Proof. reflexivity. Qed.
-
-Opaque eval_rules_j.
+(** The one-step unfolding lemmas [erj_nil]/[erj_cons] for the fuel-recursive
+    interpreter (and [Global Opaque eval_rules_j], so [cbn] reduces only the
+    current rule) come from [Eval_Fw] — the single shared source of truth. *)
 
 (** ** A clean classification of the ct-state vmap [__map3].
 
@@ -102,12 +82,8 @@ Opaque eval_rules_j.
     [data_eqb k key] (by [data_le_antisym]).  Hence the whole lookup is a cascade of
     byte-equality tests — no concrete-byte case analysis on the key is needed. *)
 
-(* A point interval's membership test IS byte equality. *)
-Lemma data_in_iv_point : forall k key, data_in_iv key (k, k) = data_eqb k key.
-Proof.
-  intros k key. unfold data_in_iv; cbn [fst snd].
-  rewrite data_le_antisym. reflexivity.
-Qed.
+(* [data_in_iv_point] — a point interval's membership test IS byte equality —
+   comes from [Eval_Fw] (shared with [Router_Input]). *)
 
 (* The vmap lookup expressed as a cascade of equality tests against the keys: the
    ONLY possible results are [Some Accept] (estab/related), [Some Drop] (invalid),

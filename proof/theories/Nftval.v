@@ -73,7 +73,7 @@ Proof.
     + rewrite N2Nat.id.
       rewrite (N.div_mod n 256) at 3 by lia. lia.
     + (* n/256 < 256^k *)
-      apply N.div_lt_upper_bound; [lia|].
+      apply N.Div0.div_lt_upper_bound.
       replace (256 * 256 ^ N.of_nat k)%N with (256 ^ N.of_nat (S k))%N.
       * exact Hlt.
       * rewrite Nat2N.inj_succ, N.pow_succ_r; lia.
@@ -90,7 +90,7 @@ Proof.
   (* induct from the RIGHT, matching N_to_data's snoc recursion *)
   induction d as [|x xs IH] using rev_ind; intro Hf.
   - reflexivity.
-  - rewrite app_length. simpl (List.length [x]).
+  - rewrite length_app. simpl (List.length [x]).
     rewrite Nat.add_1_r. simpl (N_to_data (S _) _).
     rewrite data_to_N_snoc.
     apply Forall_app in Hf as [Hxs Hx].
@@ -573,8 +573,15 @@ Qed.
 (** An UNNAMED bit (e.g. 0x10 = 1<<4) is NOT a valid ct_state — the predicate is
     a genuine restriction, not [True].  (Contrast [wf (VCtState 0x10)] which
     holds, since 0x10 < 256^4.) *)
-Example ctstate_0x10_invalid : ~ ctstate_valid (VCtState 0x10).
+(** Headline result (a [Theorem], so that [grep Theorem ... ctstate_0x10_invalid]
+    over the headline set finds it): the bit 0x10 is not a valid conntrack-state
+    value.  Proved by [cbn; discriminate] — the predicate is a genuine
+    restriction, not [True]. *)
+Theorem ctstate_0x10_invalid : ~ ctstate_valid (VCtState 0x10).
 Proof. cbn. unfold ctstate_bits_valid. cbn. discriminate. Qed.
+(** Axiom-freedom guard (build-time; mirrors Fib_Local.v): prints "Closed under
+    the global context". *)
+Print Assumptions ctstate_0x10_invalid.
 Example wf_VCtState_0x10 : wf (VCtState 0x10).
 Proof. cbn. lia. Qed.
 
@@ -586,8 +593,33 @@ Proof. reflexivity. Qed.
 Lemma ifname_valid_pf : forall s, List.length (sbytes s) <= 16 -> ifname_valid (ifname s).
 Proof.
   intros s Hle. unfold ifname_valid, ifname, pad16.
-  rewrite app_length, repeat_length. lia.
+  rewrite length_app, repeat_length. lia.
 Qed.
+
+(** Witnesses for the remaining datatype validity predicates, so that
+    [port_valid]/[integer_valid]/[ipv6_valid]/[ether_valid] are each actually
+    exercised by a lemma (mirroring [ip4_valid]/[ifname_valid_pf] above): the
+    central constructor of each datatype yields a valid value of that datatype. *)
+
+(** [port] (inet_service): a 16-bit value is valid when in range. *)
+Lemma port_valid_pf : forall n, (N.of_nat n < 2 ^ 16)%N -> port_valid (port n).
+Proof. intros n H. unfold port_valid, port. exact H. Qed.
+
+(** [inet_proto]/[icmp_type] are width-1 integers, valid when < 256 = 256^1. *)
+Lemma inet_proto_valid_pf : forall n, (N.of_nat n < 256)%N -> integer_valid (inet_proto n).
+Proof. intros n H. unfold integer_valid, inet_proto. exact H. Qed.
+Lemma icmp_type_valid_pf : forall n, (N.of_nat n < 256)%N -> integer_valid (icmp_type n).
+Proof. intros n H. unfold integer_valid, icmp_type. exact H. Qed.
+(** [ethertype] is a width-2 integer, valid when it fits 2 bytes (< 256^2). *)
+Lemma ethertype_valid_pf : forall n, (n < 256 ^ 2)%N -> integer_valid (ethertype n).
+Proof. intros n H. unfold integer_valid, ethertype. exact H. Qed.
+
+(** [ether] (link-layer) is always a 6-byte register value. *)
+Lemma ether_valid_pf : forall a b c d e f, ether_valid (ether a b c d e f).
+Proof. reflexivity. Qed.
+(** Any 16-byte IPv6 register value is valid (there is no narrower v6 ctor). *)
+Lemma ipv6_valid_intro : forall b, List.length b = 16 -> ipv6_valid (VIpv6 b).
+Proof. intros b H. unfold ipv6_valid. exact H. Qed.
 
 (* ================================================================== *)
 (** * BYTE-FAITHFULNESS of the named constants.

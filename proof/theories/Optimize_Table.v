@@ -302,3 +302,9 @@ Proof.
   apply (optimize_table_compile_correct 0 _ c n' d' c' base p H Hclean);
     intros k _ Hin; cbn in Hin; exact Hin.
 Qed.
+
+(** ** Axiom-freedom audit (build-time guard; mirrors Fib_Local.v).
+    Prints "Closed under the global context"; a future regression that pulls in
+    an axiom/admit would show up in the build log here. *)
+Print Assumptions optimize_table_correct.
+Print Assumptions optimize_table_compile_correct.

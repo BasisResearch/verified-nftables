@@ -334,12 +334,20 @@ let render_instr (i : Bytecode.instr) : string = match i with
              (opt "proto_max" pmax) fl)
 
 (* ---------- program rendering (library output) ---------- *)
+(* FORMAT: this renderer targets the upstream nftables *corpus* representation
+   (tests/py/*.t.payload) — register values are 4-byte BIG-endian chunks with a
+   possibly-short last chunk (see [render_value] above).  That is NOT byte-for-byte
+   the same as a live `nft --debug=netlink` dump, which prints little-endian,
+   4-byte-padded 0x%08x words (that other layout is glue.ml's [render_data]/
+   [render_program], exercised by ../difftest.sh).  The corpus round-trip
+   (corpus_test.ml) checks THIS renderer byte-identical against the corpus; keep
+   the two renderers distinct on purpose. *)
 (* Render one rule's instructions, one per line (no family/table/chain header;
    that framing is the caller's concern). *)
 let render_rule (rp : Bytecode.instr list) : string =
   String.concat "\n" (List.map render_instr rp)
 
 (* Render a whole base-chain program: each per-rule instruction block, blank-line
-   separated, matching the layout of `nft --debug=netlink`. *)
+   separated, in the corpus .t.payload layout described above. *)
 let render_program (prog : Bytecode.program) : string =
   String.concat "\n" (List.map render_rule prog)

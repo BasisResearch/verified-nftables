@@ -59,6 +59,9 @@ Import ListNotations.
 
 Definition RTN_UNICAST   : data := [1; 0; 0; 0].   (* 1 *)
 Definition RTN_LOCAL     : data := [2; 0; 0; 0].   (* 2 = the visible "type local" *)
+(* RTN_BROADCAST/RTN_MULTICAST are listed for rtnetlink enum-completeness /
+   documentation only; the host-wide local lookup below uses just UNICAST and
+   LOCAL, so these two are intentionally unreferenced. *)
 Definition RTN_BROADCAST : data := [3; 0; 0; 0].   (* 3 *)
 Definition RTN_MULTICAST : data := [5; 0; 0; 0].   (* 5 *)
 

@@ -40,65 +40,35 @@
                             out. *)
 
 From Stdlib Require Import List String NArith.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen.
+From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen Nftval Eval_Fw.
 Import ListNotations.
 Open Scope string_scope.
 
-(** Concrete ct-state wire values (big-endian 32-bit; only equality matters). *)
-Definition cts_invalid     : data := [0;0;0;1].
-Definition cts_established : data := [0;0;0;2].
-Definition cts_related     : data := [0;0;0;4].
-Definition cts_new         : data := [0;0;0;8].
+(** Concrete ct-state wire values (big-endian 32-bit; only equality matters).
+    Routed through the central typed nft constructors + [encode] (as
+    [Example_Ruleset]/[Nftval] do) so the byte literals cannot drift from the
+    central conntrack-state encoding; [Eval compute] reduces each to the very
+    literal the [cbn]-based proofs match against. *)
+Definition cts_invalid     : data := Eval compute in encode ct_invalid.      (* [0;0;0;1] *)
+Definition cts_established : data := Eval compute in encode ct_established.   (* [0;0;0;2] *)
+Definition cts_related     : data := Eval compute in encode ct_related.      (* [0;0;0;4] *)
+Definition cts_new         : data := Eval compute in encode ct_new.          (* [0;0;0;8] *)
 
 (* The three named interfaces as the 16-byte zero-padded ASCII the parser emitted. *)
 Definition if_lo   : data := [108;111;0;0; 0;0;0;0; 0;0;0;0; 0;0;0;0].
 Definition if_ppp0 : data := [112;112;112;48; 0;0;0;0; 0;0;0;0; 0;0;0;0].
 Definition if_eth1 : data := [101;116;104;49; 0;0;0;0; 0;0;0;0; 0;0;0;0].
 
-(* The single allowed world source: 81.209.165.42, and the ssh service (tcp/22). *)
-Definition wan_ssh_host : data := [81;209;165;42].
+(* The TCP L4-protocol byte the meta-load returns (used by the input model). *)
 Definition l4_tcp : data := [6].
-Definition dport_ssh : data := [0;22].
 
 Definition in_fuel : nat := 8.
 
-(** One-step unfolding lemmas for the fuel-recursive interpreter (kept opaque so
-    [cbn] reduces only the current rule).  Identical to [Ruleset_Verified]. *)
-Lemma erj_nil : forall n cs p, eval_rules_j (S n) cs [] p = None.
-Proof. reflexivity. Qed.
-
-Lemma erj_cons : forall n cs r rest p,
-  eval_rules_j (S n) cs (r :: rest) p =
-  (if andb (rule_loadable r p) (rule_applies r p)
-   then match outcome r p with
-        | None => eval_rules_j n cs rest p
-        | Some Return => None
-        | Some (Jump m) =>
-            match chain_lookup cs m with
-            | Some ch => match eval_rules_j n cs (c_rules ch) p with
-                         | Some v => Some v | None => eval_rules_j n cs rest p end
-            | None => eval_rules_j n cs rest p
-            end
-        | Some (Goto m) =>
-            match chain_lookup cs m with
-            | Some ch => eval_rules_j n cs (c_rules ch) p | None => None end
-        | Some Continue => eval_rules_j n cs rest p
-        | Some v => Some v
-        end
-   else eval_rules_j n cs rest p).
-Proof. reflexivity. Qed.
-
-Lemma erj_empty : forall m cs p, eval_rules_j m cs [] p = None.
-Proof. destruct m; reflexivity. Qed.
-
-Opaque eval_rules_j.
-
-(** ** Point-interval vmap classification (as in [Router_Forward]). *)
-Lemma data_in_iv_point : forall k key, data_in_iv key (k, k) = data_eqb k key.
-Proof.
-  intros k key. unfold data_in_iv; cbn [fst snd].
-  rewrite data_le_antisym. reflexivity.
-Qed.
+(** The one-step unfolding lemmas [erj_nil]/[erj_cons]/[erj_empty] for the
+    fuel-recursive interpreter (and [Global Opaque eval_rules_j], so [cbn] reduces
+    only the current rule), plus the point-interval classifier [data_in_iv_point],
+    come from [Eval_Fw] — the single shared source of truth (also used by
+    [Router_Forward]). *)
 
 (* The ct-state vmap [__map1] (== [__map3]) the parser emitted. *)
 Definition map1 : list (data * data * verdict) :=

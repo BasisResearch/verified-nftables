@@ -416,8 +416,7 @@ reads (2026-06 audit). `nat`/`masq`/`redir` now **rewrite the packet** — the
 address/port translation (flow-stateful in `e_nat`, with L3+L4 checksum fix-up and
 reply-direction un-NAT) is applied by the whole-chain trace evaluator and observed by
 later hooks, not merely carried for rendering (2026-06 audit; see TODO 3 and
-`../adversarial.md`). `reject`/`queue` still model only their control-flow (stop
-traversal), not the emitted ICMP / userspace hand-off. Concatenation now uses multiple registers with
+`../adversarial.md`). Concatenation now uses multiple registers with
 a verified distinct-register allocation; nft's debug register *numbering* (the
 128-bit alias for 16-byte-aligned slots) is a tested-glue presentation map
 (`nreg`), validated byte-identically — the dataflow correctness is verified.

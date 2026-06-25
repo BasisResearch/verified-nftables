@@ -74,7 +74,7 @@ Fixpoint N_to_data (len : nat) (n : N) : data :=
 Lemma N_to_data_length : forall len n, List.length (N_to_data len n) = len.
 Proof.
   induction len; intro n; simpl; [reflexivity|].
-  rewrite app_length, IHlen; simpl; lia.
+  rewrite length_app, IHlen; simpl; lia.
 Qed.
 
 (** Left/right bit shift of a register value (preserving its byte width). *)
@@ -270,6 +270,20 @@ Definition data_in_iv (x : data) (iv : data * data) : bool :=
   andb (data_le (fst iv) x) (data_le x (snd iv)).
 Definition set_mem (x : data) (s : list (data * data)) : bool :=
   existsb (data_in_iv x) s.
+
+(** Canonical point-interval fact: membership of [x] in the degenerate range
+    [(v, v)] IS byte equality (the two [<=] collapse by [data_le_antisym]).  This
+    is the single home for the identity that both the worked-ruleset engine
+    ([Eval_Fw]) and the optimizer ([Optimize_Merge]) previously reproved under a
+    colliding name; downstream files import it from here.  The orientation is the
+    one [data_le_antisym] yields directly ([data_eqb v x], element-first); the
+    optimizer's MCmp goals want the swapped orientation and adapt with one
+    [data_eqb_sym] (see [Optimize_Merge.data_in_iv_point_eqb]). *)
+Lemma data_in_iv_point : forall x v, data_in_iv x (v, v) = data_eqb v x.
+Proof.
+  intros x v. unfold data_in_iv; cbn [fst snd].
+  rewrite data_le_antisym. reflexivity.
+Qed.
 
 (** ** Per-field (cross-product) membership for CONCATENATED sets.
 

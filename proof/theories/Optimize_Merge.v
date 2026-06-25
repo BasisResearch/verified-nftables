@@ -556,10 +556,13 @@ Qed.
     Fidelity note: [nft -o] NEVER coalesces contiguous values into a range — it
     keeps a discrete SET `{ 22, 23, 24 }`; this pass emits exactly [(v1,v1);(v2,v2)]. *)
 
-Lemma data_in_iv_point : forall x v, data_in_iv x (v, v) = data_eqb x v.
+(** Point-interval membership in the orientation this file's MCmp goals want
+    (RHS [data_eqb x v], key-first).  The fact itself is proved once as the
+    canonical [Bytes.data_in_iv_point] ([data_eqb v x]); here we only flip the
+    [data_eqb] arguments with [data_eqb_sym] — no reproof from scratch. *)
+Lemma data_in_iv_point_eqb : forall x v, data_in_iv x (v, v) = data_eqb x v.
 Proof.
-  intros x v. unfold data_in_iv. cbn [fst snd].
-  rewrite data_le_antisym. apply data_eqb_sym.
+  intros x v. rewrite data_in_iv_point. apply data_eqb_sym.
 Qed.
 
 Lemma concat_set_two_points : forall f v1 v2 name q,
@@ -577,7 +580,7 @@ Proof.
   specialize (H1 eq_refl). specialize (H2 eq_refl).
   cbn [map]. rewrite concat_set_mem_single. unfold set_mem. rewrite Hset.
   cbn [existsb]. rewrite Bool.orb_false_r.
-  rewrite !data_in_iv_point.
+  rewrite !data_in_iv_point_eqb.
   unfold eval_cmp.
   rewrite <- H1, <- H2, !List.firstn_all.
   reflexivity.
@@ -1192,7 +1195,7 @@ Proof.
   - cbn [map]. rewrite concat_set_mem_single. unfold set_mem. rewrite Hset.
     rewrite existsb_map_eq.
     apply existsb_ext. intros v Hv.
-    rewrite data_in_iv_point.
+    rewrite data_in_iv_point_eqb.
     rewrite (eval_mcmp_point f v q Hld (Hlen v Hv eq_refl)). reflexivity.
   - symmetry. apply existsb_false_forall. intros v Hv.
     apply (eval_mcmp_point_unload f v q Hld).
