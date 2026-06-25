@@ -671,6 +671,60 @@ Proof.
   inversion H; subst. apply (optimize_rules_concatN_vmaps _ _ _ _ _ _ _ E).
 Qed.
 
+(** ** Structural facts about clean rules: their bodies are matches-only and read
+    NO set name (every clean matchcond is value/range, [mc_set_name = None]). *)
+
+Lemma rule_clean_forallb_bi_clean : forall r,
+  rule_clean r = true -> forallb bi_clean (r_body r) = true.
+Proof.
+  intros r Hc. unfold rule_clean in Hc.
+  repeat (apply Bool.andb_true_iff in Hc as [Hc ?]). exact Hc.
+Qed.
+
+Lemma mc_clean_set_name_none : forall m,
+  mc_clean m = true -> mc_set_name m = None.
+Proof. intros m H. destruct m; cbn in H |- *; try reflexivity; discriminate. Qed.
+
+Lemma rule_clean_body_only_matches : forall r,
+  rule_clean r = true -> body_only_matches (r_body r) = true.
+Proof.
+  intros r Hc. pose proof (rule_clean_forallb_bi_clean r Hc) as Hb.
+  unfold body_only_matches. clear Hc.
+  induction (r_body r) as [| it b IH]; [reflexivity|].
+  cbn [forallb] in Hb |- *. apply Bool.andb_true_iff in Hb as [Hit Hrest].
+  destruct it as [m | s]; [| discriminate]. cbn. apply IH. exact Hrest.
+Qed.
+
+(** A body whose matchconds are all clean reads no set names. *)
+Lemma body_set_names_nil_of_clean_matches : forall ms,
+  forallb mc_clean ms = true ->
+  flat_map (fun m => match mc_set_name m with Some nm => [nm] | None => [] end) ms = [].
+Proof.
+  induction ms as [| m ms IH]; intro Hb; [reflexivity|].
+  cbn [forallb] in Hb. apply Bool.andb_true_iff in Hb as [Hm Hms].
+  cbn [flat_map]. rewrite (mc_clean_set_name_none m Hm). cbn [app]. apply IH. exact Hms.
+Qed.
+
+Lemma forallb_bi_clean_matches_clean : forall b,
+  forallb bi_clean b = true -> forallb mc_clean (body_matches b) = true.
+Proof.
+  induction b as [| it b IH]; intro Hb; [reflexivity|].
+  cbn [forallb] in Hb. apply Bool.andb_true_iff in Hb as [Hit Hrest].
+  destruct it as [m | s]; [| discriminate]. cbn [bi_clean] in Hit.
+  replace (body_matches (BMatch m :: b)) with (m :: body_matches b)
+    by reflexivity.
+  cbn [forallb]. apply Bool.andb_true_iff. split; [exact Hit | apply IH; exact Hrest].
+Qed.
+
+Lemma rule_clean_body_set_names_nil : forall r,
+  rule_clean r = true -> body_set_names (r_body r) = [].
+Proof.
+  intros r Hc. unfold body_set_names.
+  apply body_set_names_nil_of_clean_matches.
+  apply forallb_bi_clean_matches_clean.
+  apply (rule_clean_forallb_bi_clean r Hc).
+Qed.
+
 (** ** Part 3: generalized vmapN / concatN correctness (weaker-than-[rules_clean]
     precondition true of a PARTIALLY-MERGED chain).
 
