@@ -212,3 +212,102 @@ Proof.
   rewrite (outcome_agree_gen r p base d1 d2 Hda).
   rewrite (IH p base d1 d2 (fun r' Hr' => Hag r' (or_intror Hr'))). reflexivity.
 Qed.
+
+(** ** Part 2: the length-based fresh-counter and read-freshness predicates.
+
+    To make the entry point's freshness side-conditions DISCHARGEABLE BY
+    CONSTRUCTION, we mint synthesized names from a counter chosen STRICTLY ABOVE the
+    LENGTH of every name the input chain reads.  Since [setname k]/[vmapname k] are
+    each STRICTLY LONGER than [k], any [k] past that bound yields a name longer than
+    every seed name — hence absent from the seed.  No string parsing, only a length
+    argument; [setname]/[vmapname] keep their [nat]-counter shape. *)
+
+Local Transparent setname vmapname.
+
+Lemma string_of_nat_length : forall n, String.length (string_of_nat n) = n.
+Proof. induction n as [| n IH]; cbn; [reflexivity | rewrite IH; reflexivity]. Qed.
+
+Lemma string_append_length : forall a b,
+  String.length (a ++ b)%string = String.length a + String.length b.
+Proof. induction a as [| c a IH]; intros b; cbn; [reflexivity | rewrite IH; reflexivity]. Qed.
+
+Lemma setname_length : forall n, String.length (setname n) = 5 + n.
+Proof.
+  intros n. unfold setname. rewrite string_append_length, string_of_nat_length.
+  reflexivity.
+Qed.
+
+Lemma vmapname_length : forall n, String.length (vmapname n) = 6 + n.
+Proof.
+  intros n. unfold vmapname. rewrite string_append_length, string_of_nat_length.
+  reflexivity.
+Qed.
+
+Local Opaque setname vmapname.
+
+(** Membership in a [nat] list is bounded by [list_max]. *)
+Lemma in_le_list_max : forall x l, In x l -> x <= list_max l.
+Proof.
+  induction l as [| a l IH]; intros Hin; [destruct Hin|].
+  cbn [list_max]. destruct Hin as [Heq | Hin].
+  - subst. apply Nat.le_max_l.
+  - apply Nat.max_le_iff. right. apply IH; exact Hin.
+Qed.
+
+(** A name strictly longer than every string in [seed] is absent from [seed]. *)
+Lemma not_in_of_length_gt : forall (s : string) seed,
+  list_max (map String.length seed) < String.length s -> ~ In s seed.
+Proof.
+  intros s seed Hlt Hin.
+  assert (Hle : String.length s <= list_max (map String.length seed)).
+  { apply in_le_list_max. apply in_map. exact Hin. }
+  lia.
+Qed.
+
+(** *** Read-freshness predicates: a rule reads no minted name at-or-above [n]. *)
+Definition rule_set_fresh (n : nat) (r : rule) : Prop :=
+  forall k, n <= k -> ~ In (setname k) (body_set_names (r_body r)).
+
+Definition rule_vmap_fresh (n : nat) (r : rule) : Prop :=
+  forall k, n <= k -> ~ In (vmapname k) (rule_vmap_name r).
+
+Lemma rule_set_fresh_mono : forall n m r,
+  n <= m -> rule_set_fresh n r -> rule_set_fresh m r.
+Proof. intros n m r Hnm Hf k Hk. apply Hf. lia. Qed.
+
+Lemma rule_vmap_fresh_mono : forall n m r,
+  n <= m -> rule_vmap_fresh n r -> rule_vmap_fresh m r.
+Proof. intros n m r Hnm Hf k Hk. apply Hf. lia. Qed.
+
+(** *** The two seam helpers: a passed-through rule that reads no minted name
+    AGREES across the extended declarations. *)
+
+(** setsN / concatN seam: the pass adds only [setname] entries (and leaves
+    [sd_vmaps] fixed); a [rule_set_fresh n] rule agrees. *)
+Lemma decls_agree_rule_setseam : forall base d d' r n,
+  sd_vmaps d' = sd_vmaps d ->
+  (forall nm X, (forall k, n <= k -> nm <> setname k) ->
+     assoc_str nm (sd_sets d') X = assoc_str nm (sd_sets d) X) ->
+  rule_set_fresh n r ->
+  decls_agree_rule base d' d r.
+Proof.
+  intros base d d' r n Hvm Hassoc Hfresh. split.
+  - intros nm Hnm. rewrite !e_set_declared.
+    apply Hassoc. intros k Hk Heq. subst nm. apply (Hfresh k Hk Hnm).
+  - intros nm _. rewrite !e_vmap_env_with_sets. rewrite Hvm. reflexivity.
+Qed.
+
+(** vmapN seam: the pass adds only [vmapname] entries (and leaves [sd_sets]
+    fixed); a [rule_vmap_fresh n] rule agrees. *)
+Lemma decls_agree_rule_vmapseam : forall base d d' r n,
+  sd_sets d' = sd_sets d ->
+  (forall nm X, (forall k, n <= k -> nm <> vmapname k) ->
+     assoc_str nm (sd_vmaps d') X = assoc_str nm (sd_vmaps d) X) ->
+  rule_vmap_fresh n r ->
+  decls_agree_rule base d' d r.
+Proof.
+  intros base d d' r n Hss Hassoc Hfresh. split.
+  - intros nm _. rewrite !e_set_declared. rewrite Hss. reflexivity.
+  - intros nm Hnm. rewrite !e_vmap_env_with_sets.
+    apply Hassoc. intros k Hk Heq. subst nm. apply (Hfresh k Hk Hnm).
+Qed.
