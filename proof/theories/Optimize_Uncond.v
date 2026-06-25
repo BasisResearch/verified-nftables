@@ -30,7 +30,8 @@ From Stdlib Require Import Lia.
 From Stdlib Require Import String.
 Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
-  Compile Correct Optimize Optimize_Merge Optimize_Vmap Optimize_Concat Optimize_Table_Inv.
+  Compile Correct Optimize Optimize_Merge Optimize_Vmap Optimize_Concat Optimize_Table_Inv
+  Optimize_Table.
 
 Local Open Scope nat_scope.
 
@@ -1046,4 +1047,201 @@ Proof.
           by (apply (optimize_rules_concatN_mono fuel n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec))).
         constructor; [apply (rule_vmap_fresh_mono n m'' r1 Hmono Hf1)
                      | apply (IH n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec) Hrf_tail)].
+Qed.
+
+(** ** Part 4: chain-level wrappers, composition, and the END-TO-END theorems. *)
+
+(** *** Chain-level correctness (lift the [optimize_rules_*N_correct_uncond]). *)
+Lemma optimize_chain_setsN_correct_uncond : forall n d c n' d' c' base p,
+  optimize_chain_setsN n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  Forall (rule_set_fresh n) (c_rules c) ->
+  eval_chain c' (set_env p (env_with_sets base d'))
+  = eval_chain c  (set_env p (env_with_sets base d)).
+Proof.
+  intros n d c n' d' c' base p H Hfs Hrf. unfold optimize_chain_setsN in H.
+  destruct (optimize_rules_setsN (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain. cbn [c_rules c_policy].
+  rewrite (optimize_rules_setsN_correct_uncond (Datatypes.length (c_rules c)) (c_rules c) n d
+             m'' dd'' rr'' base p E Hfs Hrf). reflexivity.
+Qed.
+
+Lemma optimize_chain_concatN_correct_uncond : forall n d c n' d' c' base p,
+  optimize_chain_concatN n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  Forall (rule_set_fresh n) (c_rules c) ->
+  eval_chain c' (set_env p (env_with_sets base d'))
+  = eval_chain c  (set_env p (env_with_sets base d)).
+Proof.
+  intros n d c n' d' c' base p H Hfs Hrf. unfold optimize_chain_concatN in H.
+  destruct (optimize_rules_concatN (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain. cbn [c_rules c_policy].
+  rewrite (optimize_rules_concatN_correct_uncond (Datatypes.length (c_rules c)) (c_rules c) n d
+             m'' dd'' rr'' base p E Hfs Hrf). reflexivity.
+Qed.
+
+Lemma optimize_chain_vmapN_correct_uncond : forall n d c n' d' c' base p,
+  optimize_chain_vmapN n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
+  Forall (rule_vmap_fresh n) (c_rules c) ->
+  eval_chain c' (set_env p (env_with_sets base d'))
+  = eval_chain c  (set_env p (env_with_sets base d)).
+Proof.
+  intros n d c n' d' c' base p H Hfv Hrf. unfold optimize_chain_vmapN in H.
+  destruct (optimize_rules_vmapN (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain. cbn [c_rules c_policy].
+  rewrite (optimize_rules_vmapN_correct_uncond (Datatypes.length (c_rules c)) (c_rules c) n d
+             m'' dd'' rr'' base p E Hfv Hrf). reflexivity.
+Qed.
+
+(** *** Chain-level read-freshness propagation. *)
+Lemma optimize_chain_setsN_output_set_fresh : forall n d c n' d' c',
+  optimize_chain_setsN n d c = (n', d', c') ->
+  Forall (rule_set_fresh n) (c_rules c) -> Forall (rule_set_fresh n') (c_rules c').
+Proof.
+  intros n d c n' d' c' H Hrf. unfold optimize_chain_setsN in H.
+  destruct (optimize_rules_setsN (Datatypes.length (c_rules c)) n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. cbn [c_rules].
+  apply (optimize_rules_setsN_output_set_fresh _ _ _ _ _ _ _ E Hrf).
+Qed.
+
+Lemma optimize_chain_setsN_output_vmap_fresh : forall n d c n' d' c',
+  optimize_chain_setsN n d c = (n', d', c') ->
+  Forall (rule_vmap_fresh n) (c_rules c) -> Forall (rule_vmap_fresh n') (c_rules c').
+Proof.
+  intros n d c n' d' c' H Hrf. unfold optimize_chain_setsN in H.
+  destruct (optimize_rules_setsN (Datatypes.length (c_rules c)) n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. cbn [c_rules].
+  apply (optimize_rules_setsN_output_vmap_fresh _ _ _ _ _ _ _ E Hrf).
+Qed.
+
+Lemma optimize_chain_concatN_output_set_fresh : forall n d c n' d' c',
+  optimize_chain_concatN n d c = (n', d', c') ->
+  Forall (rule_set_fresh n) (c_rules c) -> Forall (rule_set_fresh n') (c_rules c').
+Proof.
+  intros n d c n' d' c' H Hrf. unfold optimize_chain_concatN in H.
+  destruct (optimize_rules_concatN (Datatypes.length (c_rules c)) n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. cbn [c_rules].
+  apply (optimize_rules_concatN_output_set_fresh _ _ _ _ _ _ _ E Hrf).
+Qed.
+
+Lemma optimize_chain_concatN_output_vmap_fresh : forall n d c n' d' c',
+  optimize_chain_concatN n d c = (n', d', c') ->
+  Forall (rule_vmap_fresh n) (c_rules c) -> Forall (rule_vmap_fresh n') (c_rules c').
+Proof.
+  intros n d c n' d' c' H Hrf. unfold optimize_chain_concatN in H.
+  destruct (optimize_rules_concatN (Datatypes.length (c_rules c)) n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. cbn [c_rules].
+  apply (optimize_rules_concatN_output_vmap_fresh _ _ _ _ _ _ _ E Hrf).
+Qed.
+
+(** *** UNCONDITIONAL [optimize_table] correctness (arbitrary [d], with read-freshness
+    of the base-optimised chain in BOTH namespaces — NO [rules_clean]). *)
+Theorem optimize_table_correct_uncond_gen : forall n d c n' d' c' base p,
+  optimize_table n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k)  (map fst (sd_sets  d))) ->
+  (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
+  Forall (rule_set_fresh  n) (c_rules (optimize_chain c)) ->
+  Forall (rule_vmap_fresh n) (c_rules (optimize_chain c)) ->
+  eval_chain c' (set_env p (env_with_sets base d'))
+  = eval_chain c  (set_env p (env_with_sets base d)).
+Proof.
+  intros n d c n' d' c' base p H Hfs Hfv Hrs Hrv.
+  unfold optimize_table in H.
+  destruct (optimize_chain_setsN n d (optimize_chain c)) as [[n1 d1] c1] eqn:E1.
+  destruct (optimize_chain_concatN n1 d1 c1) as [[n2 d2] c2] eqn:E2.
+  (* freshness threading *)
+  pose proof (optimize_chain_setsN_fresh_setname n d (optimize_chain c) n1 d1 c1 E1 Hfs) as Hfs1.
+  pose proof (optimize_chain_setsN_mono n d (optimize_chain c) n1 d1 c1 E1) as Hm1.
+  pose proof (optimize_chain_concatN_mono n1 d1 c1 n2 d2 c2 E2) as Hm2.
+  assert (Hvm2 : sd_vmaps d2 = sd_vmaps d).
+  { rewrite (optimize_chain_concatN_vmaps n1 d1 c1 n2 d2 c2 E2).
+    apply (optimize_chain_setsN_vmaps n d (optimize_chain c) n1 d1 c1 E1). }
+  assert (Hfv2 : forall k, n2 <= k -> ~ In (vmapname k) (map fst (sd_vmaps d2))).
+  { intros k Hk. rewrite Hvm2. apply Hfv. lia. }
+  (* read-freshness threading *)
+  pose proof (optimize_chain_setsN_output_set_fresh n d (optimize_chain c) n1 d1 c1 E1 Hrs) as Hrs1.
+  pose proof (optimize_chain_setsN_output_vmap_fresh n d (optimize_chain c) n1 d1 c1 E1 Hrv) as Hrv1.
+  pose proof (optimize_chain_concatN_output_set_fresh n1 d1 c1 n2 d2 c2 E2 Hrs1) as Hrs2.
+  pose proof (optimize_chain_concatN_output_vmap_fresh n1 d1 c1 n2 d2 c2 E2 Hrv1) as Hrv2.
+  rewrite (optimize_chain_vmapN_correct_uncond n2 d2 c2 n' d' c' base p H Hfv2 Hrv2).
+  rewrite (optimize_chain_concatN_correct_uncond n1 d1 c1 n2 d2 c2 base p E2 Hfs1 Hrs1).
+  rewrite (optimize_chain_setsN_correct_uncond n d (optimize_chain c) n1 d1 c1 base p E1 Hfs Hrs).
+  apply optimize_chain_correct.
+Qed.
+
+(** *** The fresh-counter seed: choose the start counter STRICTLY above the length
+    of every name the base-optimised chain reads, so minted names avoid the seed. *)
+Definition chain_seed (c : chain) : list string :=
+  flat_map (fun r => body_set_names (r_body r) ++ rule_vmap_name r) (c_rules c).
+
+Definition seed_start (c : chain) : nat :=
+  S (list_max (map String.length (chain_seed c))).
+
+Lemma chain_seed_set_in : forall c r nm,
+  In r (c_rules c) -> In nm (body_set_names (r_body r)) -> In nm (chain_seed c).
+Proof.
+  intros c r nm Hr Hnm. unfold chain_seed. apply in_flat_map. exists r.
+  split; [exact Hr | apply in_or_app; left; exact Hnm].
+Qed.
+
+Lemma chain_seed_vmap_in : forall c r nm,
+  In r (c_rules c) -> In nm (rule_vmap_name r) -> In nm (chain_seed c).
+Proof.
+  intros c r nm Hr Hnm. unfold chain_seed. apply in_flat_map. exists r.
+  split; [exact Hr | apply in_or_app; right; exact Hnm].
+Qed.
+
+Lemma seed_start_set_fresh : forall c, Forall (rule_set_fresh (seed_start c)) (c_rules c).
+Proof.
+  intro c. apply Forall_forall. intros r Hr k Hk Hin.
+  apply (not_in_of_length_gt (setname k) (chain_seed c)).
+  - rewrite setname_length. unfold seed_start in Hk. lia.
+  - apply (chain_seed_set_in c r (setname k) Hr Hin).
+Qed.
+
+Lemma seed_start_vmap_fresh : forall c, Forall (rule_vmap_fresh (seed_start c)) (c_rules c).
+Proof.
+  intro c. apply Forall_forall. intros r Hr k Hk Hin.
+  apply (not_in_of_length_gt (vmapname k) (chain_seed c)).
+  - rewrite vmapname_length. unfold seed_start in Hk. lia.
+  - apply (chain_seed_vmap_in c r (vmapname k) Hr Hin).
+Qed.
+
+(** *** The UNCONDITIONAL entry point: optimise a fresh table starting the
+    fresh-name counter at [seed_start] of the base-optimised chain. *)
+Definition empty_decls : set_decls := {| sd_sets := []; sd_vmaps := []; sd_maps := [] |}.
+
+Definition optimize_table_uncond (c : chain) : nat * set_decls * chain :=
+  optimize_table (seed_start (optimize_chain c)) empty_decls c.
+
+(** END-TO-END, NO HYPOTHESIS ON [c]: the optimised chain, run against the
+    synthesised declarations, has EXACTLY the DSL verdict of the original chain. *)
+Theorem optimize_table_uncond_correct : forall c base p n' d' c',
+  optimize_table_uncond c = (n', d', c') ->
+  eval_chain c' (set_env p (env_with_sets base d'))
+  = eval_chain c (set_env p (env_with_sets base empty_decls)).
+Proof.
+  intros c base p n' d' c' H. unfold optimize_table_uncond in H.
+  apply (optimize_table_correct_uncond_gen (seed_start (optimize_chain c)) empty_decls c
+           n' d' c' base p H).
+  - intros k _ Hin; cbn in Hin; exact Hin.
+  - intros k _ Hin; cbn in Hin; exact Hin.
+  - apply seed_start_set_fresh.
+  - apply seed_start_vmap_fresh.
+Qed.
+
+(** END-TO-END to the BYTECODE: compile the optimised chain, run the VM against the
+    synthesised declarations — EXACTLY the original chain's DSL verdict. *)
+Theorem optimize_table_uncond_compile_correct : forall c base p n' d' c',
+  optimize_table_uncond c = (n', d', c') ->
+  run_chain (compile_chain c') (c_policy c') (set_env p (env_with_sets base d'))
+  = eval_chain c (set_env p (env_with_sets base empty_decls)).
+Proof.
+  intros c base p n' d' c' H.
+  rewrite (compile_chain_sets_correct c' base d' p).
+  exact (optimize_table_uncond_correct c base p n' d' c' H).
 Qed.
