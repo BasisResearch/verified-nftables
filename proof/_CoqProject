@@ -9,6 +9,7 @@ theories/Semantics.v
 theories/Compile.v
 theories/Correct.v
 theories/Optimize.v
+theories/Eval_Fw.v
 theories/Example_Ruleset.v
 theories/Ruleset_Gen.v
 theories/Router_Gen.v

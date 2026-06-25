@@ -46,7 +46,7 @@
         comparison is exact. *)
 
 From Stdlib Require Import List String NArith.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics Compile Correct Nftval.
+From Nft Require Import Bytes Verdict Packet Syntax Semantics Compile Correct Nftval Eval_Fw.
 Import ListNotations.
 Open Scope string_scope.
 
@@ -190,54 +190,14 @@ Definition fw_chains : list (string * chain) :=
    tight because [cbn] symbolically expands the fuel-recursion tree. *)
 Definition fw_fuel : nat := 8.
 
-(** One-step unfolding lemmas for the fuel-recursive chain interpreter.  We keep
-    [eval_rules_j] opaque during evaluation and step it with these, so [cbn] only
-    ever reduces the *current* rule (rather than symbolically expanding the whole
-    fuel-bounded traversal tree, which blows up). *)
-Lemma erj_nil : forall n cs p, eval_rules_j (S n) cs [] p = None.
-Proof. reflexivity. Qed.
-
-Lemma erj_cons : forall n cs r rest p,
-  eval_rules_j (S n) cs (r :: rest) p =
-  (if andb (rule_loadable r p) (rule_applies r p)
-   then match outcome r p with
-        | None => eval_rules_j n cs rest p
-        | Some Return => None
-        | Some (Jump m) =>
-            match chain_lookup cs m with
-            | Some ch => match eval_rules_j n cs (c_rules ch) p with
-                         | Some v => Some v | None => eval_rules_j n cs rest p end
-            | None => eval_rules_j n cs rest p
-            end
-        | Some (Goto m) =>
-            match chain_lookup cs m with
-            | Some ch => eval_rules_j n cs (c_rules ch) p | None => None end
-        | Some Continue => eval_rules_j n cs rest p
-        | Some v => Some v
-        end
-   else eval_rules_j n cs rest p).
-Proof. reflexivity. Qed.
-
-Global Opaque eval_rules_j.
-
-(** Symbolically evaluate [eval_table] over the concrete chains, stepping one
-    rule at a time and rewriting the per-packet field values from the hypotheses
-    as each match is reached.  [field_value]/[pkt_env]/[eval_rules_j] are kept
-    folded so the field hypotheses can rewrite [field_value _ p], [pkt_env p]
-    resolves to [fw_env], and the recursion does not explode. *)
+(** Symbolically evaluate [eval_table] over the concrete chains: unfold this
+    module's own chain definitions, then run the shared [eval_fw_core] engine
+    (Eval_Fw.v) which steps one rule at a time and rewrites the per-packet field
+    values from the hypotheses.  [erj_nil]/[erj_cons] and [Global Opaque
+    eval_rules_j] live in Eval_Fw.v. *)
 Ltac eval_fw Hpe :=
   unfold eval_table, fw_fuel, fw_chains, inbound, inbound_ipv4, inbound_ipv6;
-  repeat first
-    [ rewrite Hpe
-    | rewrite erj_nil
-    | rewrite erj_cons
-    | match goal with H : field_value _ _ = _ |- _ => rewrite H end
-    | match goal with H : read_payload_ok _ _ _ _ = _ |- _ => rewrite H end
-    | progress unfold rule_loadable, rule_applies, end_loadable, tail_loadable,
-        terminal_loadable, vmap_loadable, body_item_loadable, match_loadable,
-        fields_loadable, field_loadable, load_ok, eval_matchcond, eval_matchcond_body
-    | progress cbn -[eval_rules_j field_value read_payload_ok pkt_env] ];
-  reflexivity.
+  eval_fw_core Hpe.
 
 (** ** The properties.
 
