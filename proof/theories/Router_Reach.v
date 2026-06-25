@@ -227,6 +227,10 @@ Proof.
     unfold env_nat_upd; cbn [with_e_nat e_nat]. now rewrite data_eqb_refl.
 Qed.
 
+(** Axiom-freedom guard (build-time; mirrors Fib_Local.v): prints "Closed under
+    the global context". *)
+Print Assumptions nat_masquerade_fires.
+
 (* ------------------------------------------------------------ *)
 (** *** Half (b): the masquerade does NOT fire — packet returned UNCHANGED. *)
 

@@ -573,8 +573,13 @@ Qed.
 (** An UNNAMED bit (e.g. 0x10 = 1<<4) is NOT a valid ct_state — the predicate is
     a genuine restriction, not [True].  (Contrast [wf (VCtState 0x10)] which
     holds, since 0x10 < 256^4.) *)
-Example ctstate_0x10_invalid : ~ ctstate_valid (VCtState 0x10).
+(** Headline result (a [Lemma], so it is found by [grep Theorem\|Lemma] over the
+    headline set): the bit 0x10 is not a valid conntrack-state value. *)
+Lemma ctstate_0x10_invalid : ~ ctstate_valid (VCtState 0x10).
 Proof. cbn. unfold ctstate_bits_valid. cbn. discriminate. Qed.
+(** Axiom-freedom guard (build-time; mirrors Fib_Local.v): prints "Closed under
+    the global context". *)
+Print Assumptions ctstate_0x10_invalid.
 Example wf_VCtState_0x10 : wf (VCtState 0x10).
 Proof. cbn. lia. Qed.
 

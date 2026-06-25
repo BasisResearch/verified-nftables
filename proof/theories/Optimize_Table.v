@@ -258,3 +258,8 @@ Proof.
   rewrite (optimize_chain_setsN_correct n d (optimize_chain c) n1 d1 c1 base p E1 Hc0clean Hfs).
   apply optimize_chain_correct.
 Qed.
+
+(** ** Axiom-freedom audit (build-time guard; mirrors Fib_Local.v).
+    Prints "Closed under the global context"; a future regression that pulls in
+    an axiom/admit would show up in the build log here. *)
+Print Assumptions optimize_table_correct.

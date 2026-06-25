@@ -96,6 +96,10 @@ Proof.
     rewrite ?Hok, Hobr, ?app_nil_r, Henv, Hin, Hpair. vm_compute. reflexivity.
 Qed.
 
+(** Axiom-freedom guard (build-time; mirrors Fib_Local.v): prints "Closed under
+    the global context". *)
+Print Assumptions antispoof_general.
+
 (** ** Concrete witness 1 — the spoofing attempt is blocked.
 
     The container behind `inc-vikun` (vikunja, real address .14) sends a frame to

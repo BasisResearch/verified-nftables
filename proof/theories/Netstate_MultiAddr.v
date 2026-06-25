@@ -158,6 +158,10 @@ Proof.
   exists pre, ia, post. repeat split; auto.
 Qed.
 
+(** Axiom-freedom guard (build-time; mirrors Fib_Local.v): prints "Closed under
+    the global context". *)
+Print Assumptions masq_saddr_is_selected_primary.
+
 (** THE NF_DROP THEOREM: the masquerade NAT-core drop fires EXACTLY when the egress
     interface has NO eligible (non-secondary, in-scope) primary address — the
     kernel's `newsrc = inet_select_addr(out,...); if (!newsrc) return NF_DROP;`.
