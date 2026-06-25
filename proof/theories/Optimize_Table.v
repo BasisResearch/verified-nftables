@@ -188,25 +188,8 @@ Proof. trivial. Qed.
 (** ** Step 2 (first rung): compose base [optimize_chain] then the N-WAY value->set
     pass.  Step 1 supplies the [rules_clean] hypothesis the [setsN] theorem needs. *)
 
-Definition optimize_table_sets (n : nat) (d : set_decls) (c : chain)
-  : nat * set_decls * chain :=
-  optimize_chain_setsN n d (optimize_chain c).
 
 (** *** First-rung whole-pipeline correctness, axiom-free. *)
-Theorem optimize_table_sets_correct : forall n d c n' d' c' base p,
-  optimize_table_sets n d c = (n', d', c') ->
-  rules_clean (c_rules c) = true ->
-  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
-  eval_chain c' (set_env p (env_with_sets base d'))
-  = eval_chain c  (set_env p (env_with_sets base d)).
-Proof.
-  intros n d c n' d' c' base p H Hclean Hfresh.
-  unfold optimize_table_sets in H.
-  rewrite (optimize_chain_setsN_correct n d (optimize_chain c) n' d' c' base p
-             H (optimize_chain_clean c Hclean) Hfresh).
-  (* base optimize_chain is eval_chain-preserving on every packet/env *)
-  apply optimize_chain_correct.
-Qed.
 
 (** ** Step 3: the FULL four-stage pipeline and its whole-pipeline correctness.
 

@@ -451,7 +451,7 @@ let () =
       "saddr 10.0.0.1",     mk_pkt ~nh:(nh ~saddr:[10;0;0;1] ~daddr:[8;8;8;8]) () ];
   Printf.printf "\n";
   (* (6c) THE HEADLINE nft -o pass — value -> anonymous SET, now run as the ACTUAL
-     extracted VERIFIED term (Optimize_Table.optimize_table_sets, composing base
+     extracted VERIFIED term (Optimize_Uncond.optimize_table_uncond, composing base
      dedup/DCE then the N-WAY value->anonymous-SET consolidation
      optimize_chain_setsN).  Previously this was a hand-OCaml mirror because the
      verified term's rule_eq_dec extracted to a multi-MB OCaml value; that bloat is
@@ -466,9 +466,9 @@ let () =
      with the original on every packet. *)
   Printf.printf "=== (6c) nft -o value->SET: tcp dport {22,80,443} (anonymous set, the headline pass) ===\n";
   (* This now runs the ACTUAL extracted VERIFIED term — the composed optimizer
-     [Optimize_Table.optimize_table_sets] (base dedup/DCE then the N-WAY
+     [Optimize_Uncond.optimize_table_uncond] (base dedup/DCE then the N-WAY
      value->anonymous-SET consolidation [optimize_chain_setsN]).  Its whole-pipeline
-     correctness is the axiom-free [optimize_table_sets_correct]; the per-pass
+     correctness is the axiom-free [optimize_table_uncond_correct]; the per-pass
      [optimize_chain_setsN_correct] proves verdict-preservation with the synthesised
      N-element set in scope.  No hand-OCaml mirror: the [rule_eq_dec] extraction
      bloat was eliminated by the compact boolean [rule_end_eqb] (see Optimize_Merge.v),
@@ -481,7 +481,7 @@ let () =
   let empty_decls : Semantics.set_decls =
     { Semantics.sd_sets = []; sd_vmaps = []; sd_maps = [] } in
   let ((_n_out, decls_out), c_out_v) =
-    Optimize_Table.optimize_table_sets 0 empty_decls (chain Verdict.Drop rs_in) in
+    Optimize_Uncond.optimize_table_uncond (chain Verdict.Drop rs_in) in
   let sets_out = decls_out.Semantics.sd_sets in
   let rs_out = c_out_v.Syntax.c_rules in
   let len_in = Stdlib.List.length rs_in and len_out = Stdlib.List.length rs_out in

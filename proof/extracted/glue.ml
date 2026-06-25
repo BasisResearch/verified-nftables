@@ -164,10 +164,10 @@ let () =
         ]
       in
       let ((_, decls'), d') =
-        Optimize_Table.optimize_table_sets 0 empty_decls d in
-      print_string "--- before (verified optimize_table_sets) ---\n";
+        Optimize_Uncond.optimize_table_uncond d in
+      print_string "--- before (verified optimize_table_uncond) ---\n";
       print_compiled d;
-      print_string "--- after (verified optimize_table_sets) ---\n";
+      print_string "--- after (verified optimize_table_uncond) ---\n";
       print_compiled d';
       print_string "--- synthesised set declarations ---\n";
       print_string (render_decls decls')
