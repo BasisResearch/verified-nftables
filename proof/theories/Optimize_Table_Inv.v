@@ -169,10 +169,6 @@ Qed.
 Definition rule_vmap_name (r : rule) : list string :=
   match r_vmap r with Some vm => [vm_name vm] | None => [] end.
 
-(** All set/vmap names a rule reads from the environment. *)
-Definition rule_read_names (r : rule) : list string :=
-  body_set_names (r_body r) ++ rule_vmap_name r.
-
 (** Two decls AGREE for a rule [r] iff they give the same [e_set]/[e_vmap] lookup at
     every name [r] reads. *)
 Definition decls_agree_rule (base : env) (d1 d2 : set_decls) (r : rule) : Prop :=
