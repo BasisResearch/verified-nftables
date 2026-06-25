@@ -310,8 +310,8 @@ Definition env_bug : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
      e_quota := fun _ => 0;
-     e_ifaddr := fun n => if data_eqb n if_ppp0 then wan_addr else [];
-     e_ifaddr6 := fun _ => []; e_connlimit := fun _ => [];
+     e_ifaddrs := fun n => ifaddrs_of (if data_eqb n if_ppp0 then wan_addr else []);
+     e_ifaddrs6 := fun _ => []; e_connlimit := fun _ => [];
      e_ct := fun _ _ => []; e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
 
 Definition pkt_pub : packet :=
@@ -614,8 +614,8 @@ Definition env_confirmed : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
      e_quota := fun _ => 0;
-     e_ifaddr := fun n => if data_eqb n if_ppp0 then current_exit else [];
-     e_ifaddr6 := fun _ => []; e_connlimit := fun _ => [];
+     e_ifaddrs := fun n => ifaddrs_of (if data_eqb n if_ppp0 then current_exit else []);
+     e_ifaddrs6 := fun _ => []; e_connlimit := fun _ => [];
      e_ct := fun _ _ => [];
      e_nat := fun k => if data_eqb k flowkey
                        then Some (Some orig_priv, Some stored_wan, None, None)

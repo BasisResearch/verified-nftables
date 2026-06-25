@@ -126,6 +126,50 @@ Inductive pbase : Type :=
 | PInner
 | PTunnel.
 
+(** ** Per-interface address state — a faithful multi-address model.
+
+    A real Linux interface does NOT carry a single source address: it carries a
+    LIST of addresses (a primary + secondaries, kept in [in_device->ifa_list],
+    net/ipv4/devinet.c).  Each [in_ifaddr] records its local address
+    ([ifa_local]), whether it is a SECONDARY (the [IFA_F_SECONDARY] flag — only a
+    PRIMARY is eligible for source-address selection), and its address SCOPE
+    ([ifa_scope]: RT_SCOPE_UNIVERSE=0 global, HOST=254 loopback-only, ...; a
+    larger number is a TIGHTER scope).  We model exactly this triple. *)
+Record ifaddr : Type := {
+  ifa_local     : data;   (* the interface address (4-byte IPv4 / 16-byte IPv6) *)
+  ifa_secondary : bool;   (* IFA_F_SECONDARY: secondaries are skipped by selection *)
+  ifa_scope     : nat     (* RT_SCOPE_*: 0=UNIVERSE(global) .. 255=NOWHERE; bigger=tighter *)
+}.
+
+(** RT_SCOPE_UNIVERSE — the loosest scope, what masquerade asks for
+    (nf_nat_masquerade.c: [inet_select_addr(out, nh, RT_SCOPE_UNIVERSE)]). *)
+Definition scope_universe : nat := 0.
+
+(** A "primary" interface address in the universal scope — the common case used
+    by the test/literal environments (a single global primary). *)
+Definition mk_primary (v : data) : ifaddr :=
+  {| ifa_local := v; ifa_secondary := false; ifa_scope := scope_universe |}.
+
+(** [inet_select_addr l scope] — the kernel's source-address SELECTION,
+    net/ipv4/devinet.c:1359 [inet_select_addr], specialised to the
+    destination-less call (masquerade passes the nexthop as [dst], but the
+    on-link [inet_ifa_match] preference only REORDERS among equally-eligible
+    primaries; the value the kernel returns when no on-link match exists — and the
+    NF_DROP condition — is exactly "the first eligible primary", which is what we
+    model).  We iterate the device's address list and return the FIRST address
+    that is (a) NOT a secondary and (b) in scope, i.e. [ifa_scope <= scope] (the
+    kernel's [min(ifa->ifa_scope, ...) > scope] skip, here without the localnet
+    refinement).  When NO such address exists the result is [] — the kernel's
+    [inet_select_addr] returns 0, which the masquerade core turns into NF_DROP. *)
+Fixpoint inet_select_addr (l : list ifaddr) (scope : nat) : data :=
+  match l with
+  | [] => []
+  | ia :: rest =>
+      if andb (negb (ifa_secondary ia)) (Nat.leb (ifa_scope ia) scope)
+      then ifa_local ia
+      else inet_select_addr rest scope
+  end.
+
 (** The named, runtime-mutable table state a ruleset is evaluated against: a
     [lookup @s] does NOT read contents baked into the rule — it reads the current
     contents of the named set/map from this environment.  Modelling it as a
@@ -193,19 +237,24 @@ Record env : Type := {
                                                 accumulates skb->len UNCONDITIONALLY,
                                                 regardless of pass/fail).  Consumed by
                                                 [limit_sweep_*] like [e_limit]. *)
-  e_ifaddr : data -> data;                   (* an interface's primary IPv4 source
-                                                address, keyed by its name — the
-                                                source `masquerade` rewrites an IPv4
-                                                packet to (the IP of the interface
-                                                it exits).  Shared host config. *)
-  e_ifaddr6 : data -> data;                  (* an interface's primary IPv6 source
-                                                address (a 16-byte in6_addr), keyed
-                                                by its name — what an IPv6
-                                                `masquerade` rewrites to.  The kernel
-                                                computes it via ipv6_dev_get_saddr
-                                                (nf_nat_masquerade_ipv6); it is a
-                                                DIFFERENT value from the IPv4
-                                                e_ifaddr.  Shared host config. *)
+  e_ifaddrs : data -> list ifaddr;           (* an interface's FULL IPv4 address LIST
+                                                (primary + secondaries), keyed by its
+                                                name — the genuine multi-address
+                                                per-device [ifa_list] of Linux's
+                                                [in_device] (net/ipv4/devinet.c).  The
+                                                source `masquerade` SELECTS from this
+                                                list via [inet_select_addr] (see the
+                                                derived [e_ifaddr] below).  Shared host
+                                                config. *)
+  e_ifaddrs6 : data -> list ifaddr;          (* an interface's FULL IPv6 address LIST
+                                                (each [ifa_local] a 16-byte in6_addr),
+                                                keyed by its name — the [inet6_dev]
+                                                address list.  An IPv6 `masquerade`
+                                                SELECTS from this via [inet_select_addr]
+                                                (the kernel's ipv6_dev_get_saddr); the
+                                                selected value is a DIFFERENT 128-bit
+                                                address, not the IPv4 one.  Shared host
+                                                config. *)
   e_connlimit : connlimit_spec -> list data; (* the SHARED, flow-keyed set of DISTINCT
                                                 live CONNECTIONS currently counted for a
                                                 `connlimit`/`ct count` instance — the
@@ -300,6 +349,40 @@ Record env : Type := {
                                nft_ng_random_gen: get_random_u32) stays a genuine per-packet
                                oracle [pkt_numgen]. *)
 }.
+
+(** The DERIVED single primary source address an IPv4 `masquerade` rewrites to:
+    [inet_select_addr] applied to the egress interface's full address list at
+    RT_SCOPE_UNIVERSE — i.e. the first non-secondary, in-scope (global) primary.
+    This is a genuine SELECTION from the multi-address state [e_ifaddrs], not a
+    one-address oracle; the masquerade core then turns a [] result into NF_DROP
+    (nf_nat_masquerade.c).  Keeping the applied shape [e_ifaddr e n : data]
+    identical to the old projection means every downstream definition/theorem that
+    read "the interface's source address" continues to typecheck and now denotes
+    the kernel's selection. *)
+Definition e_ifaddr (e : env) (n : data) : data :=
+  inet_select_addr (e_ifaddrs e n) scope_universe.
+
+(** Likewise for IPv6: select the primary in-scope address from the interface's
+    IPv6 address list (the kernel's ipv6_dev_get_saddr over the inet6_dev list). *)
+Definition e_ifaddr6 (e : env) (n : data) : data :=
+  inet_select_addr (e_ifaddrs6 e n) scope_universe.
+
+(** [ifaddrs_of v]: the compatibility constructor used by the single-address test
+    environments — an interface whose ONLY address is the global primary [v], or
+    NO address when [v = []].  [e_ifaddr] of such a list is exactly [v], so every
+    literal environment that used to write [e_ifaddr := fun n => f n] is faithfully
+    migrated to [e_ifaddrs := fun n => ifaddrs_of (f n)] with the SAME observable
+    [e_ifaddr] (see [e_ifaddr_ifaddrs_of]). *)
+Definition ifaddrs_of (v : data) : list ifaddr :=
+  if data_eqb v [] then [] else [ mk_primary v ].
+
+Lemma inet_select_ifaddrs_of : forall v,
+  inet_select_addr (ifaddrs_of v) scope_universe = v.
+Proof.
+  intro v. unfold ifaddrs_of. destruct (data_eqb v []) eqn:E.
+  - apply data_eqb_true_iff in E. now rewrite E.
+  - reflexivity.
+Qed.
 
 Record packet : Type := {
   pkt_env  : env;                (* the named set/map state (see [env] above) *)
@@ -447,42 +530,42 @@ Record packet : Type := {
 Definition with_e_set (e : env) (v : string -> list (data * data)) : env :=
   {| e_set := v; e_vmap := e_vmap e; e_map := e_map e;
      e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_ifaddrs := e_ifaddrs e; e_ifaddrs6 := e_ifaddrs6 e;
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
      e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
 
 Definition with_e_map (e : env) (v : string -> list (data * data)) : env :=
   {| e_set := e_set e; e_vmap := e_vmap e; e_map := v;
      e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_ifaddrs := e_ifaddrs e; e_ifaddrs6 := e_ifaddrs6 e;
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
      e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
 
 Definition with_e_limit (e : env) (v : limit_spec -> nat) : env :=
   {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
      e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_ifaddrs := e_ifaddrs e; e_ifaddrs6 := e_ifaddrs6 e;
      e_limit := v; e_quota := e_quota e; e_connlimit := e_connlimit e;
      e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
 
 Definition with_e_quota (e : env) (v : quota_spec -> nat) : env :=
   {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
      e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_ifaddrs := e_ifaddrs e; e_ifaddrs6 := e_ifaddrs6 e;
      e_limit := e_limit e; e_quota := v; e_connlimit := e_connlimit e;
      e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
 
 Definition with_e_connlimit (e : env) (v : connlimit_spec -> list data) : env :=
   {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
      e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_ifaddrs := e_ifaddrs e; e_ifaddrs6 := e_ifaddrs6 e;
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := v;
      e_ct := e_ct e; e_nat := e_nat e; e_numgen := e_numgen e |}.
 
 Definition with_e_ct (e : env) (v : data -> ct_key -> data) : env :=
   {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
      e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_ifaddrs := e_ifaddrs e; e_ifaddrs6 := e_ifaddrs6 e;
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
      e_ct := v; e_nat := e_nat e; e_numgen := e_numgen e |}.
 
@@ -490,14 +573,14 @@ Definition with_e_nat (e : env)
     (v : data -> option (option data * option data * option nat * option data)) : env :=
   {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
      e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_ifaddrs := e_ifaddrs e; e_ifaddrs6 := e_ifaddrs6 e;
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
      e_ct := e_ct e; e_nat := v; e_numgen := e_numgen e |}.
 
 Definition with_e_numgen (e : env) (v : numgen_spec -> nat) : env :=
   {| e_set := e_set e; e_vmap := e_vmap e; e_map := e_map e;
      e_routes := e_routes e; e_rt := e_rt e;
-     e_ifaddr := e_ifaddr e; e_ifaddr6 := e_ifaddr6 e;
+     e_ifaddrs := e_ifaddrs e; e_ifaddrs6 := e_ifaddrs6 e;
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
      e_ct := e_ct e; e_nat := e_nat e; e_numgen := v |}.
 
