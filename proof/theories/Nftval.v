@@ -39,7 +39,7 @@
     This file is purely ADDITIVE: it edits no existing definition and proves no
     existing theorem differently. *)
 
-From Stdlib Require Import List PeanoNat Bool NArith Lia.
+From Stdlib Require Import List PeanoNat Bool NArith Lia String Ascii.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.
 Import ListNotations.
 
@@ -402,3 +402,243 @@ Proof.
   rewrite (encode_length v Hwf) in Hmatch.
   rewrite Hmatch. apply decode_encode. exact Hwf.
 Qed.
+
+(* ================================================================== *)
+(** * PER-DATATYPE VALIDITY PREDICATES (man nft, DATA TYPES).
+
+    The width well-formedness [wf] above is only the *register-slot* invariant
+    (a value fits its byte width).  It does NOT capture which values are
+    *meaningful* for each nft datatype.  The predicates below restrict each
+    datatype to exactly the values nft's own datatype table (src/datatype.c) and
+    the kernel UAPI admit:
+
+      - ct_state is a BITMASK over the named conntrack-state bits, NOT an
+        arbitrary 4-byte integer: only unions of {invalid,established,related,
+        new,destroyed,untracked} are valid;
+      - fib route-type is a small enum (the RTN_* codes);
+      - inet_service (port) is a 16-bit value, inet_proto / icmp_type are 8-bit,
+        ethertype is 16-bit;
+      - the address / ifname types carry their exact register length.
+
+    These are the validity predicates the mission demands: a value passing the
+    predicate is a value nft would actually accept for that datatype. *)
+
+(* ------------------------------------------------------------------ *)
+(** ** ct_state: a bitmask of the named conntrack-state bits.
+
+    The named bits, from [include/uapi/linux/netfilter/nf_conntrack_common.h]
+    and nft's [src/ct.c] / [src/datatype.c] [ctstate_type]:
+      INVALID = 1<<0 = 0x01, NEW = 1<<3 = 0x08 (bit value 0x08 in the nft
+      symbol table), ESTABLISHED = 0x02, RELATED = 0x04, DESTROYED = 0x20,
+      UNTRACKED = 1<<6 = 0x40.  (nft exposes these via the [enum ip_conntrack_*]
+      / [IP_CT_*] mapping; the *register bytes* are the 4-byte big-endian word
+      of the OR of the selected bits.)
+
+    The set of valid bits is exactly the mask [ctstate_mask = 0x6F]; a value is
+    valid iff every set bit lies in the mask, i.e. [N.lor n mask = mask]. *)
+Definition ct_INVALID     : N := 0x01.
+Definition ct_ESTABLISHED : N := 0x02.
+Definition ct_RELATED     : N := 0x04.
+Definition ct_NEW         : N := 0x08.
+Definition ct_DESTROYED   : N := 0x20.
+Definition ct_UNTRACKED   : N := 0x40.
+
+(** The union of all named ct_state bits (= [0x6F]). *)
+Definition ctstate_mask : N :=
+  N.lor ct_INVALID (N.lor ct_ESTABLISHED (N.lor ct_RELATED
+       (N.lor ct_NEW (N.lor ct_DESTROYED ct_UNTRACKED)))).
+
+(** A raw ct_state bitmask value is valid iff all its set bits are named bits. *)
+Definition ctstate_bits_valid (n : N) : Prop := (N.lor n ctstate_mask = ctstate_mask)%N.
+
+(** Validity of a typed [VCtState]: a bitmask over the named bits.  This is the
+    REAL ct_state validity (NOT the byte-range alias [wf]): it rejects e.g.
+    0x10 (1<<4, unused) and 0xFFFFFFFF, admitting only unions of named bits. *)
+Definition ctstate_valid (v : nftval) : Prop :=
+  match v with VCtState n => ctstate_bits_valid n | _ => False end.
+
+(** The mask is [0x6F] and ct_state validity is decidable by [vm_compute]. *)
+Example ctstate_mask_value : ctstate_mask = 0x6F%N.
+Proof. reflexivity. Qed.
+
+(* ------------------------------------------------------------------ *)
+(** ** fib route-type: the RTN_* enum ([include/uapi/linux/rtnetlink.h]).
+
+    nft's [fib addrtype] datatype is exactly this enum (src/datatype.c
+    [addrtype_type], [fib_addr_type]).  The register stores the type as a
+    host-endian 32-bit word [res.type] (little-endian on x86/ARM64). *)
+Inductive fib_addrtype : Type :=
+| FAunspec | FAunicast | FAlocal | FAbroadcast | FAanycast | FAmulticast
+| FAblackhole | FAunreachable | FAprohibit.
+
+(** The RTN_* code of each address type (rtnetlink.h:262 enum order). *)
+Definition addrtype_code (a : fib_addrtype) : N :=
+  match a with
+  | FAunspec      => 0  | FAunicast     => 1  | FAlocal     => 2
+  | FAbroadcast   => 3  | FAanycast     => 4  | FAmulticast => 5
+  | FAblackhole   => 6  | FAunreachable => 7  | FAprohibit  => 8
+  end.
+
+(** A [VFibType] value is valid iff its code is one of the RTN_* codes
+    (equivalently, it is the code of SOME [fib_addrtype]). *)
+Definition fibtype_valid (v : nftval) : Prop :=
+  match v with VFibType n => exists a, n = addrtype_code a | _ => False end.
+
+(* ------------------------------------------------------------------ *)
+(** ** inet_service / inet_proto / icmp_type / ethertype: width-bounded ints. *)
+
+(** inet_service (port): a 16-bit value. *)
+Definition port_valid (v : nftval) : Prop :=
+  match v with VPort n => (n < 2 ^ 16)%N | _ => False end.
+
+(** An integer-of-width value is valid iff it fits its declared width. *)
+Definition integer_valid (v : nftval) : Prop :=
+  match v with VInteger w n => (n < 256 ^ N.of_nat w)%N | _ => False end.
+
+(* ------------------------------------------------------------------ *)
+(** ** Address / link-layer / ifname: exact register lengths. *)
+Definition ipv4_valid (v : nftval) : Prop :=
+  match v with VIpv4 b => List.length b = 4  | _ => False end.
+Definition ipv6_valid (v : nftval) : Prop :=
+  match v with VIpv6 b => List.length b = 16 | _ => False end.
+Definition ether_valid (v : nftval) : Prop :=
+  match v with VEther b => List.length b = 6 | _ => False end.
+Definition ifname_valid (v : nftval) : Prop :=
+  match v with VIfname s => List.length s = 16 | _ => False end.
+
+(* ================================================================== *)
+(** * CENTRAL SMART CONSTRUCTORS / NOTATIONS (defined ONCE).
+
+    Concrete rulesets read cleanly with these instead of raw byte literals.
+    Every constructor is paired (below) with an [Example] proving its [encode]
+    [vm_compute]s to exactly the byte literal the existing ruleset proofs use,
+    so refactoring a ruleset to use them changes no proved bytes. *)
+
+(** A string's bytes (ASCII codes), and the 16-byte NUL-padded ifname register
+    buffer the kernel compares (IFNAMSIZ = 16). *)
+Fixpoint sbytes (s : String.string) : data :=
+  match s with
+  | String.EmptyString => []
+  | String.String c r => Ascii.nat_of_ascii c :: sbytes r
+  end.
+Definition pad16 (d : data) : data := List.app d (List.repeat 0 (16 - List.length d)).
+
+(** ct_state named constants (the typed values). *)
+Definition ct_invalid     : nftval := VCtState ct_INVALID.
+Definition ct_established : nftval := VCtState ct_ESTABLISHED.
+Definition ct_related     : nftval := VCtState ct_RELATED.
+Definition ct_new         : nftval := VCtState ct_NEW.
+Definition ct_destroyed   : nftval := VCtState ct_DESTROYED.
+Definition ct_untracked   : nftval := VCtState ct_UNTRACKED.
+
+(** fib addrtype named constant. *)
+Definition fib_type_val (a : fib_addrtype) : nftval := VFibType (addrtype_code a).
+
+(** Address / ifname / ether smart constructors. *)
+Definition ip4 (a b c d : nat) : nftval := VIpv4 [a; b; c; d].
+Definition ifname (s : String.string) : nftval := VIfname (pad16 (sbytes s)).
+Definition ether (a b c d e f : nat) : nftval := VEther [a; b; c; d; e; f].
+
+(** inet_service / inet_proto / icmp_type / ethertype constructors. *)
+Definition port (n : nat) : nftval := VPort (N.of_nat n).
+Definition inet_proto (n : nat) : nftval := VInteger 1 (N.of_nat n).
+Definition icmp_type (n : nat) : nftval := VInteger 1 (N.of_nat n).
+Definition ethertype (n : N) : nftval := VInteger 2 n.
+
+(* ================================================================== *)
+(** * VALIDITY of the named constants (each is a valid value of its datatype). *)
+
+Lemma ct_invalid_valid     : ctstate_valid ct_invalid.
+Proof. reflexivity. Qed.
+Lemma ct_established_valid : ctstate_valid ct_established.
+Proof. reflexivity. Qed.
+Lemma ct_related_valid     : ctstate_valid ct_related.
+Proof. reflexivity. Qed.
+Lemma ct_new_valid         : ctstate_valid ct_new.
+Proof. reflexivity. Qed.
+Lemma ct_destroyed_valid   : ctstate_valid ct_destroyed.
+Proof. reflexivity. Qed.
+Lemma ct_untracked_valid   : ctstate_valid ct_untracked.
+Proof. reflexivity. Qed.
+
+(** A union of two valid ct_state masks is valid (bitmasks compose). *)
+Lemma ctstate_union_valid : forall m n,
+  ctstate_bits_valid m -> ctstate_bits_valid n ->
+  ctstate_bits_valid (N.lor m n).
+Proof.
+  intros m n Hm Hn. unfold ctstate_bits_valid in *.
+  rewrite <- N.lor_assoc. rewrite Hn. exact Hm.
+Qed.
+
+(** An UNNAMED bit (e.g. 0x10 = 1<<4) is NOT a valid ct_state — the predicate is
+    a genuine restriction, not [True].  (Contrast [wf (VCtState 0x10)] which
+    holds, since 0x10 < 256^4.) *)
+Example ctstate_0x10_invalid : ~ ctstate_valid (VCtState 0x10).
+Proof. cbn. unfold ctstate_bits_valid. cbn. discriminate. Qed.
+Example wf_VCtState_0x10 : wf (VCtState 0x10).
+Proof. cbn. lia. Qed.
+
+Lemma fib_local_valid : fibtype_valid (fib_type_val FAlocal).
+Proof. exists FAlocal. reflexivity. Qed.
+
+Lemma ip4_valid : forall a b c d, ipv4_valid (ip4 a b c d).
+Proof. reflexivity. Qed.
+Lemma ifname_valid_pf : forall s, List.length (sbytes s) <= 16 -> ifname_valid (ifname s).
+Proof.
+  intros s Hle. unfold ifname_valid, ifname, pad16.
+  rewrite app_length, repeat_length. lia.
+Qed.
+
+(* ================================================================== *)
+(** * BYTE-FAITHFULNESS of the named constants.
+
+    Each [encode <ctor>] [vm_compute]s to exactly the byte literal the existing
+    ruleset files hand-defined — so replacing the literal by [encode <ctor>] is
+    a definitional no-op the [vm_compute] proof scripts see through. *)
+
+Example enc_ct_invalid     : encode ct_invalid     = [0;0;0;1].
+Proof. vm_compute. reflexivity. Qed.
+Example enc_ct_established : encode ct_established = [0;0;0;2].
+Proof. vm_compute. reflexivity. Qed.
+Example enc_ct_related     : encode ct_related     = [0;0;0;4].
+Proof. vm_compute. reflexivity. Qed.
+Example enc_ct_new         : encode ct_new         = [0;0;0;8].
+Proof. vm_compute. reflexivity. Qed.
+Example enc_ct_destroyed   : encode ct_destroyed   = [0;0;0;32].
+Proof. vm_compute. reflexivity. Qed.
+Example enc_ct_untracked   : encode ct_untracked   = [0;0;0;64].
+Proof. vm_compute. reflexivity. Qed.
+
+Example enc_fib_local : encode (fib_type_val FAlocal) = [2;0;0;0].
+Proof. vm_compute. reflexivity. Qed.
+
+Example enc_ip4 : encode (ip4 192 168 51 20) = [192;168;51;20].
+Proof. vm_compute. reflexivity. Qed.
+
+Example enc_ifname_br20 : encode (ifname "br.20"%string)
+  = [98;114;46;50;48; 0;0;0; 0;0;0;0; 0;0;0;0].
+Proof. vm_compute. reflexivity. Qed.
+
+(** [port] matches the ruleset's [Nat.div]/[Nat.modulo] big-endian pair. *)
+Example enc_port_22  : encode (port 22)  = [Nat.div 22 256;  Nat.modulo 22 256].
+Proof. vm_compute. reflexivity. Qed.
+Example enc_port_80  : encode (port 80)  = [Nat.div 80 256;  Nat.modulo 80 256].
+Proof. vm_compute. reflexivity. Qed.
+Example enc_port_443 : encode (port 443) = [Nat.div 443 256; Nat.modulo 443 256].
+Proof. vm_compute. reflexivity. Qed.
+Example enc_port_3389  : encode (port 3389)  = [13;61].
+Proof. vm_compute. reflexivity. Qed.
+Example enc_port_48010 : encode (port 48010) = [187;138].
+Proof. vm_compute. reflexivity. Qed.
+
+(** ethertype / inet_proto / icmp_type. *)
+Example enc_eth_ip   : encode (ethertype 0x0800) = [8;0].
+Proof. vm_compute. reflexivity. Qed.
+Example enc_eth_ip6  : encode (ethertype 0x86dd) = [134;221].
+Proof. vm_compute. reflexivity. Qed.
+Example enc_l4_tcp   : encode (inet_proto 6)  = [6].
+Proof. vm_compute. reflexivity. Qed.
+Example enc_l4_icmp6 : encode (inet_proto 58) = [58].
+Proof. vm_compute. reflexivity. Qed.
+Example enc_icmp6_nsol : encode (icmp_type 135) = [135].
+Proof. vm_compute. reflexivity. Qed.
