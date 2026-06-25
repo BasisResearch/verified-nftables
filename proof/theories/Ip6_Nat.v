@@ -122,8 +122,8 @@ Proof.
   rewrite set_daddr_nh; change (daddr_slot "ip6") with (24, 16);
     change (String.eqb "ip6" nat_fam_ip6) with true; cbv iota;
     cbn [set_nh_field with_pkt_nh pkt_nh].
-  unfold splice. rewrite !app_length, firstn_length_le by lia.
-  rewrite skipn_length. unfold tgt6. rewrite repeat_length. lia.
+  unfold splice. rewrite !length_app, firstn_length_le by lia.
+  rewrite length_skipn. unfold tgt6. rewrite repeat_length. lia.
 Qed.
 
 (* THE FIX, on a concrete 40-byte IPv6 packet: the IPv6 destination IS now set

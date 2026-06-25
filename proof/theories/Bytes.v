@@ -74,7 +74,7 @@ Fixpoint N_to_data (len : nat) (n : N) : data :=
 Lemma N_to_data_length : forall len n, List.length (N_to_data len n) = len.
 Proof.
   induction len; intro n; simpl; [reflexivity|].
-  rewrite app_length, IHlen; simpl; lia.
+  rewrite length_app, IHlen; simpl; lia.
 Qed.
 
 (** Left/right bit shift of a register value (preserving its byte width). *)

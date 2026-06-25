@@ -1447,7 +1447,7 @@ Proof. induction fields as [| f fs IH]; intros slot; cbn [alloc_regs length]; [r
 Lemma skipn_map_snd_alloc_nil : forall keyfs,
   skipn (length keyfs) (map snd (alloc_regs 0 keyfs)) = [].
 Proof.
-  intros. apply skipn_all2. rewrite map_length, alloc_regs_length. apply Nat.le_refl.
+  intros. apply skipn_all2. rewrite length_map, alloc_regs_length. apply Nat.le_refl.
 Qed.
 
 Lemma compile_dynset_set : forall op name keyfs,
@@ -1549,8 +1549,8 @@ Lemma skipn_map_snd_alloc_app : forall keyfs extra,
   = map snd (alloc_regs (slots_of keyfs) extra).
 Proof.
   intros. rewrite alloc_regs_app, map_app, Nat.add_0_l, skipn_app.
-  rewrite skipn_all2 by (rewrite map_length, alloc_regs_length; apply Nat.le_refl).
-  rewrite map_length, alloc_regs_length, Nat.sub_diag. reflexivity.
+  rewrite skipn_all2 by (rewrite length_map, alloc_regs_length; apply Nat.le_refl).
+  rewrite length_map, alloc_regs_length, Nat.sub_diag. reflexivity.
 Qed.
 
 Lemma compile_dynset_map : forall op name keyfs d ds,

@@ -73,7 +73,7 @@ Proof.
     + rewrite N2Nat.id.
       rewrite (N.div_mod n 256) at 3 by lia. lia.
     + (* n/256 < 256^k *)
-      apply N.div_lt_upper_bound; [lia|].
+      apply N.Div0.div_lt_upper_bound.
       replace (256 * 256 ^ N.of_nat k)%N with (256 ^ N.of_nat (S k))%N.
       * exact Hlt.
       * rewrite Nat2N.inj_succ, N.pow_succ_r; lia.
@@ -90,7 +90,7 @@ Proof.
   (* induct from the RIGHT, matching N_to_data's snoc recursion *)
   induction d as [|x xs IH] using rev_ind; intro Hf.
   - reflexivity.
-  - rewrite app_length. simpl (List.length [x]).
+  - rewrite length_app. simpl (List.length [x]).
     rewrite Nat.add_1_r. simpl (N_to_data (S _) _).
     rewrite data_to_N_snoc.
     apply Forall_app in Hf as [Hxs Hx].
@@ -586,7 +586,7 @@ Proof. reflexivity. Qed.
 Lemma ifname_valid_pf : forall s, List.length (sbytes s) <= 16 -> ifname_valid (ifname s).
 Proof.
   intros s Hle. unfold ifname_valid, ifname, pad16.
-  rewrite app_length, repeat_length. lia.
+  rewrite length_app, repeat_length. lia.
 Qed.
 
 (* ================================================================== *)
