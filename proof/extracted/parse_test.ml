@@ -327,6 +327,14 @@ let mark99 = [153;0;0;0]   (* 0x99 host-endian (little-endian), matching the LE 
 let data_eq (a : int list) (b : int list) = (a = b)
 let show d = S.concat ":" (Stdlib.List.map string_of_int d)
 
+(* Compatibility constructor for the multi-address interface model: an interface
+   whose only address is the global primary [v] (or NO address when [v = []]).
+   Packet.e_ifaddr / e_ifaddr6 select this single primary, so [e_ifaddr] of such a
+   list is exactly [v] — the same observable as the old single-address oracle. *)
+let ifaddrs_of (v : int list) : Packet.ifaddr list =
+  if v = [] then []
+  else [ { Packet.ifa_local = v; ifa_secondary = false; ifa_scope = 0 } ]
+
 (* a streaming packet (dport 48010): iifname=home, fib daddr type=local (via a
    route returning type=2), tcp.  Not the 3389 RDP port — so it flows PAST
    prerouting rule 1 and is marked by rule 2. *)
@@ -369,7 +377,7 @@ let check_optiplex_mark () =
   (* masquerade SOURCE-NAT: the packet leaving postrouting has its ip saddr
      rewritten to the address of the interface it exits (e_ifaddr oifname). *)
   let eth0 = ascii "eth0" and eth0_ip = [203;0;113;5] in   (* TEST-NET-3 *)
-  let env_if = { env with Packet.e_ifaddr = (fun n -> if n = eth0 then eth0_ip else []) } in
+  let env_if = { env with Packet.e_ifaddrs = (fun n -> ifaddrs_of (if n = eth0 then eth0_ip else [])) } in
   let p_masq =                                             (* marked, exits eth0 *)
     { (mk_pkt ~env:env_if ()) with
       Packet.pkt_meta = (fun k -> match k with
@@ -724,8 +732,8 @@ let check_ip6_nat () =
      e_ifaddr is a DIFFERENT value, to prove masquerade picks the IPv6 one *)
   let if6 = Stdlib.List.init 16 (fun _ -> 0xBB) in
   let env6 = parsed6.Nft_lower.p_env in
-  let env6 = { env6 with Packet.e_ifaddr = (fun _ -> [9;9;9;9]);
-                         e_ifaddr6 = (fun _ -> if6) } in
+  let env6 = { env6 with Packet.e_ifaddrs = (fun _ -> ifaddrs_of [9;9;9;9]);
+                         e_ifaddrs6 = (fun _ -> ifaddrs_of if6) } in
   let p6 = { (mk_pkt ~env:env6 ()) with Packet.pkt_nh = nh } in
   let src6_in = Syntax.field_value Syntax.FIp6Saddr p6 in
   let (_, p6_out) = Semantics.eval_chain_trace Semantics.Hpostrouting post6 p6 in
@@ -767,8 +775,8 @@ let check_ip6_nat () =
   (* exit interface: IPv4 = 9.9.9.9, IPv6 = 0xBB*16 (a DIFFERENT value) *)
   let inet_if6 = Stdlib.List.init 16 (fun _ -> 0xBB) in
   let env_inet = parsed_inet.Nft_lower.p_env in
-  let env_inet = { env_inet with Packet.e_ifaddr = (fun _ -> [9;9;9;9]);
-                                 e_ifaddr6 = (fun _ -> inet_if6) } in
+  let env_inet = { env_inet with Packet.e_ifaddrs = (fun _ -> ifaddrs_of [9;9;9;9]);
+                                 e_ifaddrs6 = (fun _ -> ifaddrs_of inet_if6) } in
   (* (a) IPv6 packet (nfproto = NFPROTO_IPV6 = 10): full 16-byte IPv6 rewrite. *)
   let p_inet6 = { (mk_pkt ~env:env_inet ~nfproto:[10] ()) with Packet.pkt_nh = nh } in
   let s6_in  = Syntax.field_value Syntax.FIp6Saddr p_inet6 in
@@ -791,8 +799,8 @@ let check_ip6_nat () =
     (data_eq (Syntax.field_value Syntax.FIp4Saddr p_inet4_out) [9;9;9;9]);
   (* (c) interface with an IPv6 address but NO IPv4 address: an IPv6 packet must be
      MASQUERADED (kernel uses the IPv6 address), NOT dropped. *)
-  let env_noip4 = { env_inet with Packet.e_ifaddr = (fun _ -> []);
-                                  e_ifaddr6 = (fun _ -> inet_if6) } in
+  let env_noip4 = { env_inet with Packet.e_ifaddrs = (fun _ -> []);
+                                  e_ifaddrs6 = (fun _ -> ifaddrs_of inet_if6) } in
   let p_noip4 = { (mk_pkt ~env:env_noip4 ~nfproto:[10] ()) with Packet.pkt_nh = nh } in
   let (v_noip4, p_noip4_out) = Semantics.eval_chain_trace Semantics.Hpostrouting post_inet p_noip4 in
   check "inet masquerade: no-IPv4-addr iface does NOT drop an IPv6 packet (kernel masqs via IPv6)"
@@ -825,7 +833,7 @@ let check_redir_hook () =
     { (Nft_parse.parse_string
          "table ip nat {\n  chain c { type nat hook output priority 0; }\n}\n")
         .Nft_lower.p_env
-      with Packet.e_ifaddr = (fun n -> if n = eth0 then eth0_ip else []) } in
+      with Packet.e_ifaddrs = (fun n -> ifaddrs_of (if n = eth0 then eth0_ip else [])) } in
   let nh = [0x45;0;0;0; 0;0;0;0; 64;6;0;0; 1;2;3;4; 192;168;0;9] in
   let p_in =
     { (mk_pkt ~env ()) with
@@ -855,7 +863,7 @@ let check_redir_hook () =
      nf_nat_redirect_ipv4 PREROUTING `if (!newdst.ip) return NF_DROP;`
      (nf_nat_redirect.c:71-74); nf_nat_masquerade_ipv4 `if (!newsrc) return NF_DROP;`
      (nf_nat_masquerade.c:54-58).  e_ifaddr = [] is exactly that condition. *)
-  let env_noaddr = { env with Packet.e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []) } in
+  let env_noaddr = { env with Packet.e_ifaddrs = (fun _ -> []); e_ifaddrs6 = (fun _ -> []) } in
   let p_noaddr = { (mk_pkt ~env:env_noaddr ()) with
                    Packet.pkt_meta = (fun k -> match k with Packet.MKiifname -> eth0 | _ -> []);
                    pkt_nh = nh } in
@@ -886,7 +894,7 @@ let check_redir_hook () =
   check "postrouting masquerade with NO exit address DROPS (kernel NF_DROP)"
     (fst (Semantics.eval_chain_trace Semantics.Hpostrouting masq_chain p_noaddr) = Verdict.Drop);
   (* with the address restored, both accept again *)
-  let env_addr = { env with Packet.e_ifaddr = (fun _ -> [203;0;113;5]) } in
+  let env_addr = { env with Packet.e_ifaddrs = (fun _ -> ifaddrs_of [203;0;113;5]) } in
   let p_addr = { p_noaddr with Packet.pkt_env = env_addr } in
   check "redirect/masquerade ACCEPT once the interface has an address"
     (fst (Semantics.eval_chain_trace Semantics.Hprerouting redir_chain p_addr) = Verdict.Accept
@@ -1305,7 +1313,7 @@ let check_notrack () =
     { Syntax.c_policy = Verdict.Drop; c_rules = [ notrack_only; ctstate_rule ] } in
   let env = { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
               e_routes = []; e_rt = (fun _ -> []); e_limit = (fun _ -> 0);
-              e_quota = (fun _ -> 0); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
+              e_quota = (fun _ -> 0); e_ifaddrs = (fun _ -> []); e_ifaddrs6 = (fun _ -> []);
               e_connlimit = (fun _ -> []); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None); e_numgen = (fun _ -> 0) } in
   (* a NO-ENTRY packet (pkt_ct_present = false): nf_ct_get returns NULL, the only
      case where `notrack` has an effect (nft_notrack_eval's
@@ -1366,7 +1374,7 @@ let check_exthdr_present () =
     { Syntax.c_policy = Verdict.Accept; c_rules = [ maxseg_drop ] } in
   let env = { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
               e_routes = []; e_rt = (fun _ -> []); e_limit = (fun _ -> 0);
-              e_quota = (fun _ -> 0); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
+              e_quota = (fun _ -> 0); e_ifaddrs = (fun _ -> []); e_ifaddrs6 = (fun _ -> []);
               e_connlimit = (fun _ -> []); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None);
               e_numgen = (fun _ -> 0) } in
   (* ABSENT: existence oracle (present=true) returns [0]; the value oracle returns
@@ -1417,7 +1425,7 @@ let check_notrack_intra () =
     { Syntax.c_policy = Verdict.Drop; c_rules = [ intra_rule ] } in
   let env = { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
               e_routes = []; e_rt = (fun _ -> []); e_limit = (fun _ -> 0);
-              e_quota = (fun _ -> 0); e_ifaddr = (fun _ -> []); e_ifaddr6 = (fun _ -> []);
+              e_quota = (fun _ -> 0); e_ifaddrs = (fun _ -> []); e_ifaddrs6 = (fun _ -> []);
               e_connlimit = (fun _ -> []); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None); e_numgen = (fun _ -> 0) } in
   let oracle_new k = (match k with Packet.CKstate -> [0;0;0;8] | _ -> []) in
   (* NO-ENTRY packet (pkt_ct_present = false): the case where notrack has effect. *)

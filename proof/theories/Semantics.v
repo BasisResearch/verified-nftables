@@ -811,7 +811,7 @@ Definition env_with_sets (base : env) (d : set_decls) : env :=
      e_vmap := fun n => assoc_str n (sd_vmaps d) (e_vmap base n);
      e_map  := fun n => assoc_str n (sd_maps d)  (e_map base n);
      e_routes := e_routes base; e_rt := e_rt base;
-     e_ifaddr := e_ifaddr base; e_ifaddr6 := e_ifaddr6 base;
+     e_ifaddrs := e_ifaddrs base; e_ifaddrs6 := e_ifaddrs6 base;
      e_limit := e_limit base; e_quota := e_quota base; e_connlimit := e_connlimit base;
      e_ct := e_ct base; e_nat := e_nat base; e_numgen := e_numgen base |}.
 

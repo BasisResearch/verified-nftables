@@ -63,7 +63,7 @@ Definition notrack_chain : chain :=
 Definition env0 : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
-     e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => [];
+     e_quota := fun _ => 0; e_ifaddrs := fun _ => []; e_ifaddrs6 := fun _ => [];
      e_connlimit := fun _ => []; e_ct := fun _ _ => []; e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
 
 (* A NO-ENTRY packet ([pkt_ct_present := false]): nf_ct_get returns NULL, the case
@@ -137,7 +137,7 @@ Qed.
 Definition pkt_estab_entry : packet :=
   {| pkt_env := {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
        e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
-       e_quota := fun _ => 0; e_ifaddr := fun _ => []; e_ifaddr6 := fun _ => [];
+       e_quota := fun _ => 0; e_ifaddrs := fun _ => []; e_ifaddrs6 := fun _ => [];
        e_connlimit := fun _ => [];
        e_ct := fun _ k => match k with CKstate => [0;0;0;2] | _ => [] end;
        e_nat := fun _ => None; e_numgen := fun _ => 0 |};
