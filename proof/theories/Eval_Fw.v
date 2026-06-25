@@ -54,15 +54,11 @@ Proof. destruct m; reflexivity. Qed.
 
 Global Opaque eval_rules_j.
 
-(** A point interval's membership test [data_in_iv key (k, k)] IS byte equality
-    [data_eqb k key] (the [<=] both ways collapse by [data_le_antisym]).  Used by
-    the router vmap classifications to turn point-interval lookups into a cascade
-    of byte-equality tests without any concrete-byte case analysis on the key. *)
-Lemma data_in_iv_point : forall k key, data_in_iv key (k, k) = data_eqb k key.
-Proof.
-  intros k key. unfold data_in_iv; cbn [fst snd].
-  rewrite data_le_antisym. reflexivity.
-Qed.
+(** The point-interval membership identity [data_in_iv key (k, k) = data_eqb k key]
+    used by the router vmap classifications (to turn point-interval lookups into a
+    cascade of byte-equality tests without concrete-byte case analysis on the key)
+    now lives canonically as [Bytes.data_in_iv_point]; it is re-exported here via
+    the [Bytes] import, so callers' [rewrite data_in_iv_point] is unchanged. *)
 
 (** The shared engine: step one rule at a time, rewriting the per-packet field
     values from the hypotheses as each match is reached.  [field_value] /

@@ -85,7 +85,7 @@ Proof.
   unfold outcome_core, mk_vmap_rule. cbn [r_vmap vm_keyf vm_name vm_fields].
   cbn [apply_transforms fold_left].
   rewrite Hvm. cbn [assoc_verdict].
-  rewrite !data_in_iv_point.
+  rewrite !data_in_iv_point_eqb.
   unfold eval_cmp.
   rewrite <- H1, <- H2, !List.firstn_all.
   rewrite (data_eqb_sym (field_value f q) v1), (data_eqb_sym (field_value f q) v2).
@@ -650,7 +650,7 @@ Proof.
   intros es f q Hlen Hld.
   induction es as [| [v w] es IH]; [reflexivity|].
   cbn [map]. unfold vmap_pt at 1. cbn [fst snd assoc_verdict first_match].
-  rewrite data_in_iv_point.
+  rewrite data_in_iv_point_eqb.
   rewrite (eval_mcmp_point f v q Hld (Hlen v w (or_introl eq_refl) Hld)).
   destruct (data_eqb (field_value f q) v) eqn:E; [reflexivity|].
   apply IH. intros v' w' Hin Hld'. apply (Hlen v' w'); [right; exact Hin | exact Hld'].
