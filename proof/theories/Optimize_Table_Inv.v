@@ -1543,3 +1543,139 @@ Proof.
   inversion H; subst n' d' c'. cbn [c_rules].
   apply (optimize_rules_concatN_preserves_vmapN_ok _ _ _ _ _ _ _ E Hok).
 Qed.
+
+(** ** Pipeline-composition seam lemmas (setsN key-bound, freshness transfer,
+    and setsN-output [rs_vmapN_ok]) — used by [Optimize_Table.optimize_table]. *)
+
+(* 1. setsN key-bound: every setname key in the output is either pre-existing or
+      has index < n' (it was minted at some counter value in [n, n')). *)
+Lemma optimize_rules_setsN_keys_bound : forall fuel n d rs n' d' rs' k,
+  optimize_rules_setsN fuel n d rs = (n', d', rs') ->
+  In (setname k) (map fst (sd_sets d')) ->
+  In (setname k) (map fst (sd_sets d)) \/ k < n'.
+Proof.
+  induction fuel as [| fuel IH]; intros n d rs n' d' rs' k H Hin.
+  - cbn in H. inversion H; subst. left; exact Hin.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst. left; exact Hin.
+    + cbn in H. inversion H; subst. left; exact Hin.
+    + rewrite optimize_rules_setsN_consSS in H.
+      destruct (head_value r1) as [[[f v1] body] |] eqn:Ehd.
+      * destruct (take_value_run r1 (r2 :: rest)) as [vs rest'] eqn:Erun.
+        destruct vs as [| v vs'].
+        -- remember (optimize_rules_setsN fuel n d (r2 :: rest)) as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H. inversion H; subst.
+           eapply (IH n d (r2 :: rest)); [symmetry; exact Erec | exact Hin].
+        -- cbv zeta in H.
+           remember (optimize_rules_setsN fuel (S n)
+                       {| sd_sets := (setname n, map (fun w => (w,w)) (v1 :: v :: vs'))
+                                     :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           destruct (IH (S n) _ rest' m'' dd'' rr'' k (eq_sym Erec) Hin) as [Hin_dn | Hlt].
+           ++ cbn [sd_sets map] in Hin_dn. destruct Hin_dn as [Heq | Hin_d].
+              ** apply setname_inj in Heq. subst k. right.
+                 pose proof (optimize_rules_setsN_mono fuel (S n) _ rest' m'' dd'' rr''
+                               (eq_sym Erec)) as Hmono. lia.
+              ** left; exact Hin_d.
+           ++ right; exact Hlt.
+      * remember (optimize_rules_setsN fuel n d (r2 :: rest)) as t eqn:Erec.
+        destruct t as [[m'' dd''] rr'']. cbv zeta in H. inversion H; subst.
+        eapply (IH n d (r2 :: rest)); [symmetry; exact Erec | exact Hin].
+Qed.
+
+Lemma optimize_chain_setsN_keys_bound : forall n d c n' d' c' k,
+  optimize_chain_setsN n d c = (n', d', c') ->
+  In (setname k) (map fst (sd_sets d')) ->
+  In (setname k) (map fst (sd_sets d)) \/ k < n'.
+Proof.
+  intros n d c n' d' c' k H Hin. unfold optimize_chain_setsN in H.
+  destruct (optimize_rules_setsN (List.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  apply (optimize_rules_setsN_keys_bound _ _ _ _ _ _ _ k E Hin).
+Qed.
+
+(* 2. Freshness TRANSFER across setsN: an [n]-fresh setname namespace stays
+      [n']-fresh in the output decls (the minted names all lie below n'). *)
+Lemma optimize_chain_setsN_fresh_setname : forall n d c n' d' c',
+  optimize_chain_setsN n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n' <= k -> ~ In (setname k) (map fst (sd_sets d'))).
+Proof.
+  intros n d c n' d' c' H Hfresh k Hk Hin.
+  pose proof (optimize_chain_setsN_mono n d c n' d' c' H) as Hmono.
+  destruct (optimize_chain_setsN_keys_bound n d c n' d' c' k H Hin) as [Hin_d | Hlt].
+  - apply (Hfresh k); [lia | exact Hin_d].
+  - lia.
+Qed.
+
+(* 3. setsN OUTPUT is [rs_vmapN_ok]: each output rule is clean, or a merged
+      single-field [MConcatSet] lookup rule (head_value = None, matches-only body,
+      no vmap) -- the right disjunct of [rule_lookup_vmapN_ok]. *)
+Lemma optimize_rules_setsN_output_vmapN_ok : forall fuel n d rs n' d' rs',
+  optimize_rules_setsN fuel n d rs = (n', d', rs') ->
+  rules_clean rs = true ->
+  Forall rule_lookup_vmapN_ok rs'.
+Proof.
+  induction fuel as [| fuel IH]; intros n d rs n' d' rs' H Hclean.
+  - cbn in H. inversion H; subst.
+    unfold rules_clean in Hclean. rewrite forallb_forall in Hclean.
+    apply Forall_forall. intros r Hr. apply clean_rule_vmapN_ok. apply Hclean; exact Hr.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst. constructor.
+    + cbn in H. inversion H; subst.
+      cbn [rules_clean forallb] in Hclean. apply Bool.andb_true_iff in Hclean as [Hc1 _].
+      constructor; [apply clean_rule_vmapN_ok; exact Hc1 | constructor].
+    + rewrite optimize_rules_setsN_consSS in H.
+      cbn [rules_clean forallb] in Hclean.
+      apply Bool.andb_true_iff in Hclean as [Hc1 Hclrest].
+      destruct (head_value r1) as [[[f v1] body] |] eqn:Ehd.
+      * destruct (take_value_run r1 (r2 :: rest)) as [vs rest'] eqn:Erun.
+        destruct (take_value_run_shape r1 f v1 body (r2 :: rest) vs rest' Ehd Erun)
+          as [Hsplit Hwidth].
+        assert (Hclrest' : rules_clean rest' = true).
+        { assert (Hsub : rules_clean (r2 :: rest) = true)
+            by (cbn [rules_clean forallb]; exact Hclrest).
+          rewrite Hsplit in Hsub. unfold rules_clean in Hsub.
+          rewrite forallb_app in Hsub. apply Bool.andb_true_iff in Hsub. exact (proj2 Hsub). }
+        destruct vs as [| v vs'].
+        -- remember (optimize_rules_setsN fuel n d (r2 :: rest)) as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           constructor.
+           ++ apply clean_rule_vmapN_ok; exact Hc1.
+           ++ eapply (IH n d (r2 :: rest)); [symmetry; exact Erec | exact Hclrest].
+        -- cbv zeta in H.
+           pose proof (head_value_clean_tail r1 f v1 body Hc1 Ehd) as [Hbm [Hbn Hvn]].
+           remember (optimize_rules_setsN fuel (S n)
+                       {| sd_sets := (setname n, map (fun w => (w,w)) (v1 :: v :: vs'))
+                                     :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           constructor.
+           ++ apply (merged_MConcatSet_vmapN_ok [f] (setname n) body r1 Hbm Hvn).
+           ++ eapply (IH (S n) _ rest'); [symmetry; exact Erec | exact Hclrest'].
+      * remember (optimize_rules_setsN fuel n d (r2 :: rest)) as t eqn:Erec.
+        destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        constructor.
+        -- apply clean_rule_vmapN_ok; exact Hc1.
+        -- eapply (IH n d (r2 :: rest)); [symmetry; exact Erec | exact Hclrest].
+Qed.
+
+Lemma optimize_chain_setsN_output_vmapN_ok : forall n d c n' d' c',
+  optimize_chain_setsN n d c = (n', d', c') ->
+  rules_clean (c_rules c) = true ->
+  rs_vmapN_ok (c_rules c').
+Proof.
+  intros n d c n' d' c' H Hclean. unfold optimize_chain_setsN in H.
+  destruct (optimize_rules_setsN (List.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. cbn [c_rules]. unfold rs_vmapN_ok.
+  apply (optimize_rules_setsN_output_vmapN_ok _ _ _ _ _ _ _ E Hclean).
+Qed.

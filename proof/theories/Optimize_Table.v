@@ -25,7 +25,7 @@ From Stdlib Require Import Arith.
 From Stdlib Require Import Lia.
 Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
-  Compile Optimize Optimize_Merge Optimize_Vmap Optimize_Concat.
+  Compile Optimize Optimize_Merge Optimize_Vmap Optimize_Concat Optimize_Table_Inv.
 
 (** ** Step 1: the base pass preserves [rules_clean].
 
@@ -202,5 +202,59 @@ Proof.
   rewrite (optimize_chain_setsN_correct n d (optimize_chain c) n' d' c' base p
              H (optimize_chain_clean c Hclean) Hfresh).
   (* base optimize_chain is eval_chain-preserving on every packet/env *)
+  apply optimize_chain_correct.
+Qed.
+
+(** ** Step 3: the FULL four-stage pipeline and its whole-pipeline correctness.
+
+    [optimize_table] runs the base dedup/DCE pass, then the N-way value->set
+    merge, the two-selector->concat merge, and finally the value+verdict->vmap
+    merge, threading the fresh-name counter and [set_decls] accumulator across the
+    table semantics.  [optimize_table_correct] proves the WHOLE pipeline preserves
+    [eval_chain] over the synthesised declarations — axiom-free.
+
+    The seam between passes is the crux: [setsN] needs [rules_clean] input (supplied
+    by [optimize_chain_clean]); its OUTPUT is no longer clean (it carries merged
+    [MConcatSet] lookup rules), so the [concat]/[vmap] stages run under the WEAKER
+    [rs_concatN_ok] / [rs_vmapN_ok] preconditions, which the setsN-output invariants
+    ([optimize_chain_setsN_output_concatN_ok] / [_output_vmapN_ok]) and the
+    [concatN]-preserves-[vmapN_ok] lemma establish.  Fresh-name discipline is
+    threaded by [optimize_chain_setsN_fresh_setname] (setname namespace) and the
+    cross-namespace stability lemmas (setsN/concatN leave [sd_vmaps] fixed, so the
+    initial [vmapname] freshness survives to the vmap stage). *)
+Definition optimize_table (n : nat) (d : set_decls) (c : chain)
+  : nat * set_decls * chain :=
+  let '(n1, d1, c1) := optimize_chain_setsN n d (optimize_chain c) in
+  let '(n2, d2, c2) := optimize_chain_concatN n1 d1 c1 in
+  optimize_chain_vmapN n2 d2 c2.
+
+Theorem optimize_table_correct : forall n d c n' d' c' base p,
+  optimize_table n d c = (n', d', c') ->
+  rules_clean (c_rules c) = true ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
+  eval_chain c' (set_env p (env_with_sets base d'))
+  = eval_chain c  (set_env p (env_with_sets base d)).
+Proof.
+  intros n d c n' d' c' base p H Hclean Hfs Hfv.
+  unfold optimize_table in H.
+  destruct (optimize_chain_setsN n d (optimize_chain c)) as [[n1 d1] c1] eqn:E1.
+  destruct (optimize_chain_concatN n1 d1 c1) as [[n2 d2] c2] eqn:E2.
+  assert (Hc0clean : rules_clean (c_rules (optimize_chain c)) = true)
+    by (apply optimize_chain_clean; exact Hclean).
+  pose proof (optimize_chain_setsN_fresh_setname n d (optimize_chain c) n1 d1 c1 E1 Hfs) as Hfs1.
+  pose proof (optimize_chain_setsN_output_concatN_ok n d (optimize_chain c) n1 d1 c1 E1 Hc0clean) as Hcc1.
+  pose proof (optimize_chain_setsN_output_vmapN_ok n d (optimize_chain c) n1 d1 c1 E1 Hc0clean) as Hv1.
+  pose proof (optimize_chain_concatN_preserves_vmapN_ok n1 d1 c1 n2 d2 c2 E2 Hv1) as Hv2.
+  assert (Hvm2 : sd_vmaps d2 = sd_vmaps d).
+  { rewrite (optimize_chain_concatN_vmaps n1 d1 c1 n2 d2 c2 E2).
+    apply (optimize_chain_setsN_vmaps n d (optimize_chain c) n1 d1 c1 E1). }
+  pose proof (optimize_chain_setsN_mono n d (optimize_chain c) n1 d1 c1 E1) as Hm1.
+  pose proof (optimize_chain_concatN_mono n1 d1 c1 n2 d2 c2 E2) as Hm2.
+  assert (Hfv2 : forall k, n2 <= k -> ~ In (vmapname k) (map fst (sd_vmaps d2))).
+  { intros k Hk. rewrite Hvm2. apply Hfv. lia. }
+  rewrite (optimize_chain_vmapN_correct_gen n2 d2 c2 n' d' c' base p H Hv2 Hfv2).
+  rewrite (optimize_chain_concatN_correct_gen n1 d1 c1 n2 d2 c2 base p E2 Hcc1 Hfs1).
+  rewrite (optimize_chain_setsN_correct n d (optimize_chain c) n1 d1 c1 base p E1 Hc0clean Hfs).
   apply optimize_chain_correct.
 Qed.
