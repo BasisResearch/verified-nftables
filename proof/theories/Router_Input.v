@@ -55,10 +55,8 @@ Definition if_lo   : data := [108;111;0;0; 0;0;0;0; 0;0;0;0; 0;0;0;0].
 Definition if_ppp0 : data := [112;112;112;48; 0;0;0;0; 0;0;0;0; 0;0;0;0].
 Definition if_eth1 : data := [101;116;104;49; 0;0;0;0; 0;0;0;0; 0;0;0;0].
 
-(* The single allowed world source: 81.209.165.42, and the ssh service (tcp/22). *)
-Definition wan_ssh_host : data := [81;209;165;42].
+(* The TCP L4-protocol byte the meta-load returns (used by the input model). *)
 Definition l4_tcp : data := [6].
-Definition dport_ssh : data := [0;22].
 
 Definition in_fuel : nat := 8.
 
