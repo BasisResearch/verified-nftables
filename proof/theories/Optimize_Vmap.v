@@ -804,6 +804,19 @@ Fixpoint take_vmap_run (r1 : rule) (rest : list rule)
 Definition has_distinct_verdict (w1 : verdict) (es : list (data * verdict)) : bool :=
   existsb (fun vw => if verdict_eq_dec (snd vw) w1 then false else true) es.
 
+(** A body is VMAP-MERGE-SAFE iff it carries no SYN-proxy and no `notrack`
+    statement.  The vmap merge moves the key field read to AFTER the body (the
+    merged rule reads field [f] as its vmap key at [body_thread body p]), whereas
+    each original rule reads [f] in its HEAD match BEFORE the body.  A `notrack`
+    in the body would make [body_thread] flip the conntrack latch, so a
+    ct-dependent key would be read in a DIFFERENT tracking state than the originals
+    — the merge would be UNSOUND.  Likewise a body SYN-proxy STOP short-circuits
+    the outcome.  This guard is VACUOUSLY TRUE on a clean rule body (no statements),
+    so it never blocks the merges [nft -o] performs on real rulesets, but it makes
+    the pass sound on ARBITRARY input. *)
+Definition body_vmap_safe (body : list body_item) : bool :=
+  negb (body_has_synproxy body) && negb (body_has_notrack body).
+
 Fixpoint optimize_rules_vmapN (fuel n : nat) (d : set_decls) (rs : list rule)
   : nat * set_decls * list rule :=
   match fuel with
@@ -815,7 +828,7 @@ Fixpoint optimize_rules_vmapN (fuel n : nat) (d : set_decls) (rs : list rule)
         | Some (f, v1, body) =>
             match take_vmap_run r1 rest with
             | ((_ :: _) as es, rest') =>
-                if has_distinct_verdict (r_verdict r1) es then
+                if has_distinct_verdict (r_verdict r1) es && body_vmap_safe body then
                   let name := vmapname n in
                   let entries := (v1, r_verdict r1) :: es in
                   let d' := {| sd_sets := sd_sets d;
@@ -850,7 +863,7 @@ Lemma optimize_rules_vmapN_consSS : forall fuel n d r1 r2 rest,
   | Some (f, v1, body) =>
       match take_vmap_run r1 (r2 :: rest) with
       | ((_ :: _) as es, rest') =>
-          if has_distinct_verdict (r_verdict r1) es then
+          if has_distinct_verdict (r_verdict r1) es && body_vmap_safe body then
             let name := vmapname n in
             let entries := (v1, r_verdict r1) :: es in
             let d' := {| sd_sets := sd_sets d;
@@ -890,7 +903,7 @@ Proof.
            destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst d'. clear Hn' Hr'.
            eapply (IH n d (r2 :: rest)); [symmetry; exact Erec | exact Hnm].
-        -- destruct (has_distinct_verdict (r_verdict r1) (e :: es')) eqn:Hdv.
+        -- destruct (has_distinct_verdict (r_verdict r1) (e :: es') && body_vmap_safe body) eqn:Hdv.
            2:{ remember (optimize_rules_vmapN fuel n d (r2 :: rest)) as tt eqn:Erec.
                destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
                injection H as Hn' Hd' Hr'. subst d'. clear Hn' Hr'.
@@ -988,7 +1001,7 @@ Proof.
            rewrite Hl, Ha, Ho. reflexivity.
         -- destruct (take_vmap_run_head r1 f v1 body r2 rest (e :: es') rest' Ehd Erun
                        ltac:(discriminate)) as [Hr1eq [HwK1 HwT1]].
-           destruct (has_distinct_verdict (r_verdict r1) (e :: es')) eqn:Hdv.
+           destruct (has_distinct_verdict (r_verdict r1) (e :: es') && body_vmap_safe body) eqn:Hdv.
            2:{ remember (optimize_rules_vmapN fuel n d (r2 :: rest)) as tt eqn:Erec.
                destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
                injection H as Hn' Hd' Hr'. subst n' d' rs'.

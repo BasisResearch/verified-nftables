@@ -629,3 +629,149 @@ Proof.
         rewrite (rule_applies_agree_gen r1 p base dd'' d Hda1).
         rewrite (outcome_agree_gen r1 p base dd'' d Hda1). reflexivity.
 Qed.
+
+(** *** vmapN.  The vmap merge is GATED on [body_vmap_safe] (no synproxy/notrack in
+    the body), which the merge condition now enforces; that gate is what makes the
+    vmap pass SOUND on arbitrary input (the merge is genuinely unsound for a
+    [notrack] body, since the merged rule reads its key field at the body-threaded
+    packet).  Read-freshness is in the [vmapname] namespace. *)
+Theorem optimize_rules_vmapN_correct_uncond : forall fuel rs n d n' d' rs' base p,
+  optimize_rules_vmapN fuel n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
+  Forall (rule_vmap_fresh n) rs ->
+  eval_rules rs' (set_env p (env_with_sets base d'))
+  = eval_rules rs  (set_env p (env_with_sets base d)).
+Proof.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' base p H Hfresh Hrf.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_vmapN_consSS in H.
+      inversion Hrf as [| ? ? Hf1 Hrf_tail]; subst.
+      destruct (head_value r1) as [[[f v1] body] |] eqn:Ehd.
+      * destruct (take_vmap_run r1 (r2 :: rest)) as [es rest'] eqn:Erun.
+        destruct (take_vmap_run_shape r1 f v1 body (r2 :: rest) es rest' Ehd Erun)
+          as [Hsplit [HwK HwT]].
+        assert (Hrf_rest_n : Forall (rule_vmap_fresh n) rest').
+        { rewrite Hsplit in Hrf_tail. apply Forall_app in Hrf_tail. exact (proj2 Hrf_tail). }
+        destruct es as [| e es'].
+        -- remember (optimize_rules_vmapN fuel n d (r2 :: rest)) as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           cbn [eval_rules].
+           rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
+           assert (Hda1 : decls_agree_rule base dd'' d r1).
+           { apply (decls_agree_rule_vmapseam base d dd'' r1 n).
+             - apply (optimize_rules_vmapN_sets fuel n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec)).
+             - intros nm X Hf. apply (optimize_rules_vmapN_assoc_stable fuel n d (r2 :: rest) m'' dd'' rr'' nm X (eq_sym Erec) Hf).
+             - exact Hf1. }
+           rewrite (rule_loadable_agree_gen r1 p base dd'' d Hda1).
+           rewrite (rule_applies_agree_gen r1 p base dd'' d Hda1).
+           rewrite (outcome_agree_gen r1 p base dd'' d Hda1). reflexivity.
+        -- destruct (take_vmap_run_head r1 f v1 body r2 rest (e :: es') rest' Ehd Erun
+                       ltac:(discriminate)) as [Hr1eq [HwK1 HwT1]].
+           destruct (has_distinct_verdict (r_verdict r1) (e :: es') && body_vmap_safe body) eqn:Hdv.
+           2:{ remember (optimize_rules_vmapN fuel n d (r2 :: rest)) as tt eqn:Erec.
+               destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+               injection H as Hn' Hd' Hr'. subst n' d' rs'.
+               cbn [eval_rules].
+               rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
+               assert (Hda1 : decls_agree_rule base dd'' d r1).
+           { apply (decls_agree_rule_vmapseam base d dd'' r1 n).
+             - apply (optimize_rules_vmapN_sets fuel n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec)).
+             - intros nm X Hf. apply (optimize_rules_vmapN_assoc_stable fuel n d (r2 :: rest) m'' dd'' rr'' nm X (eq_sym Erec) Hf).
+             - exact Hf1. }
+               rewrite (rule_loadable_agree_gen r1 p base dd'' d Hda1).
+               rewrite (rule_applies_agree_gen r1 p base dd'' d Hda1).
+               rewrite (outcome_agree_gen r1 p base dd'' d Hda1). reflexivity. }
+           (* merge: discharge synproxy/notrack from the body_vmap_safe gate *)
+           apply Bool.andb_true_iff in Hdv as [_ Hsafe].
+           apply Bool.andb_true_iff in Hsafe as [Hns Hnt].
+           apply Bool.negb_true_iff in Hns. apply Bool.negb_true_iff in Hnt.
+           cbv zeta in H.
+           remember (optimize_rules_vmapN fuel (S n)
+                       {| sd_sets := sd_sets d;
+                          sd_vmaps := (vmapname n,
+                            map vmap_pt ((v1, r_verdict r1) :: e :: es')) :: sd_vmaps d;
+                          sd_maps := sd_maps d |} rest')
+             as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           set (entries := (v1, r_verdict r1) :: e :: es') in *.
+           set (dn := {| sd_sets := sd_sets d;
+                         sd_vmaps := (vmapname n, map vmap_pt entries) :: sd_vmaps d;
+                         sd_maps := sd_maps d |}) in *.
+           assert (Hrun_eq : r1 :: r2 :: rest
+                   = map (fun vw => orig_rule f (fst vw) body (snd vw)) entries ++ rest').
+           { subst entries. cbn [map app fst snd]. f_equal; [exact Hr1eq | exact Hsplit]. }
+           assert (Hrf_rest' : Forall (rule_vmap_fresh (S n)) rest').
+           { eapply Forall_impl; [intros r Hr; apply (rule_vmap_fresh_mono n (S n) r); [lia | exact Hr] |].
+             exact Hrf_rest_n. }
+           assert (Hsets_dd : sd_sets dd'' = sd_sets dn)
+             by (apply (optimize_rules_vmapN_sets _ _ _ _ _ _ _ (eq_sym Erec))).
+           assert (Hsets_dn : sd_sets dn = sd_sets d) by (subst dn; reflexivity).
+           assert (Htail : eval_rules rr'' (set_env p (env_with_sets base dd''))
+                           = eval_rules rest' (set_env p (env_with_sets base dn))).
+           { eapply (IH rest' (S n) dn m'' dd'' rr'' base p (eq_sym Erec)); [| exact Hrf_rest'].
+             intros k Hk Hin. subst dn; cbn [sd_vmaps map] in Hin.
+             destruct Hin as [Heq | Hin].
+             - apply vmapname_inj in Heq. lia.
+             - apply (Hfresh k); [lia | exact Hin]. }
+           assert (Hlook : e_vmap (pkt_env (set_env p (env_with_sets base dd'')))
+                             (vmapname n) = map vmap_pt entries).
+           { cbn [set_env with_pkt_env pkt_env]. rewrite e_vmap_env_with_sets.
+             erewrite (optimize_rules_vmapN_assoc_stable fuel (S n) dn _ _ _ _
+                         (vmapname n) _ (eq_sym Erec)).
+             - subst dn; cbn [sd_vmaps assoc_str]. rewrite String.eqb_refl. reflexivity.
+             - intros k Hk Heq. apply vmapname_inj in Heq. lia. }
+           set (qd := set_env p (env_with_sets base dd'')) in *.
+           transitivity (eval_rules
+             (map (fun vw => orig_rule f (fst vw) body (snd vw)) entries ++ rr'') qd).
+           { unfold qd. apply (eval_rules_vmap_mergeN f (vmapname n) entries body rr''
+                                 (set_env p (env_with_sets base dd''))).
+             - exact Hlook.
+             - intros v w Hin. subst entries. destruct Hin as [Hvw | Hin];
+                 [ inversion Hvw; subst; exact HwK1 | apply (HwK v w Hin) ].
+             - intros v w Hin. subst entries. destruct Hin as [Hvw | Hin];
+                 [ inversion Hvw; subst; exact HwT1 | apply (HwT v w Hin) ].
+             - apply (body_has_synproxy_false_stops body qd Hns).
+             - exact Hnt. }
+           assert (Htail' : eval_rules rr'' qd = eval_rules rest' qd).
+           { rewrite Htail. unfold qd.
+             apply (eval_rules_agree_gen rest' p base dn dd'').
+             intros r Hr. apply decls_agree_rule_sym.
+             apply (decls_agree_rule_vmapseam base dn dd'' r (S n)).
+             - apply (optimize_rules_vmapN_sets fuel (S n) dn rest' m'' dd'' rr'' (eq_sym Erec)).
+             - intros nm X Hf. apply (optimize_rules_vmapN_assoc_stable fuel (S n) dn rest'
+                                       m'' dd'' rr'' nm X (eq_sym Erec) Hf).
+             - rewrite Forall_forall in Hrf_rest'. apply Hrf_rest'; exact Hr. }
+           rewrite (eval_rules_app_cong
+                      (map (fun vw => orig_rule f (fst vw) body (snd vw)) entries)
+                      rr'' rest' qd Htail').
+           rewrite <- Hrun_eq.
+           unfold qd. apply (eval_rules_agree_gen (r1 :: r2 :: rest) p base dd'' d).
+           intros r Hr. apply (decls_agree_rule_vmapseam base d dd'' r n).
+           ++ rewrite Hsets_dd, Hsets_dn; reflexivity.
+           ++ intros nm X Hf.
+              rewrite (optimize_rules_vmapN_assoc_stable fuel (S n) dn rest' m'' dd'' rr'' nm X
+                         (eq_sym Erec) (fun k Hk => Hf k ltac:(lia))).
+              subst dn; cbn [sd_vmaps assoc_str].
+              destruct (String.eqb nm (vmapname n)) eqn:Eq.
+              ** apply String.eqb_eq in Eq. exfalso. apply (Hf n (Nat.le_refl n) Eq).
+              ** reflexivity.
+           ++ rewrite Forall_forall in Hrf. apply Hrf; exact Hr.
+      * remember (optimize_rules_vmapN fuel n d (r2 :: rest)) as tt eqn:Erec.
+        destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        cbn [eval_rules].
+        rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
+        assert (Hda1 : decls_agree_rule base dd'' d r1).
+           { apply (decls_agree_rule_vmapseam base d dd'' r1 n).
+             - apply (optimize_rules_vmapN_sets fuel n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec)).
+             - intros nm X Hf. apply (optimize_rules_vmapN_assoc_stable fuel n d (r2 :: rest) m'' dd'' rr'' nm X (eq_sym Erec) Hf).
+             - exact Hf1. }
+        rewrite (rule_loadable_agree_gen r1 p base dd'' d Hda1).
+        rewrite (rule_applies_agree_gen r1 p base dd'' d Hda1).
+        rewrite (outcome_agree_gen r1 p base dd'' d Hda1). reflexivity.
+Qed.
