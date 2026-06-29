@@ -10,7 +10,7 @@
     equals its stored value — the literal K-way conjunction generalising
     [concat_in_iv_two_points].  Axiom-free. *)
 
-From Stdlib Require Import List PeanoNat Bool Lia.
+From Stdlib Require Import List PeanoNat Bool Lia Wellfounded Arith.Wf_nat.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Optimize Optimize_Merge Optimize_Concat.
 Import ListNotations.
 Local Open Scope nat_scope.
@@ -529,6 +529,120 @@ Proof.
   - rewrite Hf. apply (fields_fixed_Forall2 ps2 Hx2).
   - intro Hc. apply (f_equal (@length field)) in Hc. rewrite length_map in Hc. cbn in Hc. lia.
   - rewrite length_map. exact Hlen3.
+Qed.
+
+(* ================================================================== *)
+(** ** The executable pairwise K-field concat pass.
+
+    On each adjacent eligible K(>=3)-field pair it mints a fresh [setname n],
+    prepends the two packed rows to [sd_sets], and rewrites the pair into ONE
+    [merged_ruleK] (a single [MConcatSet] head atop the shared body).  Mirrors the
+    pairwise 2-field [Optimize_Concat.optimize_rules_concat]; correctness is
+    [eval_rules_concat_mergeK] (with two rows). *)
+Fixpoint optimize_rules_concatK (n : nat) (d : set_decls) (rs : list rule)
+  : nat * set_decls * list rule :=
+  match rs with
+  | r1 :: ((r2 :: rest) as tl) =>
+      match concat_mergeK_pair r1 r2 with
+      | Some (fields, row1, row2, body) =>
+          let name := setname n in
+          let d' := {| sd_sets := (name, map pack_row [row1; row2]) :: sd_sets d;
+                       sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} in
+          let merged := merged_ruleK fields name body r1 in
+          let '(n'', d'', rest') := optimize_rules_concatK (S n) d' rest in
+          (n'', d'', merged :: rest')
+      | None =>
+          let '(n'', d'', tl') := optimize_rules_concatK n d tl in
+          (n'', d'', r1 :: tl')
+      end
+  | _ => (n, d, rs)
+  end.
+
+Lemma optimize_rules_concatK_cons2 : forall n d r1 r2 rest,
+  optimize_rules_concatK n d (r1 :: r2 :: rest) =
+  match concat_mergeK_pair r1 r2 with
+  | Some (fields, row1, row2, body) =>
+      let name := setname n in
+      let d' := {| sd_sets := (name, map pack_row [row1; row2]) :: sd_sets d;
+                   sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} in
+      let merged := merged_ruleK fields name body r1 in
+      let '(n'', d'', rest') := optimize_rules_concatK (S n) d' rest in
+      (n'', d'', merged :: rest')
+  | None =>
+      let '(n'', d'', tl') := optimize_rules_concatK n d (r2 :: rest) in
+      (n'', d'', r1 :: tl')
+  end.
+Proof. reflexivity. Qed.
+
+Definition optimize_chain_concatK (n : nat) (d : set_decls) (c : chain)
+  : nat * set_decls * chain :=
+  let '(n', d', rs') := optimize_rules_concatK n d (c_rules c) in
+  (n', d', {| c_policy := c_policy c; c_rules := rs' |}).
+
+(** The pass only PREPENDS [sd_sets] entries keyed by [setname k], n <= k < n', and
+    leaves [sd_vmaps] / [sd_maps] untouched. *)
+Lemma optimize_rules_concatK_assoc_stable : forall rs n d n' d' rs' nm X,
+  optimize_rules_concatK n d rs = (n', d', rs') ->
+  (forall k, n <= k -> nm <> setname k) ->
+  assoc_str nm (sd_sets d') X = assoc_str nm (sd_sets d) X.
+Proof.
+  induction rs as [rs H0] using (induction_ltof1 _ (@length rule)).
+  intros n d n' d' rs' nm X H Hnm.
+  destruct rs as [| r1 [| r2 rest] ].
+  - cbn in H. inversion H; subst; reflexivity.
+  - cbn in H. inversion H; subst; reflexivity.
+  - rewrite optimize_rules_concatK_cons2 in H. cbv zeta in H.
+    destruct (concat_mergeK_pair r1 r2) as [[[[fields row1] row2] body] |] eqn:Em.
+    + destruct (optimize_rules_concatK (S n)
+                  {| sd_sets := (setname n, map pack_row [row1; row2]) :: sd_sets d;
+                     sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest)
+        as [[m'' dd''] rr''] eqn:Erec.
+      inversion H; subst n' d' rs'. clear H.
+      erewrite (H0 rest); [ | unfold ltof; cbn; lia | exact Erec | ].
+      * cbn [sd_sets assoc_str].
+        destruct (String.eqb nm (setname n)) eqn:Eqn.
+        -- apply String.eqb_eq in Eqn. exfalso. apply (Hnm n); [lia | exact Eqn].
+        -- reflexivity.
+      * intros k Hk. apply Hnm. lia.
+    + destruct (optimize_rules_concatK n d (r2 :: rest)) as [[m'' dd''] rr''] eqn:Erec.
+      inversion H. subst n' d' rs'. clear H.
+      eapply (H0 (r2 :: rest)); [ unfold ltof; cbn; lia | exact Erec | exact Hnm ].
+Qed.
+
+Lemma optimize_rules_concatK_vmaps : forall rs n d n' d' rs',
+  optimize_rules_concatK n d rs = (n', d', rs') -> sd_vmaps d' = sd_vmaps d.
+Proof.
+  induction rs as [rs H0] using (induction_ltof1 _ (@length rule)).
+  intros n d n' d' rs' H.
+  destruct rs as [| r1 [| r2 rest] ].
+  - cbn in H. inversion H; subst; reflexivity.
+  - cbn in H. inversion H; subst; reflexivity.
+  - rewrite optimize_rules_concatK_cons2 in H. cbv zeta in H.
+    destruct (concat_mergeK_pair r1 r2) as [[[[fields row1] row2] body] |] eqn:Em.
+    + destruct (optimize_rules_concatK (S n) _ rest) as [[m'' dd''] rr''] eqn:Erec.
+      inversion H; subst n' d' rs'. clear H.
+      rewrite (H0 rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ Erec). reflexivity.
+    + destruct (optimize_rules_concatK n d (r2 :: rest)) as [[m'' dd''] rr''] eqn:Erec.
+      inversion H; subst n' d' rs'. clear H.
+      exact (H0 (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ Erec).
+Qed.
+
+Lemma optimize_rules_concatK_mono : forall rs n d n' d' rs',
+  optimize_rules_concatK n d rs = (n', d', rs') -> n <= n'.
+Proof.
+  induction rs as [rs H0] using (induction_ltof1 _ (@length rule)).
+  intros n d n' d' rs' H.
+  destruct rs as [| r1 [| r2 rest] ].
+  - cbn in H. inversion H; subst; lia.
+  - cbn in H. inversion H; subst; lia.
+  - rewrite optimize_rules_concatK_cons2 in H. cbv zeta in H.
+    destruct (concat_mergeK_pair r1 r2) as [[[[fields row1] row2] body] |] eqn:Em.
+    + destruct (optimize_rules_concatK (S n) _ rest) as [[m'' dd''] rr''] eqn:Erec.
+      inversion H; subst n' d' rs'. clear H.
+      pose proof (H0 rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ Erec). lia.
+    + destruct (optimize_rules_concatK n d (r2 :: rest)) as [[m'' dd''] rr''] eqn:Erec.
+      inversion H; subst n' d' rs'. clear H.
+      exact (H0 (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ Erec).
 Qed.
 
 (** Axiom-freedom guard (build-time): prints "Closed under the global context". *)
