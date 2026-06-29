@@ -92,6 +92,47 @@ PASS + a self-run of all gates.
 
 ---
 
+## Progress log (2026-06-29 session)
+
+**TODO 3 — DONE** (adversarial review: PASS). `theories/Nft_Tactics.v` (predicates
+`nft_accepts`/`nft_drops`/`nft_field_is`/…, notations, tactics `nft_eval`/`nft_decide`,
+step lemmas), demos `Nft_Demo_Symbolic.v` / `Nft_Demo_Concrete.v` (re-express existing
+proofs byte-equal + false-property rejection), guide `proof/CONFIG_PROOFS.md`.
+
+**TODO 2 — DONE.** `extracted/nftc_cli.ml` (CLI: `compile`/`optimize`/`send`, bottoms out
+in `Compile.compile_chain` / `Optimize_Uncond.optimize_table_uncond`); parser gained
+`meta mark set` (`parser.mly`); `proof/e2e.sh` + `make e2e` (parse→optimize→compile→render
+vs live nft, value→set merge, real rulesets, coverage probe); `extracted/nl_send.ml` +
+`nl_stubs.c` + `make nl-send` — a REAL `NETLINK_NETFILTER` sender that transmits the
+verified `compile_chain` output 1:1, round-trip-tested in a netns (rules land in the
+kernel; `nft list ruleset` confirms).
+
+**TODO 1 — value→set gap CLOSED on real input; mapN / N-concat remain.**
+- `theories/Optimize_Normalize.v` (NEW, axiom-free): `normalize_chain` rewrites every
+  `MEq f v` → `MCmp f CEq v` (extensionally equal: identical `match_loadable` and
+  `eval_matchcond_body`), proved `eval_chain`-preserving. `optimize_table_uncond` now runs
+  it FIRST, so the value→set/concat/vmap merge recognisers (which match `MCmp _ CEq _`)
+  FIRE on PARSER output (the frontend lowers `==` to `MEq`). Effect: the shipped verified
+  optimizer now consolidates real `.nft` rulesets (e.g. three `ip saddr` rules → one
+  `lookup set {…}`, matching `nft -o`), where before it was a no-op on parser output. Both
+  headline theorems still `Closed under the global context`, statements unchanged.
+- **Still open — 1a (mapN):** a faithful data-map merge changes PACKET STATE (the dnat
+  target / `meta mark` value), NOT the verdict. The optimizer's correctness is stated over
+  `eval_chain` (verdict only), so composing a value-map merge into `optimize_table_uncond_correct`
+  would be VACUOUS for the value effect. Doing it right needs a STATE-preserving optimizer
+  correctness framework (over `eval_chain_mut_env`), which does not yet exist — that framework
+  is the real prerequisite, larger than the pass itself.
+- **Still open — 1b (N-dim concat):** verdict-preserving, so it fits the existing framework.
+  Good news: the membership primitive `Bytes.concat_in_iv` is ALREADY N-ary (it splits the
+  stored bound by per-field register slots). The remaining work is to generalise the PACKER
+  (`pack2`→`packN`: each field in its `reg_slot`, last takes remainder) and the recogniser
+  (`head_value2`→a K-prefix extractor), lift the certificate (`concat_in_iv_two_points`→
+  `concat_in_iv_pointsN`; mind the singleton/general boundary in `concat_in_iv`), the merge
+  (`eval_rules_concat_merge2`→K), and thread it through the `Optimize_Uncond` composition
+  bookkeeping. Large but mechanical.
+
+---
+
 ## TODO 1 — Close the gap between our optimizer and `nft -o`
 
 **Goal.** Make the optimizer a faithful superset of upstream `nft --optimize`. Two capabilities are
