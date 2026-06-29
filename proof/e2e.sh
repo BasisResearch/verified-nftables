@@ -78,6 +78,28 @@ if printf '%s\n' "$SETRULES" | unshare -rn nft -o -f - >/dev/null 2>&1; then
   NFTO=$(printf '%s\n' "$SETRULES" | unshare -rn nft --optimize -c -f - 2>/dev/null || true)
 fi
 
+# ---- B2. the verified optimizer synthesises an N(>=3)-field concat (nft -o) ---
+echo ">> B2. nftc optimize synthesises a 3-field concat set (matches nft -o)"
+CONCATRULES='table ip t {
+  chain c {
+    type filter hook input priority 0; policy drop;
+    ip saddr 10.0.0.1 ip daddr 10.0.0.2 ip protocol 6 accept
+    ip saddr 10.0.0.3 ip daddr 10.0.0.4 ip protocol 17 accept
+  }
+}'
+printf '%s\n' "$CONCATRULES" > /tmp/e2e_concat.nft
+COPT=$("$NFTC" optimize /tmp/e2e_concat.nft)
+echo "$COPT" | sed 's/^/     /'
+clk=$(echo "$COPT" | grep -c 'lookup' || true)
+cim=$(echo "$COPT" | grep -c 'immediate reg 0 accept' || true)
+# the synthesised concat set element has THREE space-separated field slots
+cset=$(echo "$COPT" | grep -E 'set __set.*=.*0x.* 0x.* 0x' | grep -c . || true)
+if [ "$clk" -eq 1 ] && [ "$cim" -eq 1 ] && [ "$cset" -ge 1 ]; then
+  echo "   PASS: 2 rules -> 1 lookup over a synthesised 3-field concat set"
+else
+  echo "   FAIL: N-field concat did not fire (lookups=$clk accepts=$cim 3-field-sets=$cset)"; fail=1
+fi
+
 # ---- C. the pipeline runs on the repo's real rulesets -----------------------
 echo ">> C. pipeline runs on real rulesets"
 for f in ../router.nft ../optiplex.nft ../ruleset.nft; do

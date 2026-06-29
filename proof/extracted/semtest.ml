@@ -525,6 +525,63 @@ let () =
       "tcp dport 1   (not in)", [0; 1];
       "tcp dport 8080(not in)", [31; 144] ];
   Printf.printf "\n";
+  (* (6c-N) THE N-DIMENSIONAL CONCAT pass — N(>=3)-field value tuples -> ONE concat
+     SET (Optimize_ConcatK.v `optimize_chain_concatK`, composed into the verified
+     `optimize_table_uncond`).  nft -o folds adjacent rules that differ in THREE OR
+     MORE selector values into one rule keyed on a concatenation set.  Run here as
+     the ACTUAL extracted verified term.
+
+       INPUT (nft -o oracle):
+         `ip saddr 10.0.0.1 ip daddr 10.0.0.2 ip protocol 6  accept`
+         `ip saddr 10.0.0.3 ip daddr 10.0.0.4 ip protocol 17 accept`
+       => OUTPUT `ip saddr . ip daddr . ip protocol { 1.2.6 , 3.4.17 } accept`.
+
+     Witness: it FIRES (2 rules -> 1, a 2-element 3-field concat set is synthesised)
+     AND `eval_chain` of the rewritten rule UNDER the synthesised set agrees with the
+     original on every packet.  (All three fields are fixed-width PAYLOAD fields, as
+     the merge gate `field_fixed_len = Some` requires.) *)
+  Printf.printf "=== (6c-N) nft -o N-field CONCAT: ip saddr . ip daddr . ip protocol ===\n";
+  (* network header with protocol byte at offset 9, saddr at 12, daddr at 16 *)
+  let nh3 ~saddr ~daddr ~proto =
+    (Stdlib.List.init 9 (fun _ -> 0)) @ [proto] @ [0; 0] @ saddr @ daddr in
+  let row f1 f2 f3 = [
+    mcmp Syntax.FIp4Saddr    Bytecode.CEq f1;
+    mcmp Syntax.FIp4Daddr    Bytecode.CEq f2;
+    mcmp Syntax.FIp4Protocol Bytecode.CEq f3 ] in
+  let rsk_in = [
+    rule (row [10;0;0;1] [10;0;0;2] [6])  Verdict.Accept;
+    rule (row [10;0;0;3] [10;0;0;4] [17]) Verdict.Accept ] in
+  let ((_nk, declsk), ck_v) =
+    Optimize_Uncond.optimize_table_uncond (chain Verdict.Drop rsk_in) in
+  let setsk = declsk.Semantics.sd_sets in
+  let rsk_out = ck_v.Syntax.c_rules in
+  let lk_in = Stdlib.List.length rsk_in and lk_out = Stdlib.List.length rsk_out in
+  Printf.printf "  rules: %d -> %d (%s)\n" lk_in lk_out
+    (if lk_out < lk_in then "shrunk: N-field concat-merge fired" else "NOT shrunk");
+  if lk_out <> 1 then (Printf.printf "  EXPECTED 1 merged rule, got %d\n" lk_out; incr fails);
+  (match setsk with
+   | [ (nm, els) ] when Stdlib.List.length els = 2 ->
+       Printf.printf "  synthesised concat set %s (%d 3-field tuples)\n" nm (Stdlib.List.length els)
+   | _ -> Printf.printf "  EXPECTED ONE 2-element concat set\n"; incr fails);
+  let declsk' : Semantics.set_decls =
+    { Semantics.sd_sets = setsk; sd_vmaps = []; sd_maps = [] } in
+  let envk = Semantics.env_with_sets empty_env declsk' in
+  let ck_in  = chain Verdict.Drop rsk_in in
+  let ck_out = chain Verdict.Drop rsk_out in
+  Stdlib.List.iter (fun (name, sa, da, pr) ->
+    let p_in  = mk_pkt ~nh:(nh3 ~saddr:sa ~daddr:da ~proto:pr) () in
+    let p_out = mk_pkt ~env:envk ~nh:(nh3 ~saddr:sa ~daddr:da ~proto:pr) () in
+    let a = Semantics.eval_chain ck_in  p_in in
+    let b = Semantics.eval_chain ck_out p_out in
+    let ok = a = b in
+    Printf.printf "  %-32s two-rule=%-7s concat-merged=%-7s %s\n"
+      name (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
+    if not ok then incr fails)
+    [ "1.0.0.1 . 1.0.0.2 . 6  (tuple1)",  [10;0;0;1], [10;0;0;2], 6;
+      "3.0.0.3 . 3.0.0.4 . 17 (tuple2)",  [10;0;0;3], [10;0;0;4], 17;
+      "1.0.0.1 . 1.0.0.2 . 17 (proto miss)", [10;0;0;1], [10;0;0;2], 17;
+      "9.9.9.9 . 1.0.0.2 . 6  (saddr miss)", [9;9;9;9], [10;0;0;2], 6 ];
+  Printf.printf "\n";
   (* (6d) THE VMAP nft -o pass — value+verdict -> VERDICT MAP (Optimize_Vmap.v
      `optimize_rules_vmap` / `optimize_chain_vmap_correct`, axiom-free).  The
      verified pass mints a fresh `__vmapN`, emits its (v1,v1,w1)/(v2,v2,w2)
