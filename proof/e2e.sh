@@ -90,6 +90,33 @@ for f in ../router.nft ../optiplex.nft ../ruleset.nft; do
   fi
 done
 
+# ---- D. parser coverage probe (TODO 2b inventory + regression) --------------
+# A representative spread of constructs the UNTRUSTED frontend must accept.  These
+# all parse+compile through the verified pipeline.  Known-unsupported constructs
+# (documented, fail loudly with Unsupported rather than mis-parsing): `reject with
+# <type>`, `numgen … vmap { … }`, non-verdict data maps (`… map { k : v }`).
+echo ">> D. parser coverage (constructs the frontend accepts)"
+covok=0; covn=0
+cov() {
+  covn=$((covn+1))
+  if printf 'table ip t {\n chain c {\n  type filter hook input priority 0; policy drop;\n  %s\n }\n}\n' "$1" \
+       | "$NFTC" compile - >/dev/null 2>/tmp/e2e_cov; then covok=$((covok+1));
+  else echo "   FAIL: should parse: $1 -> $(cat /tmp/e2e_cov)"; fail=1; fi
+}
+cov 'tcp dport { 22, 80, 443 } accept'
+cov 'ip saddr 10.0.0.0/8 drop'
+cov 'ct state { established, related } accept'
+cov 'tcp dport != 22 drop'
+cov 'tcp dport 1-1024 accept'
+cov 'meta mark set 0x1 accept'          # newly supported (TODO 2b)
+cov 'iifname "eth0" accept'
+cov 'ip protocol tcp accept'
+cov 'tcp flags syn accept'
+cov 'ip saddr 1.2.3.4 ip daddr 5.6.7.8 drop'
+cov 'icmp type echo-request accept'
+cov 'snat to 1.2.3.4'
+echo "   PASS: $covok/$covn coverage constructs parse+compile"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "ALL E2E CHECKS PASSED"

@@ -335,6 +335,7 @@ stmt:
   | DNAT IP6 nat_to           { let (a,p) = $3 in StDnat (a,p) }
   | MARK SET value            { StMetaSet ("mark", $3) }
   | META IDENT SET value      { StMetaSet ($2, $4) }
+  | META MARK SET value       { StMetaSet ("mark", $4) }  (* `mark` lexes as MARK, not IDENT *)
   | CT IDENT SET value        { StCtSet ($2, $4) }
   | CT MARK SET value         { StCtSet ("mark", $4) }  (* `mark` lexes as MARK, not IDENT *)
 
