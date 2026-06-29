@@ -116,12 +116,30 @@ kernel; `nft list ruleset` confirms).
   optimizer now consolidates real `.nft` rulesets (e.g. three `ip saddr` rules → one
   `lookup set {…}`, matching `nft -o`), where before it was a no-op on parser output. Both
   headline theorems still `Closed under the global context`, statements unchanged.
-- **Still open — 1a (mapN):** a faithful data-map merge changes PACKET STATE (the dnat
+- **Still open — 1a (mapN). Confirmed (by the TODO 1 adversarial review) to genuinely need a
+  new framework, not a quick add.** A faithful data-map merge changes PACKET STATE (the dnat
   target / `meta mark` value), NOT the verdict. The optimizer's correctness is stated over
-  `eval_chain` (verdict only), so composing a value-map merge into `optimize_table_uncond_correct`
-  would be VACUOUS for the value effect. Doing it right needs a STATE-preserving optimizer
-  correctness framework (over `eval_chain_mut_env`), which does not yet exist — that framework
-  is the real prerequisite, larger than the pass itself.
+  `eval_chain` (verdict only, `Semantics.v:1104`), so composing a value-map merge into
+  `optimize_table_uncond_correct` would be VACUOUS for the value effect. Precise findings (what a
+  faithful 1a must build, in order):
+    1. **A state-exposing chain evaluation the optimizer correctness is stated over.** `eval_chain`
+       is verdict-only. `eval_chain_mut_env` (`Semantics.v:2094`) threads `dsl_step` but returns
+       only the SHARED env (sets/maps/limiters) — explicitly NOT the per-packet `meta`/`ct` fields,
+       so it can't even observe a `meta mark` write. The mark/nat target lives in the FINAL PACKET;
+       only `eval_chain_trace` (`Semantics.v:2526`, returns `verdict * packet`) exposes it, and the
+       optimizer has NO correctness theorem over it. So step 1 is: a per-pass optimizer-correctness
+       over a meta/state-exposing evaluation.
+    2. **The map-miss semantics.** `meta mark set … map {A:…}` / `dnat to … map {A:…}` on a key not
+       in the map must BREAK (NFT_BREAK → rule skipped, no write / fall-through) for the merge to be
+       state- AND verdict-preserving; confirm/realise that in the model (`map_lookup_data` miss).
+    3. **The merge + per-pass `_uncond` theorem** over that evaluation (mirror `Optimize_Vmap`'s
+       `body_vmap_safe` gate against the notrack/ct soundness pitfall), then **wire `sd_maps`** (the
+       record field exists but NO pass writes it — confirmed: across theories/+extracted/, `sd_maps`
+       only appears as `[]` or `sd_maps := sd_maps d`) + `Extract.v` + a semtest battery proving the
+       map produces the right values.
+    4. **Compose** so `optimize_table_uncond_correct` (verdict) still holds.
+  The `meta mark set … map` case is the simplest start (no flow-keyed NAT state, unlike `dnat to …
+  map`). This is a substantial undertaking comparable to (or larger than) the whole 1b effort.
 - **DONE — 1b (N-dim concat).** The N(≥3)-field concat pass is implemented, proved axiom-free,
   COMPOSED into the shipped `optimize_table_uncond`, extracted, and semtested. The shipped
   optimizer now synthesises ≥3-field concatenation sets (e.g. two `ip saddr . ip daddr . ip
