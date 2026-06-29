@@ -122,14 +122,17 @@ kernel; `nft list ruleset` confirms).
   would be VACUOUS for the value effect. Doing it right needs a STATE-preserving optimizer
   correctness framework (over `eval_chain_mut_env`), which does not yet exist — that framework
   is the real prerequisite, larger than the pass itself.
-- **Still open — 1b (N-dim concat):** verdict-preserving, so it fits the existing framework.
-  Good news: the membership primitive `Bytes.concat_in_iv` is ALREADY N-ary (it splits the
-  stored bound by per-field register slots). The remaining work is to generalise the PACKER
-  (`pack2`→`packN`: each field in its `reg_slot`, last takes remainder) and the recogniser
-  (`head_value2`→a K-prefix extractor), lift the certificate (`concat_in_iv_two_points`→
-  `concat_in_iv_pointsN`; mind the singleton/general boundary in `concat_in_iv`), the merge
-  (`eval_rules_concat_merge2`→K), and thread it through the `Optimize_Uncond` composition
-  bookkeeping. Large but mechanical.
+- **In progress — 1b (N-dim concat):** verdict-preserving, so it fits the existing framework.
+  The membership primitive `Bytes.concat_in_iv` is ALREADY N-ary. **DONE so far** (axiom-free,
+  `theories/Optimize_ConcatK.v`): the packer `packN` (each field in its `reg_slot`, last takes
+  remainder; `packN [a;b] = pack2 a b`) and the K-field membership certificate
+  `concat_in_iv_pointsN` (a packed point key is matched iff every field equals its stored
+  value — the K-way generalisation of `concat_in_iv_two_points`; the singleton/general boundary
+  in `concat_in_iv` is handled by proving the general-branch forallb-over-split directly,
+  `concat_match_packN`). **Remaining:** the matchcond-level certificate (`MConcatSet fields …`
+  = existsb over rows of the per-field MCmp conjunction), `orig_ruleK`/`merged_ruleK`, the merge
+  theorem (`eval_rules_concat_merge2`→K), the recogniser (`head_value2`→K-prefix) + run collapse,
+  and the `Optimize_Uncond` composition bookkeeping + extraction + semtest.
 
 ---
 
