@@ -473,7 +473,8 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          if more <> [] then raise (Unsupported "trailing-after-tproxy");
                          mk_tproxy body (List.rev imms) (fam,ar,pr)
                      | PDup (dev,addr) ->
-                         go (bs body (Syntax.SDup (List.rev imms, dev, addr))) more
+                         let regval r = (match r with Some rr -> Some (List.assoc rr imms) | None -> None) in
+                         go (bs body (Syntax.SDup (regval addr, regval dev))) more
                      | PFwd (dev,addr,nfp) ->
                          if more <> [] then raise (Unsupported "trailing-after-fwd");
                          mk_fwd body (List.rev imms) (dev,addr,nfp)
@@ -632,9 +633,9 @@ let rule_of_block (lines : string list) : Syntax.rule =
                            | l3 :: more3 ->
                              (match parse_line l3 with
                               | PImmData (r2, v2) -> gimm ((r2, v2) :: iacc) more3
-                              | PDynset (op, name, _, Some dreg) ->
+                              | PDynset (op, name, _, Some _dreg) ->
                                   go (bs body (Syntax.SDynsetImm
-                                        (op, name, keyfs, List.rev iacc, dreg))) more3
+                                        (op, name, keyfs, List.map snd (List.rev iacc)))) more3
                               | _ -> raise (Unsupported "dynset-imm-not-dynset"))
                            | [] -> raise (Unsupported "dynset-imm-dangling")
                          in gimm [(r, v)] more
@@ -751,20 +752,22 @@ let rule_of_block (lines : string list) : Syntax.rule =
                                  if more3 <> [] then raise (Unsupported "trailing-after-queue");
                                  mk_queue ~src:(Some (Syntax.VMap ([f], List.rev ts, name)))
                                    body [] (sreg, bypass, fanout)
-                             (* map value (in reg 1) feeding a dup device/address *)
-                             | PDup (dev, addr) ->
+                             (* map value (in reg 1) feeding a dup device/address.
+                                The map (reg 1) is the address iff addr = reg 1,
+                                else it is the device. *)
+                             | PDup (_dev, addr) ->
                                  go (bs body (Syntax.SDupSrc
                                        (Syntax.VMap ([f], List.rev ts, name),
-                                        [], dev, addr))) more3
-                             (* map value + an immediate operand feeding a dup *)
-                             | PImmData (r, v) ->
+                                        (addr = Some 1), None))) more3
+                             (* map value (addr, reg 1) + an immediate device (reg 2) *)
+                             | PImmData (_r, v) ->
                                  (match more3 with
                                   | l4 :: more4 ->
                                     (match parse_line l4 with
-                                     | PDup (dev, addr) ->
+                                     | PDup (_dev, addr) ->
                                          go (bs body (Syntax.SDupSrc
                                                (Syntax.VMap ([f], List.rev ts, name),
-                                                [(r, v)], dev, addr))) more4
+                                                (addr = Some 1), Some v))) more4
                                      | _ -> raise (Unsupported "map-imm-not-dup"))
                                   | [] -> raise (Unsupported "map-imm-dangling"))
                              | _ -> raise (Unsupported "map-not-set"))

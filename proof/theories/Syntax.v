@@ -347,22 +347,24 @@ Inductive stmt : Type :=
                             (* add/delete [keyfs] (-> [dataf] for a map) to a set *)
 | SExthdrReset (proto : string) (htype : nat)
                             (* reset (clear) a TCP option; verdict-neutral *)
-| SDup (imms : list (nat * data)) (devreg addrreg : option nat)
-                            (* duplicate the packet to a device/address loaded by
-                               [imms]; verdict-neutral (the dup is a side effect) *)
+| SDup (dup_addr : option data) (dup_dev : option data)
+                            (* REGISTER-FREE: duplicate to an immediate address
+                               (-> reg 1) and/or device (-> reg 2 after an address,
+                               else reg 1); compile allocates the registers.
+                               Verdict-neutral (the dup is a side effect) *)
 | SObjrefMap (keyfs : list field) (name : string)
-| SDynsetImm (op name : string) (keyfs : list field)
-             (dimms : list (nat * data)) (datareg : nat)
-                            (* dynset whose map data is immediate constants loaded
-                               into data registers [dimms]; verdict-neutral *)
+| SDynsetImm (op name : string) (keyfs : list field) (data_vals : list data)
+                            (* REGISTER-FREE: dynset whose map data are immediate
+                               constants; compile lays them into the registers
+                               after the key fields.  Verdict-neutral *)
 | SExthdrWrite (vs : vsrc) (proto : string) (htype off len : nat)
                             (* write a value into a TCP-option exthdr field;
                                verdict-neutral (packet rewrite outside the model) *)
-| SDupSrc (src : vsrc) (imms : list (nat * data)) (devreg addrreg : option nat).
-                            (* duplicate the packet to a device/address where one
-                               operand is computed by a value source [src] (e.g. a
-                               map lookup into reg 1) and the rest by [imms];
-                               verdict-neutral (the dup is a side effect) *)
+| SDupSrc (src : vsrc) (src_is_addr : bool) (dup_dev : option data).
+                            (* REGISTER-FREE: duplicate where one operand (the
+                               address if [src_is_addr], else the device) is
+                               computed by [src] into reg 1, and an optional
+                               immediate device lands in reg 2.  Verdict-neutral *)
                             (* reference a stateful object selected by looking up
                                the concatenation of [keyfs] in a named object map *)
                             (* dynamically add/delete the concatenation of [keyfs]

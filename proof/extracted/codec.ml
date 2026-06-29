@@ -174,9 +174,11 @@ let render_value (d : int list) : string =
    nft itself BUG()s on larger keys, so the collisions past slot 32 are
    unreachable and cannot hide a divergence. *)
 let nreg r =
-  if r <= 1 then r
-  else let slot = r - 8 in
-       if slot mod 4 = 0 then slot / 4 + 1 else slot + 8
+  (* Only a 32-bit sub-register that is 16-byte aligned (sub-reg 12/16/20 = the
+     start of the 2nd/3rd/4th 128-bit register) is displayed by its 128-bit alias
+     (reg 2/3/4).  Raw operand registers (1..4, and 9/10/11) are left untouched —
+     in particular reg 4 must stay 4, not be mangled by a negative-slot path. *)
+  if r >= 12 && (r - 8) mod 4 = 0 then (r - 8) / 4 + 1 else r
 
 let cmpop_name = function
   | Bytecode.CEq -> "eq" | Bytecode.CNe -> "neq"
@@ -293,8 +295,10 @@ let render_instr (i : Bytecode.instr) : string = match i with
         | Verdict.Jump n->"jump "^n | Verdict.Goto n->"goto "^n) in
       Printf.sprintf "[ immediate reg 0 %s ]" vn
   | Bytecode.IImmediateData (dst,v) ->
-      (* NAT operand registers (1..4) are raw nft numbers, not slot regs *)
-      Printf.sprintf "[ immediate reg %d %s ]" dst (render_value v)
+      (* NAT operand registers (1..4) are raw nft numbers; [nreg] leaves those
+         untouched and only re-aliases a 16-byte-aligned slot register (e.g. a
+         dynset data value at sub-reg 12 -> reg 2). *)
+      Printf.sprintf "[ immediate reg %d %s ]" (nreg dst) (render_value v)
   | Bytecode.IPayloadWrite (src,b,off,len,ct,co,cf) ->
       Printf.sprintf
         "[ payload write reg %d => %db @ %s header + %d csum_type %d csum_off %d csum_flags 0x%x ]"

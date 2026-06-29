@@ -708,12 +708,12 @@ Definition stmt_loadable (s : stmt) (p : packet) : bool :=
   | SCtSetDir _ _ vs => vsrc_loadable vs p
   | SDynset _ _ keyfs dataf => fields_loadable (keyfs ++ dataf) p
   | SObjrefMap keyfs _ => fields_loadable keyfs p
-  | SDynsetImm _ _ keyfs _ _ => fields_loadable keyfs p
+  | SDynsetImm _ _ keyfs _ => fields_loadable keyfs p
   | SExthdrWrite vs _ _ _ _ => vsrc_loadable vs p
-  | SDupSrc src _ _ _ => vsrc_loadable src p
+  | SDupSrc src _ _ => vsrc_loadable src p
   | SSynproxy _ _ => synproxy_loadable p   (* non-TCP / non-L4 => NFT_BREAK (rule skipped) *)
   | SCounter _ _ | SNotrack | SLog _ | SObjref _ _
-  | SLast _ | SExthdrReset _ _ | SDup _ _ _ => true
+  | SLast _ | SExthdrReset _ _ | SDup _ _ => true
   end.
 
 Definition body_item_loadable (it : body_item) (p : packet) : bool :=

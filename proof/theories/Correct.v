@@ -1709,9 +1709,9 @@ Proof.
     rewrite run_load_fields by (rewrite forallb_alloc_regs; exact Hl).
     cbn [app run_rule]. eexists; reflexivity.
   - (* SDup: operand immediates, then the verdict-neutral IDup *)
-    edestruct (run_imms_through imms rf (IDup devreg addrreg :: rest) p) as [rf' Hr].
-    exists rf'. cbn [compile_stmt]. rewrite <- app_assoc. cbn [app].
-    rewrite Hr. cbn [run_rule]. reflexivity.
+    cbn [compile_stmt]. rewrite <- app_assoc. cbn [app].
+    edestruct run_imms_through as [rf' Hr]. rewrite Hr.
+    cbn [run_rule]. eexists; reflexivity.
   - (* SObjrefMap: load the key fields, then the verdict-neutral IObjrefMap *)
     cbn [compile_stmt]. rewrite <- app_assoc.
     rewrite run_load_fields by (rewrite forallb_alloc_regs; exact Hl).

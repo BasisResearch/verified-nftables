@@ -86,7 +86,12 @@ Definition load_width (ld : loaddesc) : nat :=
 Definition field_slots (f : field) : nat :=
   Nat.max 1 (Nat.div (load_width (field_load f) + 3) 4).
 
-Definition reg_of_slot (s : nat) : reg := if Nat.eqb s 0 then 1 else 8 + s.
+(** A 4-byte slot [s] occupies kernel sub-register [8 + s] (NFT_REG32_00 = 8),
+    except slot 0 which is the first 16-byte register (reg 1).  These are the
+    PHYSICAL register identities (monotonic in the slot), used for the
+    non-clobbering concatenation proofs; the 16-byte-aligned DISPLAY naming
+    (sub-reg 12/16/20 -> reg 2/3/4) is applied by the bytecode renderer. *)
+Definition reg_of_slot (s : reg) : reg := if Nat.eqb s 0 then 1 else 8 + s.
 
 Fixpoint alloc_regs (slot : nat) (fields : list field) : list (field * reg) :=
   match fields with
@@ -176,6 +181,33 @@ Definition compile_vsrc (vs : vsrc) : list instr :=
       [ILookupVal [1] name 1]
   end.
 
+(** dup register allocation: the address (if any) takes register 1; the device
+    takes register 2 after an address, else register 1. *)
+Definition dup_addr_present (addr : option data) : bool :=
+  match addr with Some _ => true | None => false end.
+Definition dup_dbase (addr : option data) : nat := if dup_addr_present addr then 2 else 1.
+Definition dup_addrreg (addr : option data) : option nat :=
+  if dup_addr_present addr then Some 1 else None.
+Definition dup_devreg (addr dev : option data) : option nat :=
+  match dev with Some _ => Some (dup_dbase addr) | None => None end.
+Definition dup_imm_loads (addr dev : option data) : list (nat * data) :=
+  (match addr with Some a => [(1, a)] | None => [] end)
+  ++ (match dev with Some d => [(dup_dbase addr, d)] | None => [] end).
+(** A [SDupSrc] immediate device lands in register 2 (after the reg-1 source). *)
+Definition dupsrc_dev_loads (dev : option data) : list (nat * data) :=
+  match dev with Some d => [(2, d)] | None => [] end.
+
+(** dynset immediate-data layout: the data values occupy the registers after the
+    key fields, each taking [data_slots] 4-byte slots. *)
+Definition data_slots (v : data) : nat := Nat.max 1 (Nat.div (length v + 3) 4).
+Fixpoint sum_field_slots (fs : list field) : nat :=
+  match fs with [] => 0 | f :: rest => field_slots f + sum_field_slots rest end.
+Fixpoint dynset_data_loads (slot : nat) (vals : list data) : list (nat * data) :=
+  match vals with
+  | [] => []
+  | v :: rest => (reg_of_slot slot, v) :: dynset_data_loads (slot + data_slots v) rest
+  end.
+
 Definition compile_stmt (s : stmt) : list instr :=
   match s with
   | SCounter p b => [ICounter p b]
@@ -201,21 +233,26 @@ Definition compile_stmt (s : stmt) : list instr :=
           | [] => None | r :: _ => Some r end)
          (match dataf with [] => false | _ => true end)]
   | SExthdrReset proto htype => [IExthdrReset proto htype]
-  | SDup imms dev addr =>
-      map (fun rv => IImmediateData (fst rv) (snd rv)) imms ++ [IDup dev addr]
+  | SDup addr dev =>
+      map (fun rv => IImmediateData (fst rv) (snd rv)) (dup_imm_loads addr dev)
+      ++ [IDup (dup_devreg addr dev) (dup_addrreg addr)]
   | SObjrefMap keyfs name =>
       load_fields (alloc_regs 0 keyfs) ++
       [IObjrefMap (map snd (alloc_regs 0 keyfs)) name]
-  | SDynsetImm op name keyfs dimms datareg =>
+  | SDynsetImm op name keyfs data_vals =>
       load_fields (alloc_regs 0 keyfs) ++
-      map (fun rv => IImmediateData (fst rv) (snd rv)) dimms ++
-      [IDynset op name (map snd (alloc_regs 0 keyfs)) (Some datareg) false]
+      map (fun rv => IImmediateData (fst rv) (snd rv))
+          (dynset_data_loads (sum_field_slots keyfs) data_vals) ++
+      [IDynset op name (map snd (alloc_regs 0 keyfs))
+         (Some (reg_of_slot (sum_field_slots keyfs))) false]
   | SExthdrWrite vs proto htype off len =>
       compile_vsrc vs ++ [IExthdrWrite proto htype off len 1]
-  | SDupSrc src imms devreg addrreg =>
+  | SDupSrc src is_addr dev =>
       compile_vsrc src ++
-      map (fun rv => IImmediateData (fst rv) (snd rv)) imms ++
-      [IDup devreg addrreg]
+      map (fun rv => IImmediateData (fst rv) (snd rv)) (dupsrc_dev_loads dev) ++
+      [IDup (if is_addr then (match dev with Some _ => Some 2 | None => None end)
+             else Some 1)
+            (if is_addr then Some 1 else None)]
   end.
 
 Definition verdict_tail (v : verdict) : list instr :=
