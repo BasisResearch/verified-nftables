@@ -342,8 +342,21 @@ let rule_of_block (lines : string list) : Syntax.rule =
       r_verdict = v; r_vmap = vmap; r_nat = nat; r_tproxy = tproxy;
       r_fwd = fwd; r_queue = queue; r_after = after } in
   let mk_fwd ?(src=None) body imms (dev,addr,nfp) =
-    mk ~fwd:(Some { Syntax.fwd_imms = imms; fwd_src = src; fwd_devreg = dev;
-                    fwd_addrreg = addr; fwd_nfproto = nfp }) body Verdict.Continue in
+    (* register-free: device value expr (reg 1), optional address immediate (reg 2),
+       family from nfproto; the compiler re-allocates registers 1/2 *)
+    let fdev = match src with
+      | Some vs -> vs
+      | None -> (match dev with
+                 | Some r -> (try Syntax.VImm (List.assoc r imms)
+                              with Not_found -> raise (Unsupported "fwd: device"))
+                 | None -> raise (Unsupported "fwd: no device")) in
+    let faddr = match addr with
+      | Some r -> (try Some (List.assoc r imms)
+                   with Not_found -> raise (Unsupported "fwd: address"))
+      | None -> None in
+    let ffam = match nfp with Some 10 -> "ip6" | Some _ -> "ip" | None -> "" in
+    mk ~fwd:(Some { Syntax.fwd_dev = fdev; fwd_addr = faddr;
+                    fwd_family = ffam }) body Verdict.Continue in
   let mk_queue ?(src=None) body imms (sreg,bypass,fanout) =
     (* register-free queue number: the value source, or the immediate loaded into
        the queue's source register (the compiler re-allocates register 1) *)

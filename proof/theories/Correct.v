@@ -1138,7 +1138,7 @@ Proof.
     - rewrite nw_app, nw_imms. reflexivity.
     - rewrite nw_imms. reflexivity. }
   destruct (r_fwd r) as [w |].
-  { rewrite nw_app. destruct (fwd_src w) as [vs |]; [rewrite nw_vsrc | rewrite nw_imms]; reflexivity. }
+  { rewrite nw_app, nw_vsrc. destruct (fwd_addr w); reflexivity. }
   destruct (r_queue r) as [q |].
   { rewrite nw_app, nw_vsrc. reflexivity. }
   apply nw_verdict_tail.
@@ -1808,6 +1808,19 @@ Proof.
   rewrite Hr. cbn [run_rule]. reflexivity.
 Qed.
 
+(** Forward with a target ADDRESS immediate (loaded into reg 2) between the device
+    operand and the terminal [IFwd]; the immediate is verdict-neutral. *)
+Lemma run_vsrc_fwd_addr : forall vs a tail rf dev addr nfp p,
+  vsrc_loadable vs p = true ->
+  run_rule rf (compile_vsrc vs ++ IImmediateData 2 a :: IFwd dev addr nfp :: tail) p
+  = Some Accept.
+Proof.
+  intros vs a tail rf dev addr nfp p Hl.
+  edestruct (run_vsrc_exists vs rf (IImmediateData 2 a :: IFwd dev addr nfp :: tail) p Hl)
+    as [rf' Hr].
+  rewrite Hr. cbn [run_rule]. reflexivity.
+Qed.
+
 (** A queue outcome: the operand immediates pass through and the terminal
     [IQueueSreg] accepts (ignoring anything after it). *)
 Lemma run_imms_queue : forall imms tail rf sreg b f p,
@@ -2151,8 +2164,9 @@ Proof.
     + rewrite <- app_assoc. destruct (tp_portmap t) as [[[m o] name] |];
         [apply run_portmap_tproxy | apply run_imms_tproxy].
     + destruct (r_fwd r) as [w |].
-      * rewrite <- app_assoc. destruct (fwd_src w) as [vs |];
-          [apply run_vsrc_fwd; exact Htl | apply run_imms_fwd].
+      * destruct (fwd_addr w) as [a |]; cbn [app].
+        -- rewrite <- !app_assoc. cbn [app]. apply run_vsrc_fwd_addr; exact Htl.
+        -- rewrite <- app_assoc. apply run_vsrc_fwd; exact Htl.
       * destruct (r_queue r) as [q |].
         -- rewrite <- app_assoc. apply run_vsrc_queue; exact Htl.
         -- rewrite run_verdict_tail_after.
@@ -2188,10 +2202,8 @@ Proof.
     + (* tproxy: immediate/symhash operands never break; terminal_outcome=Some Accept *)
       destruct Hl as [Hd | Ht]; [discriminate Hd | discriminate Ht].
     + destruct (r_fwd r) as [w |].
-      * rewrite <- app_assoc. destruct (fwd_src w) as [vs |].
-        -- rewrite run_vsrc_break; [reflexivity|].
-           destruct Hl as [Hd | Ht]; [exact Hd | discriminate Ht].
-        -- destruct Hl as [Hd | Ht]; [discriminate Hd | discriminate Ht].
+      * rewrite <- !app_assoc. rewrite run_vsrc_break; [reflexivity|].
+        destruct Hl as [Hd | Ht]; [exact Hd | discriminate Ht].
       * destruct (r_queue r) as [q |].
         -- rewrite <- app_assoc. rewrite run_vsrc_break; [reflexivity|].
            destruct Hl as [Hd | Ht]; [exact Hd | discriminate Ht].
@@ -2478,8 +2490,8 @@ Proof.
     - rewrite lf_app, lf_imms; reflexivity.
     - apply lf_imms. }
   destruct (r_fwd r) as [w |].
-  { rewrite lf_app. apply Bool.andb_true_iff; split; [| reflexivity].
-    destruct (fwd_src w) as [vs |]; [apply lf_vsrc | apply lf_imms]. }
+  { rewrite !lf_app. apply Bool.andb_true_iff; split; [apply lf_vsrc|].
+    apply Bool.andb_true_iff; split; [destruct (fwd_addr w); reflexivity | reflexivity]. }
   destruct (r_queue r) as [q |].
   { rewrite lf_app. apply Bool.andb_true_iff; split; [| reflexivity].
     apply lf_vsrc. }

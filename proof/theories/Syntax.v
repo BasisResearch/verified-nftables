@@ -426,13 +426,15 @@ Record tproxy_spec : Type := {
 (** A [fwd] statement: terminal (like NAT/tproxy) — forward the packet to a device
     (and optionally address) loaded by [fwd_imms]; the forward is a side effect
     outside the single-packet verdict model (which sees a terminal Accept). *)
+(** REGISTER-FREE source: [fwd_dev] names the device EXPRESSION (`fwd to "lo"` /
+    `fwd to <map>`), [fwd_addr] the optional target address VALUE, [fwd_family] the
+    "ip"/"ip6" qualifier.  The compiler ([compile_terminal]) loads the device into
+    register 1, the address (if any) into register 2, derives the numeric nfproto
+    from the family, and emits [IFwd (Some 1) …]. *)
 Record fwd_spec : Type := {
-  fwd_imms    : list (nat * data);
-  fwd_src     : option vsrc;       (* the device computed by a value source
-                                      (e.g. a map lookup) instead of immediates *)
-  fwd_devreg  : option nat;
-  fwd_addrreg : option nat;
-  fwd_nfproto : option nat;
+  fwd_dev    : vsrc;             (* the device value expression (reg 1) *)
+  fwd_addr   : option data;      (* the target address immediate (reg 2), if any *)
+  fwd_family : string;          (* "ip" / "ip6" — used only when [fwd_addr] present *)
 }.
 
 (** A value-sourced [queue] verdict: terminal (sends the packet to a userspace

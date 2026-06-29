@@ -180,7 +180,7 @@ Proof.
     destruct (nat_field n) as [[f ?] |]; [apply field_loadable_env| reflexivity]. }
   destruct (r_tproxy r); [reflexivity|].
   destruct (r_fwd r) as [w |].
-  { destruct (fwd_src w) as [vs |]; [apply vsrc_loadable_env | reflexivity]. }
+  { apply vsrc_loadable_env. }
   destruct (r_queue r) as [q |].
   { apply vsrc_loadable_env. }
   reflexivity.

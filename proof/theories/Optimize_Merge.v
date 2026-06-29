@@ -328,7 +328,7 @@ Definition fwd_spec_eq_dec (a b : fwd_spec) : {a = b} + {a <> b}.
 Proof.
   decide equality;
     repeat first
-      [ apply Nat.eq_dec | apply vsrc_eq_dec
+      [ apply Nat.eq_dec | apply vsrc_eq_dec | apply String.string_dec
       | apply (list_eq_dec Nat.eq_dec) | decide equality ].
 Defined.
 

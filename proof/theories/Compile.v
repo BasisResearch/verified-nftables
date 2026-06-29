@@ -244,6 +244,11 @@ Definition compile_vmap (r : rule) : list instr :=
   | None => []
   end.
 
+(** The numeric NFPROTO the kernel uses for an address family qualifier (the
+    register-free [fwd_family]/… string is lowered here). *)
+Definition nfproto_of_family (s : String.string) : nat :=
+  if String.eqb s nat_fam_ip6 then 10 else 2.
+
 (** The terminal of a rule: a nat/tproxy/fwd/queue side effect, else the static
     verdict tail. *)
 Definition compile_terminal (r : rule) : list instr :=
@@ -275,11 +280,12 @@ Definition compile_terminal (r : rule) : list instr :=
               [ITproxy (tp_family t) (tp_areg t) (tp_preg t)]
   | None =>
   match r_fwd r with
-  | Some w => (match fwd_src w with
-               | Some vs => compile_vsrc vs
-               | None => map (fun rv => IImmediateData (fst rv) (snd rv)) (fwd_imms w)
-               end) ++
-              [IFwd (fwd_devreg w) (fwd_addrreg w) (fwd_nfproto w)]
+  | Some w => compile_vsrc (fwd_dev w)
+              ++ (match fwd_addr w with Some a => [IImmediateData 2 a] | None => [] end)
+              ++ [IFwd (Some 1)
+                    (match fwd_addr w with Some _ => Some 2 | None => None end)
+                    (match fwd_addr w with
+                     | Some _ => Some (nfproto_of_family (fwd_family w)) | None => None end)]
   | None =>
   match r_queue r with
   | Some q => compile_vsrc (q_num q) ++
