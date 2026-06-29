@@ -34,7 +34,7 @@ From Stdlib Require Import String.
 Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
   Compile Correct Optimize Optimize_Merge Optimize_Vmap Optimize_Concat Optimize_Table_Inv
-  Optimize_Table.
+  Optimize_Table Optimize_Normalize.
 
 Local Open Scope nat_scope.
 
@@ -1218,8 +1218,13 @@ Qed.
     fresh-name counter at [seed_start] of the base-optimised chain. *)
 Definition empty_decls : set_decls := {| sd_sets := []; sd_vmaps := []; sd_maps := [] |}.
 
+(** Run the verdict-preserving head normalisation ([MEq f v -> MCmp f CEq v],
+    [Optimize_Normalize]) FIRST, so the merge recognisers ([head_value] etc., which
+    match [MCmp _ CEq _]) fire on PARSER output (which lowers `==` to [MEq]).  This
+    is what makes the SHIPPED optimizer consolidate real `.nft` rulesets. *)
 Definition optimize_table_uncond (c : chain) : nat * set_decls * chain :=
-  optimize_table (seed_start (optimize_chain c)) empty_decls c.
+  let c0 := normalize_chain c in
+  optimize_table (seed_start (optimize_chain c0)) empty_decls c0.
 
 (** END-TO-END, NO HYPOTHESIS ON [c]: the optimised chain, run against the
     synthesised declarations, has EXACTLY the DSL verdict of the original chain. *)
@@ -1229,8 +1234,10 @@ Theorem optimize_table_uncond_correct : forall c base p n' d' c',
   = eval_chain c (set_env p (env_with_sets base empty_decls)).
 Proof.
   intros c base p n' d' c' H. unfold optimize_table_uncond in H.
-  apply (optimize_table_correct_uncond_gen (seed_start (optimize_chain c)) empty_decls c
-           n' d' c' base p H).
+  (* the pipeline runs on [normalize_chain c]; relate its verdict back to [c]'s *)
+  rewrite <- (normalize_chain_eval c (set_env p (env_with_sets base empty_decls))).
+  apply (optimize_table_correct_uncond_gen (seed_start (optimize_chain (normalize_chain c)))
+           empty_decls (normalize_chain c) n' d' c' base p H).
   - intros k _ Hin; cbn in Hin; exact Hin.
   - intros k _ Hin; cbn in Hin; exact Hin.
   - apply seed_start_set_fresh.

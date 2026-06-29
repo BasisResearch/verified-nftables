@@ -55,6 +55,7 @@ theories/Optimize_Vmap.v
 theories/Optimize_Concat.v
 theories/Optimize_Table_Inv.v
 theories/Optimize_Table.v
+theories/Optimize_Normalize.v
 theories/Optimize_Uncond.v
 theories/Fib_Local.v
 theories/Netstate_MultiAddr.v

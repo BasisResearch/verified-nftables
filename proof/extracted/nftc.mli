@@ -10,6 +10,7 @@ module Verdict : module type of Verdict
 module Packet : module type of Packet
 module Syntax : module type of Syntax
 module Bytecode : module type of Bytecode
+module Semantics : module type of Semantics
 
 type field = Syntax.field
 type matchcond = Syntax.matchcond
@@ -54,6 +55,15 @@ val optimize : chain -> chain
 
 (** [optimize] then [compile]. *)
 val compile_optimized : chain -> program
+
+(** The FULL verified consolidation pipeline (the [nft -o] supersetting passes):
+    base dedup/DCE, then the N-way value->set, two-selector->concat, and
+    value+verdict->vmap merges, via the UNCONDITIONAL extracted entry
+    [Optimize_Uncond.optimize_table_uncond] — whole-pipeline verdict preservation
+    holds for ANY input chain with no precondition. Returns the synthesised set/map
+    declarations the merges minted (anonymous `__setN`/`__vmapN`) alongside the
+    rewritten chain. *)
+val optimize_table : chain -> Semantics.set_decls * chain
 
 (** {2 Rendering (untrusted glue)} *)
 

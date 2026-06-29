@@ -17,6 +17,7 @@ module Verdict = Verdict
 module Packet = Packet
 module Syntax = Syntax
 module Bytecode = Bytecode
+module Semantics = Semantics
 
 type field   = Syntax.field
 type matchcond = Syntax.matchcond
@@ -55,6 +56,12 @@ let chain (policy : verdict) (rules : rule list) : chain =
 let compile : chain -> program = Compile.compile_chain
 let optimize : chain -> chain = Optimize.optimize_chain
 let compile_optimized (c : chain) : program = compile (optimize c)
+
+(* the full verified consolidation pipeline, via the unconditional extracted entry
+   [Optimize_Uncond.optimize_table_uncond : chain -> (nat * set_decls) * chain] *)
+let optimize_table (c : chain) : Semantics.set_decls * chain =
+  let (nd, c') = Optimize_Uncond.optimize_table_uncond c in
+  (snd nd, c')
 
 (* ---- rendering (untrusted, corpus-tested) ---- *)
 let to_netlink_text : program -> string = Codec.render_program
