@@ -33,8 +33,8 @@ From Stdlib Require Import Lia.
 From Stdlib Require Import String.
 Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
-  Compile Correct Optimize Optimize_Merge Optimize_Vmap Optimize_Concat Optimize_Table_Inv
-  Optimize_Table Optimize_Normalize.
+  Compile Correct Optimize Optimize_Merge Optimize_Vmap Optimize_Concat Optimize_ConcatK
+  Optimize_Table_Inv Optimize_Table Optimize_Normalize.
 
 Local Open Scope nat_scope.
 
@@ -632,6 +632,97 @@ Proof.
         rewrite (rule_loadable_agree_gen r1 p base dd'' d Hda1).
         rewrite (rule_applies_agree_gen r1 p base dd'' d Hda1).
         rewrite (outcome_agree_gen r1 p base dd'' d Hda1). reflexivity.
+Qed.
+
+(** *** concatK (the N>=3-field pairwise concat pass, Optimize_ConcatK).  Mirrors
+    the [concatN] correctness but uses [eval_rules_concat_mergeK] (which bundles the
+    matchcond certificate + run-collapse) on the two-row merge. *)
+Theorem optimize_rules_concatK_correct_uncond : forall rs n d n' d' rs' base p,
+  optimize_rules_concatK n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  Forall (rule_set_fresh n) rs ->
+  eval_rules rs' (set_env p (env_with_sets base d'))
+  = eval_rules rs  (set_env p (env_with_sets base d)).
+Proof.
+  induction rs as [rs IHrs] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' base p H Hfresh Hrf.
+  destruct rs as [| r1 [| r2 rest] ].
+  - cbn in H. inversion H; subst; reflexivity.
+  - cbn in H. inversion H; subst; reflexivity.
+  - rewrite optimize_rules_concatK_cons2 in H.
+    inversion Hrf as [| ? ? Hf1 Hrf2]; subst.
+    inversion Hrf2 as [| ? ? Hf2 Hrf_rest]; subst.
+    destruct (concat_mergeK_pair r1 r2) as [[[[fields row1] row2] body] |] eqn:Em.
+    + cbv zeta in H.
+      destruct (concat_mergeK_pair_shape r1 r2 fields row1 row2 body Em)
+        as [Hr1eq [Hr2eq [Hwf1 [Hwf2 [Hfne _]]]]].
+      set (dn := {| sd_sets := (setname n, map pack_row [row1; row2]) :: sd_sets d;
+                    sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) in *.
+      remember (optimize_rules_concatK (S n) dn rest) as tt eqn:Erec.
+      destruct tt as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
+      assert (Hrest_fresh : Forall (rule_set_fresh (S n)) rest).
+      { eapply Forall_impl;
+          [intros r Hr; apply (rule_set_fresh_mono n (S n) r); [lia|exact Hr]|exact Hrf_rest]. }
+      assert (Hfresh_dn : forall k, S n <= k -> ~ In (setname k) (map fst (sd_sets dn))).
+      { intros k Hk Hin. subst dn; cbn [sd_sets map] in Hin. destruct Hin as [Heq|Hin].
+        - apply setname_inj in Heq. lia.
+        - apply (Hfresh k); [lia|exact Hin]. }
+      assert (Htail : eval_rules rr'' (set_env p (env_with_sets base dd''))
+                      = eval_rules rest (set_env p (env_with_sets base dn))).
+      { apply (IHrs rest ltac:(unfold ltof; cbn; lia) (S n) dn m'' dd'' rr'' base p
+                 (eq_sym Erec) Hfresh_dn Hrest_fresh). }
+      assert (Hvm_dd : sd_vmaps dd'' = sd_vmaps d).
+      { rewrite (optimize_rules_concatK_vmaps rest (S n) dn m'' dd'' rr'' (eq_sym Erec)).
+        subst dn; reflexivity. }
+      assert (Hassoc_dd : forall nm X, (forall k, n <= k -> nm <> setname k) ->
+                assoc_str nm (sd_sets dd'') X = assoc_str nm (sd_sets d) X).
+      { intros nm X Hf.
+        rewrite (optimize_rules_concatK_assoc_stable rest (S n) dn m'' dd'' rr'' nm X
+                   (eq_sym Erec) (fun k Hk => Hf k ltac:(lia))).
+        subst dn; cbn [sd_sets assoc_str]. destruct (String.eqb nm (setname n)) eqn:Eq.
+        - apply String.eqb_eq in Eq. exfalso. apply (Hf n (Nat.le_refl n) Eq).
+        - reflexivity. }
+      set (qd := set_env p (env_with_sets base dd'')) in *.
+      assert (Hlook : e_set (pkt_env qd) (setname n) = map pack_row [row1; row2]).
+      { unfold qd. cbn [set_env with_pkt_env pkt_env]. rewrite e_set_declared.
+        erewrite (optimize_rules_concatK_assoc_stable rest (S n) dn m'' dd'' rr'' (setname n) _
+                    (eq_sym Erec)).
+        - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
+        - intros k Hk Heq. apply setname_inj in Heq. lia. }
+      assert (Htail' : eval_rules rr'' qd = eval_rules rest qd).
+      { rewrite Htail. unfold qd. apply (eval_rules_agree_gen rest p base dn dd'').
+        intros r Hr. apply decls_agree_rule_sym.
+        apply (decls_agree_rule_setseam base dn dd'' r (S n)).
+        - apply (optimize_rules_concatK_vmaps rest (S n) dn m'' dd'' rr'' (eq_sym Erec)).
+        - intros nm X Hf. apply (optimize_rules_concatK_assoc_stable rest (S n) dn m'' dd'' rr''
+                                   nm X (eq_sym Erec) Hf).
+        - rewrite Forall_forall in Hrest_fresh. apply Hrest_fresh; exact Hr. }
+      (* collapse the merged rule to its two originals (= r1, r2) at env dd'' *)
+      rewrite (eval_rules_concat_mergeK fields [row1; row2] (setname n) body r1 rr'' qd
+                 Hfne ltac:(discriminate) Hlook
+                 ltac:(intros row Hin; destruct Hin as [<-|[<-|[]]]; assumption)).
+      cbn [map]. rewrite <- Hr1eq, <- Hr2eq.
+      (* eval_rules (r1::r2::rr'') qd = eval_rules (r1::r2::rest) [d] *)
+      transitivity (eval_rules (r1 :: r2 :: rest) qd).
+      { exact (eval_rules_app_cong [r1; r2] rr'' rest qd Htail'). }
+      unfold qd. apply (eval_rules_agree_gen (r1 :: r2 :: rest) p base dd'' d).
+      intros r Hr. apply (decls_agree_rule_setseam base d dd'' r n Hvm_dd Hassoc_dd).
+      rewrite Forall_forall in Hrf. apply Hrf; exact Hr.
+    + remember (optimize_rules_concatK n d (r2 :: rest)) as tt eqn:Erec.
+      destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as Hn' Hd' Hr'. subst n' d' rs'.
+      cbn [eval_rules].
+      rewrite (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) n d m'' dd'' rr'' base p
+                 (eq_sym Erec) Hfresh Hrf2).
+      assert (Hda1 : decls_agree_rule base dd'' d r1).
+      { apply (decls_agree_rule_setseam base d dd'' r1 n).
+        - apply (optimize_rules_concatK_vmaps (r2 :: rest) n d m'' dd'' rr'' (eq_sym Erec)).
+        - intros nm X Hf. apply (optimize_rules_concatK_assoc_stable (r2 :: rest) n d m'' dd'' rr''
+                                   nm X (eq_sym Erec) Hf).
+        - exact Hf1. }
+      rewrite (rule_loadable_agree_gen r1 p base dd'' d Hda1).
+      rewrite (rule_applies_agree_gen r1 p base dd'' d Hda1).
+      rewrite (outcome_agree_gen r1 p base dd'' d Hda1). reflexivity.
 Qed.
 
 (** *** vmapN.  The vmap merge is GATED on [body_vmap_safe] (no synproxy/notrack in
