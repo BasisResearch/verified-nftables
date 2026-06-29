@@ -152,11 +152,31 @@ NOT nft -o byte-faithful (head-set-guarded form; documented, see below).**
       NOT nft -o's output. The original commit MISLABELLED the guarded form as the "nft -o oracle"; this
       was corrected — `Optimize_Mapn.v` header + `semtest.ml` §6f now state plainly that this is a SOUND
       data-map consolidation, NOT nft -o byte-fidelity.
-    - **REMAINING to truly close the bare-map gap (future work):** model NFT_BREAK-on-map-miss in the
-      statement value-map semantics (`body_writes` SMetaSet/SMangle + the VM's `ILookupVal`), re-prove
-      `compile_chain_correct` for it, then the bare map (no head guard) becomes sound and the pass can
-      emit nft -o's exact form. Also: extend to `dnat to … map` (the case nft -o actually merges), which
-      additionally needs the NAT-state (`r_nat`) effect modelled.
+    - **REMAINING to truly close the bare-map gap — IN PROGRESS on branch `dnat-map-miss`** (NOT on main).
+      Targets `dnat to … map` / `snat to … map` (the case `nft -o` actually merges). Three phases:
+      - **Phase 1 — NFT_BREAK-on-map-miss (DONE on branch, commit `ea2838f`; `compile_chain_correct`
+        re-proved, "Closed").** `Bytes.map_has_key`; new `Bytecode.ILookupValBr` (breaking lookup for a
+        TERMINAL map operand; non-breaking `ILookupVal` stays for verdict-neutral statement maps where a
+        miss is verdict-equivalent); `Semantics.nat_map_key`; `terminal_loadable` nat_map case now requires
+        the key present; `nat_addr` refactored; `ILookupValBr` breaks in `run_rule`/`run_rule_writes`;
+        `Compile` nat_map → `ILookupValBr`; `Correct`: `run_map_nat`/`run_map_nat_break` with the
+        register↔field-value key bridge (`run_transforms_key` via `run_transforms_at_prefix`),
+        `run_terminal`/`run_terminal_break` threaded.
+      - **Phase 2 — optimizer agreement+freshness (PARTIAL on branch, commit `df78c06`).** Because
+        `terminal_loadable` now reads `e_map`, the env-agreement infra must track it.  DONE: `rule_nat_map_name`;
+        `decls_agree_rule` += e_map clause; `terminal_loadable_env`/`tail_loadable_env`/`end_loadable_agree`
+        conditional; `rule_loadable_agree_gen`/`outcome_agree_gen` threaded (`Optimize_Table_Inv` compiles).
+        TODO (the green-Phase-2 blocker): `decls_agree_rule_setseam`/`_vmapseam`/`_sym` must discharge the
+        e_map clause — trivial for the sd_maps-preserving passes (setsN/concatK/concatN/vmapN), but mapN/dnat
+        need a `rule_nat_map_fresh` track mirroring `rule_set_fresh` (def + mono + ~8 `output_fresh` lemmas
+        [all trivial — NO pass mints a nat_map name] + `seed_start` + gen-theorem threading). Until this
+        lands, `optimize_table_uncond_correct` does not compile on the branch.
+      - **Phase 3 — the dnat/snat merge pass itself + NAT-effect correctness** (not started): recognise
+        adjacent `field=A dnat to T1` / `field=B dnat to T2`, emit the BARE `dnat to field map {A:T1,B:T2}`
+        (writing `sd_maps`, NO head guard — sound now that miss breaks); prove verdict-preserving over
+        `eval_chain` AND the NAT packet rewrite (`apply_nat`) over a state-exposing evaluation (analogue of
+        `dsl_step_map_merge`, for `r_nat`).
+      Estimated remaining: Phase 2 ~15 mechanical lemmas; Phase 3 comparable to the whole mapN effort.
 - **DONE — 1b (N-dim concat).** The N(≥3)-field concat pass is implemented, proved axiom-free,
   COMPOSED into the shipped `optimize_table_uncond`, extracted, and semtested. The shipped
   optimizer now synthesises ≥3-field concatenation sets (e.g. two `ip saddr . ip daddr . ip
