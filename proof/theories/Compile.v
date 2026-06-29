@@ -317,6 +317,26 @@ Definition compile_nat_operand (n : nat_spec) : list instr :=
   | None => match nat_addr_imm n with Some v => [IImmediateData 1 v] | None => [] end
   end end end.
 
+(** tproxy register allocation: the address (if any) takes register 1; the port
+    (immediate or symhash-map) takes register 2 after an address, else register 1. *)
+Definition tp_addr_present (t : tproxy_spec) : bool :=
+  match tp_addr t with Some _ => true | None => false end.
+Definition tp_pbase (t : tproxy_spec) : nat := if tp_addr_present t then 2 else 1.
+Definition tp_areg (t : tproxy_spec) : option nat :=
+  if tp_addr_present t then Some 1 else None.
+Definition tp_has_port (t : tproxy_spec) : bool :=
+  match tp_portmap t with Some _ => true
+  | None => match tp_port t with Some _ => true | None => false end end.
+Definition tp_preg (t : tproxy_spec) : option nat :=
+  if tp_has_port t then Some (tp_pbase t) else None.
+(** The immediate operand loads (address in reg 1, an immediate port in [tp_pbase]). *)
+Definition tp_imm_loads (t : tproxy_spec) : list (nat * data) :=
+  (match tp_addr t with Some a => [(1, a)] | None => [] end)
+  ++ (match tp_portmap t with
+      | Some _ => []   (* port comes from the symhash map, not an immediate *)
+      | None => match tp_port t with Some p => [(tp_pbase t, p)] | None => [] end
+      end).
+
 (** The terminal of a rule: a nat/tproxy/fwd/queue side effect, else the static
     verdict tail. *)
 Definition compile_terminal (r : rule) : list instr :=
@@ -328,9 +348,9 @@ Definition compile_terminal (r : rule) : list instr :=
   match r_tproxy r with
   | Some t => (match tp_portmap t with
                | Some (m, o, name) =>
-                   map (fun rv => IImmediateData (fst rv) (snd rv)) (tp_imms t)
-                   ++ [ISymhash m o 2; ILookupVal [2] name 2]
-               | None => map (fun rv => IImmediateData (fst rv) (snd rv)) (tp_imms t)
+                   map (fun rv => IImmediateData (fst rv) (snd rv)) (tp_imm_loads t)
+                   ++ [ISymhash m o (tp_pbase t); ILookupVal [tp_pbase t] name (tp_pbase t)]
+               | None => map (fun rv => IImmediateData (fst rv) (snd rv)) (tp_imm_loads t)
                end) ++
               [ITproxy (tp_family t) (tp_areg t) (tp_preg t)]
   | None =>

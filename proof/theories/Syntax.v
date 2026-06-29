@@ -421,20 +421,20 @@ Record nat_spec : Type := {
   nat_flags    : nat;
 }.
 
-(** A [tproxy] statement (transparent proxy): terminal, like NAT.  The target
-    address/port are loaded into data registers by [tp_imms]; the statement then
-    references those registers.  The redirection is a side effect outside the
+(** A [tproxy] statement (transparent proxy): terminal, like NAT.  Register-free:
+    it names the target address and/or port values (or a symhash-keyed port map);
+    [compile] allocates the registers (address -> reg 1, port -> reg 2 after an
+    address else reg 1).  The redirection is a side effect outside the
     single-packet verdict model (which sees a terminal Accept). *)
 Record tproxy_spec : Type := {
-  tp_imms   : list (nat * data);   (* immediate operand loads (reg, value) *)
+  tp_addr   : option data;         (* target address (immediate), if any *)
+  tp_port   : option data;         (* target port (immediate), if any *)
   tp_portmap : option (nat * nat * string);
                             (* the target port computed by a symhash (modulus,
-                               offset) keyed map lookup into register 2 — e.g.
-                               `tproxy to :symhash mod N map {...}`; the map's
+                               offset) keyed map lookup — e.g.
+                               `tproxy to <a>:symhash mod N map {...}`; the map's
                                entries are looked up by name at runtime *)
   tp_family : string;              (* "ip" / "ip6" / "" *)
-  tp_areg   : option nat;          (* target-address register, if any *)
-  tp_preg   : option nat;          (* target-port register, if any *)
 }.
 
 (** A [fwd] statement: terminal (like NAT/tproxy) — forward the packet to a device

@@ -423,9 +423,15 @@ let rule_of_block (lines : string list) : Syntax.rule =
                     nat_kind = kind; nat_family = family; nat_flags = flags })
        body Verdict.Continue in
   let mk_tproxy ?(portmap=None) body imms (family,areg,preg) =
-    mk ~tproxy:(Some { Syntax.tp_imms = imms; tp_portmap = portmap;
-                       tp_family = family;
-                       tp_areg = areg; tp_preg = preg }) body Verdict.Continue in
+    (* register-free: recover the address/port VALUES from the operand immediates.
+       The address (if any) is in [areg]; an immediate port (no symhash map) is in
+       [preg]. *)
+    let tp_addr = (match areg with Some r -> Some (List.assoc r imms) | None -> None) in
+    let tp_port = (match portmap with
+                   | Some _ -> None
+                   | None -> (match preg with Some r -> Some (List.assoc r imms) | None -> None)) in
+    mk ~tproxy:(Some { Syntax.tp_addr; tp_port; tp_portmap = portmap;
+                       tp_family = family }) body Verdict.Continue in
   (* fold a block into a rule body, preserving the source order of matches and
      verdict-neutral statements (nft interleaves them; our [r_body] is ordered). *)
   let rec go body = function

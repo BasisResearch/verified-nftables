@@ -1780,9 +1780,9 @@ Qed.
 
 (** A symhash-keyed-map tproxy port: the operand immediates, then the
     verdict-neutral symhash + map lookup, then the terminal [ITproxy] accepts. *)
-Lemma run_portmap_tproxy : forall imms m o name fam areg preg tail rf p,
+Lemma run_portmap_tproxy : forall imms pr m o name fam areg preg tail rf p,
   run_rule rf ((map (fun rv => IImmediateData (fst rv) (snd rv)) imms
-                ++ [ISymhash m o 2; ILookupVal [2] name 2])
+                ++ [ISymhash m o pr; ILookupVal [pr] name pr])
                ++ ITproxy fam areg preg :: tail) p = Some Accept.
 Proof.
   induction imms as [| [r v] rest IH]; intros; cbn [map fst snd app run_rule].
