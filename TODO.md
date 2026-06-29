@@ -122,17 +122,26 @@ kernel; `nft list ruleset` confirms).
   would be VACUOUS for the value effect. Doing it right needs a STATE-preserving optimizer
   correctness framework (over `eval_chain_mut_env`), which does not yet exist — that framework
   is the real prerequisite, larger than the pass itself.
-- **In progress — 1b (N-dim concat):** verdict-preserving, so it fits the existing framework.
-  The membership primitive `Bytes.concat_in_iv` is ALREADY N-ary. **DONE so far** (axiom-free,
-  `theories/Optimize_ConcatK.v`): the packer `packN` (each field in its `reg_slot`, last takes
-  remainder; `packN [a;b] = pack2 a b`) and the K-field membership certificate
-  `concat_in_iv_pointsN` (a packed point key is matched iff every field equals its stored
-  value — the K-way generalisation of `concat_in_iv_two_points`; the singleton/general boundary
-  in `concat_in_iv` is handled by proving the general-branch forallb-over-split directly,
-  `concat_match_packN`). **Remaining:** the matchcond-level certificate (`MConcatSet fields …`
-  = existsb over rows of the per-field MCmp conjunction), `orig_ruleK`/`merged_ruleK`, the merge
-  theorem (`eval_rules_concat_merge2`→K), the recogniser (`head_value2`→K-prefix) + run collapse,
-  and the `Optimize_Uncond` composition bookkeeping + extraction + semtest.
+- **In progress — 1b (N-dim concat): the verdict-preservation CORE is DONE.** All axiom-free in
+  `theories/Optimize_ConcatK.v` (`Print Assumptions`: Closed):
+  - `packN` (pack K field values, each in its `reg_slot`, last takes remainder; `packN [a;b] =
+    pack2 a b`) + membership certificate `concat_in_iv_pointsN` (a packed point key is matched
+    iff every field equals its stored value; general-branch forallb-over-split proved directly,
+    `concat_match_packN`, sidestepping `concat_in_iv`'s singleton dispatch);
+  - matchcond certificate `concat_fields_certificate_N` (`MConcatSet fields …` = existsb over
+    rows of the per-field `MCmp f_i CEq a_i` conjunction);
+  - **the merge theorem `eval_rules_concat_mergeK`** — `merged_ruleK` (one `MConcatSet` head atop
+    `body`) provably replaces a RUN of `orig_ruleK` rows (K head matches each), verdict-preserving
+    on every packet, via `eval_rules_run_collapse` (the K-match prefix is transparent to
+    synproxy/notrack/thread, so all rows share one loadability+outcome; the merged applicability
+    is the existsb the certificate gives).
+  - **Remaining (the pass plumbing around the proven core):** the recogniser (`head_value2`→a
+    K-prefix extractor + a run collector mirroring `take_concat_run`), the executable
+    `optimize_rules_concatKN` fixpoint, and the `Optimize_Uncond` composition (mirror the
+    `concatN` section: `_correct_uncond` / `_assoc_stable` / `_output_set_fresh` /
+    `_output_vmap_fresh` / `_vmaps` / `_mono`, then add the stage to `optimize_table` and re-prove
+    `optimize_table_correct_uncond_gen`) + `Extract.v` wiring + a semtest battery. Large but it
+    mirrors the existing `concatN` plumbing 1:1.
 
 ---
 
