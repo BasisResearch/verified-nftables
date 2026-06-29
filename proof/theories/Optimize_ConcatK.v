@@ -11,9 +11,13 @@
     [concat_in_iv_two_points].  Axiom-free. *)
 
 From Stdlib Require Import List PeanoNat Bool Lia.
-From Nft Require Import Bytes Packet Verdict Syntax Semantics Optimize_Concat.
+From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Optimize Optimize_Merge Optimize_Concat.
 Import ListNotations.
 Local Open Scope nat_scope.
+
+Lemma existsb_map_local : forall (A B : Type) (f : B -> bool) (g : A -> B) (l : list A),
+  existsb f (map g l) = existsb (fun x => f (g x)) l.
+Proof. induction l as [| x l IH]; cbn [map existsb]; [reflexivity | rewrite IH; reflexivity]. Qed.
 
 (** Pack field values into a concatenation key: each field in its own register slot
     ([pad_slot], width [reg_slot]); the LAST field takes the remainder (no padding),
@@ -105,5 +109,99 @@ Proof.
     exact (concat_match_packN (v1 :: v2 :: vals) avs Hf2).
 Qed.
 
+(* ================================================================== *)
+(** ** Matchcond-level certificate: the merged [MConcatSet] head over K fields,
+    when its name resolves to packed POINT rows, tests exactly the [existsb] over
+    rows of the per-field [MCmp f_i CEq a_i] conjunction. *)
+
+(** A packed point row as a stored set element. *)
+Definition pack_row (row : list data) : data * data := (packN row, packN row).
+
+(** On a row whose fields all LOAD and length-match, the byte-equality conjunction
+    [all_data_eqb] over the field values equals the [forallb] of the per-field
+    [MCmp] tests. *)
+Lemma all_data_eqb_mcmp : forall fields row q,
+  Forall2 (fun f a => field_loadable f q = true /\ length (field_value f q) = length a) fields row ->
+  all_data_eqb (map (fun f => field_value f q) fields) row
+  = forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) q) (combine fields row).
+Proof.
+  intros fields row q Hf2. induction Hf2 as [| f a fl rl HR Htl IH]; [reflexivity|].
+  destruct HR as [Hld Hlen].
+  cbn [map all_data_eqb combine forallb fst snd].
+  rewrite (eval_mcmp_point f a q Hld Hlen), IH. reflexivity.
+Qed.
+
+(** If some field does not load, every row's per-field conjunction is [false]. *)
+Lemma forallb_mcmp_unload : forall fields row q,
+  fields_loadable fields q = false ->
+  length fields = length row ->
+  forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) q) (combine fields row) = false.
+Proof.
+  induction fields as [| f fields IH]; intros row q Hfl Hlen.
+  - cbn in Hfl. discriminate.
+  - destruct row as [| a row]; [cbn in Hlen; discriminate|].
+    cbn [combine forallb fst snd].
+    unfold fields_loadable in Hfl. cbn [forallb] in Hfl.
+    apply Bool.andb_false_iff in Hfl as [Hf | Hfs].
+    + rewrite (eval_mcmp_point_unload f a q Hf). reflexivity.
+    + rewrite (IH row q Hfs ltac:(cbn in Hlen; lia)). apply Bool.andb_false_r.
+Qed.
+
+(** From fixed-width fields that all LOAD, the per-field loadable+length facts.
+    The loadability premise is introduced AFTER the induction, so it specialises to
+    each tail (avoiding the dependent-hypothesis pitfall). *)
+Lemma cert_loadable_facts : forall (fields : list field) (row : list data) q,
+  Forall2 (fun f a => field_fixed_len f = Some (length a)) fields row ->
+  (forall f, In f fields -> field_loadable f q = true) ->
+  Forall2 (fun f a => field_loadable f q = true /\ length (field_value f q) = length a) fields row.
+Proof.
+  intros fields row q Hwf. induction Hwf as [| f a fs rs Hfx Hrest IH]; intro Hfl'; [constructor|].
+  constructor.
+  - split; [apply Hfl'; left; reflexivity
+           | apply (field_fixed_len_loaded f (length a) q Hfx), Hfl'; left; reflexivity].
+  - apply IH. intros f' Hf'. apply Hfl'; right; exact Hf'.
+Qed.
+
+Lemma forall2_pair_to_lenmap : forall (fields : list field) (row : list data) q,
+  Forall2 (fun f a => field_loadable f q = true /\ length (field_value f q) = length a) fields row ->
+  Forall2 (fun v a => length v = length a) (map (fun f => field_value f q) fields) row.
+Proof.
+  intros fields row q H.
+  induction H as [| f a fs rs [_ Hlen] Hrest IH]; cbn [map]; constructor;
+    [exact Hlen | exact IH].
+Qed.
+
+Lemma concat_fields_certificate_N : forall fields rows name q,
+  fields <> [] ->
+  e_set (pkt_env q) name = map pack_row rows ->
+  (forall row, In row rows ->
+     Forall2 (fun f a => field_fixed_len f = Some (length a)) fields row) ->
+  eval_matchcond (MConcatSet fields false name) q
+  = existsb (fun row => forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) q)
+                                (combine fields row)) rows.
+Proof.
+  intros fields rows name q Hne Hset Hwf.
+  unfold eval_matchcond at 1, eval_matchcond_body at 1, match_loadable.
+  cbn [andb]. rewrite Bool.xorb_false_l.
+  assert (Hfl' : fields_loadable fields q = true ->
+                 forall f, In f fields -> field_loadable f q = true).
+  { intros Hfl f Hf. unfold fields_loadable in Hfl. rewrite forallb_forall in Hfl.
+    apply Hfl, Hf. }
+  destruct (fields_loadable fields q) eqn:Hfl; cbn [andb].
+  - (* all fields load: membership = existsb of the byte-equality conjunctions *)
+    rewrite Hset. unfold concat_set_mem. rewrite existsb_map_local.
+    apply existsb_ext. intros row Hin. unfold pack_row.
+    pose proof (cert_loadable_facts fields row q (Hwf row Hin) (Hfl' eq_refl)) as Hfacts.
+    rewrite (concat_in_iv_pointsN (map (fun f => field_value f q) fields) row
+               (forall2_pair_to_lenmap fields row q Hfacts)
+               ltac:(intro Hc; apply map_eq_nil in Hc; contradiction)).
+    apply all_data_eqb_mcmp; exact Hfacts.
+  - (* some field does not load: both sides false *)
+    symmetry. apply existsb_false_forall. intros row Hin.
+    apply forallb_mcmp_unload; [exact Hfl |].
+    apply Forall2_length with (1 := Hwf row Hin).
+Qed.
+
 (** Axiom-freedom guard (build-time): prints "Closed under the global context". *)
 Print Assumptions concat_in_iv_pointsN.
+Print Assumptions concat_fields_certificate_N.
