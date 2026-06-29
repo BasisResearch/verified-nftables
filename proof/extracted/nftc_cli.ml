@@ -143,11 +143,14 @@ let () =
                   print_string ds))
              chains
        | "send" ->
-           L.iter
-             (fun (t, cn, c) ->
-               let c' = if !no_opt then c else snd (optimize_table c) in
-               let program = Compile.compile_chain c' in
-               Nl_send.send_chain ~table:t ~chain:cn ~commit:!commit program)
-             chains
+           (try
+              L.iter
+                (fun (t, cn, c) ->
+                  let c' = if !no_opt then c else snd (optimize_table c) in
+                  let program = Compile.compile_chain c' in
+                  Nl_send.send_chain ~table:t ~chain:cn ~commit:!commit program)
+                chains
+            with Nl_send.Unsupported msg ->
+              prerr_string (prog ^ ": cannot encode for netlink: " ^ msg ^ "\n"); exit 4)
        | _ -> usage ())
   | _ -> usage ()
