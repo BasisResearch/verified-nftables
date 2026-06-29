@@ -185,5 +185,68 @@ Proof.
     rewrite Hmerged_p, Horig1, Horig2. reflexivity.
 Qed.
 
-(** Axiom-freedom guard. *)
+(** Both rules are verdict-neutral ([Continue] with no side-effect terminal and no
+    trailing statements), so their [outcome] is [None] — each just threads its
+    [dsl_step] write to the next rule. *)
+Lemma outcome_orig_map_none : forall f v M k p,
+  outcome (orig_map_rule f v M k) p = None.
+Proof. reflexivity. Qed.
+Lemma outcome_mk_map_none : forall f setname mapname k p,
+  outcome (mk_map_rule f setname mapname k) p = None.
+Proof. reflexivity. Qed.
+
+Lemma eval_rules_mut_continue : forall r rest p,
+  outcome r p = None ->
+  eval_rules_mut (r :: rest) p = eval_rules_mut rest (dsl_step r p).
+Proof.
+  intros r rest p Ho. cbn [eval_rules_mut]. rewrite Ho.
+  destruct (rule_loadable r p && rule_applies r p); reflexivity.
+Qed.
+
+(** *** THE per-pass STATE correctness (non-vacuous): replacing the two originals by
+    the merged map rule preserves the STATE-threading evaluation [eval_rules_mut] on
+    every packet (so the rest of the chain sees the SAME mark). *)
+Theorem eval_rules_mut_map_merge : forall (f : field) (v1 v2 M1 M2 : data)
+    (setname mapname : string) (k : meta_key) (rest : list rule) (p : packet),
+  e_set (pkt_env p) setname = map2_set v1 v2 ->
+  e_map (pkt_env p) mapname = map2_map v1 v2 M1 M2 ->
+  field_fixed_len f = Some (List.length v1) ->
+  field_fixed_len f = Some (List.length v2) ->
+  data_eqb v1 v2 = false ->
+  eval_rules_mut (mk_map_rule f setname mapname k :: rest) p
+  = eval_rules_mut (orig_map_rule f v1 M1 k :: orig_map_rule f v2 M2 k :: rest) p.
+Proof.
+  intros f v1 v2 M1 M2 setname mapname k rest p Hset Hmap Hfx1 Hfx2 Hne.
+  rewrite (eval_rules_mut_continue _ rest p (outcome_mk_map_none f setname mapname k p)).
+  rewrite (eval_rules_mut_continue _ _ p (outcome_orig_map_none f v1 M1 k p)).
+  rewrite (eval_rules_mut_continue _ rest _ (outcome_orig_map_none f v2 M2 k _)).
+  rewrite (dsl_step_map_merge f v1 v2 M1 M2 setname mapname k p Hset Hmap Hfx1 Hfx2 Hne).
+  reflexivity.
+Qed.
+
+(** *** The VERDICT correctness is trivial (both sides fall through for ANY env), so
+    composing this pass preserves [eval_rules] / [eval_chain] unconditionally. *)
+Lemma eval_rules_continue : forall r rest p,
+  outcome r p = None ->
+  eval_rules (r :: rest) p = eval_rules rest p.
+Proof.
+  intros r rest p Ho. cbn [eval_rules]. rewrite Ho.
+  destruct (rule_loadable r p && rule_applies r p); reflexivity.
+Qed.
+
+Theorem eval_rules_map_merge : forall (f : field) (v1 v2 M1 M2 : data)
+    (setname mapname : string) (k : meta_key) (rest : list rule) (p : packet),
+  eval_rules (mk_map_rule f setname mapname k :: rest) p
+  = eval_rules (orig_map_rule f v1 M1 k :: orig_map_rule f v2 M2 k :: rest) p.
+Proof.
+  intros.
+  rewrite (eval_rules_continue _ rest p (outcome_mk_map_none f setname mapname k p)).
+  rewrite (eval_rules_continue _ _ p (outcome_orig_map_none f v1 M1 k p)).
+  rewrite (eval_rules_continue _ rest p (outcome_orig_map_none f v2 M2 k p)).
+  reflexivity.
+Qed.
+
+(** Axiom-freedom guards. *)
 Print Assumptions dsl_step_map_merge.
+Print Assumptions eval_rules_mut_map_merge.
+Print Assumptions eval_rules_map_merge.
