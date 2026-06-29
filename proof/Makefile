@@ -11,7 +11,7 @@
 ROCQBIN ?=
 COQMAKE  = CoqMakefile
 
-.PHONY: all proofs glue lib example semtest difftest corpus validate parse-test gen clean
+.PHONY: all proofs glue lib example semtest difftest corpus validate parse-test gen clean cli e2e
 
 all: proofs glue
 
@@ -54,6 +54,16 @@ $(COQMAKE): _CoqProject
 
 glue: proofs
 	cd extracted && dune build ./glue.exe corpus_test.exe
+
+# The verified optimizer/compiler CLI (parse -> optimize_table_uncond/compile_chain
+# -> render | send).  Bottoms out in the extracted verified terms.
+cli: proofs
+	cd extracted && dune build ./nftc_cli.exe
+
+# End-to-end pipeline test (TODO 2c): run real .nft files through the nftc CLI
+# (parse -> optimize -> compile -> render) and check against live `nft`.
+e2e: cli
+	./e2e.sh
 
 # Byte-identical forward check on a hand-written ruleset vs the local `nft`.
 difftest: glue
