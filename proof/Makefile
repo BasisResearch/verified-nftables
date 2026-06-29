@@ -11,7 +11,7 @@
 ROCQBIN ?=
 COQMAKE  = CoqMakefile
 
-.PHONY: all proofs glue lib example semtest difftest corpus validate parse-test gen clean cli e2e
+.PHONY: all proofs glue lib example semtest difftest corpus validate parse-test gen clean cli e2e nl-send
 
 all: proofs glue
 
@@ -64,6 +64,12 @@ cli: proofs
 # (parse -> optimize -> compile -> render) and check against live `nft`.
 e2e: cli
 	./e2e.sh
+
+# Netlink sender round-trip (TODO 2d): in a fresh user+net namespace, push the
+# verified-compiled rules to the kernel over a real NETLINK_NETFILTER socket and
+# read them back with `nft list ruleset`.  Needs unshare (unprivileged userns).
+nl-send: cli
+	cd extracted && unshare --net --map-root-user --map-auto bash nl_send_test.sh
 
 # Byte-identical forward check on a hand-written ruleset vs the local `nft`.
 difftest: glue

@@ -17,6 +17,7 @@
  (name nftc_cli)
  (modules nftc_cli nl_send)
  (libraries nftc unix)
+ (foreign_stubs (language c) (names nl_stubs))
  (flags (:standard -w -a)))
 
 ; The .nft -> Syntax-AST frontend (untrusted glue): an ocamllex lexer and a
