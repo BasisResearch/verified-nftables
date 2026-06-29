@@ -645,6 +645,63 @@ Proof.
       exact (H0 (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ Erec).
 Qed.
 
+(** The minted set keys lie in [n, n'). *)
+Lemma optimize_rules_concatK_keys_bound : forall rs n d n' d' rs' k,
+  optimize_rules_concatK n d rs = (n', d', rs') ->
+  In (setname k) (map fst (sd_sets d')) ->
+  In (setname k) (map fst (sd_sets d)) \/ k < n'.
+Proof.
+  induction rs as [rs IHrs] using (induction_ltof1 _ (@length rule)).
+  intros n d n' d' rs' k H Hin.
+  destruct rs as [| r1 [| r2 rest] ].
+  - cbn in H. inversion H; subst. left; exact Hin.
+  - cbn in H. inversion H; subst. left; exact Hin.
+  - rewrite optimize_rules_concatK_cons2 in H. cbv zeta in H.
+    destruct (concat_mergeK_pair r1 r2) as [[[[fields row1] row2] body] |] eqn:Em.
+    + remember (optimize_rules_concatK (S n)
+                  {| sd_sets := (setname n, map pack_row [row1; row2]) :: sd_sets d;
+                     sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest) as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
+      destruct (IHrs rest ltac:(unfold ltof; cbn; lia) (S n) _ m'' dd'' rr'' k (eq_sym Erec) Hin)
+        as [Hin_dn | Hlt].
+      * cbn [sd_sets map] in Hin_dn. destruct Hin_dn as [Heq | Hin_d].
+        -- apply setname_inj in Heq. subst k. right.
+           pose proof (optimize_rules_concatK_mono rest (S n) _ m'' dd'' rr'' (eq_sym Erec)). lia.
+        -- left; exact Hin_d.
+      * right; exact Hlt.
+    + remember (optimize_rules_concatK n d (r2 :: rest)) as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
+      eapply (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) n d m'' dd'' rr'' k (eq_sym Erec) Hin).
+Qed.
+
+(** *** Chain-level wrappers (mono / vmaps / keys_bound). *)
+Lemma optimize_chain_concatK_mono : forall n d c n' d' c',
+  optimize_chain_concatK n d c = (n', d', c') -> n <= n'.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_concatK in H.
+  destruct (optimize_rules_concatK n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. apply (optimize_rules_concatK_mono _ _ _ _ _ _ E).
+Qed.
+
+Lemma optimize_chain_concatK_vmaps : forall n d c n' d' c',
+  optimize_chain_concatK n d c = (n', d', c') -> sd_vmaps d' = sd_vmaps d.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_concatK in H.
+  destruct (optimize_rules_concatK n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. apply (optimize_rules_concatK_vmaps _ _ _ _ _ _ E).
+Qed.
+
+Lemma optimize_chain_concatK_keys_bound : forall n d c n' d' c' k,
+  optimize_chain_concatK n d c = (n', d', c') ->
+  In (setname k) (map fst (sd_sets d')) ->
+  In (setname k) (map fst (sd_sets d)) \/ k < n'.
+Proof.
+  intros n d c n' d' c' k H Hin. unfold optimize_chain_concatK in H.
+  destruct (optimize_rules_concatK n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  apply (optimize_rules_concatK_keys_bound _ _ _ _ _ _ k E Hin).
+Qed.
+
 (** Axiom-freedom guard (build-time): prints "Closed under the global context". *)
 Print Assumptions concat_in_iv_pointsN.
 Print Assumptions concat_fields_certificate_N.
