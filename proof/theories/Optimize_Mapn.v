@@ -400,6 +400,135 @@ Proof.
       reflexivity.
 Qed.
 
+(** *** Decls seam bookkeeping (mirrors concatK; mapn adds a [setname] to [sd_sets]
+    and a [mapname] to [sd_maps], leaving [sd_vmaps] fixed). *)
+Lemma optimize_rules_mapn_mono : forall rs n d n' d' rs',
+  optimize_rules_mapn n d rs = (n', d', rs') -> n <= n'.
+Proof.
+  induction rs as [rs IH] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' H. destruct rs as [| r1 [| r2 rest]].
+  - cbn in H; inversion H; subst; lia.
+  - cbn in H; inversion H; subst; lia.
+  - rewrite optimize_rules_mapn_cons2 in H.
+    destruct (map_merge_pair r1 r2) as [[[[[[f v1] v2] M1] M2] k]|]; cbv zeta in H.
+    + remember (optimize_rules_mapn (S n)
+                  {| sd_sets := (setname n, map2_set v1 v2) :: sd_sets d;
+                     sd_vmaps := sd_vmaps d;
+                     sd_maps := (mapname n, map2_map v1 v2 M1 M2) :: sd_maps d |} rest)
+        as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. injection H as Hn _ _; subst.
+      pose proof (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)). lia.
+    + remember (optimize_rules_mapn n d (r2 :: rest)) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. injection H as Hn _ _; subst.
+      exact (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)).
+Qed.
+
+Lemma optimize_rules_mapn_vmaps : forall rs n d n' d' rs',
+  optimize_rules_mapn n d rs = (n', d', rs') -> sd_vmaps d' = sd_vmaps d.
+Proof.
+  induction rs as [rs IH] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' H. destruct rs as [| r1 [| r2 rest]].
+  - cbn in H; inversion H; subst; reflexivity.
+  - cbn in H; inversion H; subst; reflexivity.
+  - rewrite optimize_rules_mapn_cons2 in H.
+    destruct (map_merge_pair r1 r2) as [[[[[[f v1] v2] M1] M2] k]|]; cbv zeta in H.
+    + remember (optimize_rules_mapn (S n)
+                  {| sd_sets := (setname n, map2_set v1 v2) :: sd_sets d;
+                     sd_vmaps := sd_vmaps d;
+                     sd_maps := (mapname n, map2_map v1 v2 M1 M2) :: sd_maps d |} rest)
+        as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. injection H as _ Hd _; subst.
+      rewrite (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)). reflexivity.
+    + remember (optimize_rules_mapn n d (r2 :: rest)) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. injection H as _ Hd _; subst.
+      exact (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)).
+Qed.
+
+Lemma optimize_rules_mapn_assoc_stable : forall rs n d n' d' rs' nm X,
+  optimize_rules_mapn n d rs = (n', d', rs') ->
+  (forall j, n <= j -> nm <> setname j) ->
+  assoc_str nm (sd_sets d') X = assoc_str nm (sd_sets d) X.
+Proof.
+  induction rs as [rs IH] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' nm X H Hnm. destruct rs as [| r1 [| r2 rest]].
+  - cbn in H; inversion H; subst; reflexivity.
+  - cbn in H; inversion H; subst; reflexivity.
+  - rewrite optimize_rules_mapn_cons2 in H.
+    destruct (map_merge_pair r1 r2) as [[[[[[f v1] v2] M1] M2] k]|]; cbv zeta in H.
+    + remember (optimize_rules_mapn (S n)
+                  {| sd_sets := (setname n, map2_set v1 v2) :: sd_sets d;
+                     sd_vmaps := sd_vmaps d;
+                     sd_maps := (mapname n, map2_map v1 v2 M1 M2) :: sd_maps d |} rest)
+        as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. injection H as _ Hd _; subst d'.
+      erewrite (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ nm X (eq_sym E)
+                  ltac:(intros j Hj; apply Hnm; lia)).
+      cbn [sd_sets assoc_str].
+      destruct (String.eqb nm (setname n)) eqn:Eq.
+      * apply String.eqb_eq in Eq. exfalso. apply (Hnm n); [lia | exact Eq].
+      * reflexivity.
+    + remember (optimize_rules_mapn n d (r2 :: rest)) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. injection H as _ Hd _; subst d'.
+      exact (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ nm X (eq_sym E) Hnm).
+Qed.
+
+Lemma optimize_rules_mapn_keys_bound : forall rs n d n' d' rs' j,
+  optimize_rules_mapn n d rs = (n', d', rs') ->
+  In (setname j) (map fst (sd_sets d')) ->
+  In (setname j) (map fst (sd_sets d)) \/ j < n'.
+Proof.
+  induction rs as [rs IH] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' j H Hin. destruct rs as [| r1 [| r2 rest]].
+  - cbn in H; inversion H; subst; left; exact Hin.
+  - cbn in H; inversion H; subst; left; exact Hin.
+  - rewrite optimize_rules_mapn_cons2 in H.
+    destruct (map_merge_pair r1 r2) as [[[[[[f v1] v2] M1] M2] k]|]; cbv zeta in H.
+    + remember (optimize_rules_mapn (S n)
+                  {| sd_sets := (setname n, map2_set v1 v2) :: sd_sets d;
+                     sd_vmaps := sd_vmaps d;
+                     sd_maps := (mapname n, map2_map v1 v2 M1 M2) :: sd_maps d |} rest)
+        as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. injection H as Hn Hd Hr; subst.
+      destruct (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ j (eq_sym E) Hin) as [Hd0|Hlt].
+      * cbn [sd_sets map] in Hd0. destruct Hd0 as [Heq|Hd0].
+        -- apply setname_inj in Heq. subst j. right.
+           pose proof (optimize_rules_mapn_mono rest (S n) _ _ _ _ (eq_sym E)). lia.
+        -- left; exact Hd0.
+      * right; exact Hlt.
+    + remember (optimize_rules_mapn n d (r2 :: rest)) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. injection H as Hn Hd Hr; subst.
+      exact (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ j (eq_sym E) Hin).
+Qed.
+
+Definition optimize_chain_mapn (n : nat) (d : set_decls) (c : chain)
+  : nat * set_decls * chain :=
+  let '(n', d', rs') := optimize_rules_mapn n d (c_rules c) in
+  (n', d', {| c_policy := c_policy c; c_rules := rs' |}).
+
+Lemma optimize_chain_mapn_mono : forall n d c n' d' c',
+  optimize_chain_mapn n d c = (n', d', c') -> n <= n'.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_mapn in H.
+  destruct (optimize_rules_mapn n d (c_rules c)) as [[m d0] r0] eqn:E.
+  inversion H; subst. exact (optimize_rules_mapn_mono _ _ _ _ _ _ E).
+Qed.
+Lemma optimize_chain_mapn_vmaps : forall n d c n' d' c',
+  optimize_chain_mapn n d c = (n', d', c') -> sd_vmaps d' = sd_vmaps d.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_mapn in H.
+  destruct (optimize_rules_mapn n d (c_rules c)) as [[m d0] r0] eqn:E.
+  inversion H; subst. exact (optimize_rules_mapn_vmaps _ _ _ _ _ _ E).
+Qed.
+Lemma optimize_chain_mapn_keys_bound : forall n d c n' d' c' j,
+  optimize_chain_mapn n d c = (n', d', c') ->
+  In (setname j) (map fst (sd_sets d')) ->
+  In (setname j) (map fst (sd_sets d)) \/ j < n'.
+Proof.
+  intros n d c n' d' c' j H Hin. unfold optimize_chain_mapn in H.
+  destruct (optimize_rules_mapn n d (c_rules c)) as [[m d0] r0] eqn:E.
+  inversion H; subst. exact (optimize_rules_mapn_keys_bound _ _ _ _ _ _ j E Hin).
+Qed.
+
 (** Axiom-freedom guards. *)
 Print Assumptions dsl_step_map_merge.
 Print Assumptions eval_rules_mut_map_merge.
