@@ -48,9 +48,8 @@ Definition if_ppp0 : data := [112; 112; 112; 48; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0
 
 (* The masquerade NAT spec the parser emitted for `masquerade` (family ip). *)
 Definition masq_spec : nat_spec :=
-  {| nat_imms := []; nat_field := None; nat_map := None; nat_src := None;
-     nat_kind := "masq"; nat_family := "ip"; nat_amin := None; nat_amax := None;
-     nat_pmin := None; nat_pmax := None; nat_flags := 0 |}.
+  {| nat_addr_imm := None; nat_field := None; nat_map := None; nat_src := None;
+     nat_kind := "masq"; nat_family := "ip"; nat_extra := NXnone; nat_flags := 0 |}.
 
 (* The masquerade rule = the single rule of the generated postrouting chain,
    reproduced for unfolding; proved equal to the parser output below. *)

@@ -385,26 +385,40 @@ Record vmap_spec : Type := {
     registers by the immediates in [nat_imms]; the statement then references those
     registers.  NAT is terminal (it accepts with a translation); the packet
     rewrite itself is a side effect outside the single-packet verdict model. *)
+(** The SECONDARY NAT operand — a range-end address or a port range — REGISTER-FREE
+    (was the netlink registers [nat_amax]/[nat_pmin]/[nat_pmax]).  The compiler
+    ([compile_terminal]) derives the actual registers: a separate immediate lands in
+    the next sequential register (reg 2/3), while a value taken from the PRIMARY
+    operand's concat-MAP lands in the next slot register (reg 9 = slot 1). *)
+Inductive nat_2nd : Type :=
+| NXnone                              (* `dnat to a` : no second operand *)
+| NXimm (addr_max : option data) (port_min : option data) (port_max : option data)
+                                      (* separate immediates for the range-end address
+                                         and/or port [range]; allocated to the next
+                                         sequential registers (reg 2/3/4) *)
+| NXmap_addr_max                      (* `snat to <k> map {k:a-b}` : range-end from the operand concat-map (reg 9) *)
+| NXmap_port                          (* `snat to <k> map {k:a.p}` : port from the operand concat-map (reg 9) *)
+| NXmap_full.                         (* `dnat to <k> map {k : a1-a2 . p1-p2}` : address range
+                                         AND port range from one concat-map value, laid out
+                                         addr_min . port_min . addr_max . port_max across
+                                         register slots 0/1/2/3 (reg 1/9/10/11) *)
+
+(** A NAT terminal.  REGISTER-FREE source: the operand SOURCE for the primary
+    address (into register 1) is exactly one of [nat_addr_imm] (an immediate value),
+    [nat_field], [nat_map], or [nat_src]; the secondary operand is [nat_extra]; the
+    register allocation (the NFTNL_EXPR_NAT_REG slots) is entirely the compiler's job. *)
 Record nat_spec : Type := {
-  nat_imms   : list (nat * data);   (* immediate operand loads (reg, value) *)
-  nat_field  : option (field * list transform);
-                            (* operand straight from a (transformed) packet field,
-                               `dnat to ip saddr` (no map lookup) *)
-  nat_map    : option (list field * list transform * string);
-                            (* alternative operand source: the concatenation of
-                               [fields] (after the transforms) looked up in a named
-                               map, into register 1 — `dnat to ip saddr map {...}`.
-                               The looked-up value is consumed by the terminal NAT,
-                               which the single-packet model sees only as Accept. *)
-  nat_src    : option vsrc;         (* general operand value source into register 1
-                                       (e.g. a jhash-keyed map, [VHashMap]) *)
-  nat_kind   : string;              (* "snat" / "dnat" / "masq" / "redir" *)
-  nat_family : string;              (* "ip" / "ip6"; "" for masq/redir *)
-  nat_amin   : option nat;          (* None for masq/redir *)
-  nat_amax   : option nat;
-  nat_pmin   : option nat;
-  nat_pmax   : option nat;
-  nat_flags  : nat;
+  nat_addr_imm : option data;       (* `… to <imm>` : the immediate address value (reg 1) *)
+  nat_field    : option (field * list transform);
+                            (* `… to ip saddr` : operand from a (transformed) field *)
+  nat_map      : option (list field * list transform * string);
+                            (* `… to ip saddr map {…}` : concat of [fields] looked up
+                               in a named map (into register 1) *)
+  nat_src      : option vsrc;       (* general operand value source (e.g. jhash map) *)
+  nat_extra    : nat_2nd;           (* range-end / port (register-free) *)
+  nat_kind     : string;            (* "snat" / "dnat" / "masq" / "redir" *)
+  nat_family   : string;            (* "ip" / "ip6"; "" for masq/redir *)
+  nat_flags    : nat;
 }.
 
 (** A [tproxy] statement (transparent proxy): terminal, like NAT.  The target

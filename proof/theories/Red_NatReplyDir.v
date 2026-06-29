@@ -35,9 +35,9 @@ Import ListNotations.
 (* `dnat to 8.8.8.8; accept` — a FIXED destination NAT (immediate operand,
    reg 1 = 8.8.8.8), so the operand does not vary per packet. *)
 Definition dnat_fixed : nat_spec :=
-  {| nat_imms := [(1, [8;8;8;8])]; nat_field := None; nat_map := None;
+  {| nat_addr_imm := Some [8;8;8;8]; nat_field := None; nat_map := None;
      nat_src := None; nat_kind := nat_dnat_kind; nat_family := nat_fam_ip4;
-     nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None;
+     nat_extra := NXnone;
      nat_flags := 0 |}.
 Definition dnat_rule : rule :=
   {| r_body := []; r_verdict := Accept; r_vmap := None;
@@ -153,9 +153,9 @@ Proof. split; vm_compute; reflexivity. Qed.
 
 (* `dnat to 8.8.8.8:8080`: dest addr 8.8.8.8 (reg 1) + dest port 8080. *)
 Definition dnat_port : nat_spec :=
-  {| nat_imms := [(1, [8;8;8;8])]; nat_field := None; nat_map := None;
+  {| nat_addr_imm := Some [8;8;8;8]; nat_field := None; nat_map := None;
      nat_src := None; nat_kind := nat_dnat_kind; nat_family := nat_fam_ip4;
-     nat_amin := None; nat_amax := None; nat_pmin := Some 8080; nat_pmax := Some 8080;
+     nat_extra := NXimm None (Some (N_to_data 2 (N.of_nat 8080))) None;
      nat_flags := 0 |}.
 Definition dnat_port_rule : rule :=
   {| r_body := []; r_verdict := Accept; r_vmap := None;

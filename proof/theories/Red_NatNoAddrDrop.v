@@ -30,9 +30,9 @@ Import ListNotations.
 
 (* ---- redirect; accept at PREROUTING ---- *)
 Definition redir_spec : nat_spec :=
-  {| nat_imms := []; nat_field := None; nat_map := None;
+  {| nat_addr_imm := None; nat_field := None; nat_map := None;
      nat_src := None; nat_kind := nat_redir_kind; nat_family := nat_fam_ip4;
-     nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None;
+     nat_extra := NXnone;
      nat_flags := 0 |}.
 Definition redir_rule : rule :=
   {| r_body := []; r_verdict := Accept; r_vmap := None;
@@ -42,9 +42,9 @@ Definition redir_chain : chain := {| c_policy := Drop; c_rules := [ redir_rule ]
 
 (* ---- masquerade; accept at POSTROUTING ---- *)
 Definition masq_spec : nat_spec :=
-  {| nat_imms := []; nat_field := None; nat_map := None;
+  {| nat_addr_imm := None; nat_field := None; nat_map := None;
      nat_src := None; nat_kind := nat_masq_kind; nat_family := nat_fam_ip4;
-     nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None;
+     nat_extra := NXnone;
      nat_flags := 0 |}.
 Definition masq_rule : rule :=
   {| r_body := []; r_verdict := Accept; r_vmap := None;

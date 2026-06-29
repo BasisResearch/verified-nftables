@@ -15,9 +15,9 @@ From Nft Require Import Bytes Packet Verdict Syntax Semantics.
 
 (* A `dnat to 10.0.0.1` rule: target address in register 1, family ip. *)
 Definition dnat_spec : nat_spec :=
-  {| nat_imms := [(1, [10;0;0;1])]; nat_field := None; nat_map := None; nat_src := None;
+  {| nat_addr_imm := Some [10;0;0;1]; nat_field := None; nat_map := None; nat_src := None;
      nat_kind := "dnat"; nat_family := "ip";
-     nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None; nat_flags := 0 |}.
+     nat_extra := NXnone; nat_flags := 0 |}.
 Definition dnat_rule : rule :=
   {| r_body := []; r_verdict := Continue; r_vmap := None; r_nat := Some dnat_spec;
      r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
@@ -144,9 +144,9 @@ Qed.
     mirrors this exactly; the old behaviour (always the iif address) was
     kernel-incorrect for the output hook. *)
 Definition redir_spec (fam : string) : nat_spec :=
-  {| nat_imms := []; nat_field := None; nat_map := None; nat_src := None;
+  {| nat_addr_imm := None; nat_field := None; nat_map := None; nat_src := None;
      nat_kind := "redir"; nat_family := fam;
-     nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None; nat_flags := 0 |}.
+     nat_extra := NXnone; nat_flags := 0 |}.
 Definition redir_rule (fam : string) : rule :=
   {| r_body := []; r_verdict := Continue; r_vmap := None; r_nat := Some (redir_spec fam);
      r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
@@ -238,17 +238,16 @@ Qed.
     DESTINATION port (TCP/UDP header bytes 2..3).  The kernel loads [PORT] into the
     proto-min register and [nf_nat_proto.c]/[tcp_manip_pkt] writes it into the
     header (`*portptr = newport`, nf_nat_proto.c:163-172).  Before the fix the model
-    ignored [nat_pmin]/[nat_pmax] entirely, so the transport header (and hence the
+    ignored [nat_port_num]/[nat_pmax] entirely, so the transport header (and hence the
     port) was provably left byte-for-byte unchanged — `pkt_th (chain_out …) = pkt_th p`.
     These theorems prove the opposite: the port IS now rewritten, and the
     formerly-provable no-op is refuted. *)
 
-(* `dnat to 10.0.0.1:8080`: same address operand, plus port 8080 in nat_pmin. *)
+(* `dnat to 10.0.0.1:8080`: same address operand, plus port 8080 in nat_port_num. *)
 Definition dnat_port_spec : nat_spec :=
-  {| nat_imms := [(1, [10;0;0;1])]; nat_field := None; nat_map := None; nat_src := None;
+  {| nat_addr_imm := Some [10;0;0;1]; nat_field := None; nat_map := None; nat_src := None;
      nat_kind := "dnat"; nat_family := "ip";
-     nat_amin := None; nat_amax := None;
-     nat_pmin := Some 8080; nat_pmax := Some 8080; nat_flags := 0 |}.
+     nat_extra := NXimm None (Some (N_to_data 2 (N.of_nat 8080))) None; nat_flags := 0 |}.
 Definition dnat_port_rule : rule :=
   {| r_body := []; r_verdict := Continue; r_vmap := None; r_nat := Some dnat_port_spec;
      r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
@@ -353,15 +352,14 @@ Qed.
 
 (** A `snat ... :PORT` rewrites the L4 SOURCE port (transport bytes 0..1), not the
     destination — the [NF_NAT_MANIP_SRC] half.  A dnat with NO port operand
-    ([nat_pmin] = None, the address-only case) leaves the transport-header PORT
+    ([nat_port_num] = None, the address-only case) leaves the transport-header PORT
     bytes untouched (mirroring `if (priv->sreg_proto_min)`, nft_nat.c:120) — but
     NOT the transport header in full: see below, the L4 CHECKSUM is still updated
     for the address change. *)
 Definition snat_port_spec : nat_spec :=
-  {| nat_imms := [(1, [192;168;0;1])]; nat_field := None; nat_map := None; nat_src := None;
+  {| nat_addr_imm := Some [192;168;0;1]; nat_field := None; nat_map := None; nat_src := None;
      nat_kind := "snat"; nat_family := "ip";
-     nat_amin := None; nat_amax := None;
-     nat_pmin := Some 4000; nat_pmax := Some 4000; nat_flags := 0 |}.
+     nat_extra := NXimm None (Some (N_to_data 2 (N.of_nat 4000))) None; nat_flags := 0 |}.
 Definition snat_port_rule : rule :=
   {| r_body := []; r_verdict := Continue; r_vmap := None; r_nat := Some snat_port_spec;
      r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
@@ -383,7 +381,7 @@ Proof.
   cbn -[set_sport set_saddr store_nat_mapping slice pkt_nh]. rewrite ?Horig; reflexivity.
 Qed.
 
-(* The address-only dnat ([nat_pmin]=None) leaves the L4 PORT bytes (transport
+(* The address-only dnat ([nat_port_num]=None) leaves the L4 PORT bytes (transport
    slots 0..1 / 2..3) byte-for-byte unchanged — the kernel's
    `if (priv->sreg_proto_min)` is NOT taken — even though it does touch the L4
    CHECKSUM slot for the address change (see [dnat_addronly_updates_l4_csum]).
@@ -415,10 +413,9 @@ Qed.
     EMPTY list into the 4-byte daddr slot: it deleted 4 bytes of the IP header and
     shifted the rest left, corrupting/destroying the destination address. *)
 Definition dnat_portonly_spec : nat_spec :=
-  {| nat_imms := []; nat_field := None; nat_map := None; nat_src := None;
+  {| nat_addr_imm := None; nat_field := None; nat_map := None; nat_src := None;
      nat_kind := "dnat"; nat_family := "ip";
-     nat_amin := None; nat_amax := None;
-     nat_pmin := Some 80; nat_pmax := Some 80; nat_flags := 0 |}.
+     nat_extra := NXimm None (Some (N_to_data 2 (N.of_nat 80))) None; nat_flags := 0 |}.
 Definition dnat_portonly_rule : rule :=
   {| r_body := []; r_verdict := Continue; r_vmap := None;
      r_nat := Some dnat_portonly_spec;

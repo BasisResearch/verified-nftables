@@ -741,10 +741,13 @@ let nat_l3_family = function "ip6" -> "ip6" | "inet" -> "inet" | _ -> "ip"
 (* a `masquerade` NAT spec: source-NAT to the exit interface's address, in the
    address family of the enclosing table ([nat_l3_family]) so an `ip6 masquerade`
    rewrites the 16-byte IPv6 source (nf_nat_masquerade_ipv6), not the IPv4 slot. *)
+(* 2-byte big-endian port value (the compiler loads it into the proto register) *)
+let port_bytes p = [(p lsr 8) land 0xff; p land 0xff]
+
 let masq_spec ~family : Syntax.nat_spec =
-  { Syntax.nat_imms = []; nat_field = None; nat_map = None; nat_src = None;
-    nat_kind = "masq"; nat_family = nat_l3_family family; nat_amin = None;
-    nat_amax = None; nat_pmin = None; nat_pmax = None; nat_flags = 0 }
+  { Syntax.nat_addr_imm = None; nat_field = None; nat_map = None; nat_src = None;
+    nat_extra = Syntax.NXnone;
+    nat_kind = "masq"; nat_family = nat_l3_family family; nat_flags = 0 }
 
 (* an `snat to <ip>[:<port>]` / `dnat to <ip>[:<port>]` NAT spec: the target
    address goes into register 1 (= NFTNL_EXPR_NAT_REG_ADDR_MIN), which the kernel
@@ -760,10 +763,12 @@ let masq_spec ~family : Syntax.nat_spec =
 let addr_nat_spec st kind ?(port=None) (v : Nft_ast.value) : Syntax.nat_spec option =
   match resolve_var st v with
   | Nft_ast.Vip4 b ->
-      Some { Syntax.nat_imms = [(1, b)]; nat_field = None; nat_map = None;
-             nat_src = None; nat_kind = kind; nat_family = "ip";
-             nat_amin = None; nat_amax = None; nat_pmin = port; nat_pmax = port;
-             nat_flags = 0 }
+      let ne = (match port with
+                | Some p -> Syntax.NXimm (None, Some ((port_bytes p)), None)
+                | None -> Syntax.NXnone) in
+      Some { Syntax.nat_addr_imm = Some b; nat_field = None; nat_map = None;
+             nat_src = None; nat_extra = ne;
+             nat_kind = kind; nat_family = "ip"; nat_flags = 0 }
   | _ -> None   (* unresolvable / non-literal target: stay a bare terminal Accept *)
 
 (* a PORT-ONLY `snat to :<port>` / `dnat to :<port>` NAT spec: NO address operand
@@ -774,9 +779,9 @@ let addr_nat_spec st kind ?(port=None) (v : Nft_ast.value) : Syntax.nat_spec opt
    nat_spec with nat_has_addr = false, so apply_nat preserves the address and
    apply_nat_port rewrites the port. *)
 let portonly_nat_spec ~family kind (port : int) : Syntax.nat_spec =
-  { Syntax.nat_imms = []; nat_field = None; nat_map = None; nat_src = None;
-    nat_kind = kind; nat_family = nat_l3_family family; nat_amin = None;
-    nat_amax = None; nat_pmin = Some port; nat_pmax = Some port; nat_flags = 0 }
+  { Syntax.nat_addr_imm = None; nat_field = None; nat_map = None; nat_src = None;
+    nat_extra = Syntax.NXimm (None, Some ((port_bytes port)), None);
+    nat_kind = kind; nat_family = nat_l3_family family; nat_flags = 0 }
 
 (* In a multi-L3 family an inet chain sees both IPv4 and IPv6 packets, so nft
    guards every `ip`/`ip6` payload match with `meta nfproto == {2|10}`.  A

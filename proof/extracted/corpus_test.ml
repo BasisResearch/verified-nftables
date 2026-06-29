@@ -385,25 +385,43 @@ let rule_of_block (lines : string list) : Syntax.rule =
   let mk_vmap_t ?(after=[]) ?(nat=None) body f ts name =
     mk ~after ~nat ~vmap:(Some { Syntax.vm_fields = [f]; vm_keyf = Some (f, ts);
                      vm_name = name }) body Verdict.Continue in
+  (* register-free reconstruction: the address immediate sits in the addr_min
+     register; the secondary operand is reg 2 (immediate) or reg 9 (concat-map) *)
+  let nat_addr_imm_of imms amin =
+    match amin with
+    | Some r -> (try Some (List.assoc r imms) with Not_found -> None)
+    | None -> None in
+  let assoc_imm r imms = try List.assoc r imms with Not_found -> raise (Unsupported "nat operand") in
+  let opt_imm ro imms = match ro with Some r -> Some (assoc_imm r imms) | None -> None in
+  let nat_extra_of imms (amax,pmin,pmax) : Syntax.nat_2nd =
+    match amax, pmin, pmax with
+    | Some 10, Some 9, Some 11 -> Syntax.NXmap_full
+    | Some 9, _, _ -> Syntax.NXmap_addr_max
+    | _, Some 9, _ -> Syntax.NXmap_port
+    | None, None, None -> Syntax.NXnone
+    | _ -> Syntax.NXimm (opt_imm amax imms, opt_imm pmin imms, opt_imm pmax imms) in
   let nat_spec_of imms (kind,family,amin,amax,pmin,pmax,flags) : Syntax.nat_spec =
-    { Syntax.nat_imms = imms; nat_field = None; nat_map = None; nat_src = None;
-      nat_kind = kind; nat_family = family; nat_amin = amin; nat_amax = amax;
-      nat_pmin = pmin; nat_pmax = pmax; nat_flags = flags } in
-  let mk_nat body imms (kind,family,amin,amax,pmin,pmax,flags) =
-    mk ~nat:(Some { Syntax.nat_imms = imms; nat_field = None; nat_map = None; nat_src = None;
-                    nat_kind = kind; nat_family = family;
-                    nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
-                    nat_pmax = pmax; nat_flags = flags }) body Verdict.Continue in
-  let mk_nat_map body (fields,ts,name) (kind,family,amin,amax,pmin,pmax,flags) =
-    mk ~nat:(Some { Syntax.nat_imms = []; nat_field = None; nat_map = Some ((fields, ts), name); nat_src = None;
-                    nat_kind = kind; nat_family = family;
-                    nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
-                    nat_pmax = pmax; nat_flags = flags }) body Verdict.Continue in
-  let mk_nat_field body (f,ts) (kind,family,amin,amax,pmin,pmax,flags) =
-    mk ~nat:(Some { Syntax.nat_imms = []; nat_field = Some (f, ts); nat_map = None; nat_src = None;
-                    nat_kind = kind; nat_family = family;
-                    nat_amin = amin; nat_amax = amax; nat_pmin = pmin;
-                    nat_pmax = pmax; nat_flags = flags }) body Verdict.Continue in
+    { Syntax.nat_addr_imm = nat_addr_imm_of imms amin; nat_field = None;
+      nat_map = None; nat_src = None; nat_extra = nat_extra_of imms (amax,pmin,pmax);
+      nat_kind = kind; nat_family = family; nat_flags = flags } in
+  let mk_nat body imms args =
+    mk ~nat:(Some (nat_spec_of imms args)) body Verdict.Continue in
+  let mk_nat_map body (fields,ts,name) (kind,family,_amin,amax,pmin,pmax,flags) =
+    (* a concat-map range/port lands in reg 9 -> NXmap_addr_max / NXmap_port.
+       For masq/redir the map operand IS the port (reg 1): drop that reg-1
+       reference so it is not re-read as a separate immediate. *)
+    let drop1 = function Some 1 -> None | x -> x in
+    mk ~nat:(Some { Syntax.nat_addr_imm = None; nat_field = None;
+                    nat_map = Some ((fields, ts), name); nat_src = None;
+                    nat_extra = nat_extra_of [] (drop1 amax, drop1 pmin, drop1 pmax);
+                    nat_kind = kind; nat_family = family; nat_flags = flags })
+       body Verdict.Continue in
+  let mk_nat_field body (f,ts) (kind,family,_,amax,pmin,pmax,flags) =
+    mk ~nat:(Some { Syntax.nat_addr_imm = None; nat_field = Some (f, ts);
+                    nat_map = None; nat_src = None;
+                    nat_extra = nat_extra_of [] (amax,pmin,pmax);
+                    nat_kind = kind; nat_family = family; nat_flags = flags })
+       body Verdict.Continue in
   let mk_tproxy ?(portmap=None) body imms (family,areg,preg) =
     mk ~tproxy:(Some { Syntax.tp_imms = imms; tp_portmap = portmap;
                        tp_family = family;
@@ -558,12 +576,13 @@ let rule_of_block (lines : string list) : Syntax.rule =
                            (match parse_line l2 with
                             | PNat (k,fa,a,ax,pm,px,fl) ->
                                 if more2 <> [] then raise (Unsupported "trailing-after-nat");
-                                mk ~nat:(Some { Syntax.nat_imms = []; nat_field = None;
+                                ignore a;
+                                mk ~nat:(Some { Syntax.nat_addr_imm = None; nat_field = None;
                                                 nat_map = None;
                                                 nat_src = Some (Syntax.VHashMap
                                                   ([f], len, seed, m, o, name));
-                                                nat_kind = k; nat_family = fa; nat_amin = a;
-                                                nat_amax = ax; nat_pmin = pm; nat_pmax = px;
+                                                nat_extra = nat_extra_of [] (ax,pm,px);
+                                                nat_kind = k; nat_family = fa;
                                                 nat_flags = fl }) body Verdict.Continue
                             | _ -> raise (Unsupported "jhashmap-not-nat"))
                          | [] -> raise (Unsupported "jhashmap-dangling"))

@@ -73,7 +73,7 @@ Definition global_postrouting : chain :=
    c_rules := [{| r_body := [(BMatch (MMasked FIp4Saddr false [255; 255; 0; 0] [0; 0; 0; 0] [192; 168; 0; 0]));
              (BMatch (MEq FMetaOifname [112; 112; 112; 48; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0]))];
      r_verdict := Accept; r_vmap := None;
-     r_nat := (Some {| nat_imms := []; nat_field := None; nat_map := None; nat_src := None; nat_kind := "masq"; nat_family := "ip"; nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
+     r_nat := (Some {| nat_addr_imm := None; nat_field := None; nat_map := None; nat_src := None; nat_kind := "masq"; nat_family := "ip"; nat_extra := NXnone; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
 
 Definition global_chains : list (string * chain) :=
   [("inbound_world", global_inbound_world);

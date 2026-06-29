@@ -456,8 +456,8 @@ let check_dnat_rewrite () =
   let pre_p = Nft_lower.find_chain parsed_p ~table:"nat" ~chain:"prerouting" in
   let rp = Stdlib.List.nth pre_p.Syntax.c_rules 0 in
   let ns = match rp.Syntax.r_nat with Some n -> n | None -> failwith "no nat_spec" in
-  check "dnat to A:PORT carries the port into nat_pmin" (ns.Syntax.nat_pmin = Some 8080);
-  check "dnat to A:PORT carries the port into nat_pmax" (ns.Syntax.nat_pmax = Some 8080);
+  check "dnat to A:PORT carries the port (8080=0x1f90) into nat_extra"
+    (ns.Syntax.nat_extra = Syntax.NXimm (None, Some ([0x1f; 0x90]), None));
   (* a packet with dport=80 in the transport header (bytes 2..3 = [0;80]) *)
   let th = [0;0; 0;80; 0;0;0;0] in
   let p_in2 = { (mk_pkt ~env:env_p ()) with Packet.pkt_nh = nh; pkt_th = th } in
@@ -492,7 +492,8 @@ let check_dnat_rewrite () =
     | Some n -> n | None -> failwith "port-only dnat dropped to bare Accept" in
   check "dnat to :PORT lowers to a real nat_spec (not a bare Accept)"
     (rpo.Syntax.r_nat <> None);
-  check "dnat to :PORT carries the port into nat_pmin" (nso.Syntax.nat_pmin = Some 80);
+  check "dnat to :PORT carries the port (80=0x0050) into nat_extra"
+    (nso.Syntax.nat_extra = Syntax.NXimm (None, Some ([0; 80]), None));
   check "dnat to :PORT has NO address operand (nat_has_addr = false)"
     (Semantics.nat_has_addr nso = false);
   let th_po = [0;0; 0;25; 0;0;0;0] in
@@ -521,9 +522,9 @@ let check_dnat_rewrite () =
      observable: two same-flow packets with different saddrs get the SAME (packet-1)
      destination.  Built at the Semantics level (no parser surface for `to ip saddr`). *)
   let dnat_saddr_spec : Syntax.nat_spec =
-    { Syntax.nat_imms = []; nat_field = Some (Syntax.FIp4Saddr, []); nat_map = None;
+    { Syntax.nat_addr_imm = None; nat_field = Some (Syntax.FIp4Saddr, []); nat_map = None;
       nat_src = None; nat_kind = Syntax.nat_dnat_kind; nat_family = Syntax.nat_fam_ip4;
-      nat_amin = None; nat_amax = None; nat_pmin = None; nat_pmax = None; nat_flags = 0 } in
+      nat_extra = Syntax.NXnone; nat_flags = 0 } in
   let dnat_saddr_rule : Syntax.rule =
     { Syntax.r_body = []; r_verdict = Verdict.Accept; r_vmap = None;
       r_nat = Some dnat_saddr_spec; r_tproxy = None; r_fwd = None;
@@ -573,9 +574,9 @@ let check_dnat_rewrite () =
      inversion.  Before the fix the model re-applied the forward dnat forward (reply
      dst -> 8.8.8.8) and left the reply src stale. *)
   let dnat88_spec : Syntax.nat_spec =
-    { Syntax.nat_imms = [(1, [8;8;8;8])]; nat_field = None; nat_map = None;
+    { Syntax.nat_addr_imm = Some [8;8;8;8]; nat_field = None; nat_map = None;
       nat_src = None; nat_kind = Syntax.nat_dnat_kind; nat_family = Syntax.nat_fam_ip4;
-      nat_amin = None; nat_amax = None; nat_pmin = None; nat_pmax = None; nat_flags = 0 } in
+      nat_extra = Syntax.NXnone; nat_flags = 0 } in
   let dnat88_rule : Syntax.rule =
     { Syntax.r_body = []; r_verdict = Verdict.Accept; r_vmap = None;
       r_nat = Some dnat88_spec; r_tproxy = None; r_fwd = None;
@@ -609,9 +610,9 @@ let check_dnat_rewrite () =
      (tcp_manip_pkt: `*portptr = newport`).  Before the fix the model left the reply
      ports byte-for-byte unchanged, so the reply's source port stayed stuck at 8080. *)
   let dnat_port_spec : Syntax.nat_spec =
-    { Syntax.nat_imms = [(1, [8;8;8;8])]; nat_field = None; nat_map = None;
+    { Syntax.nat_addr_imm = Some [8;8;8;8]; nat_field = None; nat_map = None;
       nat_src = None; nat_kind = Syntax.nat_dnat_kind; nat_family = Syntax.nat_fam_ip4;
-      nat_amin = None; nat_amax = None; nat_pmin = Some 8080; nat_pmax = Some 8080;
+      nat_extra = Syntax.NXimm (None, Some ([31; 144]), None);
       nat_flags = 0 } in
   let dnat_port_rule : Syntax.rule =
     { Syntax.r_body = []; r_verdict = Verdict.Accept; r_vmap = None;
@@ -666,9 +667,9 @@ let check_ip6_nat () =
   Printf.printf "=== (G) family-aware ip6 NAT rewrite ===\n";
   let tgt6 = Stdlib.List.init 16 (fun _ -> 0xAA) in
   let mk_spec kind =
-    { Syntax.nat_imms = [(1, tgt6)]; nat_field = None; nat_map = None;
+    { Syntax.nat_addr_imm = Some tgt6; nat_field = None; nat_map = None;
       nat_src = None; nat_kind = kind; nat_family = Syntax.nat_fam_ip6;
-      nat_amin = None; nat_amax = None; nat_pmin = None; nat_pmax = None;
+      nat_extra = Syntax.NXnone;
       nat_flags = 0 } in
   let mk_rule sp =
     { Syntax.r_body = []; r_verdict = Verdict.Continue; r_vmap = None;
@@ -700,9 +701,9 @@ let check_ip6_nat () =
     (Stdlib.List.length p_s.Packet.pkt_nh = Stdlib.List.length nh);
   (* sanity: an ip dnat still rewrites the IPv4 slot (regression for the v4 path) *)
   let v4spec =
-    { Syntax.nat_imms = [(1, [10;0;0;1])]; nat_field = None; nat_map = None;
+    { Syntax.nat_addr_imm = Some [10;0;0;1]; nat_field = None; nat_map = None;
       nat_src = None; nat_kind = Syntax.nat_dnat_kind; nat_family = Syntax.nat_fam_ip4;
-      nat_amin = None; nat_amax = None; nat_pmin = None; nat_pmax = None;
+      nat_extra = Syntax.NXnone;
       nat_flags = 0 } in
   let p4 = Semantics.apply_nat Semantics.Hprerouting (mk_rule v4spec) p_in in
   check "ip (v4) dnat still rewrites the IPv4 destination slot"
@@ -819,9 +820,9 @@ let check_ip6_nat () =
 let check_redir_hook () =
   Printf.printf "=== (G') hook-dependent redirect destination ===\n";
   let mk_spec fam =
-    { Syntax.nat_imms = []; nat_field = None; nat_map = None; nat_src = None;
+    { Syntax.nat_addr_imm = None; nat_field = None; nat_map = None; nat_src = None;
       nat_kind = Syntax.nat_redir_kind; nat_family = fam;
-      nat_amin = None; nat_amax = None; nat_pmin = None; nat_pmax = None;
+      nat_extra = Syntax.NXnone;
       nat_flags = 0 } in
   let mk_rule sp =
     { Syntax.r_body = []; r_verdict = Verdict.Continue; r_vmap = None;
@@ -885,9 +886,9 @@ let check_redir_hook () =
     (fst (Semantics.eval_chain_trace Semantics.Houtput redir_chain p_noaddr) = Verdict.Accept);
   (* masquerade likewise drops at postrouting when the exit interface has no address *)
   let masq_spec =
-    { Syntax.nat_imms = []; nat_field = None; nat_map = None; nat_src = None;
+    { Syntax.nat_addr_imm = None; nat_field = None; nat_map = None; nat_src = None;
       nat_kind = Syntax.nat_masq_kind; nat_family = Syntax.nat_fam_ip4;
-      nat_amin = None; nat_amax = None; nat_pmin = None; nat_pmax = None; nat_flags = 0 } in
+      nat_extra = Syntax.NXnone; nat_flags = 0 } in
   let masq_chain : Syntax.chain =
     { Syntax.c_policy = Verdict.Drop;
       c_rules = [ { (mk_rule masq_spec) with Syntax.r_verdict = Verdict.Accept } ] } in

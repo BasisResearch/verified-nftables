@@ -249,26 +249,81 @@ Definition compile_vmap (r : rule) : list instr :=
 Definition nfproto_of_family (s : String.string) : nat :=
   if String.eqb s nat_fam_ip6 then 10 else 2.
 
+(** *** NAT register ALLOCATION (the compiler's job; the source [nat_spec] is
+    register-free).  The primary address operand goes into register 1 (when there is
+    one); a SECONDARY immediate lands in the next sequential register (reg 2/3),
+    while a value taken from the operand's concat-MAP lands in slot 1 = register 9. *)
+Definition nat_addr_present (n : nat_spec) : bool :=
+  match nat_src n with Some _ => true | None =>
+  match nat_map n with Some _ => true | None =>
+  match nat_field n with Some _ => true | None =>
+  match nat_addr_imm n with Some _ => true | None => false end end end end.
+
+Definition optlen {A} (o : option A) : nat := match o with Some _ => 1 | None => 0 end.
+(** The first register available for a SECONDARY operand: reg 2 after an address in
+    reg 1, else reg 1 (a port-only NAT). *)
+Definition nat_sec0 (n : nat_spec) : nat := if nat_addr_present n then 2 else 1.
+
+(** [masq]/[redir] never translate an address: any operand (map/field/immediate)
+    they carry is the PORT, loaded into register 1.  For these the operand reg is
+    [proto_min], not [addr_min]. *)
+Definition nat_portonly (n : nat_spec) : bool :=
+  orb (String.eqb (nat_kind n) nat_masq_kind) (String.eqb (nat_kind n) nat_redir_kind).
+
+Definition nat_amin_reg (n : nat_spec) : option nat :=
+  if nat_portonly n then None
+  else if nat_addr_present n then Some 1 else None.
+Definition nat_amax_reg (n : nat_spec) : option nat :=
+  match nat_extra n with
+  | NXimm (Some _) _ _ => Some (nat_sec0 n)
+  | NXmap_addr_max => Some 9
+  | NXmap_full => Some (reg_of_slot 2)
+  | _ => None end.
+Definition nat_pmin_reg (n : nat_spec) : option nat :=
+  match nat_extra n with
+  | NXimm am (Some _) _ => Some (nat_sec0 n + optlen am)
+  | NXmap_port => Some 9
+  | NXmap_full => Some (reg_of_slot 1)
+  | _ => if andb (nat_portonly n) (nat_addr_present n) then Some 1 else None end.
+Definition nat_pmax_reg (n : nat_spec) : option nat :=
+  match nat_extra n with
+  | NXimm am pm (Some _) => Some (nat_sec0 n + optlen am + optlen pm)
+  | NXmap_full => Some (reg_of_slot 3)
+  | _ => None end.
+
+(** The immediate loads for the secondary operands, in sequential registers. *)
+Definition compile_nat_extra (n : nat_spec) : list instr :=
+  match nat_extra n with
+  | NXimm am pm px =>
+      let r0 := nat_sec0 n in
+      (match am with Some v => [IImmediateData r0 v] | None => [] end)
+      ++ (match pm with Some v => [IImmediateData (r0 + optlen am) v] | None => [] end)
+      ++ (match px with Some v => [IImmediateData (r0 + optlen am + optlen pm) v] | None => [] end)
+  | _ => []
+  end.
+
+(** The primary address operand loads (into register 1). *)
+Definition compile_nat_operand (n : nat_spec) : list instr :=
+  match nat_src n with
+  | Some vs => compile_vsrc vs
+  | None =>
+  match nat_map n with
+  | Some (fields, ts, name) =>
+      load_fields (alloc_regs 0 fields) ++ compile_transforms ts ++
+      [ILookupVal (map snd (alloc_regs 0 fields)) name 1]
+  | None =>
+  match nat_field n with
+  | Some (f, ts) => compile_load (field_load f) 1 :: compile_transforms ts
+  | None => match nat_addr_imm n with Some v => [IImmediateData 1 v] | None => [] end
+  end end end.
+
 (** The terminal of a rule: a nat/tproxy/fwd/queue side effect, else the static
     verdict tail. *)
 Definition compile_terminal (r : rule) : list instr :=
   match r_nat r with
-  | Some n => (match nat_src n with
-               | Some vs => compile_vsrc vs
-               | None =>
-               match nat_map n with
-               | Some (fields, ts, name) =>
-                   load_fields (alloc_regs 0 fields) ++ compile_transforms ts ++
-                   [ILookupVal (map snd (alloc_regs 0 fields)) name 1]
-               | None => match nat_field n with
-                         | Some (f, ts) =>
-                             compile_load (field_load f) 1 :: compile_transforms ts
-                         | None => map (fun rv => IImmediateData (fst rv) (snd rv)) (nat_imms n)
-                         end
-               end
-               end) ++
-              [INat (nat_kind n) (nat_family n) (nat_amin n)
-                    (nat_amax n) (nat_pmin n) (nat_pmax n) (nat_flags n)]
+  | Some n => (compile_nat_operand n ++ compile_nat_extra n) ++
+              [INat (nat_kind n) (nat_family n) (nat_amin_reg n)
+                    (nat_amax_reg n) (nat_pmin_reg n) (nat_pmax_reg n) (nat_flags n)]
   | None =>
   match r_tproxy r with
   | Some t => (match tp_portmap t with

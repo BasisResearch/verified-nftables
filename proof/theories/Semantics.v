@@ -2133,12 +2133,7 @@ Definition nat_addr (ns : nat_spec) (p : packet) : data :=
   | None =>
   match nat_field ns with
   | Some (f, ts) => apply_transforms ts (field_value f p)
-  | None =>
-      (* the immediate loaded into register 1 = NFTNL_EXPR_NAT_REG_ADDR_MIN *)
-      match find (fun rv => Nat.eqb (fst rv) 1) (nat_imms ns) with
-      | Some rv => snd rv
-      | None => []
-      end
+  | None => match nat_addr_imm ns with Some v => v | None => [] end
   end end end.
 
 (** The data-plane effect of a terminal NAT rule on the packet, dispatched on
@@ -2241,12 +2236,13 @@ Definition nat_port_bytes (pmin : nat) : data := N_to_data 2 (N.of_nat pmin).
     DESTINATION port ([set_dport]) — exactly the [NF_NAT_MANIP_{SRC,DST}] split of
     [tcp_manip_pkt] (nf_nat_proto.c).  Address-only NAT ([nat_pmin] = None) leaves
     the port byte-for-byte unchanged. *)
+(** REGISTER-FREE / bug-fixed: the port is the VALUE [lo] (a 2-byte port operand),
+    not [nat_port_bytes] of a register index (the old [nat_pmin] conflated the two).
+    A concat-map port ([NXmap_port]) is a runtime map value, not statically modelled. *)
 Definition apply_nat_port (is_src : bool) (ns : nat_spec) (p : packet) : packet :=
-  match nat_pmin ns with
-  | Some pmin =>
-      if is_src then set_sport p (nat_port_bytes pmin)
-                else set_dport p (nat_port_bytes pmin)
-  | None => p
+  match nat_extra ns with
+  | NXimm _ (Some lo) _ => if is_src then set_sport p lo else set_dport p lo
+  | _ => p
   end.
 
 (** Whether the NAT spec carries an L3 ADDRESS operand — i.e. whether the kernel
@@ -2261,7 +2257,7 @@ Definition apply_nat_port (is_src : bool) (ns : nat_spec) (p : packet) : packet 
     a packet field ([nat_field]), or a register-1 immediate ([nat_imms]). *)
 Definition nat_has_addr (ns : nat_spec) : bool :=
   match nat_src ns, nat_map ns, nat_field ns with
-  | None, None, None => existsb (fun rv => Nat.eqb (fst rv) 1) (nat_imms ns)
+  | None, None, None => match nat_addr_imm ns with Some _ => true | None => false end
   | _, _, _ => true
   end.
 
@@ -2419,8 +2415,15 @@ Definition nat_orig_addr (ns : nat_spec) (p : packet) : data :=
     reply tuple the kernel records (nf_conntrack_alter_reply), un-rewritten onto
     the OPPOSITE slot of a reply-direction packet (mirroring nf_nat_manip_pkt's
     inverted maniptype). *)
+(** The port operand as a NUMBER, for the flow tuple (register-free; the source
+    carries the port as a 2-byte VALUE in [nat_extra], decoded here). *)
+Definition nat_port_num (ns : nat_spec) : option nat :=
+  match nat_extra ns with
+  | NXimm _ (Some lo) _ => Some (N.to_nat (data_to_N lo))
+  | _ => None
+  end.
 Definition nat_orig_port (ns : nat_spec) (p : packet) : option data :=
-  match nat_pmin ns with
+  match nat_port_num ns with
   | Some _ =>
       if nat_is_src ns
       then Some (slice (pkt_th p) 0 2)   (* source NAT: original SOURCE port *)
@@ -2443,7 +2446,7 @@ Definition apply_nat (h : hook_id) (r : rule) (p : packet) : packet :=
           if pkt_ctdir_orig p then
             (* first packet of the flow (original direction): capture the original
                address, compute the tuple, apply it FORWARD, and STORE it *)
-            let m := (Some (nat_orig_addr ns p), nat_operand_addr h ns p, nat_pmin ns,
+            let m := (Some (nat_orig_addr ns p), nat_operand_addr h ns p, nat_port_num ns,
                       nat_orig_port ns p) in
             store_nat_mapping (apply_nat_tuple ns p m) m
           else

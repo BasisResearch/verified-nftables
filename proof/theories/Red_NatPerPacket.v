@@ -26,7 +26,7 @@
     (orig addr, new addr, new port, orig port).  [apply_nat] (Semantics.v)
     looks up [e_nat (pkt_flow p)]:
       - [None]  (first packet of the flow): compute the tuple from the operand
-        ([nat_operand_addr]/[nat_pmin]), apply it, AND store it into [e_nat] —
+        ([nat_operand_addr]/[nat_port_num]), apply it, AND store it into [e_nat] —
         the kernel's get_unique_tuple + nf_conntrack_alter_reply on the unconfirmed
         packet.
       - [Some m] (every later, confirmed packet): apply the STORED tuple [m]
@@ -46,9 +46,9 @@ Import ListNotations.
 (* `dnat to ip saddr; accept`: destination-NAT the IPv4 dst to the packet's OWN
    source address (operand = a packet FIELD, so it varies per packet). *)
 Definition dnat_to_saddr : nat_spec :=
-  {| nat_imms := []; nat_field := Some (FIp4Saddr, []); nat_map := None;
+  {| nat_addr_imm := None; nat_field := Some (FIp4Saddr, []); nat_map := None;
      nat_src := None; nat_kind := nat_dnat_kind; nat_family := nat_fam_ip4;
-     nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None;
+     nat_extra := NXnone;
      nat_flags := 0 |}.
 Definition dnat_rule : rule :=
   {| r_body := []; r_verdict := Accept; r_vmap := None;

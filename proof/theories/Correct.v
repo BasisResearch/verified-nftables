@@ -1127,12 +1127,16 @@ Lemma nw_compile_terminal : forall r, no_writes (compile_terminal r) = true.
 Proof.
   intros r. unfold compile_terminal.
   destruct (r_nat r) as [n |].
-  { rewrite nw_app. destruct (nat_src n) as [vs |]; [rewrite nw_vsrc; reflexivity|].
-    destruct (nat_map n) as [[[fields ts] name] |].
-    - rewrite nw_app, nw_load_fields, nw_app, nw_transforms. reflexivity.
-    - destruct (nat_field n) as [[f ts] |].
-      + rewrite nw_cons, nw_transforms. unfold compile_load; destruct (field_load f); reflexivity.
-      + rewrite nw_imms. reflexivity. }
+  { rewrite nw_app. apply Bool.andb_true_iff. split; [| reflexivity].
+    rewrite nw_app. apply Bool.andb_true_iff. split.
+    - unfold compile_nat_operand. destruct (nat_src n) as [vs |]; [apply nw_vsrc|].
+      destruct (nat_map n) as [[[fields ts] name] |].
+      + rewrite nw_app, nw_load_fields, nw_app, nw_transforms. reflexivity.
+      + destruct (nat_field n) as [[f ts] |].
+        * rewrite nw_cons, nw_transforms. unfold compile_load; destruct (field_load f); reflexivity.
+        * destruct (nat_addr_imm n); reflexivity.
+    - unfold compile_nat_extra. destruct (nat_extra n) as [| am pm px | | | ];
+        try reflexivity; destruct am as [v|]; destruct pm as [v2|]; destruct px as [v3|]; reflexivity. }
   destruct (r_tproxy r) as [t |].
   { rewrite nw_app. destruct (tp_portmap t) as [[[m o] name] |].
     - rewrite nw_app, nw_imms. reflexivity.
@@ -1875,6 +1879,83 @@ Proof.
   rewrite Hr. cbn [run_rule]. reflexivity.
 Qed.
 
+(** The secondary-operand immediates ([compile_nat_extra]) are verdict-neutral, then
+    the terminal [INat] accepts (from any register file). *)
+Lemma run_extra_inat : forall n tail rf k fam amin amax pmin pmax fl p,
+  run_rule rf (compile_nat_extra n ++ INat k fam amin amax pmin pmax fl :: tail) p = Some Accept.
+Proof.
+  intros. unfold compile_nat_extra. destruct (nat_extra n) as [| am pm px | | | ].
+  - cbn [app run_rule]; reflexivity.
+  - destruct am as [v|]; destruct pm as [v2|]; destruct px as [v3|];
+      cbn [app run_rule]; reflexivity.
+  - cbn [app run_rule]; reflexivity.
+  - cbn [app run_rule]; reflexivity.
+  - cbn [app run_rule]; reflexivity.
+Qed.
+
+(** The compiled NAT terminal runs to [Some Accept] when its address operand loads:
+    the operand loads into reg 1, the secondary immediates pass through, [INat]
+    accepts.  (Register allocation is irrelevant to the verdict — [INat] is
+    terminal-Accept regardless of its register args.) *)
+Lemma run_compile_nat : forall n tail rf k fam amin amax pmin pmax fl p,
+  (match nat_src n with
+   | Some vs => vsrc_loadable vs p
+   | None => match nat_map n with
+             | Some (fields, _, _) => fields_loadable fields p
+             | None => match nat_field n with Some (f, _) => field_loadable f p | None => true end
+             end
+   end) = true ->
+  run_rule rf ((compile_nat_operand n ++ compile_nat_extra n)
+               ++ INat k fam amin amax pmin pmax fl :: tail) p = Some Accept.
+Proof.
+  intros n tail rf k fam amin amax pmin pmax fl p Hl.
+  rewrite <- app_assoc. unfold compile_nat_operand.
+  destruct (nat_src n) as [vs |].
+  - edestruct (run_vsrc_exists vs rf
+                 (compile_nat_extra n ++ INat k fam amin amax pmin pmax fl :: tail) p Hl) as [rf' Hr].
+    rewrite Hr. apply run_extra_inat.
+  - destruct (nat_map n) as [[[fields ts] name] |].
+    + rewrite <- !app_assoc. rewrite run_load_fields by (rewrite forallb_alloc_regs; exact Hl).
+      edestruct (run_transforms_prefix ts (write_fields rf (alloc_regs 0 fields) p)
+                   ([ILookupVal (map snd (alloc_regs 0 fields)) name 1]
+                      ++ compile_nat_extra n ++ INat k fam amin amax pmin pmax fl :: tail) p)
+        as [rf' [_ Hr]].
+      rewrite Hr. cbn [app run_rule]. apply run_extra_inat.
+    + destruct (nat_field n) as [[f ts] |].
+      * cbn [app]. rewrite compile_load_correct by exact Hl.
+        edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
+                     (compile_nat_extra n ++ INat k fam amin amax pmin pmax fl :: tail) p)
+          as [rf' [_ Hr]].
+        rewrite Hr. apply run_extra_inat.
+      * destruct (nat_addr_imm n) as [v |]; cbn [app run_rule]; apply run_extra_inat.
+Qed.
+
+(** When the NAT address operand does NOT load, the compiled terminal BREAKs at the
+    operand load (an immediate operand always loads, so this is a [src]/[map]/[field]
+    operand). *)
+Lemma run_compile_nat_break : forall n tail rf k fam amin amax pmin pmax fl p,
+  (match nat_src n with
+   | Some vs => vsrc_loadable vs p
+   | None => match nat_map n with
+             | Some (fields, _, _) => fields_loadable fields p
+             | None => match nat_field n with Some (f, _) => field_loadable f p | None => true end
+             end
+   end) = false ->
+  run_rule rf ((compile_nat_operand n ++ compile_nat_extra n)
+               ++ INat k fam amin amax pmin pmax fl :: tail) p = None.
+Proof.
+  intros n tail rf k fam amin amax pmin pmax fl p Hl.
+  rewrite <- app_assoc. unfold compile_nat_operand.
+  destruct (nat_src n) as [vs |].
+  - rewrite run_vsrc_break; [reflexivity | exact Hl].
+  - destruct (nat_map n) as [[[fields ts] name] |].
+    + rewrite <- !app_assoc. rewrite run_load_fields_break; [reflexivity|].
+      rewrite forallb_alloc_regs. exact Hl.
+    + destruct (nat_field n) as [[f ts] |].
+      * cbn [app]. rewrite compile_load_break; [reflexivity | exact Hl].
+      * discriminate Hl.
+Qed.
+
 (** A statement whose operand load BREAKs returns [None] (the VM stops at the
     failing payload load), regardless of the trailing program. *)
 Lemma run_stmt_break : forall s rf rest p,
@@ -2155,11 +2236,7 @@ Proof.
   apply Bool.andb_true_iff in Hl. destruct Hl as [Htl Har].
   unfold compile_terminal, terminal_outcome, terminal_loadable in *.
   destruct (r_nat r) as [n |].
-  - rewrite <- app_assoc. destruct (nat_src n) as [vs |].
-    + apply run_vsrc_nat; exact Htl.
-    + destruct (nat_map n) as [[[fields ts] name] |].
-      * apply run_map_nat; exact Htl.
-      * destruct (nat_field n) as [[f ts] |]; [apply run_field_nat; exact Htl | apply run_imms_nat].
+  - rewrite <- app_assoc. apply run_compile_nat; exact Htl.
   - destruct (r_tproxy r) as [t |].
     + rewrite <- app_assoc. destruct (tp_portmap t) as [[[m o] name] |];
         [apply run_portmap_tproxy | apply run_imms_tproxy].
@@ -2185,19 +2262,8 @@ Proof.
   intros r rf p Hl. unfold tail_loadable in Hl. apply Bool.andb_false_iff in Hl.
   unfold compile_terminal, terminal_loadable, terminal_outcome in *.
   destruct (r_nat r) as [n |].
-  - rewrite <- app_assoc. destruct (nat_src n) as [vs |].
-    + rewrite run_vsrc_break; [reflexivity|].
-      destruct Hl as [Hd | Ht]; [exact Hd | discriminate Ht].
-    + destruct (nat_map n) as [[[fields ts] name] |].
-      * rewrite <- !app_assoc. rewrite run_load_fields_break; [reflexivity|].
-        rewrite forallb_alloc_regs.
-        destruct Hl as [Hd | Ht]; [exact Hd | discriminate Ht].
-      * destruct (nat_field n) as [[f ts] |].
-        -- cbn [app]. rewrite compile_load_break; [reflexivity|].
-           destruct Hl as [Hd | Ht]; [exact Hd | discriminate Ht].
-        -- (* immediate operands never break; tail_loadable false must be the [Some] r_after,
-              but terminal_outcome is [Some Accept] here, so the second disjunct is [true=false] *)
-           destruct Hl as [Hd | Ht]; [discriminate Hd | discriminate Ht].
+  - rewrite <- app_assoc. apply run_compile_nat_break.
+    destruct Hl as [Hd | Ht]; [exact Hd | discriminate Ht].
   - destruct (r_tproxy r) as [t |].
     + (* tproxy: immediate/symhash operands never break; terminal_outcome=Some Accept *)
       destruct Hl as [Hd | Ht]; [discriminate Hd | discriminate Ht].
@@ -2477,13 +2543,16 @@ Proof.
   intro r. unfold compile_terminal.
   destruct (r_nat r) as [n |].
   { rewrite lf_app. apply Bool.andb_true_iff; split; [| reflexivity].
-    destruct (nat_src n) as [vs |]; [apply lf_vsrc |].
-    destruct (nat_map n) as [[[fields ts] name] |].
-    - rewrite lf_app, lf_load_fields, lf_app, lf_transforms; reflexivity.
-    - destruct (nat_field n) as [[f ts] |].
-      + cbn [limit_free_prog forallb]. rewrite lf_transforms.
-        unfold compile_load; destruct (field_load f); reflexivity.
-      + apply lf_imms. }
+    rewrite lf_app. apply Bool.andb_true_iff; split.
+    - unfold compile_nat_operand. destruct (nat_src n) as [vs |]; [apply lf_vsrc |].
+      destruct (nat_map n) as [[[fields ts] name] |].
+      + rewrite lf_app, lf_load_fields, lf_app, lf_transforms; reflexivity.
+      + destruct (nat_field n) as [[f ts] |].
+        * cbn [limit_free_prog forallb]. rewrite lf_transforms.
+          unfold compile_load; destruct (field_load f); reflexivity.
+        * destruct (nat_addr_imm n); reflexivity.
+    - unfold compile_nat_extra. destruct (nat_extra n) as [| am pm px | | | ];
+        try reflexivity; destruct am as [v|]; destruct pm as [v2|]; destruct px as [v3|]; reflexivity. }
   destruct (r_tproxy r) as [t |].
   { rewrite lf_app. apply Bool.andb_true_iff; split; [| reflexivity].
     destruct (tp_portmap t) as [[[m o] name] |].

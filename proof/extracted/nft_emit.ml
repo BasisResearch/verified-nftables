@@ -157,22 +157,28 @@ let vmap_spec (vm : Syntax.vmap_spec) : string =
 
 let opt_int = function None -> "None" | Some n -> spf "(Some %d)" n
 
+let nat_2nd_str (e : Syntax.nat_2nd) : string =
+  match e with
+  | Syntax.NXnone -> "NXnone"
+  | Syntax.NXimm (amax, pmin, pmax) ->
+      let od = function Some v -> spf "(Some %s)" (data v) | None -> "None" in
+      spf "(NXimm %s %s %s)" (od amax) (od pmin) (od pmax)
+  | Syntax.NXmap_addr_max -> "NXmap_addr_max"
+  | Syntax.NXmap_port -> "NXmap_port"
+  | Syntax.NXmap_full -> "NXmap_full"
+
 let nat_spec (ns : Syntax.nat_spec) : string =
-  (* the lowering produces `masquerade` (no operand) and immediate-address
-     `snat`/`dnat to <ipv4>` (nat_imms = [(reg, addr)]).  Field/map/src-sourced NAT
-     operands are not produced by the lowering; fail loudly if one ever appears. *)
+  (* the lowering produces `masquerade` (no operand) and immediate-address/port
+     `snat`/`dnat to <ipv4>[:<port>]` (register-free: nat_addr_imm / nat_extra).
+     Field/map/src-sourced NAT operands are not produced by the lowering. *)
   (match ns.Syntax.nat_field, ns.Syntax.nat_map, ns.Syntax.nat_src with
    | None, None, None -> ()
    | _ -> raise (Unsupported "nat operand emission (extend nft_emit.nat_spec)"));
-  let nat_imms =
-    "[" ^ S.concat "; "
-            (L.map (fun (r, d) -> spf "(%d, %s)" r (data d)) ns.Syntax.nat_imms)
-    ^ "]" in
-  spf "{| nat_imms := %s; nat_field := None; nat_map := None; nat_src := None; nat_kind := %s; nat_family := %s; nat_amin := %s; nat_amax := %s; nat_pmin := %s; nat_pmax := %s; nat_flags := %d |}"
-    nat_imms
-    (qstring ns.Syntax.nat_kind) (qstring ns.Syntax.nat_family)
-    (opt_int ns.Syntax.nat_amin) (opt_int ns.Syntax.nat_amax)
-    (opt_int ns.Syntax.nat_pmin) (opt_int ns.Syntax.nat_pmax) ns.Syntax.nat_flags
+  ignore opt_int;
+  spf "{| nat_addr_imm := %s; nat_field := None; nat_map := None; nat_src := None; nat_extra := %s; nat_kind := %s; nat_family := %s; nat_flags := %d |}"
+    (match ns.Syntax.nat_addr_imm with Some v -> spf "(Some %s)" (data v) | None -> "None")
+    (nat_2nd_str ns.Syntax.nat_extra)
+    (qstring ns.Syntax.nat_kind) (qstring ns.Syntax.nat_family) ns.Syntax.nat_flags
 
 let rule (r : Syntax.rule) : string =
   let vmap = match r.Syntax.r_vmap with

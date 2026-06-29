@@ -194,7 +194,7 @@ Lemma pre2_apply_dnat : forall h p,
 Proof.
   intros h p Horig Hnone. unfold apply_nat, pre2, filter_prerouting.
   cbn -[set_daddr field_value pkt_env e_nat store_nat_mapping
-        apply_nat_tuple nat_orig_addr nat_operand_addr nat_pmin nat_orig_port slice pkt_nh].
+        apply_nat_tuple nat_orig_addr nat_operand_addr nat_port_num nat_orig_port slice pkt_nh].
   rewrite Hnone, Horig.
   unfold apply_nat_tuple, nat_is_src, nat_operand_addr, nat_addrfamily_pkt,
     nat_addrfamily, nat_orig_addr, nat_addr, nat_has_addr, nat_orig_port.
@@ -340,7 +340,7 @@ Lemma post1_apply_masq : forall h p,
 Proof.
   intros h p Hfam Horig Hnone. unfold apply_nat, post1, filter_postrouting.
   cbn -[set_saddr e_ifaddr field_value pkt_env e_nat store_nat_mapping
-        apply_nat_tuple nat_orig_addr nat_operand_addr nat_pmin pkt_l3_family].
+        apply_nat_tuple nat_orig_addr nat_operand_addr nat_port_num pkt_l3_family].
   rewrite Hnone, Horig.
   unfold apply_nat_tuple, nat_is_src, nat_operand_addr, nat_addrfamily_pkt,
     nat_addrfamily, nat_orig_addr, masq_saddr, saddr_slot.

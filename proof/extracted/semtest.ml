@@ -110,9 +110,8 @@ let vmap_rule ?(nat = None) f : Syntax.rule =
     r_nat = nat; r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] }
 
 let redirect : Syntax.nat_spec option =
-  Some { Syntax.nat_imms = []; nat_field = None; nat_map = None; nat_src = None;
-         nat_kind = "redir"; nat_family = ""; nat_amin = None; nat_amax = None;
-         nat_pmin = None; nat_pmax = None; nat_flags = 0 }
+  Some { Syntax.nat_addr_imm = None; nat_field = None; nat_map = None; nat_src = None;
+         nat_kind = "redir"; nat_family = ""; nat_extra = Syntax.NXnone; nat_flags = 0 }
 
 let () =
   let fails = ref 0 in

@@ -19,9 +19,9 @@ Open Scope string_scope.
 Definition tgt6 : data := List.repeat 170 16.
 
 Definition ip6_dnat_spec : nat_spec :=
-  {| nat_imms := [(1, tgt6)]; nat_map := None; nat_field := None;
+  {| nat_addr_imm := Some tgt6; nat_map := None; nat_field := None;
      nat_src := None; nat_kind := nat_dnat_kind; nat_family := nat_fam_ip6;
-     nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None;
+     nat_extra := NXnone;
      nat_flags := 0 |}.
 Definition ip6_dnat_rule : rule :=
   {| r_body := []; r_verdict := Continue; r_vmap := None;
@@ -29,9 +29,9 @@ Definition ip6_dnat_rule : rule :=
      r_queue := None; r_after := [] |}.
 
 Definition ip6_snat_spec : nat_spec :=
-  {| nat_imms := [(1, tgt6)]; nat_map := None; nat_field := None;
+  {| nat_addr_imm := Some tgt6; nat_map := None; nat_field := None;
      nat_src := None; nat_kind := nat_snat_kind; nat_family := nat_fam_ip6;
-     nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None;
+     nat_extra := NXnone;
      nat_flags := 0 |}.
 Definition ip6_snat_rule : rule :=
   {| r_body := []; r_verdict := Continue; r_vmap := None;
@@ -167,9 +167,9 @@ Proof. vm_compute. reflexivity. Qed.
 Definition if6 : data := List.repeat 187 16.
 
 Definition masq6_spec : nat_spec :=
-  {| nat_imms := []; nat_map := None; nat_field := None;
+  {| nat_addr_imm := None; nat_map := None; nat_field := None;
      nat_src := None; nat_kind := nat_masq_kind; nat_family := nat_fam_ip6;
-     nat_amin := None; nat_amax := None; nat_pmin := None; nat_pmax := None;
+     nat_extra := NXnone;
      nat_flags := 0 |}.
 Definition masq6_rule : rule :=
   {| r_body := []; r_verdict := Continue; r_vmap := None;
