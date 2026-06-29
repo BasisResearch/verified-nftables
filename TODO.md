@@ -36,10 +36,15 @@ pipeline, with its trust boundary:
 - `setsN`  : value → anonymous set            — `Optimize_Merge.v`
 - `vmapN`  : value + differing verdict → vmap  — `Optimize_Vmap.v`  (merge gated on `body_vmap_safe`: no notrack/synproxy)
 - `concatN`: two differing selectors → concat  — `Optimize_Concat.v`
+- `concatK`: K(≥3)-dimensional concat           — `Optimize_ConcatK.v`  (TODO 1b)
+- `mapn`   : value → data MAP (`meta mark set … map`) — `Optimize_Mapn.v`  (TODO 1a; FIRST `sd_maps` writer;
+  correctness over the meta-STATE via `dsl_step`/`eval_rules_mut`, not just the verdict `eval_chain`)
 - composition + unconditional correctness       — `Optimize_Table.v`, `Optimize_Uncond.v`, seam helpers in `Optimize_Table_Inv.v`
 
 **Data model.** `Semantics.v` `Record set_decls := { sd_sets; sd_vmaps; sd_maps }`. Per-datatype
-validity predicates + constructors are in `Nftval.v`. NOTE: `sd_maps` exists but **no pass writes it yet**.
+validity predicates + constructors are in `Nftval.v`. `sd_maps` is now written by the `mapn` pass
+(`Optimize_Mapn.v`, TODO 1a) — the merged rule carries a head set guard (the map keys) so the lookup
+always hits, making the data-map merge provably state-preserving.
 
 **Tooling layout** (`proof/extracted/`, built with dune):
 - `glue.ml` — the CLI (modes: `optimize`, `optsets`, `optdemo`). Entry the executable runs.
@@ -107,7 +112,7 @@ vs live nft, value→set merge, real rulesets, coverage probe); `extracted/nl_se
 verified `compile_chain` output 1:1, round-trip-tested in a netns (rules land in the
 kernel; `nft list ruleset` confirms).
 
-**TODO 1 — value→set gap CLOSED on real input; mapN / N-concat remain.**
+**TODO 1 — DONE (1a mapN + 1b N-concat both shipped, axiom-free, composed).**
 - `theories/Optimize_Normalize.v` (NEW, axiom-free): `normalize_chain` rewrites every
   `MEq f v` → `MCmp f CEq v` (extensionally equal: identical `match_loadable` and
   `eval_matchcond_body`), proved `eval_chain`-preserving. `optimize_table_uncond` now runs
@@ -116,30 +121,25 @@ kernel; `nft list ruleset` confirms).
   optimizer now consolidates real `.nft` rulesets (e.g. three `ip saddr` rules → one
   `lookup set {…}`, matching `nft -o`), where before it was a no-op on parser output. Both
   headline theorems still `Closed under the global context`, statements unchanged.
-- **Still open — 1a (mapN). Confirmed (by the TODO 1 adversarial review) to genuinely need a
-  new framework, not a quick add.** A faithful data-map merge changes PACKET STATE (the dnat
-  target / `meta mark` value), NOT the verdict. The optimizer's correctness is stated over
-  `eval_chain` (verdict only, `Semantics.v:1104`), so composing a value-map merge into
-  `optimize_table_uncond_correct` would be VACUOUS for the value effect. Precise findings (what a
-  faithful 1a must build, in order):
-    1. **A state-exposing chain evaluation the optimizer correctness is stated over.** `eval_chain`
-       is verdict-only. `eval_chain_mut_env` (`Semantics.v:2094`) threads `dsl_step` but returns
-       only the SHARED env (sets/maps/limiters) — explicitly NOT the per-packet `meta`/`ct` fields,
-       so it can't even observe a `meta mark` write. The mark/nat target lives in the FINAL PACKET;
-       only `eval_chain_trace` (`Semantics.v:2526`, returns `verdict * packet`) exposes it, and the
-       optimizer has NO correctness theorem over it. So step 1 is: a per-pass optimizer-correctness
-       over a meta/state-exposing evaluation.
-    2. **The map-miss semantics.** `meta mark set … map {A:…}` / `dnat to … map {A:…}` on a key not
-       in the map must BREAK (NFT_BREAK → rule skipped, no write / fall-through) for the merge to be
-       state- AND verdict-preserving; confirm/realise that in the model (`map_lookup_data` miss).
-    3. **The merge + per-pass `_uncond` theorem** over that evaluation (mirror `Optimize_Vmap`'s
-       `body_vmap_safe` gate against the notrack/ct soundness pitfall), then **wire `sd_maps`** (the
-       record field exists but NO pass writes it — confirmed: across theories/+extracted/, `sd_maps`
-       only appears as `[]` or `sd_maps := sd_maps d`) + `Extract.v` + a semtest battery proving the
-       map produces the right values.
-    4. **Compose** so `optimize_table_uncond_correct` (verdict) still holds.
-  The `meta mark set … map` case is the simplest start (no flow-keyed NAT state, unlike `dnat to …
-  map`). This is a substantial undertaking comparable to (or larger than) the whole 1b effort.
+- **DONE — 1a (mapN data-value maps).** `theories/Optimize_Mapn.v` (NEW, axiom-free): the
+  `meta mark set … map` merge — adjacent `ip saddr A meta mark set M1` / `… B meta mark set M2`
+  fold into ONE `ip saddr { A, B } meta mark set ip saddr map { A:M1, B:M2 }`. Resolution of the
+  state-vs-verdict obstacle the earlier review flagged:
+    - The merge keeps a **head set guard** (`ip saddr { A, B }` = the map keys), so the map ALWAYS
+      hits and the rule simply does-not-apply off-key — making it provably STATE-preserving over the
+      existing `dsl_step` / `eval_rules_mut` threading **without a new evaluation framework**.
+    - Verdict side is trivial (all rules `Continue`, so `eval_chain`-invisible); the NON-vacuous
+      content is `dsl_step_map_merge`: `dsl_step merged p = dsl_step orig2 (dsl_step orig1 p)` — the
+      data map yields exactly the right `MKmark`. Supporting: `body_writes_merged`/`body_writes_orig`/
+      `mapn_head_mem` (the lookup selects M1 vs M2 by key).
+    - FIRST pass to write `sd_maps` (alongside the head `sd_sets`). `is_orig_map` recognises the
+      original shell via pure constructor matches (NOT `rule_eq_dec`, which would extract the per-char
+      `String.get` destructor / ~42 MB blow-up); checks BOTH body shape and all end-fields.
+    - COMPOSED into `optimize_table` (between concatK and concatN); the gen theorem
+      `optimize_table_correct_uncond_gen` threads the stage. Both headline theorems still
+      `Closed under the global context`. Extracted; `make semtest` §(6f) runs the verified
+      `optimize_chain_mapn` + `dsl_step` and shows the merged mark matches the two-rule composition
+      on key hits (0x0a/0x14) and a miss (unchanged). Commit `a1278da`.
 - **DONE — 1b (N-dim concat).** The N(≥3)-field concat pass is implemented, proved axiom-free,
   COMPOSED into the shipped `optimize_table_uncond`, extracted, and semtested. The shipped
   optimizer now synthesises ≥3-field concatenation sets (e.g. two `ip saddr . ip daddr . ip
