@@ -393,6 +393,80 @@ Proof.
     apply existsb_andb_const.
 Qed.
 
+(* ================================================================== *)
+(** ** The recogniser: extract a rule's maximal leading [MCmp _ CEq _] run. *)
+
+Fixpoint take_mcmp_prefix (body : list body_item) : list (field * data) * list body_item :=
+  match body with
+  | BMatch (MCmp f CEq v) :: rest =>
+      let '(ps, tl) := take_mcmp_prefix rest in ((f, v) :: ps, tl)
+  | _ => ([], body)
+  end.
+
+(** [combine] of the projections recovers the pair list. *)
+Lemma combine_fst_snd : forall (ps : list (field * data)),
+  combine (map fst ps) (map snd ps) = ps.
+Proof.
+  induction ps as [| [f a] ps IH]; [reflexivity|]. cbn [map fst snd combine]. rewrite IH. reflexivity.
+Qed.
+
+(** [kmatches] over the projections is the raw [BMatch (MCmp …)] map. *)
+Lemma kmatches_proj : forall (ps : list (field * data)),
+  kmatches (map fst ps) (map snd ps)
+  = map (fun fa => BMatch (MCmp (fst fa) CEq (snd fa))) ps.
+Proof. intro ps. unfold kmatches. rewrite combine_fst_snd. reflexivity. Qed.
+
+(** The prefix reconstructs the body. *)
+Lemma take_mcmp_prefix_app : forall body ps tl,
+  take_mcmp_prefix body = (ps, tl) ->
+  body = map (fun fa => BMatch (MCmp (fst fa) CEq (snd fa))) ps ++ tl.
+Proof.
+  induction body as [| it body IH]; intros ps tl H.
+  - cbn in H. inversion H; subst. reflexivity.
+  - destruct it as [m | s].
+    + destruct m as [ | | | | f op v | | | | | | | | ]; try (cbn in H; inversion H; subst; reflexivity).
+      destruct op; try (cbn in H; inversion H; subst; reflexivity).
+      cbn in H. destruct (take_mcmp_prefix body) as [ps0 tl0] eqn:E.
+      inversion H; subst ps tl. cbn [map app fst snd].
+      rewrite (IH ps0 tl0 eq_refl). reflexivity.
+    + cbn in H. inversion H; subst. reflexivity.
+Qed.
+
+(** A record built from a body [b] and [r1]'s end fields. *)
+Definition with_end (b : list body_item) (r1 : rule) : rule :=
+  {| r_body := b; r_verdict := r_verdict r1; r_vmap := r_vmap r1; r_nat := r_nat r1;
+     r_tproxy := r_tproxy r1; r_fwd := r_fwd r1; r_queue := r_queue r1;
+     r_after := r_after r1 |}.
+
+Lemma orig_ruleK_with_end : forall fields row body r1,
+  orig_ruleK fields row body r1 = with_end (kmatches fields row ++ body) r1.
+Proof. reflexivity. Qed.
+
+(** A rule equals [with_end] of its OWN body and end fields (record eta). *)
+Lemma with_end_self : forall r, with_end (r_body r) r = r.
+Proof. intro r. unfold with_end. destruct r; reflexivity. Qed.
+
+(** When [rule_end_eqb r1 r2] holds, [with_end b r1 = with_end b r2]. *)
+Lemma with_end_end_eqb : forall b r1 r2,
+  rule_end_eqb r1 r2 = true -> with_end b r1 = with_end b r2.
+Proof.
+  intros b r1 r2 H. unfold rule_end_eqb in H.
+  rewrite !Bool.andb_true_iff in H. rewrite !sumbool_eqb_true_iff, !opt_eqb_true_iff in H.
+  destruct H as [[[[[[Hv Hvm] Hn] Ht] Hf] Hq] Ha].
+  unfold with_end. rewrite Hv, Hvm, Hn, Ht, Hf, Hq, Ha. reflexivity.
+Qed.
+
+(** If [r1]'s prefix is [(ps, body)] then [r1] is its own [orig_ruleK] shell over
+    [fields = map fst ps], [row = map snd ps]. *)
+Lemma head_self_orig : forall r1 ps body,
+  take_mcmp_prefix (r_body r1) = (ps, body) ->
+  r1 = orig_ruleK (map fst ps) (map snd ps) body r1.
+Proof.
+  intros r1 ps body H. rewrite orig_ruleK_with_end, kmatches_proj.
+  rewrite <- (take_mcmp_prefix_app (r_body r1) ps body H).
+  symmetry. apply with_end_self.
+Qed.
+
 (** Axiom-freedom guard (build-time): prints "Closed under the global context". *)
 Print Assumptions concat_in_iv_pointsN.
 Print Assumptions concat_fields_certificate_N.
