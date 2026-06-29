@@ -2115,7 +2115,7 @@ Definition run_chain_mut_env (prog : program) (policy : verdict) (p : packet) : 
     compiler emits ([compile_terminal]) and the loadability discipline
     ([terminal_loadable]): an explicit value source ([nat_src]), else a named-map
     lookup ([nat_map]), else a (transformed) packet field ([nat_field]), else the
-    immediate destined for register 1 ([nat_imms]). *)
+    immediate destined for register 1 ([nat_addr_imm]). *)
 Definition nat_addr (ns : nat_spec) (p : packet) : data :=
   match nat_src ns with
   | Some vs => eval_vsrc vs p
@@ -2151,7 +2151,7 @@ Definition nat_addr (ns : nat_spec) (p : packet) : data :=
     [nat_family] = "" (their family is implicit in the chain); [nat_addrfamily]
     normalises "" to "ip" so the legacy IPv4 behaviour is preserved while "ip6"
     is honoured.  Only the address rewrite is modelled; the protocol-PORT range
-    ([nat_pmin]/[nat_pmax]) is a separate obligation.  An unrecognised kind
+    ([nat_extra]) is a separate obligation.  An unrecognised kind
     leaves the packet unchanged. *)
 Definition nat_addrfamily (ns : nat_spec) : String.string :=
   if String.eqb (nat_family ns) nat_fam_ip6 then nat_fam_ip6
@@ -2224,17 +2224,17 @@ Definition masq_saddr (fam : String.string) (p : packet) : data :=
 
 (** The L4 port the kernel writes is [min_proto.all] of the NAT range, loaded as a
     big-endian 16-bit value from the proto-min register ([nft_nat_setup_proto],
-    nft_nat.c:57-60).  In the model the operand is [nat_pmin]; encode it as the
+    nft_nat.c:57-60).  In the model the operand is [nat_port_num]; encode it as the
     2-byte big-endian port the transport header carries. *)
 Definition nat_port_bytes (pmin : nat) : data := N_to_data 2 (N.of_nat pmin).
 
 (** Apply the L4 PORT half of a NAT effect, mirroring the kernel
     [nft_nat_setup_proto]: the port rewrite happens ONLY when the proto-min
     register is set (`if (priv->sreg_proto_min)`, nft_nat.c:120) — in the model,
-    when [nat_pmin ns = Some pmin].  A SOURCE NAT (snat/masquerade) rewrites the
+    when [nat_port_num ns = Some pmin].  A SOURCE NAT (snat/masquerade) rewrites the
     L4 SOURCE port ([set_sport]); a DESTINATION NAT (dnat/redirect) the L4
     DESTINATION port ([set_dport]) — exactly the [NF_NAT_MANIP_{SRC,DST}] split of
-    [tcp_manip_pkt] (nf_nat_proto.c).  Address-only NAT ([nat_pmin] = None) leaves
+    [tcp_manip_pkt] (nf_nat_proto.c).  Address-only NAT ([nat_port_num] = None) leaves
     the port byte-for-byte unchanged. *)
 (** REGISTER-FREE / bug-fixed: the port is the VALUE [lo] (a 2-byte port operand),
     not [nat_port_bytes] of a register index (the old [nat_pmin] conflated the two).
@@ -2254,7 +2254,7 @@ Definition apply_nat_port (is_src : bool) (ns : nat_spec) (p : packet) : packet 
     rewrites ONLY the L4 port and leaves the L3 destination/source address
     byte-for-byte UNCHANGED.  An address operand is present iff [nat_addr] has a
     source: an explicit value source ([nat_src]), a named-map lookup ([nat_map]),
-    a packet field ([nat_field]), or a register-1 immediate ([nat_imms]). *)
+    a packet field ([nat_field]), or a register-1 immediate ([nat_addr_imm]). *)
 Definition nat_has_addr (ns : nat_spec) : bool :=
   match nat_src ns, nat_map ns, nat_field ns with
   | None, None, None => match nat_addr_imm ns with Some _ => true | None => false end
@@ -2267,7 +2267,7 @@ Definition nat_has_addr (ns : nat_spec) : bool :=
     when an address operand is present ([nat_has_addr], the kernel's
     `if (priv->sreg_addr_min)` guard, nft_nat.c:114); a port-only snat/dnat
     therefore preserves the L3 address — and then, when a port operand is present
-    ([nat_pmin] = Some), the L4 port rewrite ([apply_nat_port], the independent
+    ([nat_port_num] = Some), the L4 port rewrite ([apply_nat_port], the independent
     `if (priv->sreg_proto_min)` guard, nft_nat.c:120).  masquerade always derives
     its source address from the exit interface and redirect from the inbound
     interface / loopback, so both always carry an (implicit) address operand and
@@ -2302,7 +2302,7 @@ Definition nat_operand_addr (h : hook_id) (ns : nat_spec) (p : packet) : option 
 (** Apply a (possibly absent) L4 PORT translation [port_opt] to packet [p],
     rewriting the SOURCE port for a source NAT or the DESTINATION port for a
     destination NAT — the value-level analogue of [apply_nat_port] that takes the
-    stored port directly instead of re-reading [nat_pmin]. *)
+    stored port directly instead of re-reading [nat_port_num]. *)
 Definition apply_nat_port_val (is_src : bool) (port_opt : option nat) (p : packet) : packet :=
   match port_opt with
   | Some pmin =>
@@ -2379,7 +2379,7 @@ Definition store_nat_mapping (p : packet) (m : option data * option data * optio
       kernel computes the new tuple from the rule operand (get_unique_tuple,
       nf_nat_core.c:796), STORES it in the conntrack entry (nf_conntrack_alter_reply,
       :803), and applies the rewrite.  The model mirrors this: it evaluates
-      [nat_operand_addr]/[nat_pmin] from the CURRENT packet, applies the tuple
+      [nat_operand_addr]/[nat_port_num] from the CURRENT packet, applies the tuple
       ([apply_nat_tuple]) AND stores it into the shared, flow-keyed [e_nat]
       ([store_nat_mapping]).
 
@@ -2409,7 +2409,7 @@ Definition nat_orig_addr (ns : nat_spec) (p : packet) : data :=
     from the CURRENT packet's transport header before any rewrite: the SOURCE port
     (transport bytes 0..1) for a source NAT ([nat_is_src]: snat/masquerade), the
     DESTINATION port (bytes 2..3) for a destination NAT (dnat/redirect).  Stored
-    ONLY when a port operand is present ([nat_pmin ns = Some _], the kernel's
+    ONLY when a port operand is present ([nat_port_num ns = Some _], the kernel's
     `if (priv->sreg_proto_min)` guard, nft_nat.c:120) — otherwise [None], so the
     reply leaves the port byte-for-byte unchanged.  This is the port half of the
     reply tuple the kernel records (nf_conntrack_alter_reply), un-rewritten onto

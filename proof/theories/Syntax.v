@@ -383,10 +383,11 @@ Record vmap_spec : Type := {
   vm_name    : string;      (* the verdict map's entries are looked up by name *)
 }.
 
-(** A NAT statement (snat/dnat).  The address/port operands are loaded into data
-    registers by the immediates in [nat_imms]; the statement then references those
-    registers.  NAT is terminal (it accepts with a translation); the packet
-    rewrite itself is a side effect outside the single-packet verdict model. *)
+(** A NAT statement (snat/dnat).  REGISTER-FREE: it names the address/port
+    operand VALUES; [compile_terminal] loads them into data registers and emits
+    the [INat] that references those registers.  NAT is terminal (it accepts with
+    a translation); the packet rewrite itself is a side effect outside the
+    single-packet verdict model. *)
 (** The SECONDARY NAT operand — a range-end address or a port range — REGISTER-FREE
     (was the netlink registers [nat_amax]/[nat_pmin]/[nat_pmax]).  The compiler
     ([compile_terminal]) derives the actual registers: a separate immediate lands in
@@ -440,9 +441,9 @@ Record tproxy_spec : Type := {
 }.
 
 (** A [fwd] statement: terminal (like NAT/tproxy) — forward the packet to a device
-    (and optionally address) loaded by [fwd_imms]; the forward is a side effect
-    outside the single-packet verdict model (which sees a terminal Accept). *)
-(** REGISTER-FREE source: [fwd_dev] names the device EXPRESSION (`fwd to "lo"` /
+    (and optionally address); the forward is a side effect outside the
+    single-packet verdict model (which sees a terminal Accept).
+    REGISTER-FREE source: [fwd_dev] names the device EXPRESSION (`fwd to "lo"` /
     `fwd to <map>`), [fwd_addr] the optional target address VALUE, [fwd_family] the
     "ip"/"ip6" qualifier.  The compiler ([compile_terminal]) loads the device into
     register 1, the address (if any) into register 2, derives the numeric nfproto

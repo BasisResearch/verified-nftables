@@ -238,7 +238,7 @@ Qed.
     DESTINATION port (TCP/UDP header bytes 2..3).  The kernel loads [PORT] into the
     proto-min register and [nf_nat_proto.c]/[tcp_manip_pkt] writes it into the
     header (`*portptr = newport`, nf_nat_proto.c:163-172).  Before the fix the model
-    ignored [nat_port_num]/[nat_pmax] entirely, so the transport header (and hence the
+    ignored [nat_port_num]/[nat_extra] entirely, so the transport header (and hence the
     port) was provably left byte-for-byte unchanged — `pkt_th (chain_out …) = pkt_th p`.
     These theorems prove the opposite: the port IS now rewritten, and the
     formerly-provable no-op is refuted. *)
