@@ -345,7 +345,13 @@ let rule_of_block (lines : string list) : Syntax.rule =
     mk ~fwd:(Some { Syntax.fwd_imms = imms; fwd_src = src; fwd_devreg = dev;
                     fwd_addrreg = addr; fwd_nfproto = nfp }) body Verdict.Continue in
   let mk_queue ?(src=None) body imms (sreg,bypass,fanout) =
-    mk ~queue:(Some { Syntax.q_imms = imms; q_src = src; q_sreg = sreg;
+    (* register-free queue number: the value source, or the immediate loaded into
+       the queue's source register (the compiler re-allocates register 1) *)
+    let qnum = match src with
+      | Some vs -> vs
+      | None -> (try Syntax.VImm (List.assoc sreg imms)
+                 with Not_found -> raise (Unsupported "queue: number source")) in
+    mk ~queue:(Some { Syntax.q_num = qnum;
                       q_bypass = bypass; q_fanout = fanout }) body Verdict.Continue in
   let bm body m = Syntax.BMatch m :: body in      (* prepend a match in order *)
   let bs body s = Syntax.BStmt s :: body in       (* prepend a statement in order *)

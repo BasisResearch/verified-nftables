@@ -435,14 +435,14 @@ Record fwd_spec : Type := {
   fwd_nfproto : option nat;
 }.
 
-(** A register-sourced [queue] verdict: terminal (sends the packet to a userspace
-    queue whose number is in [q_sreg], loaded by [q_imms]); the queue hand-off is
-    a side effect outside the single-packet model (a terminal Accept). *)
+(** A value-sourced [queue] verdict: terminal (sends the packet to a userspace
+    queue whose number is the value [q_num] — e.g. `queue to numgen inc mod 4`);
+    the queue hand-off is a side effect outside the single-packet model (a terminal
+    Accept).  REGISTER-FREE source: [q_num] names the number EXPRESSION; the
+    compiler ([compile_terminal]) loads it into register 1 and emits
+    [IQueueSreg 1 …], reproducing nft's fixed register convention. *)
 Record queue_spec : Type := {
-  q_imms   : list (nat * data);
-  q_src    : option vsrc;       (* the queue number computed by a value source
-                                   (e.g. numgen/symhash/jhash) instead of immediates *)
-  q_sreg   : nat;
+  q_num    : vsrc;             (* the queue-number value expression *)
   q_bypass : bool;
   q_fanout : bool;
 }.

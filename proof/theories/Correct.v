@@ -1140,7 +1140,7 @@ Proof.
   destruct (r_fwd r) as [w |].
   { rewrite nw_app. destruct (fwd_src w) as [vs |]; [rewrite nw_vsrc | rewrite nw_imms]; reflexivity. }
   destruct (r_queue r) as [q |].
-  { rewrite nw_app. destruct (q_src q) as [vs |]; [rewrite nw_vsrc | rewrite nw_imms]; reflexivity. }
+  { rewrite nw_app, nw_vsrc. reflexivity. }
   apply nw_verdict_tail.
 Qed.
 Lemma nw_compile_end : forall r, no_writes (compile_end r) = true.
@@ -2154,8 +2154,7 @@ Proof.
       * rewrite <- app_assoc. destruct (fwd_src w) as [vs |];
           [apply run_vsrc_fwd; exact Htl | apply run_imms_fwd].
       * destruct (r_queue r) as [q |].
-        -- rewrite <- app_assoc. destruct (q_src q) as [vs |];
-             [apply run_vsrc_queue; exact Htl | apply run_imms_queue].
+        -- rewrite <- app_assoc. apply run_vsrc_queue; exact Htl.
         -- rewrite run_verdict_tail_after.
            (* Continue runs r_after, realising [stmts_after_outcome] = the
               [Continue] arm of [terminal_outcome]; every other verdict is terminal. *)
@@ -2194,10 +2193,8 @@ Proof.
            destruct Hl as [Hd | Ht]; [exact Hd | discriminate Ht].
         -- destruct Hl as [Hd | Ht]; [discriminate Hd | discriminate Ht].
       * destruct (r_queue r) as [q |].
-        -- rewrite <- app_assoc. destruct (q_src q) as [vs |].
-           ++ rewrite run_vsrc_break; [reflexivity|].
-              destruct Hl as [Hd | Ht]; [exact Hd | discriminate Ht].
-           ++ destruct Hl as [Hd | Ht]; [discriminate Hd | discriminate Ht].
+        -- rewrite <- app_assoc. rewrite run_vsrc_break; [reflexivity|].
+           destruct Hl as [Hd | Ht]; [exact Hd | discriminate Ht].
         -- (* static verdict: only a [Continue] runs r_after; a break there is in r_after *)
            rewrite run_verdict_tail_after.
            destruct (r_verdict r);
@@ -2485,7 +2482,7 @@ Proof.
     destruct (fwd_src w) as [vs |]; [apply lf_vsrc | apply lf_imms]. }
   destruct (r_queue r) as [q |].
   { rewrite lf_app. apply Bool.andb_true_iff; split; [| reflexivity].
-    destruct (q_src q) as [vs |]; [apply lf_vsrc | apply lf_imms]. }
+    apply lf_vsrc. }
   apply lf_verdict_tail.
 Qed.
 

@@ -780,7 +780,7 @@ Definition terminal_loadable (r : rule) (p : packet) : bool :=
   | Some w => match fwd_src w with Some vs => vsrc_loadable vs p | None => true end
   | None =>
   match r_queue r with
-  | Some q => match q_src q with Some vs => vsrc_loadable vs p | None => true end
+  | Some q => vsrc_loadable (q_num q) p
   | None => true
   end end end end.
 

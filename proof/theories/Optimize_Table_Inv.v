@@ -182,7 +182,7 @@ Proof.
   destruct (r_fwd r) as [w |].
   { destruct (fwd_src w) as [vs |]; [apply vsrc_loadable_env | reflexivity]. }
   destruct (r_queue r) as [q |].
-  { destruct (q_src q) as [vs |]; [apply vsrc_loadable_env | reflexivity]. }
+  { apply vsrc_loadable_env. }
   reflexivity.
 Qed.
 

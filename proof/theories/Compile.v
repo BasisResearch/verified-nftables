@@ -282,11 +282,8 @@ Definition compile_terminal (r : rule) : list instr :=
               [IFwd (fwd_devreg w) (fwd_addrreg w) (fwd_nfproto w)]
   | None =>
   match r_queue r with
-  | Some q => (match q_src q with
-               | Some vs => compile_vsrc vs
-               | None => map (fun rv => IImmediateData (fst rv) (snd rv)) (q_imms q)
-               end) ++
-              [IQueueSreg (q_sreg q) (q_bypass q) (q_fanout q)]
+  | Some q => compile_vsrc (q_num q) ++
+              [IQueueSreg 1 (q_bypass q) (q_fanout q)]
   | None => verdict_tail (r_verdict r)
   end
   end
