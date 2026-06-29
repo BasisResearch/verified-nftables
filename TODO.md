@@ -122,8 +122,21 @@ kernel; `nft list ruleset` confirms).
   would be VACUOUS for the value effect. Doing it right needs a STATE-preserving optimizer
   correctness framework (over `eval_chain_mut_env`), which does not yet exist — that framework
   is the real prerequisite, larger than the pass itself.
-- **In progress — 1b (N-dim concat): the verdict-preservation CORE is DONE.** All axiom-free in
-  `theories/Optimize_ConcatK.v` (`Print Assumptions`: Closed):
+- **DONE — 1b (N-dim concat).** The N(≥3)-field concat pass is implemented, proved axiom-free,
+  COMPOSED into the shipped `optimize_table_uncond`, extracted, and semtested. The shipped
+  optimizer now synthesises ≥3-field concatenation sets (e.g. two `ip saddr . ip daddr . ip
+  protocol` rules → one `lookup` over a 2-element 3-field concat set), matching `nft -o`.
+  `theories/Optimize_ConcatK.v`: `packN`/`concat_in_iv_pointsN` (membership cert),
+  `concat_fields_certificate_N` (matchcond cert), `eval_rules_concat_mergeK` (merge),
+  `concat_mergeK_pair` (recogniser), `optimize_rules_concatK`/`optimize_chain_concatK` (pass) +
+  seam bookkeeping (assoc_stable/vmaps/mono/keys_bound). `theories/Optimize_Uncond.v`:
+  `optimize_rules_concatK_correct_uncond` + output-fresh/chain wrappers/`fresh_setname`;
+  `optimize_table` (Optimize_Table.v) gained the stage (setsN→concatK→concatN→vmapN);
+  `optimize_table_correct_uncond_gen` re-proved threading it. semtest §(6c-N) + e2e check B2
+  demonstrate it fires + `eval_chain` agrees. GATE (same as the 2-field pass): all concat fields
+  must be fixed-width PAYLOAD (`field_fixed_len = Some`); a non-fixed-width meta dependency (the
+  `l4proto` dep of `tcp dport`) is not folded into the key — a faithful refinement still open.
+  (Historical: the verdict-preservation core lemmas, axiom-free —)
   - `packN` (pack K field values, each in its `reg_slot`, last takes remainder; `packN [a;b] =
     pack2 a b`) + membership certificate `concat_in_iv_pointsN` (a packed point key is matched
     iff every field equals its stored value; general-branch forallb-over-split proved directly,
