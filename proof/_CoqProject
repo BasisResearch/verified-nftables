@@ -38,6 +38,7 @@ theories/Concat_Iv.v
 theories/Ifname_Exact.v
 theories/Limit_Over.v
 theories/Nftval.v
+theories/Nft_Tactics.v
 theories/Red_CtMark_Crosspkt.v
 theories/Red_NatPerPacket.v
 theories/Red_Notrack.v
@@ -57,4 +58,6 @@ theories/Optimize_Table.v
 theories/Optimize_Uncond.v
 theories/Fib_Local.v
 theories/Netstate_MultiAddr.v
+theories/Nft_Demo_Symbolic.v
+theories/Nft_Demo_Concrete.v
 theories/Extract.v

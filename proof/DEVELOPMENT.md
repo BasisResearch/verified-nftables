@@ -497,6 +497,25 @@ verdict-preserving (`optimize_chain_correct`, axiom-free):
 (`compile`/`optimize`/`compile_optimized`), and `to_netlink_text`. See
 `extracted/example.ml` (`dune exec ./example.exe`) for an end-to-end demo.
 
+## Proving properties about a concrete ruleset (ergonomics layer)
+
+To STATE and PROVE a security property about a specific `.nft` file, use the
+readable predicate / notation / tactic layer in
+[`theories/Nft_Tactics.v`](theories/Nft_Tactics.v): write
+`my_chain denies p under my_chains budget my_fuel` (definitionally
+`eval_table my_fuel my_chains my_chain p = Drop`) with typed hypotheses
+`fieldof FThDport p === port 25` (routed through the `Nftval` constructors), and
+discharge it with one tactic — **`nft_eval Hpe`** for a packet constrained by
+hypotheses, **`nft_decide`** for a fully concrete packet. The step-by-step recipe
+(including `make gen` onboarding of a new file) is in
+[`CONFIG_PROOFS.md`](CONFIG_PROOFS.md); compiling worked examples are
+`theories/Nft_Demo_Symbolic.v` and `theories/Nft_Demo_Concrete.v`. The layer is
+additive and sound: every notation is *definitionally* its raw `eval_table` /
+`field_value` statement (`nft_*_spec` / `demo_*_def`), `demo_recovers_original`
+re-derives the original `Ruleset_Verified`-shaped theorem from the readable one,
+and `demo_smtp_not_accepted` / `Fail now nft_decide` witness that the tactics
+cannot prove a false property.
+
 ## Orientation for a fresh session (read this before picking up a TODO)
 
 **Build & verify (every change must keep ALL of these green):**
