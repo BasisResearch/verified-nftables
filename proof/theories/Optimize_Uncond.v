@@ -34,7 +34,7 @@ From Stdlib Require Import String.
 Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
   Compile Correct Optimize Optimize_Merge Optimize_Vmap Optimize_Concat Optimize_ConcatK
-  Optimize_Table_Inv Optimize_Table Optimize_Normalize.
+  Optimize_Mapn Optimize_Table_Inv Optimize_Table Optimize_Normalize.
 
 Local Open Scope nat_scope.
 
@@ -1373,6 +1373,138 @@ Proof.
 Qed.
 
 
+(* ================================================================== *)
+(** *** mapN stage (the data-value-map merge, Optimize_Mapn).  Its VERDICT effect is
+    ENV-INDEPENDENT (the merged Continue rules fall through for any env), so the
+    chain correctness is the env-indep [optimize_rules_mapn_eval] composed with the
+    standard set-seam env-stability for the passed-through rules. *)
+
+(** The merged map rule reads exactly one set name ([setname n], its head guard);
+    its body statement (a `meta set … map`) contributes NO set name. *)
+Lemma body_set_names_mk_map_rule : forall f setname mapname k,
+  body_set_names (r_body (mk_map_rule f setname mapname k)) = [setname].
+Proof. reflexivity. Qed.
+
+Lemma rule_vmap_name_mk_map_rule : forall f setname mapname k,
+  rule_vmap_name (mk_map_rule f setname mapname k) = [].
+Proof. reflexivity. Qed.
+
+Lemma optimize_rules_mapn_output_set_fresh : forall rs n d n' d' rs',
+  optimize_rules_mapn n d rs = (n', d', rs') ->
+  Forall (rule_set_fresh n) rs -> Forall (rule_set_fresh n') rs'.
+Proof.
+  induction rs as [rs IH] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' H Hrf. destruct rs as [| r1 [| r2 rest]].
+  - cbn in H; inversion H; subst; exact Hrf.
+  - cbn in H; inversion H; subst; exact Hrf.
+  - rewrite optimize_rules_mapn_cons2 in H.
+    inversion Hrf as [| ? ? Hf1 Hrf2]; subst.
+    inversion Hrf2 as [| ? ? Hf2 Hrf_rest]; subst.
+    destruct (map_merge_pair r1 r2) as [[[[[[f v1] v2] M1] M2] k]|]; cbv zeta in H.
+    + remember (optimize_rules_mapn (S n)
+                  {| sd_sets := (setname n, map2_set v1 v2) :: sd_sets d;
+                     sd_vmaps := sd_vmaps d;
+                     sd_maps := (mapname n, map2_map v1 v2 M1 M2) :: sd_maps d |} rest)
+        as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. injection H as Hn Hd Hr; subst n' d' rs'.
+      pose proof (optimize_rules_mapn_mono rest (S n) _ _ _ _ (eq_sym E)) as Hmono.
+      constructor.
+      * intros j Hj Hin. rewrite body_set_names_mk_map_rule in Hin.
+        destruct Hin as [Heq|[]]. apply setname_inj in Heq. lia.
+      * apply (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)).
+        eapply Forall_impl; [intros r Hr; apply (rule_set_fresh_mono n (S n) r); [lia|exact Hr]
+                            |exact Hrf_rest].
+    + remember (optimize_rules_mapn n d (r2 :: rest)) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. injection H as Hn Hd Hr; subst n' d' rs'.
+      pose proof (optimize_rules_mapn_mono (r2 :: rest) n d _ _ _ (eq_sym E)) as Hmono.
+      constructor;
+        [apply (rule_set_fresh_mono n m'' r1 Hmono Hf1)
+        |apply (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E));
+           constructor; assumption].
+Qed.
+
+Lemma optimize_rules_mapn_output_vmap_fresh : forall rs n d n' d' rs',
+  optimize_rules_mapn n d rs = (n', d', rs') ->
+  Forall (rule_vmap_fresh n) rs -> Forall (rule_vmap_fresh n') rs'.
+Proof.
+  induction rs as [rs IH] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' H Hrf. destruct rs as [| r1 [| r2 rest]].
+  - cbn in H; inversion H; subst; exact Hrf.
+  - cbn in H; inversion H; subst; exact Hrf.
+  - rewrite optimize_rules_mapn_cons2 in H.
+    inversion Hrf as [| ? ? Hf1 Hrf2]; subst.
+    inversion Hrf2 as [| ? ? Hf2 Hrf_rest]; subst.
+    destruct (map_merge_pair r1 r2) as [[[[[[f v1] v2] M1] M2] k]|]; cbv zeta in H.
+    + remember (optimize_rules_mapn (S n)
+                  {| sd_sets := (setname n, map2_set v1 v2) :: sd_sets d;
+                     sd_vmaps := sd_vmaps d;
+                     sd_maps := (mapname n, map2_map v1 v2 M1 M2) :: sd_maps d |} rest)
+        as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. injection H as Hn Hd Hr; subst n' d' rs'.
+      pose proof (optimize_rules_mapn_mono rest (S n) _ _ _ _ (eq_sym E)) as Hmono.
+      constructor.
+      * intros j Hj Hin. rewrite rule_vmap_name_mk_map_rule in Hin. destruct Hin.
+      * apply (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)).
+        eapply Forall_impl; [intros r Hr; apply (rule_vmap_fresh_mono n (S n) r); [lia|exact Hr]
+                            |exact Hrf_rest].
+    + remember (optimize_rules_mapn n d (r2 :: rest)) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. injection H as Hn Hd Hr; subst n' d' rs'.
+      pose proof (optimize_rules_mapn_mono (r2 :: rest) n d _ _ _ (eq_sym E)) as Hmono.
+      constructor;
+        [apply (rule_vmap_fresh_mono n m'' r1 Hmono Hf1)
+        |apply (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E));
+           constructor; assumption].
+Qed.
+
+(** Chain-level wrappers. *)
+Lemma optimize_chain_mapn_correct_uncond : forall n d c n' d' c' base p,
+  optimize_chain_mapn n d c = (n', d', c') ->
+  Forall (rule_set_fresh n) (c_rules c) ->
+  eval_chain c' (set_env p (env_with_sets base d'))
+  = eval_chain c  (set_env p (env_with_sets base d)).
+Proof.
+  intros n d c n' d' c' base p H Hrf. unfold optimize_chain_mapn in H.
+  destruct (optimize_rules_mapn n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain. cbn [c_rules c_policy].
+  rewrite (optimize_rules_mapn_eval (c_rules c) n d m'' dd'' rr''
+             (set_env p (env_with_sets base dd'')) E).
+  erewrite (eval_rules_agree_gen (c_rules c) p base dd'' d); [reflexivity|].
+  intros r Hr. apply (decls_agree_rule_setseam base d dd'' r n).
+  - apply (optimize_rules_mapn_vmaps (c_rules c) n d m'' dd'' rr'' E).
+  - intros nm X Hf. apply (optimize_rules_mapn_assoc_stable (c_rules c) n d m'' dd'' rr'' nm X E Hf).
+  - rewrite Forall_forall in Hrf. apply Hrf; exact Hr.
+Qed.
+
+Lemma optimize_chain_mapn_output_set_fresh : forall n d c n' d' c',
+  optimize_chain_mapn n d c = (n', d', c') ->
+  Forall (rule_set_fresh n) (c_rules c) -> Forall (rule_set_fresh n') (c_rules c').
+Proof.
+  intros n d c n' d' c' H Hrf. unfold optimize_chain_mapn in H.
+  destruct (optimize_rules_mapn n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. cbn [c_rules].
+  apply (optimize_rules_mapn_output_set_fresh _ _ _ _ _ _ E Hrf).
+Qed.
+Lemma optimize_chain_mapn_output_vmap_fresh : forall n d c n' d' c',
+  optimize_chain_mapn n d c = (n', d', c') ->
+  Forall (rule_vmap_fresh n) (c_rules c) -> Forall (rule_vmap_fresh n') (c_rules c').
+Proof.
+  intros n d c n' d' c' H Hrf. unfold optimize_chain_mapn in H.
+  destruct (optimize_rules_mapn n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. cbn [c_rules].
+  apply (optimize_rules_mapn_output_vmap_fresh _ _ _ _ _ _ E Hrf).
+Qed.
+Lemma optimize_chain_mapn_fresh_setname : forall n d c n' d' c',
+  optimize_chain_mapn n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n' <= k -> ~ In (setname k) (map fst (sd_sets d'))).
+Proof.
+  intros n d c n' d' c' H Hfresh k Hk Hin.
+  pose proof (optimize_chain_mapn_mono n d c n' d' c' H) as Hmono.
+  destruct (optimize_chain_mapn_keys_bound n d c n' d' c' k H Hin) as [Hin_d | Hlt].
+  - apply (Hfresh k); [lia | exact Hin_d].
+  - lia.
+Qed.
+
 (** *** UNCONDITIONAL [optimize_table] correctness (arbitrary [d], with read-freshness
     of the base-optimised chain in BOTH namespaces — NO [rules_clean]). *)
 Theorem optimize_table_correct_uncond_gen : forall n d c n' d' c' base p,
@@ -1388,29 +1520,37 @@ Proof.
   unfold optimize_table in H.
   destruct (optimize_chain_setsN n d (optimize_chain c)) as [[n1 d1] c1] eqn:E1.
   destruct (optimize_chain_concatK n1 d1 c1) as [[nK dK] cK] eqn:EK.
-  destruct (optimize_chain_concatN nK dK cK) as [[n2 d2] c2] eqn:E2.
-  (* setname-freshness threading through setsN then concatK (both mint setnames) *)
+  destruct (optimize_chain_mapn nK dK cK) as [[nM dM] cM] eqn:EM.
+  destruct (optimize_chain_concatN nM dM cM) as [[n2 d2] c2] eqn:E2.
+  (* counter monotonicity chain n <= n1 <= nK <= nM <= n2 *)
+  pose proof (optimize_chain_setsN_mono n d (optimize_chain c) n1 d1 c1 E1) as Hmn1.
+  pose proof (optimize_chain_concatK_mono n1 d1 c1 nK dK cK EK) as HmnK.
+  pose proof (optimize_chain_mapn_mono nK dK cK nM dM cM EM) as HmnM.
+  pose proof (optimize_chain_concatN_mono nM dM cM n2 d2 c2 E2) as Hmn2.
+  (* setname-freshness threading through setsN, concatK, mapn (all mint setnames) *)
   pose proof (optimize_chain_setsN_fresh_setname n d (optimize_chain c) n1 d1 c1 E1 Hfs) as Hfs1.
   pose proof (optimize_chain_concatK_fresh_setname n1 d1 c1 nK dK cK EK Hfs1) as HfsK.
-  pose proof (optimize_chain_setsN_mono n d (optimize_chain c) n1 d1 c1 E1) as Hm1.
-  pose proof (optimize_chain_concatK_mono n1 d1 c1 nK dK cK EK) as HmK.
-  pose proof (optimize_chain_concatN_mono nK dK cK n2 d2 c2 E2) as Hm2.
-  (* sd_vmaps unchanged across setsN, concatK, concatN *)
+  pose proof (optimize_chain_mapn_fresh_setname nK dK cK nM dM cM EM HfsK) as HfsM.
+  (* sd_vmaps unchanged across setsN, concatK, mapn, concatN *)
   assert (Hvm2 : sd_vmaps d2 = sd_vmaps d).
-  { rewrite (optimize_chain_concatN_vmaps nK dK cK n2 d2 c2 E2).
+  { rewrite (optimize_chain_concatN_vmaps nM dM cM n2 d2 c2 E2).
+    rewrite (optimize_chain_mapn_vmaps nK dK cK nM dM cM EM).
     rewrite (optimize_chain_concatK_vmaps n1 d1 c1 nK dK cK EK).
     apply (optimize_chain_setsN_vmaps n d (optimize_chain c) n1 d1 c1 E1). }
   assert (Hfv2 : forall k, n2 <= k -> ~ In (vmapname k) (map fst (sd_vmaps d2))).
   { intros k Hk. rewrite Hvm2. apply Hfv. lia. }
-  (* read-freshness threading: setsN -> concatK -> concatN *)
+  (* read-freshness threading: setsN -> concatK -> mapn -> concatN *)
   pose proof (optimize_chain_setsN_output_set_fresh n d (optimize_chain c) n1 d1 c1 E1 Hrs) as Hrs1.
   pose proof (optimize_chain_setsN_output_vmap_fresh n d (optimize_chain c) n1 d1 c1 E1 Hrv) as Hrv1.
   pose proof (optimize_chain_concatK_output_set_fresh n1 d1 c1 nK dK cK EK Hrs1) as HrsK.
   pose proof (optimize_chain_concatK_output_vmap_fresh n1 d1 c1 nK dK cK EK Hrv1) as HrvK.
-  pose proof (optimize_chain_concatN_output_set_fresh nK dK cK n2 d2 c2 E2 HrsK) as Hrs2.
-  pose proof (optimize_chain_concatN_output_vmap_fresh nK dK cK n2 d2 c2 E2 HrvK) as Hrv2.
+  pose proof (optimize_chain_mapn_output_set_fresh nK dK cK nM dM cM EM HrsK) as HrsM.
+  pose proof (optimize_chain_mapn_output_vmap_fresh nK dK cK nM dM cM EM HrvK) as HrvM.
+  pose proof (optimize_chain_concatN_output_set_fresh nM dM cM n2 d2 c2 E2 HrsM) as Hrs2.
+  pose proof (optimize_chain_concatN_output_vmap_fresh nM dM cM n2 d2 c2 E2 HrvM) as Hrv2.
   rewrite (optimize_chain_vmapN_correct_uncond n2 d2 c2 n' d' c' base p H Hfv2 Hrv2).
-  rewrite (optimize_chain_concatN_correct_uncond nK dK cK n2 d2 c2 base p E2 HfsK HrsK).
+  rewrite (optimize_chain_concatN_correct_uncond nM dM cM n2 d2 c2 base p E2 HfsM HrsM).
+  rewrite (optimize_chain_mapn_correct_uncond nK dK cK nM dM cM base p EM HrsK).
   rewrite (optimize_chain_concatK_correct_uncond n1 d1 c1 nK dK cK base p EK Hfs1 Hrs1).
   rewrite (optimize_chain_setsN_correct_uncond n d (optimize_chain c) n1 d1 c1 base p E1 Hfs Hrs).
   apply optimize_chain_correct.

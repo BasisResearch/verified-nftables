@@ -725,6 +725,70 @@ let () =
       "1.1.1.1 . 80  (cross miss -> policy)", [1;1;1;1], [0;80];
       "9.9.9.9 . 22  (saddr miss -> policy)", [9;9;9;9], [0;22] ];
   Printf.printf "\n";
-  Printf.printf "%s: compile & optimize preserve the DSL verdict on every packet\n"
+
+  (* === (6f) nft -o DATA-VALUE-MAP merge: `meta mark set ... map` (TODO 1a) ===
+
+       INPUT  (nft -o oracle):
+         ip saddr 1.1.1.1 meta mark set 0x0a
+         ip saddr 2.2.2.2 meta mark set 0x14
+       => OUTPUT
+         ip saddr { 1.1.1.1, 2.2.2.2 } meta mark set ip saddr map { 1.1.1.1 : 0x0a, 2.2.2.2 : 0x14 }
+
+     Unlike 6c-6e (which consolidate the VERDICT, checked against verdict-only
+     [eval_chain]), this folds the differing STATEMENT VALUE (the mark) into a data
+     MAP.  The merge is verdict-neutral, so it is invisible to [eval_chain]; the real
+     content is the META STATE.  We therefore run the extracted STATE-threading
+     semantics [Semantics.dsl_step] and read the resulting [MKmark] — the witness of
+     [Optimize_Mapn.dsl_step_map_merge] / the [optimize_table_uncond_correct] chain.
+
+     Runs the ACTUAL extracted VERIFIED term [Optimize_Mapn.optimize_chain_mapn]; this
+     pass is the FIRST to synthesise an [sd_maps] entry alongside the head [sd_sets]. *)
+  Printf.printf "=== (6f) nft -o data-map: ip saddr { .. } meta mark set ip saddr map { .. } ===\n";
+  let omap_rule v m : Syntax.rule =
+    rule_b [ Syntax.BMatch (Syntax.MCmp (Syntax.FIp4Saddr, Bytecode.CEq, v));
+             Syntax.BStmt (Syntax.SMetaSet (Packet.MKmark, Syntax.VImm m)) ]
+           Verdict.Continue in
+  let mv1 = [1;1;1;1] and mv2 = [2;2;2;2] in
+  let mark1 = [0;0;0;10] and mark2 = [0;0;0;20] in
+  let mrs_in = [ omap_rule mv1 mark1; omap_rule mv2 mark2 ] in
+  let mempty_decls : Semantics.set_decls =
+    { Semantics.sd_sets = []; sd_vmaps = []; sd_maps = [] } in
+  let ((_mn, mdecls_out), mc_out_v) =
+    Optimize_Mapn.optimize_chain_mapn 0 mempty_decls (chain Verdict.Drop mrs_in) in
+  let mrs_out = mc_out_v.Syntax.c_rules in
+  let mlen_in = Stdlib.List.length mrs_in and mlen_out = Stdlib.List.length mrs_out in
+  Printf.printf "  rules: %d -> %d (%s)\n" mlen_in mlen_out
+    (if mlen_out < mlen_in then "shrunk: data-map merge fired" else "NOT shrunk");
+  if mlen_out <> 1 then
+    (Printf.printf "  EXPECTED 1 merged rule, got %d\n" mlen_out; incr fails);
+  (match mdecls_out.Semantics.sd_sets with
+   | [ (snm, els) ] when Stdlib.List.length els = 2 ->
+       Printf.printf "  synthesised head SET %s = { 1.1.1.1, 2.2.2.2 }\n" snm
+   | _ -> Printf.printf "  EXPECTED ONE 2-element head set\n"; incr fails);
+  (match mdecls_out.Semantics.sd_maps with
+   | [ (mnm, els) ] when Stdlib.List.length els = 2 ->
+       Printf.printf "  synthesised data MAP %s = { 1.1.1.1:0x0a, 2.2.2.2:0x14 }  (FIRST sd_maps writer)\n" mnm
+   | _ -> Printf.printf "  EXPECTED ONE 2-entry data map (sd_maps)\n"; incr fails);
+  let menv = Semantics.env_with_sets empty_env mdecls_out in
+  let merged = (match mrs_out with [ r ] -> r | _ -> Stdlib.List.hd mrs_in) in
+  let orig1 = omap_rule mv1 mark1 and orig2 = omap_rule mv2 mark2 in
+  let hexm m = "0x" ^ Stdlib.String.concat "" (Stdlib.List.map (Printf.sprintf "%02x") m) in
+  Stdlib.List.iter (fun (name, saddr) ->
+    let p = mk_pkt ~env:menv ~nh:(nh ~saddr ~daddr:[8;8;8;8]) () in
+    (* the merged rule's mark write vs the two originals composed *)
+    let p_merged = Semantics.dsl_step merged p in
+    let p_orig   = Semantics.dsl_step orig2 (Semantics.dsl_step orig1 p) in
+    let mark_merged = p_merged.Packet.pkt_meta Packet.MKmark in
+    let mark_orig   = p_orig.Packet.pkt_meta Packet.MKmark in
+    let ok = mark_merged = mark_orig in
+    Printf.printf "  %-34s two-rule mark=%-10s map-merged mark=%-10s %s\n"
+      name (hexm mark_orig) (hexm mark_merged) (if ok then "ok" else "MISMATCH");
+    if not ok then incr fails)
+    [ "1.1.1.1 (key -> mark 0x0a)", [1;1;1;1];
+      "2.2.2.2 (key -> mark 0x14)", [2;2;2;2];
+      "9.9.9.9 (miss -> mark unchanged)", [9;9;9;9] ];
+  Printf.printf "\n";
+
+  Printf.printf "%s: compile & optimize preserve the DSL verdict AND meta-state on every packet\n"
     (if !fails = 0 then "PASS" else Printf.sprintf "FAIL (%d mismatches)" !fails);
   if !fails > 0 then exit 1

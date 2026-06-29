@@ -269,22 +269,47 @@ Definition orig_map_data (r : rule) : option (field * data * data * meta_key) :=
   | _ => None
   end.
 
-(** Recognise a rule as EXACTLY the ORIGINAL shell (body AND end fields), via the
-    extracted data + a full [rule_eq_dec] against the canonical [orig_map_rule]. *)
+(** Recognise a rule as EXACTLY the ORIGINAL shell (body AND end fields), using only
+    constructor matches — NO decidable equality.  (The monolithic [rule_eq_dec] would
+    re-derive [field]/[matchcond] equality via raw [decide equality], whose [string]
+    case emits the per-char [String.get] destructor — unbound in the extracted OCaml
+    and a ~42 MB blow-up; see [Optimize_Merge.rule_end_eqb].  Matching the record
+    structurally binds [f]/[v]/[M]/[k] without ever comparing a [string].) *)
 Definition is_orig_map (r : rule) : option (field * data * data * meta_key) :=
-  match orig_map_data r with
-  | Some (f, v, M, k) =>
-      if rule_eq_dec r (orig_map_rule f v M k) then Some (f, v, M, k) else None
-  | None => None
+  match orig_map_data r, r_verdict r, r_vmap r, r_nat r,
+        r_tproxy r, r_fwd r, r_queue r, r_after r with
+  | Some (f, v, M, k), Continue, None, None, None, None, None, [] => Some (f, v, M, k)
+  | _, _, _, _, _, _, _, _ => None
   end.
+
+(** [orig_map_data] is a SINGLE match on [r_body]; its shape inverts cleanly. *)
+Lemma orig_map_data_shape : forall r f v M k,
+  orig_map_data r = Some (f, v, M, k) ->
+  r_body r = [BMatch (MCmp f CEq v); BStmt (SMetaSet k (VImm M))].
+Proof.
+  intros [body verd vmap nt tp fwd q aft] f v M k H.
+  unfold orig_map_data in H. cbn in H. cbn [r_body].
+  repeat (match goal with
+          | [ H : (match ?y with _ => _ end) = Some _ |- _ ] => destruct y
+          end; cbn in H; try discriminate H).
+  injection H as -> -> -> ->. reflexivity.
+Qed.
 
 Lemma is_orig_map_shape : forall r f v M k,
   is_orig_map r = Some (f, v, M, k) -> r = orig_map_rule f v M k.
 Proof.
   intros r f v M k H. unfold is_orig_map in H.
-  destruct (orig_map_data r) as [[[[f0 v0] M0] k0]|]; [|discriminate].
-  destruct (rule_eq_dec r (orig_map_rule f0 v0 M0 k0)) as [Heq|]; [|discriminate].
-  injection H as -> -> -> ->. exact Heq.
+  destruct (orig_map_data r) as [[[[f0 v0] M0] k0]|] eqn:Hd; [|discriminate H].
+  destruct (r_verdict r) eqn:Hverd; try discriminate H.
+  destruct (r_vmap r) eqn:Hvm; try discriminate H.
+  destruct (r_nat r) eqn:Hnt; try discriminate H.
+  destruct (r_tproxy r) eqn:Htp; try discriminate H.
+  destruct (r_fwd r) eqn:Hfwd; try discriminate H.
+  destruct (r_queue r) eqn:Hq; try discriminate H.
+  destruct (r_after r) eqn:Haft; try discriminate H.
+  injection H as -> -> -> ->.
+  pose proof (orig_map_data_shape r f v M k Hd) as Hbody.
+  destruct r; cbn in *. subst. reflexivity.
 Qed.
 
 (** Two rules form an eligible map-merge pair: both ORIGINAL shells over the SAME
