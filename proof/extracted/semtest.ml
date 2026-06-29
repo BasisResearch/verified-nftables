@@ -726,13 +726,21 @@ let () =
       "9.9.9.9 . 22  (saddr miss -> policy)", [9;9;9;9], [0;22] ];
   Printf.printf "\n";
 
-  (* === (6f) nft -o DATA-VALUE-MAP merge: `meta mark set ... map` (TODO 1a) ===
+  (* === (6f) DATA-VALUE-MAP consolidation: `meta mark set ... map` (TODO 1a) ===
 
-       INPUT  (nft -o oracle):
+       INPUT (the two rules our pass folds):
          ip saddr 1.1.1.1 meta mark set 0x0a
          ip saddr 2.2.2.2 meta mark set 0x14
-       => OUTPUT
+       => OUTPUT (our verified pass):
          ip saddr { 1.1.1.1, 2.2.2.2 } meta mark set ip saddr map { 1.1.1.1 : 0x0a, 2.2.2.2 : 0x14 }
+
+     NOTE ON FIDELITY: this is NOT `nft -o`'s output.  `nft -o` (v1.1.6) does not
+     merge `meta mark set` at all, and for the maps it DOES emit (dnat/snat) it emits
+     a BARE map with no head set guard.  We emit the head-set-GUARDED form, which is
+     valid, equivalent nftables and is required for soundness in our model (whose
+     statement value-map semantics load the map default on a miss rather than
+     NFT_BREAK; see the Optimize_Mapn.v header).  What this witnesses is a SOUND
+     state-preserving data-map consolidation, not nft -o byte-fidelity.
 
      Unlike 6c-6e (which consolidate the VERDICT, checked against verdict-only
      [eval_chain]), this folds the differing STATEMENT VALUE (the mark) into a data
@@ -743,7 +751,7 @@ let () =
 
      Runs the ACTUAL extracted VERIFIED term [Optimize_Mapn.optimize_chain_mapn]; this
      pass is the FIRST to synthesise an [sd_maps] entry alongside the head [sd_sets]. *)
-  Printf.printf "=== (6f) nft -o data-map: ip saddr { .. } meta mark set ip saddr map { .. } ===\n";
+  Printf.printf "=== (6f) data-map consolidation: ip saddr { .. } meta mark set ip saddr map { .. } ===\n";
   let omap_rule v m : Syntax.rule =
     rule_b [ Syntax.BMatch (Syntax.MCmp (Syntax.FIp4Saddr, Bytecode.CEq, v));
              Syntax.BStmt (Syntax.SMetaSet (Packet.MKmark, Syntax.VImm m)) ]

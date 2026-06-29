@@ -38,13 +38,16 @@ pipeline, with its trust boundary:
 - `concatN`: two differing selectors → concat  — `Optimize_Concat.v`
 - `concatK`: K(≥3)-dimensional concat           — `Optimize_ConcatK.v`  (TODO 1b)
 - `mapn`   : value → data MAP (`meta mark set … map`) — `Optimize_Mapn.v`  (TODO 1a; FIRST `sd_maps` writer;
-  correctness over the meta-STATE via `dsl_step`/`eval_rules_mut`, not just the verdict `eval_chain`)
+  correctness over the meta-STATE via `dsl_step`/`eval_rules_mut`, not just the verdict `eval_chain`.
+  CAVEAT: emits the head-set-GUARDED form, NOT `nft -o`'s bare map — see the fidelity note below)
 - composition + unconditional correctness       — `Optimize_Table.v`, `Optimize_Uncond.v`, seam helpers in `Optimize_Table_Inv.v`
 
 **Data model.** `Semantics.v` `Record set_decls := { sd_sets; sd_vmaps; sd_maps }`. Per-datatype
 validity predicates + constructors are in `Nftval.v`. `sd_maps` is now written by the `mapn` pass
 (`Optimize_Mapn.v`, TODO 1a) — the merged rule carries a head set guard (the map keys) so the lookup
-always hits, making the data-map merge provably state-preserving.
+always hits, making the data-map merge provably state-preserving. (Fidelity caveat: `nft -o` emits a
+BARE map with no head guard; matching that needs NFT_BREAK-on-map-miss in `body_writes`/`ILookupVal` —
+see TODO 1a note below.)
 
 **Tooling layout** (`proof/extracted/`, built with dune):
 - `glue.ml` — the CLI (modes: `optimize`, `optsets`, `optdemo`). Entry the executable runs.
@@ -112,7 +115,8 @@ vs live nft, value→set merge, real rulesets, coverage probe); `extracted/nl_se
 verified `compile_chain` output 1:1, round-trip-tested in a netns (rules land in the
 kernel; `nft list ruleset` confirms).
 
-**TODO 1 — DONE (1a mapN + 1b N-concat both shipped, axiom-free, composed).**
+**TODO 1 — 1b (N-concat) DONE with nft -o fidelity; 1a (mapN) shipped as a SOUND pass but
+NOT nft -o byte-faithful (head-set-guarded form; documented, see below).**
 - `theories/Optimize_Normalize.v` (NEW, axiom-free): `normalize_chain` rewrites every
   `MEq f v` → `MCmp f CEq v` (extensionally equal: identical `match_loadable` and
   `eval_matchcond_body`), proved `eval_chain`-preserving. `optimize_table_uncond` now runs
@@ -121,25 +125,38 @@ kernel; `nft list ruleset` confirms).
   optimizer now consolidates real `.nft` rulesets (e.g. three `ip saddr` rules → one
   `lookup set {…}`, matching `nft -o`), where before it was a no-op on parser output. Both
   headline theorems still `Closed under the global context`, statements unchanged.
-- **DONE — 1a (mapN data-value maps).** `theories/Optimize_Mapn.v` (NEW, axiom-free): the
-  `meta mark set … map` merge — adjacent `ip saddr A meta mark set M1` / `… B meta mark set M2`
-  fold into ONE `ip saddr { A, B } meta mark set ip saddr map { A:M1, B:M2 }`. Resolution of the
-  state-vs-verdict obstacle the earlier review flagged:
-    - The merge keeps a **head set guard** (`ip saddr { A, B }` = the map keys), so the map ALWAYS
-      hits and the rule simply does-not-apply off-key — making it provably STATE-preserving over the
-      existing `dsl_step` / `eval_rules_mut` threading **without a new evaluation framework**.
+- **1a (mapN data-value maps) — verified SOUND pass shipped; nft -o BYTE-fidelity NOT achieved
+  (documented).** `theories/Optimize_Mapn.v` (NEW, axiom-free): folds adjacent
+  `ip saddr A meta mark set M1` / `… B meta mark set M2` into ONE
+  `ip saddr { A, B } meta mark set ip saddr map { A:M1, B:M2 }`.
     - Verdict side is trivial (all rules `Continue`, so `eval_chain`-invisible); the NON-vacuous
       content is `dsl_step_map_merge`: `dsl_step merged p = dsl_step orig2 (dsl_step orig1 p)` — the
       data map yields exactly the right `MKmark`. Supporting: `body_writes_merged`/`body_writes_orig`/
-      `mapn_head_mem` (the lookup selects M1 vs M2 by key).
+      `mapn_head_mem` (the lookup selects M1 vs M2 by key), over `dsl_step`/`eval_rules_mut` (state),
+      not the verdict-only `eval_chain`.
     - FIRST pass to write `sd_maps` (alongside the head `sd_sets`). `is_orig_map` recognises the
       original shell via pure constructor matches (NOT `rule_eq_dec`, which would extract the per-char
-      `String.get` destructor / ~42 MB blow-up); checks BOTH body shape and all end-fields.
+      `String.get` destructor / ~42 MB blow-up); checks BOTH body shape and all end-fields (sound recogniser).
     - COMPOSED into `optimize_table` (between concatK and concatN); the gen theorem
       `optimize_table_correct_uncond_gen` threads the stage. Both headline theorems still
       `Closed under the global context`. Extracted; `make semtest` §(6f) runs the verified
       `optimize_chain_mapn` + `dsl_step` and shows the merged mark matches the two-rule composition
-      on key hits (0x0a/0x14) and a miss (unchanged). Commit `a1278da`.
+      on key hits (0x0a/0x14) and a miss (unchanged). Commits `a1278da` (impl), `<fidelity-doc>`.
+    - **ADVERSARIAL REVIEW (1a-specific): formal core PASS, fidelity FAIL → corrected to honest framing.**
+      Independent skeptic confirmed axiom-free / no-admits / non-vacuous / sound-recogniser / all gates
+      green / shipped binary runs the extracted verified term — the theorem proved is TRUE. BUT, tested
+      vs `nft v1.1.6`: (1) `nft -o` does NOT merge `meta mark set` at all; (2) for the maps it DOES emit
+      (dnat/snat) it emits a BARE map with NO head guard. Our head-set guard is required for soundness
+      *in our model* (statement value-maps load the lookup default on a miss rather than NFT_BREAK —
+      `Semantics.v:696`/`:1241`, `Bytes.v:37`), so the guarded form is valid/equivalent nftables but is
+      NOT nft -o's output. The original commit MISLABELLED the guarded form as the "nft -o oracle"; this
+      was corrected — `Optimize_Mapn.v` header + `semtest.ml` §6f now state plainly that this is a SOUND
+      data-map consolidation, NOT nft -o byte-fidelity.
+    - **REMAINING to truly close the bare-map gap (future work):** model NFT_BREAK-on-map-miss in the
+      statement value-map semantics (`body_writes` SMetaSet/SMangle + the VM's `ILookupVal`), re-prove
+      `compile_chain_correct` for it, then the bare map (no head guard) becomes sound and the pass can
+      emit nft -o's exact form. Also: extend to `dnat to … map` (the case nft -o actually merges), which
+      additionally needs the NAT-state (`r_nat`) effect modelled.
 - **DONE — 1b (N-dim concat).** The N(≥3)-field concat pass is implemented, proved axiom-free,
   COMPOSED into the shipped `optimize_table_uncond`, extracted, and semtested. The shipped
   optimizer now synthesises ≥3-field concatenation sets (e.g. two `ip saddr . ip daddr . ip

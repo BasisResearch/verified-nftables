@@ -1,8 +1,8 @@
-(** * Optimize_Mapn: the [nft -o] DATA-VALUE-MAP merge (`meta mark set … map`),
-    proved STATE-preserving (axiom-free) — TODO 1a.
+(** * Optimize_Mapn: a verified DATA-VALUE-MAP consolidation pass (the first to
+    write `sd_maps`), proved STATE-preserving (axiom-free) — TODO 1a.
 
-    [nft -o] folds adjacent rules whose differing part is a STATEMENT VALUE (not the
-    verdict) into ONE rule keyed by a map:
+    Adjacent rules whose differing part is a STATEMENT VALUE (the `meta mark` being
+    set, not the verdict) are folded into ONE rule keyed by a data map:
 
         ip saddr A meta mark set M1          ip saddr { A, B }
         ip saddr B meta mark set M2   =>      meta mark set ip saddr map { A:M1, B:M2 }
@@ -12,21 +12,46 @@
     packet's META state (the `mark`), which [eval_chain] cannot observe.  So the
     soundness here is stated over the DSL STATE-threading semantics [eval_rules_mut]
     / [dsl_step] (which thread each rule's [body_writes] meta effect), NOT
-    [eval_chain] — this is the per-pass correctness the gap demanded.
+    [eval_chain].  This is the non-vacuous content: the map yields exactly the right
+    mark.  The verdict side is trivial (all rules are verdict-neutral [Continue], so
+    they fall through for ANY environment), hence composing the pass preserves
+    [eval_chain] unconditionally.
 
-    The MERGED rule keeps a head SET guard `ip saddr { A, B }` (the map's key set):
-    so the rule only fires when the field is a map key, the map lookup ALWAYS hits,
-    and on a non-key value the rule simply does not apply — exactly matching the two
-    originals.  This sidesteps any map-MISS subtlety and makes the merge provably
-    state-preserving.  The merge synthesises BOTH the anonymous set (`sd_sets`, the
-    head guard) AND the data map (`sd_maps`, the statement value) — and is the FIRST
-    pass to write `sd_maps`.
+    *** FIDELITY NOTE — relationship to `nft -o`'s output (read this).
 
-    The verdict side is trivial: both the originals and the merged rule are verdict-
-    neutral ([Continue]), so they fall through on every packet for ANY environment;
-    hence composing this pass preserves [eval_chain] (the verdict) unconditionally,
-    while the [dsl_step] equality below is the NON-vacuous content (the map yields the
-    right mark). Axiom-free. *)
+    This pass is NOT byte-identical to `nft -o`, and does not claim to be:
+
+      - `nft -o` (tested: nft v1.1.6) merges value maps only for the NAT verdict-
+        statements `dnat to … map {…}` / `snat to … map {…}`; it does NOT merge
+        `meta mark set` rules at all.  We use the `meta mark` example because it is
+        the simplest STATE write to model (no flow-keyed NAT state).
+      - When `nft -o` DOES emit a value map (dnat/snat), it emits a BARE map with NO
+        head set guard: `dnat ip to ip saddr map { A:…, B:… }`.
+
+    We instead emit the head-set-GUARDED form `ip saddr { A, B } meta mark set ip
+    saddr map { A:M1, B:M2 }`.  This is VALID, loadable nftables and is SEMANTICALLY
+    EQUIVALENT to the two originals — but the guard is required for soundness *in our
+    model*, not a free stylistic choice:
+
+      - Our statement value-map semantics ([vsrc_loadable (VMap …) = fields_loadable]
+        at [Semantics.v:696], mirrored by the VM's [ILookupVal] at [Semantics.v:1241])
+        do NOT implement nftables' NFT_BREAK-on-map-miss: a lookup of a key absent
+        from the map loads [map_lookup_data]'s default ([] — [Bytes.v:37]) and the
+        statement still writes it.  So a BARE merged map would, on a non-key packet,
+        overwrite the mark with [] instead of leaving the prior mark untouched —
+        diverging from the two originals (which simply don't match).
+      - The head SET guard (= the map's key set) makes the merged rule fire ONLY on
+        key packets, so the lookup ALWAYS hits and the off-key case is a clean
+        non-match — exactly matching the originals.  The merge therefore synthesises
+        BOTH the anonymous set (`sd_sets`, the head guard) AND the data map
+        (`sd_maps`, the statement value).
+
+    So: what is PROVEN here is a sound, axiom-free, state-preserving data-map
+    consolidation that the verified optimizer may legitimately perform.  Matching
+    `nft -o`'s exact BARE-map output (no head guard) would first require modelling
+    NFT_BREAK-on-map-miss in both [body_writes] and the VM's [ILookupVal] (and re-
+    proving [compile_chain_correct] for it) — a core-semantics change left as future
+    work.  Axiom-free either way. *)
 
 From Stdlib Require Import List PeanoNat Bool Lia String.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
