@@ -467,6 +467,70 @@ Proof.
   symmetry. apply with_end_self.
 Qed.
 
+(** Every prefix field is fixed-width and its stored value has that width. *)
+Definition fields_fixed (ps : list (field * data)) : bool :=
+  forallb (fun fa => match field_fixed_len (fst fa) with
+                     | Some l => Nat.eqb l (length (snd fa)) | None => false end) ps.
+
+Lemma fields_fixed_Forall2 : forall ps,
+  fields_fixed ps = true ->
+  Forall2 (fun f a => field_fixed_len f = Some (length a)) (map fst ps) (map snd ps).
+Proof.
+  induction ps as [| [f a] ps IH]; intro H; [constructor|].
+  cbn [fields_fixed forallb fst snd] in H. apply Bool.andb_true_iff in H as [Hfa Hrest].
+  cbn [map fst snd]. constructor.
+  - destruct (field_fixed_len f) as [l|] eqn:E; [|discriminate].
+    apply Nat.eqb_eq in Hfa. subst l. reflexivity.
+  - apply (IH Hrest).
+Qed.
+
+(** Two rules form an eligible K-field (K>=3) concat-merge pair: same fields, same
+    tail body, same end fields, both fixed-width.  Returns the shared fields, the
+    two rows, and the shared body. *)
+Definition concat_mergeK_pair (r1 r2 : rule)
+  : option (list field * list data * list data * list body_item) :=
+  let '(ps1, b1) := take_mcmp_prefix (r_body r1) in
+  let '(ps2, b2) := take_mcmp_prefix (r_body r2) in
+  if Nat.leb 3 (length ps1) then
+  if list_eq_dec field_eq_dec (map fst ps1) (map fst ps2) then
+  if list_eq_dec body_item_eq_dec b1 b2 then
+  if fields_fixed ps1 then
+  if fields_fixed ps2 then
+  if rule_end_eqb r1 r2 then
+    Some (map fst ps1, map snd ps1, map snd ps2, b1)
+  else None else None else None else None else None else None.
+
+Lemma concat_mergeK_pair_shape : forall r1 r2 fields row1 row2 body,
+  concat_mergeK_pair r1 r2 = Some (fields, row1, row2, body) ->
+  r1 = orig_ruleK fields row1 body r1 /\
+  r2 = orig_ruleK fields row2 body r1 /\
+  Forall2 (fun f a => field_fixed_len f = Some (length a)) fields row1 /\
+  Forall2 (fun f a => field_fixed_len f = Some (length a)) fields row2 /\
+  fields <> [] /\ 3 <= length fields.
+Proof.
+  intros r1 r2 fields row1 row2 body H. unfold concat_mergeK_pair in H.
+  destruct (take_mcmp_prefix (r_body r1)) as [ps1 b1] eqn:E1.
+  destruct (take_mcmp_prefix (r_body r2)) as [ps2 b2] eqn:E2.
+  destruct (Nat.leb 3 (length ps1)) eqn:Hlen3; [|discriminate].
+  destruct (list_eq_dec field_eq_dec (map fst ps1) (map fst ps2)) as [Hf|]; [|discriminate].
+  destruct (list_eq_dec body_item_eq_dec b1 b2) as [Hb|]; [|discriminate].
+  destruct (fields_fixed ps1) eqn:Hx1; [|discriminate].
+  destruct (fields_fixed ps2) eqn:Hx2; [|discriminate].
+  destruct (rule_end_eqb r1 r2) eqn:Hend; [|discriminate].
+  injection H as Hfields Hrow1 Hrow2 Hbody. subst fields row1 row2 body.
+  pose proof (head_self_orig r1 ps1 b1 E1) as Hr1.
+  pose proof (head_self_orig r2 ps2 b2 E2) as Hr2.
+  apply Nat.leb_le in Hlen3.
+  repeat split.
+  - exact Hr1.
+  - rewrite Hr2, <- Hf, <- Hb, !orig_ruleK_with_end.
+    symmetry. apply (with_end_end_eqb _ r1 r2 Hend).
+  - apply (fields_fixed_Forall2 ps1 Hx1).
+  - rewrite Hf. apply (fields_fixed_Forall2 ps2 Hx2).
+  - intro Hc. apply (f_equal (@length field)) in Hc. rewrite length_map in Hc. cbn in Hc. lia.
+  - rewrite length_map. exact Hlen3.
+Qed.
+
 (** Axiom-freedom guard (build-time): prints "Closed under the global context". *)
 Print Assumptions concat_in_iv_pointsN.
 Print Assumptions concat_fields_certificate_N.
