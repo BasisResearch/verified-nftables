@@ -246,7 +246,162 @@ Proof.
   reflexivity.
 Qed.
 
+(* ================================================================== *)
+(** ** The executable pairwise pass. *)
+
+From Stdlib Require Import Wellfounded Arith.Wf_nat.
+
+(** Fresh map-name minting (a NEW namespace; the existing passes only mint
+    [setname]/[vmapname]). *)
+Definition mapname (n : nat) : string := String.append "__map" (string_of_nat n).
+Lemma mapname_inj : forall a b, mapname a = mapname b -> a = b.
+Proof.
+  intros a b H. unfold mapname in H.
+  apply string_of_nat_inj. cbn in H. repeat (injection H as H). exact H.
+Qed.
+Global Opaque mapname.
+
+(** Extract the head field/value and the meta-set key/value of a rule shaped like
+    `<f> = v  meta <k> set M` (its body), if any. *)
+Definition orig_map_data (r : rule) : option (field * data * data * meta_key) :=
+  match r_body r with
+  | [BMatch (MCmp f CEq v); BStmt (SMetaSet k (VImm M))] => Some (f, v, M, k)
+  | _ => None
+  end.
+
+(** Recognise a rule as EXACTLY the ORIGINAL shell (body AND end fields), via the
+    extracted data + a full [rule_eq_dec] against the canonical [orig_map_rule]. *)
+Definition is_orig_map (r : rule) : option (field * data * data * meta_key) :=
+  match orig_map_data r with
+  | Some (f, v, M, k) =>
+      if rule_eq_dec r (orig_map_rule f v M k) then Some (f, v, M, k) else None
+  | None => None
+  end.
+
+Lemma is_orig_map_shape : forall r f v M k,
+  is_orig_map r = Some (f, v, M, k) -> r = orig_map_rule f v M k.
+Proof.
+  intros r f v M k H. unfold is_orig_map in H.
+  destruct (orig_map_data r) as [[[[f0 v0] M0] k0]|]; [|discriminate].
+  destruct (rule_eq_dec r (orig_map_rule f0 v0 M0 k0)) as [Heq|]; [|discriminate].
+  injection H as -> -> -> ->. exact Heq.
+Qed.
+
+(** Two rules form an eligible map-merge pair: both ORIGINAL shells over the SAME
+    fixed-width field and SAME meta key, with DISTINCT key values. *)
+Definition map_merge_pair (r1 r2 : rule)
+  : option (field * data * data * data * data * meta_key) :=
+  match is_orig_map r1, is_orig_map r2 with
+  | Some (f1, v1, M1, k1), Some (f2, v2, M2, k2) =>
+      if field_eq_dec f1 f2 then if meta_eq_dec k1 k2 then
+      match field_fixed_len f1 with
+      | Some len =>
+          if Nat.eq_dec len (List.length v1) then if Nat.eq_dec len (List.length v2) then
+          if data_eqb v1 v2 then None else Some (f1, v1, v2, M1, M2, k1)
+          else None else None
+      | None => None
+      end else None else None
+  | _, _ => None
+  end.
+
+Lemma map_merge_pair_shape : forall r1 r2 f v1 v2 M1 M2 k,
+  map_merge_pair r1 r2 = Some (f, v1, v2, M1, M2, k) ->
+  r1 = orig_map_rule f v1 M1 k /\ r2 = orig_map_rule f v2 M2 k /\
+  field_fixed_len f = Some (List.length v1) /\ field_fixed_len f = Some (List.length v2) /\
+  data_eqb v1 v2 = false.
+Proof.
+  intros r1 r2 f v1 v2 M1 M2 k H. unfold map_merge_pair in H.
+  destruct (is_orig_map r1) as [[[[f1 u1] N1] j1]|] eqn:H1; [|discriminate].
+  destruct (is_orig_map r2) as [[[[f2 u2] N2] j2]|] eqn:H2; [|discriminate].
+  destruct (field_eq_dec f1 f2) as [<-|]; [|discriminate].
+  destruct (meta_eq_dec j1 j2) as [<-|]; [|discriminate].
+  destruct (field_fixed_len f1) as [len|] eqn:Hfx; [|discriminate].
+  destruct (Nat.eq_dec len (List.length u1)) as [->|]; [|discriminate].
+  destruct (Nat.eq_dec (List.length u1) (List.length u2)) as [Hl|]; [|discriminate].
+  destruct (data_eqb u1 u2) eqn:Hd; [discriminate|].
+  injection H as -> -> -> -> -> ->.
+  pose proof (is_orig_map_shape r1 f v1 M1 k H1) as Hr1.
+  pose proof (is_orig_map_shape r2 f v2 M2 k H2) as Hr2.
+  repeat split.
+  - exact Hr1.
+  - exact Hr2.
+  - exact Hfx.
+  - rewrite Hfx. f_equal. exact Hl.
+  - exact Hd.
+Qed.
+
+Fixpoint optimize_rules_mapn (n : nat) (d : set_decls) (rs : list rule)
+  : nat * set_decls * list rule :=
+  match rs with
+  | r1 :: ((r2 :: rest) as tl) =>
+      match map_merge_pair r1 r2 with
+      | Some (f, v1, v2, M1, M2, k) =>
+          let d' := {| sd_sets := (setname n, map2_set v1 v2) :: sd_sets d;
+                       sd_vmaps := sd_vmaps d;
+                       sd_maps := (mapname n, map2_map v1 v2 M1 M2) :: sd_maps d |} in
+          let merged := mk_map_rule f (setname n) (mapname n) k in
+          let '(n'', d'', rest') := optimize_rules_mapn (S n) d' rest in
+          (n'', d'', merged :: rest')
+      | None =>
+          let '(n'', d'', tl') := optimize_rules_mapn n d tl in
+          (n'', d'', r1 :: tl')
+      end
+  | _ => (n, d, rs)
+  end.
+
+Lemma optimize_rules_mapn_cons2 : forall n d r1 r2 rest,
+  optimize_rules_mapn n d (r1 :: r2 :: rest) =
+  match map_merge_pair r1 r2 with
+  | Some (f, v1, v2, M1, M2, k) =>
+      let d' := {| sd_sets := (setname n, map2_set v1 v2) :: sd_sets d;
+                   sd_vmaps := sd_vmaps d;
+                   sd_maps := (mapname n, map2_map v1 v2 M1 M2) :: sd_maps d |} in
+      let merged := mk_map_rule f (setname n) (mapname n) k in
+      let '(n'', d'', rest') := optimize_rules_mapn (S n) d' rest in
+      (n'', d'', merged :: rest')
+  | None =>
+      let '(n'', d'', tl') := optimize_rules_mapn n d (r2 :: rest) in
+      (n'', d'', r1 :: tl')
+  end.
+Proof. reflexivity. Qed.
+
+(** *** VERDICT correctness — ENV-INDEPENDENT (no decls / freshness hypothesis): the
+    merged [Continue] rules fall through for any environment, so the rewrite never
+    changes a verdict.  This is what composes into [optimize_table_uncond_correct]. *)
+Theorem optimize_rules_mapn_eval : forall rs n d n' d' rs' p,
+  optimize_rules_mapn n d rs = (n', d', rs') ->
+  eval_rules rs' p = eval_rules rs p.
+Proof.
+  induction rs as [rs IHrs] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' p H.
+  destruct rs as [| r1 [| r2 rest]].
+  - cbn in H. inversion H; subst; reflexivity.
+  - cbn in H. inversion H; subst; reflexivity.
+  - rewrite optimize_rules_mapn_cons2 in H.
+    destruct (map_merge_pair r1 r2) as [[[[[[f v1] v2] M1] M2] k]|] eqn:Em.
+    + cbv zeta in H.
+      destruct (map_merge_pair_shape r1 r2 f v1 v2 M1 M2 k Em) as [Hr1 [Hr2 _]].
+      remember (optimize_rules_mapn (S n)
+                  {| sd_sets := (setname n, map2_set v1 v2) :: sd_sets d;
+                     sd_vmaps := sd_vmaps d;
+                     sd_maps := (mapname n, map2_map v1 v2 M1 M2) :: sd_maps d |} rest)
+        as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
+      (* merged :: rr''  collapses to orig1 :: orig2 :: rr'' (verdict, any env) *)
+      rewrite (eval_rules_map_merge f v1 v2 M1 M2 (setname n) (mapname n) k rr'' p).
+      rewrite Hr1, Hr2.   (* RHS r1 -> orig1, r2 -> orig2 *)
+      (* strip the two Continue originals from both sides *)
+      rewrite !(eval_rules_continue _ _ p (outcome_orig_map_none _ _ _ _ _)).
+      apply (IHrs rest ltac:(unfold ltof; cbn; lia) (S n) _ m'' dd'' rr'' p (eq_sym Erec)).
+    + remember (optimize_rules_mapn n d (r2 :: rest)) as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
+      cbn [eval_rules].
+      rewrite (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) n d m'' dd'' rr'' p (eq_sym Erec)).
+      reflexivity.
+Qed.
+
 (** Axiom-freedom guards. *)
 Print Assumptions dsl_step_map_merge.
 Print Assumptions eval_rules_mut_map_merge.
 Print Assumptions eval_rules_map_merge.
+Print Assumptions optimize_rules_mapn_eval.
