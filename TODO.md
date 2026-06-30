@@ -183,10 +183,14 @@ NOT nft -o byte-faithful (head-set-guarded form; documented, see below).**
         value at the key (non-vacuous target correctness). The recogniser + executable `optimize_rules_dnat`
         pass + structural invariants, the env-threaded per-list `optimize_rules_dnat_eval`, and the chain
         wrapper `optimize_chain_dnat`/`optimize_chain_dnat_eval` (eval_chain preservation) are all DONE and
-        axiom-free (full build green, commit `d6add05`). **REMAINING:** insert `optimize_chain_dnat` as a
-        stage in `optimize_table` (Optimize_Table.v) + re-prove `optimize_table_correct_uncond_gen` with a
-        3rd freshness track (`rule_nat_map_fresh`; every other pass preserves it trivially since their
-        merged rules have `r_nat=None`) + `seed_start` past nat_map names; then `Extract.v`/glue + semtest.
+        axiom-free. **NOW COMPLETE & SHIPPED (commit `847fe99`):** `optimize_chain_dnat` is the FIRST stage
+        of `optimize_table` (run on `empty_decls` so its sd_maps-freshness is trivial and later passes
+        pass-through the merged bare rules); `optimize_table_correct_uncond_gen` re-proved with the dnat
+        stage threaded (one new mapname-freshness hypothesis, discharged by `empty_decls`). All three
+        headline theorems Closed under the global context WITH the stage; corpus 2532/2532; non-vacuity
+        Compute-verified (2 dnat rules → 1 bare-map rule + synthesised data map). The shipped verified
+        optimizer now synthesises nft -o's bare dnat value-maps, sound by NFT_BREAK-on-map-miss. Optional
+        remaining: a dedicated dnat semtest; **snat** (symmetric follow-on, same machinery).
       Estimated remaining: Phase 2 ~15 mechanical lemmas; Phase 3 comparable to the whole mapN effort.
 - **DONE — 1b (N-dim concat).** The N(≥3)-field concat pass is implemented, proved axiom-free,
   COMPOSED into the shipped `optimize_table_uncond`, extracted, and semtested. The shipped
