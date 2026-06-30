@@ -506,6 +506,10 @@ Lemma e_vmap_env_with_sets : forall base d nm,
   e_vmap (env_with_sets base d) nm = assoc_str nm (sd_vmaps d) (e_vmap base nm).
 Proof. reflexivity. Qed.
 
+Lemma e_map_env_with_sets : forall base d nm,
+  e_map (env_with_sets base d) nm = assoc_str nm (sd_maps d) (e_map base nm).
+Proof. reflexivity. Qed.
+
 (** *** The executable VMAP merge, proved verdict-preserving END-TO-END over the
     table semantics with the synthesised verdict map in scope, axiom-free.
 

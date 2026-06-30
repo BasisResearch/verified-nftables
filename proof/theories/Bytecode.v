@@ -89,7 +89,19 @@ Inductive instr : Type :=
 | ICtSet       (k : ct_key) (src : reg)     (* ct set (verdict-neutral) *)
 | ILookupVal   (keys : list reg) (name : string) (dreg : reg)
                                           (* map lookup (lookup .. dreg N>0): loads
-                                             the value mapped by [name] into [dreg] *)
+                                             the value mapped by [name] into [dreg].
+                                             Used in VERDICT-NEUTRAL positions (set/
+                                             mangle operands): a miss is observable
+                                             only as the unwritten side effect, so the
+                                             VM keeps running (verdict unchanged). *)
+| ILookupValBr (keys : list reg) (name : string) (dreg : reg)
+                                          (* map lookup feeding a TERMINAL operand
+                                             (`dnat to … map`): a miss BREAKs the rule
+                                             (NFT_BREAK) so the terminal does NOT fire
+                                             — the verdict-relevant lookup.  Renders to
+                                             the same netlink `lookup` as [ILookupVal];
+                                             the two differ only in the modelled
+                                             miss behaviour at their use site. *)
 | INat         (kind family : string) (amin amax pmin pmax : option reg)
                (flags : nat)   (* terminal NAT / masquerade / redirect *)
 | ILimit       (spec : limit_spec)       (* rate limit (can break the rule) *)

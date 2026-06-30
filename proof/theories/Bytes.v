@@ -40,6 +40,14 @@ Fixpoint map_lookup_data (k : data) (entries : list (data * data)) : data :=
   | (k', v) :: rest => if data_eqb k k' then v else map_lookup_data k rest
   end.
 
+(** Map membership: whether a key is present (the nftables data-map lookup BREAKs
+    — NFT_BREAK — on a key it does not contain, rather than returning a default). *)
+Fixpoint map_has_key (k : data) (entries : list (data * data)) : bool :=
+  match entries with
+  | [] => false
+  | (k', _) :: rest => if data_eqb k k' then true else map_has_key k rest
+  end.
+
 (** Bytewise [(a & mask) ^ xor], the operation an nftables [bitwise] expression
     performs (used to model prefix/masked matches such as a /24). *)
 Definition byte_and (a b : byte) : byte := Nat.land a b.

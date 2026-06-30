@@ -306,6 +306,12 @@ let render_instr (i : Bytecode.instr) : string = match i with
   | Bytecode.ILookupVal (keys,name,dreg) ->
       let r = nreg (match keys with x :: _ -> x | [] -> 1) in
       Printf.sprintf "[ lookup reg %d set %s dreg %d ]" r name dreg
+  | Bytecode.ILookupValBr (keys,name,dreg) ->
+      (* renders identically to [ILookupVal] — the kernel's [lookup] inherently
+         breaks on a data-map miss; the Br variant differs only in the modelled
+         miss behaviour at its use site (a terminal NAT operand) *)
+      let r = nreg (match keys with x :: _ -> x | [] -> 1) in
+      Printf.sprintf "[ lookup reg %d set %s dreg %d ]" r name dreg
   | Bytecode.ITproxy (family,areg,preg) ->
       let opt label = function Some r -> Printf.sprintf " %s reg %d" label r | None -> "" in
       let fam = if family = "" then "" else " " ^ family in

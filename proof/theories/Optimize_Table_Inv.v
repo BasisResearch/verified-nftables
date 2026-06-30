@@ -119,13 +119,25 @@ Definition body_only_matches (b : list body_item) : bool :=
 Definition rule_vmap_name (r : rule) : list string :=
   match r_vmap r with Some vm => [vm_name vm] | None => [] end.
 
-(** Two decls AGREE for a rule [r] iff they give the same [e_set]/[e_vmap] lookup at
-    every name [r] reads. *)
+(** The named data MAP a rule reads, if any: a map-sourced terminal NAT operand
+    (`dnat to … map @name`) looks the operand up in [e_map name] — and, since the
+    lookup BREAKs on a miss, [terminal_loadable] reads it too.  (Empty for every
+    rule a merge pass emits and for every non-[nat_map] rule.) *)
+Definition rule_nat_map_name (r : rule) : list string :=
+  match r_nat r with
+  | Some n => match nat_map n with Some (_, _, name) => [name] | None => [] end
+  | None => []
+  end.
+
+(** Two decls AGREE for a rule [r] iff they give the same [e_set]/[e_vmap]/[e_map]
+    lookup at every name [r] reads. *)
 Definition decls_agree_rule (base : env) (d1 d2 : set_decls) (r : rule) : Prop :=
   (forall nm, In nm (body_set_names (r_body r)) ->
      e_set (env_with_sets base d1) nm = e_set (env_with_sets base d2) nm) /\
   (forall nm, In nm (rule_vmap_name r) ->
-     e_vmap (env_with_sets base d1) nm = e_vmap (env_with_sets base d2) nm).
+     e_vmap (env_with_sets base d1) nm = e_vmap (env_with_sets base d2) nm) /\
+  (forall nm, In nm (rule_nat_map_name r) ->
+     e_map (env_with_sets base d1) nm = e_map (env_with_sets base d2) nm).
 
 (** Env-stability of the load primitives: they read only the packet's payload /
     conntrack / exthdr geometry — fields [with_pkt_env] copies verbatim — never the
@@ -167,17 +179,31 @@ Proof.
   intros. unfold synproxy_loadable, read_payload_ok, set_env, with_pkt_env. reflexivity.
 Qed.
 
-(** [terminal_loadable]/[terminal_outcome] of a matches-only rule read only the
-    packet/static end fields (never [e_set]/[e_vmap]), so they are env-stable. *)
+(** [terminal_loadable] reads [e_set]/[e_vmap] never, but a map-sourced NAT operand
+    reads [e_map] at its [nat_map] name (the break-on-miss test); given the two decls
+    agree there ([rule_nat_map_name]), it is env-stable. *)
 Lemma terminal_loadable_env : forall r p base d1 d2,
+  (forall nm, In nm (rule_nat_map_name r) ->
+     e_map (env_with_sets base d1) nm = e_map (env_with_sets base d2) nm) ->
   terminal_loadable r (set_env p (env_with_sets base d1))
   = terminal_loadable r (set_env p (env_with_sets base d2)).
 Proof.
-  intros r p base d1 d2. unfold terminal_loadable.
-  destruct (r_nat r) as [n |].
+  intros r p base d1 d2 Hmap. unfold terminal_loadable.
+  destruct (r_nat r) as [n |] eqn:Hrn.
   { destruct (nat_src n) as [vs |]; [apply vsrc_loadable_env|].
-    destruct (nat_map n) as [[[fields ?] ?] |]; [apply fields_loadable_env|].
-    destruct (nat_field n) as [[f ?] |]; [apply field_loadable_env| reflexivity]. }
+    destruct (nat_map n) as [[[fields ts] name] |] eqn:Hnm.
+    - rewrite (fields_loadable_env fields p base d1 d2).
+      replace (nat_map_key fields ts (set_env p (env_with_sets base d1)))
+         with (nat_map_key fields ts (set_env p (env_with_sets base d2))).
+      2:{ unfold nat_map_key. destruct fields as [| f0 fr]; [reflexivity|].
+          rewrite (field_value_env_with_sets f0 p base d2 d1).
+          rewrite (map_ext _ _ (fun f => field_value_env_with_sets f p base d2 d1)).
+          reflexivity. }
+      cbn [set_env with_pkt_env pkt_env].
+      rewrite (Hmap name)
+        by (unfold rule_nat_map_name; rewrite Hrn, Hnm; left; reflexivity).
+      reflexivity.
+    - destruct (nat_field n) as [[f ?] |]; [apply field_loadable_env| reflexivity]. }
   destruct (r_tproxy r); [reflexivity|].
   destruct (r_fwd r) as [w |].
   { apply vsrc_loadable_env. }
@@ -239,11 +265,13 @@ Proof.
 Qed.
 
 Lemma tail_loadable_env : forall r p base d1 d2,
+  (forall nm, In nm (rule_nat_map_name r) ->
+     e_map (env_with_sets base d1) nm = e_map (env_with_sets base d2) nm) ->
   tail_loadable r (set_env p (env_with_sets base d1))
   = tail_loadable r (set_env p (env_with_sets base d2)).
 Proof.
-  intros r p base d1 d2. unfold tail_loadable.
-  rewrite (terminal_loadable_env r p base d1 d2).
+  intros r p base d1 d2 Hmap. unfold tail_loadable.
+  rewrite (terminal_loadable_env r p base d1 d2 Hmap).
   rewrite (terminal_outcome_env r p base d1 d2).
   rewrite (forallb_ext_in
              (fun s => stmt_loadable s (set_env p (env_with_sets base d1)))
@@ -267,11 +295,13 @@ Qed.
 Lemma end_loadable_agree : forall r p base d1 d2,
   (forall nm, In nm (rule_vmap_name r) ->
      e_vmap (env_with_sets base d1) nm = e_vmap (env_with_sets base d2) nm) ->
+  (forall nm, In nm (rule_nat_map_name r) ->
+     e_map (env_with_sets base d1) nm = e_map (env_with_sets base d2) nm) ->
   end_loadable r (set_env p (env_with_sets base d1))
   = end_loadable r (set_env p (env_with_sets base d2)).
 Proof.
-  intros r p base d1 d2 Hag. unfold end_loadable.
-  destruct (r_vmap r) as [vm |] eqn:Ev; [| apply tail_loadable_env].
+  intros r p base d1 d2 Hag Hmap. unfold end_loadable.
+  destruct (r_vmap r) as [vm |] eqn:Ev; [| apply tail_loadable_env; exact Hmap].
   rewrite (vmap_loadable_env (Some vm) p base d1 d2).
   assert (Hk : (let key := match vm_keyf vm with
                  | Some (f, ts) => apply_transforms ts (field_value f (set_env p (env_with_sets base d1)))
@@ -290,7 +320,7 @@ Proof.
   rewrite (Hag (vm_name vm)) by (unfold rule_vmap_name; rewrite Ev; left; reflexivity).
   destruct (assoc_verdict _ (e_vmap (env_with_sets base d2) (vm_name vm)));
     [reflexivity |].
-  f_equal. apply tail_loadable_env.
+  f_equal. apply tail_loadable_env; exact Hmap.
 Qed.
 
 (** Whole-rule agreement for a matches-only rule across two decls that agree on the
@@ -372,9 +402,80 @@ Proof.
   inversion H; subst. apply (optimize_rules_setsN_vmaps _ _ _ _ _ _ _ E).
 Qed.
 
+Lemma optimize_rules_setsN_maps : forall fuel n d rs n' d' rs',
+  optimize_rules_setsN fuel n d rs = (n', d', rs') -> sd_maps d' = sd_maps d.
+Proof.
+  induction fuel as [| fuel IH]; intros n d rs n' d' rs' H.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_setsN_consSS in H.
+      destruct (head_value r1) as [[[f v1] body] |] eqn:Ehd.
+      * destruct (take_value_run r1 (r2 :: rest)) as [vs rest'] eqn:Erun.
+        destruct vs as [| v vs'].
+        -- remember (optimize_rules_setsN fuel n d (r2 :: rest)) as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H. inversion H; subst.
+           eapply (IH n d (r2 :: rest)); symmetry; exact Erec.
+        -- cbv zeta in H.
+           remember (optimize_rules_setsN fuel (S n)
+                       {| sd_sets := (setname n, map (fun w => (w,w)) (v1 :: v :: vs'))
+                                     :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst d'.
+           rewrite (IH (S n) _ rest' _ dd'' rr'' (eq_sym Erec)). reflexivity.
+      * remember (optimize_rules_setsN fuel n d (r2 :: rest)) as t eqn:Erec.
+        destruct t as [[m'' dd''] rr'']. cbv zeta in H. inversion H; subst.
+        eapply (IH n d (r2 :: rest)); symmetry; exact Erec.
+Qed.
+
+Lemma optimize_chain_setsN_maps : forall n d c n' d' c',
+  optimize_chain_setsN n d c = (n', d', c') -> sd_maps d' = sd_maps d.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_setsN in H.
+  destruct (optimize_rules_setsN (List.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. apply (optimize_rules_setsN_maps _ _ _ _ _ _ _ E).
+Qed.
+
 (** *** vmapN. *)
 Lemma optimize_rules_vmapN_sets : forall fuel n d rs n' d' rs',
   optimize_rules_vmapN fuel n d rs = (n', d', rs') -> sd_sets d' = sd_sets d.
+Proof.
+  induction fuel as [| fuel IH]; intros n d rs n' d' rs' H.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_vmapN_consSS in H.
+      destruct (head_value r1) as [[[f v1] body] |] eqn:Ehd.
+      * destruct (take_vmap_run r1 (r2 :: rest)) as [es rest'] eqn:Erun.
+        destruct es as [| e es'].
+        -- remember (optimize_rules_vmapN fuel n d (r2 :: rest)) as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H. inversion H; subst.
+           eapply (IH n d (r2 :: rest)); symmetry; exact Erec.
+        -- destruct (has_distinct_verdict (r_verdict r1) (e :: es') && body_vmap_safe body) eqn:Hdv.
+           ++ cbv zeta in H.
+              remember (optimize_rules_vmapN fuel (S n)
+                          {| sd_sets := sd_sets d;
+                             sd_vmaps := (vmapname n,
+                               map vmap_pt ((v1, r_verdict r1) :: e :: es')) :: sd_vmaps d;
+                             sd_maps := sd_maps d |} rest') as t eqn:Erec.
+              destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+              injection H as Hn' Hd' Hr'. subst d'.
+              rewrite (IH (S n) _ rest' _ dd'' rr'' (eq_sym Erec)). reflexivity.
+           ++ remember (optimize_rules_vmapN fuel n d (r2 :: rest)) as t eqn:Erec.
+              destruct t as [[m'' dd''] rr'']. cbv zeta in H. inversion H; subst.
+              eapply (IH n d (r2 :: rest)); symmetry; exact Erec.
+      * remember (optimize_rules_vmapN fuel n d (r2 :: rest)) as t eqn:Erec.
+        destruct t as [[m'' dd''] rr'']. cbv zeta in H. inversion H; subst.
+        eapply (IH n d (r2 :: rest)); symmetry; exact Erec.
+Qed.
+
+Lemma optimize_rules_vmapN_maps : forall fuel n d rs n' d' rs',
+  optimize_rules_vmapN fuel n d rs = (n', d', rs') -> sd_maps d' = sd_maps d.
 Proof.
   induction fuel as [| fuel IH]; intros n d rs n' d' rs' H.
   - cbn in H. inversion H; subst; reflexivity.
@@ -461,6 +562,35 @@ Proof.
         eapply (IH n d (r2 :: rest)); symmetry; exact Erec.
 Qed.
 
+Lemma optimize_rules_concatN_maps : forall fuel n d rs n' d' rs',
+  optimize_rules_concatN fuel n d rs = (n', d', rs') -> sd_maps d' = sd_maps d.
+Proof.
+  induction fuel as [| fuel IH]; intros n d rs n' d' rs' H.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_concatN_consSS in H.
+      destruct (head_value2 r1) as [[[[[f1 a1] f2] b1] body] |] eqn:Ehd.
+      * destruct (take_concat_run r1 (r2 :: rest)) as [ts rest'] eqn:Erun.
+        destruct ts as [| t ts'].
+        -- remember (optimize_rules_concatN fuel n d (r2 :: rest)) as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H. inversion H; subst.
+           eapply (IH n d (r2 :: rest)); symmetry; exact Erec.
+        -- cbv zeta in H.
+           remember (optimize_rules_concatN fuel (S n)
+                       {| sd_sets := (setname n, map pack_tuple ((a1, b1) :: t :: ts'))
+                                     :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst d'.
+           rewrite (IH (S n) _ rest' _ dd'' rr'' (eq_sym Erec)). reflexivity.
+      * remember (optimize_rules_concatN fuel n d (r2 :: rest)) as tt eqn:Erec.
+        destruct tt as [[m'' dd''] rr'']. cbv zeta in H. inversion H; subst.
+        eapply (IH n d (r2 :: rest)); symmetry; exact Erec.
+Qed.
+
 Lemma optimize_chain_concatN_mono : forall n d c n' d' c',
   optimize_chain_concatN n d c = (n', d', c') -> n <= n'.
 Proof.
@@ -477,6 +607,15 @@ Proof.
   destruct (optimize_rules_concatN (List.length (c_rules c)) n d (c_rules c))
     as [[m'' dd''] rr''] eqn:E.
   inversion H; subst. apply (optimize_rules_concatN_vmaps _ _ _ _ _ _ _ E).
+Qed.
+
+Lemma optimize_chain_concatN_maps : forall n d c n' d' c',
+  optimize_chain_concatN n d c = (n', d', c') -> sd_maps d' = sd_maps d.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_concatN in H.
+  destruct (optimize_rules_concatN (List.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. apply (optimize_rules_concatN_maps _ _ _ _ _ _ _ E).
 Qed.
 
 (** ** Structural facts about clean rules: their bodies are matches-only and read

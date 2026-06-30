@@ -347,7 +347,7 @@ Definition compile_nat_operand (n : nat_spec) : list instr :=
   match nat_map n with
   | Some (fields, ts, name) =>
       load_fields (alloc_regs 0 fields) ++ compile_transforms ts ++
-      [ILookupVal (map snd (alloc_regs 0 fields)) name 1]
+      [ILookupValBr (map snd (alloc_regs 0 fields)) name 1]
   | None =>
   match nat_field n with
   | Some (f, ts) => compile_load (field_load f) 1 :: compile_transforms ts

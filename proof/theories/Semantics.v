@@ -760,12 +760,29 @@ Definition vmap_loadable (ov : option vmap_spec) (p : packet) : bool :=
                end
   end.
 
+(** The concatenated lookup key of a map-sourced NAT operand (`dnat to … map`):
+    the first field is transformed in place, the rest are taken raw, then all are
+    concatenated — exactly the operand the compiler leaves in the key registers
+    (cf. [nat_addr] / [compile_terminal]). *)
+Definition nat_map_key (fields : list field) (ts : list transform) (p : packet) : data :=
+  match fields with
+  | [] => []   (* no key fields: the empty concatenation (matches the VM register key) *)
+  | f0 :: frest =>
+      List.concat (apply_transforms ts (field_value f0 p)
+                   :: map (fun f => field_value f p) frest)
+  end.
+
 Definition terminal_loadable (r : rule) (p : packet) : bool :=
   match r_nat r with
   | Some n => match nat_src n with
               | Some vs => vsrc_loadable vs p
               | None => match nat_map n with
-                        | Some (fields, _, _) => fields_loadable fields p
+                        (* a data-map operand BREAKs (NFT_BREAK) on a key the map
+                           does not contain: the lookup must HIT for the terminal
+                           NAT to apply (matches the VM's [ILookupValBr] break). *)
+                        | Some (fields, ts, name) =>
+                            fields_loadable fields p
+                            && map_has_key (nat_map_key fields ts p) (e_map (pkt_env p) name)
                         | None => match nat_field n with
                                   | Some (f, _) => field_loadable f p
                                   | None => true
@@ -1241,6 +1258,13 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   | ILookupVal keys name dreg :: rest =>
       run_rule (set_reg rf dreg (map_lookup_data (List.concat (map rf keys))
                                                  (e_map (pkt_env p) name))) rest p
+  | ILookupValBr keys name dreg :: rest =>
+      (* a map lookup feeding a terminal operand: BREAK on a miss (the terminal
+         does not fire), else load the value and continue. *)
+      if map_has_key (List.concat (map rf keys)) (e_map (pkt_env p) name)
+      then run_rule (set_reg rf dreg (map_lookup_data (List.concat (map rf keys))
+                                                      (e_map (pkt_env p) name))) rest p
+      else None
   | INat _ _ _ _ _ _ _ :: _ => Some Accept   (* terminal *)
   | ITproxy _ _ _ :: _ => Some Accept        (* terminal redirect *)
   | IFwd _ _ _ :: _ => Some Accept           (* terminal forward *)
@@ -1878,6 +1902,12 @@ Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet 
   | ILookupVal keys name dreg :: rest =>
       run_rule_writes (set_reg rf dreg (map_lookup_data (List.concat (map rf keys))
                                                         (e_map (pkt_env p) name))) rest p
+  | ILookupValBr keys name dreg :: rest =>
+      (* break on a map miss: no further writes (the terminal does not fire) *)
+      if map_has_key (List.concat (map rf keys)) (e_map (pkt_env p) name)
+      then run_rule_writes (set_reg rf dreg (map_lookup_data (List.concat (map rf keys))
+                                                             (e_map (pkt_env p) name))) rest p
+      else p
   | INat _ _ _ _ _ _ _ :: _ => p
   | ITproxy _ _ _ :: _ => p
   | IFwd _ _ _ :: _ => p
@@ -2122,14 +2152,7 @@ Definition nat_addr (ns : nat_spec) (p : packet) : data :=
   | None =>
   match nat_map ns with
   | Some (fields, ts, name) =>
-      map_lookup_data
-        (match fields with
-         | [] => apply_transforms ts []
-         | f0 :: frest =>
-             List.concat (apply_transforms ts (field_value f0 p)
-                          :: map (fun f => field_value f p) frest)
-         end)
-        (e_map (pkt_env p) name)
+      map_lookup_data (nat_map_key fields ts p) (e_map (pkt_env p) name)
   | None =>
   match nat_field ns with
   | Some (f, ts) => apply_transforms ts (field_value f p)

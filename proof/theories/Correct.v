@@ -616,6 +616,9 @@ Proof.
   (* ISynproxy: break/stop return [p]; the continue arm threads by IH. *)
   all: try (destruct (synproxy_loadable p);
             [destruct (synproxy_stops p); [reflexivity | apply IH; exact Hno] | reflexivity]).
+  (* ILookupValBr: a map miss returns [p]; the hit arm threads by IH (set_reg is
+     a regfile write, not a packet write). *)
+  all: try (destruct (map_has_key _ _); [apply IH; exact Hno | reflexivity]).
   (* IDynset: writes_instr and run_rule_writes branch on the data-reg option and
      the field/immediate flag.  set (None) and field-map (Some _, true) are writes
      so [no_writes] excludes them (discriminate); an immediate-map (Some _, false)
@@ -1158,7 +1161,7 @@ Qed.
     objref/ctsetdir), so the mutation theorem no longer has to exclude them. ---- *)
 Definition straight_instr (i : instr) : bool :=
   match i with
-  | ICmp _ _ _ | IRange _ _ _ _ | ILookup _ _ _ | IVmap _ _
+  | ICmp _ _ _ | IRange _ _ _ _ | ILookup _ _ _ | ILookupValBr _ _ _ | IVmap _ _
   | ILimit _ | IQuota _ | IConnlimit _
   | INat _ _ _ _ _ _ _ | ITproxy _ _ _ | IFwd _ _ _ | IQueueSreg _ _ _
   | IReject _ _ | IQueue _ _ _ _ | IImmediate _
@@ -1847,22 +1850,81 @@ Proof.
   rewrite Hr. cbn [run_rule]. reflexivity.
 Qed.
 
+(** [compile_transforms] is the in-place transform chain at register 1. *)
+Lemma compile_transforms_eq_at1 : forall ts, compile_transforms ts = compile_transforms_at 1 ts.
+Proof.
+  induction ts as [| t ts IH]; [reflexivity|].
+  cbn [compile_transforms compile_transforms_at map]. rewrite IH.
+  destruct t; reflexivity.
+Qed.
+
+(** The lookup key the loads+transforms leave in the key registers IS the
+    [nat_map_key]: the first field transformed in place, the rest raw, concatenated
+    (mirrors the [VMap] statement key, cf. the [eval_vsrc] proof above). *)
+Lemma run_transforms_key : forall fields ts rf p (rf' : regfile),
+  rf' 1 = apply_transforms ts (write_fields rf (alloc_regs 0 fields) p 1) ->
+  (forall r0, r0 <> 1 -> rf' r0 = write_fields rf (alloc_regs 0 fields) p r0) ->
+  List.concat (map rf' (map snd (alloc_regs 0 fields))) = nat_map_key fields ts p.
+Proof.
+  intros fields ts rf p rf' Hv1 Hfr. destruct fields as [| f0 fr].
+  - reflexivity.
+  - cbn [nat_map_key]. f_equal.
+    replace (map snd (alloc_regs 0 (f0 :: fr)))
+      with (1 :: map snd (alloc_regs (field_slots f0) fr))
+      by (cbn [alloc_regs map snd reg_of_slot Nat.eqb Nat.add]; reflexivity).
+    cbn [map]. f_equal.
+    + rewrite Hv1. f_equal. apply (write_fields_head f0 fr 0 rf p).
+    + transitivity (map (write_fields rf (alloc_regs 0 (f0 :: fr)) p)
+                        (map snd (alloc_regs (field_slots f0) fr))).
+      * apply map_ext_in. intros r Hin. apply Hfr. intro Heq; subst r.
+        apply alloc_regs_lb in Hin. pose proof (field_slots_pos f0).
+        assert (0 < field_slots f0) as Hlt by lia. apply reg_of_slot_mono in Hlt.
+        cbn [reg_of_slot Nat.eqb] in Hlt. lia.
+      * pose proof (map_write_fields (alloc_regs 0 (f0 :: fr)) rf p (alloc_regs_nodup _ _)) as Hwf.
+        rewrite map_fst_field, alloc_regs_fst in Hwf.
+        cbn [alloc_regs map snd Nat.add] in Hwf. injection Hwf as _ Htl. exact Htl.
+Qed.
+
 (** A map-sourced NAT operand: load the key (+ transforms), look it up in the map
-    (into reg 1), then the terminal [INat] accepts — all verdict-neutral until
-    [INat]. *)
+    (into reg 1) — a HIT ([map_has_key]) feeds the terminal [INat] which accepts; a
+    miss BREAKs at [ILookupValBr] before [INat] (see [run_map_nat_break]). *)
 Lemma run_map_nat : forall fields ts name tail rf k fam amin amax pmin pmax fl p,
   fields_loadable fields p = true ->
+  map_has_key (nat_map_key fields ts p) (e_map (pkt_env p) name) = true ->
   run_rule rf
     ((load_fields (alloc_regs 0 fields) ++ compile_transforms ts
-        ++ [ILookupVal (map snd (alloc_regs 0 fields)) name 1])
+        ++ [ILookupValBr (map snd (alloc_regs 0 fields)) name 1])
      ++ INat k fam amin amax pmin pmax fl :: tail) p = Some Accept.
 Proof.
-  intros fields ts name tail rf k fam amin amax pmin pmax fl p Hl.
+  intros fields ts name tail rf k fam amin amax pmin pmax fl p Hl Hk.
   rewrite <- !app_assoc. rewrite run_load_fields by (rewrite forallb_alloc_regs; exact Hl).
-  edestruct (run_transforms_prefix ts (write_fields rf (alloc_regs 0 fields) p)
-              ([ILookupVal (map snd (alloc_regs 0 fields)) name 1]
-                 ++ INat k fam amin amax pmin pmax fl :: tail) p) as [rf' [_ Hr]].
-  rewrite Hr. cbn [app run_rule]. reflexivity.
+  rewrite compile_transforms_eq_at1.
+  edestruct (run_transforms_at_prefix ts 1 (write_fields rf (alloc_regs 0 fields) p)
+              ([ILookupValBr (map snd (alloc_regs 0 fields)) name 1]
+                 ++ INat k fam amin amax pmin pmax fl :: tail) p) as [rf' [Hv1 [Hfr Hr]]].
+  rewrite Hr. cbn [app run_rule].
+  rewrite (run_transforms_key fields ts rf p rf' Hv1 Hfr), Hk.
+  cbn [run_rule]. reflexivity.
+Qed.
+
+(** A map-sourced NAT operand on a MISS: the [ILookupValBr] BREAKs the rule, so the
+    terminal never fires. *)
+Lemma run_map_nat_break : forall fields ts name tail rf k fam amin amax pmin pmax fl p,
+  fields_loadable fields p = true ->
+  map_has_key (nat_map_key fields ts p) (e_map (pkt_env p) name) = false ->
+  run_rule rf
+    ((load_fields (alloc_regs 0 fields) ++ compile_transforms ts
+        ++ [ILookupValBr (map snd (alloc_regs 0 fields)) name 1])
+     ++ INat k fam amin amax pmin pmax fl :: tail) p = None.
+Proof.
+  intros fields ts name tail rf k fam amin amax pmin pmax fl p Hl Hk.
+  rewrite <- !app_assoc. rewrite run_load_fields by (rewrite forallb_alloc_regs; exact Hl).
+  rewrite compile_transforms_eq_at1.
+  edestruct (run_transforms_at_prefix ts 1 (write_fields rf (alloc_regs 0 fields) p)
+              ([ILookupValBr (map snd (alloc_regs 0 fields)) name 1]
+                 ++ INat k fam amin amax pmin pmax fl :: tail) p) as [rf' [Hv1 [Hfr Hr]]].
+  rewrite Hr. cbn [app run_rule].
+  rewrite (run_transforms_key fields ts rf p rf' Hv1 Hfr), Hk. reflexivity.
 Qed.
 
 (** A field-sourced NAT operand: load the field (+ transforms), then the terminal
@@ -1901,7 +1963,9 @@ Lemma run_compile_nat : forall n tail rf k fam amin amax pmin pmax fl p,
   (match nat_src n with
    | Some vs => vsrc_loadable vs p
    | None => match nat_map n with
-             | Some (fields, _, _) => fields_loadable fields p
+             | Some (fields, ts, name) =>
+                 fields_loadable fields p
+                 && map_has_key (nat_map_key fields ts p) (e_map (pkt_env p) name)
              | None => match nat_field n with Some (f, _) => field_loadable f p | None => true end
              end
    end) = true ->
@@ -1915,12 +1979,16 @@ Proof.
                  (compile_nat_extra n ++ INat k fam amin amax pmin pmax fl :: tail) p Hl) as [rf' Hr].
     rewrite Hr. apply run_extra_inat.
   - destruct (nat_map n) as [[[fields ts] name] |].
-    + rewrite <- !app_assoc. rewrite run_load_fields by (rewrite forallb_alloc_regs; exact Hl).
-      edestruct (run_transforms_prefix ts (write_fields rf (alloc_regs 0 fields) p)
-                   ([ILookupVal (map snd (alloc_regs 0 fields)) name 1]
+    + apply Bool.andb_true_iff in Hl. destruct Hl as [Hfl Hk].
+      rewrite <- !app_assoc. rewrite run_load_fields by (rewrite forallb_alloc_regs; exact Hfl).
+      rewrite compile_transforms_eq_at1.
+      edestruct (run_transforms_at_prefix ts 1 (write_fields rf (alloc_regs 0 fields) p)
+                   ([ILookupValBr (map snd (alloc_regs 0 fields)) name 1]
                       ++ compile_nat_extra n ++ INat k fam amin amax pmin pmax fl :: tail) p)
-        as [rf' [_ Hr]].
-      rewrite Hr. cbn [app run_rule]. apply run_extra_inat.
+        as [rf' [Hv1 [Hfr Hr]]].
+      rewrite Hr. cbn [app run_rule].
+      rewrite (run_transforms_key fields ts rf p rf' Hv1 Hfr), Hk.
+      cbn [run_rule]. apply run_extra_inat.
     + destruct (nat_field n) as [[f ts] |].
       * cbn [app]. rewrite compile_load_correct by exact Hl.
         edestruct (run_transforms_prefix ts (set_reg rf 1 (field_value f p))
@@ -1937,7 +2005,9 @@ Lemma run_compile_nat_break : forall n tail rf k fam amin amax pmin pmax fl p,
   (match nat_src n with
    | Some vs => vsrc_loadable vs p
    | None => match nat_map n with
-             | Some (fields, _, _) => fields_loadable fields p
+             | Some (fields, ts, name) =>
+                 fields_loadable fields p
+                 && map_has_key (nat_map_key fields ts p) (e_map (pkt_env p) name)
              | None => match nat_field n with Some (f, _) => field_loadable f p | None => true end
              end
    end) = false ->
@@ -1949,8 +2019,21 @@ Proof.
   destruct (nat_src n) as [vs |].
   - rewrite run_vsrc_break; [reflexivity | exact Hl].
   - destruct (nat_map n) as [[[fields ts] name] |].
-    + rewrite <- !app_assoc. rewrite run_load_fields_break; [reflexivity|].
-      rewrite forallb_alloc_regs. exact Hl.
+    + destruct (fields_loadable fields p) eqn:Hfl.
+      * (* fields load: the break is the map MISS at [ILookupValBr] *)
+        assert (Hk : map_has_key (nat_map_key fields ts p) (e_map (pkt_env p) name) = false)
+          by (cbn [andb] in Hl; exact Hl).
+        rewrite <- !app_assoc. rewrite run_load_fields by (rewrite forallb_alloc_regs; exact Hfl).
+        rewrite compile_transforms_eq_at1.
+        edestruct (run_transforms_at_prefix ts 1 (write_fields rf (alloc_regs 0 fields) p)
+                     ([ILookupValBr (map snd (alloc_regs 0 fields)) name 1]
+                        ++ compile_nat_extra n ++ INat k fam amin amax pmin pmax fl :: tail) p)
+          as [rf' [Hv1 [Hfr Hr]]].
+        rewrite Hr. cbn [app run_rule].
+        rewrite (run_transforms_key fields ts rf p rf' Hv1 Hfr), Hk. reflexivity.
+      * (* fields don't load: break at the load *)
+        rewrite <- !app_assoc. rewrite run_load_fields_break; [reflexivity|].
+        rewrite forallb_alloc_regs. exact Hfl.
     + destruct (nat_field n) as [[f ts] |].
       * cbn [app]. rewrite compile_load_break; [reflexivity | exact Hl].
       * discriminate Hl.

@@ -522,6 +522,36 @@ Proof.
       exact (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ nm X (eq_sym E) Hnm).
 Qed.
 
+(** The synthesised DATA-MAP names are [mapname k] for [k >= n]; any OTHER name's
+    [sd_maps] lookup is stable across the pass (mirrors [_assoc_stable] for sets). *)
+Lemma optimize_rules_mapn_maps_assoc_stable : forall rs n d n' d' rs' nm X,
+  optimize_rules_mapn n d rs = (n', d', rs') ->
+  (forall j, n <= j -> nm <> mapname j) ->
+  assoc_str nm (sd_maps d') X = assoc_str nm (sd_maps d) X.
+Proof.
+  induction rs as [rs IH] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' nm X H Hnm. destruct rs as [| r1 [| r2 rest]].
+  - cbn in H; inversion H; subst; reflexivity.
+  - cbn in H; inversion H; subst; reflexivity.
+  - rewrite optimize_rules_mapn_cons2 in H.
+    destruct (map_merge_pair r1 r2) as [[[[[[f v1] v2] M1] M2] k]|]; cbv zeta in H.
+    + remember (optimize_rules_mapn (S n)
+                  {| sd_sets := (setname n, map2_set v1 v2) :: sd_sets d;
+                     sd_vmaps := sd_vmaps d;
+                     sd_maps := (mapname n, map2_map v1 v2 M1 M2) :: sd_maps d |} rest)
+        as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. injection H as _ Hd _; subst d'.
+      erewrite (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ nm X (eq_sym E)
+                  ltac:(intros j Hj; apply Hnm; lia)).
+      cbn [sd_maps assoc_str].
+      destruct (String.eqb nm (mapname n)) eqn:Eq.
+      * apply String.eqb_eq in Eq. exfalso. apply (Hnm n); [lia | exact Eq].
+      * reflexivity.
+    + remember (optimize_rules_mapn n d (r2 :: rest)) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. injection H as _ Hd _; subst d'.
+      exact (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ nm X (eq_sym E) Hnm).
+Qed.
+
 Lemma optimize_rules_mapn_keys_bound : forall rs n d n' d' rs' j,
   optimize_rules_mapn n d rs = (n', d', rs') ->
   In (setname j) (map fst (sd_sets d')) ->
