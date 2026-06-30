@@ -300,26 +300,39 @@ corpus round-trip.
 Build & check proofs: `make proofs`. Forward test: `make difftest`. Corpus
 coverage: `make corpus` (clones nftables' `tests/py` once into a cache dir).
 
-## The theorems (all twelve `Closed under the global context` — no axioms)
+## The theorems (every one `Closed under the global context` — no axioms)
 
-The two headline statements:
+The headline statements (these are what `README.md` leads with):
 
 ```coq
 Theorem compile_chain_correct : forall c p,
   run_chain (compile_chain c) (c_policy c) p = eval_chain c p.
 
-Theorem optimize_chain_correct : forall c p,
-  eval_chain (optimize_chain c) p = eval_chain c p.
+(* whole-pipeline optimizer correctness, for ANY input chain — no rules_clean,
+   no caller freshness side-condition (freshness is internal via seed_start): *)
+Theorem optimize_table_uncond_correct : forall c base p n' d' c',
+  optimize_table_uncond c = (n', d', c') ->
+  eval_chain c' (set_env p (env_with_sets base d'))
+  = eval_chain c (set_env p (env_with_sets base empty_decls)).
+
+Theorem optimize_table_uncond_compile_correct : ...  (* same, to the COMPILED bytecode *)
 ```
 
 `eval_chain` is the declarative meaning of a base chain (first-match evaluation
 with a default policy); `run_chain` runs the compiled register-machine bytecode.
 The first says the netlink ruleset we would install filters every packet exactly
-as the DSL specifies; the second says the optimizer never changes a verdict.
+as the DSL specifies; the `optimize_table_uncond` family (in `Optimize_Uncond.v`)
+says the *optimized* chain — and its compiled bytecode — preserves every packet's
+verdict against the synthesised set/map declarations, for **any** input ruleset.
+The earlier per-pass `Optimize.optimize_chain_correct` (the base dedup/simplify
+pass alone changes no verdict) is subsumed by it.
 
-The verified core has grown well past those two. The full set of top-level
-theorems in `Correct.v`/`Optimize.v`, each verified axiom-free by
-`Print Assumptions` (12 × "Closed under the global context"):
+The verified core also includes the compile/control-flow theorems below, each
+verified axiom-free by `Print Assumptions` ("Closed under the global context").
+This list is the original compile core; the optimizer pipeline adds the
+`optimize_table_uncond*` headline above (and the per-pass `_correct_uncond`
+lemmas in `Optimize_Uncond.v`), all likewise axiom-free — re-check any with
+`Print Assumptions <name>`:
 
 | theorem | what it preserves |
 |---|---|
@@ -529,10 +542,13 @@ cannot prove a false property.
 | `make semtest` | executable witnesses: DSL = VM = optimized on packet batteries (incl. the mutation / sequence witnesses) |
 | `make parse-test` | `.nft` frontend (TODO 9 M1): parses `../ruleset.nft`, checks parsed-AST verdicts vs `Example_Ruleset.v`; difftest ruleset → `glue.ml`'s AST; live-`nft` round-trip |
 
-Axiom-freedom (must stay at **12**), re-check with:
+Axiom-freedom — every headline theorem must print "Closed under the global
+context". Re-check the optimizer-pipeline headline (and the compile core) with:
 ```
-cd theories && printf 'From Nft Require Import Correct Optimize.\nPrint Assumptions compile_chain_correct.\n... (all 12) ...\n' | coqtop -R . Nft | grep -c "Closed under the global context"
+cd theories && printf 'From Nft Require Import Correct Optimize_Uncond.\nPrint Assumptions compile_chain_correct.\nPrint Assumptions Optimize_Uncond.optimize_table_uncond_correct.\nPrint Assumptions Optimize_Uncond.optimize_table_uncond_compile_correct.\n' | coqtop -R . Nft | grep -c "Closed under the global context"
 ```
+(plus the compile/control-flow theorems listed above; the in-repo `Print
+Assumptions` guards across `theories/*.v` are checked on every `make proofs`.)
 The 12 theorems are listed in "The theorems" table above. Any new top-level
 theorem must also print `Closed under the global context`.
 

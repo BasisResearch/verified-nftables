@@ -156,8 +156,10 @@ NOT nft -o byte-faithful (head-set-guarded form; documented, see below).**
       the register-free `nat_spec`.** (The old `dnat-map-miss` branch did Phase 1+2 on the pre-refactor
       `nat_spec`; that is superseded.) Phase 1 (NFT_BREAK-on-map-miss) and Phase 2 (optimizer e_map
       agreement + freshness) are DONE, axiom-free, all gates green (corpus 2532/2532). **Phase 3 (the
-      dnat/snat merge pass that EMITS the bare map + nat-effect correctness) is the remaining work.**
-      Targets `dnat to … map` / `snat to … map` (the case `nft -o` actually merges). Three phases:
+      dnat merge pass that EMITS the bare map + nat-effect correctness) is ALSO DONE AND SHIPPED** —
+      see the per-phase status below and the "Phase 3 — NOW COMPLETE & SHIPPED" note (commit `847fe99`);
+      `dnat to … map` is composed into `optimize_table`. The remaining bare-map follow-on is **snat**
+      (the symmetric case — same machinery). The detailed three-phase log:
       - **Phase 1 — NFT_BREAK-on-map-miss (DONE on branch, commit `ea2838f`; `compile_chain_correct`
         re-proved, "Closed").** `Bytes.map_has_key`; new `Bytecode.ILookupValBr` (breaking lookup for a
         TERMINAL map operand; non-breaking `ILookupVal` stays for verdict-neutral statement maps where a
