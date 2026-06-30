@@ -148,3 +148,71 @@ Proof.
   - (* field does not load: every rule BREAKs (rule_loadable false) -> fall through *)
     cbn [andb]. reflexivity.
 Qed.
+
+(** ** The NON-VACUOUS data-plane correctness: the bare merged map rule applies
+    the SAME NAT translation as a `dnat to T` rule whose target [T] is the map
+    value at the packet's key — i.e. the synthesised map rewrites to exactly the
+    right address (not just "some accept"). *)
+
+(** [apply_nat_tuple] / [nat_orig_addr] read the spec ONLY through its address
+    family and src/dst-ness, so two specs agreeing there have the same effect. *)
+Lemma apply_nat_tuple_indep : forall ns1 ns2 p m,
+  nat_addrfamily ns1 = nat_addrfamily ns2 ->
+  nat_is_src ns1 = nat_is_src ns2 ->
+  apply_nat_tuple ns1 p m = apply_nat_tuple ns2 p m.
+Proof.
+  intros ns1 ns2 p m Hf Hs. unfold apply_nat_tuple, nat_addrfamily_pkt.
+  rewrite Hf, Hs. reflexivity.
+Qed.
+
+Lemma nat_orig_addr_indep : forall ns1 ns2 p,
+  nat_addrfamily ns1 = nat_addrfamily ns2 ->
+  nat_is_src ns1 = nat_is_src ns2 ->
+  nat_orig_addr ns1 p = nat_orig_addr ns2 p.
+Proof.
+  intros ns1 ns2 p Hf Hs. unfold nat_orig_addr, nat_addrfamily_pkt.
+  rewrite Hf, Hs. reflexivity.
+Qed.
+
+(** The merged operand resolves to the map value at the key. *)
+Lemma nat_operand_addr_dnat_eq : forall h f m T p,
+  map_lookup_data (field_value f p) (e_map (pkt_env p) m) = T ->
+  nat_operand_addr h (dnat_map_spec f m) p = nat_operand_addr h (dnat_imm_spec T) p.
+Proof.
+  intros h f m T p Hlk. unfold nat_operand_addr, nat_has_addr, nat_addr.
+  cbn [nat_kind nat_src nat_map nat_field nat_addr_imm dnat_map_spec dnat_imm_spec].
+  rewrite nat_map_key_single, Hlk. reflexivity.
+Qed.
+
+(** THE data-plane merge: the bare map rule's NAT effect equals that of a
+    `dnat to <map value at the key>` rule — at EVERY hook and flow state. *)
+Theorem apply_nat_dnat_eq : forall h f m T p,
+  map_lookup_data (field_value f p) (e_map (pkt_env p) m) = T ->
+  apply_nat h (mk_dnat_rule f m) p = apply_nat h (orig_dnat_rule f [] T) p.
+Proof.
+  intros h f m T p Hlk.
+  unfold apply_nat, mk_dnat_rule, orig_dnat_rule. cbn [r_nat].
+  destruct (e_nat (pkt_env p) (pkt_flow p)) as [mm |].
+  - apply apply_nat_tuple_indep; reflexivity.
+  - destruct (pkt_ctdir_orig p); [| reflexivity].
+    rewrite (nat_orig_addr_indep (dnat_map_spec f m) (dnat_imm_spec T) p eq_refl eq_refl).
+    rewrite (nat_operand_addr_dnat_eq h f m T p Hlk).
+    cbn [nat_port_num nat_orig_port nat_extra dnat_map_spec dnat_imm_spec].
+    rewrite (apply_nat_tuple_indep (dnat_map_spec f m) (dnat_imm_spec T) p _ eq_refl eq_refl).
+    reflexivity.
+Qed.
+
+(** Specialised to the two-key map: hitting key [v1] applies [T1]; key [v2]
+    (distinct) applies [T2] — the merged rule's translation matches whichever
+    original would have fired. *)
+Corollary apply_nat_dnat_merge1 : forall h f v1 v2 T1 T2 m p,
+  e_map (pkt_env p) m = dmap2 v1 v2 T1 T2 ->
+  data_eqb (field_value f p) v1 = true ->
+  apply_nat h (mk_dnat_rule f m) p = apply_nat h (orig_dnat_rule f v1 T1) p.
+Proof.
+  intros h f v1 v2 T1 T2 m p Hmap Hv1.
+  transitivity (apply_nat h (orig_dnat_rule f [] T1) p).
+  - apply apply_nat_dnat_eq.
+    rewrite Hmap. unfold dmap2. cbn [map_lookup_data]. rewrite Hv1. reflexivity.
+  - unfold apply_nat, orig_dnat_rule. cbn [r_nat]. reflexivity.
+Qed.
