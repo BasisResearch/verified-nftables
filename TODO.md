@@ -152,7 +152,11 @@ NOT nft -o byte-faithful (head-set-guarded form; documented, see below).**
       NOT nft -o's output. The original commit MISLABELLED the guarded form as the "nft -o oracle"; this
       was corrected — `Optimize_Mapn.v` header + `semtest.ml` §6f now state plainly that this is a SOUND
       data-map consolidation, NOT nft -o byte-fidelity.
-    - **REMAINING to truly close the bare-map gap — IN PROGRESS on branch `dnat-map-miss`** (NOT on main).
+    - **REMAINING to truly close the bare-map gap — Phase 1+2 NOW ON MAIN (commit `b3d06b0`), redone on
+      the register-free `nat_spec`.** (The old `dnat-map-miss` branch did Phase 1+2 on the pre-refactor
+      `nat_spec`; that is superseded.) Phase 1 (NFT_BREAK-on-map-miss) and Phase 2 (optimizer e_map
+      agreement + freshness) are DONE, axiom-free, all gates green (corpus 2532/2532). **Phase 3 (the
+      dnat/snat merge pass that EMITS the bare map + nat-effect correctness) is the remaining work.**
       Targets `dnat to … map` / `snat to … map` (the case `nft -o` actually merges). Three phases:
       - **Phase 1 — NFT_BREAK-on-map-miss (DONE on branch, commit `ea2838f`; `compile_chain_correct`
         re-proved, "Closed").** `Bytes.map_has_key`; new `Bytecode.ILookupValBr` (breaking lookup for a
