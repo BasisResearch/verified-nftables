@@ -440,3 +440,44 @@ Proof.
       destruct t as [[m'' dd''] rr'']. injection H as _ Hd _; subst d'.
       exact (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ nm X (eq_sym E) Hnm).
 Qed.
+
+(** ** The chain wrapper. *)
+Definition optimize_chain_dnat (n : nat) (d : set_decls) (c : chain)
+  : nat * set_decls * chain :=
+  let '(n', d', rs') := optimize_rules_dnat n d (c_rules c) in
+  (n', d', {| c_policy := c_policy c; c_rules := rs' |}).
+
+Lemma optimize_chain_dnat_mono : forall n d c n' d' c',
+  optimize_chain_dnat n d c = (n', d', c') -> n <= n'.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_dnat in H.
+  destruct (optimize_rules_dnat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. apply (optimize_rules_dnat_mono _ _ _ _ _ _ E).
+Qed.
+
+Lemma optimize_chain_dnat_sets : forall n d c n' d' c',
+  optimize_chain_dnat n d c = (n', d', c') -> sd_sets d' = sd_sets d.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_dnat in H.
+  destruct (optimize_rules_dnat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. apply (optimize_rules_dnat_sets _ _ _ _ _ _ E).
+Qed.
+
+Lemma optimize_chain_dnat_vmaps : forall n d c n' d' c',
+  optimize_chain_dnat n d c = (n', d', c') -> sd_vmaps d' = sd_vmaps d.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_dnat in H.
+  destruct (optimize_rules_dnat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. apply (optimize_rules_dnat_vmaps _ _ _ _ _ _ E).
+Qed.
+
+Lemma optimize_chain_dnat_maps_assoc_stable : forall n d c n' d' c' nm X,
+  optimize_chain_dnat n d c = (n', d', c') ->
+  (forall j, n <= j -> nm <> mapname j) ->
+  assoc_str nm (sd_maps d') X = assoc_str nm (sd_maps d) X.
+Proof.
+  intros n d c n' d' c' nm X H Hnm. unfold optimize_chain_dnat in H.
+  destruct (optimize_rules_dnat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst.
+  apply (optimize_rules_dnat_maps_assoc_stable _ _ _ _ _ _ nm X E Hnm).
+Qed.

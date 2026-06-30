@@ -492,6 +492,21 @@ Proof.
         | exact Htail ].
 Qed.
 
+(** The chain-level lift: the dnat pass preserves [eval_chain] on every packet. *)
+Lemma optimize_chain_dnat_eval : forall n d c n' d' c' base p,
+  optimize_chain_dnat n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (mapname k) (map fst (sd_maps d))) ->
+  Forall (rule_nat_map_fresh n) (c_rules c) ->
+  eval_chain c' (set_env p (env_with_sets base d'))
+  = eval_chain c  (set_env p (env_with_sets base d)).
+Proof.
+  intros n d c n' d' c' base p H Hfresh Hrf. unfold optimize_chain_dnat in H.
+  destruct (optimize_rules_dnat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain. cbn [c_rules c_policy].
+  rewrite (optimize_rules_dnat_eval (c_rules c) n d m'' dd'' rr'' base p E Hfresh Hrf).
+  reflexivity.
+Qed.
+
 (** ** Part 3: unconditional per-pass correctness.
 
     Each theorem drops [rules_clean] in favour of [Forall (rule_set_fresh n)]
