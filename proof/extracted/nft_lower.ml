@@ -901,9 +901,9 @@ let lower_setdecl st (sd : Nft_ast.setdecl) : unit =
 (* the (hook, priority) registration of a base chain, if it has a `type _ hook _
    priority _` declaration; [None] for a regular (jumpable) chain. *)
 let lower_chain st ~family (sc : Nft_ast.schain)
-  : (string * Syntax.chain) * (string * int) option =
+  : (string * Syntax.chain) * (string * string * int) option =
   let hookinfo = L.fold_left (fun acc -> function
-    | Nft_ast.ITypeHook { hook; priority; _ } -> Some (hook, priority)
+    | Nft_ast.ITypeHook { ct_type; hook; priority } -> Some (ct_type, hook, priority)
     | _ -> acc) None sc.Nft_ast.sc_items in
   let is_base = hookinfo <> None in
   let policy = ref None and rules = ref [] in
@@ -920,9 +920,9 @@ let lower_chain st ~family (sc : Nft_ast.schain)
 
 type parsed = {
   p_tables : (string * string * (string * Syntax.chain) list) list;
-  (* per table: the base-chain hook registrations (chain-name, hook, priority),
-     in source order.  Empty for tables with no base chains. *)
-  p_hooks  : (string * string * (string * string * int) list) list;
+  (* per table: the base-chain hook registrations (chain-name, chain-type, hook,
+     priority), in source order.  Empty for tables with no base chains. *)
+  p_hooks  : (string * string * (string * string * string * int) list) list;
   p_env    : Packet.env;
   (* the raw declared/anonymous set & map contents, so a Coq emitter can
      serialise them as a [set_decls] record (the env is then [env_with_sets]) *)
@@ -959,7 +959,7 @@ let lower (f : Nft_ast.sfile) : parsed =
           | Nft_ast.TSet _ | Nft_ast.TObj _ -> None) t.Nft_ast.st_items in
         let chains = L.map fst lowered in
         let hooks = L.filter_map (fun ((cname, _), hi) -> match hi with
-          | Some (hook, prio) -> Some (cname, hook, prio)
+          | Some (ctype, hook, prio) -> Some (cname, ctype, hook, prio)
           | None -> None) lowered in
         Some ((t.Nft_ast.st_family, t.Nft_ast.st_name, chains),
               (t.Nft_ast.st_family, t.Nft_ast.st_name, hooks))

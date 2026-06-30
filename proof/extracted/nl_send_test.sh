@@ -69,5 +69,75 @@ nft add chain ip t2 c2 2>/dev/null || true
 nft --debug=netlink add rule ip t2 c2 tcp dport 22 accept 2>&1 | sed 's/^/  nft| /' || true
 
 rm -f "$RS"
+
+# ---------------------------------------------------------------------------
+# 5. STANDALONE stand-up (no preparatory `nft`): one atomic batch that creates
+#    the table + base/jump chains + a named set/vmap and the rules referencing
+#    them, exercising the conntrack / counter / nat / meta-set / verdict-chain /
+#    set-lookup / vmap encoders end-to-end.
+# ---------------------------------------------------------------------------
+nft flush ruleset 2>/dev/null || true
+RS2=$(mktemp)
+cat > "$RS2" <<'EOF'
+table ip fw {
+  chain c {
+    type filter hook input priority 0; policy drop;
+    ct state established,related accept
+    ct mark set 0x1
+    counter accept
+    tcp dport { 22, 80, 443 } accept
+    meta mark set 0x1
+    iifname vmap { lo : accept, eth0 : jump sub }
+  }
+  chain sub { }
+  chain post {
+    type nat hook postrouting priority 100; policy accept;
+    masquerade
+  }
+}
+EOF
+echo
+echo "=== standalone send --commit (no prior nft add) ==="
+"$CLI" send --no-optimize --commit < "$RS2" || fail "standalone send reported a kernel error"
+OUT2=$(nft list ruleset) || fail "nft list ruleset (standalone)"
+echo "$OUT2"
+echo
+echo "=== assertions (standalone) ==="
+for pat in 'chain c' 'ct mark set' 'counter ' 'meta mark set' 'chain sub' 'masquerade' '@__set' '@__map'; do
+  echo "$OUT2" | grep -Eq "$pat" \
+    && echo "  ok: '$pat' present" \
+    || fail "standalone: missing '$pat'"
+done
+rm -f "$RS2"
+
+# ---------------------------------------------------------------------------
+# 6. EXIT-CODE + ATOMICITY contract (CLI-2 / CLI-5): a committed batch the
+#    kernel REJECTS must exit non-zero (5) AND leave the kernel unchanged
+#    (all-or-nothing — the bad table must NOT appear).  Documented codes:
+#      4 = encode failure (Unsupported)  5 = kernel rejected  6 = no ack.
+# ---------------------------------------------------------------------------
+nft flush ruleset 2>/dev/null || true
+RS3=$(mktemp)
+cat > "$RS3" <<'EOF'
+table ip bad {
+  chain c {
+    type filter hook input priority 0; policy drop;
+    meta protocol vmap { ip : jump ghost }
+  }
+}
+EOF
+echo
+echo "=== negative: jump to an undeclared chain (expect reject + rollback) ==="
+"$CLI" send --no-optimize --commit < "$RS3"; RC=$?
+[ "$RC" -ne 0 ] \
+  && echo "  ok: non-zero exit ($RC) on kernel reject" \
+  || fail "committed an invalid batch but exited 0 (CLI-2 regression)"
+if nft list table ip bad >/dev/null 2>&1; then
+  fail "kernel left partially mutated: table 'bad' exists (CLI-5 atomicity regression)"
+else
+  echo "  ok: nothing committed — table 'bad' absent (atomic rollback)"
+fi
+rm -f "$RS3"
+
 echo
 echo "PASS: verified-compiled rules landed in the kernel via Nl_send"

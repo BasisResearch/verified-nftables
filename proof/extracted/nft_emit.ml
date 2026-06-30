@@ -267,7 +267,7 @@ let emit (src_path : string) (p : Nft_lower.parsed) : string =
       | Some (_, _, hs) -> hs | None -> [] in
     pr "Definition %s_hooks : list hooked_chain :=\n  [%s].\n\n" pfx
       (S.concat ";\n   "
-         (L.map (fun (cname, hook, prio) ->
+         (L.map (fun (cname, _ctype, hook, prio) ->
             spf "{| hc_hook := %s; hc_prio := %d; hc_env := %s_chains; hc_base := %s_%s |}"
               (hook_id hook) prio pfx pfx (sanitize cname)) hooks)))
     p.Nft_lower.p_tables;

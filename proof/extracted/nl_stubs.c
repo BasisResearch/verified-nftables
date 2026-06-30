@@ -41,5 +41,17 @@ CAMLprim value caml_nl_open(value unit)
     close(fd);
     caml_failwith(strerror(e));
   }
+
+  /* Ask the kernel for extended ACKs: on rejection it then appends a
+     human-readable NLMSGERR_ATTR_MSG (and the offending attribute offset),
+     which nl_send.ml surfaces to the user.  Best-effort: ignore failure on
+     kernels too old to support it. */
+#ifndef NETLINK_EXT_ACK
+#define NETLINK_EXT_ACK 11
+#endif
+  {
+    int on = 1;
+    (void)setsockopt(fd, SOL_NETLINK, NETLINK_EXT_ACK, &on, sizeof(on));
+  }
   CAMLreturn(Val_int(fd));
 }

@@ -6,9 +6,18 @@
      nftc send     [FILE.nft | -]      parse -> (optimize ->) compile -> SEND to the kernel
                                        (requires --commit; mutates kernel state; see Nl_send)
 
+   `send` builds ONE atomic nfnetlink batch for the whole selected ruleset —
+   NEWTABLE, NEWCHAIN (every chain, so jump targets exist), NEWSET + NEWSETELEM
+   (each set/map a rule references), then NEWRULE per rule — so a ruleset is
+   stood up from scratch with no preparatory `nft add`.  Exit codes:
+     0 ok ; 1 parse/usage ; 4 an instruction can't be encoded for netlink ;
+     5 the kernel rejected the batch ; 6 committed but no kernel ack (timeout).
+
    Options:
      --table T        restrict to table T (default: all parsed tables)
-     --chain C        restrict to base chain C (default: all base chains)
+     --chain C        restrict rule emission to chain C (default: all chains)
+     --family F       override the nfgen address family (ip|ip6|inet|arp|bridge|
+                      netdev) used for `send` (default: the parsed table family)
      --no-optimize    for `send`: compile the parsed chain WITHOUT the optimizer
      --commit         for `send`: actually transmit (otherwise a dry run that
                       prints the netlink batch it WOULD send)
@@ -28,7 +37,7 @@ let prog = "nftc"
 let usage () =
   prerr_string
     ("usage: " ^ prog ^ " {compile|optimize|send} [FILE.nft | -] \
-      [--table T] [--chain C] [--no-optimize] [--commit]\n");
+      [--table T] [--chain C] [--family F] [--no-optimize] [--commit]\n");
   exit 2
 
 (* read the whole ruleset text from a file path, or stdin for "-"/absent *)
@@ -49,6 +58,21 @@ let optimize_table (c : Syntax.chain) : Semantics.set_decls * Syntax.chain =
   let (nd, c') = Optimize_Uncond.optimize_table_uncond c in
   (snd nd, c')
 
+(* base-chain policy verdict -> NFTA_CHAIN_POLICY (NF_ACCEPT=1 / NF_DROP=0) *)
+let policy_code = function Verdict.Drop -> 0 | _ -> 1
+
+(* the named sets/maps/vmaps a compiled program references, in lookup order *)
+let referenced_sets (prog : Bytecode.program) : string list =
+  L.concat_map
+    (fun rp ->
+      L.filter_map
+        (function
+          | Bytecode.ILookup (_, n, _) | Bytecode.IVmap (_, n)
+          | Bytecode.ILookupVal (_, n, _) | Bytecode.ILookupValBr (_, n, _) -> Some n
+          | _ -> None)
+        rp)
+    prog
+
 (* the base chains (table, chain-name, chain) of a parsed ruleset, optionally
    filtered by --table / --chain.  A chain is a BASE chain iff it is registered
    with a hook in p_hooks (a jump-target-only chain has no hook). *)
@@ -63,7 +87,7 @@ let selected_chains (p : Nft_lower.parsed) ~table ~chain
         let hooks =
           match L.find_opt (fun (_f, n, _h) -> n = tname) p.Nft_lower.p_hooks with
           | Some (_f, _n, hs) -> hs | None -> [] in
-        let is_base cn = L.exists (fun (n, _hook, _prio) -> n = cn) hooks in
+        let is_base cn = L.exists (fun (n, _ctype, _hook, _prio) -> n = cn) hooks in
         L.filter_map
           (fun (cn, c) ->
             if is_base cn && want_chain cn then Some (tname, cn, c) else None)
@@ -102,11 +126,12 @@ let () =
   | _ :: ("-h" | "--help") :: _ | [_] -> usage ()
   | _ :: cmd :: rest ->
       let file = ref None and table = ref None and chain = ref None in
-      let no_opt = ref false and commit = ref false in
+      let no_opt = ref false and commit = ref false and family = ref None in
       let rec go = function
         | [] -> ()
         | "--table" :: t :: r -> table := Some t; go r
         | "--chain" :: c :: r -> chain := Some c; go r
+        | "--family" :: f :: r -> family := Some f; go r
         | "--no-optimize" :: r -> no_opt := true; go r
         | "--commit" :: r -> commit := true; go r
         | ("-h" | "--help") :: _ -> usage ()
@@ -125,14 +150,17 @@ let () =
             prerr_string (prog ^ ": unsupported construct: " ^ msg ^ "\n"); exit 1
       in
       let chains = selected_chains parsed ~table:!table ~chain:!chain in
-      if chains = [] then (prerr_string (prog ^ ": no matching base chain\n"); exit 1);
+      let need_chains () =
+        if chains = [] then (prerr_string (prog ^ ": no matching base chain\n"); exit 1) in
       (match cmd with
        | "compile" ->
+           need_chains ();
            L.iter
              (fun (t, cn, c) ->
                print_string (render_chain ~table:t ~chain:cn (Compile.compile_chain c)))
              chains
        | "optimize" ->
+           need_chains ();
            L.iter
              (fun (t, cn, c) ->
                let (decls, c') = optimize_table c in
@@ -143,13 +171,101 @@ let () =
                   print_string ds))
              chains
        | "send" ->
+           (* Build ONE atomic NFNL batch for the whole (selected) ruleset:
+              NEWTABLE, NEWCHAIN (every chain, so jump targets exist), NEWSET +
+              NEWSETELEM (each set/map a rule references), then NEWRULE per rule.
+              The rule expressions are the verified Compile.compile_chain output;
+              the table/chain/set framing is the parsed/optimizer structure. *)
+           let want_table tn = match !table with None -> true | Some t -> t = tn in
+           let want_chain cn = match !chain with None -> true | Some c -> c = cn in
+           let sel_tables =
+             L.filter (fun (_f, tn, _) -> want_table tn) parsed.Nft_lower.p_tables in
+           if sel_tables = [] then
+             (prerr_string (prog ^ ": no matching table\n"); exit 1);
+           let next_id = let c = ref 0 in fun () -> incr c; !c in
+           let msgs = ref [] in
+           let add m = msgs := m :: !msgs in
            (try
               L.iter
-                (fun (t, cn, c) ->
-                  let c' = if !no_opt then c else snd (optimize_table c) in
-                  let program = Compile.compile_chain c' in
-                  Nl_send.send_chain ~table:t ~chain:cn ~commit:!commit program)
-                chains
+                (fun (fam_str, tname, tchains) ->
+                  let fam = match !family with
+                    | Some f -> Nl_send.nfproto_of_family f
+                    | None -> Nl_send.nfproto_of_family fam_str in
+                  add (Nl_send.msg_table ~family:fam ~table:tname);
+                  let hooks =
+                    match L.find_opt (fun (_f, n, _h) -> n = tname) parsed.Nft_lower.p_hooks with
+                    | Some (_f, _n, hs) -> hs | None -> [] in
+                  let base_of cn =
+                    match L.find_opt (fun (n, _c, _h, _p) -> n = cn) hooks with
+                    | Some (_n, ctype, hook, prio) ->
+                        Some (ctype, Nl_send.hooknum_of_name hook, prio)
+                    | None -> None in
+                  (* every chain is created (jump targets included) *)
+                  L.iter
+                    (fun (cn, ch) ->
+                      let base = base_of cn in
+                      let policy = match base with
+                        | Some _ -> Some (policy_code ch.Syntax.c_policy) | None -> None in
+                      add (Nl_send.msg_chain ~family:fam ~table:tname ~name:cn ~base ~policy))
+                    tchains;
+                  (* set/map declarations: parsed named ones + optimizer-synthesised *)
+                  let synth_sets = ref [] and synth_vmaps = ref [] in
+                  let seen = Hashtbl.create 16 in
+                  let emit_set name =
+                    if not (Hashtbl.mem seen name) then begin
+                      Hashtbl.add seen name ();
+                      let find l1 l2 = match L.assoc_opt name l1 with
+                        | Some x -> Some x | None -> L.assoc_opt name l2 in
+                      match find !synth_vmaps parsed.Nft_lower.p_vmaps with
+                      | Some entries ->
+                          let elems = L.map
+                            (fun ((lo, _hi), v) -> { Nl_send.ek = lo; ed = Some (Nl_send.EVerdict v) })
+                            entries in
+                          let klen = match entries with ((lo, _), _) :: _ -> L.length lo | [] -> 0 in
+                          let id = next_id () in
+                          add (Nl_send.msg_set ~family:fam ~table:tname ~name ~set_id:id
+                                 ~flags:Nl_send.nft_set_map ~klen
+                                 ~dtype:(Some Nl_send.nft_data_verdict) ~dlen:None);
+                          if elems <> [] then
+                            add (Nl_send.msg_setelems ~family:fam ~table:tname ~set:name ~set_id:id elems)
+                      | None ->
+                          (match find !synth_sets parsed.Nft_lower.p_sets with
+                           | Some els ->
+                               let elems = L.map
+                                 (fun (lo, hi) ->
+                                   if lo <> hi then
+                                     raise (Nl_send.Unsupported
+                                       ("interval element in set " ^ name ^
+                                        " (range/prefix set elements not yet encoded)"));
+                                   { Nl_send.ek = lo; ed = None })
+                                 els in
+                               let klen = match els with (lo, _) :: _ -> L.length lo | [] -> 0 in
+                               let id = next_id () in
+                               add (Nl_send.msg_set ~family:fam ~table:tname ~name ~set_id:id
+                                      ~flags:0 ~klen ~dtype:None ~dlen:None);
+                               if elems <> [] then
+                                 add (Nl_send.msg_setelems ~family:fam ~table:tname ~set:name ~set_id:id elems)
+                           | None ->
+                               raise (Nl_send.Unsupported ("set/map referenced but not declared: " ^ name)))
+                    end in
+                  L.iter
+                    (fun (cn, ch) ->
+                      if want_chain cn then begin
+                        let ch' = if !no_opt then ch
+                          else (let (d, c') = optimize_table ch in
+                                synth_sets := !synth_sets @ d.Semantics.sd_sets;
+                                synth_vmaps := !synth_vmaps @ d.Semantics.sd_vmaps;
+                                c') in
+                        let prog = Compile.compile_chain ch' in
+                        L.iter emit_set (referenced_sets prog);
+                        L.iter (fun rp -> add (Nl_send.msg_rule ~family:fam ~table:tname ~chain:cn rp)) prog
+                      end)
+                    tchains)
+                sel_tables;
+              let desc =
+                Printf.sprintf "%d table(s), %d message(s)"
+                  (L.length sel_tables) (L.length !msgs) in
+              Nl_send.send_batch ~commit:!commit ~desc (L.rev !msgs)
             with Nl_send.Unsupported msg ->
               prerr_string (prog ^ ": cannot encode for netlink: " ^ msg ^ "\n"); exit 4)
        | _ -> usage ())
