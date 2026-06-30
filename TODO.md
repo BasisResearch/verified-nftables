@@ -175,11 +175,16 @@ NOT nft -o byte-faithful (head-set-guarded form; documented, see below).**
         need a `rule_nat_map_fresh` track mirroring `rule_set_fresh` (def + mono + ~8 `output_fresh` lemmas
         [all trivial — NO pass mints a nat_map name] + `seed_start` + gen-theorem threading). Until this
         lands, `optimize_table_uncond_correct` does not compile on the branch.
-      - **Phase 3 — the dnat/snat merge pass itself + NAT-effect correctness** (not started): recognise
-        adjacent `field=A dnat to T1` / `field=B dnat to T2`, emit the BARE `dnat to field map {A:T1,B:T2}`
-        (writing `sd_maps`, NO head guard — sound now that miss breaks); prove verdict-preserving over
-        `eval_chain` AND the NAT packet rewrite (`apply_nat`) over a state-exposing evaluation (analogue of
-        `dsl_step_map_merge`, for `r_nat`).
+      - **Phase 3 — MATH CORE DONE (`theories/Optimize_Dnat.v`, commits `f683db9`/`487bed4`, axiom-free).**
+        `orig_dnat_rule`/`mk_dnat_rule` (bare `dnat to field map {A:T1,B:T2}`, no head guard);
+        `eval_rules_dnat_merge` proves the bare merged rule accepts EXACTLY the packets the two originals
+        accept and falls through on the rest (the crux: a key miss makes `rule_loadable` FALSE = NFT_BREAK);
+        `apply_nat_dnat_eq`/`apply_nat_dnat_merge1` prove the data-plane rewrite applies exactly the map
+        value at the key (non-vacuous target correctness). **REMAINING (mechanical, mirrors
+        `Optimize_Mapn.v`):** the recogniser + executable `optimize_rules_dnat` pass; per-list eval
+        correctness threading the env-agreement infra (Phase 2 already provides `decls_agree_rule_mapseam`
+        + `rule_nat_map_fresh`); compose into `optimize_table_uncond` + re-prove the gen theorem; extraction
+        + semtest.
       Estimated remaining: Phase 2 ~15 mechanical lemmas; Phase 3 comparable to the whole mapN effort.
 - **DONE — 1b (N-dim concat).** The N(≥3)-field concat pass is implemented, proved axiom-free,
   COMPOSED into the shipped `optimize_table_uncond`, extracted, and semtested. The shipped
