@@ -180,11 +180,13 @@ NOT nft -o byte-faithful (head-set-guarded form; documented, see below).**
         `eval_rules_dnat_merge` proves the bare merged rule accepts EXACTLY the packets the two originals
         accept and falls through on the rest (the crux: a key miss makes `rule_loadable` FALSE = NFT_BREAK);
         `apply_nat_dnat_eq`/`apply_nat_dnat_merge1` prove the data-plane rewrite applies exactly the map
-        value at the key (non-vacuous target correctness). **REMAINING (mechanical, mirrors
-        `Optimize_Mapn.v`):** the recogniser + executable `optimize_rules_dnat` pass; per-list eval
-        correctness threading the env-agreement infra (Phase 2 already provides `decls_agree_rule_mapseam`
-        + `rule_nat_map_fresh`); compose into `optimize_table_uncond` + re-prove the gen theorem; extraction
-        + semtest.
+        value at the key (non-vacuous target correctness). The recogniser + executable `optimize_rules_dnat`
+        pass + structural invariants, the env-threaded per-list `optimize_rules_dnat_eval`, and the chain
+        wrapper `optimize_chain_dnat`/`optimize_chain_dnat_eval` (eval_chain preservation) are all DONE and
+        axiom-free (full build green, commit `d6add05`). **REMAINING:** insert `optimize_chain_dnat` as a
+        stage in `optimize_table` (Optimize_Table.v) + re-prove `optimize_table_correct_uncond_gen` with a
+        3rd freshness track (`rule_nat_map_fresh`; every other pass preserves it trivially since their
+        merged rules have `r_nat=None`) + `seed_start` past nat_map names; then `Extract.v`/glue + semtest.
       Estimated remaining: Phase 2 ~15 mechanical lemmas; Phase 3 comparable to the whole mapN effort.
 - **DONE — 1b (N-dim concat).** The N(≥3)-field concat pass is implemented, proved axiom-free,
   COMPOSED into the shipped `optimize_table_uncond`, extracted, and semtested. The shipped
