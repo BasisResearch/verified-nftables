@@ -274,6 +274,7 @@ let instr_name : Bytecode.instr -> string = function
   | Bytecode.IVmap _ -> "IVmap"           | Bytecode.IImmediateData _ -> "IImmediateData"
   | Bytecode.IPayloadWrite _ -> "IPayloadWrite" | Bytecode.IMetaSet _ -> "IMetaSet"
   | Bytecode.ICtSet _ -> "ICtSet"         | Bytecode.ILookupVal _ -> "ILookupVal"
+  | Bytecode.ILookupValBr _ -> "ILookupValBr"
   | Bytecode.INat _ -> "INat"             | Bytecode.ILimit _ -> "ILimit"
   | Bytecode.ICounter _ -> "ICounter"     | Bytecode.INotrack -> "INotrack"
   | Bytecode.ILog _ -> "ILog"             | Bytecode.IReject _ -> "IReject"
