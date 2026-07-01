@@ -155,7 +155,18 @@ Definition numgen_inc_value (spec : numgen_spec) (c : nat) : data :=
     width is variable / unmodelled, e.g. the interface-name string keys). *)
 Definition meta_fixed_len (k : meta_key) : option nat :=
   match k with
+  (* Fixed-width meta SCALARS at their kernel register widths (net/netfilter/nft_meta.c,
+     nft_meta_get_init): [mark]/[skuid]/[skgid] are u32 slots (nft_reg_store32, 4 bytes);
+     [l4proto]/[nfproto] are u8 slots (nft_reg_store8, 1 byte).  Pinning the width lets the
+     value->set / vmap / concat merges fold a run over these keys exactly as for [meta mark]
+     (same membership certificate [field_fixed_len_loaded]), matching `nft -o`'s
+     `meta skuid { … }` / `meta l4proto { … }` / `meta nfproto { … }` consolidation.
+     Keys left [None] read raw (variable / unmodelled width, e.g. interface-name strings). *)
   | MKmark => Some 4
+  | MKskuid => Some 4
+  | MKskgid => Some 4
+  | MKl4proto => Some 1
+  | MKnfproto => Some 1
   | _      => None
   end.
 

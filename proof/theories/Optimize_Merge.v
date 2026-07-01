@@ -1515,3 +1515,54 @@ Qed.
     N-rule run into a single N-element anonymous set. *)
 
 (** *** Chain-level N-WAY value->set: verdict-preserving end-to-end, axiom-free. *)
+
+(** ** Non-vacuity witnesses: the value->set merge now FIRES on the fixed-width meta
+    SCALAR keys [skuid]/[skgid] (u32) and [l4proto]/[nfproto] (u8), exactly as it
+    already did on [meta mark].  Each [value_merge_pair] recognises the adjacent
+    `meta K v1 accept` / `meta K v2 accept` pair and returns the two point values,
+    so [optimize_rules_sets] rewrites the pair into a single [MConcatSet] over a
+    fresh `__setN` = `{ v1, v2 }` — the `meta K { v1, v2 } accept` fold. *)
+Definition wit_meta_rule (f : field) (v : data) : rule :=
+  {| r_body := [BMatch (MCmp f CEq v)];
+     r_verdict := Accept; r_vmap := None; r_nat := None;
+     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+
+(* meta skuid 1000/1001 => set { 0xe8030000, 0xe9030000 } (u32, little-endian). *)
+Example value_merge_fires_skuid :
+  value_merge_pair (wit_meta_rule FMetaSkuid [232;3;0;0])
+                   (wit_meta_rule FMetaSkuid [233;3;0;0])
+  = Some (FMetaSkuid, [232;3;0;0], [233;3;0;0], []).
+Proof. reflexivity. Qed.
+
+(* meta skgid, same u32 family. *)
+Example value_merge_fires_skgid :
+  value_merge_pair (wit_meta_rule FMetaSkgid [6;0;0;0])
+                   (wit_meta_rule FMetaSkgid [17;0;0;0])
+  = Some (FMetaSkgid, [6;0;0;0], [17;0;0;0], []).
+Proof. reflexivity. Qed.
+
+(* meta l4proto 6/17 => set { 0x06, 0x11 } (u8). *)
+Example value_merge_fires_l4proto :
+  value_merge_pair (wit_meta_rule FMetaL4proto [6])
+                   (wit_meta_rule FMetaL4proto [17])
+  = Some (FMetaL4proto, [6], [17], []).
+Proof. reflexivity. Qed.
+
+(* meta nfproto 6/17 => set { 0x06, 0x11 } (u8). *)
+Example value_merge_fires_nfproto :
+  value_merge_pair (wit_meta_rule FMetaNfproto [6])
+                   (wit_meta_rule FMetaNfproto [17])
+  = Some (FMetaNfproto, [6], [17], []).
+Proof. reflexivity. Qed.
+
+(* End-to-end at the rule-list level: [optimize_rules_sets] collapses the skuid pair
+   into ONE rule (a [MConcatSet] over a fresh `__set`) plus the minted 2-element set. *)
+Example optimize_rules_sets_folds_skuid :
+  optimize_rules_sets 0 {| sd_sets := []; sd_vmaps := []; sd_maps := [] |}
+    [wit_meta_rule FMetaSkuid [232;3;0;0]; wit_meta_rule FMetaSkuid [233;3;0;0]]
+  = (1,
+     {| sd_sets := [(setname 0, [([232;3;0;0],[232;3;0;0]); ([233;3;0;0],[233;3;0;0])])];
+        sd_vmaps := []; sd_maps := [] |},
+     [ mk_head (MConcatSet [FMetaSkuid] false (setname 0)) []
+               (wit_meta_rule FMetaSkuid [232;3;0;0]) ]).
+Proof. reflexivity. Qed.
