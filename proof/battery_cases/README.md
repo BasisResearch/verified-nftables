@@ -22,8 +22,8 @@ or unsafe; we soundly decline.
 | 02 | vmap_distinct | host values, differing verdicts → vmap | **MATCH** |
 | 03 | overlap_prefix_diffverdict | `/24`⊂`/16`, differing verdicts | **nft BUG** — kernel rejects `conflicting intervals` (fail-closed); we decline |
 | 04 | overlap_concat_diffverdict | overlapping concat, differing verdicts | **nft BUG** — kernel rejects `Could not process rule: File exists`; we decline |
-| 05 | overlap_prefix_sameverdict | `/24`⊂`/16`, same verdict → covering `/16` | **GAP (ours)** — same-verdict prefix absorption; deferred-hard |
-| 06 | disjoint_prefix | adjacent `/24`s, same verdict → merged `/23` | **GAP (ours)** — same-verdict prefix normalization/union; deferred-hard |
+| 05 | overlap_prefix_sameverdict | `/24`⊂`/16`, same verdict → covering `/16` | **MATCH** — *landed this run* (same-verdict prefix ABSORPTION, `Optimize_Absorb`): we drop the subsumed `/24`, keeping the covering `/16` — verdict-identical to the kernel's committed `{ 10.0.0.0/16 }` |
+| 06 | disjoint_prefix | adjacent `/24`s, same verdict → merged `/23` | **MATCH** — the bare value→set pass (`Optimize_Merge`/`setsN`) folds the two same-field `/24` compares to `ip saddr { 10.0.0.0/24, 10.0.1.0/24 }`; kernel-equivalent interval coverage to nft's `{ 10.0.0.0/23 }` (both load, same verdict) |
 | 07 | dnat_overlap | overlapping dnat → daddr map | **nft BUG** — kernel rejects `conflicting intervals`; we decline |
 | 08 | snat_map | saddr → snat value map | **MATCH** |
 | 09 | meta_mark_map | `saddr → meta mark set` pairs → map | **EXCEED** — sound superset; `nft -o` declines, we fold |
@@ -35,7 +35,7 @@ or unsafe; we soundly decline.
 | 15 | silent_daddr | `daddr . tcp dport` concat, same overlap shape as 14 | **GAP (ours), conservative** — as 14 |
 | 16 | tcp_dport_set | bare `tcp dport` values, same verdict → set | **MATCH** — *landed this run* (bare-transport-port-set, `Optimize_Setg`) |
 | 17 | udp_dport_set | bare `udp dport` values, same verdict → set | **MATCH** — *landed this run* (bare-transport-port-set) |
-| 18 | tcp_dport_vmap | bare `tcp dport` distinct values, differing verdicts → vmap | **GAP (ours)** — transport-guarded value+verdict→vmap; deferred-hard |
+| 18 | tcp_dport_vmap | bare `tcp dport` distinct values, differing verdicts → vmap | **MATCH** — *landed (`Optimize_Vmapg`, guarded value+verdict→vmap)*: the l4proto-guarded run folds to `tcp dport vmap { 22:drop, 80:accept, 443:drop }`, byte-identical to `nft -o`; kernel-loaded + data-plane-equivalent to the 3 originals |
 | 19 | meta_mark_set | bare `meta mark` values, same verdict → set | **MATCH** — *landed this run* (metafield-fixedwidth-set, `Optimize_Merge`) |
 | — | MINIMAL_…_failclosed_bug | canonical duplicate of 03 | **nft BUG** — minimal fail-closed repro |
 
@@ -52,18 +52,43 @@ this run are now fully matched:
 Both are verified, axiom-free, and composed into the shipped
 `Optimize_Uncond.optimize_table_uncond` entry.
 
+### Newly closed this run
+
+- **05 — same-verdict prefix ABSORPTION** (`/24`⊂`/16` → covering `/16`).
+  `Optimize_Absorb`: a byte-aligned prefix lowers to an `MCmp (FPayload b off k)
+  CEq …` k-byte payload compare, so the /24 is a 3-byte and the /16 a 2-byte
+  compare over the SAME base+offset. The recogniser detects the prefix subsumption
+  (`w2 ≤ w1`, `firstn w2 v1 = v2`, same tail/verdict) and DROPS the subsumed /24,
+  keeping the covering /16 — verdict-identical to the kernel's committed
+  `{ 10.0.0.0/16 }` normalisation of `nft -o`'s set. Verified, axiom-free, composed
+  as the FIRST stage of `optimize_table` (`optimize_table_uncond_correct` /
+  `_compile_correct` still print "Closed under the global context").
+- **06 — adjacent same-verdict `/24`s** now fold via the pre-existing bare
+  value→set pass (`Optimize_Merge`/`setsN`): the two same-field 3-byte compares
+  become `ip saddr { 10.0.0.0/24, 10.0.1.0/24 }`, kernel-equivalent interval
+  coverage to nft's `{ 10.0.0.0/23 }` (both load, same verdict). No new pass
+  needed — the earlier "GAP" classification was stale.
+
+### Newly closed (this run)
+
+- **18 — transport-guarded value+verdict→vmap** (bare `tcp dport vmap { 22:drop,
+  80:accept, 443:drop }`). `Optimize_Vmapg`: the guarded run
+  `[ MCmp l4proto 6 ; MCmp tcp_dport v_i ] w_i` (differing terminal verdicts) folds
+  to ONE `mk_vmap_rule` whose body keeps the l4proto guard and whose vmap key is
+  `tcp dport`, over the N point entries `{ v_i : w_i }` — exactly `nft -o`'s
+  `tcp dport vmap { … }` (guard `[ meta ][ cmp ]` then `[ lookup dreg 0 ]`).
+  Soundness REDUCES the heavy N-way vmap outcome argument to the existing
+  `Optimize_Vmap.eval_rules_vmap_mergeN` (on body `BMatch gm :: body`), composed
+  with a per-rule SWAP equivalence `orig_ruleGv_eq_swap` that commutes the two
+  leading pure matches. Verified, axiom-free, composed as the penultimate stage of
+  `optimize_table` (before `vmapN`); `optimize_table_uncond_correct` /
+  `_compile_correct` / `compile_chain_correct` still print "Closed under the global
+  context". Fires non-vacuously (`Optimize_Vmapg_Witness.vmapg_fires`, `cbv`);
+  kernel-loaded and data-plane-equivalent to the 3 originals (netns loopback probe:
+  `22:DROP 80:ACCEPT 443:DROP 1234:ACCEPT` identical for both forms).
+
 ### Residue (documented, each with a reason)
 
-- **05, 06 — same-verdict prefix union/absorption** (`/24`⊂`/16` → `/16`; two
-  adjacent `/24` → `/23`). *deferred-hard*: needs prefix→interval canonicalization
-  plus subset-absorption in the recogniser (our value→set fires on exact host
-  values and explicit ranges, not on prefix-notation keys). We soundly leave the
-  first-match rules.
-- **18 — transport-guarded value+verdict→vmap** (bare `tcp dport vmap { 22:drop,
-  80:accept, … }`). *deferred-hard*: the vmap sibling of `Optimize_Setg` (which
-  builds a set); the network-key analogue `Optimize_Vmap` already exists, so this
-  is a mechanical-but-real extension. We soundly leave the sequential guarded
-  `cmp` rules (first-match-equivalent).
 - **14, 15 — overlapping-verdict concat→vmap**. *soundness-necessary*: `nft -o`
   folds overlapping-interval concat vmaps that the kernel accepts and resolves by
   element specificity; that coincides with first-match only when the more-specific
