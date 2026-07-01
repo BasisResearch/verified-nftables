@@ -365,6 +365,13 @@ let pad_to_slot (b : Bytes.data) : Bytes.data =
      no-op there (resolved in [ensure_dep], which is family-aware).
    - [DNone]: no dependency. *)
 type dep1 = DL4 of Bytes.data | DNfproto of Bytes.data | DEther of Bytes.data
+          | DL2proto of Bytes.data
+(* [DL2proto et]: an L2-family (bridge/netdev) network-layer guard `meta protocol
+   == <ethertype>` that nft prepends before a network-header (arp) match.  Unlike
+   [DNfproto] (which nft emits for ip/ip6 in the *inet* family), the bridge and
+   netdev families pin the L3 protocol by the LINK-layer ethertype instead
+   (golden arp.t.payload.netdev: `meta load protocol` / `cmp eq 0x0806`).  It is a
+   no-op in every single-L3 family (ip/ip6/arp/inet). *)
 (* [DEther pv]: the VLAN ether-type guard nft inserts before a `vlan <field>`
    match — `ether type == 0x8100` (payload load 2b @ link+12).  In the netdev
    family nft prepends a `meta iiftype == ARPHRD_ETHER (1)` guard as well
@@ -427,6 +434,9 @@ let tcpopt_field (name : string) (field : string) : int * int * kind =
 
 let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
   let none = [] in
+  (* arp lives at the network header; in a bridge/netdev L2 chain nft pins it with
+     `meta protocol == 0x0806` (ETH_P_ARP), a no-op in the arp family itself. *)
+  let arp_dep = [DL2proto [0x08; 0x06]] in
   match kp with
   | ["tcp"; "dport"] | ["udp"; "dport"] | ["th"; "dport"] ->
       (Syntax.FThDport, KPort, dep_l4 (L.hd kp))
@@ -537,15 +547,15 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
   (* ---- ARP header (NFT_PAYLOAD_NETWORK_HEADER; arp is a single-L3 family so
      nft emits NO nfproto dependency).  Offsets from arp.c / golden arp.t.payload:
      htype@0 ptype@2 hlen@4 plen@5 operation@6, sender/target hw+proto addrs. ---- *)
-  | ["arp"; "htype"]     -> (Syntax.FPayload (Packet.PNetwork, 0, 2), KNum 2, none)
-  | ["arp"; "ptype"]     -> (Syntax.FPayload (Packet.PNetwork, 2, 2), KEthertype, none)
-  | ["arp"; "hlen"]      -> (Syntax.FPayload (Packet.PNetwork, 4, 1), KNum 1, none)
-  | ["arp"; "plen"]      -> (Syntax.FPayload (Packet.PNetwork, 5, 1), KNum 1, none)
-  | ["arp"; "operation"] -> (Syntax.FPayload (Packet.PNetwork, 6, 2), KArpop, none)
-  | ["arp"; "saddr"; "ether"] -> (Syntax.FPayload (Packet.PNetwork, 8, 6),  KNum 6, none)
-  | ["arp"; "saddr"; "ip"]    -> (Syntax.FPayload (Packet.PNetwork, 14, 4), KIp4, none)
-  | ["arp"; "daddr"; "ether"] -> (Syntax.FPayload (Packet.PNetwork, 18, 6), KNum 6, none)
-  | ["arp"; "daddr"; "ip"]    -> (Syntax.FPayload (Packet.PNetwork, 24, 4), KIp4, none)
+  | ["arp"; "htype"]     -> (Syntax.FPayload (Packet.PNetwork, 0, 2), KNum 2, arp_dep)
+  | ["arp"; "ptype"]     -> (Syntax.FPayload (Packet.PNetwork, 2, 2), KEthertype, arp_dep)
+  | ["arp"; "hlen"]      -> (Syntax.FPayload (Packet.PNetwork, 4, 1), KNum 1, arp_dep)
+  | ["arp"; "plen"]      -> (Syntax.FPayload (Packet.PNetwork, 5, 1), KNum 1, arp_dep)
+  | ["arp"; "operation"] -> (Syntax.FPayload (Packet.PNetwork, 6, 2), KArpop, arp_dep)
+  | ["arp"; "saddr"; "ether"] -> (Syntax.FPayload (Packet.PNetwork, 8, 6),  KNum 6, arp_dep)
+  | ["arp"; "saddr"; "ip"]    -> (Syntax.FPayload (Packet.PNetwork, 14, 4), KIp4, arp_dep)
+  | ["arp"; "daddr"; "ether"] -> (Syntax.FPayload (Packet.PNetwork, 18, 6), KNum 6, arp_dep)
+  | ["arp"; "daddr"; "ip"]    -> (Syntax.FPayload (Packet.PNetwork, 24, 4), KIp4, arp_dep)
   (* ---- AH (IPPROTO_AH 51), transport header.  nexthdr@0 hdrlength@1 reserved@2
      spi@4 sequence@8 (golden inet/ah.t.payload). ---- *)
   | ["ah"; "nexthdr"]    -> (Syntax.FPayload (Packet.PTransport, 0, 1), KL4proto, dep_l4 "ah")
@@ -1209,6 +1219,16 @@ let redir_spec ~flags (port : int option) : Syntax.nat_spec =
    (ethertype) instead and are out of scope of this nfproto fix.) *)
 let family_is_inet = function "inet" -> true | _ -> false
 
+(* A bridge/netdev chain is an L2 chain that can see any ethertype, so nft pins an
+   ip/ip6 network match with the LINK-layer ethertype (`meta protocol ==`) rather
+   than the NFPROTO nfproto guard it uses in inet.  Map the nfproto byte carried by
+   [DNfproto] to that ethertype: IPv4 (2) -> 0x0800, IPv6 (10) -> 0x86dd. *)
+let family_is_l2 = function "bridge" | "netdev" -> true | _ -> false
+let nfproto_ethertype = function
+  | [2]  -> Some [0x08; 0x00]      (* ETH_P_IP   *)
+  | [10] -> Some [0x86; 0xdd]      (* ETH_P_IPV6 *)
+  | _    -> None
+
 let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
   let body = ref [] in
   let deps = ref [] in       (* (field, value) deps already emitted, for dedup *)
@@ -1223,7 +1243,13 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
   in
   let ensure_dep1 = function
     | DL4 pv -> push_dep Syntax.FMetaL4proto pv
-    | DNfproto pv -> if family_is_inet family then push_dep Syntax.FMetaNfproto pv
+    | DNfproto pv ->
+        if family_is_inet family then push_dep Syntax.FMetaNfproto pv
+        else if family_is_l2 family then
+          (match nfproto_ethertype pv with
+           | Some et -> push_dep Syntax.FMetaProtocol et
+           | None -> ())
+    | DL2proto et -> if family_is_l2 family then push_dep Syntax.FMetaProtocol et
     | DEther pv ->
         (* In netdev nft prepends a `meta iiftype == ARPHRD_ETHER` guard, but the
            frontend's host-endian iiftype immediate renders in the wrong byte
