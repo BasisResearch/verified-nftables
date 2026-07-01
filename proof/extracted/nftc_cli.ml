@@ -240,7 +240,7 @@ let () =
                                  ~flags ~klen ~key_fields
                                  ~dtype:(Some Nl_send.nft_data_verdict) ~dlen:None);
                           if elems <> [] then
-                            add (Nl_send.msg_setelems ~family:fam ~table:tname ~set:name ~set_id:id elems)
+                            add (Nl_send.msg_setelems ~family:fam ~table:tname ~set:name ~set_id:id ~key_fields elems)
                       | None ->
                           (match find !synth_sets parsed.Nft_lower.p_sets with
                            | Some els ->
@@ -259,7 +259,7 @@ let () =
                                add (Nl_send.msg_set ~family:fam ~table:tname ~name ~set_id:id
                                       ~flags ~klen ~key_fields ~dtype:None ~dlen:None);
                                if elems <> [] then
-                                 add (Nl_send.msg_setelems ~family:fam ~table:tname ~set:name ~set_id:id elems)
+                                 add (Nl_send.msg_setelems ~family:fam ~table:tname ~set:name ~set_id:id ~key_fields elems)
                            | None ->
                                raise (Nl_send.Unsupported ("set/map referenced but not declared: " ^ name)))
                     end in

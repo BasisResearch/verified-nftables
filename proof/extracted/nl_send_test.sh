@@ -181,5 +181,81 @@ else
   fail "concat/notrack/fib readback differs from live nft"
 fi
 
+# ---------------------------------------------------------------------------
+# 8. ct_state HOST-vs-BIG byte order on the WIRE.  The verified model stores a
+#    ct_state bitmask BIG-endian (correct for the display/corpus render), but
+#    the kernel holds the ct register + ct_state set keys HOST-order, so the
+#    sender byte-reverses ct_state data on the wire (see nl_send.ml).  This is a
+#    trap the TEXT-render gates cannot catch: a wrong-endian `ct state` set still
+#    LISTS correctly yet matches ZERO packets.  So we assert both the display AND
+#    an actual runtime conntrack match (counter > 0 on an established loopback
+#    connection).  Regression symptom before the fix: `ct state 0x2000000` and a
+#    counter stuck at 0.
+# ---------------------------------------------------------------------------
+nft flush ruleset 2>/dev/null || true
+RS5=$(mktemp)
+cat > "$RS5" <<'EOF'
+table ip ctt {
+  chain c {
+    type filter hook input priority 0; policy accept;
+    ct state established counter
+    ct state { established, related } counter
+  }
+}
+EOF
+echo
+echo "=== ct_state wire byte-order round-trip (display + runtime match) ==="
+"$CLI" send --commit < "$RS5" >/dev/null || fail "ct_state send reported a kernel error"
+OUT5=$(nft list ruleset) || fail "nft list ruleset (ct_state)"
+rm -f "$RS5"
+# display: the single-rule bug manifested as `ct state 0x2000000`
+echo "$OUT5" | grep -Eq 'ct state established counter' \
+  && echo "  ok: 'ct state established' displays correctly (not 0x2000000)" \
+  || { echo "$OUT5"; fail "ct state established mis-rendered (wire byte order regression)"; }
+echo "$OUT5" | grep -Eq 'ct state \{ established, related \} counter' \
+  && echo "  ok: 'ct state { established, related }' displays correctly" \
+  || { echo "$OUT5"; fail "ct state established mis-rendered (wire byte order regression)"; }
+echo "$OUT5" | grep -Fq '0x2000000' \
+  && { echo "$OUT5"; fail "found 'ct state 0x2000000' — big-endian ct_state on the wire"; } \
+  || echo "  ok: no big-endian 'ct state 0x2000000' artefact"
+# runtime: only a real kernel MATCH (not a text render) catches the set-path bug.
+if command -v python3 >/dev/null 2>&1; then
+  python3 - <<'PY' || true
+import socket,threading,time
+def srv():
+    s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+    s.bind(("127.0.0.1",54321)); s.listen(1)
+    try:
+        c,_=s.accept()
+        for _ in range(10):
+            d=c.recv(200)
+            if not d: break
+            try: c.sendall(b"pong"*20)
+            except OSError: break
+        c.close()
+    except OSError: pass
+    s.close()
+threading.Thread(target=srv,daemon=True).start(); time.sleep(0.4)
+try:
+    c=socket.socket(); c.connect(("127.0.0.1",54321))
+    for _ in range(8):
+        try: c.sendall(b"ping"*20); c.recv(200); time.sleep(0.03)
+        except OSError: break
+    c.close()
+except OSError: pass
+time.sleep(0.4)
+PY
+  OUT5b=$(nft list ruleset) || fail "nft list ruleset (ct_state runtime)"
+  # both counters (single + set) must have caught the established loopback packets
+  if echo "$OUT5b" | grep -Eq 'ct state established counter packets 0 bytes 0' \
+     || echo "$OUT5b" | grep -Eq 'ct state \{ established, related \} counter packets 0 bytes 0'; then
+    echo "$OUT5b"
+    fail "ct_state rule matched ZERO packets at runtime — wire byte order regression"
+  fi
+  echo "  ok: ct state established + { established, related } MATCHED live packets"
+else
+  echo "  WARN: python3 not found — skipped the runtime ct_state match assertion"
+fi
+
 echo
 echo "PASS: verified-compiled rules landed in the kernel via Nl_send"

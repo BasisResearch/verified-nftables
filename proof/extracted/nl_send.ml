@@ -810,8 +810,70 @@ let encode_elem (ins : Bytecode.instr) : string =
   attr_nested nfta_list_elem
     (attr_str nfta_expr_name name ^ attr_nested nfta_expr_data data)
 
+(* ------------------------------------------------------------------ *)
+(* ct_state HOST-vs-BIG byte order on the WIRE.                          *)
+(*                                                                       *)
+(* The verified model stores a ct_state bitmask BIG-endian (Nftval.v:    *)
+(* [VCtState 2] encodes to [0;0;0;2]; the display/corpus render depends  *)
+(* on that and MUST stay big-endian).  The KERNEL, however, holds the    *)
+(* ct register and ct_state set-element keys in HOST byte order, and     *)
+(* real nft transmits ct_state masks/values host-order (verified with    *)
+(* `nft --debug=netlink`: `bitwise reg 1 = ( reg 1 & 0x00000002 )` goes  *)
+(* on the wire as 02 00 00 00, and a runtime conntrack test shows real   *)
+(* nft matching where our big-endian wire matched 0 packets).            *)
+(*                                                                       *)
+(* So the SENDER — which is untrusted glue that already picks register   *)
+(* numbers and attr framing — must emit ct_state register data host-     *)
+(* order.  This is correct serialization, not re-deriving rules: we take *)
+(* the verified [compile_chain] output and byte-reverse only the data of *)
+(* ct_state-tainted registers.  Nothing else is touched (meta/payload/   *)
+(* immediates are already host-order-correct in the model and read back  *)
+(* fine — reversing them would BREAK them). *)
+
+(* the destination (result) register an instruction writes, if any — used to
+   drop ct_state taint when a register is reloaded with something else. *)
+let instr_dreg : Bytecode.instr -> int option = function
+  | Bytecode.IMetaLoad (_, r) | Bytecode.ICtLoad (_, r) | Bytecode.IRtLoad (_, r)
+  | Bytecode.ISocketLoad (_, r) | Bytecode.INumgen (_, r) | Bytecode.IOsf r
+  | Bytecode.IExthdrLoad (_, _, _, _, _, r) | Bytecode.IFibLoad (_, _, r)
+  | Bytecode.ICtDirLoad (_, _, r) | Bytecode.IXfrmLoad (_, _, _, r)
+  | Bytecode.ITunnelLoad (_, r) | Bytecode.ISymhash (_, _, r)
+  | Bytecode.IInnerLoad (_, _, _, _, _, r) | Bytecode.IPayloadLoad (_, _, _, r)
+  | Bytecode.IImmediateData (r, _) | Bytecode.IBitwiseOr (r, _, _)
+  | Bytecode.IBitShift (r, _, _, _) | Bytecode.IByteorder (r, _, _, _, _)
+  | Bytecode.IJhash (r, _, _, _, _, _)
+  | Bytecode.ILookupVal (_, _, r) | Bytecode.ILookupValBr (_, _, r) -> Some r
+  | _ -> None
+
+(* Byte-reverse the [data] of every ct_state-tainted register in a rule's
+   instruction stream, so the WIRE is host-order.  A register becomes tainted
+   at [ICtLoad CKstate]; the taint follows through an [IBitwise] (the compiler's
+   `ct state X` mask lands in the bitwise dreg) and is consumed by the [ICmp] /
+   [IRange] that tests it.  Any other write to a register clears its taint (e.g.
+   a later `ip saddr` reloading the same register must NOT be reversed). *)
+let retarget_ct_state_order (rp : Bytecode.rule_prog) : Bytecode.rule_prog =
+  let tainted : (int, unit) Hashtbl.t = Hashtbl.create 8 in
+  let is_ct r = Hashtbl.mem tainted r in
+  let mark r = Hashtbl.replace tainted r () in
+  let unmark r = Hashtbl.remove tainted r in
+  L.map
+    (fun ins ->
+      match ins with
+      | Bytecode.ICtLoad (Packet.CKstate, r) -> mark r; ins
+      | Bytecode.IBitwise (dst, src, mask, xor) when is_ct src ->
+          mark dst;   (* the masked ct_state value stays host-order-on-wire *)
+          Bytecode.IBitwise (dst, src, L.rev mask, L.rev xor)
+      | Bytecode.ICmp (op, r, v) when is_ct r ->
+          Bytecode.ICmp (op, r, L.rev v)
+      | Bytecode.IRange (op, r, lo, hi) when is_ct r ->
+          Bytecode.IRange (op, r, L.rev lo, L.rev hi)
+      | _ ->
+          (match instr_dreg ins with Some r -> unmark r | None -> ());
+          ins)
+    rp
+
 let encode_exprs (rp : Bytecode.rule_prog) : string =
-  String.concat "" (L.map encode_elem rp)
+  String.concat "" (L.map encode_elem (retarget_ct_state_order rp))
 
 (* The lookup/vmap instructions in a compiled program that reference a named
    set, and the KEY FIELDS each set is matched on.  The compiler emits the key's
@@ -924,6 +986,11 @@ let byteorder_big     = 2
    big-endian would byte-reverse the string and print it empty). *)
 let dtype_byteorder dt =
   if dt = dt_ifname || dt = dt_etheraddr then byteorder_host
+  (* ct_state is HOST-endian in the kernel/nft (see the ct_state comment above
+     encode_exprs): its set-element keys are emitted host-order on the wire, so
+     nft must be told to decode them host-order — declaring big-endian here would
+     byte-reverse the key and mis-print the state. *)
+  else if dt = dt_ct_state then byteorder_host
   else byteorder_big
 
 let msg_set ~family ~table ~name ~set_id ~flags ~klen ~key_fields ~dtype ~dlen : msg =
@@ -958,8 +1025,35 @@ let msg_set ~family ~table ~name ~set_id ~flags ~klen ~key_fields ~dtype ~dlen :
 type elemdata = EVerdict of Verdict.verdict | EBytes of int list
 type elem = { ek : int list; ed : elemdata option }
 
-let encode_set_elem (e : elem) : string =
-  let key = attr_nested nfta_set_elem_key (attr_data_value e.ek) in
+(* Byte-reverse the ct_state field(s) of a (possibly concatenated, register-
+   padded) set-element key so the WIRE is host-order — the set analogue of
+   [retarget_ct_state_order] for the rule stream (see the ct_state comment above
+   encode_exprs).  [key_fields] gives each field's (byte length, datatype); only
+   ct_state fields are reversed, every other field (ip/service/mark/…) passes
+   through verbatim (those are big-endian in BOTH the model and the kernel). *)
+let host_order_set_key (key_fields : (int * int) list) (key : int list) : int list =
+  match key_fields with
+  | [ (_, dt) ] when dt = dt_ct_state -> L.rev key
+  | [] | [ _ ] -> key
+  | fields ->
+      let rec take n = function x :: xs when n > 0 -> x :: take (n - 1) xs | _ -> [] in
+      let rec drop n = function _ :: xs when n > 0 -> drop (n - 1) xs | l -> l in
+      let rec go fields bytes = match fields with
+        | [] -> bytes
+        | (len, dt) :: rest ->
+            let slot = nla_align len in
+            let this = take slot bytes in
+            let this =
+              if dt = dt_ct_state
+              then L.rev (take len this) @ drop len this  (* reverse data, keep pad *)
+              else this in
+            this @ go rest (drop slot bytes)
+      in go fields key
+
+let encode_set_elem ~key_fields (e : elem) : string =
+  let key =
+    attr_nested nfta_set_elem_key
+      (attr_data_value (host_order_set_key key_fields e.ek)) in
   let dat = match e.ed with
     | None -> ""
     | Some (EBytes b) -> attr_nested nfta_set_elem_data (attr_data_value b)
@@ -967,14 +1061,14 @@ let encode_set_elem (e : elem) : string =
         attr_nested nfta_set_elem_data (attr_nested nfta_data_verdict (verdict_data v)) in
   attr_nested nfta_list_elem (key ^ dat)
 
-let msg_setelems ~family ~table ~set ~set_id (elems : elem list) : msg =
+let msg_setelems ~family ~table ~set ~set_id ~key_fields (elems : elem list) : msg =
   let body =
     nfgenmsg ~family ~res_id:0
     ^ attr_str nfta_set_elem_list_table table
     ^ attr_str nfta_set_elem_list_set set
     ^ attr_u32 nfta_set_elem_list_set_id set_id
     ^ attr_nested nfta_set_elem_list_elements
-        (String.concat "" (L.map encode_set_elem elems)) in
+        (String.concat "" (L.map (encode_set_elem ~key_fields) elems)) in
   { m_type = msg_type nft_msg_newsetelem; m_flags = create_flags; m_payload = body }
 
 let msg_rule ~family ~table ~chain (rp : Bytecode.rule_prog) : msg =
