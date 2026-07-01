@@ -58,12 +58,16 @@ extension** + a pass folding only the live (narrower-first) overlap case — rea
 work, not trivial. See `proof/battery_cases/README.md` for the full corrected analysis
 and the kernel-source citations.
 
-The remaining non-matches that are **not** our gaps are the `nft --optimize` fail-closed
-**bugs**: it folds overlapping single-field keys (03/07/13/MINIMAL, rejected in nft
-**userspace** `intervals.c` before netlink) or a dead-rule concat (04, rejected by the
-**kernel** `pipapo`) into an **unloadable** ruleset; we soundly decline. Untested-by-the-
-battery field types (`ct state` flag-masks, `iifname` strings, `ether saddr` L2) have no
-battery shape yet — a
+The remaining non-matches that are **not** our gaps are one `nft --optimize`
+**defect**: it merges rules into an interval set/vmap **without checking the result is
+representable**, so it emits an **unloadable** overlapping set — overlapping single-field
+keys (03/07/13/MINIMAL, unrepresentable in *either* backend since `/24⊂/16` shares a
+start; caught in nft **userspace** `intervals.c` before netlink) or a dead-rule concat
+(04, caught by the **kernel** `pipapo` endpoint check). In apply mode the transaction
+aborts (`exit 1`, 0 rules applied); a valid *disjoint* merge exists (e.g. `{ /24 : drop,
+10.0.1.0-10.0.255.255 : accept }`) but nft doesn't compute it. nftables core is correct;
+the bug is in `src/optimize.c`. We soundly decline. Untested-by-the-battery field types
+(`ct state` flag-masks, `iifname` strings, `ether saddr` L2) have no battery shape yet — a
 consolidation pass for them is possible future work, not a known divergence.
 
 ### Data-plane fidelity (compiler/semantics, not the optimizer)
