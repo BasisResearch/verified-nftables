@@ -1,0 +1,36 @@
+flush ruleset;
+
+table inet filter {
+	chain input {
+		type filter hook input priority 0;
+			ip saddr 10.10.10.100 icmp type echo-request drop;
+			ip saddr 10.10.10.100 tcp dport 65000 drop;
+			ip saddr 10.10.10.100 ip protocol icmp drop;
+			tcp dport 65000 accept;
+	}
+	chain forward {
+		type filter hook forward priority 0;
+			ip saddr 64.233.0.0/16 drop;
+			ip saddr 142.251.0.0/16 drop;
+	}
+	chain output {
+		type filter hook output priority 0;
+			ip daddr 10.10.10.100 icmp type echo-request drop;
+			ip saddr 64.233.0.0/16 drop;
+			ip saddr 142.251.0.0/16 drop;
+			ip daddr {9.0.0.0/24, 77.0.0.0/24, 199.0.0.0/24, 74.0.0.0/24, 64.0.0.0/24, 207.0.0.0/24, 208.0.0.0/24, 209.0.0.0/24, 216.0.0.0/24} drop;
+	}
+}
+table ip nat {
+		chain postrouting {
+			type nat hook postrouting priority 0;
+			oifname ens19 masquerade;
+		}
+}
+table ip my_t2 {
+	chain prerouting {
+		type nat hook prerouting priority filter; policy accept;
+		tcp dport 65000 dnat to 10.10.10.100:22;
+	}
+
+}

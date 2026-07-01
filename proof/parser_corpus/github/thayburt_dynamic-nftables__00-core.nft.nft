@@ -1,0 +1,5 @@
+add rule inet global input iif lo accept comment "allow from loopback"
+add rule inet global input ct state invalid drop comment "early drop of invalid connections"
+add rule inet global input ct state {established, related} accept comment "allow tracked connections"
+add rule inet global input ip protocol icmp accept comment "allow icmp"
+add rule inet global input meta l4proto ipv6-icmp accept comment "allow icmp v6"

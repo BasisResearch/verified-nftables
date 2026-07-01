@@ -1,0 +1,36 @@
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority filter; policy accept;
+
+        # Разрешаем входящий трафик для работы самого VPN
+        udp dport 1194 counter accept comment "OpenVPN port"
+
+        # Разрешаем установленные соединения (чтобы сервер мог отвечать)
+        ct state established,related accept
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+
+        # 🔥 КРИТИЧНО: Исправление MTU для клиентов
+        tcp flags syn tcp option maxseg size set rt mtu
+
+        # Разрешаем пересылку трафика из VPN в локальную сеть/интернет
+        iifname "tun0" oifname "ens18" accept comment "VPN -> LAN/WAN"
+        iifname "ens18" oifname "tun0" ct state established,related accept
+    }
+}
+
+table ip nat {
+    chain postrouting {
+        # Исправлен приоритет на srcnat
+        type nat hook postrouting priority srcnat; policy accept;
+
+        # Маскарадинг только для трафика из подсети VPN
+        ip saddr 172.31.31.0/24 oifname "ens18" masquerade comment "Masquerade VPN clients"
+    }
+}

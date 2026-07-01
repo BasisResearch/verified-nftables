@@ -1,0 +1,39 @@
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+define WAN      = "WAN_IFACE"
+define MGMT     = "MGMT_IFACE"
+define MGMT_NET = 192.168.100.0/24
+
+table inet filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        ct state established,related accept
+        ct state invalid drop
+        iif "lo" accept
+
+        iifname $WAN tcp dport { 21, 80, 443 } accept
+        iifname $WAN tcp dport 30000-30009 accept
+        iifname $WAN icmp type echo-request drop
+
+        iifname $MGMT udp dport 51820 ip saddr $MGMT_NET accept
+        iifname $MGMT tcp dport 22 accept
+        iifname "wg0" accept
+
+        counter drop
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        ct state established,related accept
+
+        ip saddr 10.200.0.0/16 accept
+        ip daddr 10.200.0.0/16 accept
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}

@@ -1,0 +1,151 @@
+#!/usr/sbin/nft
+flush ruleset
+
+# Fully Qualified Verdict Name for logging
+# nft.<table>.<parent-hook>.<chain>.<verdict>
+
+define nic_wan = eno3
+define nic_lan = vm-br-vl20
+define nic_man = vm-br-vl10
+define nic_vpn = wg0
+
+table inet primary {
+
+    chain input_dispatch {
+        type filter hook input priority 0; policy drop;
+
+        iiftype loopback accept comment "Accept any loopback traffic"
+
+        ct state vmap {
+            new: continue, invalid: drop,
+            established: accept, related: accept
+        } comment "Accept established and related connections"
+
+        # -{Wireguard traffic}
+        udp dport 51820 accept
+
+        # -{Dispatch packets to zones by interface}
+        meta iifname $nic_wan jump input_wan_zone
+        meta iifname {$nic_man, $nic_lan} jump input_trusted_zone
+
+        # -{Final Verdict of incoming connections}
+        ct state new counter log prefix "nft.primary.input.dispatch.reject " reject with icmpx type admin-prohibited
+    }
+
+    chain input_wan_zone {
+        # -{Rate limit icmp echo-requests}
+        ip protocol icmp icmp type echo-request limit rate over 1/minute burst 4 packets drop
+        ip6 nexthdr icmpv6 icmpv6 type echo-request limit rate over 1/minute burst 4 packets drop
+        # -{Allow neighbor discovery}
+        ip6 nexthdr icmpv6 icmpv6 type {
+            nd-neighbor-solicit,nd-neighbor-advert,nd-router-solicit,
+            nd-router-advert,mld-listener-query,destination-unreachable,
+            packet-too-big,time-exceeded,parameter-problem
+        } accept
+        # -{Accept and rate-limit ssh connections}
+        #tcp dport 22 ct state new limit rate 2/minute jump logging_accept_wan_zone
+        ip saddr {199.38.207.2, 147.0.211.10} tcp dport 22 ct state new limit rate 2/minute jump logging_accept_wan_zone
+        # -{Final Verdict of incoming connections}
+        ct state new counter log prefix "nft.primary.input.wan_zone.reject " reject with icmpx type admin-prohibited
+    }
+    chain logging_accept_wan_zone {
+        ct state new counter log prefix "nft.primary.input.wan_zone.accept " accept
+    }
+
+    chain input_trusted_zone {
+        # -{Allow all ICMP communications}
+        meta l4proto { icmp, ipv6-icmp } jump logging_accept_trusted_zone
+        # -{Allow connections to services running on the local system}
+        tcp dport 22 jump logging_accept_trusted_zone comment "Secure Shell"
+        udp dport {67,68} jump logging_accept_trusted_zone comment "DHCP"
+        #-------------------------------------#
+        # -{Domain Name System}
+        meta l4proto { udp, tcp } th dport 53 jump logging_accept_trusted_zone comment "Accept DNS - Unbound"
+        meta l4proto { udp, tcp } th dport 2053 jump logging_accept_trusted_zone comment "Accept DNS - BIND"
+        # -{Accept DNS, multicast DNS, and LLMNR}
+        udp dport mdns ip6 daddr ff02::fb jump logging_accept_trusted_zone comment "Accept mDNS"
+        udp dport mdns ip daddr 224.0.0.251 jump logging_accept_trusted_zone comment "Accept mDNS"
+        meta l4proto { udp, tcp } th dport llmnr jump logging_accept_trusted_zone comment "Accept llmnr"
+        #-------------------------------------#
+        # -{Accept FTP}
+        tcp dport 20-21 jump logging_accept_trusted_zone
+        udp dport 69 jump logging_accept_trusted_zone
+        tcp dport 60000-60029 jump logging_accept_trusted_zone
+        #-------------------------------------#
+        # -{Allow Kubernetes API}
+        tcp dport 6443 jump logging_accept_trusted_zone
+        # -{Jump into sub-chains}
+        meta iifname $nic_man jump input_man_zone
+        # -{Final Verdict of incoming connections}
+        ct state new counter log prefix "nft.primary.input.trusted_zone.reject " reject with icmpx type admin-prohibited
+    }
+    chain logging_accept_trusted_zone {
+        ct state new counter log prefix "nft.primary.input.trusted_zone.accept " accept
+    }
+
+    chain input_man_zone {
+        # -{Allow Routing Protocols}
+        tcp dport 179 jump logging_accept_man_zone comment "frr-bgp-speaker"
+        # -{Allow NBDE client connections}
+        tcp dport 6830 jump logging_accept_man_zone comment "tangd-nbde"
+        # -{Allow Prometheus Node Exporter}
+        tcp dport 9100 jump logging_accept_man_zone comment "prometheus"
+        # -{Final Verdict of incoming connections}
+        ct state new counter log prefix "nft.primary.input.man_zone.reject " reject with icmpx type admin-prohibited
+    }
+    chain logging_accept_man_zone {
+        ct state new counter log prefix "nft.primary.input.man_zone.accept " accept
+    }
+
+    chain forward_dispatch {
+        type filter hook forward priority 0; policy drop;
+        # -{Contrack Verdict Map}
+        ct state vmap {
+            new: continue, invalid: drop,
+            established: accept, related: accept
+        } comment "Accept established and related connections"
+        # -{Packet Forwarding Verdict Map}
+        meta iifname . meta oifname {
+            $nic_man . $nic_wan, # MAN -> WAN; allow
+            $nic_lan . $nic_wan, # LAN -> WAN; allow
+            $nic_man . $nic_lan, # MAN -> LAN; allow
+            $nic_lan . $nic_man, # LAN -> MAN; allow
+            $nic_vpn . $nic_lan, # VPN -> LAN; allow
+            $nic_vpn . $nic_man  # VPN -> MAN; allow
+        } accept
+        
+        # -{ Palworld Server }
+        udp dport 8211 accept
+        
+        # -{Final Verdict of incoming connections}
+        ct state new counter log prefix "nft.primary.forward.dispatch.reject " reject with icmpx type admin-prohibited
+    }
+
+    chain prerouting_dispatch {
+        type nat hook prerouting priority -100;
+        # -{ Force internal nameserver usage }
+        #iifname { $nic_man } meta l4proto { tcp, udp } th dport 53 dnat to 172.22.0.1
+        #iifname { $nic_lan } meta l4proto { tcp, udp } th dport 53 dnat to 172.22.1.1
+        iifname $nic_wan udp dport 8211 dnat ip to 172.22.0.21
+    }
+
+    chain postrouting_dispatch {
+        type nat hook postrouting priority srcnat;
+        # -{ Port Address Translation for IPv4}
+        oifname $nic_wan counter masquerade comment "Outbound Overload PAT"
+        # -{Hairpin LAN -> MAN, this shouldnt be in use}
+        #iifname $nic_lan oifname $nic_man counter masquerade
+    }
+}
+
+table inet suricata {
+    # -{Support table for suricata IPS}
+    chain ips-filter-input {
+        type filter hook input priority -10;
+        iifname $nic_wan queue bypass
+    }
+    chain ips-filter-forward {
+        type filter hook forward priority -10;
+        iifname $nic_wan queue bypass
+    }
+}

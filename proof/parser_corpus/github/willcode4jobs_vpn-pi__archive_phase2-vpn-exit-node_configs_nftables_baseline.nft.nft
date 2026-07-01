@@ -1,0 +1,75 @@
+#!/usr/sbin/nft -f
+# =============================================================================
+# VPN Pi project — nftables baseline ruleset (default-deny)
+# =============================================================================
+# Sanitized from prototype/configs/nftables/current.nft.
+#
+# NOTE: prototype/configs/nftables/current.nft on the prototype VM has
+# `policy accept` on every chain, i.e. no actual filtering. This baseline
+# implements the default-deny posture stated in CLAUDE.md ("default-deny
+# nftables"), which the live VM does not currently enforce. Applying this
+# file to the VM is part of Phase 2 hardening.
+#
+# Applies to every node in the mesh. Deployed by harden-base.sh to
+# /etc/nftables.conf.
+#
+# Posture:
+#   - input:   drop by default; allow loopback, established, ICMP, SSH.
+#   - forward: drop by default. Phase 3 will open this for WireGuard
+#              (UDP/51820) and VPN-egress NAT.
+#   - output:  accept by default (this node is also a client).
+#
+# Placeholders (search-and-replace per node when restricting access):
+#   <LAN_SUBNET>  e.g. 192.168.1.0/24 — local trusted network for
+#                 management traffic. Used in commented "restrict SSH to
+#                 LAN" rule below; remove the commented version and uncomment
+#                 the restrictive one if the node only needs SSH from LAN.
+#
+# Validate before applying:
+#   nft -c -f baseline.nft
+# =============================================================================
+
+flush ruleset
+
+table inet filter {
+	chain input {
+		type filter hook input priority filter; policy drop;
+
+		# loopback
+		iif "lo" accept
+
+		# established/related connections
+		ct state established,related accept
+		ct state invalid drop
+
+		# ICMP (ping, MTU discovery, neighbor discovery on v6)
+		ip protocol icmp accept
+		ip6 nexthdr icmpv6 accept
+
+		# SSH — default: allow from anywhere (fail2ban handles brute-force).
+		# To restrict to LAN only, comment the next line and uncomment the
+		# placeholder line below it (replace <LAN_SUBNET> with the actual CIDR).
+		tcp dport 22 accept
+		# ip saddr <LAN_SUBNET> tcp dport 22 accept
+
+		# WireGuard listen port (Phase 3 — uncomment when wg0 comes up).
+		# udp dport 51820 accept
+
+		# Log + drop everything else (rate-limited so the journal doesn't fill).
+		limit rate 5/minute log prefix "nft-input-drop: " level info
+		counter drop
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+
+		# Phase 3: opens for WireGuard. Until then, this node forwards nothing.
+		# Expected future rules (kept here as a reference, not active):
+		#   iifname "wg0" oifname <WAN_IFACE> ct state new accept
+		#   iifname <WAN_IFACE> oifname "wg0" ct state established,related accept
+	}
+
+	chain output {
+		type filter hook output priority filter; policy accept;
+	}
+}

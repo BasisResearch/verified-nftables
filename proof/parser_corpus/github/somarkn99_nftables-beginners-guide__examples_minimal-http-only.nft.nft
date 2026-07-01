@@ -1,0 +1,15 @@
+#!/usr/sbin/nft -f
+flush ruleset
+
+table inet filter {
+  chain input {
+    type filter hook input priority 0; policy drop;
+
+    ct state established,related accept
+    iif "lo" accept
+
+    # SSH + Web
+    tcp dport 22 accept
+    tcp dport {80,443} accept
+  }
+}

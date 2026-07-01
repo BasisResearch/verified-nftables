@@ -1,0 +1,120 @@
+#!/usr/bin/env nft -f
+# nftables firewall rules for gateway server (172.16.42.251)
+# Whitelist-only internet access with NAT masquerade
+
+# Flush existing rules
+flush ruleset
+
+# Define variables
+define GATEWAY_IP = 172.16.42.251
+define SERVER_IP = 172.16.42.252
+define CLIENT_NET = 172.16.42.0/24
+define INTERNAL_IF = "eth0"  # Internal interface (adjust as needed)
+define EXTERNAL_IF = "eth1"  # External interface (adjust as needed)
+
+# Table for filter rules
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+        
+        # Allow loopback
+        iif "lo" accept
+        
+        # Allow established and related connections
+        ct state established,related accept
+        
+        # Allow ICMP (ping)
+        icmp type echo-request accept
+        icmpv6 type echo-request accept
+        
+        # Allow SSH from internal network only
+        tcp dport 22 ip saddr $CLIENT_NET accept
+        tcp dport 22 ip saddr $SERVER_IP accept
+        
+        # Allow DNS (bind) from internal network
+        udp dport 53 ip saddr $CLIENT_NET accept
+        tcp dport 53 ip saddr $CLIENT_NET accept
+        
+        # Allow NTP (chrony) from internal network
+        udp dport 123 ip saddr $CLIENT_NET accept
+        
+        # Allow DHCP from internal network
+        udp dport 67 ip saddr $CLIENT_NET accept
+        
+        # Allow TFTP from internal network
+        udp dport 69 ip saddr $CLIENT_NET accept
+        
+        # Allow HTTP (PXE/Nginx) from internal network
+        tcp dport 80 ip saddr $CLIENT_NET accept
+        tcp dport 443 ip saddr $CLIENT_NET accept
+        
+        # Allow apt-proxy from internal network
+        tcp dport 3142 ip saddr $CLIENT_NET accept
+        
+        # Drop all other input
+        drop
+    }
+    
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+        
+        # Allow established and related connections
+        ct state established,related accept
+        
+        # Forward from internal network to external (will be filtered by output chain)
+        iif $INTERNAL_IF oif $EXTERNAL_IF accept
+        
+        # Drop all other forwarding
+        drop
+    }
+    
+    chain output {
+        type filter hook output priority 0; policy drop;
+        
+        # Allow loopback
+        oif "lo" accept
+        
+        # Allow established and related connections
+        ct state established,related accept
+        
+        # Allow DNS queries to upstream servers
+        udp dport 53 accept
+        tcp dport 53 accept
+        
+        # Allow NTP queries
+        udp dport 123 accept
+        
+        # Allow HTTP/HTTPS to whitelisted destinations
+        # Note: Specific IPs will be added dynamically by update-whitelist.sh
+        # This chain will be populated with allowed destinations
+        tcp dport { 80, 443 } accept
+        
+        # Allow OCSP (GlobalSign) for certificate validation
+        tcp dport 80 ip daddr 64.50.233.0/24 accept  # GlobalSign OCSP
+        
+        # Drop all other output
+        drop
+    }
+}
+
+# Table for NAT
+table inet nat {
+    chain prerouting {
+        type nat hook prerouting priority -100; policy accept;
+        # No DNAT rules needed for basic setup
+    }
+    
+    chain postrouting {
+        type nat hook postrouting priority 100; policy accept;
+        
+        # Masquerade internal network traffic going to external interface
+        oif $EXTERNAL_IF ip saddr $CLIENT_NET masquerade
+    }
+}
+
+# Disable IPv6 forwarding (IPv4 only)
+table ip6 filter {
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+}

@@ -1,0 +1,30 @@
+#!/usr/sbin/nft -f
+flush ruleset
+
+table inet gfw_rs {
+    chain MGMT_SAFETY {
+        type filter hook input priority -200; policy accept;
+        # Mark AND accept in the same rule so the mark survives into later chains.
+        # (A separate `accept` rule followed by a `mark set` rule would never run
+        # the mark rule, because accept terminates chain traversal for that rule.)
+        tcp dport { 22, 443, 3000 } meta mark set 0x1 counter accept comment "management access"
+        meta l4proto icmp meta mark set 0x1 counter accept
+        meta l4proto icmpv6 meta mark set 0x1 counter accept
+    }
+    chain gfw_fw_input {
+        type filter hook input priority -10; policy drop;
+        # Skip packets already accepted by MGMT_SAFETY
+        meta mark 0x1 accept
+        ct state established,related accept
+        ct state invalid drop
+        iifname "lo" accept
+    }
+    chain gfw_fw_forward {
+        type filter hook forward priority -10; policy drop;
+        ct state established,related accept
+        ct state invalid drop
+    }
+    chain gfw_fw_output {
+        type filter hook output priority -10; policy accept;
+    }
+}

@@ -280,11 +280,15 @@ let check_live_nft () =
    The proofs are about nft2coq's emitted AST; this confirms the OCaml runtime
    path agrees with it. *)
 
-(* a bridge frame: obrname / oifname metas + an IPv4 daddr at network offset 16 *)
+(* a bridge frame: obrname / oifname metas + an IPv4 daddr at network offset 16.
+   It is an IPv4 ethertype frame (meta protocol == ETH_P_IP 0x0800), matching the
+   `meta protocol == 0x0800` dependency nft prepends before an `ip <field>` match
+   in a bridge/netdev L2 chain (see nft_lower ensure_dep1 / arp+ip L2 guards). *)
 let mk_bridge ~env ~obrname ~oifname ~daddr : Packet.packet =
   { (mk_pkt ~env ()) with
     Packet.pkt_meta = (fun k -> match k with
-      | Packet.MKbri_oifname -> obrname | Packet.MKoifname -> oifname | _ -> []);
+      | Packet.MKbri_oifname -> obrname | Packet.MKoifname -> oifname
+      | Packet.MKprotocol -> [0x08; 0x00] | _ -> []);
     pkt_nh = (Stdlib.List.init 16 (fun _ -> 0)) @ daddr }
 
 let check_optiplex_antispoof () =

@@ -1,0 +1,72 @@
+flush ruleset
+
+
+table ip filter {
+	chain input {
+		type filter hook input priority filter; policy accept;
+		iifname lo accept \
+		comment "accept any localhost traffic"
+
+		ct state { established, related } accept \
+		comment "accept traffic originated from us"
+
+		ct state invalid drop \
+		comment "drop invalid connections"
+
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy accept;
+	}
+
+	chain output {
+		type filter hook output priority filter; policy accept;
+	}
+}
+
+
+
+table ip nat {
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+
+        ### map port to two different ip and ports 
+        tcp dport 2080 counter dnat to numgen inc mod 2 map { 
+            0 : 192.168.78.1 . 8080, 
+            1 : 192.168.77.1 . 8081
+        }
+		
+		tcp dport 52321 counter dnat numgen inc mod 2 map { 
+			0 : 192.168.77.1,
+			1 : 192.168.77.2
+		}
+
+		### ports should be same, why ?
+		# meta l4proto tcp tcp dport 8080 counter dnat  numgen inc mod 2 map { 0 : 192.168.77.1, 1 : 192.168.77.2 }
+		# tcp dport 8080 dnat numgen inc mod 2 map { 0 : 192.168.77.1, 1 : 192.168.77.2 }
+
+		# worked fine
+        # meta l4proto tcp tcp dport 8080 counter dnat 192.168.77.2 : numgen inc mod 2 map { 0 : 2020, 1 : 2030 }
+
+	}
+
+	chain input {
+		type nat hook input priority 100; policy accept;
+	}
+
+	chain output {
+		type nat hook output priority -100; policy accept;
+	}
+
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+	}
+}
+
+### localhost lb
+table ip nat {
+	chain mynat {
+		type nat hook output priority dstnat; policy accept;
+		tcp dport 8080 counter packets 16 bytes 960 dnat ip to numgen inc mod 2 map { 0 : 10.42.1.122 . 80, 1 : 10.42.2.114 . 80 }
+	}
+}

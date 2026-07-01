@@ -1,0 +1,49 @@
+flush ruleset
+
+table inet filter {
+  chain prerouting {
+    type nat hook prerouting priority dstnat; policy accept;
+    iifname { "eth2", "eth3" } ip daddr 10.40.0.10 tcp dport 80 dnat ip to 10.189.1.14
+  }
+
+  chain input {
+    type filter hook input priority 0; policy drop;
+    iif lo accept
+    ct state established,related accept
+    ip protocol icmp accept
+    ip protocol 112 accept
+    tcp dport 179 accept
+  }
+
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+    ct state established,related accept
+    ip saddr 192.168.30.0/24 ip daddr 10.10.1.0/24 accept
+    ip saddr 192.168.30.0/24 ip daddr 10.30.0.0/24 tcp dport 8000 accept
+    ip saddr 192.168.40.0/24 ip daddr 10.10.2.0/24 accept
+    ip saddr 192.168.40.0/24 ip daddr 10.30.0.0/24 tcp dport 8000 accept
+    ip saddr { 192.168.30.0/24, 192.168.40.0/24 } ip daddr { 10.20.0.10, 10.30.0.10, 10.39.7.10, 10.39.8.10 } ip protocol icmp accept
+    ip saddr { 192.168.30.0/24, 192.168.40.0/24 } ip daddr 10.40.0.0/23 ip protocol icmp accept
+    ip saddr {{ firewall_policy.external_subnet }} ip daddr {{ firewall_policy.dmz_subnet }} tcp dport { {{ firewall_policy.allowed_external_dmz_ports | join(', ') }} } accept
+    ip saddr {{ firewall_policy.external_subnet }} ip daddr { {{ firewall_policy.internal_blocks | join(', ') }} } drop
+    ip daddr 10.20.0.10 udp dport 53 accept
+    ip daddr 10.20.0.10 tcp dport 53 accept
+    ip daddr 10.39.7.10 udp dport 123 accept
+    ip daddr 10.39.8.10 tcp dport { 53, 88, 389, 636, 3268, 3269 } accept
+    ip daddr 10.39.8.10 udp dport { 53, 88, 389 } accept
+    ip daddr 10.30.0.10 tcp dport 8000 accept
+    ip daddr 10.40.0.0/23 tcp dport { 80, 443 } accept
+    ip daddr 172.20.0.0/24 accept
+    ip daddr 10.189.1.14 tcp dport 80 accept
+    ip saddr 192.168.30.0/24 ip daddr 10.10.2.0/24 drop
+    ip saddr 10.40.0.0/23 ip daddr { 10.10.0.0/16, 10.20.0.0/16, 10.30.0.0/16, 10.39.0.0/16 } drop
+    log prefix "FW-DROP: " drop
+  }
+
+  chain postrouting {
+    type nat hook postrouting priority srcnat;
+    oifname "eth1" masquerade
+    oifname "eth4" masquerade
+    oifname "eth0" ip daddr 10.189.1.14 masquerade
+  }
+}

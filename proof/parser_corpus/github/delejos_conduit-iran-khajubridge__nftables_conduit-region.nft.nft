@@ -1,0 +1,103 @@
+#!/usr/sbin/nft -f
+
+# KhajuBridge nftables ruleset
+# Template: scripts/apply_firewall.sh replaces placeholders at runtime:
+#  - __CGROUP_ID__   (numeric cgroup id / inode) for meta cgroup matches
+#  - __CGROUP_PATH__ (cgroup v2 path) for socket cgroupv2 matches
+
+define CONDUIT_CGROUP_ID   = __CGROUP_ID__
+define CONDUIT_CGROUP_PATH = "__CGROUP_PATH__"
+
+# Anti-abuse rate limit: max UDP packets/second accepted from Iran IPs (global, not per-source).
+# Excess packets fall through to the drop rule. Tune to your node's capacity.
+# To disable: remove the "limit rate ..." clause from the accept rules below.
+define IRAN_UDP_RATE  = 100000/second
+define IRAN_UDP_BURST = 200000
+
+table inet khajubridge {
+
+  #
+  # Region CIDR sets (populated by scripts)
+  #
+  set region_ipv4 {
+    type ipv4_addr
+    flags interval
+  }
+
+  set region_ipv6 {
+    type ipv6_addr
+    flags interval
+  }
+
+  #
+  # Named counters — readable by the web console's Iran test panel without
+  # parsing the full ruleset output.
+  #
+  counter iran_udp_v4_accepted  { comment "UDP from Iran IPv4 → Conduit socket (accepted)" }
+  counter iran_udp_v6_accepted  { comment "UDP from Iran IPv6 → Conduit socket (accepted)" }
+  counter iran_udp_v4_ratelimit { comment "UDP from Iran IPv4 dropped by rate limit" }
+  counter iran_udp_v6_ratelimit { comment "UDP from Iran IPv6 dropped by rate limit" }
+  counter non_iran_udp_dropped  { comment "UDP to Conduit socket from outside Iran (dropped)" }
+  counter non_iran_tcp_dropped  { comment "TCP to Conduit socket from outside Iran (dropped)" }
+
+  #
+  # Inbound filtering — scoped to Conduit sockets via socket cgroupv2
+  #
+  chain input {
+    type filter hook input priority 0;
+    policy accept;
+
+    iif lo accept
+
+    # Allow established/related first so Conduit's outbound TCP replies are never dropped.
+    # This must come before any socket-scoped drop rules.
+    ct state established,related accept
+    ct state invalid drop
+
+    # Allow Iran IPv4 UDP → Conduit sockets, with rate limit and named counter
+    meta l4proto udp socket cgroupv2 level 2 $CONDUIT_CGROUP_PATH ip saddr @region_ipv4 \
+      limit rate $IRAN_UDP_RATE burst $IRAN_UDP_BURST packets \
+      counter name iran_udp_v4_accepted accept
+
+    # Drop Iran IPv4 UDP that exceeded the rate limit (falls through from above)
+    meta l4proto udp socket cgroupv2 level 2 $CONDUIT_CGROUP_PATH ip saddr @region_ipv4 \
+      counter name iran_udp_v4_ratelimit drop
+
+    # Allow Iran IPv6 UDP → Conduit sockets, with rate limit and named counter
+    meta l4proto udp socket cgroupv2 level 2 $CONDUIT_CGROUP_PATH ip6 saddr @region_ipv6 \
+      limit rate $IRAN_UDP_RATE burst $IRAN_UDP_BURST packets \
+      counter name iran_udp_v6_accepted accept
+
+    # Drop Iran IPv6 UDP that exceeded the rate limit
+    meta l4proto udp socket cgroupv2 level 2 $CONDUIT_CGROUP_PATH ip6 saddr @region_ipv6 \
+      counter name iran_udp_v6_ratelimit drop
+
+    # Drop all remaining UDP to Conduit sockets (non-Iran)
+    meta l4proto udp socket cgroupv2 level 2 $CONDUIT_CGROUP_PATH \
+      counter name non_iran_udp_dropped drop
+
+    # Drop all TCP to Conduit sockets (non-Iran; established TCP is allowed above via conntrack)
+    meta l4proto tcp socket cgroupv2 level 2 $CONDUIT_CGROUP_PATH \
+      counter name non_iran_tcp_dropped drop
+  }
+
+  #
+  # Outbound filtering — applies only to Conduit process (meta cgroup id)
+  #
+  chain output {
+    type filter hook output priority 0;
+    policy accept;
+
+    # TCP from Conduit: allow globally
+    meta cgroup $CONDUIT_CGROUP_ID ip  protocol tcp accept
+    meta cgroup $CONDUIT_CGROUP_ID ip6 nexthdr tcp accept
+
+    # UDP from Conduit: allow only to Iran CIDRs
+    meta cgroup $CONDUIT_CGROUP_ID ip  protocol udp ip  daddr @region_ipv4 accept
+    meta cgroup $CONDUIT_CGROUP_ID ip6 nexthdr  udp ip6 daddr @region_ipv6 accept
+
+    # UDP from Conduit: drop everything else
+    meta cgroup $CONDUIT_CGROUP_ID ip  protocol udp drop
+    meta cgroup $CONDUIT_CGROUP_ID ip6 nexthdr  udp drop
+  }
+}

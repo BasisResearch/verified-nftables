@@ -1,0 +1,198 @@
+table ip mytable {
+    set inbound_whitelist {
+        type inet_service
+        elements = { 22, 8080, 4173, 7474, 7687 }
+    }
+
+    set vpn_ports {
+        type inet_service
+        elements = { 80, 88, 443, 500, 1194, 1224, 4500, 4569, 5060, 7770, 8443, 51820 }
+    }
+
+    # --- New sets for ADB/Android debugging ---
+    set adb_ports {
+        type inet_service
+        elements = { 5037 }  # ADB server on host
+    }
+
+    set adb_device_ips {
+        type ipv4_addr
+        elements = { 192.168.1.16 }  # Replace with your phone’s IP
+    }
+
+    chain input {
+        type filter hook input priority filter; policy drop;
+        ct state established,related accept
+        iif "lo" accept
+        tcp dport @inbound_whitelist ct state new accept
+
+        # Allow ADB server and device over Wi-Fi
+        ip saddr @adb_device_ips tcp dport @adb_ports accept comment "ADB device → host"
+        ip saddr @adb_device_ips tcp sport 40000-65535 accept comment "ADB high ports from device"
+
+        # Allow mDNS (Avahi) from local network
+        iifname "wlp120s0u2" ip saddr 192.168.0.0/16 udp dport 5353 accept comment "mDNS inbound"
+
+        # Allow multicast mDNS traffic
+        iifname "wlp120s0u2" ip daddr 224.0.0.251 udp dport 5353 accept comment "mDNS multicast (LAN only)"
+
+        # Allow access to Kubernetes API server (default port 6443)
+        tcp dport 6443 accept
+
+        # (Optional) Allow CoreDNS (UDP/TCP on 53) from cluster-internal IPs
+        ip saddr 10.244.0.0/16 udp dport 53 accept
+        ip saddr 10.244.0.0/16 tcp dport 53 accept
+
+        # Allow traffic to K8s API server on default service IP
+        ip saddr 10.244.0.0/16 tcp dport 443 ip daddr 10.96.0.1 accept
+
+        # (Optional) Allow kubelet metrics server or health checks (typically 10250, 10255)
+        tcp dport { 10250, 10255 } accept
+
+        jump sig_filter_input
+        #iifname "wlp0s20f3" ip saddr { 10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12 } accept
+        iifname "wlp0s20f0u3i3" ip saddr { 10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12 } accept
+        ip protocol icmp limit rate 10/second burst 20 packets accept
+        log prefix "INPUT-DROP: " level debug flags all counter packets 0 bytes 0 drop
+    }
+
+    chain output {
+        type filter hook output priority filter; policy drop;
+        ct state established,related accept
+        udp dport { 53, 67, 68, 123 } accept
+        oifname "wlp120s0u2" ip daddr 224.0.0.251 udp dport 5353 accept comment "mDNS outbound"
+        udp dport @vpn_ports accept
+        tcp dport @vpn_ports accept
+        tcp dport { 7770, 8443 } accept
+        tcp dport 8080 accept # Allow outbound traffic on port 8080
+        tcp dport 7474 accept # Allow outbound traffic on port 7474
+        tcp dport 7687 accept # Allow outbound traffic on port 7687
+        tcp dport 4173 accept # Allow outbound traffic on port 4173
+
+        # Allow ADB server and device over Wi-Fi
+        ip daddr @adb_device_ips tcp sport @adb_ports accept comment "Host → ADB device"
+        ip daddr @adb_device_ips tcp dport 40000-65535 accept comment "Host → ADB device high ports"
+
+        # Allow IPP printing to Epson
+        ip daddr 192.168.1.2 tcp dport 631 accept comment "IPP → Epson printer"
+
+        # Allow DNS resolution
+
+        # Allow outgoing connections to remote registries and webhooks
+        tcp dport { 80, 443 } accept
+
+        # Allow API server access from tools running locally
+        ip daddr 127.0.0.1 tcp dport 6443 accept
+
+        # Allow kubelet and other cluster components to talk internally
+        ip daddr 172.18.0.0/16 accept
+
+        oifname "lo" accept
+        #oifname "wlp0s20f3" ip daddr { 10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12 } accept
+        oifname "wlp0s20f0u3i3" ip daddr { 10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12 } accept
+        oifname "tun0" accept
+        oifname "wg0-mullvad" accept
+        ip daddr 10.64.0.0/10 accept   # internal Mullvad ranges
+        ip protocol icmp limit rate 10/second burst 20 packets accept
+        log prefix "OUTPUT-DROP: " level debug flags all counter packets 12 bytes 738 drop
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        ct state established,related accept
+
+        # KIND/Docker rules
+        jump docker_user
+        jump docker_isolation_stage_1
+        oifname "docker0" ct state related,established accept
+        oifname "docker0" jump docker
+        iifname "docker0" oifname != "docker0" accept
+        iifname "docker0" oifname "docker0" accept
+
+        # Allow pod subnet to talk to control plane
+        ip saddr 10.244.0.0/16 ip daddr 172.18.0.0/16 accept
+        # Allow pod subnet to talk to Kubernetes services (e.g., 10.96.0.1:443)
+        ip saddr 10.244.0.0/16 ip daddr 10.96.0.0/12 accept
+
+        # This rule clears up some noisy kernel messages when
+        # coredns attempts to find the outbound dns server.
+        # This is not the ideal solution, coredns probably
+        # should do its own external resolves. TODO
+        ip saddr 172.18.0.0/16 ip daddr 192.168.1.1 udp dport 53 accept
+
+        tcp dport @inbound_whitelist iifname "docker0" oifname != "docker0" accept
+        tcp dport @inbound_whitelist iifname != "docker0" oifname "docker0" accept
+
+        # Allow bridged traffic
+        iifname "br0" oifname "br0" accept
+        ip protocol icmp limit rate 10/second burst 20 packets accept
+        ether type arp drop
+        ip daddr { 224.0.0.0/4, 255.255.255.255 } drop
+        log prefix "FORWARD-DROP: " level debug flags all counter packets 0 bytes 0 drop
+    }
+
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+    }
+
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        ip saddr 172.0.0.0/8 oifname != "docker0" masquerade
+        oifname "tun0" masquerade
+    }
+
+    chain sig_filter_input {
+        icmp type echo-request ip length > 1028 log prefix "Large ICMP Echo Request: " counter packets 0 bytes 0
+        icmp type echo-request ip length > 1028 drop
+        icmp type echo-reply ip length > 1028 log prefix "Large ICMP Echo Reply: " counter packets 0 bytes 0
+        icmp type echo-reply ip length > 1028 drop
+        icmp type destination-unreachable icmp code admin-prohibited log prefix "Admin Prohibited ICMP: " counter packets 0 bytes 0
+        icmp type destination-unreachable icmp code admin-prohibited drop
+        icmp type redirect log prefix "ICMP Redirect: " counter packets 0 bytes 0
+        icmp type redirect drop
+        icmp type time-exceeded icmp code net-unreachable log prefix "TTL Expired ICMP: " counter packets 0 bytes 0
+        icmp type time-exceeded icmp code net-unreachable drop
+        icmp type parameter-problem log prefix "ICMP Parameter Problem: " counter packets 0 bytes 0
+        icmp type parameter-problem drop
+        icmp type address-mask-request log prefix "ICMP Address Mask Request: " counter packets 0 bytes 0
+        icmp type address-mask-request drop
+        icmp type timestamp-request log prefix "ICMP Timestamp Request: " counter packets 0 bytes 0
+        icmp type timestamp-request drop
+        icmp type timestamp-reply log prefix "ICMP Timestamp Reply: " counter packets 0 bytes 0
+        icmp type timestamp-reply drop
+        icmp type 0-255 icmp code > 15 log prefix "Malformed ICMP Packet: " counter packets 0 bytes 0
+        icmp type 0-255 icmp code > 15 drop
+    }
+
+    chain docker {
+      iifname != "docker0" oifname "docker0" ip daddr 172.18.0.2 tcp dport 6443 accept
+    }
+
+    chain docker_user {
+      # Placeholder for user-defined rules (was a RETURN in iptables)
+    }
+
+    chain docker_isolation_stage_1 {
+      iifname "docker0" oifname != "docker0" jump docker_isolation_stage_2
+    }
+
+    chain docker_isolation_stage_2 {
+      oifname "docker0" drop
+    }
+}
+table ip6 filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        ip6 daddr ::/0 drop
+    }
+
+    chain output {
+        type filter hook output priority filter; policy drop;
+        ip6 saddr ::/0 drop
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        ip6 daddr ::/0 drop
+    }
+}

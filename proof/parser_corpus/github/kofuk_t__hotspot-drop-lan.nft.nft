@@ -1,0 +1,33 @@
+flush ruleset
+
+table inet filter {
+	chain rule_hotspot {
+		ip daddr 192.168.0.0/16 counter reject with icmp type host-unreachable
+	}
+
+	chain input {
+		type filter hook input priority 0
+		policy accept
+
+		ct state { established, related } accept
+		ct state invalid drop
+		iifname "lo" accept
+		ip protocol icmp accept
+		meta l4proto ipv6-icmp accept
+		tcp dport 22 accept
+	}
+
+	chain forward {
+		type filter hook forward priority 0
+		policy accept
+
+		ct state { established, related } accept
+		iifname "wlp10s0" jump rule_hotspot
+		iifname "wlp11s0" jump rule_hotspot
+	}
+
+	chain output {
+		type filter hook output priority 0
+		policy accept
+	}
+}

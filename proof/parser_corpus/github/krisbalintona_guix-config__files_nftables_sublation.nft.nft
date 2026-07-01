@@ -1,0 +1,107 @@
+# The nftables documentation:
+# https://wiki.nftables.org/wiki-nftables/index.php/Main_Page.  Start
+# here:
+# https://wiki.nftables.org/wiki-nftables/index.php/Configuring_chains.
+#
+# MOST INFORMATIVE LINKS
+#
+# - https://wiki.archlinux.org/title/Nftables#Configuration
+# - https://wiki.nftables.org/wiki-nftables/index.php/Quick_reference-nftables_in_10_minutes
+#
+# NOTES
+#
+# There are tables, families, and chains.  Tables have one family.
+# There can be multiple chains in each table.  The only chains that
+# are mandatory - "base chains" - are ones that have a:
+#   type ... hook ... priority
+# Optional or "regular chains" can be jumped to if
+# desired.  The order in which chains are run depends on their
+# priority; lower priority chains run first.  Different tables
+# belonging to the same family are effectively merged; the priority of
+# chains determines the calling order.
+#
+# Sets can either be run-time or compile-time.  Run-time sets are
+# those defined with set NAME { ... }, while compile-time sets are
+# those defined by set NAME = ... .  To reference a run-time set use
+# @; to reference a compile-time set use $.  The same applies
+# generally to other, non-set variables.
+#
+# Note: named sets must be 16 characters or less
+# (https://wiki.nftables.org/wiki-nftables/index.php/Sets)
+#
+# OTHER USEFUL LINKS
+#
+# - https://wiki.nftables.org/wiki-nftables/index.php/Simple_rule_management
+# - https://wiki.nftables.org/wiki-nftables/index.php/Sets
+# - https://wiki.nftables.org/wiki-nftables/index.php/Building_rules_through_expressions
+# - https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/7/html/security_guide/sec-using_nftables_to_limit_the_amount_of_connections
+
+# TODO 2025-12-21: Ensure connecting to LAN through Wireguard works
+# when outside the US
+
+# IPv4 and IPv6 table for disallowing and allowing packets
+table inet filter {
+    chain input {
+        # Drop everything unless we accept it with one of the rules
+        # below
+        type filter hook input priority 0; policy drop;
+
+        # Early drop of invalid connections
+        ct state invalid drop
+
+        # Allow packets from already already established connections
+        # (i.e. subsequent packets on a connection whose first packet
+        # was accepted) and "related" connections (i.e., packets
+        # originating from us; e.g., Podman networks)
+        ct state { established, related } accept
+
+        # Accept anything from my LAN
+        ip saddr 192.168.4.0/22 accept
+
+        # Wireguard
+        udp dport 53020 accept  # Initial connection
+        iifname "wg0" accept    # Subsequent traffic
+        # Wireguard DNS queries (redundant: already covered by the DNS
+        # server rules below though)
+        iifname "wg0" udp dport 53 accept
+        iifname "wg0" tcp dport 53 accept
+
+        # Allow incoming web packets through web ports (necessary for
+        # Caddy, since not accepting the web requests means Caddy
+        # doesn't know to send data)
+        tcp dport { 80, 443 } accept
+        udp dport 443 accept
+
+        # Allow from loopback
+        iif lo accept
+        # Drop connections to lo not coming from lo
+        iif != lo ip daddr 127.0.0.1/8 drop
+        iif != lo ip6 daddr ::1/128 drop
+
+        # Allow icmp
+        ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
+
+        # Allow SSH
+        tcp dport ssh accept
+
+        # Allow all DNS queries (e.g., Pihole)
+        udp dport 53 counter accept
+        tcp dport 53 counter accept
+
+        # Reject everything else
+        reject with icmpx type port-unreachable
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+
+        # Forward Wireguard VPN traffic
+        iifname "wg0" accept
+        oifname "wg0" ct state { established, related } accept
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}

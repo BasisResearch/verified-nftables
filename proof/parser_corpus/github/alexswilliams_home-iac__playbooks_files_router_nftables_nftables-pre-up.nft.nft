@@ -1,0 +1,45 @@
+#!/usr/sbin/nft -f
+
+destroy table ip router
+destroy table ip nat
+destroy table ip6 router
+
+table ip router {
+  chain input {
+    type filter hook input priority 0; policy drop;
+    ct state vmap { invalid: drop, established: accept, related: accept };
+    iif != "lo" ip daddr 127.0.0.0/8 drop;
+    iif "lo" accept;
+    ip protocol icmp accept;
+    tcp dport "ssh" accept;
+  }
+
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+  }
+
+  chain output {
+    type filter hook output priority 0; policy accept;
+    ct state vmap { invalid: drop, established: accept, related: accept };
+    oif != "lo" ip saddr 127.0.0.0/8 drop;
+    oif "lo" accept;
+  }
+}
+
+table ip6 router {
+  chain input {
+    type filter hook input priority 0; policy drop;
+    ct state vmap { invalid: drop, established: accept, related: accept };
+    iif != "lo" ip6 daddr ::1/128 drop;
+    iif "lo" accept;
+  }
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+  }
+  chain output {
+    type filter hook output priority 0; policy drop;
+    ct state invalid drop;
+    oif != "lo" ip6 saddr ::1/128 drop;
+    oif "lo" accept;
+  }
+}

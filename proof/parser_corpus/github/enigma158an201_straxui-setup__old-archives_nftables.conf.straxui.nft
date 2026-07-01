@@ -1,0 +1,50 @@
+#!/usr/sbin/nft -f
+
+# to check if this file is error free:
+# sudo nft -c -f /etc/nftables.conf
+
+flush ruleset
+
+# tcp dport { 53 } 									counter accept comment "count accepted input dns packets"
+# tcp dport { 80, 443, 17105 }						counter accept comment "count accepted input http packets"
+# tcp dport { 41122 }								counter accept "count accepted input ssh packets"
+
+table inet filter {
+	counter cnt_straxui {
+		comment "count accepted input straxui packets"
+	}
+
+	counter cnt_ssh {
+		comment "count accepted input ssh packets"
+	}
+	chain INPUT {
+		type filter hook input priority 0; policy drop; 	counter comment "count dropped packets"
+		ct state { established, related }					accept
+		iif lo accept
+		ct state invalid drop
+		# ether type arp accept
+		pkttype { broadcast, multicast } drop
+		ip protocol udp										counter jump UDP
+		tcp flags & (fin | syn | rst | ack) == syn			counter jump TCP
+		ip protocol icmp icmp type { destination-unreachable, router-solicitation, router-advertisement, time-exceeded, parameter-problem } accept comment "Accept ICMP"
+	}
+
+	chain FORWARD {
+		type filter hook forward priority 0; policy drop;	counter comment "count dropped packets"
+	}
+
+	chain OUTPUT {
+		type filter hook output priority 0; policy accept;	counter comment "count accepted packets"
+	}
+
+	chain TCP {
+		#type filter hook input priority filter; policy accept;
+		tcp dport 17105										counter name cnt_straxui accept
+		tcp dport 16179										counter name cnt_straxui accept
+		tcp dport 41122 									counter name cnt_ssh accept
+	}
+
+	chain UDP {
+		# udp dport { 53 }									counter accept comment "count accepted input dns packets"
+	}
+}

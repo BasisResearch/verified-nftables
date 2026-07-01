@@ -1,0 +1,11 @@
+# v6 nat: masquerade (kind 6) + dnat to a v6 address (kind 8)
+table ip6 nat {
+	chain post {
+		type nat hook postrouting priority 100; policy accept;
+		masquerade
+	}
+	chain pre {
+		type nat hook prerouting priority -100; policy accept;
+		ip6 daddr 2001:db8::1 dnat to 2001:db8::2
+	}
+}

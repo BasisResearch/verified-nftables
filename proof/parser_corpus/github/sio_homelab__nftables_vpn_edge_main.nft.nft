@@ -1,0 +1,111 @@
+#!/sbin/nft -f
+flush ruleset
+
+
+define TRUSTED = {
+    "{{ nftables_interfaces_trusted|join('", "') }}"
+}
+define UNTRUSTED = {
+    "{{ nftables_interfaces_untrusted|join('", "') }}"
+}
+define WAN = {
+    "{{ nftables_interfaces_wan|join('", "') }}"
+}
+define INTERNET = {
+    "{{ nftables_interfaces_internet|d(nftables_interfaces_wan)|join('", "') }}"
+}
+
+
+define BOGONS4 = { # https://en.wikipedia.org/wiki/Reserved_IP_addresses
+    0.0.0.0/8,         # local identification
+    10.0.0.0/8,        # private use
+    100.64.0.0/10,     # CGNAT
+    127.0.0.0/8,       # loopback
+    169.254.0.0/16,    # link-local
+    172.16.0.0/12,     # private use
+    192.0.0.0/24,      # private use
+    192.0.2.0/24,      # private use
+    192.88.99.0/24,    # reserved for IPv6 relay
+    192.168.0.0/16,    # private use
+    198.18.0.0/15,     # benchmarking and testing
+    198.51.100.0/24,   # TEST-NET-2
+    203.0.113.0/24,    # TEST-NET-3
+    224.0.0.0/4,       # multicast
+    233.252.0.0/24,    # MCAST-TEST-NET
+    240.0.0.0/4,       # future use
+    255.255.255.255/32 # broadcast
+}
+
+
+table inet router {
+    chain global {
+        ct state invalid drop
+        ct state {established, related} accept
+        iif lo accept
+        iif != lo ip daddr 127.0.0.1/8 drop
+        iif != lo ip6 daddr ::1/128 drop
+        ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
+    }
+
+    set BANNED {
+        typeof ip saddr
+        size 65536
+        flags dynamic, timeout
+        timeout 5m
+    }
+
+    chain banned {
+        ip saddr @BANNED counter drop
+        ip daddr @BANNED counter drop
+    }
+
+    chain ratelimit_ssh {
+        ct state new tcp dport ssh limit rate over 5/minute update @BANNED { ip saddr } counter drop
+    }
+
+    chain ratelimit_tcp {
+        ct state new ip protocol tcp limit rate over 50/minute update @BANNED { ip saddr timeout 1h } counter drop
+    }
+
+    chain bogons {
+        ip saddr $BOGONS4 counter drop
+    }
+
+    chain output {
+        type filter hook output priority 100; policy accept;
+        jump banned
+    }
+
+    chain input {
+        type filter hook input priority 0; policy drop;
+        jump banned
+        jump ratelimit_ssh
+        jump global
+
+        iifname $UNTRUSTED drop
+        iifname $INTERNET jump bogons
+
+        {% if nftables_open_tcp_ports|length > 0 -%}
+        tcp dport { {{ nftables_open_tcp_ports|join(',') }} } accept
+        {% endif -%}
+        {% if nftables_open_udp_ports|length > 0 -%}
+        udp dport { {{ nftables_open_udp_ports|join(',') }} } accept
+        {% endif %}
+
+        jump ratelimit_tcp
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+        jump banned
+        iifname $TRUSTED accept
+        iifname $INTERNET jump bogons
+        oifname $TRUSTED ct state {established, related} accept
+    }
+
+    chain postrouting {
+        type nat hook postrouting priority 100; policy accept;
+        iifname $TRUSTED oifname $WAN masquerade
+    }
+}

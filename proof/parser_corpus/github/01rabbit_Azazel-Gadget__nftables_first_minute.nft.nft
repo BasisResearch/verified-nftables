@@ -1,0 +1,138 @@
+#!/usr/sbin/nft -f
+# Template for Azazel-Gadget First-Minute Control
+# Tokens @UPSTREAM@ @DOWNSTREAM@ @MGMT_IP@ @MGMT_SUBNET@ @PROBE_TTL@ @DYNAMIC_TTL@ are replaced by the controller.
+
+table inet azazel_fmc {
+  define UPSTREAM = "@UPSTREAM@"
+  define DOWNSTREAM = "@DOWNSTREAM@"
+  define MGMT_IP = @MGMT_IP@
+  define MGMT_SUBNET = @MGMT_SUBNET@
+  define DNS_PORT = 53
+
+  define STAGE_PROBE = 1
+  define STAGE_DEGRADED = 2
+  define STAGE_NORMAL = 3
+  define STAGE_CONTAIN = 4
+  define STAGE_DECEPTION = 5
+
+  set allow_probe_v4 {
+    type ipv4_addr
+    flags timeout
+    timeout @PROBE_TTL@
+  }
+
+  set allow_dyn_v4 {
+    type ipv4_addr
+    flags timeout
+    timeout @DYNAMIC_TTL@
+  }
+
+  set mgmt_allow_v4 {
+    type ipv4_addr
+    elements = { $MGMT_IP }
+  }
+
+  # ★ NEW: 管理通信ポート定義（fast-path）
+  set mgmt_ports {
+    type inet_service
+    elements = { 22, 80, 443, 8081, 8082, 8084, 6080 }
+  }
+
+  chain stage_switch {
+    type filter hook prerouting priority -300; policy accept;
+    meta mark set $STAGE_PROBE
+  }
+
+  chain input {
+    type filter hook input priority 0; policy accept;
+    iifname "lo" accept
+    ct state established,related accept
+    
+    # ★ USB ガジェット接続対応
+    # ICMP (ping) と IGMP を許可（MacBook からの疎通確認用）
+    icmp type echo-request accept comment "icmp echo-request"
+    icmp type echo-reply accept comment "icmp echo-reply"
+    ip protocol igmp accept comment "igmp"
+    
+    # ★ 本運用向けフィルタリング
+    # Phase 1: usb0 (downstream) トラフィック許可
+    # - 管理通信: SSH(22), HTTP(80), HTTPS(443), StatusAPI(8082), WebUI(8083), ntfy(8081), WebUI旧(8084)
+    # - ネットワーク: DHCP(67/68), DNS(53)
+    iifname $DOWNSTREAM tcp dport @mgmt_ports accept comment "usb0 management"
+    iifname $DOWNSTREAM udp dport { 53, 67, 68 } accept comment "usb0 DHCP/DNS"
+    
+    # Phase 2: upstream 側の開放/遮断は mode applicator (table inet azazel) に委譲
+    iifname $UPSTREAM accept comment "wlan0 policy delegated to mode table"
+    
+    # Phase 3: その他の入力トラフィック（管理目的で保持）
+    # loopback, established, ICMP は既に処理済み
+    counter drop comment "default drop"
+  }
+
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+    ct state established,related accept
+    iifname != $DOWNSTREAM accept comment "non-downstream forwarding delegated to mode table"
+    iifname $DOWNSTREAM ip daddr $MGMT_IP accept
+    iifname $DOWNSTREAM meta mark set meta mark map { 0 : $STAGE_PROBE }
+    iifname $DOWNSTREAM ip saddr $MGMT_SUBNET meta mark vmap { $STAGE_PROBE : jump stage_probe, $STAGE_DEGRADED : jump stage_degraded, $STAGE_NORMAL : jump stage_normal, $STAGE_CONTAIN : jump stage_contain, $STAGE_DECEPTION : jump stage_deception }
+  }
+
+  chain stage_probe {
+    # Minimal connectivity checks only
+    udp sport 68 udp dport 67 accept
+    tcp dport 80 ip daddr @allow_probe_v4 accept
+    tcp dport 443 ip daddr @allow_probe_v4 accept
+    udp dport 53 ip daddr $MGMT_IP accept
+    udp dport 123 accept
+    udp dport 443 drop
+    tcp dport { 80, 443 } meter flood_probe { ip saddr limit rate over 100/second burst 50 packets } drop
+    ip daddr @allow_probe_v4 accept
+    ip daddr @allow_dyn_v4 accept
+    counter drop
+  }
+
+  chain stage_degraded {
+    udp dport 443 drop
+    tcp dport { 853, 784 } drop
+    ip daddr @allow_dyn_v4 accept
+    tcp dport { 80, 443 } limit rate 100/second accept
+    udp dport { 53 } accept
+    icmp type echo-request accept
+    counter drop
+  }
+
+  chain stage_normal {
+    ip daddr @allow_dyn_v4 accept
+    tcp dport { 853, 784 } drop
+    tcp dport { 80, 443, 22, 25, 110, 143, 993, 995 } accept
+    udp dport { 53, 123 } accept
+    ip protocol icmp accept
+    counter accept
+  }
+
+  chain stage_contain {
+    # ★ REDESIGN: CONTAIN 中もホスト宛管理通信は許可
+    # これにより SSH/VSCode が機能停止しない
+    ip daddr $MGMT_IP tcp dport @mgmt_ports accept comment "contain: host mgmt allowed"
+    
+    # 外向き（攻撃者側）トラフィック制限
+    udp dport { 53, 67, 68 } accept
+    tcp dport { 80, 443 } ip daddr @allow_probe_v4 accept
+    ip daddr @allow_probe_v4 accept
+    counter drop
+  }
+
+  chain stage_deception {
+    tcp dport { 21, 22, 23, 445, 3389, 5900 } accept
+    udp dport 161 accept
+    jump stage_contain
+  }
+}
+
+table ip nat_azazel_fmc {
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr @MGMT_SUBNET@ oifname != "@DOWNSTREAM@" masquerade
+  }
+}

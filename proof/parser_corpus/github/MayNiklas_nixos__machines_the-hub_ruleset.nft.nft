@@ -1,0 +1,121 @@
+# Check out https://wiki.nftables.org/ for better documentation.
+# Table for both IPv4 and IPv6.
+
+# Matching by interface (https://wiki.nftables.org/wiki-nftables/index.php/Matching_packet_metainformation)
+# iifname -> input interface name
+# oifname -> output interface name
+
+# ip (https://wiki.nftables.org/wiki-nftables/index.php/Quick_reference-nftables_in_10_minutes#Ip)
+# ip saddr -> Source address
+# ip daddr -> Destination address
+# ip protocol { icmp, esp, ah, comp, udp, udplite, tcp, dccp, sctp } -> Upper layer protocol
+
+# tcp (https://wiki.nftables.org/wiki-nftables/index.php/Quick_reference-nftables_in_10_minutes#Tcp)
+# tcp dport -> Destination port
+
+# udp (https://wiki.nftables.org/wiki-nftables/index.php/Quick_reference-nftables_in_10_minutes#Udp)
+# udp dport -> Destination port
+
+# ct (https://wiki.nftables.org/wiki-nftables/index.php/Quick_reference-nftables_in_10_minutes#Ct)
+# ct state { new, established, related, untracked } -> State of the connection
+
+define WAN_IFC      = ens3
+define VPN_IFC      = { wg0, wg1, wg2 }
+define VPN_NET = { 10.88.88.0/24, 10.10.10.0/24, 172.20.1.0/24 }
+
+define Nik_NET = { 10.88.88.21, 192.168.5.0/24 }
+
+table inet filter {
+    # Block all incomming connections traffic except SSH and "ping".
+    chain input {
+        type filter hook input priority 0;
+
+        # accept any localhost traffic
+        iifname lo accept
+
+        # accept traffic originated from us
+        ct state {established, related} accept
+
+        # ICMP
+        # routers may also want: mld-listener-query, nd-router-solicit
+        ip6 nexthdr icmpv6 icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
+        ip protocol icmp icmp type { destination-unreachable, router-advertisement, time-exceeded, parameter-problem } accept
+
+        # allow "ping"
+        ip6 nexthdr icmpv6 icmpv6 type echo-request accept
+        ip protocol icmp icmp type echo-request accept
+
+        # allow SSH
+        tcp dport 22 accept
+
+        # allow HTTP / HTTPS -> needed for ACME
+        tcp dport {http,https} accept
+
+        # allow Wireguard connections
+        udp dport {58102, 58103,58104} accept
+
+        # allow DNS via wg0
+        iifname  { "wg0", "wg1", "wg2" } tcp dport {53} accept
+        iifname  { "wg0", "wg1", "wg2" } udp dport {53} accept
+
+        # allow HTTP / HTTPS via wg0 -> used for Graphana
+        iifname { "wg0"} tcp dport {80,443} accept
+        # allow monitoring via wg0
+        iifname { "wg0"} tcp dport {3100,5201,9100,9115 } accept
+
+        # count and drop any other traffic
+        counter drop
+    }
+
+    # Allow all outgoing connections.
+    chain output {
+        type filter hook output priority 0;
+        accept
+    }
+
+    chain forward {
+        type filter hook forward priority 0;
+
+        # allow M. to connect to PVE server
+        iifname "wg2" oifname "wg0" ip daddr { 192.168.5.11/32 } accept
+
+        # Allow M. to connect to 192.168.42.0/24 & 192.168.52.0/24
+        iifname "wg2" oifname "wg0" ip daddr { 192.168.42.0/24, 192.168.52.0/24 } accept
+        
+        # only allow specific traffic from travel router
+        iifname "wg0" oifname "wg0" ip saddr { 10.88.88.25/32, 192.168.8.0/24 } ip daddr { 10.88.88.17/32, 192.168.5.0/24, 192.168.20.0/24, 192.168.72.12/32, 192.168.74.0/24 } accept
+        iifname "wg0" oifname "wg0" ip saddr { 10.88.88.25/32, 192.168.8.0/24 } ct state new counter drop
+
+        # allow packages staying on the same Wireguard Interface
+        iifname "wg0" oifname "wg0" counter accept
+        iifname "wg2" oifname "wg2" counter accept
+
+        # drop new packages between Wireguard peers
+        iifname { "wg0" } oifname { "wg0", "wg1", "wg2" } ct state new counter drop
+        iifname { "wg1" } oifname { "wg0", "wg1", "wg2" } ct state new counter drop
+        iifname { "wg2" } oifname { "wg0", "wg1", "wg2" } ct state new counter drop
+
+        accept
+    }
+}
+
+table ip nat {
+    chain PREROUTING {
+        type nat hook prerouting priority dstnat; policy accept;
+    }
+
+    chain INPUT {
+        type nat hook input priority 100; policy accept;
+    }
+
+    chain OUTPUT {
+        type nat hook output priority -100; policy accept;
+    }
+
+    chain POSTROUTING {
+        type nat hook postrouting priority srcnat; policy accept;
+
+        # NAT between Wireguard peers & ens3
+        oifname $WAN_IFC ip saddr $VPN_NET counter masquerade
+    }
+}

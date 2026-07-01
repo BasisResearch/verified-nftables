@@ -23,6 +23,8 @@ type value =
   | Vsym    of string              (* a bareword: symbolic constant / service / ifname *)
   | Vstr    of string              (* a double-quoted string, e.g. "eth0" *)
   | Vip4    of int list            (* a dotted IPv4 literal, already 4 bytes *)
+  | Vip6    of int list            (* an IPv6 literal, already 16 bytes (big-endian) *)
+  | Vmac    of int list            (* a MAC literal, 6 bytes, e.g. aa:bb:cc:dd:ee:ff *)
   | Vvar    of string              (* a `$name` reference to a `define` *)
   | Vprefix of value * int         (* a CIDR prefix, e.g. 192.168.50.0/24 *)
   | Vrange  of value * value       (* an inclusive range, e.g. 29811-29814 *)
@@ -36,7 +38,7 @@ type verdict =
   | SVreturn
   | SVjump of string
   | SVgoto of string
-  | SVqueue
+  | SVqueue of int * int * bool * bool  (* `queue [num lo[-hi]] [bypass] [fanout]` *)
   | SVreject of string             (* `reject [with ...]`; opts kept verbatim *)
 
 (* The right-hand side of a match: a single value/range/prefix, an inline
@@ -70,10 +72,15 @@ type sstmt =
   | StComment   of string
   | StCounter
   | StLog       of string          (* options string (e.g. the prefix), verbatim *)
-  | StLimit     of int * string * bool  (* rate [over] N / unit; bool = over/invert *)
-  | StMasquerade
-  | StSnat      of value option * int option  (* `snat to <addr>[:<port>]` *)
-  | StDnat      of value option * int option  (* `dnat to <addr>[:<port>]` *)
+  | StLimit     of int * string * bool * int * bool
+                          (* rate, time-unit, over/invert, burst, is-byte-rate;
+                             byte-rate values are already scaled to bytes *)
+  | StMasquerade of string list                (* `masquerade [random,...]` *)
+  | StSnat      of value option * int option * string list  (* `snat to <addr>[:<port>] [flags]` *)
+  | StDnat      of value option * int option * string list  (* `dnat to <addr>[:<port>] [flags]` *)
+  | StRedirect  of int option * string list    (* `redirect [to :<port>] [flags]` *)
+  | StTproxy    of string * value option * int option
+                          (* `tproxy [ip|ip6] to <addr>[:<port>]` (fam, addr, port) *)
   | StMetaSet   of string * value  (* `meta <k> set v` / `mark set v` (k="mark") *)
   | StCtSet     of string * value  (* `ct <k> set v` *)
   | StNotrack                      (* `notrack` (disable conntrack for the packet) *)
@@ -87,6 +94,10 @@ type clause =
   | CVmapRef of keypath list * string              (* `<key>[.<key>...] vmap @named_map` *)
   | CVerdict of verdict
   | CStmt    of sstmt
+  | CBitmatch of keypath * string * value * rhs
+                          (* `<sel> and|or|xor <mask> <relop> <val>`, e.g.
+                             `meta mark and 0x3 == 0x1`; nft lowers this to a
+                             bitwise `(field & m) ^ x` then a compare *)
 
 type srule = clause list
 

@@ -1,0 +1,25 @@
+#!/usr/sbin/nft -f
+
+# set for all the clients in the captive subnet, which should be freed
+set freed {
+    type ipv4_addr
+    flags interval
+}
+
+set redir {
+    type ipv4_addr
+    flags interval
+}
+
+# redirect traffic for all 'freed' clients from the secondary gateway/dns to the primary
+chain portal_dstnat {
+    type nat hook prerouting priority dstnat; policy accept;
+    # captive client http(s) requests are forced to our captive portal
+    iifname "br-client" ip saddr != @freed tcp dport {80,443} dnat to 10.252.0.1
+    # captive client dns requests are forced to the secondary dns, which resolves common portal urls to point to us
+    iifname "br-client" ip saddr != @freed udp dport {53} dnat to 10.251.0.1
+    # freed clients should use the main dns server now (and be forced to use it)
+    iifname "br-client" ip saddr @freed udp dport {53} dnat to 10.252.0.1
+    # workaround to make captive portal work after freeing clients who use DoH/DoT.
+    iifname "br-client" ip daddr @redir dnat to 10.252.0.1
+}

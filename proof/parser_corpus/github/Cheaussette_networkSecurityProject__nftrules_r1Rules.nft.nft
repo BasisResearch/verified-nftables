@@ -1,0 +1,40 @@
+#!/usr/sbin/nft -f
+
+# Ruleset for Router r1 (Connects WS LAN <-> DMZ/Transit)
+
+flush ruleset
+
+table inet filter {
+   
+    chain forward {
+        type filter hook forward priority 0;
+        policy drop; # default: drop traffic 
+
+        # 1. allow established and related connections 
+        ct state established,related accept comment "Allow return traffic"
+
+        # 2. allow Workstation LAN -> DMZ/Transit (Towards Servers/Internet)
+        # traffic coming IN r1-eth0 (LAN) going OUT r1-eth12 (DMZ/r2)
+        iifname "r1-eth0" oifname "r1-eth12" accept comment "Allow LAN outbound"
+
+        # 3. block DMZ/Transit -> Workstation LAN (new connections)
+        # traffic coming IN r1-eth12 going OUT r1-eth0 is blocked by default policy
+
+         iifname "r1-eth12" oifname "r1-eth0" tcp sport 20 ct state related accept
+    }
+
+    chain input {
+        type filter hook input priority 0;
+        policy drop; # Default: drop traffic destined for the router itself
+
+        iif lo accept comment "allow loopback traffic"
+        ct state established,related accept comment "allow replies to router"
+        # allow ping TO the router for diagnostics 
+        ip protocol icmp accept comment "Allow ping to r1 interfaces"
+    }
+
+    chain output {
+        type filter hook output priority 0;
+        policy accept; # allow router to send traffic 
+    }
+}

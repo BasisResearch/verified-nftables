@@ -1,0 +1,102 @@
+# NL
+
+define MARK_ACCEPT  = 0xb00b0000
+
+table inet user {}
+delete table inet user
+
+table inet user {
+  set internal_v4 {
+    type  ipv4_addr
+    flags interval
+    elements = { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 }
+  }
+
+  set internal_v6 {
+    type  ipv6_addr
+    flags interval
+    elements = { fd00::/8 }
+  }
+
+  set external_ifs {
+    type  ifname
+    flags interval
+  }
+
+  set internal_ifs {
+    type  ifname
+    flags interval
+  }
+
+  set isolated_ifs {
+    type  ifname
+    flags interval
+  }
+
+  chain preraw {
+    type filter hook prerouting priority raw
+    iifname != "lo" ip  daddr 127.0.0.0/8 counter reject with icmpx type admin-prohibited comment "Security"
+    iifname != "lo" ip6 daddr ::1         counter reject with icmpx type admin-prohibited comment "Security"
+  }
+
+  chain premangle {
+    type filter hook prerouting priority mangle
+
+    # fib daddr type { unspec, local, anycast, multicast } return comment "Ignore non-unicast addresses"
+    ct direction != original return comment "Unidirectional routing"
+  }
+
+  chain prerouting {
+    type nat hook prerouting priority dstnat
+
+    ct direction != original return comment "Unidirectional routing"
+  }
+
+  chain input {
+    type filter hook input priority filter
+
+    ct state     { established, related } mark set mark | $MARK_ACCEPT comment "Allow established traffic"
+    ct status & dnat == dnat              mark set mark | $MARK_ACCEPT comment "Allow local DNATed traffic"
+    meta l4proto { icmp, icmpv6 }         mark set mark | $MARK_ACCEPT comment "Allow ICMP, ICMPv6"
+  }
+
+  chain noinput {
+    type filter hook input priority filter + 1
+    policy drop
+
+    mark & $MARK_ACCEPT == $MARK_ACCEPT accept
+    counter reject with icmpx type admin-prohibited
+  }
+
+  chain forward {
+    type filter hook forward priority filter
+
+    ct state     { established, related } mark set mark | $MARK_ACCEPT comment "Allow established traffic"
+    ct status & dnat == dnat              mark set mark | $MARK_ACCEPT comment "Allow local DNATed traffic"
+    meta l4proto { icmp, icmpv6 }         mark set mark | $MARK_ACCEPT comment "Allow ICMP, ICMPv6"
+  }
+
+  chain noforward {
+    type filter hook forward priority filter + 1
+    policy drop
+
+    mark & $MARK_ACCEPT == $MARK_ACCEPT accept
+    counter reject with icmpx type admin-prohibited
+  }
+
+  chain output {
+    type filter hook output priority filter
+  }
+
+  chain outmangle {
+    type route hook output priority mangle
+  }
+
+  chain postmangle {
+    type filter hook postrouting priority mangle
+  }
+
+  chain postrouting {
+    type nat hook postrouting priority srcnat
+  }
+}

@@ -1,0 +1,57 @@
+table ip nat {
+  chain prerouting {
+    type nat hook prerouting priority 0; policy accept;
+    counter comment "count accepted packets"
+    counter log level info prefix "nft#ip#nat#prerouting: "
+  }
+
+  chain input {
+    type nat hook input priority 100; policy accept;
+    counter comment "count accepted packets"
+    counter log level info prefix "nft#ip#nat#input: "
+  }
+
+  chain output {
+    type nat hook output priority 0; policy accept;
+    counter comment "count accepted packets"
+    counter log level info prefix "nft#ip#nat#output: "
+  }
+
+  chain postrouting {
+    type nat hook postrouting priority 100; policy accept;
+    # accept incoming packets from WireGuard VPN interface
+    # alter outgoing packets to have server IP address
+    oifname $INET_INTERFACE counter log level info prefix "nft#ip#nat#postrouting (masquerade wireguard): " masquerade random,persistent
+    counter comment "count accepted packets"
+    counter log level info prefix "nft#ip#nat#postrouting: "
+  }
+}
+
+table ip6 nat6 {
+  chain prerouting {
+    type nat hook prerouting priority 0; policy accept;
+    counter comment "count accepted packets"
+    counter log level info prefix "nft#ip6#nat6#prerouting: "
+  }
+
+  chain input {
+    type nat hook input priority 100; policy accept;
+    counter comment "count accepted packets"
+    counter log level info prefix "nft#ip6#nat6#input: "
+  }
+
+  chain output {
+    type nat hook output priority 0; policy accept;
+    counter comment "count accepted packets"
+    counter log level info prefix "nft#ip6#nat6#output: "
+  }
+
+  chain postrouting {
+    type nat hook postrouting priority 100; policy accept;
+    # accept incoming packets from WireGuard VPN interface
+    # alter outgoing packets to have server IP address
+    oifname $INET_INTERFACE counter log level info prefix "nft#ip6#nat6#postrouting (masquerade wireguard): " masquerade random,persistent
+    counter comment "count accepted packets"
+    counter log level info prefix "nft#ip6#nat6#postrouting: "
+  }
+}

@@ -1,0 +1,59 @@
+flush ruleset
+
+table ip raw {
+  chain prerouting {
+    type filter hook prerouting priority -300; policy accept;
+    ip protocol tcp notrack
+    ip protocol udp notrack
+  }
+  chain output {
+    type filter hook output priority -300; policy accept;
+    ip protocol tcp notrack
+    ip protocol udp notrack
+  }
+}
+
+table ip6 raw {
+  chain prerouting {
+    type filter hook prerouting priority -300; policy accept;
+    meta l4proto tcp notrack
+    meta l4proto udp notrack
+  }
+  chain output {
+    type filter hook output priority -300; policy accept;
+    meta l4proto tcp notrack
+    meta l4proto udp notrack
+  }
+}
+
+table inet filter {
+  chain input {
+    type filter hook input priority 0; policy drop;
+
+    iif lo accept
+    ip protocol icmp accept
+    ip6 nexthdr icmpv6 accept
+
+    iifname != "lo" ip protocol tcp queue num 1
+    iifname != "lo" ip6 nexthdr tcp queue num 1
+    iifname != "lo" ip protocol udp queue num 1
+    iifname != "lo" ip6 nexthdr udp queue num 1
+  }
+
+  chain output {
+    type filter hook output priority 0; policy drop;
+
+    oif lo accept
+    ip protocol icmp accept
+    ip6 nexthdr icmpv6 accept
+
+    oifname != "lo" ip protocol tcp queue num 1
+    oifname != "lo" ip6 nexthdr tcp queue num 1
+    oifname != "lo" ip protocol udp queue num 1
+    oifname != "lo" ip6 nexthdr udp queue num 1
+  }
+
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+  }
+}

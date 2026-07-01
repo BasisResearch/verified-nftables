@@ -11,7 +11,7 @@
 ROCQBIN ?=
 COQMAKE  = CoqMakefile
 
-.PHONY: all proofs glue lib example semtest difftest corpus byteorder-gate validate parse-test gen clean cli e2e nl-send
+.PHONY: all proofs glue lib example semtest difftest corpus byteorder-gate validate parse-test gen clean cli e2e nl-send parser-corpus
 
 all: proofs glue
 
@@ -86,6 +86,12 @@ corpus: proofs
 # (payload->render round-trip only) cannot see.  Fails on any mismatch.
 byteorder-gate: proofs
 	./byteorder-gate.sh
+
+# Honest coverage of the UNTRUSTED .nft frontend: run `nftc compile` over a
+# large, diverse, REAL rule corpus (nftables tests/py + shipped examples + mined
+# GitHub configs) and print a parsed / parser-bug / out-of-model coverage table.
+parser-corpus: cli
+	./parser_corpus.sh
 
 # Independently validate field_load offsets / meta-ct names against live `nft`
 # (the corpus round-trip shares its tables between parse and render, so it can't

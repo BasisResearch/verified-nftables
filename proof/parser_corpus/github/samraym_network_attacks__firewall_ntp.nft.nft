@@ -1,0 +1,40 @@
+
+table ip ntp_firewall {
+  
+  chain input {
+    type filter hook input priority 0; policy drop;
+    
+    # accepter les loops
+    iif lo accept
+
+    #  Connexions invalides → drop
+    ct state invalid drop
+
+    # accepter les connexions établies
+    ct state established,related accept
+
+    # 123 port pour ntp
+    tcp dport {22,123} ct state new accept
+
+    icmp type echo-request counter accept
+
+    # tout le reste est dropé (policy drop)
+  }
+
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+    # (pas de routage sur un serveur DMZ)
+  }
+
+  chain output {
+    type filter hook output priority 0; policy drop;
+
+    # pas de ping sortant 
+    icmp type echo-request counter drop
+
+    # réponse au connexions établies
+    ct state established,related accept
+
+    # (tout nouveau output est dropé)
+  }
+}

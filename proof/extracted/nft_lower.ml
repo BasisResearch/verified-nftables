@@ -114,6 +114,14 @@ let sym_ctstate = [
   "invalid",[0;0;0;1]; "established",[0;0;0;2]; "related",[0;0;0;4];
   "new",[0;0;0;8]; "untracked",[0;0;0;64];
 ]
+(* conntrack status bits (IPS_*, nf_conntrack_common.h; nft ct.c ct_status_tbl).
+   A 4-byte big-endian register, matched as a bitmask like ct state (golden
+   any/ct.t.payload: `ct status expected` => `bitwise & 0x00000001 ^ 0 ; cmp neq 0`). *)
+let sym_ctstatus = [
+  "expected",[0;0;0;1]; "seen-reply",[0;0;0;2]; "assured",[0;0;0;4];
+  "confirmed",[0;0;0;8]; "snat",[0;0;0;0x10]; "dnat",[0;0;0;0x20];
+  "dying",[0;0;2;0];
+]
 (* TCP flag bits (the single byte at transport header + 13).  proto.c:
    TCPHDR_FIN 0x01 .. TCPHDR_CWR 0x80.  A comma/`|` list ORs the bits. *)
 let sym_tcpflag = [
@@ -121,20 +129,66 @@ let sym_tcpflag = [
   "ack",0x10; "urg",0x20; "ecn",0x40; "cwr",0x80;
 ]
 let sym_icmp = [
-  "echo-reply",[0]; "destination-unreachable",[3]; "redirect",[5];
+  "echo-reply",[0]; "destination-unreachable",[3]; "source-quench",[4];
+  "redirect",[5];
   "echo-request",[8]; "router-advertisement",[9]; "router-solicitation",[10];
   "time-exceeded",[11]; "parameter-problem",[12]; "timestamp-request",[13];
-  "timestamp-reply",[14];
+  "timestamp-reply",[14]; "info-request",[15]; "info-reply",[16];
+  "address-mask-request",[17]; "address-mask-reply",[18];
 ]
 let sym_icmpv6 = [
   "destination-unreachable",[1]; "packet-too-big",[2]; "time-exceeded",[3];
   "parameter-problem",[4]; "echo-request",[128]; "echo-reply",[129];
   "mld-listener-query",[130]; "mld-listener-report",[131];
+  "mld-listener-done",[132]; "mld-listener-reduction",[132];
   "nd-router-solicit",[133]; "nd-router-advert",[134];
   "nd-neighbor-solicit",[135]; "nd-neighbor-advert",[136]; "nd-redirect",[137];
+  "router-renumbering",[138]; "ind-neighbor-solicit",[141];
+  "ind-neighbor-advert",[142]; "mld2-listener-report",[143];
+]
+(* DSCP codepoints (6-bit): class-selector csN = 8N, assured-forwarding afXY,
+   expedited-forwarding ef=46, best-effort be=0, lower-effort le=1.  Used as the
+   RAW field value for `ip dscp` / `ip6 dscp` (then shifted into the header bits). *)
+let sym_dscp = [
+  "cs0",0; "cs1",8; "cs2",16; "cs3",24; "cs4",32; "cs5",40; "cs6",48; "cs7",56;
+  "af11",10; "af12",12; "af13",14; "af21",18; "af22",20; "af23",22;
+  "af31",26; "af32",28; "af33",30; "af41",34; "af42",36; "af43",38;
+  "ef",46; "be",0; "le",1;
+]
+(* IGMP message types (nft igmp.c igmp_type_tbl), a 1-byte field. *)
+let sym_igmptype = [
+  "membership-query",[0x11]; "membership-report-v1",[0x12];
+  "membership-report-v2",[0x16]; "leave-group",[0x17];
+  "membership-report-v3",[0x22];
+]
+(* ICMP code names (icmp.c icmp_code_tbl), a 1-byte field. *)
+let sym_icmpcode = [
+  "net-unreachable",[0]; "host-unreachable",[1]; "prot-unreachable",[2];
+  "port-unreachable",[3]; "frag-needed",[4]; "net-prohibited",[9];
+  "host-prohibited",[10]; "admin-prohibited",[13];
+]
+(* ICMPv6 code names (icmpv6.c icmpv6_code_tbl), a 1-byte field. *)
+let sym_icmp6code = [
+  "no-route",[0]; "admin-prohibited",[1]; "addr-unreachable",[3];
+  "port-unreachable",[4]; "policy-fail",[5]; "reject-route",[6];
+]
+(* Mobility-header types (mh.c mh_type_tbl), a 1-byte field. *)
+let sym_mhtype = [
+  "binding-refresh-request",[0]; "home-test-init",[1]; "careof-test-init",[2];
+  "home-test",[3]; "careof-test",[4]; "binding-update",[5];
+  "binding-acknowledgement",[6]; "binding-error",[7]; "fast-binding-update",[8];
+  "fast-binding-acknowledgement",[9]; "fast-binding-advertisement",[10];
+  "experimental-mobility-header",[11]; "home-agent-switch-message",[12];
 ]
 let sym_pkttype = [ "host",[0]; "unicast",[0]; "broadcast",[1]; "multicast",[2];
                     "other",[3]; "otherhost",[3]; ]
+(* ARP operation codes (2-byte network-order field at arp header + 6).  arp.c
+   arp_op_tbl: request 1, reply 2, rrequest 3, rreply 4, inrequest 8,
+   inreply 9, nak 10. *)
+let sym_arpop = [
+  "request",[0;1]; "reply",[0;2]; "rrequest",[0;3]; "rreply",[0;4];
+  "inrequest",[0;8]; "inreply",[0;9]; "nak",[0;10];
+]
 (* /etc/services subset (extend as corpora demand). *)
 let sym_service = [
   "ftp-data",20; "ftp",21; "ssh",22; "telnet",23; "smtp",25; "domain",53;
@@ -142,6 +196,9 @@ let sym_service = [
   "ntp",123; "imap",143; "snmp",161; "bgp",179; "https",443; "submission",587;
   "imaps",993; "pop3s",995; "mysql",3306; "rdp",3389; "nfs",2049;
   "syncthing",22000; "wireguard",51820; "openvpn",1194;
+  "http-alt",8080; "https-alt",8443; "domain-s",853; "socks",1080;
+  "printer",515; "ipp",631; "ldap",389; "ldaps",636; "smtps",465;
+  "sip",5060; "kerberos",88; "rsync",873; "irc",6667; "xmpp-client",5222;
 ]
 
 let lookup ctx tbl s =
@@ -153,7 +210,10 @@ let lookup ctx tbl s =
 
 type kind =
   | KIfname | KIfindex | KIp4 | KIp6 | KPort | KL4proto | KNfproto | KEthertype
-  | KCtstate | KMark | KIcmp | KIcmpv6 | KPkttype | KFibType | KTcpflag | KNum of int
+  | KCtstate | KCtstatus | KMark | KIcmp | KIcmpv6 | KPkttype | KFibType | KTcpflag | KNum of int
+  | KIgmp | KIcmpcode | KIcmp6code | KMhtype  (* 1-byte symbolic-or-numeric enums *)
+  | KCtdir   (* conntrack direction: original=0 / reply=1, a 1-byte register *)
+  | KArpop   (* ARP operation: symbolic (request/reply/...) or numeric, 2-byte NBO *)
   (* host-endian (little-endian on x86) integer of [n] bytes; used for the value
      of `ct <key> set` / `meta <key> set` where the kernel register width is
      key-specific (e.g. ct zone is a u16 -> [KNumLe 2], ct label a 128-bit value
@@ -182,6 +242,7 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
   | KIfindex, Nft_ast.Vnum n -> bytes_of_int_le 4 n
   | KIfindex, (Nft_ast.Vsym s | Nft_ast.Vstr s) -> bytes_of_int_le 4 (nametoindex s)
   | KIp4, Nft_ast.Vip4 b -> b
+  | KIp6, Nft_ast.Vip6 b -> b
   | KIp6, Nft_ast.Vip4 b -> b           (* a v4-mapped literal in a v6 context *)
   | KPort, Nft_ast.Vnum n -> bytes_of_int 2 n
   | KPort, Nft_ast.Vsym s -> bytes_of_int 2 (L.assoc_opt s sym_service
@@ -194,6 +255,8 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
   | KEthertype, Nft_ast.Vsym s -> lookup "ethertype" sym_ethertype s
   | KCtstate, Nft_ast.Vsym s -> lookup "ct state" sym_ctstate s
   | KCtstate, Nft_ast.Vnum n -> bytes_of_int 4 n
+  | KCtstatus, Nft_ast.Vsym s -> lookup "ct status" sym_ctstatus s
+  | KCtstatus, Nft_ast.Vnum n -> bytes_of_int 4 n
   (* a single tcp-flag symbol / numeric literal -> a 1-byte mask *)
   | KTcpflag, Nft_ast.Vsym s -> [lookup "tcp flag" sym_tcpflag s]
   | KTcpflag, Nft_ast.Vnum n -> [n land 0xff]
@@ -212,17 +275,34 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
   | KIcmpv6, Nft_ast.Vsym s -> lookup "icmpv6 type" sym_icmpv6 s
   | KPkttype, Nft_ast.Vsym s -> lookup "pkttype" sym_pkttype s
   | KPkttype, Nft_ast.Vnum n -> [n land 0xff]
+  | KIgmp, Nft_ast.Vsym s -> lookup "igmp type" sym_igmptype s
+  | KIgmp, Nft_ast.Vnum n -> [n land 0xff]
+  | KIcmpcode, Nft_ast.Vsym s -> lookup "icmp code" sym_icmpcode s
+  | KIcmpcode, Nft_ast.Vnum n -> [n land 0xff]
+  | KIcmp6code, Nft_ast.Vsym s -> lookup "icmpv6 code" sym_icmp6code s
+  | KIcmp6code, Nft_ast.Vnum n -> [n land 0xff]
+  | KMhtype, Nft_ast.Vsym s -> lookup "mh type" sym_mhtype s
+  | KMhtype, Nft_ast.Vnum n -> [n land 0xff]
   | KFibType, Nft_ast.Vsym s -> lookup "fib type" sym_fibtype s
   | KFibType, Nft_ast.Vnum n -> bytes_of_int_le 4 n
+  (* a MAC literal is 6 verbatim big-endian bytes (ether saddr/daddr, arp ether). *)
+  | KNum 6, Nft_ast.Vmac b -> b
   | KNum w, Nft_ast.Vnum n -> bytes_of_int w n
   | KNumLe w, Nft_ast.Vnum n -> bytes_of_int_le w n
+  | KArpop, Nft_ast.Vnum n -> bytes_of_int 2 n
+  | KArpop, Nft_ast.Vsym s -> lookup "arp operation" sym_arpop s
+  | KCtdir, Nft_ast.Vnum n -> [n land 0xff]
+  | KCtdir, Nft_ast.Vsym s ->
+      (match s with "original" -> [0] | "reply" -> [1]
+       | _ -> raise (Unsupported ("ct direction " ^ s)))
   | _, Nft_ast.Vvar n -> raise (Unsupported ("unresolved $" ^ n))
   | _ -> raise (Unsupported "value/selector type mismatch")
 
 (* the byte width a kind compares at (for building a prefix mask) *)
 let width_of_kind = function
-  | KIp4 -> 4 | KIp6 -> 16 | KPort | KEthertype -> 2
-  | KCtstate | KMark | KIfindex | KFibType -> 4 | KNum w -> w | KNumLe w -> w | _ -> 1
+  | KIp4 -> 4 | KIp6 -> 16 | KPort | KEthertype | KArpop -> 2
+  | KCtstate | KCtstatus | KMark | KIfindex | KFibType -> 4 | KNum w -> w | KNumLe w -> w
+  | KCtdir -> 1 | _ -> 1
 
 (* A kind stored HOST-ENDIAN (little-endian on x86) in the register, like the
    kernel holds `meta mark` / `ct mark` (BYTEORDER_HOST_ENDIAN).  For these,
@@ -284,7 +364,25 @@ let pad_to_slot (b : Bytes.data) : Bytes.data =
      (ip/ip6/arp) nft emits NO such guard, so [DNfproto] is discharged to a
      no-op there (resolved in [ensure_dep], which is family-aware).
    - [DNone]: no dependency. *)
-type dep1 = DL4 of Bytes.data | DNfproto of Bytes.data
+type dep1 = DL4 of Bytes.data | DNfproto of Bytes.data | DEther of Bytes.data
+          | DL2proto of Bytes.data | DIiftype of Bytes.data | DIcmpType of int
+(* [DIiftype et]: the `meta iiftype == ARPHRD_ETHER (1)` guard nft prepends before
+   a LINK-layer (ether address) match in any family whose interfaces are not
+   guaranteed ethernet (ip/ip6/inet/netdev) — the ethernet header only exists on an
+   ARPHRD_ETHER device (golden {ip,ip6,inet}/ether.t.payload).  A no-op in bridge
+   (an inherently-ethernet family).  The compare value is stored BIG-ENDIAN
+   ([0x00;0x01]) — the display/corpus convention codec renders as the integer
+   0x0001, exactly matching the golden — NOT the host-endian wire order. *)
+(* [DL2proto et]: an L2-family (bridge/netdev) network-layer guard `meta protocol
+   == <ethertype>` that nft prepends before a network-header (arp) match.  Unlike
+   [DNfproto] (which nft emits for ip/ip6 in the *inet* family), the bridge and
+   netdev families pin the L3 protocol by the LINK-layer ethertype instead
+   (golden arp.t.payload.netdev: `meta load protocol` / `cmp eq 0x0806`).  It is a
+   no-op in every single-L3 family (ip/ip6/arp/inet). *)
+(* [DEther pv]: the VLAN ether-type guard nft inserts before a `vlan <field>`
+   match — `ether type == 0x8100` (payload load 2b @ link+12).  In the netdev
+   family nft prepends a `meta iiftype == ARPHRD_ETHER (1)` guard as well
+   (golden bridge/vlan.t.payload{,.netdev}). *)
 (* A selector may carry SEVERAL implicit deps that nft emits, in order.  Most
    selectors carry zero or one; the L3-specific L4 protocols icmp/icmpv6 carry
    TWO — the network-protocol guard `meta nfproto == {2|10}` AND the transport
@@ -296,15 +394,56 @@ type dep = dep1 list
 
 let dep_l4 = function
   | "tcp" -> [DL4 [6]] | "udp" -> [DL4 [17]]
+  (* IP-protocol-numbered transport / auth / compression headers: nft guards each
+     payload load with `meta l4proto == <ipproto>` (golden inet/{ah,esp,comp,sctp,
+     dccp,udplite}.t.payload).  These carry NO nfproto guard (valid over both L3
+     families), exactly like tcp/udp. *)
+  | "ah" -> [DL4 [51]] | "esp" -> [DL4 [50]] | "comp" -> [DL4 [108]]
+  | "sctp" -> [DL4 [132]] | "dccp" -> [DL4 [33]] | "udplite" -> [DL4 [136]]
   (* icmp/icmpv6 are NETWORK-protocol-LINKED L4 protocols: nft emits the nfproto
      guard BEFORE the l4proto guard (payload.c proto_icmp/proto_icmp6 are linked
      to the IPv4/IPv6 network bases).  Order matches the golden byte sequence. *)
   | "icmp" -> [DNfproto [2]; DL4 [1]]
   | "icmpv6" -> [DNfproto [10]; DL4 [58]]
+  (* IGMP (IPPROTO_IGMP 2) is IPv4-only, linked to the network base like icmp. *)
+  | "igmp" -> [DNfproto [2]; DL4 [2]]
   | _ -> []
+
+(* ---------- TCP options (NFT_EXTHDR tcpopt) ----------
+   nft reads a TCP option field with `exthdr load tcpopt <len>b @ <optnum> +
+   <off>`, where <optnum> is the option KIND number and <off>/<len> position the
+   field within that option (golden any/tcpopt.t.payload).  No l4proto dependency
+   is emitted (the exthdr walker locates the TCP header itself). *)
+let tcpopt_num (name : string) : int =
+  match name with
+  | "eol" -> 0 | "nop" -> 1 | "maxseg" | "mss" -> 2 | "window" -> 3
+  | "sack-perm" -> 4 | "sack" | "sack0" | "sack1" | "sack2" | "sack3" -> 5
+  | "timestamp" -> 8 | "md5sig" -> 19 | "mptcp" -> 30 | "fastopen" -> 34
+  | _ -> (match int_of_string_opt name with
+          | Some n -> n
+          | None -> raise (Unsupported ("tcp option " ^ name)))
+
+(* field position (off,len,kind) within a TCP option.  `left`/`right` on a
+   multi-block SACK (`sack1`/`sack2`/`sack3`) step by one 8-byte block. *)
+let tcpopt_field (name : string) (field : string) : int * int * kind =
+  let sackn = match name with
+    | "sack1" -> 1 | "sack2" -> 2 | "sack3" -> 3 | _ -> 0 in
+  match field with
+  | "kind"   -> (0, 1, KNum 1)
+  | "length" -> (1, 1, KNum 1)
+  | "size"   -> (2, 2, KNum 2)          (* maxseg size *)
+  | "count"  -> (2, 1, KNum 1)          (* window count (shift) *)
+  | "left"   -> (2 + 8*sackn, 4, KNum 4)
+  | "right"  -> (6 + 8*sackn, 4, KNum 4)
+  | "tsval"  -> (2, 4, KNum 4)
+  | "tsecr"  -> (6, 4, KNum 4)
+  | _ -> raise (Unsupported ("tcp option " ^ name ^ " " ^ field))
 
 let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
   let none = [] in
+  (* arp lives at the network header; in a bridge/netdev L2 chain nft pins it with
+     `meta protocol == 0x0806` (ETH_P_ARP), a no-op in the arp family itself. *)
+  let arp_dep = [DL2proto [0x08; 0x06]] in
   match kp with
   | ["tcp"; "dport"] | ["udp"; "dport"] | ["th"; "dport"] ->
       (Syntax.FThDport, KPort, dep_l4 (L.hd kp))
@@ -323,8 +462,8 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
   | ["icmp"; "type"]   -> (Syntax.FIcmpType, KIcmp, dep_l4 "icmp")
   | ["icmpv6"; "type"] -> (Syntax.FIcmpType, KIcmpv6, dep_l4 "icmpv6")
   | ["ether"; "type"]  -> (Syntax.FEtherType, KEthertype, none)
-  | ["ether"; "saddr"] -> (Syntax.FEtherSaddr, KNum 6, none)
-  | ["ether"; "daddr"] -> (Syntax.FEtherDaddr, KNum 6, none)
+  | ["ether"; "saddr"] -> (Syntax.FEtherSaddr, KNum 6, [DIiftype [0x00; 0x01]])
+  | ["ether"; "daddr"] -> (Syntax.FEtherDaddr, KNum 6, [DIiftype [0x00; 0x01]])
   | ["meta"; "l4proto"]  -> (Syntax.FMetaL4proto, KL4proto, none)
   | ["meta"; "nfproto"]  -> (Syntax.FMetaNfproto, KNfproto, none)
   | ["meta"; "protocol"] -> (Syntax.FMetaProtocol, KEthertype, none)
@@ -346,8 +485,188 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
   | ["fib"; sel; "oifname"] -> (Syntax.FFib (sel, Packet.FRoifname), KIfname, none)
   | ["fib"; sel; "oif"]     -> (Syntax.FFib (sel, Packet.FRoif), KNum 4, none)
   | ["ct"; "state"]      -> (Syntax.FCtState, KCtstate, none)
+  | ["ct"; "status"]     -> (Syntax.FCtStatus, KCtstatus, none)
   | ["ct"; "mark"]       -> (Syntax.FCtMark, KMark, none)
+  (* ---- additional IPv4 header fields (network-order payload loads) ---- *)
+  | ["ip"; "ttl"]        -> (Syntax.FIp4Ttl,    KNum 1, [DNfproto [2]])
+  | ["ip"; "length"]     -> (Syntax.FIp4Totlen, KNum 2, [DNfproto [2]])
+  | ["ip"; "id"]         -> (Syntax.FIp4Id,     KNum 2, [DNfproto [2]])
+  | ["ip"; "frag-off"]   -> (Syntax.FIp4FragOff,KNum 2, [DNfproto [2]])
+  | ["ip"; "checksum"]   -> (Syntax.FIp4Csum,   KNum 2, [DNfproto [2]])
+  (* ---- additional IPv6 header fields ---- *)
+  | ["ip6"; "length"]    -> (Syntax.FPayload (Packet.PNetwork, 4, 2), KNum 2, [DNfproto [10]])
+  | ["ip6"; "hoplimit"]  -> (Syntax.FPayload (Packet.PNetwork, 7, 1), KNum 1, [DNfproto [10]])
+  | ["ip6"; "nexthdr"]   -> (Syntax.FPayload (Packet.PNetwork, 6, 1), KL4proto, [DNfproto [10]])
+  (* ---- additional TCP header fields (network-order payload loads) ---- *)
+  | ["tcp"; "sequence"]  -> (Syntax.FTcpSeq, KNum 4, dep_l4 "tcp")
+  | ["tcp"; "ackseq"]    -> (Syntax.FTcpAck, KNum 4, dep_l4 "tcp")
+  | ["tcp"; "window"]    -> (Syntax.FPayload (Packet.PTransport, 14, 2), KNum 2, dep_l4 "tcp")
+  | ["tcp"; "checksum"]  -> (Syntax.FPayload (Packet.PTransport, 16, 2), KNum 2, dep_l4 "tcp")
+  | ["tcp"; "urgptr"]    -> (Syntax.FPayload (Packet.PTransport, 18, 2), KNum 2, dep_l4 "tcp")
+  (* ---- UDP header fields ---- *)
+  | ["udp"; "length"]    -> (Syntax.FUdpLen,  KNum 2, dep_l4 "udp")
+  | ["udp"; "checksum"]  -> (Syntax.FUdpCsum, KNum 2, dep_l4 "udp")
+  (* ---- ICMP / ICMPv6 header fields ---- *)
+  | ["icmp"; "code"]     -> (Syntax.FIcmpCode, KIcmpcode, dep_l4 "icmp")
+  (* ---- IGMP (IPPROTO_IGMP 2), transport header: type@0 mrt@1 checksum@2
+     (golden ip/igmp.t.payload). ---- *)
+  | ["igmp"; "type"]     -> (Syntax.FPayload (Packet.PTransport, 0, 1), KIgmp,  dep_l4 "igmp")
+  | ["igmp"; "mrt"]      -> (Syntax.FPayload (Packet.PTransport, 1, 1), KNum 1, dep_l4 "igmp")
+  | ["igmp"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2, dep_l4 "igmp")
+  | ["icmp"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2, dep_l4 "icmp")
+  | ["icmp"; "id"]       -> (Syntax.FPayload (Packet.PTransport, 4, 2), KNum 2, dep_l4 "icmp")
+  | ["icmp"; "seq"] | ["icmp"; "sequence"]
+                         -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2, dep_l4 "icmp")
+  | ["icmp"; "gateway"]  -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4, dep_l4 "icmp" @ [DIcmpType 5])
+  | ["icmp"; "mtu"]      -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2, dep_l4 "icmp" @ [DIcmpType 3])
+  | ["icmpv6"; "code"]     -> (Syntax.FIcmpCode, KIcmp6code, dep_l4 "icmpv6")
+  | ["icmpv6"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2, dep_l4 "icmpv6")
+  | ["icmpv6"; "id"]       -> (Syntax.FPayload (Packet.PTransport, 4, 2), KNum 2, dep_l4 "icmpv6")
+  | ["icmpv6"; "seq"] | ["icmpv6"; "sequence"]
+                           -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2, dep_l4 "icmpv6")
+  | ["icmpv6"; "mtu"]      -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4, dep_l4 "icmpv6" @ [DIcmpType 2])
+  (* ---- host-endian meta register fields (u32/u16 host order) ---- *)
+  | ["meta"; "length"] | ["meta"; "len"] -> (Syntax.FMetaLen,   KNumLe 4, none)
+  | ["meta"; "cpu"]    -> (Syntax.FMetaCpu,   KNumLe 4, none)
+  | ["meta"; "skuid"]  -> (Syntax.FMetaSkuid, KNumLe 4, none)
+  | ["meta"; "skgid"]  -> (Syntax.FMetaSkgid, KNumLe 4, none)
+  | ["meta"; "iifgroup"] -> (Syntax.FMetaGen Packet.MKiifgroup, KNumLe 4, none)
+  | ["meta"; "oifgroup"] -> (Syntax.FMetaGen Packet.MKoifgroup, KNumLe 4, none)
+  | ["meta"; "cgroup"]   -> (Syntax.FMetaGen Packet.MKcgroup,   KNumLe 4, none)
+  | ["meta"; "iiftype"]  -> (Syntax.FMetaIiftype, KNumLe 2, none)
+  | ["meta"; "oiftype"]  -> (Syntax.FMetaOiftype, KNumLe 2, none)
+  (* ---- host-endian conntrack register fields ---- *)
+  | ["ct"; "direction"]  -> (Syntax.FCtDirection, KCtdir,  none)
+  | ["ct"; "id"]         -> (Syntax.FCtId,        KNumLe 4, none)
+  | ["ct"; "expiration"] -> (Syntax.FCtExpiration,KNumLe 4, none)
+  | ["ct"; "zone"]       -> (Syntax.FCtGen Packet.CKzone, KNumLe 2, none)
+  (* ---- direction-qualified conntrack tuple (FCtDir key strings match nft's
+     `ct load <key>` render: src_ip/dst_ip/src_ip6/dst_ip6/proto_src/proto_dst/
+     zone/protocol) ---- *)
+  | ["ctdir"; d; "zone"]         -> (Syntax.FCtDir ("zone", d),      KNumLe 2, none)
+  | ["ctdir"; d; "protocol"]     -> (Syntax.FCtDir ("protocol", d),  KL4proto, none)
+  | ["ctdir"; d; "proto-src"]    -> (Syntax.FCtDir ("proto_src", d), KPort, none)
+  | ["ctdir"; d; "proto-dst"]    -> (Syntax.FCtDir ("proto_dst", d), KPort, none)
+  | ["ctdir"; d; "ip"; "saddr"]  -> (Syntax.FCtDir ("src_ip", d),    KIp4, none)
+  | ["ctdir"; d; "ip"; "daddr"]  -> (Syntax.FCtDir ("dst_ip", d),    KIp4, none)
+  | ["ctdir"; d; "ip6"; "saddr"] -> (Syntax.FCtDir ("src_ip6", d),   KIp6, none)
+  | ["ctdir"; d; "ip6"; "daddr"] -> (Syntax.FCtDir ("dst_ip6", d),   KIp6, none)
+  (* ---- ARP header (NFT_PAYLOAD_NETWORK_HEADER; arp is a single-L3 family so
+     nft emits NO nfproto dependency).  Offsets from arp.c / golden arp.t.payload:
+     htype@0 ptype@2 hlen@4 plen@5 operation@6, sender/target hw+proto addrs. ---- *)
+  | ["arp"; "htype"]     -> (Syntax.FPayload (Packet.PNetwork, 0, 2), KNum 2, arp_dep)
+  | ["arp"; "ptype"]     -> (Syntax.FPayload (Packet.PNetwork, 2, 2), KEthertype, arp_dep)
+  | ["arp"; "hlen"]      -> (Syntax.FPayload (Packet.PNetwork, 4, 1), KNum 1, arp_dep)
+  | ["arp"; "plen"]      -> (Syntax.FPayload (Packet.PNetwork, 5, 1), KNum 1, arp_dep)
+  | ["arp"; "operation"] -> (Syntax.FPayload (Packet.PNetwork, 6, 2), KArpop, arp_dep)
+  | ["arp"; "saddr"; "ether"] -> (Syntax.FPayload (Packet.PNetwork, 8, 6),  KNum 6, arp_dep)
+  | ["arp"; "saddr"; "ip"]    -> (Syntax.FPayload (Packet.PNetwork, 14, 4), KIp4, arp_dep)
+  | ["arp"; "daddr"; "ether"] -> (Syntax.FPayload (Packet.PNetwork, 18, 6), KNum 6, arp_dep)
+  | ["arp"; "daddr"; "ip"]    -> (Syntax.FPayload (Packet.PNetwork, 24, 4), KIp4, arp_dep)
+  (* ---- AH (IPPROTO_AH 51), transport header.  nexthdr@0 hdrlength@1 reserved@2
+     spi@4 sequence@8 (golden inet/ah.t.payload). ---- *)
+  | ["ah"; "nexthdr"]    -> (Syntax.FPayload (Packet.PTransport, 0, 1), KL4proto, dep_l4 "ah")
+  | ["ah"; "hdrlength"]  -> (Syntax.FPayload (Packet.PTransport, 1, 1), KNum 1, dep_l4 "ah")
+  | ["ah"; "reserved"]   -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2, dep_l4 "ah")
+  | ["ah"; "spi"]        -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4, dep_l4 "ah")
+  | ["ah"; "sequence"]   -> (Syntax.FPayload (Packet.PTransport, 8, 4), KNum 4, dep_l4 "ah")
+  (* ---- ESP (IPPROTO_ESP 50), transport header: spi@0 sequence@4. ---- *)
+  | ["esp"; "spi"]       -> (Syntax.FPayload (Packet.PTransport, 0, 4), KNum 4, dep_l4 "esp")
+  | ["esp"; "sequence"]  -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4, dep_l4 "esp")
+  (* ---- COMP (IPPROTO_COMP 108), transport header: nexthdr@0 flags@1 cpi@2. ---- *)
+  | ["comp"; "nexthdr"]  -> (Syntax.FPayload (Packet.PTransport, 0, 1), KL4proto, dep_l4 "comp")
+  | ["comp"; "flags"]    -> (Syntax.FPayload (Packet.PTransport, 1, 1), KNum 1, dep_l4 "comp")
+  | ["comp"; "cpi"]      -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2, dep_l4 "comp")
+  (* ---- SCTP (IPPROTO_SCTP 132), transport header: sport@0 dport@2 vtag@4
+     checksum@8 (golden inet/sctp.t.payload). ---- *)
+  | ["sctp"; "sport"]    -> (Syntax.FPayload (Packet.PTransport, 0, 2), KPort, dep_l4 "sctp")
+  | ["sctp"; "dport"]    -> (Syntax.FPayload (Packet.PTransport, 2, 2), KPort, dep_l4 "sctp")
+  | ["sctp"; "vtag"]     -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4, dep_l4 "sctp")
+  | ["sctp"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 8, 4), KNum 4, dep_l4 "sctp")
+  (* ---- DCCP (IPPROTO_DCCP 33), transport header: sport@0 dport@2. ---- *)
+  | ["dccp"; "sport"]    -> (Syntax.FPayload (Packet.PTransport, 0, 2), KPort, dep_l4 "dccp")
+  | ["dccp"; "dport"]    -> (Syntax.FPayload (Packet.PTransport, 2, 2), KPort, dep_l4 "dccp")
+  (* ---- UDP-Lite (IPPROTO_UDPLITE 136), transport header: sport@0 dport@2
+     cscov@4 checksum@6 (golden inet/udplite.t.payload). ---- *)
+  | ["udplite"; "sport"]    -> (Syntax.FPayload (Packet.PTransport, 0, 2), KPort, dep_l4 "udplite")
+  | ["udplite"; "dport"]    -> (Syntax.FPayload (Packet.PTransport, 2, 2), KPort, dep_l4 "udplite")
+  | ["udplite"; "cscov"] | ["udplite"; "csumcov"]
+                            -> (Syntax.FPayload (Packet.PTransport, 4, 2), KNum 2, dep_l4 "udplite")
+  | ["udplite"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2, dep_l4 "udplite")
+  (* ---- IPv6 extension-header selectors (NFT_EXTHDR `exthdr load ipv6`).
+     The htype is the exthdr's IPPROTO (hbh=0, rt/srh=43, frag=44, dst=60,
+     mh=135); off/len are the field's position WITHIN that header.  nft guards
+     each with the IPv6 nfproto dependency (golden ip6/{hbh,rt,frag,dst,mh}.t.
+     payload: ip6 family emits none, inet/netdev emit `meta nfproto == 0x0a`),
+     so dep = [DNfproto [10]] exactly like the ip6 network-header selectors.
+     Byte-aligned fields only; the sub-byte bitfields (frag frag-off/reserved2/
+     more-fragments, which nft follows with a `bitwise` mask) are left out. ---- *)
+  | ["hbh"; "nexthdr"]    -> (Syntax.FExthdr (Packet.EPipv6, 0,   0, 1, false), KL4proto, [DNfproto [10]])
+  | ["hbh"; "hdrlength"]  -> (Syntax.FExthdr (Packet.EPipv6, 0,   1, 1, false), KNum 1,   [DNfproto [10]])
+  | ["rt"; "nexthdr"]     -> (Syntax.FExthdr (Packet.EPipv6, 43,  0, 1, false), KL4proto, [DNfproto [10]])
+  | ["rt"; "hdrlength"]   -> (Syntax.FExthdr (Packet.EPipv6, 43,  1, 1, false), KNum 1,   [DNfproto [10]])
+  | ["rt"; "type"]        -> (Syntax.FExthdr (Packet.EPipv6, 43,  2, 1, false), KNum 1,   [DNfproto [10]])
+  | ["rt"; "seg-left"]    -> (Syntax.FExthdr (Packet.EPipv6, 43,  3, 1, false), KNum 1,   [DNfproto [10]])
+  | ["srh"; "last-entry"] -> (Syntax.FExthdr (Packet.EPipv6, 43,  4, 1, false), KNum 1,   [DNfproto [10]])
+  | ["srh"; "flags"]      -> (Syntax.FExthdr (Packet.EPipv6, 43,  5, 1, false), KNum 1,   [DNfproto [10]])
+  | ["srh"; "tag"]        -> (Syntax.FExthdr (Packet.EPipv6, 43,  6, 2, false), KNum 2,   [DNfproto [10]])
+  | ["frag"; "nexthdr"]   -> (Syntax.FExthdr (Packet.EPipv6, 44,  0, 1, false), KL4proto, [DNfproto [10]])
+  | ["frag"; "reserved"]  -> (Syntax.FExthdr (Packet.EPipv6, 44,  1, 1, false), KNum 1,   [DNfproto [10]])
+  | ["frag"; "id"]        -> (Syntax.FExthdr (Packet.EPipv6, 44,  4, 4, false), KNum 4,   [DNfproto [10]])
+  | ["dst"; "nexthdr"]    -> (Syntax.FExthdr (Packet.EPipv6, 60,  0, 1, false), KL4proto, [DNfproto [10]])
+  | ["dst"; "hdrlength"]  -> (Syntax.FExthdr (Packet.EPipv6, 60,  1, 1, false), KNum 1,   [DNfproto [10]])
+  | ["mh"; "nexthdr"]     -> (Syntax.FExthdr (Packet.EPipv6, 135, 0, 1, false), KL4proto, [DNfproto [10]])
+  | ["mh"; "hdrlength"]   -> (Syntax.FExthdr (Packet.EPipv6, 135, 1, 1, false), KNum 1,   [DNfproto [10]])
+  | ["mh"; "type"]        -> (Syntax.FExthdr (Packet.EPipv6, 135, 2, 1, false), KMhtype,  [DNfproto [10]])
+  | ["mh"; "reserved"]    -> (Syntax.FExthdr (Packet.EPipv6, 135, 3, 1, false), KNum 1,   [DNfproto [10]])
+  | ["mh"; "checksum"]    -> (Syntax.FExthdr (Packet.EPipv6, 135, 4, 2, false), KNum 2,   [DNfproto [10]])
+  (* ---- TCP options: `tcp option <name> <field>` (byte-aligned fields). ---- *)
+  | ["tcpopt"; name; field] ->
+      let optnum = tcpopt_num name in
+      let (off, len, k) = tcpopt_field name field in
+      (Syntax.FExthdr (Packet.EPtcpopt, optnum, off, len, false), k, [])
   | _ -> raise (Unsupported ("selector: " ^ S.concat " " kp))
+
+(* ---------- sub-byte header bitfields ----------
+   A field that occupies only some bits of one or more header bytes: nft loads
+   the containing byte(s), masks them (`bitwise reg = (reg & M) ^ 0`), and
+   compares against the value SHIFTED into the field's bit position (golden e.g.
+   `ip dscp cs1` => load 1b@nh+1 ; bitwise & 0xfc ; cmp eq 0x20, where cs1=8 and
+   8<<2=0x20).  We return (field, len, mask, dep, is_dscp); the shift is derived
+   from the mask's trailing-zero count.  Byte-aligned fields stay in [key_field]. *)
+let bitfield_sel (kp : Nft_ast.keypath)
+    : (Syntax.field * int * Bytes.data * dep * bool) option =
+  let ip4 = [DNfproto [2]] and ip6 = [DNfproto [10]] in
+  match kp with
+  | ["ip"; "version"]    -> Some (Syntax.FPayload (Packet.PNetwork, 0, 1), 1, [0xf0], ip4, false)
+  | ["ip"; "hdrlength"]  -> Some (Syntax.FPayload (Packet.PNetwork, 0, 1), 1, [0x0f], ip4, false)
+  | ["ip"; "dscp"]       -> Some (Syntax.FPayload (Packet.PNetwork, 1, 1), 1, [0xfc], ip4, true)
+  | ["ip6"; "dscp"]      -> Some (Syntax.FPayload (Packet.PNetwork, 0, 2), 2, [0x0f;0xc0], ip6, true)
+  | ["ip6"; "flowlabel"] -> Some (Syntax.FPayload (Packet.PNetwork, 1, 3), 3, [0x0f;0xff;0xff], ip6, false)
+  | ["tcp"; "doff"]      -> Some (Syntax.FPayload (Packet.PTransport, 12, 1), 1, [0xf0], dep_l4 "tcp", false)
+  (* VLAN tag fields (802.1Q, at link+14 after the 0x8100 ether type).  The PCP
+     (0xe0>>5) and DEI/CFI (0x10>>4) live in the first byte; the 12-bit VID in
+     the 2-byte word (golden bridge/vlan.t.payload).  All carry the ether-type
+     guard.  Non-stacked forms only (stacked `vlan type` shifts offsets). *)
+  | ["vlan"; "id"]       -> Some (Syntax.FPayload (Packet.PLink, 14, 2), 2, [0x0f;0xff], [DEther [0x81;0x00]], false)
+  | ["vlan"; "pcp"]      -> Some (Syntax.FPayload (Packet.PLink, 14, 1), 1, [0xe0], [DEther [0x81;0x00]], false)
+  | ["vlan"; "dei"] | ["vlan"; "cfi"]
+                         -> Some (Syntax.FPayload (Packet.PLink, 14, 1), 1, [0x10], [DEther [0x81;0x00]], false)
+  (* IPv6 fragment-header sub-byte fields (exthdr load ipv6 @ 44, then bitwise):
+     frag-off (13 bits, 0xfff8>>3), more-fragments (0x01), reserved2 (0x06>>1)
+     — golden ip6/frag.t.payload. *)
+  | ["frag"; "frag-off"]       -> Some (Syntax.FExthdr (Packet.EPipv6, 44, 2, 2, false), 2, [0xff;0xf8], [DNfproto [10]], false)
+  | ["frag"; "reserved2"]      -> Some (Syntax.FExthdr (Packet.EPipv6, 44, 3, 1, false), 1, [0x06], [DNfproto [10]], false)
+  | ["frag"; "more-fragments"] -> Some (Syntax.FExthdr (Packet.EPipv6, 44, 3, 1, false), 1, [0x01], [DNfproto [10]], false)
+  | _ -> None
+
+(* trailing-zero bit count of a big-endian byte mask = the field's LSB position. *)
+let mask_shift (mask : Bytes.data) : int =
+  let rec tz_byte b i = if i >= 8 then 8 else if (b lsr i) land 1 = 1 then i else tz_byte b (i+1) in
+  let rec go = function
+    | [] -> 0
+    | b :: rest -> if b = 0 then 8 + go rest else tz_byte b 0
+  in go (L.rev mask)
 
 (* ---------- prefix mask ---------- *)
 
@@ -360,6 +679,27 @@ let prefix_mask (width : int) (len : int) : Bytes.data =
     done; !m)
 let band a b = L.map2 (land) a b
 let bor  a b = L.map2 (lor)  a b
+
+(* nft shortens a BYTE-ALIGNED CIDR prefix on a plain payload field to a load of
+   just the prefix bytes plus a DIRECT compare (no bitwise mask): `ip saddr .../24`
+   => `payload load 3b @ network+12 ; cmp eq 0xc0a802` and `ip6 saddr ::/64` =>
+   `payload load 8b @ network+8` (golden {ip,ip6}.t.payload).  Only byte-multiple
+   prefix lengths strictly inside the field width qualify; every other prefix keeps
+   the full-width `load ; bitwise & mask ; cmp` form.  Loading the leading N bytes
+   is exactly the masked high-order compare, so this is byte-faithful to nft. *)
+let payload_prefix_field (f : Syntax.field) (nbytes : int) : Syntax.field option =
+  match f with
+  | Syntax.FIp4Saddr -> Some (Syntax.FPayload (Packet.PNetwork, 12, nbytes))
+  | Syntax.FIp4Daddr -> Some (Syntax.FPayload (Packet.PNetwork, 16, nbytes))
+  | Syntax.FIp6Saddr -> Some (Syntax.FPayload (Packet.PNetwork, 8,  nbytes))
+  | Syntax.FIp6Daddr -> Some (Syntax.FPayload (Packet.PNetwork, 24, nbytes))
+  (* A conntrack-tuple address (`ct original ip saddr .../24`) loads via the
+     symbolic `ct load <key>` (no byte width), so the LOAD stays full-width and
+     only the compare shortens: golden ip/ct.t.payload emits `ct load src_ip` then
+     `cmp eq 0xc0a801`.  The model's MEq is a prefix compare (firstn), so keeping
+     [f] and shortening the value is exactly that. *)
+  | Syntax.FCtDir _ -> Some f
+  | _ -> None
 
 (* ---------- mutable lowering state ---------- *)
 
@@ -392,7 +732,7 @@ let lower_verdict : Nft_ast.verdict -> Verdict.verdict = function
   | Nft_ast.SVreturn -> Verdict.Return
   | Nft_ast.SVjump n -> Verdict.Jump n
   | Nft_ast.SVgoto n -> Verdict.Goto n
-  | Nft_ast.SVqueue -> Verdict.Queue (0, 0, false, false)
+  | Nft_ast.SVqueue (lo, hi, byp, fan) -> Verdict.Queue (lo, hi, byp, fan)
   | Nft_ast.SVreject _ -> Verdict.Reject (0, 0)
 
 (* ---------- element encoding (single field & declared concat type) ---------- *)
@@ -401,7 +741,7 @@ let lower_verdict : Nft_ast.verdict -> Verdict.verdict = function
 let interval_of_value st (k : kind) (v : Nft_ast.value) : Bytes.data * Bytes.data =
   match resolve_var st v with
   | Nft_ast.Vrange (a, b) -> (enc_atom k a, enc_atom k b)
-  | Nft_ast.Vprefix (Nft_ast.Vip4 b, len) ->
+  | Nft_ast.Vprefix ((Nft_ast.Vip4 b | Nft_ast.Vip6 b), len) ->
       let w = width_of_kind k in let mask = prefix_mask w len in
       let net = band b mask in
       let bcast = L.map2 (fun n m -> n lor (m lxor 0xff)) net mask in
@@ -424,7 +764,7 @@ let interval_of_value st (k : kind) (v : Nft_ast.value) : Bytes.data * Bytes.dat
 let interval_of_value_be st (k : kind) (v : Nft_ast.value) : Bytes.data * Bytes.data =
   match resolve_var st v with
   | Nft_ast.Vrange (a, b) -> (enc_atom_be k a, enc_atom_be k b)
-  | Nft_ast.Vprefix (Nft_ast.Vip4 b, len) ->
+  | Nft_ast.Vprefix ((Nft_ast.Vip4 b | Nft_ast.Vip6 b), len) ->
       let w = width_of_kind k in let mask = prefix_mask w len in
       let net = band b mask in
       let bcast = L.map2 (fun n m -> n lor (m lxor 0xff)) net mask in
@@ -467,6 +807,7 @@ let interval_of_decl_elem st (types : string list) (v : Nft_ast.value)
       (match v' with
        | Nft_ast.Vrange (a, b) -> (bytes_of_typeatom st t a, bytes_of_typeatom st t b)
        | Nft_ast.Vprefix _ when t = "ipv4_addr" -> interval_of_value st KIp4 v'
+       | Nft_ast.Vprefix _ when t = "ipv6_addr" -> interval_of_value st KIp6 v'
        | _ -> let b = bytes_of_typeatom st t v' in (b, b))
   | _, Nft_ast.Vconcat vs when L.length vs = L.length types ->
       (* CONCATENATED element (NFT_SET_CONCAT): the kernel ranges EACH field
@@ -479,6 +820,8 @@ let interval_of_decl_elem st (types : string list) (v : Nft_ast.value)
         | Nft_ast.Vrange (a, b) -> (bytes_of_typeatom st t a, bytes_of_typeatom st t b)
         | Nft_ast.Vprefix (Nft_ast.Vip4 _, _) when t = "ipv4_addr" ->
             interval_of_value st KIp4 v
+        | Nft_ast.Vprefix (Nft_ast.Vip6 _, _) when t = "ipv6_addr" ->
+            interval_of_value st KIp6 v
         | Nft_ast.Vprefix _ ->
             raise (Unsupported "CIDR/prefix in concatenated set element for non-ipv4 field")
         | v' -> let b = bytes_of_typeatom st t v' in (b, b) in
@@ -544,6 +887,58 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
       let zero = [0] in   (* FRpresent load_width = 1 byte *)
       let mc = if exists then Syntax.MNeq (f, zero) else Syntax.MEq (f, zero) in
       ([], mc)
+  | [ ["exthdr"; proto] ]
+    when (match m.Nft_ast.m_rhs.Nft_ast.payload with
+          | Nft_ast.SEvalue (Nft_ast.Vsym ("missing" | "exists")) -> true
+          | _ -> false) ->
+      (* `exthdr <proto> exists|missing`: nft loads the exthdr with the PRESENT
+         flag (a 1-byte 0/1) and compares it (golden ip6/exthdr.t.payload:
+         `exthdr load ipv6 1b @ H + 0 present => reg 1 ; cmp eq reg 1 0x01`
+         for exists, `0x00` for missing).  htype is the exthdr's IPPROTO. *)
+      let htype = (match proto with
+        | "hbh"  -> 0   | "rt"  -> 43 | "frag" -> 44
+        | "dst"  -> 60  | "mh"  -> 135
+        | _ -> raise (Unsupported ("exthdr " ^ proto))) in
+      let exists = (match m.Nft_ast.m_rhs.Nft_ast.payload with
+                    | Nft_ast.SEvalue (Nft_ast.Vsym "exists") -> true | _ -> false) in
+      let f = Syntax.FExthdr (Packet.EPipv6, htype, 0, 1, true) in
+      let mc = if exists then Syntax.MEq (f, [1]) else Syntax.MEq (f, [0]) in
+      ([DNfproto [10]], mc)
+  | [ ["tcpopt"; name] ]
+    when (match m.Nft_ast.m_rhs.Nft_ast.payload with
+          | Nft_ast.SEvalue (Nft_ast.Vsym ("missing" | "exists")) -> true
+          | _ -> false) ->
+      (* `tcp option <name> exists|missing`: exthdr tcpopt present flag, a 1-byte
+         0/1 compared to 1 (exists) / 0 (missing) — golden any/tcpopt.t.payload
+         `exthdr load tcpopt 1b @ <optnum> + 0 present => reg 1 ; cmp eq reg 1 0x01`. *)
+      let optnum = tcpopt_num name in
+      let exists = (match m.Nft_ast.m_rhs.Nft_ast.payload with
+                    | Nft_ast.SEvalue (Nft_ast.Vsym "exists") -> true | _ -> false) in
+      let f = Syntax.FExthdr (Packet.EPtcpopt, optnum, 0, 1, true) in
+      let mc = if exists then Syntax.MEq (f, [1]) else Syntax.MEq (f, [0]) in
+      ([], mc)
+  | [kp] when (match bitfield_sel kp with Some _ -> true | None -> false) ->
+      (* a sub-byte header bitfield (ip dscp / ip6 flowlabel / tcp doff / ...):
+         load the byte(s), `& mask`, and compare against value<<shift. *)
+      let (f, len, mask, dep, is_dscp) =
+        (match bitfield_sel kp with Some x -> x | None -> assert false) in
+      let shift = mask_shift mask in
+      let raw v = match resolve_var st v with
+        | Nft_ast.Vnum n -> n
+        | Nft_ast.Vsym s when is_dscp ->
+            (match L.assoc_opt s sym_dscp with Some n -> n
+             | None -> raise (Unsupported ("dscp value " ^ s)))
+        | _ -> raise (Unsupported ("bitfield selector value: " ^ S.concat " " kp)) in
+      let zeros = L.init len (fun _ -> 0) in
+      let mc = (match m.Nft_ast.m_rhs.Nft_ast.payload with
+        | Nft_ast.SEvalue v ->
+            let cmpval = bytes_of_int len ((raw v) lsl shift) in
+            Syntax.MMasked (f, neg, mask, zeros, cmpval)
+        | _ ->
+            (* a set/range over a bitfield needs a bitwise-then-lookup/range that
+               we do not model faithfully yet; refuse rather than mis-encode. *)
+            raise (Unsupported ("bitfield selector set/range: " ^ S.concat " " kp))) in
+      (dep, mc)
   | [kp] ->
       let (f, k, dep) = key_field kp in
       let mc = match m.Nft_ast.m_rhs.Nft_ast.payload with
@@ -569,7 +964,7 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
                `{ ... }` (SEset) is a different expression -> real lookup.  We refuse
                the list form for non-bitmask selectors, mirroring nft's error. *)
             (match k with
-             | KCtstate | KTcpflag ->
+             | KCtstate | KCtstatus | KTcpflag ->
                  let w = width_of_kind k in
                  let zero = L.init w (fun _ -> 0) in
                  let orMask =
@@ -632,9 +1027,17 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
                  Syntax.MRangeT (f, [Syntax.TByteorder (true, w, w)], neg,
                                  enc_atom_be k a, enc_atom_be k b)
              | Nft_ast.Vrange (a, b) -> Syntax.MRange (f, neg, enc_atom k a, enc_atom k b)
-             | Nft_ast.Vprefix (Nft_ast.Vip4 bs, len) ->
+             | Nft_ast.Vprefix ((Nft_ast.Vip4 bs | Nft_ast.Vip6 bs), len) ->
                  let w = width_of_kind k in let mask = prefix_mask w len in
-                 Syntax.MMasked (f, neg, mask, L.init w (fun _ -> 0), band bs mask)
+                 let net = band bs mask in
+                 (match (if len > 0 && len < 8 * w && len mod 8 = 0
+                         then payload_prefix_field f (len / 8) else None) with
+                  | Some f' ->
+                      let nb = len / 8 in
+                      let bytes = L.filteri (fun i _ -> i < nb) net in
+                      if neg then Syntax.MNeq (f', bytes) else Syntax.MEq (f', bytes)
+                  | None ->
+                      Syntax.MMasked (f, neg, mask, L.init w (fun _ -> 0), net))
              | Nft_ast.Vset elems
                when host_endian_kind k && set_has_interval st elems ->
                  (* a `$var` expanding to an INTERVAL set over a host-endian field:
@@ -644,7 +1047,7 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
                                intern_anon_set_be st k elems)
              | Nft_ast.Vset elems ->        (* a `$var` that expands to a set *)
                  Syntax.MConcatSet ([f], neg, intern_anon_set st k elems)
-             | v' when k = KCtstate ->
+             | v' when k = KCtstate || k = KCtstatus ->
                  (* ct_state has .basetype = bitmask_type, and the relational
                     evaluator (evaluate.c:2792-2797) rewrites OP_IMPLICIT over a
                     TYPE_BITMASK basetype to OP_EQ for EVERY bitmask type EXCEPT
@@ -708,17 +1111,33 @@ let meta_set_kind (k : Packet.meta_key) : kind =
   | Packet.MKpkttype -> KNumLe 1
   | _ -> raise (Unsupported "meta key is not settable")
 
+(* `log level <name>` renders in the golden with the NUMERIC syslog level
+   (`[ log level 0 ]` for emerg .. 7 debug, 8 audit), not the symbolic name.  Map
+   the bare `level <name>` opts to `level <n>`; other log-option forms (prefix /
+   group / snaplen / queue-threshold / flags, which the golden also canonicalises
+   with defaults and flag expansion) are left verbatim for a later batch. *)
+let syslog_level = function
+  | "emerg" -> Some 0 | "alert" -> Some 1 | "crit" -> Some 2 | "err" -> Some 3
+  | "warn" | "warning" -> Some 4 | "notice" -> Some 5 | "info" -> Some 6
+  | "debug" -> Some 7 | "audit" -> Some 8 | _ -> None
+let canon_log_opts (opts : string) : string =
+  match Stdlib.String.split_on_char ' ' opts with
+  | ["level"; name] ->
+      (match syslog_level name with Some n -> "level " ^ string_of_int n | None -> opts)
+  | _ -> opts
+
 let lower_stmt st (s : Nft_ast.sstmt) : Syntax.stmt option =
   match s with
   | Nft_ast.StComment _ -> None              (* metadata; no verdict/bytecode effect *)
   | Nft_ast.StCounter -> Some (Syntax.SCounter (0, 0))
-  | Nft_ast.StLog opts -> Some (Syntax.SLog opts)
+  | Nft_ast.StLog opts -> Some (Syntax.SLog (canon_log_opts opts))
   | Nft_ast.StLimit _ ->
       (* `limit` is a matchcond (MLimit), not a statement; lower_rule intercepts
          StLimit before reaching here, so this is unreachable. *)
       raise (Unsupported "limit handled as a match, not a statement")
-  | Nft_ast.StMasquerade | Nft_ast.StSnat _ | Nft_ast.StDnat _ ->
-      (* terminal NAT: the single-packet model treats it as a terminal Accept *)
+  | Nft_ast.StMasquerade _ | Nft_ast.StSnat _ | Nft_ast.StDnat _
+  | Nft_ast.StRedirect _ | Nft_ast.StTproxy _ ->
+      (* terminal NAT/tproxy: the single-packet model treats it as terminal Accept *)
       None
   | Nft_ast.StMetaSet (k, v) ->
       let key = meta_key k in
@@ -730,15 +1149,18 @@ let lower_stmt st (s : Nft_ast.sstmt) : Syntax.stmt option =
 
 (* does a statement force a terminal Accept (NAT)? *)
 let stmt_is_terminal_accept = function
-  | Nft_ast.StMasquerade | Nft_ast.StSnat _ | Nft_ast.StDnat _ -> true | _ -> false
+  | Nft_ast.StMasquerade _ | Nft_ast.StSnat _ | Nft_ast.StDnat _
+  | Nft_ast.StRedirect _ | Nft_ast.StTproxy _ -> true | _ -> false
 
-let limit_spec rate unit_ over : Packet.limit_spec =
+let limit_spec rate unit_ over burst bytes : Packet.limit_spec =
   let u = match unit_ with
     | "second"->0 | "minute"->1 | "hour"->2 | "day"->3 | "week"->4
     | _ -> raise (Unsupported ("limit unit " ^ unit_)) in
   (* bit 0 of ls_flags = NFT_LIMIT_F_INV ("over"); the data-plane semantics XOR
-     the under/not-exceeded test with this bit (Semantics.v eval_matchcond_body). *)
-  { Packet.ls_rate = rate; ls_unit = u; ls_burst = 5; ls_bytes = false;
+     the under/not-exceeded test with this bit (Semantics.v eval_matchcond_body).
+     [ls_burst]/[ls_bytes] now carry the parsed burst and packet-vs-byte rate
+     (nft: `kbytes`->1024, packet default burst 5, byte default burst 0). *)
+  { Packet.ls_rate = rate; ls_unit = u; ls_burst = burst; ls_bytes = bytes;
     ls_flags = (if over then 1 else 0) }
 
 (* The L3 NAT address family for a NAT statement in a chain of table [family].  The
@@ -760,10 +1182,19 @@ let nat_l3_family = function "ip6" -> "ip6" | "inet" -> "inet" | _ -> "ip"
 (* 2-byte big-endian port value (the compiler loads it into the proto register) *)
 let port_bytes p = [(p lsr 8) land 0xff; p land 0xff]
 
-let masq_spec ~family : Syntax.nat_spec =
+(* NAT flag words -> the kernel NF_NAT_RANGE_* bitmask (nf_nat.h):
+   PROTO_SPECIFIED 0x2 (a port range is given), PROTO_RANDOM 0x4,
+   PERSISTENT 0x8, PROTO_RANDOM_FULLY 0x10.  Verified against golden
+   ip/{masquerade,redirect}.t.payload flag values (0x4/0x8/0xc/0x1c). *)
+let nat_flag_bit = function
+  | "random" -> 0x04 | "persistent" -> 0x08 | "fully-random" -> 0x10
+  | s -> raise (Unsupported ("nat flag " ^ s))
+let nat_flags_of fs = L.fold_left (fun a f -> a lor nat_flag_bit f) 0 fs
+
+let masq_spec ~family ~flags : Syntax.nat_spec =
   { Syntax.nat_addr_imm = None; nat_field = None; nat_map = None; nat_src = None;
     nat_extra = Syntax.NXnone;
-    nat_kind = "masq"; nat_family = nat_l3_family family; nat_flags = 0 }
+    nat_kind = "masq"; nat_family = nat_l3_family family; nat_flags = flags }
 
 (* an `snat to <ip>[:<port>]` / `dnat to <ip>[:<port>]` NAT spec: the target
    address goes into register 1 (= NFTNL_EXPR_NAT_REG_ADDR_MIN), which the kernel
@@ -776,15 +1207,17 @@ let masq_spec ~family : Syntax.nat_spec =
    (nat = None).  An UNDEFINED `$var` is NOT swallowed: [resolve_var] raises
    [Unsupported] and the parse fails loudly, exactly as `nft -f` rejects an
    unqualified name — we never silently drop a NAT to a dangling define. *)
-let addr_nat_spec st kind ?(port=None) (v : Nft_ast.value) : Syntax.nat_spec option =
+let addr_nat_spec st kind ?(port=None) ~flags (v : Nft_ast.value) : Syntax.nat_spec option =
   match resolve_var st v with
   | Nft_ast.Vip4 b ->
-      let ne = (match port with
-                | Some p -> Syntax.NXimm (None, Some ((port_bytes p)), None)
-                | None -> Syntax.NXnone) in
+      (* a specified port range sets NF_NAT_RANGE_PROTO_SPECIFIED (0x2): golden
+         `dnat to A:port` renders `... proto_min reg N flags 0x2`. *)
+      let (ne, f) = (match port with
+                | Some p -> (Syntax.NXimm (None, Some ((port_bytes p)), None), flags lor 0x2)
+                | None -> (Syntax.NXnone, flags)) in
       Some { Syntax.nat_addr_imm = Some b; nat_field = None; nat_map = None;
              nat_src = None; nat_extra = ne;
-             nat_kind = kind; nat_family = "ip"; nat_flags = 0 }
+             nat_kind = kind; nat_family = "ip"; nat_flags = f }
   | _ -> None   (* unresolvable / non-literal target: stay a bare terminal Accept *)
 
 (* a PORT-ONLY `snat to :<port>` / `dnat to :<port>` NAT spec: NO address operand
@@ -794,10 +1227,41 @@ let addr_nat_spec st kind ?(port=None) (v : Nft_ast.value) : Syntax.nat_spec opt
    (nft_nat.c:114/120 — two independent register guards).  In the model this is a
    nat_spec with nat_has_addr = false, so apply_nat preserves the address and
    apply_nat_port rewrites the port. *)
-let portonly_nat_spec ~family kind (port : int) : Syntax.nat_spec =
+let portonly_nat_spec ~family kind ~flags (port : int) : Syntax.nat_spec =
   { Syntax.nat_addr_imm = None; nat_field = None; nat_map = None; nat_src = None;
     nat_extra = Syntax.NXimm (None, Some ((port_bytes port)), None);
-    nat_kind = kind; nat_family = nat_l3_family family; nat_flags = 0 }
+    nat_kind = kind; nat_family = nat_l3_family family; nat_flags = flags lor 0x2 }
+
+(* `tproxy [ip|ip6] to <addr>[:<port>]` — a terminal transparent-proxy spec.
+   tp_family: an explicit ip/ip6 qualifier wins; otherwise the enclosing table's
+   L3 family (ip/ip6), or "" for a multi-L3 (inet/bridge/netdev) table — golden
+   {ip,inet}/tproxy.t.payload (`tproxy ip addr reg 1` in ip, `tproxy port reg 1`
+   in inet).  Only an IPv4 literal target is modelled here; a v6 `[addr]` literal
+   needs the bracket lexer (out of scope) and stays a clean Unsupported. *)
+let tproxy_spec st ~family qual (addr : Nft_ast.value option) (port : int option)
+    : Syntax.tproxy_spec =
+  let tp_fam =
+    if qual <> "" then qual
+    else (match family with "ip" -> "ip" | "ip6" -> "ip6" | _ -> "") in
+  let a = match addr with
+    | None -> None
+    | Some v -> (match resolve_var st v with
+        | Nft_ast.Vip4 b -> Some b
+        | _ -> raise (Unsupported "tproxy target is not an IPv4 literal")) in
+  { Syntax.tp_addr = a;
+    tp_port = (match port with Some p -> Some (port_bytes p) | None -> None);
+    tp_portmap = None; tp_family = tp_fam }
+
+(* `redirect [to :port] [flags]` — kind "redir" (no address, no family), like
+   masquerade; a port range adds PROTO_SPECIFIED (0x2).  Golden ip/redirect.t:
+   bare `redirect` -> `[ redir ]`, `redirect to :22` -> `[ redir proto_min reg 1
+   flags 0x2 ]`, `redirect random` -> `[ redir flags 0x4 ]`. *)
+let redir_spec ~flags (port : int option) : Syntax.nat_spec =
+  let (ne, f) = (match port with
+    | Some p -> (Syntax.NXimm (None, Some (port_bytes p), None), flags lor 0x2)
+    | None -> (Syntax.NXnone, flags)) in
+  { Syntax.nat_addr_imm = None; nat_field = None; nat_map = None; nat_src = None;
+    nat_extra = ne; nat_kind = "redir"; nat_family = ""; nat_flags = f }
 
 (* In a multi-L3 family an inet chain sees both IPv4 and IPv6 packets, so nft
    guards every `ip`/`ip6` payload match with `meta nfproto == {2|10}`.  A
@@ -806,12 +1270,56 @@ let portonly_nat_spec ~family kind (port : int) : Syntax.nat_spec =
    (ethertype) instead and are out of scope of this nfproto fix.) *)
 let family_is_inet = function "inet" -> true | _ -> false
 
+(* `reject [with <proto> <name>]` -> the kernel nft_reject (type, code) pair.
+   type: NFT_REJECT_ICMP_UNREACH 0 (icmp/icmpv6 code), TCP_RST 1, ICMPX_UNREACH 2.
+   A BARE `reject` is family-defaulted (nft evaluate.c stmt_reject_default):
+     ip   -> icmp  port-unreach   (0,3)
+     ip6  -> icmpv6 port-unreach  (0,4)
+     inet/bridge/netdev (L2/dual) -> icmpx port-unreach (2,1).
+   Codes verified against {ip,ip6,inet,bridge,netdev}/reject.t.payload. *)
+let icmp_reject_code = function
+  | "net-unreachable" -> 0 | "host-unreachable" -> 1 | "prot-unreachable" -> 2
+  | "port-unreachable" -> 3 | "net-prohibited" -> 9 | "host-prohibited" -> 10
+  | "admin-prohibited" -> 13
+  | s -> raise (Unsupported ("reject icmp code " ^ s))
+let icmpv6_reject_code = function
+  | "no-route" -> 0 | "admin-prohibited" -> 1 | "addr-unreachable" -> 3
+  | "port-unreachable" -> 4 | "policy-fail" -> 5 | "reject-route" -> 6
+  | s -> raise (Unsupported ("reject icmpv6 code " ^ s))
+let icmpx_reject_code = function
+  | "no-route" -> 0 | "port-unreachable" -> 1 | "host-unreachable" -> 2
+  | "admin-prohibited" -> 3
+  | s -> raise (Unsupported ("reject icmpx code " ^ s))
+let reject_type_code family (opts : string) : int * int =
+  (* drop a stray `type` keyword (`reject with icmp type net-unreachable`) *)
+  let ws = L.filter (fun w -> w <> "" && w <> "type")
+             (Stdlib.String.split_on_char ' ' opts) in
+  match ws with
+  | [] -> (match family with
+           | "ip" -> (0, 3) | "ip6" -> (0, 4) | _ -> (2, 1))
+  | ["tcp"; "reset"] -> (1, 0)
+  | "icmp" :: name :: _   -> (0, icmp_reject_code name)
+  | "icmpv6" :: name :: _ -> (0, icmpv6_reject_code name)
+  | "icmpx" :: name :: _  -> (2, icmpx_reject_code name)
+  | _ -> raise (Unsupported ("reject with " ^ opts))
+
+(* A bridge/netdev chain is an L2 chain that can see any ethertype, so nft pins an
+   ip/ip6 network match with the LINK-layer ethertype (`meta protocol ==`) rather
+   than the NFPROTO nfproto guard it uses in inet.  Map the nfproto byte carried by
+   [DNfproto] to that ethertype: IPv4 (2) -> 0x0800, IPv6 (10) -> 0x86dd. *)
+let family_is_l2 = function "bridge" | "netdev" -> true | _ -> false
+let nfproto_ethertype = function
+  | [2]  -> Some [0x08; 0x00]      (* ETH_P_IP   *)
+  | [10] -> Some [0x86; 0xdd]      (* ETH_P_IPV6 *)
+  | _    -> None
+
 let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
   let body = ref [] in
   let deps = ref [] in       (* (field, value) deps already emitted, for dedup *)
   let verdict = ref Verdict.Continue in
   let vmap = ref None in
   let nat = ref None in   (* set for `masquerade` (a source-NAT terminal) *)
+  let tproxy = ref None in   (* set for `tproxy` (a transparent-proxy terminal) *)
   let push bi = body := bi :: !body in
   let push_dep fld pv =
     if not (L.mem (fld, pv) !deps) then
@@ -819,16 +1327,106 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
   in
   let ensure_dep1 = function
     | DL4 pv -> push_dep Syntax.FMetaL4proto pv
-    | DNfproto pv -> if family_is_inet family then push_dep Syntax.FMetaNfproto pv
+    | DNfproto pv ->
+        (* nft keys the network-base dependency on the LAYER, not the value: once a
+           `meta nfproto` (inet) / `meta protocol` (L2) match exists in the rule,
+           a later selector's implicit network guard is suppressed EVEN IF its value
+           differs (golden inet/icmp.t.payload `meta nfproto ipv4 icmpv6 type ...`
+           emits nfproto==2 ONCE, not a second nfproto==10).  No golden rule ever
+           emits two nfproto loads, so this value-independent suppression is faithful. *)
+        if family_is_inet family then
+          (if not (L.exists (fun (fk,_) -> fk = Syntax.FMetaNfproto) !deps)
+           then push_dep Syntax.FMetaNfproto pv)
+        else if family_is_l2 family then
+          (match nfproto_ethertype pv with
+           | Some et ->
+               if not (L.exists (fun (fk,_) -> fk = Syntax.FMetaProtocol) !deps)
+               then push_dep Syntax.FMetaProtocol et
+           | None -> ())
+    | DL2proto et -> if family_is_l2 family then push_dep Syntax.FMetaProtocol et
+    | DIiftype et -> if family <> "bridge" then push_dep Syntax.FMetaIiftype et
+    | DIcmpType ty ->
+        (* ICMP `mtu`/`gateway` are union members only valid for a particular
+           icmp type; nft prepends an implicit `icmp type == <ty>` guard (payload
+           load 1b @ transport+0 ; cmp eq <ty>) before the union-field load
+           (golden ip/icmp.t.payload: `icmp mtu` => type 3, `icmp gateway` => 5). *)
+        push_dep Syntax.FIcmpType [ty]
+    | DEther pv ->
+        (* In netdev nft prepends a `meta iiftype == ARPHRD_ETHER` guard, but the
+           frontend's host-endian iiftype immediate renders in the wrong byte
+           order vs the golden (0x0100 not 0x0001), so rather than emit an
+           unverified guard we honestly refuse vlan matches in netdev; bridge
+           (the tested family) needs only the ether-type guard. *)
+        if family = "netdev" then
+          raise (Unsupported "vlan match in netdev family (iiftype guard byte-order)");
+        push_dep Syntax.FEtherType pv
   in
   (* materialise deps in order (nfproto guard pushed before l4proto guard) *)
   let ensure_dep ds = L.iter ensure_dep1 ds in
   L.iter (fun (cl : Nft_ast.clause) ->
     match cl with
+    | Nft_ast.CVerdict (Nft_ast.SVreject opts) ->
+        (* `reject with icmp <x>` only applies to IPv4 packets and `icmpv6 <x>`
+           only to IPv6, so in a dual-stack family nft prepends the matching
+           network guard (`meta nfproto`/`meta protocol == {ipv4|ipv6}`) before the
+           reject (golden {inet,bridge,netdev}/reject.t.payload).  ensure_dep makes
+           it a no-op in the single-L3 ip/ip6 families.  icmpx/tcp/bare take no
+           network guard. *)
+        (match L.filter (fun w -> w <> "" && w <> "type")
+                 (Stdlib.String.split_on_char ' ' opts) with
+         | "icmp" :: _   -> ensure_dep [DNfproto [2]]
+         | "icmpv6" :: _ -> ensure_dep [DNfproto [10]]
+         | _ -> ());
+        let (rt, rc) = reject_type_code family opts in
+        verdict := Verdict.Reject (rt, rc)
     | Nft_ast.CVerdict v -> verdict := lower_verdict v
     | Nft_ast.CMatch m ->
         let (dep, mc) = lower_match st m in
-        ensure_dep dep; push (Syntax.BMatch mc)
+        ensure_dep dep; push (Syntax.BMatch mc);
+        (* An EXPLICIT match on a field nft also uses as an implicit dependency
+           (l4proto / nfproto / protocol / iiftype / ethertype) discharges that
+           dependency: a later selector's implicit guard for the SAME (field,value)
+           must NOT re-emit it.  nft dedups exactly this way, so `meta l4proto 6
+           tcp dport 22` and `ether type vlan vlan id 2` emit the guard ONCE.
+           Register the explicit (field,value) in the dedup set. *)
+        let reg fk pv = if not (L.mem (fk, pv) !deps) then deps := (fk, pv) :: !deps in
+        (match mc with
+         | Syntax.MEq (fld, pv) ->
+             (match fld with
+              | Syntax.FMetaL4proto | Syntax.FMetaNfproto | Syntax.FMetaProtocol
+              | Syntax.FMetaIiftype | Syntax.FEtherType -> reg fld pv
+              (* `ip protocol N` fixes the packet's L4 protocol to N, so nft does
+                 NOT re-emit the `meta l4proto == N` guard a later tcp/udp/icmp
+                 selector would otherwise carry (golden icmpX.t: `ip protocol icmp
+                 icmp type ...` has no l4proto load).  Discharge that dep. *)
+              | Syntax.FIp4Protocol -> reg Syntax.FMetaL4proto pv
+              | _ -> ())
+         | _ -> ())
+    | Nft_ast.CBitmatch (kp, op, mask, r) ->
+        (* `<field> and|or|xor <m> <relop> <v>` -> nft's `bitwise reg =
+           (reg & mask) ^ xor` then a compare (Syntax.MMasked semantics:
+           `((field & mask) ^ xor) cmp v`).  nft realises the three ops as:
+             and m : mask=m,   xor=0        or m : mask=~m, xor=m
+             xor m : mask=~0,  xor=m
+           (golden any/meta.t.payload `meta mark and 0x3`, any/ct.t.payload
+           `ct mark or 0x23`).  All bytes are in the field's own byte order
+           ([enc_atom]), so the byte-wise complement matches nft's register
+           display (host-endian mark: ~0x23 -> 0xffffffdc). *)
+        let (f, k, dep) = key_field kp in
+        ensure_dep dep;
+        let w = width_of_kind k in
+        let mbytes = enc_atom k (resolve_var st mask) in
+        let vbytes = (match r.Nft_ast.payload with
+          | Nft_ast.SEvalue v -> enc_atom k (resolve_var st v)
+          | _ -> raise (Unsupported "bitwise mask match needs a single-value rhs")) in
+        let comp = L.map (fun x -> x lxor 0xff) in
+        let ones = L.init w (fun _ -> 0xff) and zeros = L.init w (fun _ -> 0) in
+        let (mask', xorb) = match op with
+          | "and" -> (mbytes, zeros)
+          | "or"  -> (comp mbytes, mbytes)
+          | "xor" -> (ones, mbytes)
+          | _ -> raise (Unsupported ("bitwise op " ^ op)) in
+        push (Syntax.BMatch (Syntax.MMasked (f, r.Nft_ast.neg, mask', xorb, vbytes)))
     | Nft_ast.CVmap (kps, entries) ->
         if !vmap <> None then raise (Unsupported "more than one verdict map in a rule");
         let triples = L.map key_field kps in
@@ -873,21 +1471,24 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
         (match fields with
          | [f] -> vmap := Some { Syntax.vm_fields = []; vm_keyf = Some (f, []); vm_name = name }
          | _   -> vmap := Some { Syntax.vm_fields = fields; vm_keyf = None; vm_name = name })
-    | Nft_ast.CStmt (Nft_ast.StLimit (r, u, over)) ->
-        push (Syntax.BMatch (Syntax.MLimit (limit_spec r u over)))
+    | Nft_ast.CStmt (Nft_ast.StLimit (r, u, over, burst, bytes)) ->
+        push (Syntax.BMatch (Syntax.MLimit (limit_spec r u over burst bytes)))
     | Nft_ast.CStmt s ->
         if stmt_is_terminal_accept s then verdict := Verdict.Accept;
         (match s with
-         | Nft_ast.StMasquerade -> nat := Some (masq_spec ~family)
-         | Nft_ast.StSnat (Some v, port) -> nat := addr_nat_spec st "snat" ~port v
-         | Nft_ast.StDnat (Some v, port) -> nat := addr_nat_spec st "dnat" ~port v
-         | Nft_ast.StSnat (None, Some port) -> nat := Some (portonly_nat_spec ~family "snat" port)
-         | Nft_ast.StDnat (None, Some port) -> nat := Some (portonly_nat_spec ~family "dnat" port)
+         | Nft_ast.StMasquerade fs -> nat := Some (masq_spec ~family ~flags:(nat_flags_of fs))
+         | Nft_ast.StSnat (Some v, port, fs) -> nat := addr_nat_spec st "snat" ~port ~flags:(nat_flags_of fs) v
+         | Nft_ast.StDnat (Some v, port, fs) -> nat := addr_nat_spec st "dnat" ~port ~flags:(nat_flags_of fs) v
+         | Nft_ast.StSnat (None, Some port, fs) -> nat := Some (portonly_nat_spec ~family "snat" ~flags:(nat_flags_of fs) port)
+         | Nft_ast.StDnat (None, Some port, fs) -> nat := Some (portonly_nat_spec ~family "dnat" ~flags:(nat_flags_of fs) port)
+         | Nft_ast.StRedirect (port, fs) -> nat := Some (redir_spec ~flags:(nat_flags_of fs) port)
+         | Nft_ast.StTproxy (qual, addr, port) ->
+             tproxy := Some (tproxy_spec st ~family qual addr port)
          | _ -> ());
         (match lower_stmt st s with Some st' -> push (Syntax.BStmt st') | None -> ()))
     clauses;
   { Syntax.r_body = L.rev !body; r_verdict = !verdict; r_vmap = !vmap;
-    r_nat = !nat; r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] }
+    r_nat = !nat; r_tproxy = !tproxy; r_fwd = None; r_queue = None; r_after = [] }
 
 (* ---------- declarations ---------- *)
 

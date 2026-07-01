@@ -1,0 +1,19 @@
+flush chain ip lbing prerouting
+
+table ip lbing {
+	map nginx-hostname-svc-endpoint {
+		type mark : ipv4_addr
+		elements = { 0x00000000 : 10.42.2.26, 0x00000001 : 10.42.2.29 }
+	}
+
+	map xxx-endpoint {
+		type mark : ipv4_addr
+		elements = { 0x00000000 : 10.42.2.26, 0x00000001 : 10.42.2.29 }
+	}
+
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+		counter tcp dport 80 dnat to numgen inc mod 2 map @nginx-hostname-svc-endpoint
+		counter tcp dport 8080 dnat to numgen inc mod 2 map @xxx-endpoint
+	}
+}

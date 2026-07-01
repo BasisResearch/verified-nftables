@@ -1,0 +1,31 @@
+table inet custom_table {
+    set A_set {
+        type ipv4_addr;
+	elements = { 192.168.0.3, 192.168.0.4 };
+    }
+
+    set B_set {
+        type ipv4_addr;
+        elements = { 192.168.0.5, 192.168.0.6 };
+    }
+
+    set C_set {
+        type ipv4_addr;
+        elements = { 192.168.0.7, 192.168.0.8 };
+    }
+
+    chain A {
+        type filter hook input priority 0; policy drop;
+        ip saddr @A_set accept
+    }
+
+    chain B {
+        type filter hook input priority 0; policy drop;
+        ip saddr @B_set accept
+    }
+
+    chain C {
+        type filter hook input priority 0; policy accept;
+        ip saddr @C_set accept
+    }
+}

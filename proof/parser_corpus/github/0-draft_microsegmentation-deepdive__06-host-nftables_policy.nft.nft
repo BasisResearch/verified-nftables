@@ -1,0 +1,20 @@
+# Host-level microsegmentation policy applied to db's network namespace.
+# Renders the same logic an enterprise host-firewall agent would push.
+
+table inet filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        # always allow loopback and existing flows
+        iif "lo" accept
+        ct state established,related accept
+
+        # ICMP for ping-style health checks (optional)
+        ip protocol icmp accept
+
+        # microsegmentation rule: only web (10.99.0.20) can hit 5432
+        ip saddr 10.99.0.20 tcp dport 5432 ct state new accept
+
+        # everything else is dropped by the policy above
+    }
+}

@@ -1,0 +1,25 @@
+#!/usr/sbin/nft -f
+
+table inet udp_filter {
+    chain prerouting {
+        type filter hook prerouting priority 0; # Process packets entering
+        ip protocol udp udp dport 8000-9000 mark set ct mark mod 2;
+        ip protocol udp udp dport 8000-9000 mark 0 jump dnat_1;
+        ip protocol udp udp dport 8000-9000 mark 1 jump dnat_2;
+    }
+
+    chain dnat_1 {
+        type nat hook prerouting priority 100; # NAT-specific chain
+        ip daddr 127.0.0.1 udp dport 8000-9000 dnat to 127.0.0.1:8001;
+    }
+
+    chain dnat_2 {
+        type nat hook prerouting priority 100; # NAT-specific chain
+        ip daddr 127.0.0.1 udp dport 8000-9000 dnat to 127.0.0.1:8002;
+    }
+
+    chain output {
+        type filter hook output priority 0; # Process packets going out
+        policy accept; # Default accept policy for outgoing packets
+    }
+}

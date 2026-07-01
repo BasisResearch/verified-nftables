@@ -1,0 +1,26 @@
+#!/usr/sbin/nft -f                                                                  
+                                                                                    
+flush ruleset                                                                       
+                                                                                    
+                                                                                    
+# Define table at dmz servers                                                       
+table ip http_filter {                                                              
+    # Chain INPUT                                                                   
+    chain input {                                                                   
+        # Chain configuration                                                       
+        type filter hook input priority 0; policy drop;                             
+                                                                                    
+        tcp dport {22, 80} accept                                                   
+        icmp type echo-request counter accept                                       
+                                                                                    
+    }                                                                               
+    # Define chains                                                                 
+    chain outputting {                                                              
+        type filter hook output priority 0; policy drop;                            
+        icmp type echo-request counter drop                                         
+                                                                                    
+        ct state { established, related } accept                                    
+    }                                                                               
+                                                                                    
+                                                                                    
+}                                                                                   

@@ -1,0 +1,85 @@
+#-----------------------------------------------------------------------------
+# Flush existing rules: ensure a clean slate before loading new rules
+#-----------------------------------------------------------------------------
+flush ruleset
+table inet filter {
+    # -------------------------------------------------------------------------
+    # INPUT CHAIN (Incoming Traffic destined for this host)
+    # Default is to DROP all incoming traffic
+    # -------------------------------------------------------------------------
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        # Drop invalid packets (e.g., malformed or out-of-state)
+        ct state invalid drop
+
+        # Allow loopback traffic (localhost to localhost)
+        iif "lo" accept
+
+        # Allow established and related connections (replies to outgoing, FTP helper)
+        ct state established,related accept
+
+        # Allow specific ICMP types for IPv4
+        ip protocol icmp icmp type { echo-request, echo-reply, destination-unreachable, time-exceeded } accept
+
+        # Allow critical ICMPv6 types for IPv6 (essential for network function)
+        ip6 nexthdr icmpv6 icmpv6 type { echo-request, echo-reply, destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-router-advert, nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert } accept
+
+        # Allow HTTP and HTTPS (ports 80 and 443)
+        tcp dport { 80, 443 } ct state new accept
+
+        # Log packets that reach the end of the chain before they are dropped by the policy (optional)
+        log prefix "nft-input-drop: "
+    }
+
+    # -------------------------------------------------------------------------
+    # FORWARD CHAIN (Routed Traffic passing through this host)
+    # Default is to DROP all routed traffic (host-based firewall)
+    # -------------------------------------------------------------------------
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+
+        # Drop invalid packets
+        ct state invalid drop
+
+        # Allow established and related connections
+        ct state established,related accept
+
+        # Add specific FORWARD rules here if the machine is acting as a router/gateway
+    }
+
+    # -------------------------------------------------------------------------
+    # OUTPUT CHAIN (Outgoing Traffic originating from this host)
+    # Default is to DROP all outgoing traffic for maximum security
+    # -------------------------------------------------------------------------
+    chain output {
+    type filter hook output priority filter; policy drop;
+
+    # Allow essential local communication
+    oif "lo" accept
+
+    # Allow replies for established and related connections (critical)
+    ct state established,related accept
+
+    # Allow DNS queries (UDP and TCP)
+    udp dport 53 accept
+    tcp dport 53 accept
+
+    # Allow general outbound web access (e.g., for updates, API calls)
+    tcp dport { 80, 443 } accept
+
+    # Use meta l4proto to correctly match MLDv2 Type 143 packets
+    meta l4proto ipv6-icmp icmpv6 type {
+        echo-request,
+        destination-unreachable,
+        time-exceeded,
+        parameter-problem,
+        nd-neighbor-solicit,
+        nd-neighbor-advert,
+        mld2-listener-report
+    } accept
+
+    # Log packets that reach the end of the chain before they are dropped by the policy (optional)
+    log prefix "nft-output-drop: "
+    }
+}
