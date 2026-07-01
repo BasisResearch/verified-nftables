@@ -28,7 +28,7 @@ From Stdlib Require Import Arith.
 From Stdlib Require Import Lia.
 Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
-  Compile Correct Optimize Optimize_Merge Optimize_Vmap Optimize_Concat Optimize_ConcatK
+  Compile Correct Optimize Optimize_Merge Optimize_Vmap Optimize_Vmapg Optimize_Concat Optimize_ConcatK
   Optimize_ConcatM Optimize_Setg Optimize_Ivset Optimize_Absorb Optimize_Mapn Optimize_Dnat Optimize_Snat Optimize_Table_Inv.
 
 (** ** Step 1: the base pass preserves [rules_clean].
@@ -239,7 +239,8 @@ Definition optimize_table (n : nat) (d : set_decls) (c : chain)
   let '(nG, dG, cG) := optimize_chain_concatM n2 d2 c2 in
   let '(nGs, dGs, cGs) := optimize_chain_setg nG dG cG in
   let '(nI, dI, cI) := optimize_chain_ivset nGs dGs cGs in
-  optimize_chain_vmapN nI dI cI.
+  let '(nVg, dVg, cVg) := optimize_chain_vmapNg nI dI cI in
+  optimize_chain_vmapN nVg dVg cVg.
 
 (** ** Correctness of [optimize_table] lives in [Optimize_Uncond.v], where it is
     proved UNCONDITIONALLY — with NO [rules_clean] and NO caller-supplied freshness

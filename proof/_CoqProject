@@ -61,6 +61,7 @@ theories/Optimize_ConcatM.v
 theories/Optimize_Setg.v
 theories/Optimize_Ivset.v
 theories/Optimize_Absorb.v
+theories/Optimize_Vmapg.v
 theories/Optimize_Table_Inv.v
 theories/Optimize_Table.v
 theories/Optimize_Normalize.v
@@ -73,4 +74,5 @@ theories/Snat_Witness.v
 theories/Concatm_Witness.v
 theories/Ivset_Witness.v
 theories/Metaset_Witness.v
+theories/Optimize_Vmapg_Witness.v
 theories/Extract.v
