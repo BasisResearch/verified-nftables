@@ -1082,11 +1082,26 @@ let meta_set_kind (k : Packet.meta_key) : kind =
   | Packet.MKpkttype -> KNumLe 1
   | _ -> raise (Unsupported "meta key is not settable")
 
+(* `log level <name>` renders in the golden with the NUMERIC syslog level
+   (`[ log level 0 ]` for emerg .. 7 debug, 8 audit), not the symbolic name.  Map
+   the bare `level <name>` opts to `level <n>`; other log-option forms (prefix /
+   group / snaplen / queue-threshold / flags, which the golden also canonicalises
+   with defaults and flag expansion) are left verbatim for a later batch. *)
+let syslog_level = function
+  | "emerg" -> Some 0 | "alert" -> Some 1 | "crit" -> Some 2 | "err" -> Some 3
+  | "warn" | "warning" -> Some 4 | "notice" -> Some 5 | "info" -> Some 6
+  | "debug" -> Some 7 | "audit" -> Some 8 | _ -> None
+let canon_log_opts (opts : string) : string =
+  match Stdlib.String.split_on_char ' ' opts with
+  | ["level"; name] ->
+      (match syslog_level name with Some n -> "level " ^ string_of_int n | None -> opts)
+  | _ -> opts
+
 let lower_stmt st (s : Nft_ast.sstmt) : Syntax.stmt option =
   match s with
   | Nft_ast.StComment _ -> None              (* metadata; no verdict/bytecode effect *)
   | Nft_ast.StCounter -> Some (Syntax.SCounter (0, 0))
-  | Nft_ast.StLog opts -> Some (Syntax.SLog opts)
+  | Nft_ast.StLog opts -> Some (Syntax.SLog (canon_log_opts opts))
   | Nft_ast.StLimit _ ->
       (* `limit` is a matchcond (MLimit), not a statement; lower_rule intercepts
          StLimit before reaching here, so this is unreachable. *)
