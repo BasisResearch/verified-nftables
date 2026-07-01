@@ -1,0 +1,7 @@
+table ip nat {
+  chain pre {
+    type nat hook prerouting priority dstnat; policy accept;
+    ip daddr 10.0.0.0/24 dnat to 192.168.1.1
+    ip daddr 10.0.0.5 dnat to 192.168.1.2
+  }
+}

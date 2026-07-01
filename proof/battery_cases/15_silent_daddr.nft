@@ -1,0 +1,7 @@
+table ip t {
+  chain c {
+    type filter hook output priority 0; policy accept;
+    ip daddr 127.0.0.2 tcp dport 22 drop
+    ip daddr 127.0.0.2 tcp dport 1-100 accept
+  }
+}
