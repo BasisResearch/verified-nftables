@@ -32,7 +32,7 @@
 /* verdicts */
 %token ACCEPT DROP CONTINUE RETURN JUMP GOTO QUEUE REJECT
 /* statements */
-%token COUNTER LOG PREFIX LIMIT RATE OVER WITH TO MASQUERADE SNAT DNAT REDIRECT NOTRACK
+%token COUNTER LOG PREFIX LIMIT RATE OVER WITH TO MASQUERADE SNAT DNAT REDIRECT TPROXY NOTRACK
 /* match selectors */
 %token META CT IP IP6 TCP UDP TH ICMP ICMPV6 ETHER FIB
 %token IIF OIF IIFNAME OIFNAME PKTTYPE MARK
@@ -122,7 +122,7 @@ junktok:
   | ELEMENTS {} | SET {} | MAP {} | TABLE {} | CHAIN {} | DEFINE {} | INCLUDE {}
   | ACCEPT {} | DROP {} | CONTINUE {} | RETURN {} | JUMP {} | GOTO {} | QUEUE {}
   | REJECT {} | COUNTER {} | LOG {} | PREFIX {} | LIMIT {} | RATE {} | OVER {} | WITH {}
-  | TO {} | MASQUERADE {} | SNAT {} | DNAT {} | REDIRECT {} | NOTRACK {} | META {} | CT {} | IP {} | IP6 {}
+  | TO {} | MASQUERADE {} | SNAT {} | DNAT {} | REDIRECT {} | TPROXY {} | NOTRACK {} | META {} | CT {} | IP {} | IP6 {}
   | TCP {} | UDP {} | TH {} | ICMP {} | ICMPV6 {} | ETHER {} | FIB {} | IIF {}
   | OIF {} | IIFNAME {} | OIFNAME {} | PKTTYPE {} | MARK {} | FLUSH {} | RULESET {}
   | DESTROY {} | DELETE {}
@@ -402,11 +402,17 @@ stmt:
   | DNAT IP6 nat_to natflags  { let (a,p) = $3 in StDnat (a,p,$4) }
   | REDIRECT natflags               { StRedirect (None, $2) }
   | REDIRECT TO COLON INT natflags  { StRedirect (Some $4, $5) }
+  (* transparent proxy: `tproxy [ip|ip6] to <addr>[:<port>]` / `tproxy to :<port>` *)
+  | TPROXY tp_fam nat_to            { let (a,p) = $3 in StTproxy ($2, a, p) }
   | MARK SET value            { StMetaSet ("mark", $3) }
   | META IDENT SET value      { StMetaSet ($2, $4) }
   | META MARK SET value       { StMetaSet ("mark", $4) }  (* `mark` lexes as MARK, not IDENT *)
   | CT IDENT SET value        { StCtSet ($2, $4) }
   | CT MARK SET value         { StCtSet ("mark", $4) }  (* `mark` lexes as MARK, not IDENT *)
+
+(* optional `ip`/`ip6` family qualifier on a tproxy target *)
+tp_fam:
+  | /* empty */ { "" } | IP { "ip" } | IP6 { "ip6" }
 
 (* log options, gathered verbatim into the SLog opts string: `prefix "..."`,
    `level <lvl>`, `group N`, `flags <f>`, `snaplen N`, `queue-threshold N`, ...

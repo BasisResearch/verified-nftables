@@ -78,6 +78,8 @@ type sstmt =
   | StSnat      of value option * int option * string list  (* `snat to <addr>[:<port>] [flags]` *)
   | StDnat      of value option * int option * string list  (* `dnat to <addr>[:<port>] [flags]` *)
   | StRedirect  of int option * string list    (* `redirect [to :<port>] [flags]` *)
+  | StTproxy    of string * value option * int option
+                          (* `tproxy [ip|ip6] to <addr>[:<port>]` (fam, addr, port) *)
   | StMetaSet   of string * value  (* `meta <k> set v` / `mark set v` (k="mark") *)
   | StCtSet     of string * value  (* `ct <k> set v` *)
   | StNotrack                      (* `notrack` (disable conntrack for the packet) *)

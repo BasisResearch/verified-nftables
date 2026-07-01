@@ -852,8 +852,8 @@ let lower_stmt st (s : Nft_ast.sstmt) : Syntax.stmt option =
          StLimit before reaching here, so this is unreachable. *)
       raise (Unsupported "limit handled as a match, not a statement")
   | Nft_ast.StMasquerade _ | Nft_ast.StSnat _ | Nft_ast.StDnat _
-  | Nft_ast.StRedirect _ ->
-      (* terminal NAT: the single-packet model treats it as a terminal Accept *)
+  | Nft_ast.StRedirect _ | Nft_ast.StTproxy _ ->
+      (* terminal NAT/tproxy: the single-packet model treats it as terminal Accept *)
       None
   | Nft_ast.StMetaSet (k, v) ->
       let key = meta_key k in
@@ -866,7 +866,7 @@ let lower_stmt st (s : Nft_ast.sstmt) : Syntax.stmt option =
 (* does a statement force a terminal Accept (NAT)? *)
 let stmt_is_terminal_accept = function
   | Nft_ast.StMasquerade _ | Nft_ast.StSnat _ | Nft_ast.StDnat _
-  | Nft_ast.StRedirect _ -> true | _ -> false
+  | Nft_ast.StRedirect _ | Nft_ast.StTproxy _ -> true | _ -> false
 
 let limit_spec rate unit_ over burst bytes : Packet.limit_spec =
   let u = match unit_ with
@@ -948,6 +948,26 @@ let portonly_nat_spec ~family kind ~flags (port : int) : Syntax.nat_spec =
     nat_extra = Syntax.NXimm (None, Some ((port_bytes port)), None);
     nat_kind = kind; nat_family = nat_l3_family family; nat_flags = flags lor 0x2 }
 
+(* `tproxy [ip|ip6] to <addr>[:<port>]` — a terminal transparent-proxy spec.
+   tp_family: an explicit ip/ip6 qualifier wins; otherwise the enclosing table's
+   L3 family (ip/ip6), or "" for a multi-L3 (inet/bridge/netdev) table — golden
+   {ip,inet}/tproxy.t.payload (`tproxy ip addr reg 1` in ip, `tproxy port reg 1`
+   in inet).  Only an IPv4 literal target is modelled here; a v6 `[addr]` literal
+   needs the bracket lexer (out of scope) and stays a clean Unsupported. *)
+let tproxy_spec st ~family qual (addr : Nft_ast.value option) (port : int option)
+    : Syntax.tproxy_spec =
+  let tp_fam =
+    if qual <> "" then qual
+    else (match family with "ip" -> "ip" | "ip6" -> "ip6" | _ -> "") in
+  let a = match addr with
+    | None -> None
+    | Some v -> (match resolve_var st v with
+        | Nft_ast.Vip4 b -> Some b
+        | _ -> raise (Unsupported "tproxy target is not an IPv4 literal")) in
+  { Syntax.tp_addr = a;
+    tp_port = (match port with Some p -> Some (port_bytes p) | None -> None);
+    tp_portmap = None; tp_family = tp_fam }
+
 (* `redirect [to :port] [flags]` — kind "redir" (no address, no family), like
    masquerade; a port range adds PROTO_SPECIFIED (0x2).  Golden ip/redirect.t:
    bare `redirect` -> `[ redir ]`, `redirect to :22` -> `[ redir proto_min reg 1
@@ -972,6 +992,7 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
   let verdict = ref Verdict.Continue in
   let vmap = ref None in
   let nat = ref None in   (* set for `masquerade` (a source-NAT terminal) *)
+  let tproxy = ref None in   (* set for `tproxy` (a transparent-proxy terminal) *)
   let push bi = body := bi :: !body in
   let push_dep fld pv =
     if not (L.mem (fld, pv) !deps) then
@@ -1069,11 +1090,13 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
          | Nft_ast.StSnat (None, Some port, fs) -> nat := Some (portonly_nat_spec ~family "snat" ~flags:(nat_flags_of fs) port)
          | Nft_ast.StDnat (None, Some port, fs) -> nat := Some (portonly_nat_spec ~family "dnat" ~flags:(nat_flags_of fs) port)
          | Nft_ast.StRedirect (port, fs) -> nat := Some (redir_spec ~flags:(nat_flags_of fs) port)
+         | Nft_ast.StTproxy (qual, addr, port) ->
+             tproxy := Some (tproxy_spec st ~family qual addr port)
          | _ -> ());
         (match lower_stmt st s with Some st' -> push (Syntax.BStmt st') | None -> ()))
     clauses;
   { Syntax.r_body = L.rev !body; r_verdict = !verdict; r_vmap = !vmap;
-    r_nat = !nat; r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] }
+    r_nat = !nat; r_tproxy = !tproxy; r_fwd = None; r_queue = None; r_after = [] }
 
 (* ---------- declarations ---------- *)
 
