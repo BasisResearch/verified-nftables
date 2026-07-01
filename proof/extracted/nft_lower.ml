@@ -365,7 +365,14 @@ let pad_to_slot (b : Bytes.data) : Bytes.data =
      no-op there (resolved in [ensure_dep], which is family-aware).
    - [DNone]: no dependency. *)
 type dep1 = DL4 of Bytes.data | DNfproto of Bytes.data | DEther of Bytes.data
-          | DL2proto of Bytes.data
+          | DL2proto of Bytes.data | DIiftype of Bytes.data
+(* [DIiftype et]: the `meta iiftype == ARPHRD_ETHER (1)` guard nft prepends before
+   a LINK-layer (ether address) match in any family whose interfaces are not
+   guaranteed ethernet (ip/ip6/inet/netdev) — the ethernet header only exists on an
+   ARPHRD_ETHER device (golden {ip,ip6,inet}/ether.t.payload).  A no-op in bridge
+   (an inherently-ethernet family).  The compare value is stored BIG-ENDIAN
+   ([0x00;0x01]) — the display/corpus convention codec renders as the integer
+   0x0001, exactly matching the golden — NOT the host-endian wire order. *)
 (* [DL2proto et]: an L2-family (bridge/netdev) network-layer guard `meta protocol
    == <ethertype>` that nft prepends before a network-header (arp) match.  Unlike
    [DNfproto] (which nft emits for ip/ip6 in the *inet* family), the bridge and
@@ -455,8 +462,8 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
   | ["icmp"; "type"]   -> (Syntax.FIcmpType, KIcmp, dep_l4 "icmp")
   | ["icmpv6"; "type"] -> (Syntax.FIcmpType, KIcmpv6, dep_l4 "icmpv6")
   | ["ether"; "type"]  -> (Syntax.FEtherType, KEthertype, none)
-  | ["ether"; "saddr"] -> (Syntax.FEtherSaddr, KNum 6, none)
-  | ["ether"; "daddr"] -> (Syntax.FEtherDaddr, KNum 6, none)
+  | ["ether"; "saddr"] -> (Syntax.FEtherSaddr, KNum 6, [DIiftype [0x00; 0x01]])
+  | ["ether"; "daddr"] -> (Syntax.FEtherDaddr, KNum 6, [DIiftype [0x00; 0x01]])
   | ["meta"; "l4proto"]  -> (Syntax.FMetaL4proto, KL4proto, none)
   | ["meta"; "nfproto"]  -> (Syntax.FMetaNfproto, KNfproto, none)
   | ["meta"; "protocol"] -> (Syntax.FMetaProtocol, KEthertype, none)
@@ -1250,6 +1257,7 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
            | Some et -> push_dep Syntax.FMetaProtocol et
            | None -> ())
     | DL2proto et -> if family_is_l2 family then push_dep Syntax.FMetaProtocol et
+    | DIiftype et -> if family <> "bridge" then push_dep Syntax.FMetaIiftype et
     | DEther pv ->
         (* In netdev nft prepends a `meta iiftype == ARPHRD_ETHER` guard, but the
            frontend's host-endian iiftype immediate renders in the wrong byte
