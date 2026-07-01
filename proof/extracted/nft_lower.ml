@@ -364,7 +364,11 @@ let pad_to_slot (b : Bytes.data) : Bytes.data =
      (ip/ip6/arp) nft emits NO such guard, so [DNfproto] is discharged to a
      no-op there (resolved in [ensure_dep], which is family-aware).
    - [DNone]: no dependency. *)
-type dep1 = DL4 of Bytes.data | DNfproto of Bytes.data
+type dep1 = DL4 of Bytes.data | DNfproto of Bytes.data | DEther of Bytes.data
+(* [DEther pv]: the VLAN ether-type guard nft inserts before a `vlan <field>`
+   match — `ether type == 0x8100` (payload load 2b @ link+12).  In the netdev
+   family nft prepends a `meta iiftype == ARPHRD_ETHER (1)` guard as well
+   (golden bridge/vlan.t.payload{,.netdev}). *)
 (* A selector may carry SEVERAL implicit deps that nft emits, in order.  Most
    selectors carry zero or one; the L3-specific L4 protocols icmp/icmpv6 carry
    TWO — the network-protocol guard `meta nfproto == {2|10}` AND the transport
@@ -623,6 +627,14 @@ let bitfield_sel (kp : Nft_ast.keypath)
   | ["ip6"; "dscp"]      -> Some (Syntax.FPayload (Packet.PNetwork, 0, 2), 2, [0x0f;0xc0], ip6, true)
   | ["ip6"; "flowlabel"] -> Some (Syntax.FPayload (Packet.PNetwork, 1, 3), 3, [0x0f;0xff;0xff], ip6, false)
   | ["tcp"; "doff"]      -> Some (Syntax.FPayload (Packet.PTransport, 12, 1), 1, [0xf0], dep_l4 "tcp", false)
+  (* VLAN tag fields (802.1Q, at link+14 after the 0x8100 ether type).  The PCP
+     (0xe0>>5) and DEI/CFI (0x10>>4) live in the first byte; the 12-bit VID in
+     the 2-byte word (golden bridge/vlan.t.payload).  All carry the ether-type
+     guard.  Non-stacked forms only (stacked `vlan type` shifts offsets). *)
+  | ["vlan"; "id"]       -> Some (Syntax.FPayload (Packet.PLink, 14, 2), 2, [0x0f;0xff], [DEther [0x81;0x00]], false)
+  | ["vlan"; "pcp"]      -> Some (Syntax.FPayload (Packet.PLink, 14, 1), 1, [0xe0], [DEther [0x81;0x00]], false)
+  | ["vlan"; "dei"] | ["vlan"; "cfi"]
+                         -> Some (Syntax.FPayload (Packet.PLink, 14, 1), 1, [0x10], [DEther [0x81;0x00]], false)
   | _ -> None
 
 (* trailing-zero bit count of a big-endian byte mask = the field's LSB position. *)
@@ -1206,6 +1218,15 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
   let ensure_dep1 = function
     | DL4 pv -> push_dep Syntax.FMetaL4proto pv
     | DNfproto pv -> if family_is_inet family then push_dep Syntax.FMetaNfproto pv
+    | DEther pv ->
+        (* In netdev nft prepends a `meta iiftype == ARPHRD_ETHER` guard, but the
+           frontend's host-endian iiftype immediate renders in the wrong byte
+           order vs the golden (0x0100 not 0x0001), so rather than emit an
+           unverified guard we honestly refuse vlan matches in netdev; bridge
+           (the tested family) needs only the ether-type guard. *)
+        if family = "netdev" then
+          raise (Unsupported "vlan match in netdev family (iiftype guard byte-order)");
+        push_dep Syntax.FEtherType pv
   in
   (* materialise deps in order (nfproto guard pushed before l4proto guard) *)
   let ensure_dep ds = L.iter ensure_dep1 ds in
