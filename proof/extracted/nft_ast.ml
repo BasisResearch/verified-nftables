@@ -37,7 +37,7 @@ type verdict =
   | SVreturn
   | SVjump of string
   | SVgoto of string
-  | SVqueue
+  | SVqueue of int * int * bool * bool  (* `queue [num lo[-hi]] [bypass] [fanout]` *)
   | SVreject of string             (* `reject [with ...]`; opts kept verbatim *)
 
 (* The right-hand side of a match: a single value/range/prefix, an inline

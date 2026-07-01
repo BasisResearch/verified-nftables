@@ -523,7 +523,7 @@ let lower_verdict : Nft_ast.verdict -> Verdict.verdict = function
   | Nft_ast.SVreturn -> Verdict.Return
   | Nft_ast.SVjump n -> Verdict.Jump n
   | Nft_ast.SVgoto n -> Verdict.Goto n
-  | Nft_ast.SVqueue -> Verdict.Queue (0, 0, false, false)
+  | Nft_ast.SVqueue (lo, hi, byp, fan) -> Verdict.Queue (lo, hi, byp, fan)
   | Nft_ast.SVreject _ -> Verdict.Reject (0, 0)
 
 (* ---------- element encoding (single field & declared concat type) ---------- *)

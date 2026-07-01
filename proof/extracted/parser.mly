@@ -365,10 +365,23 @@ verdict:
   | DROP        { SVdrop }
   | CONTINUE    { SVcontinue }
   | RETURN      { SVreturn }
-  | QUEUE       { SVqueue }
+  | QUEUE queue_spec { let (lo,hi,b,f) = $2 in SVqueue (lo,hi,b,f) }
   | JUMP IDENT  { SVjump $2 }
   | GOTO IDENT  { SVgoto $2 }
   | REJECT reject_opt { SVreject $2 }
+
+(* `queue`, `queue num N`, `queue num N-M`, with optional trailing bypass/fanout
+   flag words.  The register-sourced form (`queue flags ... to <expr>`) is not
+   modelled here.  The leading `num` keyword lexes as IDENT. *)
+queue_spec:
+  | /* empty */                     { (0, 0, false, false) }
+  | IDENT INT queue_flags           { let (b,f)=$3 in ($2, $2, b, f) }
+  | IDENT INT DASH INT queue_flags  { let (b,f)=$5 in ($2, $4, b, f) }
+queue_flags:
+  | /* empty */          { (false, false) }
+  | queue_flags IDENT    { let (b,f)=$1 in
+                           (match $2 with "bypass" -> (true,f)
+                                        | "fanout" -> (b,true) | _ -> (b,f)) }
 
 reject_opt:
   | /* empty */             { "" }
