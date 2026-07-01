@@ -1,0 +1,12 @@
+table ip natt {
+  chain pre {
+    type nat hook prerouting priority -100; policy accept;
+    tcp dport 3389 dnat to 192.168.51.186
+    tcp dport 8080 dnat to 10.0.0.9:80
+  }
+  chain post {
+    type nat hook postrouting priority 100; policy accept;
+    ip saddr 192.168.0.0/16 snat to 203.0.113.1
+    ip saddr 10.0.0.0/8 masquerade
+  }
+}

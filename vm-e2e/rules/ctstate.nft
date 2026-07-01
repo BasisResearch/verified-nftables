@@ -1,0 +1,10 @@
+table ip ctt {
+  chain c {
+    type filter hook input priority 0; policy accept;
+    ct state established counter accept
+    ct state { established, related } counter accept
+    ct state invalid drop
+    ct mark set 0x1
+    ct state new counter
+  }
+}

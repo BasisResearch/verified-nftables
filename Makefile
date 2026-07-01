@@ -12,9 +12,22 @@
 # All artifacts build on the HOST; the VM is runtime-only and bind-mounts this
 # repo at /root/dev, so host-built outputs appear inside with no copy step.
 
-.PHONY: all deps kernel module image vm ssh test clean clean-image distclean
+.PHONY: all deps kernel module image vm ssh test clean clean-image distclean vmtest vmtest-clean
 
 all: kernel module
+
+# End-to-end integration test of the verified `nftc` CLI against a REAL kernel.
+# Rootless: builds a mkosi VM image running a PACKAGED Arch kernel (NOT the
+# custom kernel of vm/ — this is a separate config in vm-e2e/), bakes the
+# host-built CLI + rulesets + battery into it, boots it under qemu+KVM, and runs
+# the whole compile/optimize/send battery inside against the VM's nftables.
+# Needs: mkosi, qemu, /dev/kvm, and /etc/subuid+subgid ranges.  No sudo.
+vmtest:
+	./vm-e2e/vmtest.sh
+
+# Drop the e2e VM image + baked staging (force a fresh `make vmtest`).
+vmtest-clean:
+	rm -rf vm-e2e/mkosi.output vm-e2e/mkosi.extra vm-e2e/.mkosi-private
 
 # Print the host packages you need (kernel build + mkosi VM). Installation needs
 # root, so we don't run it for you — copy the line for your distro.

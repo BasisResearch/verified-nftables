@@ -1,0 +1,9 @@
+table ip mk {
+  chain c {
+    type filter hook input priority 0; policy accept;
+    tcp dport 22 meta mark set 0x99
+    meta mark 0x99 counter accept
+    meta mark set 0x1
+    iifname vmap { lo : accept, eth0 : drop }
+  }
+}

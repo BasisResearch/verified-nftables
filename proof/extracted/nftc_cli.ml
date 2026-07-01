@@ -34,23 +34,60 @@ module String = Stdlib.String
 
 let prog = "nftc"
 
-let usage () =
-  prerr_string
-    ("usage: " ^ prog ^ " {compile|optimize|send} [FILE.nft | -] \
-      [--table T] [--chain C] [--family F] [--no-optimize] [--commit]\n");
-  exit 2
+let usage_line =
+  "usage: " ^ prog ^ " {compile|optimize|send} [FILE.nft | -] \
+   [--table T] [--chain C] [--family F] [--no-optimize] [--commit]\n"
 
-(* read the whole ruleset text from a file path, or stdin for "-"/absent *)
-let read_input = function
+(* a USAGE ERROR: goes to stderr, exit 2 (the conventional "misuse" code). *)
+let usage () = prerr_string usage_line; exit 2
+
+(* an EXPLICIT --help request: success, so print the full help to stdout and
+   exit 0 (a caller that asked for help got what it asked for). *)
+let help () =
+  print_string usage_line;
+  print_string
+    "\ncommands:\n\
+    \  compile   parse -> compile_chain -> netlink-style bytecode text\n\
+    \  optimize  parse -> optimize_table_uncond -> compile -> bytecode text\n\
+    \  send      parse -> (optimize ->) compile -> netlink batch to the kernel\n\
+    \            (dry run unless --commit is given)\n\
+     \noptions:\n\
+    \  --table T       restrict to table T\n\
+    \  --chain C       restrict rule emission to chain C\n\
+    \  --family F      override nfgen family (ip|ip6|inet|arp|bridge|netdev)\n\
+    \  --no-optimize   for send: compile without the optimizer\n\
+    \  --commit        for send: actually transmit (default is a dry run)\n\
+    \  -h, --help      this message\n\
+     \nexit codes: 0 ok; 1 parse/usage/IO; 2 CLI misuse; 4 unencodable for\n\
+     netlink; 5 kernel rejected the batch; 6 committed but no kernel ack.\n";
+  exit 0
+
+(* read the whole ruleset text from a file path, or stdin for "-"/absent.
+   Any filesystem error (missing file, a directory, a permission problem, a
+   read error) is reported cleanly and exits 1 — never an uncaught Sys_error
+   stack trace (which would look like a compiler crash to the caller). *)
+let read_input arg =
+  match arg with
   | Some "-" | None ->
       let buf = Buffer.create 4096 in
       (try while true do Buffer.add_channel buf stdin 4096 done with End_of_file -> ());
       Buffer.contents buf
   | Some path ->
-      let ic = open_in_bin path in
-      let n = in_channel_length ic in
-      let s = really_input_string ic n in
-      close_in ic; s
+      (* reject a directory up front: open_in_bin on a dir succeeds on Linux but
+         in_channel_length/really_input_string then raise a confusing
+         Sys_error("Invalid argument"). *)
+      (if (try Sys.is_directory path with Sys_error _ -> false) then
+         (prerr_string (prog ^ ": " ^ path ^ ": is a directory\n"); exit 1));
+      let ic =
+        try open_in_bin path
+        with Sys_error msg -> prerr_string (prog ^ ": " ^ msg ^ "\n"); exit 1 in
+      (try
+         let n = in_channel_length ic in
+         let s = really_input_string ic n in
+         close_in ic; s
+       with Sys_error msg ->
+         (try close_in_noerr ic with _ -> ());
+         prerr_string (prog ^ ": " ^ msg ^ "\n"); exit 1)
 
 (* run the FULL verified consolidation pipeline (Optimize_Uncond.optimize_table_uncond),
    returning the synthesised set/map declarations + the rewritten chain *)
@@ -123,7 +160,8 @@ let render_decls (d : Semantics.set_decls) : string =
 let () =
   let args = Stdlib.Array.to_list Sys.argv in
   match args with
-  | _ :: ("-h" | "--help") :: _ | [_] -> usage ()
+  | _ :: ("-h" | "--help") :: _ -> help ()
+  | [_] -> usage ()
   | _ :: cmd :: rest ->
       let file = ref None and table = ref None and chain = ref None in
       let no_opt = ref false and commit = ref false and family = ref None in
@@ -134,7 +172,11 @@ let () =
         | "--family" :: f :: r -> family := Some f; go r
         | "--no-optimize" :: r -> no_opt := true; go r
         | "--commit" :: r -> commit := true; go r
-        | ("-h" | "--help") :: _ -> usage ()
+        | ("-h" | "--help") :: _ -> help ()
+        (* a value-taking option given as the LAST token has no argument: report
+           that specifically rather than the misleading "unknown option". *)
+        | (("--table" | "--chain" | "--family") as opt) :: [] ->
+            prerr_string (prog ^ ": option " ^ opt ^ " requires an argument\n"); usage ()
         | x :: _ when String.length x > 0 && x.[0] = '-' && x <> "-" ->
             prerr_string (prog ^ ": unknown option " ^ x ^ "\n"); usage ()
         | x :: r -> (match !file with None -> file := Some x | Some _ -> usage ()); go r

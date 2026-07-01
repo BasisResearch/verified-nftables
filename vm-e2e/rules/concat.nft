@@ -1,0 +1,8 @@
+table ip cc {
+  chain c {
+    type filter hook prerouting priority -300; policy accept;
+    ip protocol . th dport vmap { tcp . 22 : accept, udp . 53 : accept, tcp . 443 : accept }
+    ip saddr 10.0.0.1 ip daddr 10.0.0.2 ip protocol 6 accept
+    ip saddr 10.0.0.3 ip daddr 10.0.0.4 ip protocol 17 accept
+  }
+}
