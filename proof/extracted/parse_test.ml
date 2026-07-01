@@ -2429,9 +2429,107 @@ let check_ct_no_entry () =
        (Syntax.MEq (Syntax.FCtState, [0;0;0;1])) p_noentry);
   Printf.printf "\n"
 
+(* ---------- NEW GATE: compile the host-order corpus blocks FROM SOURCE ----------
+   `make corpus` reconstructs bytecode FROM the .payload and re-renders — it never
+   runs the SOURCE parser+compiler, so it is BLIND to a host/network byteorder
+   divergence in the compile path (which is exactly where the `meta mark`/`ct mark`
+   plain-cmp reversal lived).  This gate closes that blind spot: for each
+   .t.payload block whose header `# <src>` our parser accepts and whose compiled
+   bytecode LOADS a BYTEORDER_HOST_ENDIAN field (mark / iif / oif / ct-mark /
+   fib-type) in a plain cmp/range (no lookup/bitwise), it COMPILES <src> FROM
+   SOURCE, renders it, and requires the result byte-identical to the block. *)
+
+let read_lines path =
+  let ic = open_in path in
+  let rec go acc = match input_line ic with
+    | l -> go (l :: acc)
+    | exception End_of_file -> close_in ic; L.rev acc in
+  go []
+
+(* split a .t.payload file into blocks separated by blank lines *)
+let payload_blocks path =
+  let flush cur acc = if cur = [] then acc else L.rev cur :: acc in
+  let rec go cur acc = function
+    | [] -> L.rev (flush cur acc)
+    | "" :: rest -> go [] (flush cur acc) rest
+    | l :: rest -> go (l :: cur) acc rest in
+  go [] [] (read_lines path)
+
+let starts_bracket l = let s = S.trim l in S.length s > 0 && S.get s 0 = '['
+let rec take_while p = function x :: xs when p x -> x :: take_while p xs | _ -> []
+let has_prefix pre s = S.length s >= S.length pre && S.sub s 0 (S.length pre) = pre
+(* the byteorder-bearing instruction lines: cmp / range immediates and the hton
+   byteorder transform.  (The load line's SELECTOR text — e.g. a concatenated
+   `fib daddr . iif` — is a separate rendering concern, not a byteorder one, so it
+   is excluded from this gate's exact comparison.) *)
+let is_value_line l =
+  let s = S.trim l in
+  has_prefix "[ cmp " s || has_prefix "[ range " s || has_prefix "[ byteorder " s
+
+let bc_is_he_load i = Codec.bc_load_host_endian_reg i <> None
+let bc_is_cmp_or_range = function
+  | Bytecode.ICmp _ | Bytecode.IRange _ -> true | _ -> false
+let bc_only_load_bo_cmp = function
+  | Bytecode.IMetaLoad _ | Bytecode.ICtLoad _ | Bytecode.IFibLoad _
+  | Bytecode.IByteorder _ | Bytecode.ICmp _ | Bytecode.IRange _ -> true
+  | _ -> false
+
+let byteorder_gate files =
+  let checked = ref 0 and passed = ref 0 and failed = ref 0 and skipped = ref 0 in
+  L.iter (fun path ->
+    L.iter (fun block ->
+      match block with
+      | hdr :: fam_line :: instrs
+        when S.length hdr > 2 && S.get hdr 0 = '#' && starts_bracket
+               (match instrs with i :: _ -> i | [] -> "") ->
+          let src = S.trim (S.sub hdr 1 (S.length hdr - 1)) in
+          (match S.split_on_char ' ' (S.trim fam_line)
+                 |> L.filter (fun s -> s <> "") with
+           | [fam; tbl; chn] ->
+             let wrapped =
+               Printf.sprintf "table %s %s {\n chain %s {\n  %s\n }\n}\n" fam tbl chn src in
+             (match (try Some (Nft_parse.parse_string wrapped) with _ -> None) with
+              | None -> incr skipped
+              | Some parsed ->
+                let progs = L.concat_map (fun (_f, _t, chains) ->
+                    L.concat_map (fun (_cn, c) -> Compile.compile_chain c) chains)
+                    parsed.Nft_lower.p_tables in
+                (match progs with
+                 | [rp] when L.exists bc_is_he_load rp
+                             && L.exists bc_is_cmp_or_range rp
+                             && L.for_all bc_only_load_bo_cmp rp ->
+                     incr checked;
+                     let ours = L.filter is_value_line (Codec.render_rule_lines rp) in
+                     let theirs =
+                       take_while starts_bracket instrs |> L.map S.trim
+                       |> L.filter is_value_line in
+                     if ours = theirs then incr passed
+                     else (incr failed;
+                       Printf.printf
+                         "BYTEORDER-GATE MISMATCH  # %s\n  corpus: %s\n  ours:   %s\n"
+                         src (S.concat " | " theirs) (S.concat " | " ours))
+                 | _ -> incr skipped))
+           | _ -> incr skipped)
+      | _ -> ()) (payload_blocks path))
+    files;
+  Printf.printf "\n=== compile-from-source byteorder gate ===\n";
+  Printf.printf
+    "host-order cmp/range blocks compiled from source: %d  passed: %d  failed: %d  (skipped/oos: %d)\n"
+    !checked !passed !failed !skipped;
+  if !checked < 6 then
+    (Printf.printf "FAIL: too few host-order blocks checked (gate vacuous?)\n"; exit 1);
+  if !failed > 0 then
+    (Printf.printf "FAIL: %d byteorder mismatch(es)\n" !failed; exit 1)
+  else
+    Printf.printf "OK: %d/%d host-order blocks: compile-from-source == corpus .payload\n"
+      !passed !checked
+
 let () =
-  if Stdlib.Array.length Sys.argv > 1 then cli Sys.argv.(1)
-  else begin
+  match Stdlib.Array.to_list Sys.argv with
+  | _ :: "byteorder-gate" :: files -> byteorder_gate files
+  | _ :: path :: _ -> cli path
+  | _ ->
+  begin
     check_ruleset_nft ();
     check_jump_aware ();
     check_optiplex_antispoof ();

@@ -689,13 +689,23 @@ let rule_of_block (lines : string list) : Syntax.rule =
                      | PJhash (1,1,len,seed,m,o) -> collect (Syntax.TJhash (len,seed,m,o) :: ts) more
                      | PCmp (iseq, 1, v) ->
                          let tl = List.rev ts in
+                         (* the corpus prints a host-endian (mark/iif/oif/ct-mark/
+                            fib-type) eq/neq immediate in host order; store it as
+                            the little-endian WIRE the kernel matches so the
+                            field-aware re-render reproduces the corpus.  With a
+                            transform present the register is already network/opaque
+                            order, so leave the bytes as decoded. *)
                          let m = (match tl with
-                           | [] -> if iseq then Syntax.MEq (f,v) else Syntax.MNeq (f,v)
+                           | [] ->
+                               let v = if field_host_endian f then List.rev v else v in
+                               if iseq then Syntax.MEq (f,v) else Syntax.MNeq (f,v)
                            | _ -> Syntax.MTransform (f, tl, (if iseq then Bytecode.CEq else Bytecode.CNe), v)) in
                          go (bm body m) more
                      | POrdCmp (op, 1, v) ->
                          let m = (match List.rev ts with
-                           | [] -> Syntax.MCmp (f, op, v)
+                           | [] ->
+                               let v = if field_host_endian f then List.rev v else v in
+                               Syntax.MCmp (f, op, v)
                            | tl -> Syntax.MTransform (f, tl, op, v)) in
                          go (bm body m) more
                      | PRange (iseq, 1, words) ->
@@ -704,7 +714,10 @@ let rule_of_block (lines : string list) : Syntax.rule =
                          let lo = bytes_of_hexwords (List.filteri (fun i _ -> i < n/2) words)
                          and hi = bytes_of_hexwords (List.filteri (fun i _ -> i >= n/2) words) in
                          let m = (match List.rev ts with
-                           | [] -> Syntax.MRange (f, not iseq, lo, hi)
+                           | [] ->
+                               let lo, hi = if field_host_endian f
+                                            then List.rev lo, List.rev hi else lo, hi in
+                               Syntax.MRange (f, not iseq, lo, hi)
                            | tl -> Syntax.MRangeT (f, tl, not iseq, lo, hi)) in
                          go (bm body m) more
                      | PLookup (1, name, neg) ->
@@ -956,7 +969,9 @@ let run_corpus () =
            | _ -> ())
       | `R rule ->
           let compiled = Compile.compile_rule rule in
-          let ours = List.map render_instr compiled in
+          (* field-aware, whole-rule render: host-endian (mark/iif/oif/ct-mark/
+             fib-type) eq/range immediates print host-order, matching the corpus *)
+          let ours = render_rule_lines compiled in
           let theirs = List.map (fun l -> String.concat " " (toks_of_line l)
                                           |> fun s -> "[ " ^ s ^ " ]") block in
           if ours = theirs then incr pass

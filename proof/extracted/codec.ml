@@ -164,6 +164,59 @@ let render_value (d : int list) : string =
   done;
   Buffer.contents buf
 
+(* HOST-ENDIAN (BYTEORDER_HOST_ENDIAN) value rendering.  A `meta mark`/`ct mark`,
+   an interface index (`meta iif`/`oif`) or a `fib ... type` register holds a
+   NATIVE-endian integer (nft_meta.c `*dest = skb->mark;` etc.), so the wire bytes
+   the KERNEL matches are little-endian on x86 (e.g. mark 0x32 -> wire [0x32;0;0;0];
+   confirmed by netns round-trip).  nft's corpus displays such a register read back
+   in host order (its logical value, e.g. 0x00000032), NOT as a big-endian read of
+   the wire.  So for these registers we render the wire host-order: read each
+   ≤4-byte word little-endian.  (render_value's big-endian read is right for the
+   network-order fields — ip/port/etc. — and for a host-endian register once a
+   `byteorder hton` / bitwise transform has converted it to network/opaque order.) *)
+let render_value_le (d : int list) : string =
+  render_value (List.rev d)
+
+(* Descriptors whose register the kernel fills in HOST byte order.  Keep this in
+   lock-step with nft_lower.ml's [enc_atom] host-endian encodings (KMark/KIfindex/
+   KFibType, all [bytes_of_int_le]) and with [bc_load_host_endian_reg] below. *)
+let loaddesc_host_endian (ld : Syntax.loaddesc) = match ld with
+  | Syntax.LMeta Packet.MKmark
+  | Syntax.LMeta Packet.MKiif | Syntax.LMeta Packet.MKoif
+  | Syntax.LCt   Packet.CKmark
+  | Syntax.LFib (_, Packet.FRtype) -> true
+  | _ -> false
+
+(* Same predicate lifted to a DSL field (used by the corpus reconstruction to
+   decide whether an eq/neq/range immediate must be stored host-order). *)
+let field_host_endian (f : Syntax.field) = loaddesc_host_endian (Syntax.field_load f)
+
+(* If a bytecode LOAD populates a register with a host-endian value, its dst reg;
+   mirrors [loaddesc_host_endian] on the compiled side. *)
+let bc_load_host_endian_reg (i : Bytecode.instr) = match i with
+  | Bytecode.IMetaLoad (Packet.MKmark, r)
+  | Bytecode.IMetaLoad (Packet.MKiif, r)
+  | Bytecode.IMetaLoad (Packet.MKoif, r)
+  | Bytecode.ICtLoad   (Packet.CKmark, r)
+  | Bytecode.IFibLoad  (_, Packet.FRtype, r) -> Some r
+  | _ -> None
+
+(* The register an instruction (re)DEFINES: any load, or a transform that writes a
+   register.  Used to CLEAR a stale host-endian flag when a register is reused by
+   a different (network-order or transformed) value later in the same rule. *)
+let bc_writes_reg (i : Bytecode.instr) = match i with
+  | Bytecode.IMetaLoad (_, r) | Bytecode.ICtLoad (_, r)
+  | Bytecode.IRtLoad (_, r)   | Bytecode.ISocketLoad (_, r)
+  | Bytecode.IExthdrLoad (_,_,_,_,_,r) | Bytecode.IFibLoad (_,_,r)
+  | Bytecode.ICtDirLoad (_,_,r) | Bytecode.IXfrmLoad (_,_,_,r)
+  | Bytecode.ITunnelLoad (_,r) | Bytecode.ISymhash (_,_,r)
+  | Bytecode.IInnerLoad (_,_,_,_,_,r) | Bytecode.INumgen (_,r)
+  | Bytecode.IOsf r | Bytecode.IPayloadLoad (_,_,_,r)
+  | Bytecode.IByteorder (r,_,_,_,_) | Bytecode.IBitwise (r,_,_,_)
+  | Bytecode.IBitwiseOr (r,_,_) | Bytecode.IBitShift (r,_,_,_)
+  | Bytecode.IJhash (r,_,_,_,_,_) -> Some r
+  | _ -> None
+
 (* The verified compiler allocates concatenation registers monotonically (slot 0
    -> 1, slot s>0 -> 8+s), which is provably collision-free. nft's debug output
    instead displays a 16-byte-aligned slot using the 128-bit register alias
@@ -186,7 +239,13 @@ let cmpop_name = function
   | Bytecode.CLe -> "lte" | Bytecode.CGe -> "gte"
 
 (* ---------- render our compiled instrs back to corpus text ---------- *)
-let render_instr (i : Bytecode.instr) : string = match i with
+(* [he r] tells whether register [r] currently holds a host-endian value with no
+   network-order/opaque transform applied since its load; such a register's
+   eq/range immediates render host-order (little-endian).  The default [fun _ ->
+   false] recovers the old context-free big-endian rendering. *)
+let render_instr ?(he = (fun _ -> false)) (i : Bytecode.instr) : string =
+  let render_val r v = if he r then render_value_le v else render_value v in
+  match i with
   | Bytecode.IMetaLoad (k,r) ->
       Printf.sprintf "[ meta load %s => reg %d ]" (name_of_meta k) (nreg r)
   | Bytecode.ICtLoad (k,r) ->
@@ -226,9 +285,9 @@ let render_instr (i : Bytecode.instr) : string = match i with
       Printf.sprintf "[ payload load %db @ %s header + %d => reg %d ]"
         l (name_of_base b) o (nreg r)
   | Bytecode.ICmp (op,r,v) ->
-      Printf.sprintf "[ cmp %s reg %d %s ]" (cmpop_name op) r (render_value v)
+      Printf.sprintf "[ cmp %s reg %d %s ]" (cmpop_name op) r (render_val r v)
   | Bytecode.IRange (op,r,lo,hi) ->
-      Printf.sprintf "[ range %s reg %d %s %s ]" (cmpop_name op) r (render_value lo) (render_value hi)
+      Printf.sprintf "[ range %s reg %d %s %s ]" (cmpop_name op) r (render_val r lo) (render_val r hi)
   | Bytecode.IBitwise (d,s,mask,xor) ->
       Printf.sprintf "[ bitwise reg %d = ( reg %d & %s ) ^ %s ]"
         d s (render_value mask) (render_value xor)
@@ -353,9 +412,28 @@ let render_instr (i : Bytecode.instr) : string = match i with
    (corpus_test.ml) checks THIS renderer byte-identical against the corpus; keep
    the two renderers distinct on purpose. *)
 (* Render one rule's instructions, one per line (no family/table/chain header;
-   that framing is the caller's concern). *)
+   that framing is the caller's concern).  Threads a per-register host-endian
+   flag: a load of mark/iif/oif/ct-mark/fib-type marks its dst register
+   host-endian; a byteorder / bitwise / shift / hash transform on a register
+   converts it to network/opaque order and clears the flag (so range bounds after
+   a `byteorder hton` — and post-bitwise cmp immediates — render big-endian,
+   exactly as the upstream corpus shows them). *)
+let render_rule_lines (rp : Bytecode.instr list) : string list =
+  let he : (int, unit) Hashtbl.t = Hashtbl.create 8 in
+  List.map (fun i ->
+    let line = render_instr ~he:(Hashtbl.mem he) i in
+    (* update AFTER rendering: a host-endian load marks its reg; any other
+       (re)definition of a register clears a stale host-endian flag *)
+    (match bc_load_host_endian_reg i with
+     | Some r -> Hashtbl.replace he r ()
+     | None ->
+        (match bc_writes_reg i with
+         | Some r -> Hashtbl.remove he r
+         | None -> ()));
+    line) rp
+
 let render_rule (rp : Bytecode.instr list) : string =
-  String.concat "\n" (List.map render_instr rp)
+  String.concat "\n" (render_rule_lines rp)
 
 (* Render a whole base-chain program: each per-rule instruction block, blank-line
    separated, in the corpus .t.payload layout described above. *)
