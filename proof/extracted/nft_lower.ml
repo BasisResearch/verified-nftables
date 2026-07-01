@@ -1321,6 +1321,17 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
   L.iter (fun (cl : Nft_ast.clause) ->
     match cl with
     | Nft_ast.CVerdict (Nft_ast.SVreject opts) ->
+        (* `reject with icmp <x>` only applies to IPv4 packets and `icmpv6 <x>`
+           only to IPv6, so in a dual-stack family nft prepends the matching
+           network guard (`meta nfproto`/`meta protocol == {ipv4|ipv6}`) before the
+           reject (golden {inet,bridge,netdev}/reject.t.payload).  ensure_dep makes
+           it a no-op in the single-L3 ip/ip6 families.  icmpx/tcp/bare take no
+           network guard. *)
+        (match L.filter (fun w -> w <> "" && w <> "type")
+                 (Stdlib.String.split_on_char ' ' opts) with
+         | "icmp" :: _   -> ensure_dep [DNfproto [2]]
+         | "icmpv6" :: _ -> ensure_dep [DNfproto [10]]
+         | _ -> ());
         let (rt, rc) = reject_type_code family opts in
         verdict := Verdict.Reject (rt, rc)
     | Nft_ast.CVerdict v -> verdict := lower_verdict v
