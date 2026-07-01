@@ -76,6 +76,7 @@ type sstmt =
   | StDnat      of value option * int option  (* `dnat to <addr>[:<port>]` *)
   | StMetaSet   of string * value  (* `meta <k> set v` / `mark set v` (k="mark") *)
   | StCtSet     of string * value  (* `ct <k> set v` *)
+  | StNotrack                      (* `notrack` (disable conntrack for the packet) *)
 
 type clause =
   | CMatch   of smatch

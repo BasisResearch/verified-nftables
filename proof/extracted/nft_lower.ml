@@ -529,6 +529,21 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
   let neg = m.Nft_ast.m_rhs.Nft_ast.neg in
   let op  = m.Nft_ast.m_rhs.Nft_ast.op in
   match m.Nft_ast.m_keys with
+  | [ (["fib"; sel; _res]) ]
+    when (match m.Nft_ast.m_rhs.Nft_ast.payload with
+          | Nft_ast.SEvalue (Nft_ast.Vsym ("missing" | "exists")) -> true
+          | _ -> false) ->
+      (* `fib <sel> <result> missing|exists`: nft loads the fib result with the
+         PRESENT flag (a 0/1 boolean) and tests it against 0 —
+         `fib ... present => reg ; cmp eq reg 0` for `missing`,
+         `cmp neq reg 0` for `exists` (nft --debug=netlink).  The chosen result
+         column is irrelevant under the present flag, so we use [FRpresent]. *)
+      let exists = (match m.Nft_ast.m_rhs.Nft_ast.payload with
+                    | Nft_ast.SEvalue (Nft_ast.Vsym "exists") -> true | _ -> false) in
+      let f = Syntax.FFib (sel, Packet.FRpresent) in
+      let zero = [0] in   (* FRpresent load_width = 1 byte *)
+      let mc = if exists then Syntax.MNeq (f, zero) else Syntax.MEq (f, zero) in
+      ([], mc)
   | [kp] ->
       let (f, k, dep) = key_field kp in
       let mc = match m.Nft_ast.m_rhs.Nft_ast.payload with
@@ -711,6 +726,7 @@ let lower_stmt st (s : Nft_ast.sstmt) : Syntax.stmt option =
   | Nft_ast.StCtSet (k, v) ->
       let key = ct_key k in
       Some (Syntax.SCtSet (key, Syntax.VImm (enc_atom (ct_set_kind key) (resolve_var st v))))
+  | Nft_ast.StNotrack -> Some Syntax.SNotrack
 
 (* does a statement force a terminal Accept (NAT)? *)
 let stmt_is_terminal_accept = function

@@ -108,9 +108,19 @@ let nfta_set_key_type  = 4
 let nfta_set_key_len   = 5
 let nfta_set_data_type = 6
 let nfta_set_data_len  = 7
+let nfta_set_desc      = 9
 let nfta_set_id        = 10
+let nfta_set_userdata  = 13
+(* NFTA_SET_DESC nesting: a concatenated (multi-field) key describes each field's
+   byte length so the kernel/nft can split the concat back into its fields. *)
+let nfta_set_desc_concat = 2   (* nested list of NFTA_LIST_ELEM *)
+let nfta_set_field_len   = 1   (* NLA_U32, one field's byte length *)
+let nft_set_anonymous  = 0x1
 let nft_set_constant   = 0x2
 let nft_set_map        = 0x8
+(* NFT_SET_CONCAT: the kernel REQUIRES this flag whenever NFTA_SET_DESC carries
+   more than one field (a concatenated key), else NEWSET is rejected EINVAL. *)
+let nft_set_concat     = 0x80
 let nfta_set_elem_key       = 1
 let nfta_set_elem_data      = 2
 let nfta_set_elem_list_table    = 1
@@ -371,6 +381,88 @@ let nl_rangeop : Bytecode.cmpop -> int = function
   | _            -> 0   (* NFT_RANGE_EQ  *)
 
 (* ------------------------------------------------------------------ *)
+(* Set KEY datatypes.  NFTA_SET_KEY_TYPE is opaque to the kernel (it   *)
+(* echoes it back verbatim); it is nft *userspace* that decodes it on  *)
+(* `nft list ruleset` to print the key as e.g. `inet_service` rather   *)
+(* than `0x0 [invalid type]`.  These magic numbers are nftables'       *)
+(* `enum datatypes` (datatype.h); a concatenated key packs its field   *)
+(* subtypes with [concat_subtype_add] (6 bits each, high field first). *)
+(* ------------------------------------------------------------------ *)
+let dt_invalid       = 0
+let dt_integer       = 4
+let dt_ipaddr        = 7
+let dt_ip6addr       = 8
+let dt_etheraddr     = 9
+let dt_ethertype     = 10
+let dt_inet_protocol = 12
+let dt_inet_service  = 13
+let dt_icmp_type     = 14
+let dt_mark          = 19
+let dt_ifindex       = 20
+let dt_ct_state      = 26
+let dt_ct_dir        = 27
+let dt_ct_status     = 28
+let dt_pkttype       = 31
+let dt_ifname        = 41
+
+(* nftables' concat_subtype_add: pack a subtype into the running key type
+   (TYPE_BITS = 6), high-order field first. *)
+let type_bits = 6
+let concat_subtype_add ty sub = (ty lsl type_bits) lor sub
+
+(* meta key -> (byte length, key datatype) as nft assigns it. *)
+let meta_field_desc : Packet.meta_key -> int * int = function
+  | Packet.MKprotocol -> (2, dt_ethertype)
+  | Packet.MKnfproto  -> (1, dt_integer)        (* nfproto: 1-byte integer *)
+  | Packet.MKl4proto  -> (1, dt_inet_protocol)
+  | Packet.MKpkttype  -> (1, dt_pkttype)
+  | Packet.MKmark     -> (4, dt_mark)
+  | Packet.MKiif | Packet.MKoif -> (4, dt_ifindex)
+  | Packet.MKiifname | Packet.MKoifname -> (16, dt_ifname)
+  | _ -> (4, dt_integer)
+
+(* ct key -> (byte length, key datatype). *)
+let ct_field_desc : Packet.ct_key -> int * int = function
+  | Packet.CKstate     -> (4, dt_ct_state)
+  | Packet.CKdirection -> (1, dt_ct_dir)
+  | Packet.CKstatus    -> (4, dt_ct_status)
+  | Packet.CKmark      -> (4, dt_mark)
+  | _ -> (4, dt_integer)
+
+(* payload (base, offset, byte length) -> key datatype nft assigns.  Only the
+   datatype is nft-specific; the LENGTH we always take from the instruction. *)
+let payload_dtype (b : Packet.pbase) (off : int) (len : int) : int =
+  match b, off, len with
+  | Packet.PNetwork, 9, 1   -> dt_inet_protocol   (* ipv4 protocol *)
+  | Packet.PNetwork, 6, 1   -> dt_inet_protocol   (* ip6 nexthdr *)
+  | Packet.PNetwork, 12, 4  -> dt_ipaddr          (* ip saddr *)
+  | Packet.PNetwork, 16, 4  -> dt_ipaddr          (* ip daddr *)
+  | Packet.PNetwork, 8, 16  -> dt_ip6addr         (* ip6 saddr *)
+  | Packet.PNetwork, 24, 16 -> dt_ip6addr         (* ip6 daddr *)
+  | Packet.PTransport, 0, 2 -> dt_inet_service    (* sport *)
+  | Packet.PTransport, 2, 2 -> dt_inet_service    (* dport *)
+  | Packet.PLink, 0, 6 | Packet.PLink, 6, 6 -> dt_etheraddr
+  | Packet.PTransport, 0, 1 -> dt_icmp_type       (* icmp/icmpv6 type *)
+  | _ -> dt_integer
+
+(* a KEY-building load instruction -> (field byte length, field datatype), or
+   None if the instruction does not itself materialise a key field. *)
+let field_desc_of_load : Bytecode.instr -> (int * int) option = function
+  | Bytecode.IPayloadLoad (b, off, len, _) -> Some (len, payload_dtype b off len)
+  | Bytecode.IMetaLoad (k, _)              -> Some (meta_field_desc k)
+  | Bytecode.ICtLoad (k, _)                -> Some (ct_field_desc k)
+  | Bytecode.ICtDirLoad (_, _, _)          -> Some (4, dt_ipaddr)
+  | Bytecode.IExthdrLoad (_, _, _, l, _, _) -> Some (l, dt_integer)
+  | _ -> None
+
+(* instructions that TRANSFORM a key register in place (mask/shift/byteorder)
+   without adding a new concat field — transparent when scanning the field run. *)
+let is_key_transform : Bytecode.instr -> bool = function
+  | Bytecode.IBitwise _ | Bytecode.IBitwiseOr _ | Bytecode.IBitShift _
+  | Bytecode.IByteorder _ -> true
+  | _ -> false
+
+(* ------------------------------------------------------------------ *)
 (* Byte emitters.  Netlink message/attr headers are HOST byte order    *)
 (* (little-endian on x86_64); nft attribute scalars are BIG-endian     *)
 (* (libnftnl htonl's them); data values are raw kernel-order bytes.     *)
@@ -423,6 +515,30 @@ let data_to_string (d : int list) : string =
   Buffer.contents b
 
 let nla_align n = (n + 3) land (lnot 3)
+
+(* Register-pad a CONCATENATED set key.  The verified optimizer stores a concat
+   key TIGHTLY packed (field bytes back-to-back, e.g. `ip protocol . th dport` =
+   [proto; dport_hi; dport_lo] = 3 bytes).  The kernel, however, loads each concat
+   field into its own 4-byte-aligned register (the compiled rule does exactly
+   this: reg 1 then reg 9), so the SET side must lay every element out the same
+   way — each field padded to NLA_ALIGN(4) — or the lookup reads register padding
+   where the next field should be and never matches.  This re-lays-out the SAME
+   abstract key (no match logic invented), mirroring how nft encodes concat sets.
+   [key_fields] gives each field's byte length in order; a single field (or none)
+   is returned unchanged. *)
+let pad_concat_key (key_fields : (int * int) list) (key : int list) : int list =
+  match key_fields with
+  | [] | [ _ ] -> key
+  | fields ->
+      let rec take n = function x :: xs when n > 0 -> x :: take (n - 1) xs | _ -> [] in
+      let rec drop n = function _ :: xs when n > 0 -> drop (n - 1) xs | l -> l in
+      let rec go fields bytes = match fields with
+        | [] -> []
+        | (len, _) :: rest ->
+            let field = take len bytes in
+            let padded = field @ L.init (nla_align len - len) (fun _ -> 0) in
+            padded @ go rest (drop len bytes)
+      in go fields key
 
 (* one nlattr: {u16 len (incl 4-byte header, NOT padding); u16 type}; payload
    padded out to NLA_ALIGN(4). *)
@@ -697,6 +813,38 @@ let encode_elem (ins : Bytecode.instr) : string =
 let encode_exprs (rp : Bytecode.rule_prog) : string =
   String.concat "" (L.map encode_elem rp)
 
+(* The lookup/vmap instructions in a compiled program that reference a named
+   set, and the KEY FIELDS each set is matched on.  The compiler emits the key's
+   field loads contiguously just before the [lookup]; that run (skipping in-place
+   transforms) gives, in order, each field's (byte length, datatype) — exactly
+   what nft derives to send NFTA_SET_DESC + NFTA_SET_KEY_TYPE for a concatenated
+   key.  First reference wins (a set's shape is fixed).  This reads only the
+   verified [compile_chain] output; it invents no match logic. *)
+let set_key_fields (prog : Bytecode.program) : (string * (int * int) list) list =
+  let tbl : (string, (int * int) list) Hashtbl.t = Hashtbl.create 16 in
+  L.iter
+    (fun rp ->
+      let arr = Array.of_list rp in
+      Array.iteri
+        (fun i ins ->
+          let set_of = function
+            | Bytecode.ILookup (_, n, _) | Bytecode.IVmap (_, n)
+            | Bytecode.ILookupVal (_, n, _) | Bytecode.ILookupValBr (_, n, _) -> Some n
+            | _ -> None in
+          match set_of ins with
+          | Some name when not (Hashtbl.mem tbl name) ->
+              let acc = ref [] and j = ref (i - 1) and stop = ref false in
+              while !j >= 0 && not !stop do
+                (match field_desc_of_load arr.(!j) with
+                 | Some fd -> acc := fd :: !acc; decr j
+                 | None -> if is_key_transform arr.(!j) then decr j else stop := true)
+              done;
+              Hashtbl.replace tbl name !acc
+          | _ -> ())
+        arr)
+    prog;
+  Hashtbl.fold (fun k v a -> (k, v) :: a) tbl []
+
 (* ------------------------------------------------------------------ *)
 (* Structural objects: table / chain / set / set-elem / rule messages. *)
 (* A [msg] is a body to be sealed with a seq + nlmsghdr at batch time.  *)
@@ -727,20 +875,83 @@ let msg_chain ~family ~table ~name ~base ~policy : msg =
        | None -> "") in
   { m_type = msg_type nft_msg_newchain; m_flags = create_flags; m_payload = body }
 
+(* Derive NFTA_SET_KEY_TYPE (and, for a concatenated key, the NFTA_SET_DESC
+   field-length descriptors) from the key's fields.  A single field just names
+   the key type; >= 2 fields pack their subtypes (concat_subtype_add) and emit a
+   SET_DESC concat so nft can split/print the key — WITHOUT this the kernel
+   accepts the set but `nft list ruleset` aborts with "Relational expression
+   size mismatch" on the concat lookup.  If the field lengths don't reconstruct
+   [klen] (an unmodelled field width), degrade safely to an opaque key rather
+   than send a desc the kernel would reject. *)
+let key_type_and_desc ~klen (key_fields : (int * int) list) : int * string =
+  match key_fields with
+  | [] -> (0, "")
+  | [ (_, dt) ] -> (dt, "")
+  | fields ->
+      let sum = L.fold_left (fun a (len, _) -> a + nla_align len) 0 fields in
+      if sum <> klen then (0, "")
+      else
+        let ktype = L.fold_left (fun acc (_, dt) -> concat_subtype_add acc dt) 0 fields in
+        let concat_body =
+          String.concat ""
+            (L.map (fun (len, _) ->
+                 attr_nested nfta_list_elem (attr_u32 nfta_set_field_len len))
+               fields) in
+        (ktype,
+         attr_nested nfta_set_desc (attr_nested nfta_set_desc_concat concat_body))
+
 (* a set/map/vmap definition.  [klen]/[dlen] in bytes; [dtype] = Some magic for
    a verdict map, [Some 0]/[None] for a data map's generic data, [None] for a
-   plain membership set. *)
-let msg_set ~family ~table ~name ~set_id ~flags ~klen ~dtype ~dlen : msg =
+   plain membership set.  [key_fields] = each key field's (byte length, datatype)
+   in concat order (a singleton for a simple key), used for KEY_TYPE + DESC. *)
+(* one nft `struct nftnl_udata { u8 type; u8 len; u8 value[len] }` (packed, NOT
+   NLA-aligned) — nft's private per-set annotation format. *)
+let udata typ (v : string) = String.make 1 (Char.chr typ) ^ String.make 1 (Char.chr (String.length v)) ^ v
+
+(* NFTNL_UDATA_SET_* keys and nft byteorder codes. *)
+let udata_set_keybyteorder  = 0
+let udata_set_databyteorder = 1
+let byteorder_invalid = 0
+let byteorder_host    = 1
+let byteorder_big     = 2
+
+(* The byteorder nft must use to decode a set's element VALUES on `nft list`.
+   The verified compiler stores ALL scalar data big-endian (network /
+   kernel-comparison order — see [data_to_string]); so nft must read every
+   INTEGER key big-endian to recover the value.  BYTE-STRING key types
+   (ifname / ether address) carry no numeric byteorder — they are laid out
+   in memory order, which nft reads correctly as host-endian (declaring them
+   big-endian would byte-reverse the string and print it empty). *)
+let dtype_byteorder dt =
+  if dt = dt_ifname || dt = dt_etheraddr then byteorder_host
+  else byteorder_big
+
+let msg_set ~family ~table ~name ~set_id ~flags ~klen ~key_fields ~dtype ~dlen : msg =
+  let (ktype, desc) = key_type_and_desc ~klen key_fields in
+  (* nft decodes the key/data BYTEORDER for `nft list ruleset` from this private
+     NFTA_SET_USERDATA blob; WITHOUT it, a host-endian string key type (ifname)
+     is printed as an empty string.  Key byteorder = the (single) field's datatype
+     byteorder; a concatenated key has no single byteorder (invalid).  The data of
+     a verdict map has no byteorder (invalid). *)
+  let keybo = match key_fields with
+    | [ (_, dt) ] -> dtype_byteorder dt
+    | _ -> byteorder_invalid in
+  let databo = byteorder_invalid in
+  let userdata =
+    udata udata_set_keybyteorder (le32 keybo)
+    ^ udata udata_set_databyteorder (le32 databo) in
   let body =
     nfgenmsg ~family ~res_id:0
     ^ attr_str nfta_set_table table
     ^ attr_str nfta_set_name name
     ^ attr_u32 nfta_set_flags flags
-    ^ attr_u32 nfta_set_key_type 0
+    ^ attr_u32 nfta_set_key_type ktype
     ^ attr_u32 nfta_set_key_len klen
     ^ (match dtype with Some t -> attr_u32 nfta_set_data_type t | None -> "")
     ^ (match dlen with Some l -> attr_u32 nfta_set_data_len l | None -> "")
-    ^ attr_u32 nfta_set_id set_id in
+    ^ desc
+    ^ attr_u32 nfta_set_id set_id
+    ^ attr nfta_set_userdata userdata in
   { m_type = msg_type nft_msg_newset; m_flags = create_flags; m_payload = body }
 
 (* a single set element: a key, optionally with data (verdict or value bytes) *)

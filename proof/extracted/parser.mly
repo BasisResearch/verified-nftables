@@ -27,7 +27,7 @@
 /* verdicts */
 %token ACCEPT DROP CONTINUE RETURN JUMP GOTO QUEUE REJECT
 /* statements */
-%token COUNTER LOG PREFIX LIMIT RATE OVER WITH TO MASQUERADE SNAT DNAT
+%token COUNTER LOG PREFIX LIMIT RATE OVER WITH TO MASQUERADE SNAT DNAT NOTRACK
 /* match selectors */
 %token META CT IP IP6 TCP UDP TH ICMP ICMPV6 ETHER FIB
 %token IIF OIF IIFNAME OIFNAME PKTTYPE MARK
@@ -114,7 +114,7 @@ junktok:
   | ELEMENTS {} | SET {} | MAP {} | TABLE {} | CHAIN {} | DEFINE {} | INCLUDE {}
   | ACCEPT {} | DROP {} | CONTINUE {} | RETURN {} | JUMP {} | GOTO {} | QUEUE {}
   | REJECT {} | COUNTER {} | LOG {} | PREFIX {} | LIMIT {} | RATE {} | OVER {} | WITH {}
-  | TO {} | MASQUERADE {} | SNAT {} | DNAT {} | META {} | CT {} | IP {} | IP6 {}
+  | TO {} | MASQUERADE {} | SNAT {} | DNAT {} | NOTRACK {} | META {} | CT {} | IP {} | IP6 {}
   | TCP {} | UDP {} | TH {} | ICMP {} | ICMPV6 {} | ETHER {} | FIB {} | IIF {}
   | OIF {} | IIFNAME {} | OIFNAME {} | PKTTYPE {} | MARK {} | FLUSH {} | RULESET {}
   | DESTROY {} | DELETE {}
@@ -234,15 +234,28 @@ keyatom:
   | META PKTTYPE  { ["meta"; "pkttype"] }
   | CT IDENT      { ["ct"; $2] }
   | CT MARK       { ["ct"; "mark"] }   (* `mark` lexes as the MARK keyword *)
-  (* fib (routing-table) lookup: `fib <key> <result>`, e.g. `fib daddr type` *)
-  | FIB IDENT TYPE  { ["fib"; $2; "type"] }
-  | FIB IDENT IDENT { ["fib"; $2; $3] }
+  (* fib (routing-table) lookup: `fib <key>[. <key>...] <result>`, e.g.
+     `fib daddr type` or a concatenated selector `fib saddr . iif oif`. *)
+  | FIB fib_sel fib_result { ["fib"; Stdlib.String.concat "." $2; $3] }
   | IIF           { ["iif"] }
   | OIF           { ["oif"] }
   | IIFNAME       { ["iifname"] }
   | OIFNAME       { ["oifname"] }
   | PKTTYPE       { ["pkttype"] }
   | MARK          { ["mark"] }
+
+(* fib selector keys (may be dot-concatenated) and the fib result column.  The
+   selector keys `iif`/`oif`/`mark` lex as keyword tokens, not IDENT. *)
+fib_sel:
+  | fib_key                { [$1] }
+  | fib_sel DOT fib_key    { $1 @ [$3] }
+fib_key:
+  | IDENT { $1 } | IIF { "iif" } | OIF { "oif" } | MARK { "mark" }
+fib_result:
+  | TYPE    { "type" }
+  | OIF     { "oif" }
+  | OIFNAME { "oifname" }
+  | IDENT   { $1 }
 
 rhs:
   | payload     { { op = Op_implicit; neg = false; payload = $1 } }
@@ -325,6 +338,7 @@ reject_opt:
 stmt:
   | COMMENT STRING            { StComment $2 }
   | COUNTER                   { StCounter }
+  | NOTRACK                   { StNotrack }
   | LOG log_opts              { StLog $2 }
   | LIMIT RATE INT SLASH IDENT      { StLimit ($3, $5, false) }
   | LIMIT RATE OVER INT SLASH IDENT { StLimit ($4, $6, true) }

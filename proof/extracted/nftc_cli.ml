@@ -211,7 +211,15 @@ let () =
                   (* set/map declarations: parsed named ones + optimizer-synthesised *)
                   let synth_sets = ref [] and synth_vmaps = ref [] in
                   let seen = Hashtbl.create 16 in
-                  let emit_set name =
+                  (* the optimizer's synthesised sets are named `__mapN` / `__setN`;
+                     those are anonymous+constant (nft renders them folded inline
+                     into the rule, and — unlike a plain named set — decodes string
+                     key types like `ifname` for display).  A user-declared named
+                     set keeps its name and is neither. *)
+                  let anon_flags name =
+                    if String.length name >= 2 && name.[0] = '_' && name.[1] = '_'
+                    then Nl_send.nft_set_anonymous lor Nl_send.nft_set_constant else 0 in
+                  let emit_set ~key_fields name =
                     if not (Hashtbl.mem seen name) then begin
                       Hashtbl.add seen name ();
                       let find l1 l2 = match L.assoc_opt name l1 with
@@ -219,12 +227,17 @@ let () =
                       match find !synth_vmaps parsed.Nft_lower.p_vmaps with
                       | Some entries ->
                           let elems = L.map
-                            (fun ((lo, _hi), v) -> { Nl_send.ek = lo; ed = Some (Nl_send.EVerdict v) })
+                            (fun ((lo, _hi), v) ->
+                              { Nl_send.ek = Nl_send.pad_concat_key key_fields lo;
+                                ed = Some (Nl_send.EVerdict v) })
                             entries in
-                          let klen = match entries with ((lo, _), _) :: _ -> L.length lo | [] -> 0 in
+                          let klen = match elems with e :: _ -> L.length e.Nl_send.ek | [] -> 0 in
+                          let concat = L.length key_fields > 1 in
+                          let flags = Nl_send.nft_set_map lor anon_flags name
+                                      lor (if concat then Nl_send.nft_set_concat else 0) in
                           let id = next_id () in
                           add (Nl_send.msg_set ~family:fam ~table:tname ~name ~set_id:id
-                                 ~flags:Nl_send.nft_set_map ~klen
+                                 ~flags ~klen ~key_fields
                                  ~dtype:(Some Nl_send.nft_data_verdict) ~dlen:None);
                           if elems <> [] then
                             add (Nl_send.msg_setelems ~family:fam ~table:tname ~set:name ~set_id:id elems)
@@ -237,12 +250,14 @@ let () =
                                      raise (Nl_send.Unsupported
                                        ("interval element in set " ^ name ^
                                         " (range/prefix set elements not yet encoded)"));
-                                   { Nl_send.ek = lo; ed = None })
+                                   { Nl_send.ek = Nl_send.pad_concat_key key_fields lo; ed = None })
                                  els in
-                               let klen = match els with (lo, _) :: _ -> L.length lo | [] -> 0 in
+                               let klen = match elems with e :: _ -> L.length e.Nl_send.ek | [] -> 0 in
+                               let flags = anon_flags name
+                                           lor (if L.length key_fields > 1 then Nl_send.nft_set_concat else 0) in
                                let id = next_id () in
                                add (Nl_send.msg_set ~family:fam ~table:tname ~name ~set_id:id
-                                      ~flags:0 ~klen ~dtype:None ~dlen:None);
+                                      ~flags ~klen ~key_fields ~dtype:None ~dlen:None);
                                if elems <> [] then
                                  add (Nl_send.msg_setelems ~family:fam ~table:tname ~set:name ~set_id:id elems)
                            | None ->
@@ -257,7 +272,12 @@ let () =
                                 synth_vmaps := !synth_vmaps @ d.Semantics.sd_vmaps;
                                 c') in
                         let prog = Compile.compile_chain ch' in
-                        L.iter emit_set (referenced_sets prog);
+                        let kf = Nl_send.set_key_fields prog in
+                        L.iter
+                          (fun n ->
+                            let key_fields = match L.assoc_opt n kf with Some f -> f | None -> [] in
+                            emit_set ~key_fields n)
+                          (referenced_sets prog);
                         L.iter (fun rp -> add (Nl_send.msg_rule ~family:fam ~table:tname ~chain:cn rp)) prog
                       end)
                     tchains)

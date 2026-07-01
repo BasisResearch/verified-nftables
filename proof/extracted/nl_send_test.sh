@@ -102,8 +102,14 @@ echo "=== standalone send --commit (no prior nft add) ==="
 OUT2=$(nft list ruleset) || fail "nft list ruleset (standalone)"
 echo "$OUT2"
 echo
+# The optimizer's anonymous sets/maps (`__setN`/`__mapN`) carry NFT_SET_ANONYMOUS
+# + the correct NFTA_SET_KEY_TYPE (+ NFTA_SET_DESC for a concat key), so nft folds
+# them back INLINE into the rule, exactly as it renders its own anonymous sets —
+# a stronger round-trip than a bare `@__set` reference: the membership set and the
+# vmap reappear with their elements (`tcp dport { 22, 80, 443 }` / `iifname vmap {`).
 echo "=== assertions (standalone) ==="
-for pat in 'chain c' 'ct mark set' 'counter ' 'meta mark set' 'chain sub' 'masquerade' '@__set' '@__map'; do
+for pat in 'chain c' 'ct mark set' 'counter ' 'meta mark set' 'chain sub' 'masquerade' \
+           'tcp dport \{ 22, 80, 443 \}' 'iifname vmap \{ "lo" : accept, "eth0" : jump sub \}'; do
   echo "$OUT2" | grep -Eq "$pat" \
     && echo "  ok: '$pat' present" \
     || fail "standalone: missing '$pat'"
@@ -138,6 +144,42 @@ else
   echo "  ok: nothing committed — table 'bad' absent (atomic rollback)"
 fi
 rm -f "$RS3"
+
+# ---------------------------------------------------------------------------
+# 7. CONCAT-KEY vmap + notrack + fib(missing) round-trip.  These are the
+#    round-2 defects: the optimizer's concatenated-key vmap (`ip protocol . th
+#    dport vmap {...}`) must reappear in `nft list ruleset` (NFTA_SET_DESC +
+#    register-padded keys + NFT_SET_CONCAT), and `notrack` / `fib ... missing`
+#    must parse+encode.  We compare our readback against LIVE nft's own readback
+#    of the same source — they must be byte-identical.
+# ---------------------------------------------------------------------------
+nft flush ruleset 2>/dev/null || true
+RS4=$(mktemp)
+cat > "$RS4" <<'EOF'
+table ip r {
+  chain c {
+    type filter hook prerouting priority -300; policy accept;
+    ip protocol . th dport vmap { tcp . 22 : accept, udp . 53 : accept }
+    fib saddr . iif oif missing drop
+    ip daddr 1.2.3.4 notrack
+  }
+}
+EOF
+echo
+echo "=== concat-vmap / notrack / fib(missing) round-trip vs live nft ==="
+"$CLI" send --commit < "$RS4" >/dev/null || fail "concat/notrack/fib send reported a kernel error"
+OUT4=$(nft list ruleset) || fail "nft list ruleset (concat/notrack/fib)"
+nft flush ruleset 2>/dev/null || true
+nft -f "$RS4" || fail "live nft could not load the same source"
+REF4=$(nft list ruleset) || fail "nft list ruleset (live reference)"
+rm -f "$RS4"
+if [ "$OUT4" = "$REF4" ]; then
+  echo "  ok: our readback is BYTE-IDENTICAL to live nft's"
+else
+  echo "  --- ours ---"; echo "$OUT4"
+  echo "  --- live nft ---"; echo "$REF4"
+  fail "concat/notrack/fib readback differs from live nft"
+fi
 
 echo
 echo "PASS: verified-compiled rules landed in the kernel via Nl_send"
