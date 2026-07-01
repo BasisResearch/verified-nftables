@@ -29,11 +29,11 @@ see [`adversarial.md`](adversarial.md).
 
 ## Remaining work
 
-### Optimizer — no sound-to-close gap remains on the 20-shape differential battery
+### Optimizer — all DISJOINT-key consolidations matched; one real gap left (14/15)
 Every consolidation the differential battery (`proof/difftest_battery.sh`, 20 shapes,
-`proof/battery_cases/README.md`) surfaces as *sound* is now MATCHed or EXCEEDed by our
-verified optimizer, each a machine-checked axiom-free pass composed into
-`optimize_table_uncond`:
+`proof/battery_cases/README.md`) surfaces over **disjoint keys** is now MATCHed or
+EXCEEDed by our verified optimizer, each a machine-checked axiom-free pass composed
+into `optimize_table_uncond`:
 - transport-guarded single-field SET (`Optimize_Setg.v`) — bare `tcp/udp dport { … }`;
 - transport-guarded value+verdict → **VMAP** (`Optimize_Vmapg.v`) — `tcp dport vmap
   { 22:drop, 80:accept, … }` (shape 18);
@@ -44,11 +44,26 @@ verified optimizer, each a machine-checked axiom-free pass composed into
 - plus the pre-existing network-address set/vmap, K-field concat, guarded concat,
   interval set, dnat/snat bare-map stages.
 All kernel-confirmed (netns packet-level verdict differential, not just loadability).
-The only remaining non-matches are **principled, not gaps**: soundness-necessary
-declines where `nft -o`'s fold is unsound in general (overlapping-verdict concat→vmap,
-shapes 14/15) and **confirmed `nft --optimize` fail-closed bugs** (shapes 03/04/07/13 +
-MINIMAL — valid ruleset → kernel-rejected). Untested-by-the-battery field types (`ct
-state` flag-masks, `iifname` strings, `ether saddr` L2) have no battery shape yet — a
+
+**Open gap — shapes 14/15 (overlapping-verdict concat→vmap, narrower-first).**
+CORRECTION (2026-07): these were previously mislabeled "soundness-necessary declines."
+They are in fact **genuine modeling gaps** — `nft -o`'s fold *is* verdict-correct. A
+concatenated interval set (kernel `pipapo`) is an *ordered* first-match structure
+(lookup returns the lowest rule index via `pipapo_refill`/`__builtin_ctzl`), and nft
+emits the vmap elements in rule order, so `dport 22→drop, 50→accept` matches first-match
+exactly (datapath-verified); the wrong (dead-rule) order is refused by the kernel. We
+decline only because `Semantics.v` models set/vmap lookup as unordered/disjoint-key and
+does not yet model ordered interval sets. **Closing 14/15 needs that semantics
+extension** + a pass folding only the live (narrower-first) overlap case — real open
+work, not trivial. See `proof/battery_cases/README.md` for the full corrected analysis
+and the kernel-source citations.
+
+The remaining non-matches that are **not** our gaps are the `nft --optimize` fail-closed
+**bugs**: it folds overlapping single-field keys (03/07/13/MINIMAL, rejected in nft
+**userspace** `intervals.c` before netlink) or a dead-rule concat (04, rejected by the
+**kernel** `pipapo`) into an **unloadable** ruleset; we soundly decline. Untested-by-the-
+battery field types (`ct state` flag-masks, `iifname` strings, `ether saddr` L2) have no
+battery shape yet — a
 consolidation pass for them is possible future work, not a known divergence.
 
 ### Data-plane fidelity (compiler/semantics, not the optimizer)
