@@ -365,7 +365,7 @@ let pad_to_slot (b : Bytes.data) : Bytes.data =
      no-op there (resolved in [ensure_dep], which is family-aware).
    - [DNone]: no dependency. *)
 type dep1 = DL4 of Bytes.data | DNfproto of Bytes.data | DEther of Bytes.data
-          | DL2proto of Bytes.data | DIiftype of Bytes.data
+          | DL2proto of Bytes.data | DIiftype of Bytes.data | DIcmpType of int
 (* [DIiftype et]: the `meta iiftype == ARPHRD_ETHER (1)` guard nft prepends before
    a LINK-layer (ether address) match in any family whose interfaces are not
    guaranteed ethernet (ip/ip6/inet/netdev) — the ethernet header only exists on an
@@ -517,8 +517,8 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
   | ["icmp"; "id"]       -> (Syntax.FPayload (Packet.PTransport, 4, 2), KNum 2, dep_l4 "icmp")
   | ["icmp"; "seq"] | ["icmp"; "sequence"]
                          -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2, dep_l4 "icmp")
-  | ["icmp"; "gateway"]  -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4, dep_l4 "icmp")
-  | ["icmp"; "mtu"]      -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2, dep_l4 "icmp")
+  | ["icmp"; "gateway"]  -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4, dep_l4 "icmp" @ [DIcmpType 5])
+  | ["icmp"; "mtu"]      -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2, dep_l4 "icmp" @ [DIcmpType 3])
   | ["icmpv6"; "code"]     -> (Syntax.FIcmpCode, KIcmp6code, dep_l4 "icmpv6")
   | ["icmpv6"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2, dep_l4 "icmpv6")
   | ["icmpv6"; "id"]       -> (Syntax.FPayload (Packet.PTransport, 4, 2), KNum 2, dep_l4 "icmpv6")
@@ -679,6 +679,21 @@ let prefix_mask (width : int) (len : int) : Bytes.data =
     done; !m)
 let band a b = L.map2 (land) a b
 let bor  a b = L.map2 (lor)  a b
+
+(* nft shortens a BYTE-ALIGNED CIDR prefix on a plain payload field to a load of
+   just the prefix bytes plus a DIRECT compare (no bitwise mask): `ip saddr .../24`
+   => `payload load 3b @ network+12 ; cmp eq 0xc0a802` and `ip6 saddr ::/64` =>
+   `payload load 8b @ network+8` (golden {ip,ip6}.t.payload).  Only byte-multiple
+   prefix lengths strictly inside the field width qualify; every other prefix keeps
+   the full-width `load ; bitwise & mask ; cmp` form.  Loading the leading N bytes
+   is exactly the masked high-order compare, so this is byte-faithful to nft. *)
+let payload_prefix_field (f : Syntax.field) (nbytes : int) : Syntax.field option =
+  match f with
+  | Syntax.FIp4Saddr -> Some (Syntax.FPayload (Packet.PNetwork, 12, nbytes))
+  | Syntax.FIp4Daddr -> Some (Syntax.FPayload (Packet.PNetwork, 16, nbytes))
+  | Syntax.FIp6Saddr -> Some (Syntax.FPayload (Packet.PNetwork, 8,  nbytes))
+  | Syntax.FIp6Daddr -> Some (Syntax.FPayload (Packet.PNetwork, 24, nbytes))
+  | _ -> None
 
 (* ---------- mutable lowering state ---------- *)
 
@@ -1008,7 +1023,15 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
              | Nft_ast.Vrange (a, b) -> Syntax.MRange (f, neg, enc_atom k a, enc_atom k b)
              | Nft_ast.Vprefix ((Nft_ast.Vip4 bs | Nft_ast.Vip6 bs), len) ->
                  let w = width_of_kind k in let mask = prefix_mask w len in
-                 Syntax.MMasked (f, neg, mask, L.init w (fun _ -> 0), band bs mask)
+                 let net = band bs mask in
+                 (match (if len > 0 && len < 8 * w && len mod 8 = 0
+                         then payload_prefix_field f (len / 8) else None) with
+                  | Some f' ->
+                      let nb = len / 8 in
+                      let bytes = L.filteri (fun i _ -> i < nb) net in
+                      if neg then Syntax.MNeq (f', bytes) else Syntax.MEq (f', bytes)
+                  | None ->
+                      Syntax.MMasked (f, neg, mask, L.init w (fun _ -> 0), net))
              | Nft_ast.Vset elems
                when host_endian_kind k && set_has_interval st elems ->
                  (* a `$var` expanding to an INTERVAL set over a host-endian field:
@@ -1306,6 +1329,12 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
            | None -> ())
     | DL2proto et -> if family_is_l2 family then push_dep Syntax.FMetaProtocol et
     | DIiftype et -> if family <> "bridge" then push_dep Syntax.FMetaIiftype et
+    | DIcmpType ty ->
+        (* ICMP `mtu`/`gateway` are union members only valid for a particular
+           icmp type; nft prepends an implicit `icmp type == <ty>` guard (payload
+           load 1b @ transport+0 ; cmp eq <ty>) before the union-field load
+           (golden ip/icmp.t.payload: `icmp mtu` => type 3, `icmp gateway` => 5). *)
+        push_dep Syntax.FIcmpType [ty]
     | DEther pv ->
         (* In netdev nft prepends a `meta iiftype == ARPHRD_ETHER` guard, but the
            frontend's host-endian iiftype immediate renders in the wrong byte
