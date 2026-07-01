@@ -94,14 +94,23 @@ Proof.
   rewrite !data_in_iv_point. rewrite Bool.orb_false_r. reflexivity.
 Qed.
 
-(** *** [set_meta] preserves [pkt_env] and the [field_value] of a PAYLOAD field
-    (the only fields with [field_fixed_len = Some], hence the only merge keys): the
+(** Whether a field reads a raw PAYLOAD slice (as opposed to a meta/ct/... selector).
+    The [mapN] demo keys on such fields ([ip saddr] & co.); a payload read is
+    provably untouched by a `meta … set` write (below), which the value-map STATE
+    demonstration relies on.  [field_fixed_len] now also covers fixed-width META
+    keys, so the payload restriction is stated explicitly rather than derived from
+    [field_fixed_len = Some] (that would be UNSOUND for a `meta mark` key whose value
+    the map's own `meta mark set` write would change). *)
+Definition is_payload_load (f : field) : bool :=
+  match field_load f with LPayload _ _ _ => true | _ => false end.
+
+(** *** [set_meta] preserves [pkt_env] and the [field_value] of a PAYLOAD field: the
     mark write touches [pkt_meta], not the payload bytes a payload load reads. *)
-Lemma field_value_set_meta : forall (f : field) (len : nat) (p : packet) (k : meta_key) (v : data),
-  field_fixed_len f = Some len ->
+Lemma field_value_set_meta : forall (f : field) (p : packet) (k : meta_key) (v : data),
+  is_payload_load f = true ->
   field_value f (set_meta p k v) = field_value f p.
 Proof.
-  intros f len p k v Hfx. unfold field_value, field_fixed_len in *.
+  intros f p k v Hpl. unfold field_value, is_payload_load in *.
   destruct (field_load f) eqn:Efl; try discriminate.
   unfold do_load, read_payload, set_meta, with_pkt_meta.
   destruct b; reflexivity.
@@ -110,11 +119,11 @@ Qed.
 Lemma pkt_env_set_meta : forall p k v, pkt_env (set_meta p k v) = pkt_env p.
 Proof. intros. unfold set_meta, with_pkt_meta, pkt_env. reflexivity. Qed.
 
-Lemma field_loadable_set_meta : forall (f : field) (len : nat) (p : packet) (k : meta_key) (v : data),
-  field_fixed_len f = Some len ->
+Lemma field_loadable_set_meta : forall (f : field) (p : packet) (k : meta_key) (v : data),
+  is_payload_load f = true ->
   field_loadable f (set_meta p k v) = field_loadable f p.
 Proof.
-  intros f len p k v Hfx. unfold field_loadable, field_fixed_len in *.
+  intros f p k v Hpl. unfold field_loadable, is_payload_load in *.
   destruct (field_load f) eqn:Efl; try discriminate.
   unfold load_ok, read_payload_ok, set_meta, with_pkt_meta. destruct b; reflexivity.
 Qed.
@@ -161,6 +170,7 @@ Qed.
     originals' composed effect — the map yields exactly the right mark. *)
 Lemma dsl_step_map_merge : forall (f : field) (v1 v2 M1 M2 : data)
                                   (setname mapname : string) (k : meta_key) (p : packet),
+  is_payload_load f = true ->
   e_set (pkt_env p) setname = map2_set v1 v2 ->
   e_map (pkt_env p) mapname = map2_map v1 v2 M1 M2 ->
   field_fixed_len f = Some (List.length v1) ->
@@ -169,7 +179,7 @@ Lemma dsl_step_map_merge : forall (f : field) (v1 v2 M1 M2 : data)
   dsl_step (mk_map_rule f setname mapname k) p
   = dsl_step (orig_map_rule f v2 M2 k) (dsl_step (orig_map_rule f v1 M1 k) p).
 Proof.
-  intros f v1 v2 M1 M2 setname mapname k p Hset Hmap Hfx1 Hfx2 Hne.
+  intros f v1 v2 M1 M2 setname mapname k p Hpl Hset Hmap Hfx1 Hfx2 Hne.
   rewrite (dsl_step_limit_free (mk_map_rule f setname mapname k) p) by reflexivity.
   rewrite (dsl_step_limit_free (orig_map_rule f v1 M1 k) p) by reflexivity.
   rewrite (dsl_step_limit_free (orig_map_rule f v2 M2 k) _) by reflexivity.
@@ -179,8 +189,8 @@ Proof.
     rewrite (body_writes_merged f setname mapname v1 v2 M1 M2 k p Hset Hmap Hfx1 Hfx2 Hld).
     rewrite (body_writes_orig f v1 M1 k p Hfx1 Hld).
     rewrite (data_eqb_sym v1 (field_value f p)), (data_eqb_sym v2 (field_value f p)).
-    pose proof (field_value_set_meta f (List.length v1) p k M1 Hfx1) as Hfvm1.
-    pose proof (field_loadable_set_meta f (List.length v1) p k M1 Hfx1) as Hldm1.
+    pose proof (field_value_set_meta f p k M1 Hpl) as Hfvm1.
+    pose proof (field_loadable_set_meta f p k M1 Hpl) as Hldm1.
     destruct (data_eqb (field_value f p) v1) eqn:E1.
     + (* fvp = v1: orig1 set mark to M1; orig2 (v2) cannot match (v1<>v2); merged map -> M1 *)
       pose proof (proj1 (data_eqb_true_iff (field_value f p) v1) E1) as Ev1.
@@ -233,6 +243,7 @@ Qed.
     every packet (so the rest of the chain sees the SAME mark). *)
 Theorem eval_rules_mut_map_merge : forall (f : field) (v1 v2 M1 M2 : data)
     (setname mapname : string) (k : meta_key) (rest : list rule) (p : packet),
+  is_payload_load f = true ->
   e_set (pkt_env p) setname = map2_set v1 v2 ->
   e_map (pkt_env p) mapname = map2_map v1 v2 M1 M2 ->
   field_fixed_len f = Some (List.length v1) ->
@@ -241,11 +252,11 @@ Theorem eval_rules_mut_map_merge : forall (f : field) (v1 v2 M1 M2 : data)
   eval_rules_mut (mk_map_rule f setname mapname k :: rest) p
   = eval_rules_mut (orig_map_rule f v1 M1 k :: orig_map_rule f v2 M2 k :: rest) p.
 Proof.
-  intros f v1 v2 M1 M2 setname mapname k rest p Hset Hmap Hfx1 Hfx2 Hne.
+  intros f v1 v2 M1 M2 setname mapname k rest p Hpl Hset Hmap Hfx1 Hfx2 Hne.
   rewrite (eval_rules_mut_continue _ rest p (outcome_mk_map_none f setname mapname k p)).
   rewrite (eval_rules_mut_continue _ _ p (outcome_orig_map_none f v1 M1 k p)).
   rewrite (eval_rules_mut_continue _ rest _ (outcome_orig_map_none f v2 M2 k _)).
-  rewrite (dsl_step_map_merge f v1 v2 M1 M2 setname mapname k p Hset Hmap Hfx1 Hfx2 Hne).
+  rewrite (dsl_step_map_merge f v1 v2 M1 M2 setname mapname k p Hpl Hset Hmap Hfx1 Hfx2 Hne).
   reflexivity.
 Qed.
 

@@ -1161,7 +1161,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
   match is with
   | [] => None
   | IMetaLoad k dst :: rest =>
-      run_rule (set_reg rf dst (pkt_meta p k)) rest p
+      run_rule (set_reg rf dst (meta_load k (pkt_meta p k))) rest p
   | ICtLoad k dst :: rest =>
       (* identical to [do_load (LCt k)]: a writable/persistent key reads the SHARED
          flow-keyed conntrack table, a read-only key the per-packet oracle, EXCEPT
@@ -1843,7 +1843,7 @@ Definition set_env_dynset_map (p : packet) (op name : String.string) (key dat : 
 Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet :=
   match is with
   | [] => p
-  | IMetaLoad k dst :: rest => run_rule_writes (set_reg rf dst (pkt_meta p k)) rest p
+  | IMetaLoad k dst :: rest => run_rule_writes (set_reg rf dst (meta_load k (pkt_meta p k))) rest p
   | ICtLoad k dst :: rest =>
       (* a conntrack load on a no-entry packet ([pkt_ct_present = false]) breaks the
          rule for every key except [CKstate] (NFT_BREAK): no later statement runs and

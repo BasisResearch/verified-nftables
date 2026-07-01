@@ -56,9 +56,18 @@ Lemma prerouting_rules_eq :
   c_rules filter_prerouting = [pre1; pre2; List.nth 2 (c_rules filter_prerouting) dflt].
 Proof. reflexivity. Qed.
 
-(** Reading [meta mark] right after `mark set v` yields [v]. *)
-Lemma mark_after_set : forall p v, field_value FMetaMark (set_meta p MKmark v) = v.
-Proof. intros p v. reflexivity. Qed.
+(** Reading [meta mark] right after `mark set v` yields [v] — for a value at the
+    mark register's width (u32).  [do_load]/[meta_load] normalises a `meta mark` read
+    to 4 bytes (the kernel's fixed u32 slot), so the read-back is [v] exactly when [v]
+    already has that width — which every concrete mark here ([mark99]) does. *)
+Lemma mark_after_set : forall p v, List.length v = 4 ->
+  field_value FMetaMark (set_meta p MKmark v) = v.
+Proof.
+  intros p v Hlen. unfold field_value, do_load, meta_load, meta_fixed_len,
+    set_meta, with_pkt_meta. cbn [pkt_meta].
+  destruct v as [|a [|b [|c [|d [|e tl]]]]]; cbn in Hlen; try discriminate.
+  reflexivity.
+Qed.
 
 (** ** What each prerouting rule does to the packet (the per-rule writes).
 
@@ -210,7 +219,7 @@ Lemma mark_through_dnat : forall h p,
 Proof.
   intros h p Horig Hnone. rewrite (pre2_apply_dnat h p Horig Hnone).
   unfold field_value. cbn [field_load do_load pkt_meta store_nat_mapping with_pkt_env].
-  apply set_daddr_meta.
+  f_equal. apply set_daddr_meta.
 Qed.
 
 (* pre2's dnat never NAT-drops: [nat_iface_addr_absent] only fires for
@@ -277,7 +286,7 @@ Proof.
   intros p Henv Hiif Hfib Hl4 Hdport Hok Horig Hnone.
   rewrite (streaming_prerouting_io p Henv Hiif Hfib Hl4 Hdport Hok). cbn [snd].
   rewrite (mark_through_dnat Hprerouting (set_meta p MKmark mark99) Horig Hnone).
-  apply mark_after_set.
+  apply mark_after_set. reflexivity.
 Qed.
 
 (** ** The mark is read by the postrouting masquerade rule. *)
