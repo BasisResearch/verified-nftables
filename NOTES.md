@@ -29,29 +29,39 @@ see [`adversarial.md`](adversarial.md).
 
 ## Remaining work
 
-### Optimizer — the only gaps left vs `nft -o` (all sound under-consolidation)
-Our value→set/vmap merge fires for network-address keys, guarded concats, and (NEW,
-`Optimize_Setg.v`) the transport-guarded single-field SET — bare `tcp dport { … }` /
-`udp dport { … }` fold to a 2-byte inet_service set exactly as `nft -o` does
-(kernel-confirmed: our `[meta load l4proto][cmp][payload load 2b @ transport+2]
-[lookup]` lowering is byte-identical to the kernel's own, and a netns TCP-probe
-differential shows identical filtering). Still NOT folded:
-- the **differing-verdict** transport variant `tcp dport vmap { 22:drop, 80:accept,
-  … }` — needs a transport-guarded value+verdict→**vmap** pass (analogue of setg
-  building a vmap instead of a set); we soundly leave the sequential guarded `cmp`
-  rules (first-match-equivalent). Battery case `18_tcp_dport_vmap.nft`.
-- other bare non-network single-field keys — `ct state` (flag masks), `iifname`,
-  `meta mark` (match), `ether saddr` — and disjoint-prefix unions.
-The differential harness is `proof/difftest_battery.sh` (cases
-`16_tcp_dport_set` / `17_udp_dport_set` / `18_tcp_dport_vmap`).
+### Optimizer — no sound-to-close gap remains on the 20-shape differential battery
+Every consolidation the differential battery (`proof/difftest_battery.sh`, 20 shapes,
+`proof/battery_cases/README.md`) surfaces as *sound* is now MATCHed or EXCEEDed by our
+verified optimizer, each a machine-checked axiom-free pass composed into
+`optimize_table_uncond`:
+- transport-guarded single-field SET (`Optimize_Setg.v`) — bare `tcp/udp dport { … }`;
+- transport-guarded value+verdict → **VMAP** (`Optimize_Vmapg.v`) — `tcp dport vmap
+  { 22:drop, 80:accept, … }` (shape 18);
+- fixed-width metafield SET (`Optimize_Merge.v`) — `meta mark`, and adjacent-prefix
+  union (shape 06) folds here to an interval-equivalent set;
+- same-verdict prefix **ABSORPTION** (`Optimize_Absorb.v`) — `10.0.0.0/24` inside
+  `10.0.0.0/16` collapses to the covering `/16` (shape 05);
+- plus the pre-existing network-address set/vmap, K-field concat, guarded concat,
+  interval set, dnat/snat bare-map stages.
+All kernel-confirmed (netns packet-level verdict differential, not just loadability).
+The only remaining non-matches are **principled, not gaps**: soundness-necessary
+declines where `nft -o`'s fold is unsound in general (overlapping-verdict concat→vmap,
+shapes 14/15) and **confirmed `nft --optimize` fail-closed bugs** (shapes 03/04/07/13 +
+MINIMAL — valid ruleset → kernel-rejected). Untested-by-the-battery field types (`ct
+state` flag-masks, `iifname` strings, `ether saddr` L2) have no battery shape yet — a
+consolidation pass for them is possible future work, not a known divergence.
 
 ### Data-plane fidelity (compiler/semantics, not the optimizer)
 - **Register byte-order sweep**: the ct_state wire-order bug (model stored it
   big-endian; kernel holds ct registers host-order) was fixed in the untrusted
-  sender. Sweep the other host-order register values (other ct keys, some meta
-  keys, `rt`) the model may store big-endian and that would likewise fail on a
-  real kernel — use the runtime-counter kernel-round-trip gate the fix added
-  (text-render gates are structurally blind to this class).
+  sender. `meta`/`ct mark` were kernel-adjudicated (netns packet counters) and found
+  CORRECT on the wire — the apparent reversal was a **display-only** artifact of the
+  untrusted `codec.ml` renderer (it read host-LE bytes big-endian), now fixed, with a
+  new **`make byteorder-gate`** compiling the host-order corpus blocks from source and
+  diffing against `.payload` (closes the blind spot `make corpus`'s render round-trip
+  has). Still to adjudicate against a real kernel: `ct state`'s own representation and
+  the remaining host-order `ct`/`meta`/`rt` keys the display fix covers by class but
+  that were not individually packet-tested.
 - **Field-unit faithfulness**: `FPayload` off/len are in bytes vs nft's bits;
   `SMangle`/`SExthdrWrite` carry raw byte geometry rather than a `field`.
 - **Network-state model**: single-address-per-interface assumption; the long-term
