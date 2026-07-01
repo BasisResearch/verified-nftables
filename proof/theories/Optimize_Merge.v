@@ -610,6 +610,11 @@ Qed.
 Definition field_fixed_len (f : field) : option nat :=
   match field_load f with
   | LPayload _ _ len => Some len
+  (* A fixed-width META scalar (e.g. `meta mark`, a u32) loads at its kernel register
+     width — [meta_fixed_len] — which [do_load]/[meta_load] normalises the read to
+     ([Syntax.meta_load_len]).  This lets the value->set / vmap / concat merges fold a
+     meta-mark run just like a payload field, with the SAME membership certificate. *)
+  | LMeta k          => meta_fixed_len k
   | _ => None
   end.
 
@@ -621,8 +626,11 @@ Proof.
   intros f len q Hfx Hld. unfold field_fixed_len in Hfx.
   unfold field_loadable, field_value in *.
   destruct (field_load f) eqn:Efl; try discriminate.
-  inversion Hfx; subst.
-  cbn [do_load]. apply payload_loaded_len. exact Hld.
+  - (* LMeta: normalised to the fixed register width, unconditionally *)
+    cbn [do_load]. apply meta_load_len. exact Hfx.
+  - (* LPayload *)
+    inversion Hfx; subst.
+    cbn [do_load]. apply payload_loaded_len. exact Hld.
 Qed.
 
 (** Unary fresh-name rendering; the EXACT spelling is irrelevant to fidelity (an

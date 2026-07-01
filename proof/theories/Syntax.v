@@ -13,7 +13,7 @@
     [run_validation] in extracted/corpus_test.ml); the corpus round-trip alone
     cannot check them because its parser and renderer share these tables. *)
 
-From Stdlib Require Import List NArith String.
+From Stdlib Require Import List NArith String PeanoNat.
 From Nft Require Import Bytes Packet Verdict Bytecode.
 Import ListNotations.
 
@@ -140,10 +140,45 @@ Definition all_fields : list field :=
 Definition numgen_inc_value (spec : numgen_spec) (c : nat) : data :=
   N_to_data 4 (N.of_nat (Nat.modulo c (ng_mod spec) + ng_offset spec)).
 
+(** *** Fixed-width meta selectors.
+
+    A `meta` register in the kernel is a fixed-width slot: e.g. `meta mark` is a
+    u32 (4 bytes, host-order) — nft_meta.c stores it with [nft_reg_store32].  The
+    abstract oracle [pkt_meta : meta_key -> data] (Packet.v) carries NO width, so a
+    raw load could in principle report any length.  [meta_fixed_len] pins the
+    kernel register width for the meta keys we treat as fixed-width scalars, and
+    [meta_load] NORMALISES the oracle read to exactly that width (zero-pad / truncate
+    to the u32 slot).  This makes [length (do_load (LMeta MKmark) p) = 4]
+    UNCONDITIONALLY — a genuine fidelity improvement (the read now has the kernel's
+    fixed slot width) and the length fact the value->set merge needs on a meta key
+    ([Optimize_Merge.field_fixed_len_loaded]).  Keys left [None] read raw (their
+    width is variable / unmodelled, e.g. the interface-name string keys). *)
+Definition meta_fixed_len (k : meta_key) : option nat :=
+  match k with
+  | MKmark => Some 4
+  | _      => None
+  end.
+
+(** Normalise a meta read to its fixed register width (pad with zero bytes / truncate);
+    the identity on keys whose width is unmodelled. *)
+Definition meta_load (k : meta_key) (d : data) : data :=
+  match meta_fixed_len k with
+  | Some w => List.firstn w (d ++ List.repeat 0 w)
+  | None   => d
+  end.
+
+Lemma meta_load_len : forall k w d,
+  meta_fixed_len k = Some w -> List.length (meta_load k d) = w.
+Proof.
+  intros k w d Hk. unfold meta_load. rewrite Hk.
+  rewrite List.length_firstn, List.length_app, List.repeat_length.
+  apply Nat.min_l. apply Nat.le_add_l.
+Qed.
+
 (** Evaluate a load against a packet. *)
 Definition do_load (ld : loaddesc) (p : packet) : data :=
   match ld with
-  | LMeta k         => pkt_meta p k
+  | LMeta k         => meta_load k (pkt_meta p k)
   | LCt k           =>
       (* EVERY conntrack key is read from the SHARED, flow-keyed conntrack table
          [e_ct] at THIS packet's flow ([pkt_flow]) — NOT from a free per-packet

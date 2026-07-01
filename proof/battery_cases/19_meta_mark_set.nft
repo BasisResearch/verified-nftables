@@ -1,0 +1,8 @@
+table ip t {
+  chain c {
+    type filter hook input priority filter; policy accept;
+    meta mark 0x00000001 drop
+    meta mark 0x00000002 drop
+    meta mark 0x00000003 drop
+  }
+}
