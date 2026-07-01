@@ -34,7 +34,7 @@
 /* statements */
 %token COUNTER LOG PREFIX LIMIT RATE OVER WITH TO MASQUERADE SNAT DNAT REDIRECT TPROXY NOTRACK
 /* match selectors */
-%token META CT IP IP6 TCP UDP TH ICMP ICMPV6 ETHER FIB
+%token META CT IP IP6 TCP UDP TH ICMP ICMPV6 ETHER FIB OPTION EXISTS MISSING
 %token IIF OIF IIFNAME OIFNAME PKTTYPE MARK
 /* operators / punctuation */
 %token LBRACE RBRACE COLON COMMA DOT SLASH EQUALS NE EQ BANG DASH
@@ -125,7 +125,7 @@ junktok:
   | TO {} | MASQUERADE {} | SNAT {} | DNAT {} | REDIRECT {} | TPROXY {} | NOTRACK {} | META {} | CT {} | IP {} | IP6 {}
   | TCP {} | UDP {} | TH {} | ICMP {} | ICMPV6 {} | ETHER {} | FIB {} | IIF {}
   | OIF {} | IIFNAME {} | OIFNAME {} | PKTTYPE {} | MARK {} | FLUSH {} | RULESET {}
-  | DESTROY {} | DELETE {}
+  | DESTROY {} | DELETE {} | OPTION {} | EXISTS {} | MISSING {}
 
 (* ---- named set / map declarations ---- *)
 setdecl:
@@ -234,6 +234,12 @@ concat_keys:
 
 keyatom:
   | TCP FLAGS     { ["tcp"; "flags"] }   (* `flags` lexes as the FLAGS keyword *)
+  (* TCP options (NFT_EXTHDR tcpopt): `tcp option <name> [<field>]`, where
+     <name> is an option keyword/number (maxseg, sack1, timestamp, 6, ...) and
+     the optional <field> is a sub-selector (size, tsval, left, ...).  `option`
+     lexes as the OPTION keyword so this never collides with `tcp <field> <val>`. *)
+  | TCP OPTION opt_name        { ["tcpopt"; $3] }
+  | TCP OPTION opt_name IDENT  { ["tcpopt"; $3; $4] }
   | TCP IDENT     { ["tcp"; $2] }
   | UDP IDENT     { ["udp"; $2] }
   | TH IDENT      { ["th"; $2] }
@@ -282,6 +288,11 @@ keyatom:
   | IDENT IDENT IP    { [$1; $2; "ip"] }
   | IDENT IDENT IP6   { [$1; $2; "ip6"] }
   | IDENT IDENT ETHER { [$1; $2; "ether"] }
+
+(* a TCP-option name: a keyword-ish bareword (IDENT) or a raw option number. *)
+opt_name:
+  | IDENT { $1 }
+  | INT   { Stdlib.string_of_int $1 }
 
 (* fib selector keys (may be dot-concatenated) and the fib result column.  The
    selector keys `iif`/`oif`/`mark` lex as keyword tokens, not IDENT. *)
@@ -347,6 +358,12 @@ value:
   (* `original`/`reply` are also symbolic values (`ct direction original`) *)
   | ORIGINAL { Vsym "original" }
   | REPLY    { Vsym "reply" }
+  | OPTION   { Vsym "option" }
+  (* `exists`/`missing` lex as keywords (so a `tcp option maxseg exists` never
+     swallows `exists` as the option field); they are also the symbolic values
+     an exthdr/fib present-test matches on. *)
+  | EXISTS   { Vsym "exists" }
+  | MISSING  { Vsym "missing" }
 
 (* ---- verdict-map (`vmap { k : verdict, ... }`) ---- *)
 vmapset:

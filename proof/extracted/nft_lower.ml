@@ -334,6 +334,36 @@ let dep_l4 = function
   | "icmpv6" -> [DNfproto [10]; DL4 [58]]
   | _ -> []
 
+(* ---------- TCP options (NFT_EXTHDR tcpopt) ----------
+   nft reads a TCP option field with `exthdr load tcpopt <len>b @ <optnum> +
+   <off>`, where <optnum> is the option KIND number and <off>/<len> position the
+   field within that option (golden any/tcpopt.t.payload).  No l4proto dependency
+   is emitted (the exthdr walker locates the TCP header itself). *)
+let tcpopt_num (name : string) : int =
+  match name with
+  | "eol" -> 0 | "nop" -> 1 | "maxseg" | "mss" -> 2 | "window" -> 3
+  | "sack-perm" -> 4 | "sack" | "sack0" | "sack1" | "sack2" | "sack3" -> 5
+  | "timestamp" -> 8 | "md5sig" -> 19 | "mptcp" -> 30 | "fastopen" -> 34
+  | _ -> (match int_of_string_opt name with
+          | Some n -> n
+          | None -> raise (Unsupported ("tcp option " ^ name)))
+
+(* field position (off,len,kind) within a TCP option.  `left`/`right` on a
+   multi-block SACK (`sack1`/`sack2`/`sack3`) step by one 8-byte block. *)
+let tcpopt_field (name : string) (field : string) : int * int * kind =
+  let sackn = match name with
+    | "sack1" -> 1 | "sack2" -> 2 | "sack3" -> 3 | _ -> 0 in
+  match field with
+  | "kind"   -> (0, 1, KNum 1)
+  | "length" -> (1, 1, KNum 1)
+  | "size"   -> (2, 2, KNum 2)          (* maxseg size *)
+  | "count"  -> (2, 1, KNum 1)          (* window count (shift) *)
+  | "left"   -> (2 + 8*sackn, 4, KNum 4)
+  | "right"  -> (6 + 8*sackn, 4, KNum 4)
+  | "tsval"  -> (2, 4, KNum 4)
+  | "tsecr"  -> (6, 4, KNum 4)
+  | _ -> raise (Unsupported ("tcp option " ^ name ^ " " ^ field))
+
 let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
   let none = [] in
   match kp with
@@ -505,6 +535,11 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
   | ["mh"; "type"]        -> (Syntax.FExthdr (Packet.EPipv6, 135, 2, 1, false), KNum 1,   [DNfproto [10]])
   | ["mh"; "reserved"]    -> (Syntax.FExthdr (Packet.EPipv6, 135, 3, 1, false), KNum 1,   [DNfproto [10]])
   | ["mh"; "checksum"]    -> (Syntax.FExthdr (Packet.EPipv6, 135, 4, 2, false), KNum 2,   [DNfproto [10]])
+  (* ---- TCP options: `tcp option <name> <field>` (byte-aligned fields). ---- *)
+  | ["tcpopt"; name; field] ->
+      let optnum = tcpopt_num name in
+      let (off, len, k) = tcpopt_field name field in
+      (Syntax.FExthdr (Packet.EPtcpopt, optnum, off, len, false), k, [])
   | _ -> raise (Unsupported ("selector: " ^ S.concat " " kp))
 
 (* ---------- prefix mask ---------- *)
@@ -722,6 +757,19 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
       let f = Syntax.FExthdr (Packet.EPipv6, htype, 0, 1, true) in
       let mc = if exists then Syntax.MEq (f, [1]) else Syntax.MEq (f, [0]) in
       ([DNfproto [10]], mc)
+  | [ ["tcpopt"; name] ]
+    when (match m.Nft_ast.m_rhs.Nft_ast.payload with
+          | Nft_ast.SEvalue (Nft_ast.Vsym ("missing" | "exists")) -> true
+          | _ -> false) ->
+      (* `tcp option <name> exists|missing`: exthdr tcpopt present flag, a 1-byte
+         0/1 compared to 1 (exists) / 0 (missing) — golden any/tcpopt.t.payload
+         `exthdr load tcpopt 1b @ <optnum> + 0 present => reg 1 ; cmp eq reg 1 0x01`. *)
+      let optnum = tcpopt_num name in
+      let exists = (match m.Nft_ast.m_rhs.Nft_ast.payload with
+                    | Nft_ast.SEvalue (Nft_ast.Vsym "exists") -> true | _ -> false) in
+      let f = Syntax.FExthdr (Packet.EPtcpopt, optnum, 0, 1, true) in
+      let mc = if exists then Syntax.MEq (f, [1]) else Syntax.MEq (f, [0]) in
+      ([], mc)
   | [kp] ->
       let (f, k, dep) = key_field kp in
       let mc = match m.Nft_ast.m_rhs.Nft_ast.payload with

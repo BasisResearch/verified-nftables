@@ -28,6 +28,7 @@
     (* selectors *)
     "meta", META; "ct", CT; "ip", IP; "ip6", IP6; "tcp", TCP; "udp", UDP;
     "th", TH; "icmp", ICMP; "icmpv6", ICMPV6; "ether", ETHER; "fib", FIB;
+    "option", OPTION; "exists", EXISTS; "missing", MISSING;
     "iif", IIF; "oif", OIF; "iifname", IIFNAME; "oifname", OIFNAME;
     "pkttype", PKTTYPE; "mark", MARK;
     (* bitwise binary operators (nft `meta mark and 0x3`, `ct mark or 0x1`) *)
