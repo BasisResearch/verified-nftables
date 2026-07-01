@@ -121,17 +121,22 @@ let sym_tcpflag = [
   "ack",0x10; "urg",0x20; "ecn",0x40; "cwr",0x80;
 ]
 let sym_icmp = [
-  "echo-reply",[0]; "destination-unreachable",[3]; "redirect",[5];
+  "echo-reply",[0]; "destination-unreachable",[3]; "source-quench",[4];
+  "redirect",[5];
   "echo-request",[8]; "router-advertisement",[9]; "router-solicitation",[10];
   "time-exceeded",[11]; "parameter-problem",[12]; "timestamp-request",[13];
-  "timestamp-reply",[14];
+  "timestamp-reply",[14]; "info-request",[15]; "info-reply",[16];
+  "address-mask-request",[17]; "address-mask-reply",[18];
 ]
 let sym_icmpv6 = [
   "destination-unreachable",[1]; "packet-too-big",[2]; "time-exceeded",[3];
   "parameter-problem",[4]; "echo-request",[128]; "echo-reply",[129];
   "mld-listener-query",[130]; "mld-listener-report",[131];
+  "mld-listener-done",[132]; "mld-listener-reduction",[132];
   "nd-router-solicit",[133]; "nd-router-advert",[134];
   "nd-neighbor-solicit",[135]; "nd-neighbor-advert",[136]; "nd-redirect",[137];
+  "router-renumbering",[138]; "ind-neighbor-solicit",[141];
+  "ind-neighbor-advert",[142]; "mld2-listener-report",[143];
 ]
 let sym_pkttype = [ "host",[0]; "unicast",[0]; "broadcast",[1]; "multicast",[2];
                     "other",[3]; "otherhost",[3]; ]
@@ -846,7 +851,8 @@ let lower_stmt st (s : Nft_ast.sstmt) : Syntax.stmt option =
       (* `limit` is a matchcond (MLimit), not a statement; lower_rule intercepts
          StLimit before reaching here, so this is unreachable. *)
       raise (Unsupported "limit handled as a match, not a statement")
-  | Nft_ast.StMasquerade | Nft_ast.StSnat _ | Nft_ast.StDnat _ ->
+  | Nft_ast.StMasquerade _ | Nft_ast.StSnat _ | Nft_ast.StDnat _
+  | Nft_ast.StRedirect _ ->
       (* terminal NAT: the single-packet model treats it as a terminal Accept *)
       None
   | Nft_ast.StMetaSet (k, v) ->
@@ -859,7 +865,8 @@ let lower_stmt st (s : Nft_ast.sstmt) : Syntax.stmt option =
 
 (* does a statement force a terminal Accept (NAT)? *)
 let stmt_is_terminal_accept = function
-  | Nft_ast.StMasquerade | Nft_ast.StSnat _ | Nft_ast.StDnat _ -> true | _ -> false
+  | Nft_ast.StMasquerade _ | Nft_ast.StSnat _ | Nft_ast.StDnat _
+  | Nft_ast.StRedirect _ -> true | _ -> false
 
 let limit_spec rate unit_ over burst bytes : Packet.limit_spec =
   let u = match unit_ with
@@ -891,10 +898,19 @@ let nat_l3_family = function "ip6" -> "ip6" | "inet" -> "inet" | _ -> "ip"
 (* 2-byte big-endian port value (the compiler loads it into the proto register) *)
 let port_bytes p = [(p lsr 8) land 0xff; p land 0xff]
 
-let masq_spec ~family : Syntax.nat_spec =
+(* NAT flag words -> the kernel NF_NAT_RANGE_* bitmask (nf_nat.h):
+   PROTO_SPECIFIED 0x2 (a port range is given), PROTO_RANDOM 0x4,
+   PERSISTENT 0x8, PROTO_RANDOM_FULLY 0x10.  Verified against golden
+   ip/{masquerade,redirect}.t.payload flag values (0x4/0x8/0xc/0x1c). *)
+let nat_flag_bit = function
+  | "random" -> 0x04 | "persistent" -> 0x08 | "fully-random" -> 0x10
+  | s -> raise (Unsupported ("nat flag " ^ s))
+let nat_flags_of fs = L.fold_left (fun a f -> a lor nat_flag_bit f) 0 fs
+
+let masq_spec ~family ~flags : Syntax.nat_spec =
   { Syntax.nat_addr_imm = None; nat_field = None; nat_map = None; nat_src = None;
     nat_extra = Syntax.NXnone;
-    nat_kind = "masq"; nat_family = nat_l3_family family; nat_flags = 0 }
+    nat_kind = "masq"; nat_family = nat_l3_family family; nat_flags = flags }
 
 (* an `snat to <ip>[:<port>]` / `dnat to <ip>[:<port>]` NAT spec: the target
    address goes into register 1 (= NFTNL_EXPR_NAT_REG_ADDR_MIN), which the kernel
@@ -907,15 +923,17 @@ let masq_spec ~family : Syntax.nat_spec =
    (nat = None).  An UNDEFINED `$var` is NOT swallowed: [resolve_var] raises
    [Unsupported] and the parse fails loudly, exactly as `nft -f` rejects an
    unqualified name — we never silently drop a NAT to a dangling define. *)
-let addr_nat_spec st kind ?(port=None) (v : Nft_ast.value) : Syntax.nat_spec option =
+let addr_nat_spec st kind ?(port=None) ~flags (v : Nft_ast.value) : Syntax.nat_spec option =
   match resolve_var st v with
   | Nft_ast.Vip4 b ->
-      let ne = (match port with
-                | Some p -> Syntax.NXimm (None, Some ((port_bytes p)), None)
-                | None -> Syntax.NXnone) in
+      (* a specified port range sets NF_NAT_RANGE_PROTO_SPECIFIED (0x2): golden
+         `dnat to A:port` renders `... proto_min reg N flags 0x2`. *)
+      let (ne, f) = (match port with
+                | Some p -> (Syntax.NXimm (None, Some ((port_bytes p)), None), flags lor 0x2)
+                | None -> (Syntax.NXnone, flags)) in
       Some { Syntax.nat_addr_imm = Some b; nat_field = None; nat_map = None;
              nat_src = None; nat_extra = ne;
-             nat_kind = kind; nat_family = "ip"; nat_flags = 0 }
+             nat_kind = kind; nat_family = "ip"; nat_flags = f }
   | _ -> None   (* unresolvable / non-literal target: stay a bare terminal Accept *)
 
 (* a PORT-ONLY `snat to :<port>` / `dnat to :<port>` NAT spec: NO address operand
@@ -925,10 +943,21 @@ let addr_nat_spec st kind ?(port=None) (v : Nft_ast.value) : Syntax.nat_spec opt
    (nft_nat.c:114/120 — two independent register guards).  In the model this is a
    nat_spec with nat_has_addr = false, so apply_nat preserves the address and
    apply_nat_port rewrites the port. *)
-let portonly_nat_spec ~family kind (port : int) : Syntax.nat_spec =
+let portonly_nat_spec ~family kind ~flags (port : int) : Syntax.nat_spec =
   { Syntax.nat_addr_imm = None; nat_field = None; nat_map = None; nat_src = None;
     nat_extra = Syntax.NXimm (None, Some ((port_bytes port)), None);
-    nat_kind = kind; nat_family = nat_l3_family family; nat_flags = 0 }
+    nat_kind = kind; nat_family = nat_l3_family family; nat_flags = flags lor 0x2 }
+
+(* `redirect [to :port] [flags]` — kind "redir" (no address, no family), like
+   masquerade; a port range adds PROTO_SPECIFIED (0x2).  Golden ip/redirect.t:
+   bare `redirect` -> `[ redir ]`, `redirect to :22` -> `[ redir proto_min reg 1
+   flags 0x2 ]`, `redirect random` -> `[ redir flags 0x4 ]`. *)
+let redir_spec ~flags (port : int option) : Syntax.nat_spec =
+  let (ne, f) = (match port with
+    | Some p -> (Syntax.NXimm (None, Some (port_bytes p), None), flags lor 0x2)
+    | None -> (Syntax.NXnone, flags)) in
+  { Syntax.nat_addr_imm = None; nat_field = None; nat_map = None; nat_src = None;
+    nat_extra = ne; nat_kind = "redir"; nat_family = ""; nat_flags = f }
 
 (* In a multi-L3 family an inet chain sees both IPv4 and IPv6 packets, so nft
    guards every `ip`/`ip6` payload match with `meta nfproto == {2|10}`.  A
@@ -1034,11 +1063,12 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
     | Nft_ast.CStmt s ->
         if stmt_is_terminal_accept s then verdict := Verdict.Accept;
         (match s with
-         | Nft_ast.StMasquerade -> nat := Some (masq_spec ~family)
-         | Nft_ast.StSnat (Some v, port) -> nat := addr_nat_spec st "snat" ~port v
-         | Nft_ast.StDnat (Some v, port) -> nat := addr_nat_spec st "dnat" ~port v
-         | Nft_ast.StSnat (None, Some port) -> nat := Some (portonly_nat_spec ~family "snat" port)
-         | Nft_ast.StDnat (None, Some port) -> nat := Some (portonly_nat_spec ~family "dnat" port)
+         | Nft_ast.StMasquerade fs -> nat := Some (masq_spec ~family ~flags:(nat_flags_of fs))
+         | Nft_ast.StSnat (Some v, port, fs) -> nat := addr_nat_spec st "snat" ~port ~flags:(nat_flags_of fs) v
+         | Nft_ast.StDnat (Some v, port, fs) -> nat := addr_nat_spec st "dnat" ~port ~flags:(nat_flags_of fs) v
+         | Nft_ast.StSnat (None, Some port, fs) -> nat := Some (portonly_nat_spec ~family "snat" ~flags:(nat_flags_of fs) port)
+         | Nft_ast.StDnat (None, Some port, fs) -> nat := Some (portonly_nat_spec ~family "dnat" ~flags:(nat_flags_of fs) port)
+         | Nft_ast.StRedirect (port, fs) -> nat := Some (redir_spec ~flags:(nat_flags_of fs) port)
          | _ -> ());
         (match lower_stmt st s with Some st' -> push (Syntax.BStmt st') | None -> ()))
     clauses;

@@ -74,9 +74,10 @@ type sstmt =
   | StLimit     of int * string * bool * int * bool
                           (* rate, time-unit, over/invert, burst, is-byte-rate;
                              byte-rate values are already scaled to bytes *)
-  | StMasquerade
-  | StSnat      of value option * int option  (* `snat to <addr>[:<port>]` *)
-  | StDnat      of value option * int option  (* `dnat to <addr>[:<port>]` *)
+  | StMasquerade of string list                (* `masquerade [random,...]` *)
+  | StSnat      of value option * int option * string list  (* `snat to <addr>[:<port>] [flags]` *)
+  | StDnat      of value option * int option * string list  (* `dnat to <addr>[:<port>] [flags]` *)
+  | StRedirect  of int option * string list    (* `redirect [to :<port>] [flags]` *)
   | StMetaSet   of string * value  (* `meta <k> set v` / `mark set v` (k="mark") *)
   | StCtSet     of string * value  (* `ct <k> set v` *)
   | StNotrack                      (* `notrack` (disable conntrack for the packet) *)

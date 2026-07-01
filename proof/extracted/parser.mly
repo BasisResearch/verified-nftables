@@ -32,7 +32,7 @@
 /* verdicts */
 %token ACCEPT DROP CONTINUE RETURN JUMP GOTO QUEUE REJECT
 /* statements */
-%token COUNTER LOG PREFIX LIMIT RATE OVER WITH TO MASQUERADE SNAT DNAT NOTRACK
+%token COUNTER LOG PREFIX LIMIT RATE OVER WITH TO MASQUERADE SNAT DNAT REDIRECT NOTRACK
 /* match selectors */
 %token META CT IP IP6 TCP UDP TH ICMP ICMPV6 ETHER FIB
 %token IIF OIF IIFNAME OIFNAME PKTTYPE MARK
@@ -122,7 +122,7 @@ junktok:
   | ELEMENTS {} | SET {} | MAP {} | TABLE {} | CHAIN {} | DEFINE {} | INCLUDE {}
   | ACCEPT {} | DROP {} | CONTINUE {} | RETURN {} | JUMP {} | GOTO {} | QUEUE {}
   | REJECT {} | COUNTER {} | LOG {} | PREFIX {} | LIMIT {} | RATE {} | OVER {} | WITH {}
-  | TO {} | MASQUERADE {} | SNAT {} | DNAT {} | NOTRACK {} | META {} | CT {} | IP {} | IP6 {}
+  | TO {} | MASQUERADE {} | SNAT {} | DNAT {} | REDIRECT {} | NOTRACK {} | META {} | CT {} | IP {} | IP6 {}
   | TCP {} | UDP {} | TH {} | ICMP {} | ICMPV6 {} | ETHER {} | FIB {} | IIF {}
   | OIF {} | IIFNAME {} | OIFNAME {} | PKTTYPE {} | MARK {} | FLUSH {} | RULESET {}
   | DESTROY {} | DELETE {}
@@ -395,11 +395,13 @@ stmt:
       { let (rate, unit_, bytes) = $4 in
         let burst = match $5 with Some b -> b | None -> if bytes then 0 else 5 in
         StLimit (rate, unit_, $3, burst, bytes) }
-  | MASQUERADE                { StMasquerade }
-  | SNAT nat_to               { let (a,p) = $2 in StSnat (a,p) }
-  | DNAT nat_to               { let (a,p) = $2 in StDnat (a,p) }
-  | DNAT IP nat_to            { let (a,p) = $3 in StDnat (a,p) }
-  | DNAT IP6 nat_to           { let (a,p) = $3 in StDnat (a,p) }
+  | MASQUERADE natflags       { StMasquerade $2 }
+  | SNAT nat_to natflags      { let (a,p) = $2 in StSnat (a,p,$3) }
+  | DNAT nat_to natflags      { let (a,p) = $2 in StDnat (a,p,$3) }
+  | DNAT IP nat_to natflags   { let (a,p) = $3 in StDnat (a,p,$4) }
+  | DNAT IP6 nat_to natflags  { let (a,p) = $3 in StDnat (a,p,$4) }
+  | REDIRECT natflags               { StRedirect (None, $2) }
+  | REDIRECT TO COLON INT natflags  { StRedirect (Some $4, $5) }
   | MARK SET value            { StMetaSet ("mark", $3) }
   | META IDENT SET value      { StMetaSet ($2, $4) }
   | META MARK SET value       { StMetaSet ("mark", $4) }  (* `mark` lexes as MARK, not IDENT *)
@@ -439,3 +441,14 @@ nat_to:
   | TO value             { (Some $2, None) }
   | TO value COLON INT   { (Some $2, Some $4) }
   | TO COLON INT         { (None, Some $3) }
+
+(* trailing NAT flags: a comma-separated list of {random, fully-random,
+   persistent} idents (nft: `masquerade random,persistent`).  Kept as raw
+   strings; Nft_lower.nat_flags_of resolves them to the flag bitmask (an unknown
+   word is a clean Unsupported, never silently dropped into wrong bytecode). *)
+natflags:
+  | /* empty */            { [] }
+  | flagwords              { $1 }
+flagwords:
+  | IDENT                  { [$1] }
+  | flagwords COMMA IDENT  { $1 @ [$3] }

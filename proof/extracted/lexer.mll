@@ -23,7 +23,7 @@
     (* statements *)
     "counter", COUNTER; "log", LOG; "prefix", PREFIX; "limit", LIMIT;
     "rate", RATE; "over", OVER; "with", WITH; "to", TO; "masquerade", MASQUERADE;
-    "snat", SNAT; "dnat", DNAT; "notrack", NOTRACK;
+    "snat", SNAT; "dnat", DNAT; "redirect", REDIRECT; "notrack", NOTRACK;
     (* selectors *)
     "meta", META; "ct", CT; "ip", IP; "ip6", IP6; "tcp", TCP; "udp", UDP;
     "th", TH; "icmp", ICMP; "icmpv6", ICMPV6; "ether", ETHER; "fib", FIB;
