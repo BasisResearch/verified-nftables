@@ -114,6 +114,14 @@ let sym_ctstate = [
   "invalid",[0;0;0;1]; "established",[0;0;0;2]; "related",[0;0;0;4];
   "new",[0;0;0;8]; "untracked",[0;0;0;64];
 ]
+(* conntrack status bits (IPS_*, nf_conntrack_common.h; nft ct.c ct_status_tbl).
+   A 4-byte big-endian register, matched as a bitmask like ct state (golden
+   any/ct.t.payload: `ct status expected` => `bitwise & 0x00000001 ^ 0 ; cmp neq 0`). *)
+let sym_ctstatus = [
+  "expected",[0;0;0;1]; "seen-reply",[0;0;0;2]; "assured",[0;0;0;4];
+  "confirmed",[0;0;0;8]; "snat",[0;0;0;0x10]; "dnat",[0;0;0;0x20];
+  "dying",[0;0;2;0];
+]
 (* TCP flag bits (the single byte at transport header + 13).  proto.c:
    TCPHDR_FIN 0x01 .. TCPHDR_CWR 0x80.  A comma/`|` list ORs the bits. *)
 let sym_tcpflag = [
@@ -168,7 +176,7 @@ let lookup ctx tbl s =
 
 type kind =
   | KIfname | KIfindex | KIp4 | KIp6 | KPort | KL4proto | KNfproto | KEthertype
-  | KCtstate | KMark | KIcmp | KIcmpv6 | KPkttype | KFibType | KTcpflag | KNum of int
+  | KCtstate | KCtstatus | KMark | KIcmp | KIcmpv6 | KPkttype | KFibType | KTcpflag | KNum of int
   | KCtdir   (* conntrack direction: original=0 / reply=1, a 1-byte register *)
   | KArpop   (* ARP operation: symbolic (request/reply/...) or numeric, 2-byte NBO *)
   (* host-endian (little-endian on x86) integer of [n] bytes; used for the value
@@ -212,6 +220,8 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
   | KEthertype, Nft_ast.Vsym s -> lookup "ethertype" sym_ethertype s
   | KCtstate, Nft_ast.Vsym s -> lookup "ct state" sym_ctstate s
   | KCtstate, Nft_ast.Vnum n -> bytes_of_int 4 n
+  | KCtstatus, Nft_ast.Vsym s -> lookup "ct status" sym_ctstatus s
+  | KCtstatus, Nft_ast.Vnum n -> bytes_of_int 4 n
   (* a single tcp-flag symbol / numeric literal -> a 1-byte mask *)
   | KTcpflag, Nft_ast.Vsym s -> [lookup "tcp flag" sym_tcpflag s]
   | KTcpflag, Nft_ast.Vnum n -> [n land 0xff]
@@ -246,7 +256,7 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
 (* the byte width a kind compares at (for building a prefix mask) *)
 let width_of_kind = function
   | KIp4 -> 4 | KIp6 -> 16 | KPort | KEthertype | KArpop -> 2
-  | KCtstate | KMark | KIfindex | KFibType -> 4 | KNum w -> w | KNumLe w -> w
+  | KCtstate | KCtstatus | KMark | KIfindex | KFibType -> 4 | KNum w -> w | KNumLe w -> w
   | KCtdir -> 1 | _ -> 1
 
 (* A kind stored HOST-ENDIAN (little-endian on x86) in the register, like the
@@ -407,6 +417,7 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
   | ["fib"; sel; "oifname"] -> (Syntax.FFib (sel, Packet.FRoifname), KIfname, none)
   | ["fib"; sel; "oif"]     -> (Syntax.FFib (sel, Packet.FRoif), KNum 4, none)
   | ["ct"; "state"]      -> (Syntax.FCtState, KCtstate, none)
+  | ["ct"; "status"]     -> (Syntax.FCtStatus, KCtstatus, none)
   | ["ct"; "mark"]       -> (Syntax.FCtMark, KMark, none)
   (* ---- additional IPv4 header fields (network-order payload loads) ---- *)
   | ["ip"; "ttl"]        -> (Syntax.FIp4Ttl,    KNum 1, [DNfproto [2]])
@@ -795,7 +806,7 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
                `{ ... }` (SEset) is a different expression -> real lookup.  We refuse
                the list form for non-bitmask selectors, mirroring nft's error. *)
             (match k with
-             | KCtstate | KTcpflag ->
+             | KCtstate | KCtstatus | KTcpflag ->
                  let w = width_of_kind k in
                  let zero = L.init w (fun _ -> 0) in
                  let orMask =
@@ -870,7 +881,7 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
                                intern_anon_set_be st k elems)
              | Nft_ast.Vset elems ->        (* a `$var` that expands to a set *)
                  Syntax.MConcatSet ([f], neg, intern_anon_set st k elems)
-             | v' when k = KCtstate ->
+             | v' when k = KCtstate || k = KCtstatus ->
                  (* ct_state has .basetype = bitmask_type, and the relational
                     evaluator (evaluate.c:2792-2797) rewrites OP_IMPLICIT over a
                     TYPE_BITMASK basetype to OP_EQ for EVERY bitmask type EXCEPT

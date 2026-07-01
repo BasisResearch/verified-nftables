@@ -364,6 +364,10 @@ value:
      an exthdr/fib present-test matches on. *)
   | EXISTS   { Vsym "exists" }
   | MISSING  { Vsym "missing" }
+  (* `snat`/`dnat` lex as statement keywords but are also ct-status bit names
+     (`ct status snat`, `ct status dnat`). *)
+  | SNAT     { Vsym "snat" }
+  | DNAT     { Vsym "dnat" }
 
 (* ---- verdict-map (`vmap { k : verdict, ... }`) ---- *)
 vmapset:
