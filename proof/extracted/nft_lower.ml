@@ -1318,12 +1318,17 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
            must NOT re-emit it.  nft dedups exactly this way, so `meta l4proto 6
            tcp dport 22` and `ether type vlan vlan id 2` emit the guard ONCE.
            Register the explicit (field,value) in the dedup set. *)
+        let reg fk pv = if not (L.mem (fk, pv) !deps) then deps := (fk, pv) :: !deps in
         (match mc with
          | Syntax.MEq (fld, pv) ->
              (match fld with
               | Syntax.FMetaL4proto | Syntax.FMetaNfproto | Syntax.FMetaProtocol
-              | Syntax.FMetaIiftype | Syntax.FEtherType ->
-                  if not (L.mem (fld, pv) !deps) then deps := (fld, pv) :: !deps
+              | Syntax.FMetaIiftype | Syntax.FEtherType -> reg fld pv
+              (* `ip protocol N` fixes the packet's L4 protocol to N, so nft does
+                 NOT re-emit the `meta l4proto == N` guard a later tcp/udp/icmp
+                 selector would otherwise carry (golden icmpX.t: `ip protocol icmp
+                 icmp type ...` has no l4proto load).  Discharge that dep. *)
+              | Syntax.FIp4Protocol -> reg Syntax.FMetaL4proto pv
               | _ -> ())
          | _ -> ())
     | Nft_ast.CBitmatch (kp, op, mask, r) ->
