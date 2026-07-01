@@ -11,7 +11,7 @@
 ROCQBIN ?=
 COQMAKE  = CoqMakefile
 
-.PHONY: all proofs glue lib example semtest difftest corpus validate parse-test gen clean cli e2e nl-send
+.PHONY: all proofs glue lib example semtest difftest corpus byteorder-gate validate parse-test gen clean cli e2e nl-send
 
 all: proofs glue
 
@@ -79,6 +79,13 @@ difftest: glue
 # report measured coverage (fails on any mismatch).
 corpus: proofs
 	./corpus.sh
+
+# Compile the host-order (mark/iif/oif/ct-mark/fib-type) corpus blocks FROM SOURCE
+# through the parser+verified compiler+renderer and diff the cmp/range immediates
+# against the corpus .payload.  Closes the byteorder blind spot that `make corpus`
+# (payload->render round-trip only) cannot see.  Fails on any mismatch.
+byteorder-gate: proofs
+	./byteorder-gate.sh
 
 # Independently validate field_load offsets / meta-ct names against live `nft`
 # (the corpus round-trip shares its tables between parse and render, so it can't

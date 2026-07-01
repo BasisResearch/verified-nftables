@@ -65,7 +65,10 @@ let optimize_table (c : chain) : Semantics.set_decls * chain =
 
 (* ---- rendering (untrusted, corpus-tested) ---- *)
 let to_netlink_text : program -> string = Codec.render_program
-let render_instr : Bytecode.instr -> string = Codec.render_instr
+(* NB: context-free single-instruction render (host-endian fields render in the
+   corpus big-endian layout).  Use [to_netlink_text]/[Codec.render_rule] for the
+   field-aware, corpus-faithful rendering of a whole rule. *)
+let render_instr (i : Bytecode.instr) : string = Codec.render_instr i
 
 (* ---- the .nft text frontend (untrusted parser; see Nft_parse) ----
    parse a ruleset file/string into the Syntax AST + the set/map environment its

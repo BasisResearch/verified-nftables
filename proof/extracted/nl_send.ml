@@ -991,6 +991,14 @@ let dtype_byteorder dt =
      nft must be told to decode them host-order — declaring big-endian here would
      byte-reverse the key and mis-print the state. *)
   else if dt = dt_ct_state then byteorder_host
+  (* mark (dt_mark) and interface index (dt_ifindex) are BYTEORDER_HOST_ENDIAN in
+     the kernel (nft_meta.c `*dest = skb->mark;`): the parser encodes their set
+     elements little-endian (enc_atom KMark/KIfindex) so the WIRE is host-order and
+     the kernel's memcmp against the host-order register matches — confirmed by
+     dry-run hexdump (element 0x11223344 -> wire 44 33 22 11) and netns round-trip
+     (4/4 matched).  nft must therefore decode them host-order for `nft list`;
+     declaring big-endian byte-reverses the value (0x11223344 -> 0x44332211). *)
+  else if dt = dt_mark || dt = dt_ifindex then byteorder_host
   else byteorder_big
 
 let msg_set ~family ~table ~name ~set_id ~flags ~klen ~key_fields ~dtype ~dlen : msg =
@@ -1029,8 +1037,11 @@ type elem = { ek : int list; ed : elemdata option }
    padded) set-element key so the WIRE is host-order — the set analogue of
    [retarget_ct_state_order] for the rule stream (see the ct_state comment above
    encode_exprs).  [key_fields] gives each field's (byte length, datatype); only
-   ct_state fields are reversed, every other field (ip/service/mark/…) passes
-   through verbatim (those are big-endian in BOTH the model and the kernel). *)
+   ct_state fields need reversing HERE.  Network-order fields (ip/service/…) are
+   already big-endian; host-endian integer fields (mark/ifindex) are already
+   little-endian because the parser encodes their elements with [enc_atom]
+   (bytes_of_int_le) — so both pass through verbatim and land host-order on the
+   wire, exactly as the kernel's register holds them. *)
 let host_order_set_key (key_fields : (int * int) list) (key : int list) : int list =
   match key_fields with
   | [ (_, dt) ] when dt = dt_ct_state -> L.rev key
