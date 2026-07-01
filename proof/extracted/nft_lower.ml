@@ -146,6 +146,15 @@ let sym_icmpv6 = [
   "router-renumbering",[138]; "ind-neighbor-solicit",[141];
   "ind-neighbor-advert",[142]; "mld2-listener-report",[143];
 ]
+(* DSCP codepoints (6-bit): class-selector csN = 8N, assured-forwarding afXY,
+   expedited-forwarding ef=46, best-effort be=0, lower-effort le=1.  Used as the
+   RAW field value for `ip dscp` / `ip6 dscp` (then shifted into the header bits). *)
+let sym_dscp = [
+  "cs0",0; "cs1",8; "cs2",16; "cs3",24; "cs4",32; "cs5",40; "cs6",48; "cs7",56;
+  "af11",10; "af12",12; "af13",14; "af21",18; "af22",20; "af23",22;
+  "af31",26; "af32",28; "af33",30; "af41",34; "af42",36; "af43",38;
+  "ef",46; "be",0; "le",1;
+]
 let sym_pkttype = [ "host",[0]; "unicast",[0]; "broadcast",[1]; "multicast",[2];
                     "other",[3]; "otherhost",[3]; ]
 (* ARP operation codes (2-byte network-order field at arp header + 6).  arp.c
@@ -555,6 +564,33 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
       (Syntax.FExthdr (Packet.EPtcpopt, optnum, off, len, false), k, [])
   | _ -> raise (Unsupported ("selector: " ^ S.concat " " kp))
 
+(* ---------- sub-byte header bitfields ----------
+   A field that occupies only some bits of one or more header bytes: nft loads
+   the containing byte(s), masks them (`bitwise reg = (reg & M) ^ 0`), and
+   compares against the value SHIFTED into the field's bit position (golden e.g.
+   `ip dscp cs1` => load 1b@nh+1 ; bitwise & 0xfc ; cmp eq 0x20, where cs1=8 and
+   8<<2=0x20).  We return (field, len, mask, dep, is_dscp); the shift is derived
+   from the mask's trailing-zero count.  Byte-aligned fields stay in [key_field]. *)
+let bitfield_sel (kp : Nft_ast.keypath)
+    : (Syntax.field * int * Bytes.data * dep * bool) option =
+  let ip4 = [DNfproto [2]] and ip6 = [DNfproto [10]] in
+  match kp with
+  | ["ip"; "version"]    -> Some (Syntax.FPayload (Packet.PNetwork, 0, 1), 1, [0xf0], ip4, false)
+  | ["ip"; "hdrlength"]  -> Some (Syntax.FPayload (Packet.PNetwork, 0, 1), 1, [0x0f], ip4, false)
+  | ["ip"; "dscp"]       -> Some (Syntax.FPayload (Packet.PNetwork, 1, 1), 1, [0xfc], ip4, true)
+  | ["ip6"; "dscp"]      -> Some (Syntax.FPayload (Packet.PNetwork, 0, 2), 2, [0x0f;0xc0], ip6, true)
+  | ["ip6"; "flowlabel"] -> Some (Syntax.FPayload (Packet.PNetwork, 1, 3), 3, [0x0f;0xff;0xff], ip6, false)
+  | ["tcp"; "doff"]      -> Some (Syntax.FPayload (Packet.PTransport, 12, 1), 1, [0xf0], dep_l4 "tcp", false)
+  | _ -> None
+
+(* trailing-zero bit count of a big-endian byte mask = the field's LSB position. *)
+let mask_shift (mask : Bytes.data) : int =
+  let rec tz_byte b i = if i >= 8 then 8 else if (b lsr i) land 1 = 1 then i else tz_byte b (i+1) in
+  let rec go = function
+    | [] -> 0
+    | b :: rest -> if b = 0 then 8 + go rest else tz_byte b 0
+  in go (L.rev mask)
+
 (* ---------- prefix mask ---------- *)
 
 let prefix_mask (width : int) (len : int) : Bytes.data =
@@ -783,6 +819,28 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
       let f = Syntax.FExthdr (Packet.EPtcpopt, optnum, 0, 1, true) in
       let mc = if exists then Syntax.MEq (f, [1]) else Syntax.MEq (f, [0]) in
       ([], mc)
+  | [kp] when (match bitfield_sel kp with Some _ -> true | None -> false) ->
+      (* a sub-byte header bitfield (ip dscp / ip6 flowlabel / tcp doff / ...):
+         load the byte(s), `& mask`, and compare against value<<shift. *)
+      let (f, len, mask, dep, is_dscp) =
+        (match bitfield_sel kp with Some x -> x | None -> assert false) in
+      let shift = mask_shift mask in
+      let raw v = match resolve_var st v with
+        | Nft_ast.Vnum n -> n
+        | Nft_ast.Vsym s when is_dscp ->
+            (match L.assoc_opt s sym_dscp with Some n -> n
+             | None -> raise (Unsupported ("dscp value " ^ s)))
+        | _ -> raise (Unsupported ("bitfield selector value: " ^ S.concat " " kp)) in
+      let zeros = L.init len (fun _ -> 0) in
+      let mc = (match m.Nft_ast.m_rhs.Nft_ast.payload with
+        | Nft_ast.SEvalue v ->
+            let cmpval = bytes_of_int len ((raw v) lsl shift) in
+            Syntax.MMasked (f, neg, mask, zeros, cmpval)
+        | _ ->
+            (* a set/range over a bitfield needs a bitwise-then-lookup/range that
+               we do not model faithfully yet; refuse rather than mis-encode. *)
+            raise (Unsupported ("bitfield selector set/range: " ^ S.concat " " kp))) in
+      (dep, mc)
   | [kp] ->
       let (f, k, dep) = key_field kp in
       let mc = match m.Nft_ast.m_rhs.Nft_ast.payload with
