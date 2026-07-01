@@ -23,9 +23,13 @@ see [`adversarial.md`](adversarial.md).
 - **Untrusted tooling**: the `nftc` CLI (`compile`/`optimize`/`send`), a full
   netlink sender that stands up a whole ruleset atomically (NEWTABLE/CHAIN/SET/…),
   and a rootless-VM end-to-end harness (`make vmtest`).
-- **nft bug found**: `nft --optimize` merges overlapping-key rules into invalid
-  interval sets/vmaps the kernel rejects (fail-closed) — our optimizer soundly
-  declines. Reproducer under `proof/battery_cases/`.
+- **nft --optimize defect found**: it merges overlapping-key rules into an
+  interval set/vmap **without checking representability**, emitting an unloadable
+  ruleset (nftables correctly rejects it — in userspace for single-field overlaps,
+  in the kernel for dead-rule concats — and the `-f` transaction aborts with 0
+  rules applied). A valid disjoint merge exists; nft doesn't compute it. Our
+  optimizer soundly declines. Full analysis + reproducer under
+  `proof/battery_cases/` (`README.md`).
 
 ## Remaining work
 

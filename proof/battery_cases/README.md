@@ -104,7 +104,7 @@ past userspace and are adjudicated by the **kernel** set backend (`pipapo`).
 | 17 | udp_dport_set | bare `udp dport` values, same verdict → set | **MATCH** — *landed this run* (bare-transport-port-set) |
 | 18 | tcp_dport_vmap | bare `tcp dport` distinct values, differing verdicts → vmap | **MATCH** — *landed (`Optimize_Vmapg`, guarded value+verdict→vmap)*: the l4proto-guarded run folds to `tcp dport vmap { 22:drop, 80:accept, 443:drop }`, byte-identical to `nft -o`; kernel-loaded + data-plane-equivalent to the 3 originals |
 | 19 | meta_mark_set | bare `meta mark` values, same verdict → set | **MATCH** — *landed this run* (metafield-fixedwidth-set, `Optimize_Merge`) |
-| — | MINIMAL_…_failclosed_bug | canonical duplicate of 03 | **nft BUG** — minimal fail-closed repro |
+| — | MINIMAL_…_failclosed_bug | canonical duplicate of 03 (filename is historical) | **nft BUG** — minimal repro of the single-field-overlap defect |
 
 ## Is "absolutely no gap" achieved?
 
