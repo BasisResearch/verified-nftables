@@ -275,6 +275,8 @@ keyatom:
      resolves the (proto, field) pair to a payload load; an unknown pair is a clean
      `Unsupported "selector: ..."`, so this cannot mis-parse into wrong bytecode. *)
   | IDENT IDENT       { [$1; $2] }
+  (* `<proto> type` where `type` lexes as the TYPE keyword (rt type, mh type). *)
+  | IDENT TYPE        { [$1; "type"] }
   (* address-typed sub-fields: `arp saddr ip`, `arp daddr ether` — the third token
      is a base/family keyword that selects the field offset. *)
   | IDENT IDENT IP    { [$1; $2; "ip"] }

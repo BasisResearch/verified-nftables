@@ -478,6 +478,33 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
   | ["udplite"; "dport"]    -> (Syntax.FPayload (Packet.PTransport, 2, 2), KPort, dep_l4 "udplite")
   | ["udplite"; "cscov"]    -> (Syntax.FPayload (Packet.PTransport, 4, 2), KNum 2, dep_l4 "udplite")
   | ["udplite"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2, dep_l4 "udplite")
+  (* ---- IPv6 extension-header selectors (NFT_EXTHDR `exthdr load ipv6`).
+     The htype is the exthdr's IPPROTO (hbh=0, rt/srh=43, frag=44, dst=60,
+     mh=135); off/len are the field's position WITHIN that header.  nft guards
+     each with the IPv6 nfproto dependency (golden ip6/{hbh,rt,frag,dst,mh}.t.
+     payload: ip6 family emits none, inet/netdev emit `meta nfproto == 0x0a`),
+     so dep = [DNfproto [10]] exactly like the ip6 network-header selectors.
+     Byte-aligned fields only; the sub-byte bitfields (frag frag-off/reserved2/
+     more-fragments, which nft follows with a `bitwise` mask) are left out. ---- *)
+  | ["hbh"; "nexthdr"]    -> (Syntax.FExthdr (Packet.EPipv6, 0,   0, 1, false), KL4proto, [DNfproto [10]])
+  | ["hbh"; "hdrlength"]  -> (Syntax.FExthdr (Packet.EPipv6, 0,   1, 1, false), KNum 1,   [DNfproto [10]])
+  | ["rt"; "nexthdr"]     -> (Syntax.FExthdr (Packet.EPipv6, 43,  0, 1, false), KL4proto, [DNfproto [10]])
+  | ["rt"; "hdrlength"]   -> (Syntax.FExthdr (Packet.EPipv6, 43,  1, 1, false), KNum 1,   [DNfproto [10]])
+  | ["rt"; "type"]        -> (Syntax.FExthdr (Packet.EPipv6, 43,  2, 1, false), KNum 1,   [DNfproto [10]])
+  | ["rt"; "seg-left"]    -> (Syntax.FExthdr (Packet.EPipv6, 43,  3, 1, false), KNum 1,   [DNfproto [10]])
+  | ["srh"; "last-entry"] -> (Syntax.FExthdr (Packet.EPipv6, 43,  4, 1, false), KNum 1,   [DNfproto [10]])
+  | ["srh"; "flags"]      -> (Syntax.FExthdr (Packet.EPipv6, 43,  5, 1, false), KNum 1,   [DNfproto [10]])
+  | ["srh"; "tag"]        -> (Syntax.FExthdr (Packet.EPipv6, 43,  6, 2, false), KNum 2,   [DNfproto [10]])
+  | ["frag"; "nexthdr"]   -> (Syntax.FExthdr (Packet.EPipv6, 44,  0, 1, false), KL4proto, [DNfproto [10]])
+  | ["frag"; "reserved"]  -> (Syntax.FExthdr (Packet.EPipv6, 44,  1, 1, false), KNum 1,   [DNfproto [10]])
+  | ["frag"; "id"]        -> (Syntax.FExthdr (Packet.EPipv6, 44,  4, 4, false), KNum 4,   [DNfproto [10]])
+  | ["dst"; "nexthdr"]    -> (Syntax.FExthdr (Packet.EPipv6, 60,  0, 1, false), KL4proto, [DNfproto [10]])
+  | ["dst"; "hdrlength"]  -> (Syntax.FExthdr (Packet.EPipv6, 60,  1, 1, false), KNum 1,   [DNfproto [10]])
+  | ["mh"; "nexthdr"]     -> (Syntax.FExthdr (Packet.EPipv6, 135, 0, 1, false), KL4proto, [DNfproto [10]])
+  | ["mh"; "hdrlength"]   -> (Syntax.FExthdr (Packet.EPipv6, 135, 1, 1, false), KNum 1,   [DNfproto [10]])
+  | ["mh"; "type"]        -> (Syntax.FExthdr (Packet.EPipv6, 135, 2, 1, false), KNum 1,   [DNfproto [10]])
+  | ["mh"; "reserved"]    -> (Syntax.FExthdr (Packet.EPipv6, 135, 3, 1, false), KNum 1,   [DNfproto [10]])
+  | ["mh"; "checksum"]    -> (Syntax.FExthdr (Packet.EPipv6, 135, 4, 2, false), KNum 2,   [DNfproto [10]])
   | _ -> raise (Unsupported ("selector: " ^ S.concat " " kp))
 
 (* ---------- prefix mask ---------- *)
@@ -678,6 +705,23 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
       let zero = [0] in   (* FRpresent load_width = 1 byte *)
       let mc = if exists then Syntax.MNeq (f, zero) else Syntax.MEq (f, zero) in
       ([], mc)
+  | [ ["exthdr"; proto] ]
+    when (match m.Nft_ast.m_rhs.Nft_ast.payload with
+          | Nft_ast.SEvalue (Nft_ast.Vsym ("missing" | "exists")) -> true
+          | _ -> false) ->
+      (* `exthdr <proto> exists|missing`: nft loads the exthdr with the PRESENT
+         flag (a 1-byte 0/1) and compares it (golden ip6/exthdr.t.payload:
+         `exthdr load ipv6 1b @ H + 0 present => reg 1 ; cmp eq reg 1 0x01`
+         for exists, `0x00` for missing).  htype is the exthdr's IPPROTO. *)
+      let htype = (match proto with
+        | "hbh"  -> 0   | "rt"  -> 43 | "frag" -> 44
+        | "dst"  -> 60  | "mh"  -> 135
+        | _ -> raise (Unsupported ("exthdr " ^ proto))) in
+      let exists = (match m.Nft_ast.m_rhs.Nft_ast.payload with
+                    | Nft_ast.SEvalue (Nft_ast.Vsym "exists") -> true | _ -> false) in
+      let f = Syntax.FExthdr (Packet.EPipv6, htype, 0, 1, true) in
+      let mc = if exists then Syntax.MEq (f, [1]) else Syntax.MEq (f, [0]) in
+      ([DNfproto [10]], mc)
   | [kp] ->
       let (f, k, dep) = key_field kp in
       let mc = match m.Nft_ast.m_rhs.Nft_ast.payload with
