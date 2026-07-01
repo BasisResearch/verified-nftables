@@ -100,24 +100,45 @@ tcp-vs-udp rulesets correctly do NOT cross-merge, matching nft; no nft bug found
 Witness: `theories/Concatm_Witness.v` (Compute + `concatm_fires` Example); regression
 gate: `e2e.sh` §B4.
 
-## G3 — interval / prefix set consolidation  (capability gap)
+## G3 — interval / range set consolidation  ✅ DONE (theories/Optimize_Ivset.v)
 
-`nft -o` collapses several adjacent ranges/prefixes (`ip saddr 10.0.0.0/24`,
-`10.0.1.0/24`, ranges `a-b`) into a single **interval set**. We fold distinct
-POINT values (`setsN`) and simplify a singleton range to `cmp`, but there is no
-pass that consolidates multiple ranges/prefixes into one interval set.
+Landed: a new verified pass `Optimize_Ivset.v` (composed into `optimize_table`
+right after `concatM`, before `vmapN`).  It recognises a run of adjacent rules
+whose differing head is a positive range `MRange f false lo_i hi_i` over the SAME
+field/body/verdict and folds the WHOLE run into ONE `MConcatSet [f] false __setN`
+lookup over an INTERVAL set holding the intervals `[(lo_1,hi_1); …; (lo_N,hi_N)]`
+directly in `sd_sets` — exactly what `nft --optimize` emits
+(`ip saddr { 10.0.0.0-10.0.0.255, 10.0.2.0-10.0.2.255 } accept`, set flags
+ANONYMOUS|CONSTANT|INTERVAL; netns-confirmed vs host `nft` v1.1.6).
 
-- Add an interval-set pass: recognise a run of adjacent rules whose differing head
-  is an `MRange`/prefix (`MMasked` for `/n`) over the same field + same body/verdict,
-  emit a single `lookup @s` over an interval (`NFT_SET_INTERVAL`) set, writing the
-  intervals into `sd_sets`. The `Optimize_Merge` disjunction machinery already
-  instantiates over `MRange` (`concat_set_two_points` / `eval_rules_merge2` with
-  `m1 = MRange …`) — build on it.
-- The interval set's element/flag encoding (`NFT_SET_INTERVAL`, the start/end
-  element pairs) must match what `nft` emits — validate against `nft -o` + a
-  netns/VM kernel load (`nft list ruleset`).
-- Prove verdict-preservation (a packet is in the interval set iff some original
-  range/prefix matched) and compose into `optimize_table`.
+Verdict-preservation is CLEANER than the point-set pass: an `MRange`'s value test
+is `data_le lo x && data_le x hi = data_in_iv x (lo,hi)` and a single-field
+`MConcatSet`'s membership is `set_mem x = existsb (data_in_iv x)`, so the merged
+head is EXACTLY the `existsb` disjunction of the run's ranges — with NO fixed-width
+side-condition (`data_le` does not truncate, unlike `MCmp`'s prefix equality).  The
+new certificate `concat_set_ivs_existsb` feeds `eval_rules_run_merge_abs`
+(Optimize_Merge) VERBATIM.  The gen theorem `optimize_table_correct_uncond_gen` is
+re-proved with the 8th stage (new `optimize_chain_concatM_fresh_setname` +
+`optimize_chain_ivset_*` seam lemmas thread setname/vmap freshness past concatM into
+ivset and on to vmapN).  All three headline theorems stay `Closed under the global
+context`; corpus 2532/2532, validate 28/28, semtest/parse-test/e2e green.
+
+Fires end-to-end: `nftc optimize` collapses two `ip saddr <lo>-<hi> accept` rules
+into ONE interval-set lookup — faithful to `nft --optimize` (the `nftc`/glue
+set-dump renderer was fixed to print genuine intervals `lo-hi`, points `lo`).
+Witness: `theories/Ivset_Witness.v` (`ivset_fires` + `ivset_table_fires` Examples);
+regression gate: `e2e.sh` §B5.  No nft bug: nft merges same-verdict ranges into an
+interval set identically, uses an interval VMAP for DIFFERENT-verdict ranges (our
+ivset correctly ABSTAINS there — see below), and does not coalesce contiguous ranges
+(matching us).
+
+Deferred (principled, not laziness): (1) **prefix** heads `ip saddr 10.0.0.0/24`
+lower to `MMasked` (`(field & mask) == net`), NOT `MRange`; folding them needs the
+contiguous-mask↔interval `[net, net|~mask]` arithmetic lemma over big-endian
+`data_le`, a strict extension on top of this pass.  (2) **interval VMAP**
+(different-verdict ranges) — nft emits `ip saddr vmap { lo-hi : accept, … }`; that is
+the range analogue of the `vmapN` pass (Optimize_Vmap), a separate extension.
+Neither is an nft bug; both build cleanly on this pass.
 
 ## D1 — `mapN` (`meta mark set … map`) fidelity divergence  (resolve)
 

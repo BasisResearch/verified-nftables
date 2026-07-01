@@ -133,7 +133,9 @@ let () =
     Stdlib.List.iter
       (fun (nm, elems) ->
         let pts = Stdlib.String.concat ", "
-            (Stdlib.List.map (fun (lo, _hi) -> render_data lo) elems) in
+            (Stdlib.List.map (fun (lo, hi) ->
+               if lo = hi then render_data lo
+               else render_data lo ^ "-" ^ render_data hi) elems) in
         Buffer.add_string buf (Printf.sprintf "  set %s = { %s }\n" nm pts))
       d.Semantics.sd_sets;
     Buffer.contents buf

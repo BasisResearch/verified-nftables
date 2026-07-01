@@ -171,6 +171,39 @@ else
   echo "   NOTE: nft --optimize cross-check unavailable in this environment"
 fi
 
+# ---- B5. the verified optimizer folds adjacent RANGES into an INTERVAL set ---
+# (G3) `ip saddr 10.0.0.0-10.0.0.255 / 10.0.2.0-10.0.2.255 accept` collapses to ONE
+# `ip saddr { 10.0.0.0-10.0.0.255, 10.0.2.0-10.0.2.255 } accept` lookup over a
+# synthesised INTERVAL set (each element a [lo,hi] pair), exactly as `nft --optimize`
+# emits it (set flags ANONYMOUS|CONSTANT|INTERVAL).
+echo ">> B5. nftc optimize folds adjacent ranges into an interval set (matches nft -o)"
+IVRULES='table ip t {
+  chain c {
+    type filter hook input priority 0; policy accept;
+    ip saddr 10.0.0.0-10.0.0.255 accept
+    ip saddr 10.0.2.0-10.0.2.255 accept
+  }
+}'
+printf '%s\n' "$IVRULES" > /tmp/e2e_iv.nft
+IOPT=$("$NFTC" optimize /tmp/e2e_iv.nft)
+echo "$IOPT" | sed 's/^/     /'
+# ONE lookup over a synthesised set whose elements are genuine intervals (lo-hi).
+ilk=$(echo "$IOPT" | grep -c 'lookup reg 1 set __set' || true)
+iset=$(echo "$IOPT" | grep -Ec 'set __set.* = \{ .*0x[0-9a-f]+-0x[0-9a-f]+, .*0x[0-9a-f]+-0x[0-9a-f]+ \}' || true)
+irules=$(echo "$IOPT" | grep -c '^t c' || true)
+if [ "$ilk" -eq 1 ] && [ "$iset" -ge 1 ] && [ "$irules" -eq 1 ]; then
+  echo "   PASS: 2 range rules -> 1 interval-set lookup (verified merge fired)"
+else
+  echo "   FAIL: interval-set merge did not fire (lookups=$ilk interval-sets=$iset rules=$irules)"; fail=1
+fi
+# cross-check: nft --optimize folds these into the SAME interval set
+NFTIO=$(printf '%s\n' "$IVRULES" | unshare -rn nft --optimize -f - 2>/dev/null | grep -c 'ip saddr { .*-.*, .*-.* }' || true)
+if [ "${NFTIO:-0}" -ge 1 ]; then
+  echo "   PASS: nft --optimize agrees (folds 'ip saddr { lo-hi, lo-hi }')"
+else
+  echo "   NOTE: nft --optimize cross-check unavailable in this environment"
+fi
+
 # ---- C. the pipeline runs on the repo's real rulesets -----------------------
 echo ">> C. pipeline runs on real rulesets"
 for f in ../router.nft ../optiplex.nft ../ruleset.nft; do

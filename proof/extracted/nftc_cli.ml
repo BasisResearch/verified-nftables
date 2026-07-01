@@ -110,8 +110,13 @@ let render_decls (d : Semantics.set_decls) : string =
   let buf = Buffer.create 64 in
   L.iter
     (fun (nm, elems) ->
+      (* a genuine interval element (lo<>hi, e.g. a merged range/prefix) is shown as
+         `lo-hi`; a point element (lo=hi) as just `lo` — mirroring nft's dump of an
+         NFT_SET_INTERVAL anonymous set. *)
       let pts = String.concat ", "
-          (L.map (fun (lo, _hi) -> Codec.render_value lo) elems) in
+          (L.map (fun (lo, hi) ->
+             if lo = hi then Codec.render_value lo
+             else Codec.render_value lo ^ "-" ^ Codec.render_value hi) elems) in
       Buffer.add_string buf (Printf.sprintf "  set %s = { %s }\n" nm pts))
     d.Semantics.sd_sets;
   L.iter
