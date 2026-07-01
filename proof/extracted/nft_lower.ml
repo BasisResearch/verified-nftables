@@ -693,6 +693,12 @@ let payload_prefix_field (f : Syntax.field) (nbytes : int) : Syntax.field option
   | Syntax.FIp4Daddr -> Some (Syntax.FPayload (Packet.PNetwork, 16, nbytes))
   | Syntax.FIp6Saddr -> Some (Syntax.FPayload (Packet.PNetwork, 8,  nbytes))
   | Syntax.FIp6Daddr -> Some (Syntax.FPayload (Packet.PNetwork, 24, nbytes))
+  (* A conntrack-tuple address (`ct original ip saddr .../24`) loads via the
+     symbolic `ct load <key>` (no byte width), so the LOAD stays full-width and
+     only the compare shortens: golden ip/ct.t.payload emits `ct load src_ip` then
+     `cmp eq 0xc0a801`.  The model's MEq is a prefix compare (firstn), so keeping
+     [f] and shortening the value is exactly that. *)
+  | Syntax.FCtDir _ -> Some f
   | _ -> None
 
 (* ---------- mutable lowering state ---------- *)
