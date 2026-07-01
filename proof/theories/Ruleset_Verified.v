@@ -2,7 +2,7 @@
 
     Same worked example as [Example_Ruleset.v], but with the crucial difference
     that the AST here is NOT hand-translated: [Ruleset_Gen.v] is the Menhir
-    frontend's output on ../../ruleset.nft (the chains [firewall_inbound], ... and
+    frontend's output on ../../rulesets/ruleset.nft (the chains [firewall_inbound], ... and
     the verdict maps / sets in [gen_env]).  These theorems are therefore about the
     parser's actual output — closing the one previously-eyeballed link ("the AST
     mirrors the .nft text").  Via [compile_table_correct] each property holds of

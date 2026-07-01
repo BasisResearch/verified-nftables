@@ -282,12 +282,12 @@ corpus round-trip.
 | `theories/Compile.v` | the compiler `compile_chain : chain -> program` |
 | `theories/Correct.v` | **`compile_chain_correct`** — semantic preservation |
 | `theories/Optimize.v` | DSL optimizer (dedup + range-simplify + no-op-prune + DCE) + **`optimize_chain_correct`** |
-| `theories/Example_Ruleset.v` | worked example: `../ruleset.nft` hand-translated to the AST + 9 axiom-free packet-property proofs (the user-facing use case; the baseline a parser should reproduce — see TODO 9) |
+| `theories/Example_Ruleset.v` | worked example: `../rulesets/ruleset.nft` hand-translated to the AST + 9 axiom-free packet-property proofs (the user-facing use case; the baseline a parser should reproduce — see TODO 9) |
 | `theories/Extract.v` | extraction to `extracted/*.ml` |
 | `extracted/glue.ml` | *untrusted* glue: builds chains, renders nft-format bytecode (forward test) |
 | `extracted/lexer.mll` `parser.mly` `nft_ast.ml` `nft_lower.ml` `nft_parse.ml` | *untrusted* **`.nft` text → `Syntax` AST frontend** (TODO 9): ocamllex+Menhir surface parser → lowering (define/symbol resolution, implicit-l4proto deps, CIDR/range/concat, anonymous-set/vmap → `env`, `include` expansion) → `Nft_parse.parse_file` |
 | `extracted/nft_emit.ml` `nft2coq.ml` | *untrusted* **AST → Coq emitter**: serialise the parsed chains + `set_decls`/`env` as Coq `Definition`s (`make gen`), so proofs reason about the parser's real output |
-| `theories/Optiplex_Gen.v` `Ruleset_Gen.v` | **generated** by `nft2coq` from `../optiplex.nft` / `../ruleset.nft` (the parser's output as Coq terms; kernel-checked) |
+| `theories/Optiplex_Gen.v` `Ruleset_Gen.v` | **generated** by `nft2coq` from `../rulesets/optiplex.nft` / `../rulesets/ruleset.nft` (the parser's output as Coq terms; kernel-checked) |
 | `theories/Optiplex_Antispoof.v` | **anti-spoofing** proofs about the parsed `optiplex.nft` bridge `output` chain (+ legit-traffic-allowed); all axiom-free |
 | `theories/Optiplex_Antispoof_Gaps.v` | **adversarial** proofs: the binding is unenforced outside `@vmaddrs` / off br.20 (real bypasses), axiom-free |
 | `theories/Optiplex_Mark.v` | **firewall-mark** proofs about the parsed prerouting/postrouting chains: marking RDP traffic, mark-gated masquerade, cross-hook flow; axiom-free |
@@ -540,7 +540,7 @@ cannot prove a false property.
 | `make difftest` | compiled bytecode **byte-identical** to live `nft --debug=netlink` |
 | `make validate` | `field_load` offsets/names vs live `nft`: **28/28** |
 | `make semtest` | executable witnesses: DSL = VM = optimized on packet batteries (incl. the mutation / sequence witnesses) |
-| `make parse-test` | `.nft` frontend (TODO 9 M1): parses `../ruleset.nft`, checks parsed-AST verdicts vs `Example_Ruleset.v`; difftest ruleset → `glue.ml`'s AST; live-`nft` round-trip |
+| `make parse-test` | `.nft` frontend (TODO 9 M1): parses `../rulesets/ruleset.nft`, checks parsed-AST verdicts vs `Example_Ruleset.v`; difftest ruleset → `glue.ml`'s AST; live-`nft` round-trip |
 
 Axiom-freedom — every headline theorem must print "Closed under the global
 context". Re-check the optimizer-pipeline headline (and the compile core) with:
@@ -880,10 +880,10 @@ Rocq kernel (untrusted emitter, kernel-checked result — same trust story as th
 renderer).
 
 **Proven about the parsed rulesets (all axiom-free):**
-  - `Ruleset_Verified.v` — the 8 packet-verdict properties of `../ruleset.nft`
+  - `Ruleset_Verified.v` — the 8 packet-verdict properties of `../rulesets/ruleset.nft`
     (established/invalid/loopback/ssh/smtp/ipv6-nd/forward), now about the
     *generated* `firewall_inbound` rather than a hand copy.
-  - `Optiplex_Antispoof.v` — **anti-spoofing** for `../optiplex.nft`'s bridge
+  - `Optiplex_Antispoof.v` — **anti-spoofing** for `../rulesets/optiplex.nft`'s bridge
     `output` chain: a frame to a protected VM address leaving br.20 on the wrong
     interface is **dropped** (`antispoof_general`; concrete
     `vikunja_cannot_spoof_budget`, `gentoo_cannot_spoof_hass`), while the legit
@@ -940,7 +940,7 @@ NAT/helper-set forms above; matching nft's exact `__setN` anonymous-set numberin
 There is no parser from nftables DSL *text* to the extracted
 `Syntax` AST (`chain`/`table`/`ruleset` + the `env`/`set_decls` the lookups read).
 Today a user with a real ruleset must hand-translate it — see
-`theories/Example_Ruleset.v`, which encodes `../ruleset.nft` by hand and proves
+`theories/Example_Ruleset.v`, which encodes `../rulesets/ruleset.nft` by hand and proves
 properties against `eval_table`. That manual step is the one *unverified* link:
 the proofs check AST→verdict soundness, but "the AST mirrors the `.nft` text" is
 eyeballed. A differentially-tested parser closes that gap and lets users prove
@@ -980,7 +980,7 @@ coding:
    hook/prio/policy), `accept`/`drop`/`jump`/`goto`/`return`, simple matches
    (`iifname`, `meta protocol`, `ct state`, `tcp dport`), inline sets `{a,b,c}`
    and vmaps `{ k : verdict }`. Build a `chain` + the `env` (sets/vmaps). **Acceptance:
-   parse `../ruleset.nft` and check the resulting `inbound` AST/verdicts agree with
+   parse `../rulesets/ruleset.nft` and check the resulting `inbound` AST/verdicts agree with
    the hand-written `Example_Ruleset.v`** (a concrete first oracle, independent of nft).
 2. **M2 — anonymous set/map allocation.** Inline `{…}` must become a named
    `MConcatSet … "name"` + an `env`/`set_decls` entry, with names matching what
@@ -1014,7 +1014,7 @@ pipeline already renders AST→netlink text and diffs it against live `nft`
 (`make difftest`, `difftest.sh`). So a parse is faithful iff
 `parse(file) |> compile_optimized |> to_netlink_text` is **byte-identical** to
 `nft --debug=netlink -f file`. Add a `make parse-test` target that runs this over
-a corpus of real `.nft` files (start with `../ruleset.nft`; then nftables'
+a corpus of real `.nft` files (start with `../rulesets/ruleset.nft`; then nftables'
 `files/examples/*.nft` and `doc/` rulesets). Same honest scope as the existing
 round-trip: it checks structural lowering, not the byte-level data-plane meaning.
 

@@ -13,7 +13,7 @@ interprets the bytecode, is trusted and unverified.
 Other than building and running the `nftc_cli.exe` command line tool,
 you can also use Rocq to formally prove properties about your ruleset (see
 [proof/theories/Optiplex_Antispoof.v](Optiplex\_Antispoof.v), which
-reasons about the ruleset [optiplex.nft](optiplex.nft).
+reasons about the ruleset [optiplex.nft](rulesets/optiplex.nft).
 
 The core compiler is tested against the stock `nft` utility, but the
 untrusted OCaml code isn't fully exercised. Therefore, you should
@@ -93,10 +93,10 @@ optimize/compile core is the *extracted verified term*):
 
 ```sh
 make cli             # builds extracted/_build/default/nftc_cli.exe
-./extracted/_build/default/nftc_cli.exe optimize ../ruleset.nft   # parse->optimize_table_uncond->compile->render
-./extracted/_build/default/nftc_cli.exe compile  ../router.nft    # parse->compile_chain->render
+./extracted/_build/default/nftc_cli.exe optimize ../rulesets/ruleset.nft   # parse->optimize_table_uncond->compile->render
+./extracted/_build/default/nftc_cli.exe compile  ../rulesets/router.nft    # parse->compile_chain->render
 # equivalently, via dune (note the `--` and the ../../ path from extracted/):
-cd extracted && dune exec ./nftc_cli.exe -- optimize ../../ruleset.nft
+cd extracted && dune exec ./nftc_cli.exe -- optimize ../rulesets/ruleset.nft
 ```
 
 `nftc` has three modes — `compile`, `optimize`, and `send` (the last pushes the
@@ -124,7 +124,7 @@ kernel state and requires `--commit`, otherwise it dry-runs). Flags: `--table T`
 | `make lib` / `make example` | build the reusable `nftc` library / build+run its standalone consumer demo |
 | `make gen` | regenerate the parser-output Coq terms (`theories/*_Gen.v`) from the `.nft` sources |
 
-Sample rulesets to try the CLI on live in the repo root: `ruleset.nft`, `router.nft`,
+Sample rulesets to try the CLI on live in `rulesets/`: `rulesets/ruleset.nft`, `rulesets/router.nft`,
 `optiplex.nft`.
 
 ## Secondary: kernel-dev environment

@@ -280,7 +280,7 @@ fi
 
 # ---- C. the pipeline runs on the repo's real rulesets -----------------------
 echo ">> C. pipeline runs on real rulesets"
-for f in ../router.nft ../optiplex.nft ../ruleset.nft; do
+for f in ../rulesets/router.nft ../rulesets/optiplex.nft ../rulesets/ruleset.nft; do
   [ -f "$f" ] || continue
   if "$NFTC" compile "$f" >/dev/null 2>/tmp/e2e_err && \
      "$NFTC" optimize "$f" >/dev/null 2>>/tmp/e2e_err; then

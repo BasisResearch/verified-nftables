@@ -1,4 +1,4 @@
-(** * Example: verifying properties of a real ruleset (../../ruleset.nft).
+(** * Example: verifying properties of a real ruleset (../../rulesets/ruleset.nft).
 
     This file demonstrates the use case from the project's brief: a user has a
     ruleset, already in AST form, and wants to *prove* which packets it accepts

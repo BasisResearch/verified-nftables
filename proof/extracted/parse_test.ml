@@ -2,7 +2,7 @@
 
    With NO arguments (`make parse-test`) it runs three checks:
 
-   (A) Parse ../../ruleset.nft and run the *extracted* DSL semantics
+   (A) Parse ../../rulesets/ruleset.nft and run the *extracted* DSL semantics
        (Semantics.eval_table) on concrete packets, asserting the verdicts match
        the eight properties proved by hand in ../theories/Example_Ruleset.v.  This
        is an oracle INDEPENDENT of nft: it shows the parser builds an AST that
@@ -103,8 +103,8 @@ let ifname16 s =
 (* ---------- (A) ruleset.nft vs Example_Ruleset.v ---------- *)
 
 let check_ruleset_nft () =
-  Printf.printf "=== (A) ../../ruleset.nft vs Example_Ruleset.v (extracted eval_table) ===\n";
-  let parsed = Nft_parse.parse_file "../../ruleset.nft" in
+  Printf.printf "=== (A) ../../rulesets/ruleset.nft vs Example_Ruleset.v (extracted eval_table) ===\n";
+  let parsed = Nft_parse.parse_file "../../rulesets/ruleset.nft" in
   let env = parsed.Nft_lower.p_env in
   let chains = Nft_lower.chains_of parsed ~table:"firewall" in
   let inbound = Nft_lower.find_chain parsed ~table:"firewall" ~chain:"inbound" in
@@ -274,7 +274,7 @@ let check_live_nft () =
 
 (* ---------- (D) optiplex.nft anti-spoofing (extracted eval_table) ----------
    Cross-checks the EXTRACTED parser against the Coq theorems in
-   theories/Optiplex_Antispoof.v: parse ../../optiplex.nft, run the extracted
+   theories/Optiplex_Antispoof.v: parse ../../rulesets/optiplex.nft, run the extracted
    eval_table on the same spoof / legitimate packets, and assert the verdicts
    the proofs establish (vikunja/gentoo spoofs -> Drop; the bound pair -> Accept).
    The proofs are about nft2coq's emitted AST; this confirms the OCaml runtime
@@ -289,7 +289,7 @@ let mk_bridge ~env ~obrname ~oifname ~daddr : Packet.packet =
 
 let check_optiplex_antispoof () =
   Printf.printf "=== (D) optiplex.nft anti-spoofing vs Optiplex_Antispoof.v ===\n";
-  let parsed = Nft_parse.parse_file "../../optiplex.nft" in
+  let parsed = Nft_parse.parse_file "../../rulesets/optiplex.nft" in
   let env = parsed.Nft_lower.p_env in
   let chains = Nft_lower.chains_of parsed ~table:"vmfilter" in
   let output = Nft_lower.find_chain parsed ~table:"vmfilter" ~chain:"output" in
@@ -354,7 +354,7 @@ let mark_of p = Syntax.field_value Syntax.FMetaMark p
 
 let check_optiplex_mark () =
   Printf.printf "=== (E) optiplex.nft firewall mark vs Optiplex_Mark.v ===\n";
-  let parsed = Nft_parse.parse_file "../../optiplex.nft" in
+  let parsed = Nft_parse.parse_file "../../rulesets/optiplex.nft" in
   let env = parsed.Nft_lower.p_env in
   let prerouting  = Nft_lower.find_chain parsed ~table:"filter" ~chain:"prerouting" in
   let postrouting = Nft_lower.find_chain parsed ~table:"filter" ~chain:"postrouting" in

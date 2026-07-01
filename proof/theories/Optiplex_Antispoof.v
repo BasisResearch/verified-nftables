@@ -1,6 +1,6 @@
 (** * Anti-spoofing: a proven security property of optiplex.nft's bridge filter.
 
-    [../../optiplex.nft] is a real, in-use IPv4/IPv6 firewall.  Its `bridge
+    [../../rulesets/optiplex.nft] is a real, in-use IPv4/IPv6 firewall.  Its `bridge
     vmfilter` table binds each container's IP to the bridge port it lives behind,
     via two declared sets and, in the bridge `output` chain (policy accept):
 
@@ -14,7 +14,7 @@
 
     Crucially, we do NOT hand-translate the ruleset here.  [Optiplex_Gen.v] is the
     Menhir frontend's OUTPUT: the parser (extracted/nft_*.ml) reads
-    ../../optiplex.nft and emits the chains ([vmfilter_output], ...) and the
+    ../../rulesets/optiplex.nft and emits the chains ([vmfilter_output], ...) and the
     set/map declarations ([decls]/[gen_env]) as the Coq terms below.  So the chain
     these theorems are about IS the parser's output — there is no eyeballed step
     between the `.nft` text and the theorem.  Via [compile_table_correct] every

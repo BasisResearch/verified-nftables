@@ -1,4 +1,4 @@
-(* AUTO-GENERATED from ../../optiplex.nft by nft2coq (extracted/nft_emit.ml). DO NOT EDIT.
+(* AUTO-GENERATED from ../../rulesets/optiplex.nft by nft2coq (extracted/nft_emit.ml). DO NOT EDIT.
    This is the parser's output as Coq terms: the chains and the set/map
    declarations their lookups read.  Properties proved about these terms
    are properties of the parsed ruleset (and, via compile_table_correct, of
