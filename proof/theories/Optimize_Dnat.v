@@ -36,9 +36,13 @@ Definition dnat_map_spec (f : field) (mapname : string) : nat_spec :=
      nat_src := None; nat_extra := NXnone; nat_kind := nat_dnat_kind;
      nat_family := nat_fam_ip4; nat_flags := 0 |}.
 
-(** An ORIGINAL rule: `<field> = v  dnat to T` (terminal accept). *)
+(** An ORIGINAL rule: `<field> = v  dnat to T` (terminal accept).  The [r_verdict]
+    is [Accept] to match the frontend's lowering of a bare `dnat` statement
+    ([nft_lower]'s [stmt_is_terminal_accept]) so the recogniser FIRES on parsed
+    rulesets; the NAT is terminal regardless ([terminal_outcome] returns [Some Accept]
+    whenever [r_nat] is set), so the merge is verdict-preserving. *)
 Definition orig_dnat_rule (f : field) (v T : data) : rule :=
-  {| r_body := [BMatch (MCmp f CEq v)]; r_verdict := Continue; r_vmap := None;
+  {| r_body := [BMatch (MCmp f CEq v)]; r_verdict := Accept; r_vmap := None;
      r_nat := Some (dnat_imm_spec T); r_tproxy := None; r_fwd := None;
      r_queue := None; r_after := [] |}.
 
@@ -267,7 +271,7 @@ Qed.
 (** Recognise a rule as EXACTLY the original `dnat to <imm>` shell. *)
 Definition is_orig_dnat (r : rule) : option (field * data * data) :=
   match orig_dnat_data r, r_verdict r, r_vmap r, r_tproxy r, r_fwd r, r_queue r, r_after r with
-  | Some (f, v, T), Continue, None, None, None, None, [] => Some (f, v, T)
+  | Some (f, v, T), Accept, None, None, None, None, [] => Some (f, v, T)
   | _, _, _, _, _, _, _ => None
   end.
 
@@ -480,4 +484,51 @@ Proof.
   destruct (optimize_rules_dnat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
   inversion H; subst.
   apply (optimize_rules_dnat_maps_assoc_stable _ _ _ _ _ _ nm X E Hnm).
+Qed.
+
+(** *** [sd_maps]-DECLARATION freshness threading: every minted [mapname] lies below
+    the output counter [n'], so an [n]-fresh mapname namespace stays [n']-fresh in the
+    output decls.  (This lets a LATER nat-map-minting pass — the [snat] stage — mint
+    disjoint mapnames on top of the [dnat] stage's output.) *)
+Lemma optimize_rules_dnat_maps_bound : forall rs n d n' d' rs' k,
+  optimize_rules_dnat n d rs = (n', d', rs') ->
+  In (mapname k) (map fst (sd_maps d')) ->
+  In (mapname k) (map fst (sd_maps d)) \/ k < n'.
+Proof.
+  induction rs as [rs IH] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' k H Hin. destruct rs as [| r1 [| r2 rest]].
+  - cbn in H; inversion H; subst; left; exact Hin.
+  - cbn in H; inversion H; subst; left; exact Hin.
+  - rewrite optimize_rules_dnat_cons2 in H.
+    destruct (dnat_merge_pair r1 r2) as [[[[[f v1] v2] T1] T2]|]; cbv zeta in H.
+    + remember (optimize_rules_dnat (S n)
+                  {| sd_sets := sd_sets d; sd_vmaps := sd_vmaps d;
+                     sd_maps := (mapname n, dmap2 v1 v2 T1 T2) :: sd_maps d |} rest)
+        as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. inversion H; subst n' d' rs'. clear H.
+      destruct (IH rest ltac:(unfold ltof; cbn; lia) (S n) _ m'' dd'' rr'' k (eq_sym E) Hin)
+        as [Hin' | Hlt].
+      * cbn [sd_maps map fst] in Hin'. destruct Hin' as [Heq | Hin_d].
+        -- apply mapname_inj in Heq. subst k. right.
+           pose proof (optimize_rules_dnat_mono rest (S n) _ _ _ _ (eq_sym E)) as Hmono. lia.
+        -- left; exact Hin_d.
+      * right; exact Hlt.
+    + remember (optimize_rules_dnat n d (r2 :: rest)) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. inversion H; subst n' d' rs'. clear H.
+      apply (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) n d m'' dd'' rr'' k (eq_sym E) Hin).
+Qed.
+
+Lemma optimize_chain_dnat_fresh_mapname : forall n d c n' d' c',
+  optimize_chain_dnat n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (mapname k) (map fst (sd_maps d))) ->
+  (forall k, n' <= k -> ~ In (mapname k) (map fst (sd_maps d'))).
+Proof.
+  intros n d c n' d' c' H Hfresh k Hk Hin. unfold optimize_chain_dnat in H.
+  destruct (optimize_rules_dnat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  pose proof (optimize_rules_dnat_mono (c_rules c) n d _ _ _ E) as Hmono.
+  destruct (optimize_rules_dnat_maps_bound (c_rules c) n d _ _ _ k E Hin)
+    as [Hin_d | Hlt].
+  - apply (Hfresh k); [lia | exact Hin_d].
+  - lia.
 Qed.

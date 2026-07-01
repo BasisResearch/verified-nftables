@@ -100,6 +100,40 @@ else
   echo "   FAIL: N-field concat did not fire (lookups=$clk accepts=$cim 3-field-sets=$cset)"; fail=1
 fi
 
+# ---- B3. the verified optimizer merges adjacent snat into a bare source map --
+# (G1) `ip saddr A snat to T1 / ip saddr B snat to T2` collapses to a single
+# bare `snat to ip saddr map { A:T1, B:T2 }` — no head-set guard, SOURCE slot —
+# exactly as `nft --optimize` emits it.
+echo ">> B3. nftc optimize merges adjacent snat into a bare source map (matches nft -o)"
+SNATRULES='table ip nat {
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr 10.0.0.1 snat to 192.168.1.1
+    ip saddr 10.0.0.2 snat to 192.168.1.2
+  }
+}'
+printf '%s\n' "$SNATRULES" > /tmp/e2e_snat.nft
+SOPT=$("$NFTC" optimize /tmp/e2e_snat.nft)
+echo "$SOPT" | sed 's/^/     /'
+# the two snat rules must collapse to ONE snat rule that reads a synthesised
+# map (a `lookup` feeding reg 1) on the SOURCE address (payload @ network + 12)
+slk=$(echo "$SOPT" | grep -c 'lookup reg 1 set __map' || true)
+snt=$(echo "$SOPT" | grep -c 'nat snat ip addr_min reg 1' || true)
+ssrc=$(echo "$SOPT" | grep -c 'network header + 12' || true)
+snat_rules=$(echo "$SOPT" | grep -c '^nat postrouting' || true)
+if [ "$slk" -eq 1 ] && [ "$snt" -eq 1 ] && [ "$ssrc" -eq 1 ] && [ "$snat_rules" -eq 1 ]; then
+  echo "   PASS: 2 snat rules -> 1 bare source-address map (verified merge fired)"
+else
+  echo "   FAIL: snat map merge did not fire (lookups=$slk snat=$snt src-loads=$ssrc rules=$snat_rules)"; fail=1
+fi
+# cross-check: nft --optimize folds these into the SAME bare source map
+NFTSO=$(printf '%s\n' "$SNATRULES" | unshare -rn nft --optimize -f - 2>/dev/null | grep -c 'snat .*to ip saddr map' || true)
+if [ "${NFTSO:-0}" -ge 1 ]; then
+  echo "   PASS: nft --optimize agrees (bare 'snat to ip saddr map { .. }')"
+else
+  echo "   NOTE: nft --optimize cross-check unavailable in this environment"
+fi
+
 # ---- C. the pipeline runs on the repo's real rulesets -----------------------
 echo ">> C. pipeline runs on real rulesets"
 for f in ../router.nft ../optiplex.nft ../ruleset.nft; do

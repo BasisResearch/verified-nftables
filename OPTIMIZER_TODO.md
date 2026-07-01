@@ -31,7 +31,26 @@ verdict-preservation, so any real divergence is either our gap or nft's bug.
 
 ---
 
-## G1 — `snat to … map { … }` bare-map merge  (capability gap; highest value, lowest risk)
+## G1 — `snat to … map { … }` bare-map merge  ✅ DONE (theories/Optimize_Snat.v)
+
+Landed: `Optimize_Snat.v` mirrors `Optimize_Dnat.v` for `nat_snat_kind` + the SOURCE
+slot, reusing the kind-agnostic helpers (`dmap2`, `nat_map_key_single`,
+`map_has_key_dmap2`, `apply_nat_tuple_indep`, `nat_orig_addr_indep`) verbatim. The
+`snat` stage is composed into `optimize_table` right after `dnat`; the gen theorem
+`optimize_table_correct_uncond_gen` is re-proved (new lemma
+`optimize_chain_dnat_fresh_mapname` threads sd_maps-declaration freshness so the
+`snat` stage mints disjoint mapnames on top of `dnat`). Fires end-to-end
+(`nftc optimize` collapses 2 snat rules → 1 bare `snat to ip saddr map { … }`),
+matching `nft --optimize` (netns-confirmed; no nft bug). Also fixed a latent gap in
+the `dnat` template: the recogniser required `r_verdict = Continue` but the frontend
+lowers a bare `snat`/`dnat` to a terminal **Accept**, so neither pass fired on real
+rulesets — both `orig_{s,d}nat_rule` / `is_orig_{s,d}nat` now match `Accept` (sound:
+`terminal_outcome` returns `Some Accept` for any `r_nat`-set rule regardless of
+verdict). Witness: `theories/Snat_Witness.v`; regression gate: `e2e.sh` §B3. All
+three headline theorems stay `Closed under the global context`; corpus 2532/2532,
+validate 28/28, semtest/parse-test/e2e green.
+
+Original plan (for reference):
 
 `nft -o` merges adjacent `snat` rules into a bare map exactly like `dnat`; we only
 do `dnat`. Reuse the `Optimize_Dnat.v` machinery verbatim with `nat_snat_kind` and

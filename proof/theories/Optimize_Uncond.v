@@ -34,7 +34,7 @@ From Stdlib Require Import String.
 Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
   Compile Correct Optimize Optimize_Merge Optimize_Vmap Optimize_Concat Optimize_ConcatK
-  Optimize_Mapn Optimize_Dnat Optimize_Table_Inv Optimize_Table Optimize_Normalize.
+  Optimize_Mapn Optimize_Dnat Optimize_Snat Optimize_Table_Inv Optimize_Table Optimize_Normalize.
 
 Local Open Scope nat_scope.
 
@@ -635,6 +635,250 @@ Proof.
   inversion H; subst n' d' c'. cbn [c_rules].
   apply (optimize_rules_dnat_output_nat_map_fresh _ _ _ _ _ _ E Hrf).
 Qed.
+(** An [orig_snat_rule] reads NO set/vmap/map name, so it AGREES across any decls. *)
+Lemma decls_agree_orig_snat : forall base d1 d2 f v T,
+  decls_agree_rule base d1 d2 (orig_snat_rule f v T).
+Proof.
+  intros. repeat split; intros nm Hin; cbn in Hin; contradiction.
+Qed.
+
+(** The snat pass is structurally identical to the dnat pass (it preserves
+    [sd_sets]/[sd_vmaps] and only prepends [mapname]-keyed [sd_maps] entries), so it
+    reuses the kind-agnostic seam lemma [decls_agree_rule_dnatseam] verbatim. *)
+
+(** *** snat (bare-map): per-list VERDICT correctness, env-threaded.  The merged
+    bare rule READS [e_map (mapname n)] = the freshly-prepended [dmap2], so this is
+    NOT env-independent like the meta-mark mapN pass; it threads the agreement infra
+    exactly as [setsN] does, plugging in [eval_rules_snat_merge]. *)
+Theorem optimize_rules_snat_eval : forall rs n d n' d' rs' base p,
+  optimize_rules_snat n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (mapname k) (map fst (sd_maps d))) ->
+  Forall (rule_nat_map_fresh n) rs ->
+  eval_rules rs' (set_env p (env_with_sets base d'))
+  = eval_rules rs  (set_env p (env_with_sets base d)).
+Proof.
+  induction rs as [rs IH] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' base p H Hfresh Hrf. destruct rs as [| r1 [| r2 rest]].
+  - cbn in H; inversion H; subst; reflexivity.
+  - cbn in H; inversion H; subst; reflexivity.
+  - rewrite optimize_rules_snat_cons2 in H.
+    inversion Hrf as [| ? ? Hf1 Hrf_t]; subst.
+    inversion Hrf_t as [| ? ? Hf2 Hrf_r]; subst.
+    destruct (snat_merge_pair r1 r2) as [[[[[f v1] v2] T1] T2]|] eqn:Epair.
+    + (* MERGE *)
+      cbv zeta in H.
+      destruct (snat_merge_pair_shape r1 r2 f v1 v2 T1 T2 Epair)
+        as [Hr1 [Hr2 [Hfx1 [Hfx2 Hne]]]].
+      remember (optimize_rules_snat (S n)
+                  {| sd_sets := sd_sets d; sd_vmaps := sd_vmaps d;
+                     sd_maps := (mapname n, dmap2 v1 v2 T1 T2) :: sd_maps d |} rest)
+        as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. inversion H; subst n' d' rs'. clear H.
+      set (dd := {| sd_sets := sd_sets d; sd_vmaps := sd_vmaps d;
+                    sd_maps := (mapname n, dmap2 v1 v2 T1 T2) :: sd_maps d |}) in *.
+      assert (Hfresh' : forall k, S n <= k -> ~ In (mapname k) (map fst (sd_maps dd))).
+      { intros k Hk Hin. subst dd; cbn [sd_maps map fst] in Hin.
+        destruct Hin as [Heq | Hin].
+        - apply mapname_inj in Heq. lia.
+        - apply (Hfresh k); [lia | exact Hin]. }
+      assert (Hrf_r' : Forall (rule_nat_map_fresh (S n)) rest).
+      { eapply Forall_impl; [| exact Hrf_r].
+        intros r Hr. apply (rule_nat_map_fresh_mono n (S n) r); [lia | exact Hr]. }
+      pose proof (IH rest ltac:(unfold ltof; cbn; lia) (S n) dd m'' dd'' rr'' base p
+                    (eq_sym Erec) Hfresh' Hrf_r') as Htail0.
+      assert (Hrest_dd_d : eval_rules rest (set_env p (env_with_sets base dd))
+                         = eval_rules rest (set_env p (env_with_sets base d))).
+      { apply eval_rules_agree_gen. intros r Hr.
+        apply (decls_agree_rule_dnatseam base d dd r n).
+        - subst dd; reflexivity.
+        - subst dd; reflexivity.
+        - intros nm X Hnm. subst dd; cbn [sd_maps assoc_str].
+          destruct (String.eqb nm (mapname n)) eqn:Eq;
+            [apply String.eqb_eq in Eq; exfalso; apply (Hnm n); [lia | exact Eq] | reflexivity].
+        - rewrite Forall_forall in Hrf_r. apply Hrf_r; exact Hr. }
+      assert (Hlook : e_map (pkt_env (set_env p (env_with_sets base dd''))) (mapname n)
+                    = dmap2 v1 v2 T1 T2).
+      { cbn [set_env with_pkt_env pkt_env]. rewrite e_map_env_with_sets.
+        rewrite (optimize_rules_snat_maps_assoc_stable rest (S n) dd m'' dd'' rr''
+                   (mapname n) (e_map base (mapname n)) (eq_sym Erec)
+                   ltac:(intros j Hj Heq; apply mapname_inj in Heq; lia)).
+        subst dd; cbn [sd_maps assoc_str]. rewrite String.eqb_refl. reflexivity. }
+      subst r1 r2.
+      rewrite (eval_rules_snat_merge f v1 v2 T1 T2 (mapname n) rr''
+                 (set_env p (env_with_sets base dd'')) Hlook Hfx1 Hfx2).
+      apply (eval_rules_cons_cong (orig_snat_rule f v1 T1));
+        [ apply (rule_loadable_agree_gen _ p base dd'' d (decls_agree_orig_snat _ _ _ _ _ _))
+        | apply (rule_applies_agree_gen _ p base dd'' d (decls_agree_orig_snat _ _ _ _ _ _))
+        | apply (outcome_agree_gen _ p base dd'' d (decls_agree_orig_snat _ _ _ _ _ _)) | ].
+      apply (eval_rules_cons_cong (orig_snat_rule f v2 T2));
+        [ apply (rule_loadable_agree_gen _ p base dd'' d (decls_agree_orig_snat _ _ _ _ _ _))
+        | apply (rule_applies_agree_gen _ p base dd'' d (decls_agree_orig_snat _ _ _ _ _ _))
+        | apply (outcome_agree_gen _ p base dd'' d (decls_agree_orig_snat _ _ _ _ _ _)) | ].
+      rewrite Htail0. exact Hrest_dd_d.
+    + (* NO MERGE: keep r1, recurse on (r2 :: rest) *)
+      cbv zeta in H.
+      remember (optimize_rules_snat n d (r2 :: rest)) as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. inversion H; subst n' d' rs'. clear H.
+      pose proof (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) n d m'' dd'' rr'' base p
+                    (eq_sym Erec) Hfresh Hrf_t) as Htail.
+      assert (Hda1 : decls_agree_rule base dd'' d r1).
+      { apply (decls_agree_rule_dnatseam base d dd'' r1 n).
+        - apply (optimize_rules_snat_sets (r2 :: rest) n d m'' dd'' rr'' (eq_sym Erec)).
+        - apply (optimize_rules_snat_vmaps (r2 :: rest) n d m'' dd'' rr'' (eq_sym Erec)).
+        - intros nm X Hnm. apply (optimize_rules_snat_maps_assoc_stable (r2 :: rest) n d
+                                    m'' dd'' rr'' nm X (eq_sym Erec) Hnm).
+        - exact Hf1. }
+      apply (eval_rules_cons_cong r1);
+        [ apply (rule_loadable_agree_gen r1 p base dd'' d Hda1)
+        | apply (rule_applies_agree_gen r1 p base dd'' d Hda1)
+        | apply (outcome_agree_gen r1 p base dd'' d Hda1)
+        | exact Htail ].
+Qed.
+
+(** The chain-level lift: the snat pass preserves [eval_chain] on every packet. *)
+Lemma optimize_chain_snat_eval : forall n d c n' d' c' base p,
+  optimize_chain_snat n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (mapname k) (map fst (sd_maps d))) ->
+  Forall (rule_nat_map_fresh n) (c_rules c) ->
+  eval_chain c' (set_env p (env_with_sets base d'))
+  = eval_chain c  (set_env p (env_with_sets base d)).
+Proof.
+  intros n d c n' d' c' base p H Hfresh Hrf. unfold optimize_chain_snat in H.
+  destruct (optimize_rules_snat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain. cbn [c_rules c_policy].
+  rewrite (optimize_rules_snat_eval (c_rules c) n d m'' dd'' rr'' base p E Hfresh Hrf).
+  reflexivity.
+Qed.
+
+(** The snat pass preserves set-/vmap-read freshness: the merged [mk_snat_rule]
+    has an empty body and no verdict map, so it reads NO setname/vmapname. *)
+Lemma optimize_rules_snat_output_set_fresh : forall rs n d n' d' rs',
+  optimize_rules_snat n d rs = (n', d', rs') ->
+  Forall (rule_set_fresh n) rs -> Forall (rule_set_fresh n') rs'.
+Proof.
+  induction rs as [rs IH] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' H Hrf. destruct rs as [| r1 [| r2 rest]].
+  - cbn in H; inversion H; subst; exact Hrf.
+  - cbn in H; inversion H; subst; exact Hrf.
+  - rewrite optimize_rules_snat_cons2 in H.
+    inversion Hrf as [| ? ? Hf1 Hrf2]; subst.
+    inversion Hrf2 as [| ? ? Hf2 Hrf_rest]; subst.
+    destruct (snat_merge_pair r1 r2) as [[[[[f v1] v2] T1] T2]|] eqn:Ep; cbv zeta in H.
+    + remember (optimize_rules_snat (S n)
+                  {| sd_sets := sd_sets d; sd_vmaps := sd_vmaps d;
+                     sd_maps := (mapname n, dmap2 v1 v2 T1 T2) :: sd_maps d |} rest)
+        as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. inversion H; subst n' d' rs'. clear H. constructor.
+      * intros j Hj Hin. cbn [mk_snat_rule r_body body_set_names body_matches flat_map] in Hin.
+        contradiction.
+      * apply (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)).
+        eapply Forall_impl; [intros r Hr; apply (rule_set_fresh_mono n (S n) r); [lia|exact Hr]
+                            |exact Hrf_rest].
+    + remember (optimize_rules_snat n d (r2 :: rest)) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. inversion H; subst n' d' rs'. clear H.
+      pose proof (optimize_rules_snat_mono (r2 :: rest) n d _ _ _ (eq_sym E)) as Hmono.
+      constructor;
+        [apply (rule_set_fresh_mono n m'' r1 Hmono Hf1)
+        |apply (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E));
+           constructor; assumption].
+Qed.
+
+Lemma optimize_rules_snat_output_vmap_fresh : forall rs n d n' d' rs',
+  optimize_rules_snat n d rs = (n', d', rs') ->
+  Forall (rule_vmap_fresh n) rs -> Forall (rule_vmap_fresh n') rs'.
+Proof.
+  induction rs as [rs IH] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' H Hrf. destruct rs as [| r1 [| r2 rest]].
+  - cbn in H; inversion H; subst; exact Hrf.
+  - cbn in H; inversion H; subst; exact Hrf.
+  - rewrite optimize_rules_snat_cons2 in H.
+    inversion Hrf as [| ? ? Hf1 Hrf2]; subst.
+    inversion Hrf2 as [| ? ? Hf2 Hrf_rest]; subst.
+    destruct (snat_merge_pair r1 r2) as [[[[[f v1] v2] T1] T2]|] eqn:Ep; cbv zeta in H.
+    + remember (optimize_rules_snat (S n)
+                  {| sd_sets := sd_sets d; sd_vmaps := sd_vmaps d;
+                     sd_maps := (mapname n, dmap2 v1 v2 T1 T2) :: sd_maps d |} rest)
+        as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. inversion H; subst n' d' rs'. clear H. constructor.
+      * intros j Hj Hin. cbn [mk_snat_rule rule_vmap_name r_vmap] in Hin. contradiction.
+      * apply (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)).
+        eapply Forall_impl; [intros r Hr; apply (rule_vmap_fresh_mono n (S n) r); [lia|exact Hr]
+                            |exact Hrf_rest].
+    + remember (optimize_rules_snat n d (r2 :: rest)) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. inversion H; subst n' d' rs'. clear H.
+      pose proof (optimize_rules_snat_mono (r2 :: rest) n d _ _ _ (eq_sym E)) as Hmono.
+      constructor;
+        [apply (rule_vmap_fresh_mono n m'' r1 Hmono Hf1)
+        |apply (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E));
+           constructor; assumption].
+Qed.
+
+Lemma optimize_chain_snat_output_set_fresh : forall n d c n' d' c',
+  optimize_chain_snat n d c = (n', d', c') ->
+  Forall (rule_set_fresh n) (c_rules c) -> Forall (rule_set_fresh n') (c_rules c').
+Proof.
+  intros n d c n' d' c' H Hrf. unfold optimize_chain_snat in H.
+  destruct (optimize_rules_snat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. cbn [c_rules].
+  apply (optimize_rules_snat_output_set_fresh _ _ _ _ _ _ E Hrf).
+Qed.
+
+Lemma optimize_chain_snat_output_vmap_fresh : forall n d c n' d' c',
+  optimize_chain_snat n d c = (n', d', c') ->
+  Forall (rule_vmap_fresh n) (c_rules c) -> Forall (rule_vmap_fresh n') (c_rules c').
+Proof.
+  intros n d c n' d' c' H Hrf. unfold optimize_chain_snat in H.
+  destruct (optimize_rules_snat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. cbn [c_rules].
+  apply (optimize_rules_snat_output_vmap_fresh _ _ _ _ _ _ E Hrf).
+Qed.
+
+(** snat preserves nat-map read-freshness: the ONLY nat-map name the merged rule
+    reads is [mapname n], which is BELOW the output counter [n'] (>= S n). *)
+Lemma optimize_rules_snat_output_nat_map_fresh : forall rs n d n' d' rs',
+  optimize_rules_snat n d rs = (n', d', rs') ->
+  Forall (rule_nat_map_fresh n) rs -> Forall (rule_nat_map_fresh n') rs'.
+Proof.
+  induction rs as [rs IH] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' H Hrf. destruct rs as [| r1 [| r2 rest]].
+  - cbn in H; inversion H; subst; exact Hrf.
+  - cbn in H; inversion H; subst; exact Hrf.
+  - rewrite optimize_rules_snat_cons2 in H.
+    inversion Hrf as [| ? ? Hf1 Hrf2]; subst.
+    inversion Hrf2 as [| ? ? Hf2 Hrf_rest]; subst.
+    destruct (snat_merge_pair r1 r2) as [[[[[f v1] v2] T1] T2]|] eqn:Ep; cbv zeta in H.
+    + remember (optimize_rules_snat (S n)
+                  {| sd_sets := sd_sets d; sd_vmaps := sd_vmaps d;
+                     sd_maps := (mapname n, dmap2 v1 v2 T1 T2) :: sd_maps d |} rest)
+        as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. inversion H; subst n' d' rs'. clear H.
+      pose proof (optimize_rules_snat_mono rest (S n) _ _ _ _ (eq_sym E)) as Hmono.
+      constructor.
+      * intros j Hj Hin.
+        cbn [mk_snat_rule rule_nat_map_name r_nat snat_map_spec nat_map] in Hin.
+        destruct Hin as [Heq | []]. apply mapname_inj in Heq. lia.
+      * apply (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)).
+        eapply Forall_impl; [intros r Hr; apply (rule_nat_map_fresh_mono n (S n) r); [lia|exact Hr]
+                            |exact Hrf_rest].
+    + remember (optimize_rules_snat n d (r2 :: rest)) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. inversion H; subst n' d' rs'. clear H.
+      pose proof (optimize_rules_snat_mono (r2 :: rest) n d _ _ _ (eq_sym E)) as Hmono.
+      constructor;
+        [apply (rule_nat_map_fresh_mono n m'' r1 Hmono Hf1)
+        |apply (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E));
+           constructor; assumption].
+Qed.
+
+Lemma optimize_chain_snat_output_nat_map_fresh : forall n d c n' d' c',
+  optimize_chain_snat n d c = (n', d', c') ->
+  Forall (rule_nat_map_fresh n) (c_rules c) -> Forall (rule_nat_map_fresh n') (c_rules c').
+Proof.
+  intros n d c n' d' c' H Hrf. unfold optimize_chain_snat in H.
+  destruct (optimize_rules_snat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. cbn [c_rules].
+  apply (optimize_rules_snat_output_nat_map_fresh _ _ _ _ _ _ E Hrf).
+Qed.
+
 
 (** ** Part 3: unconditional per-pass correctness.
 
@@ -1976,7 +2220,8 @@ Proof.
   intros n d c n' d' c' base p H Hfs Hfv Hfm Hrs Hrv Hrm.
   unfold optimize_table in H.
   destruct (optimize_chain_dnat n d (optimize_chain c)) as [[nD dD] cD] eqn:ED.
-  destruct (optimize_chain_setsN nD dD cD) as [[n1 d1] c1] eqn:E1.
+  destruct (optimize_chain_snat nD dD cD) as [[nS dS] cS] eqn:ES.
+  destruct (optimize_chain_setsN nS dS cS) as [[n1 d1] c1] eqn:E1.
   destruct (optimize_chain_concatK n1 d1 c1) as [[nK dK] cK] eqn:EK.
   destruct (optimize_chain_mapn nK dK cK) as [[nM dM] cM] eqn:EM.
   destruct (optimize_chain_concatN nM dM cM) as [[n2 d2] c2] eqn:E2.
@@ -1988,32 +2233,46 @@ Proof.
   assert (Hfv_D : forall k, nD <= k -> ~ In (vmapname k) (map fst (sd_vmaps dD))).
   { intros k Hk. rewrite (optimize_chain_dnat_vmaps n d (optimize_chain c) nD dD cD ED).
     apply Hfv. lia. }
+  assert (Hfm_D : forall k, nD <= k -> ~ In (mapname k) (map fst (sd_maps dD))).
+  { apply (optimize_chain_dnat_fresh_mapname n d (optimize_chain c) nD dD cD ED Hfm). }
   pose proof (optimize_chain_dnat_output_set_fresh n d (optimize_chain c) nD dD cD ED Hrs) as Hrs_D.
   pose proof (optimize_chain_dnat_output_vmap_fresh n d (optimize_chain c) nD dD cD ED Hrv) as Hrv_D.
   pose proof (optimize_chain_dnat_output_nat_map_fresh n d (optimize_chain c) nD dD cD ED Hrm) as Hrm_D.
-  (* counter monotonicity chain nD <= n1 <= nK <= nM <= n2 *)
-  pose proof (optimize_chain_setsN_mono nD dD cD n1 d1 c1 E1) as Hmn1.
+  (* snat stage: structurally identical to dnat (mints [mapname]s on the SOURCE slot),
+     threaded on top of the dnat outputs *)
+  pose proof (optimize_chain_snat_mono nD dD cD nS dS cS ES) as HmnS.
+  assert (Hfs_S : forall k, nS <= k -> ~ In (setname k) (map fst (sd_sets dS))).
+  { intros k Hk. rewrite (optimize_chain_snat_sets nD dD cD nS dS cS ES).
+    apply Hfs_D. lia. }
+  assert (Hfv_S : forall k, nS <= k -> ~ In (vmapname k) (map fst (sd_vmaps dS))).
+  { intros k Hk. rewrite (optimize_chain_snat_vmaps nD dD cD nS dS cS ES).
+    apply Hfv_D. lia. }
+  pose proof (optimize_chain_snat_output_set_fresh nD dD cD nS dS cS ES Hrs_D) as Hrs_S.
+  pose proof (optimize_chain_snat_output_vmap_fresh nD dD cD nS dS cS ES Hrv_D) as Hrv_S.
+  pose proof (optimize_chain_snat_output_nat_map_fresh nD dD cD nS dS cS ES Hrm_D) as Hrm_S.
+  (* counter monotonicity chain nS <= n1 <= nK <= nM <= n2 *)
+  pose proof (optimize_chain_setsN_mono nS dS cS n1 d1 c1 E1) as Hmn1.
   pose proof (optimize_chain_concatK_mono n1 d1 c1 nK dK cK EK) as HmnK.
   pose proof (optimize_chain_mapn_mono nK dK cK nM dM cM EM) as HmnM.
   pose proof (optimize_chain_concatN_mono nM dM cM n2 d2 c2 E2) as Hmn2.
   (* setname-freshness threading through setsN, concatK, mapn (all mint setnames) *)
-  pose proof (optimize_chain_setsN_fresh_setname nD dD cD n1 d1 c1 E1 Hfs_D) as Hfs1.
+  pose proof (optimize_chain_setsN_fresh_setname nS dS cS n1 d1 c1 E1 Hfs_S) as Hfs1.
   pose proof (optimize_chain_concatK_fresh_setname n1 d1 c1 nK dK cK EK Hfs1) as HfsK.
   pose proof (optimize_chain_mapn_fresh_setname nK dK cK nM dM cM EM HfsK) as HfsM.
   (* sd_vmaps unchanged across setsN, concatK, mapn, concatN *)
-  assert (Hvm2 : sd_vmaps d2 = sd_vmaps dD).
+  assert (Hvm2 : sd_vmaps d2 = sd_vmaps dS).
   { rewrite (optimize_chain_concatN_vmaps nM dM cM n2 d2 c2 E2).
     rewrite (optimize_chain_mapn_vmaps nK dK cK nM dM cM EM).
     rewrite (optimize_chain_concatK_vmaps n1 d1 c1 nK dK cK EK).
-    apply (optimize_chain_setsN_vmaps nD dD cD n1 d1 c1 E1). }
+    apply (optimize_chain_setsN_vmaps nS dS cS n1 d1 c1 E1). }
   assert (Hfv2 : forall k, n2 <= k -> ~ In (vmapname k) (map fst (sd_vmaps d2))).
-  { intros k Hk. rewrite Hvm2. apply Hfv_D. lia. }
+  { intros k Hk. rewrite Hvm2. apply Hfv_S. lia. }
   (* read-freshness threading: setsN -> concatK -> mapn -> concatN *)
-  pose proof (optimize_chain_setsN_output_set_fresh nD dD cD n1 d1 c1 E1 Hrs_D) as Hrs1.
-  pose proof (optimize_chain_setsN_output_vmap_fresh nD dD cD n1 d1 c1 E1 Hrv_D) as Hrv1.
+  pose proof (optimize_chain_setsN_output_set_fresh nS dS cS n1 d1 c1 E1 Hrs_S) as Hrs1.
+  pose proof (optimize_chain_setsN_output_vmap_fresh nS dS cS n1 d1 c1 E1 Hrv_S) as Hrv1.
   pose proof (optimize_chain_concatK_output_set_fresh n1 d1 c1 nK dK cK EK Hrs1) as HrsK.
-  (* nat-map read-freshness threading: dnat -> setsN -> concatK -> mapn input *)
-  pose proof (optimize_chain_setsN_output_nat_map_fresh nD dD cD n1 d1 c1 E1 Hrm_D) as Hrm1.
+  (* nat-map read-freshness threading: snat -> setsN -> concatK -> mapn input *)
+  pose proof (optimize_chain_setsN_output_nat_map_fresh nS dS cS n1 d1 c1 E1 Hrm_S) as Hrm1.
   pose proof (optimize_chain_concatK_output_nat_map_fresh n1 d1 c1 nK dK cK EK Hrm1) as HrmK.
   pose proof (optimize_chain_concatK_output_vmap_fresh n1 d1 c1 nK dK cK EK Hrv1) as HrvK.
   pose proof (optimize_chain_mapn_output_set_fresh nK dK cK nM dM cM EM HrsK) as HrsM.
@@ -2024,7 +2283,8 @@ Proof.
   rewrite (optimize_chain_concatN_correct_uncond nM dM cM n2 d2 c2 base p E2 HfsM HrsM).
   rewrite (optimize_chain_mapn_correct_uncond nK dK cK nM dM cM base p EM HrsK HrmK).
   rewrite (optimize_chain_concatK_correct_uncond n1 d1 c1 nK dK cK base p EK Hfs1 Hrs1).
-  rewrite (optimize_chain_setsN_correct_uncond nD dD cD n1 d1 c1 base p E1 Hfs_D Hrs_D).
+  rewrite (optimize_chain_setsN_correct_uncond nS dS cS n1 d1 c1 base p E1 Hfs_S Hrs_S).
+  rewrite (optimize_chain_snat_eval nD dD cD nS dS cS base p ES Hfm_D Hrm_D).
   rewrite (optimize_chain_dnat_eval n d (optimize_chain c) nD dD cD base p ED Hfm Hrm).
   apply optimize_chain_correct.
 Qed.

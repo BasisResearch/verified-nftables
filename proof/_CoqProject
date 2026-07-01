@@ -56,6 +56,7 @@ theories/Optimize_Concat.v
 theories/Optimize_ConcatK.v
 theories/Optimize_Mapn.v
 theories/Optimize_Dnat.v
+theories/Optimize_Snat.v
 theories/Optimize_Table_Inv.v
 theories/Optimize_Table.v
 theories/Optimize_Normalize.v
@@ -64,4 +65,5 @@ theories/Fib_Local.v
 theories/Netstate_MultiAddr.v
 theories/Nft_Demo_Symbolic.v
 theories/Nft_Demo_Concrete.v
+theories/Snat_Witness.v
 theories/Extract.v
