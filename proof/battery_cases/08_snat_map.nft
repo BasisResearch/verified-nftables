@@ -1,0 +1,7 @@
+table ip nat {
+  chain post {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr 10.0.0.1 snat to 192.168.1.1
+    ip saddr 10.0.0.2 snat to 192.168.1.2
+  }
+}

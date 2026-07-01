@@ -1,0 +1,7 @@
+table ip t {
+  chain c {
+    type filter hook prerouting priority 0; policy accept;
+    ip saddr 1.1.1.1 meta mark set 0x00000001
+    ip saddr 2.2.2.2 meta mark set 0x00000002
+  }
+}

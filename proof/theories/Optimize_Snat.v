@@ -1,0 +1,459 @@
+(** * Optimize_Snat: the BARE snat value-map merge (G1).
+
+    [nft -o] folds adjacent rules whose only difference is a NAT TARGET into a
+    map keyed by a match, emitting the BARE map with NO head-set guard — exactly
+    as the [dnat] pass ([Optimize_Dnat.v]), but for the SOURCE address slot:
+
+      ip saddr A snat to T1
+      ip saddr B snat to T2   =>   snat to ip saddr map { A : T1, B : T2 }
+
+    The only difference from [Optimize_Dnat] is the NAT [nat_kind] ([nat_snat_kind]
+    instead of [nat_dnat_kind]); everything downstream ([nat_is_src] = true, the
+    SOURCE address/port slots) is derived from it by [Semantics].  The verdict
+    machinery ([outcome]/[rule_loadable]/[rule_applies]) is kind-independent, so the
+    kind-agnostic helpers ([dmap2], [nat_map_key_single], [map_has_key_dmap2],
+    [apply_nat_tuple_indep], [nat_orig_addr_indep]) are REUSED verbatim from
+    [Optimize_Dnat].
+
+    Unlike the meta-mark [mapN] pass ([Optimize_Mapn.v]), which keeps a head-set
+    guard so its statement-map lookup always hits, this pass relies on Phase 1's
+    NFT_BREAK-on-map-miss ([ILookupValBr] / [terminal_loadable]'s [map_has_key]):
+    a packet whose key is NOT in the map makes the merged rule's [rule_loadable]
+    FALSE, so [eval_rules] skips it and falls through — exactly as the two
+    original rules fall through when neither head match fires.
+
+    This file proves the per-merge VERDICT correctness over [eval_rules]
+    ([eval_rules_snat_merge]); the meaningfulness rests on the break (a packet
+    off the key set must fall through, not accept). *)
+
+From Stdlib Require Import List Bool Arith Lia String.
+Import ListNotations.
+From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
+  Compile Optimize Optimize_Merge Optimize_Vmap Optimize_Mapn Optimize_Dnat.
+
+Local Open Scope nat_scope.
+
+(** A snat NAT spec to an immediate target [T]. *)
+Definition snat_imm_spec (T : data) : nat_spec :=
+  {| nat_addr_imm := Some T; nat_field := None; nat_map := None; nat_src := None;
+     nat_extra := NXnone; nat_kind := nat_snat_kind; nat_family := nat_fam_ip4;
+     nat_flags := 0 |}.
+
+(** A snat NAT spec whose target comes from a data MAP keyed by [f]. *)
+Definition snat_map_spec (f : field) (mapname : string) : nat_spec :=
+  {| nat_addr_imm := None; nat_field := None; nat_map := Some ([f], [], mapname);
+     nat_src := None; nat_extra := NXnone; nat_kind := nat_snat_kind;
+     nat_family := nat_fam_ip4; nat_flags := 0 |}.
+
+(** An ORIGINAL rule: `<field> = v  snat to T` (terminal accept).  The [r_verdict]
+    is [Accept]: the frontend lowers a bare `snat`/`dnat` statement to a terminal
+    ACCEPT ([nft_lower]'s [stmt_is_terminal_accept]), so the recogniser must match
+    that real shape to FIRE on parsed rulesets.  The NAT is terminal regardless:
+    [terminal_outcome] returns [Some Accept] whenever [r_nat] is set, so the merge is
+    verdict-preserving independent of the stated [r_verdict]. *)
+Definition orig_snat_rule (f : field) (v T : data) : rule :=
+  {| r_body := [BMatch (MCmp f CEq v)]; r_verdict := Accept; r_vmap := None;
+     r_nat := Some (snat_imm_spec T); r_tproxy := None; r_fwd := None;
+     r_queue := None; r_after := [] |}.
+
+(** The MERGED rule: `snat to <field> map @mapname` — BARE, no head guard. *)
+Definition mk_snat_rule (f : field) (mapname : string) : rule :=
+  {| r_body := []; r_verdict := Continue; r_vmap := None;
+     r_nat := Some (snat_map_spec f mapname); r_tproxy := None; r_fwd := None;
+     r_queue := None; r_after := [] |}.
+
+(** [dmap2], [nat_map_key_single], [map_has_key_dmap2], [apply_nat_tuple_indep]
+    and [nat_orig_addr_indep] are kind-independent — reused from [Optimize_Dnat]. *)
+
+(** *** [outcome] of either rule is [Some Accept] (a NAT terminal), with no
+    synproxy/vmap to intervene. *)
+Lemma outcome_orig_snat : forall f v T p, outcome (orig_snat_rule f v T) p = Some Accept.
+Proof.
+  intros f v T p. unfold outcome, orig_snat_rule.
+  cbn [body_synproxy_stops r_body body_matches].
+  unfold outcome_core. cbn [r_vmap r_nat]. reflexivity.
+Qed.
+
+Lemma outcome_mk_snat : forall f mapname p, outcome (mk_snat_rule f mapname) p = Some Accept.
+Proof. intros. reflexivity. Qed.
+
+(** *** [rule_applies] of the original rule is the head [MCmp] eval; the merged
+    rule (empty body) always applies. *)
+Lemma applies_orig_snat : forall f v T p,
+  rule_applies (orig_snat_rule f v T) p = eval_matchcond (MCmp f CEq v) p.
+Proof.
+  intros f v T p. unfold rule_applies, orig_snat_rule.
+  cbn [r_body rule_applies_walk body_matches]. apply andb_true_r.
+Qed.
+
+Lemma applies_mk_snat : forall f mapname p, rule_applies (mk_snat_rule f mapname) p = true.
+Proof. reflexivity. Qed.
+
+(** *** [rule_loadable] of the original rule = the head field loads (its terminal
+    is an immediate, always loadable). *)
+Lemma loadable_orig_snat : forall f v T p,
+  rule_loadable (orig_snat_rule f v T) p = field_loadable f p.
+Proof.
+  intros f v T p. unfold rule_loadable, orig_snat_rule, end_loadable, tail_loadable.
+  cbn [r_body body_loadable_walk body_item_loadable body_synproxy_stops body_thread
+       r_after r_vmap terminal_loadable terminal_outcome r_nat r_tproxy r_fwd r_queue
+       nat_src nat_map nat_field snat_imm_spec forallb].
+  unfold match_loadable. rewrite !andb_true_r. reflexivity.
+Qed.
+
+(** *** [rule_loadable] of the merged rule = the field loads AND its value is a
+    KEY of the map (else the terminal data-map lookup BREAKs — NFT_BREAK). *)
+Lemma loadable_mk_snat : forall f mapname p,
+  rule_loadable (mk_snat_rule f mapname) p
+  = field_loadable f p && map_has_key (field_value f p) (e_map (pkt_env p) mapname).
+Proof.
+  intros f mapname p.
+  unfold rule_loadable, mk_snat_rule, end_loadable, tail_loadable, terminal_loadable,
+    terminal_outcome, snat_map_spec.
+  cbn [r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after body_loadable_walk
+       body_synproxy_stops body_thread nat_src nat_map fields_loadable forallb].
+  rewrite nat_map_key_single. rewrite !andb_true_r, !andb_true_l. reflexivity.
+Qed.
+
+(** *** THE per-merge VERDICT correctness: the bare merged map rule accepts
+    EXACTLY the packets the two originals accept, and falls through on the rest —
+    the break-on-miss ([loadable_mk_snat]'s [map_has_key]) is what makes the
+    head-guard-free map sound. *)
+Theorem eval_rules_snat_merge : forall (f : field) (v1 v2 T1 T2 : data)
+    (mapname : string) (rest : list rule) (p : packet),
+  e_map (pkt_env p) mapname = dmap2 v1 v2 T1 T2 ->
+  field_fixed_len f = Some (List.length v1) ->
+  field_fixed_len f = Some (List.length v2) ->
+  eval_rules (mk_snat_rule f mapname :: rest) p
+  = eval_rules (orig_snat_rule f v1 T1 :: orig_snat_rule f v2 T2 :: rest) p.
+Proof.
+  intros f v1 v2 T1 T2 mapname rest p Hmap Hfx1 Hfx2.
+  cbn [eval_rules].
+  rewrite loadable_mk_snat, applies_mk_snat, outcome_mk_snat.
+  rewrite loadable_orig_snat, applies_orig_snat, outcome_orig_snat.
+  rewrite loadable_orig_snat, applies_orig_snat, outcome_orig_snat.
+  rewrite Hmap, map_has_key_dmap2.
+  destruct (field_loadable f p) eqn:Hld.
+  - (* field loads: relate the head MCmp matches to the data_eqb disjunction *)
+    rewrite (eval_mcmp_point f v1 p Hld (field_fixed_len_loaded f (List.length v1) p Hfx1 Hld)).
+    rewrite (eval_mcmp_point f v2 p Hld (field_fixed_len_loaded f (List.length v2) p Hfx2 Hld)).
+    rewrite (data_eqb_sym (field_value f p) v1), (data_eqb_sym (field_value f p) v2).
+    cbn [andb terminal].
+    destruct (data_eqb v1 (field_value f p)); cbn [orb];
+      destruct (data_eqb v2 (field_value f p)); reflexivity.
+  - (* field does not load: every rule BREAKs (rule_loadable false) -> fall through *)
+    cbn [andb]. reflexivity.
+Qed.
+
+(** ** The NON-VACUOUS data-plane correctness: the bare merged map rule applies
+    the SAME NAT translation as a `snat to T` rule whose target [T] is the map
+    value at the packet's key — i.e. the synthesised map rewrites to exactly the
+    right address (not just "some accept"). *)
+
+(** The merged operand resolves to the map value at the key. *)
+Lemma nat_operand_addr_snat_eq : forall h f m T p,
+  map_lookup_data (field_value f p) (e_map (pkt_env p) m) = T ->
+  nat_operand_addr h (snat_map_spec f m) p = nat_operand_addr h (snat_imm_spec T) p.
+Proof.
+  intros h f m T p Hlk. unfold nat_operand_addr, nat_has_addr, nat_addr.
+  cbn [nat_kind nat_src nat_map nat_field nat_addr_imm snat_map_spec snat_imm_spec].
+  rewrite nat_map_key_single, Hlk. reflexivity.
+Qed.
+
+(** THE data-plane merge: the bare map rule's NAT effect equals that of a
+    `snat to <map value at the key>` rule — at EVERY hook and flow state. *)
+Theorem apply_nat_snat_eq : forall h f m T p,
+  map_lookup_data (field_value f p) (e_map (pkt_env p) m) = T ->
+  apply_nat h (mk_snat_rule f m) p = apply_nat h (orig_snat_rule f [] T) p.
+Proof.
+  intros h f m T p Hlk.
+  unfold apply_nat, mk_snat_rule, orig_snat_rule. cbn [r_nat].
+  destruct (e_nat (pkt_env p) (pkt_flow p)) as [mm |].
+  - apply apply_nat_tuple_indep; reflexivity.
+  - destruct (pkt_ctdir_orig p); [| reflexivity].
+    rewrite (nat_orig_addr_indep (snat_map_spec f m) (snat_imm_spec T) p eq_refl eq_refl).
+    rewrite (nat_operand_addr_snat_eq h f m T p Hlk).
+    cbn [nat_port_num nat_orig_port nat_extra snat_map_spec snat_imm_spec].
+    rewrite (apply_nat_tuple_indep (snat_map_spec f m) (snat_imm_spec T) p _ eq_refl eq_refl).
+    reflexivity.
+Qed.
+
+(** Specialised to the two-key map: hitting key [v1] applies [T1]; key [v2]
+    (distinct) applies [T2] — the merged rule's translation matches whichever
+    original would have fired. *)
+Corollary apply_nat_snat_merge1 : forall h f v1 v2 T1 T2 m p,
+  e_map (pkt_env p) m = dmap2 v1 v2 T1 T2 ->
+  data_eqb (field_value f p) v1 = true ->
+  apply_nat h (mk_snat_rule f m) p = apply_nat h (orig_snat_rule f v1 T1) p.
+Proof.
+  intros h f v1 v2 T1 T2 m p Hmap Hv1.
+  transitivity (apply_nat h (orig_snat_rule f [] T1) p).
+  - apply apply_nat_snat_eq.
+    rewrite Hmap. unfold dmap2. cbn [map_lookup_data]. rewrite Hv1. reflexivity.
+  - unfold apply_nat, orig_snat_rule. cbn [r_nat]. reflexivity.
+Qed.
+
+(* ================================================================== *)
+(** ** The executable pairwise pass. *)
+
+(** Extract the head field/value and snat target of a rule shaped EXACTLY like
+    `<f> = v  snat to T` (an [orig_snat_rule]).  Constructor matches only — no
+    monolithic [rule_eq_dec] (cf. [Optimize_Mapn.is_orig_map]). *)
+Definition orig_snat_data (r : rule) : option (field * data * data) :=
+  match r_body r, r_nat r with
+  | [BMatch (MCmp f CEq v)], Some ns =>
+      match nat_src ns, nat_map ns, nat_field ns, nat_addr_imm ns, nat_extra ns with
+      | None, None, None, Some T, NXnone =>
+          if String.string_dec (nat_kind ns) nat_snat_kind then
+          if String.string_dec (nat_family ns) nat_fam_ip4 then
+          match nat_flags ns with O => Some (f, v, T) | _ => None end
+          else None else None
+      | _, _, _, _, _ => None
+      end
+  | _, _ => None
+  end.
+
+Lemma orig_snat_data_shape : forall r f v T,
+  orig_snat_data r = Some (f, v, T) ->
+  r_body r = [BMatch (MCmp f CEq v)] /\ r_nat r = Some (snat_imm_spec T).
+Proof.
+  intros [body verd vmap nt tp fwd q aft] f v T H. unfold orig_snat_data in H.
+  cbn [r_body r_nat] in H.
+  destruct body as [| it tl]; try discriminate H.
+  destruct it as [m|s]; [|discriminate H].
+  destruct m as [ b1 b2 | b1 b2 | b1 b2 b3 b4 | b1 b2 b3 b4 b5 | f1 op v1
+                | b1 b2 b3 | b1 b2 b3 b4 | b1 b2 b3 b4 | b1 b2 b3 b4 b5
+                | b1 | b1 | b1 | b1 b2 b3 ]; try discriminate H.
+  destruct op; try discriminate H.
+  destruct tl as [| x l]; try discriminate H.
+  destruct nt as [ns|]; [|discriminate H].
+  destruct ns as [aimm afld amap asrc aext aknd afam afl].
+  cbn [nat_addr_imm nat_field nat_map nat_src nat_extra nat_kind nat_family nat_flags] in H.
+  destruct asrc; try discriminate H.
+  destruct amap; try discriminate H.
+  destruct afld; try discriminate H.
+  destruct aimm as [T0|]; [|discriminate H].
+  destruct aext; try discriminate H.
+  destruct (String.string_dec aknd nat_snat_kind) as [Hk|]; [|discriminate H].
+  destruct (String.string_dec afam nat_fam_ip4) as [Hfam|]; [|discriminate H].
+  destruct afl; [|discriminate H].
+  injection H as -> -> ->. subst. cbn [r_body r_nat]. split; reflexivity.
+Qed.
+
+(** Recognise a rule as EXACTLY the original `snat to <imm>` shell. *)
+Definition is_orig_snat (r : rule) : option (field * data * data) :=
+  match orig_snat_data r, r_verdict r, r_vmap r, r_tproxy r, r_fwd r, r_queue r, r_after r with
+  | Some (f, v, T), Accept, None, None, None, None, [] => Some (f, v, T)
+  | _, _, _, _, _, _, _ => None
+  end.
+
+Lemma is_orig_snat_shape : forall r f v T,
+  is_orig_snat r = Some (f, v, T) -> r = orig_snat_rule f v T.
+Proof.
+  intros r f v T H. unfold is_orig_snat in H.
+  destruct (orig_snat_data r) as [[[f0 v0] T0]|] eqn:Hd; [|discriminate H].
+  destruct (r_verdict r) eqn:Hverd; try discriminate H.
+  destruct (r_vmap r) eqn:Hvm; try discriminate H.
+  destruct (r_tproxy r) eqn:Htp; try discriminate H.
+  destruct (r_fwd r) eqn:Hfwd; try discriminate H.
+  destruct (r_queue r) eqn:Hq; try discriminate H.
+  destruct (r_after r) eqn:Haft; try discriminate H.
+  injection H as -> -> ->.
+  pose proof (orig_snat_data_shape r f v T Hd) as [Hbody Hnat].
+  destruct r; cbn in *. subst. reflexivity.
+Qed.
+
+(** Two rules form an eligible BARE-map snat merge: both `snat to <imm>` shells
+    over the SAME fixed-width field, with DISTINCT key values. *)
+Definition snat_merge_pair (r1 r2 : rule)
+  : option (field * data * data * data * data) :=
+  match is_orig_snat r1, is_orig_snat r2 with
+  | Some (f1, v1, T1), Some (f2, v2, T2) =>
+      if field_eq_dec f1 f2 then
+      match field_fixed_len f1 with
+      | Some len =>
+          if Nat.eq_dec len (List.length v1) then if Nat.eq_dec len (List.length v2) then
+          if data_eqb v1 v2 then None else Some (f1, v1, v2, T1, T2)
+          else None else None
+      | None => None
+      end else None
+  | _, _ => None
+  end.
+
+Lemma snat_merge_pair_shape : forall r1 r2 f v1 v2 T1 T2,
+  snat_merge_pair r1 r2 = Some (f, v1, v2, T1, T2) ->
+  r1 = orig_snat_rule f v1 T1 /\ r2 = orig_snat_rule f v2 T2 /\
+  field_fixed_len f = Some (List.length v1) /\ field_fixed_len f = Some (List.length v2) /\
+  data_eqb v1 v2 = false.
+Proof.
+  intros r1 r2 f v1 v2 T1 T2 H. unfold snat_merge_pair in H.
+  destruct (is_orig_snat r1) as [[[f1 u1] N1]|] eqn:H1; [|discriminate].
+  destruct (is_orig_snat r2) as [[[f2 u2] N2]|] eqn:H2; [|discriminate].
+  destruct (field_eq_dec f1 f2) as [<-|]; [|discriminate].
+  destruct (field_fixed_len f1) as [len|] eqn:Hfx; [|discriminate].
+  destruct (Nat.eq_dec len (List.length u1)) as [->|]; [|discriminate].
+  destruct (Nat.eq_dec (List.length u1) (List.length u2)) as [Hl|]; [|discriminate].
+  destruct (data_eqb u1 u2) eqn:Hd; [discriminate|].
+  injection H as -> -> -> -> ->.
+  pose proof (is_orig_snat_shape r1 f v1 T1 H1) as Hr1.
+  pose proof (is_orig_snat_shape r2 f v2 T2 H2) as Hr2.
+  repeat split; [exact Hr1 | exact Hr2 | exact Hfx | rewrite Hfx; f_equal; exact Hl | exact Hd].
+Qed.
+
+(** The pass: fold each adjacent eligible pair into ONE bare map rule, minting a
+    fresh [mapname] (NO [setname] — the bare map needs no head guard). *)
+Fixpoint optimize_rules_snat (n : nat) (d : set_decls) (rs : list rule)
+  : nat * set_decls * list rule :=
+  match rs with
+  | r1 :: ((r2 :: rest) as tl) =>
+      match snat_merge_pair r1 r2 with
+      | Some (f, v1, v2, T1, T2) =>
+          let d' := {| sd_sets := sd_sets d; sd_vmaps := sd_vmaps d;
+                       sd_maps := (mapname n, dmap2 v1 v2 T1 T2) :: sd_maps d |} in
+          let merged := mk_snat_rule f (mapname n) in
+          let '(n'', d'', rest') := optimize_rules_snat (S n) d' rest in
+          (n'', d'', merged :: rest')
+      | None =>
+          let '(n'', d'', tl') := optimize_rules_snat n d tl in
+          (n'', d'', r1 :: tl')
+      end
+  | _ => (n, d, rs)
+  end.
+
+Lemma optimize_rules_snat_cons2 : forall n d r1 r2 rest,
+  optimize_rules_snat n d (r1 :: r2 :: rest) =
+  match snat_merge_pair r1 r2 with
+  | Some (f, v1, v2, T1, T2) =>
+      let d' := {| sd_sets := sd_sets d; sd_vmaps := sd_vmaps d;
+                   sd_maps := (mapname n, dmap2 v1 v2 T1 T2) :: sd_maps d |} in
+      let merged := mk_snat_rule f (mapname n) in
+      let '(n'', d'', rest') := optimize_rules_snat (S n) d' rest in
+      (n'', d'', merged :: rest')
+  | None =>
+      let '(n'', d'', tl') := optimize_rules_snat n d (r2 :: rest) in
+      (n'', d'', r1 :: tl')
+  end.
+Proof. reflexivity. Qed.
+
+(** *** Structural invariants: the pass leaves [sd_sets]/[sd_vmaps] untouched and
+    its counter is monotone. *)
+Lemma optimize_rules_snat_sets : forall rs n d n' d' rs',
+  optimize_rules_snat n d rs = (n', d', rs') -> sd_sets d' = sd_sets d.
+Proof.
+  induction rs as [rs IH] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' H. destruct rs as [| r1 [| r2 rest]].
+  - cbn in H; inversion H; subst; reflexivity.
+  - cbn in H; inversion H; subst; reflexivity.
+  - rewrite optimize_rules_snat_cons2 in H.
+    destruct (snat_merge_pair r1 r2) as [[[[[f v1] v2] T1] T2]|]; cbv zeta in H.
+    + remember (optimize_rules_snat (S n) _ rest) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. inversion H; subst.
+      exact (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)).
+    + remember (optimize_rules_snat n d (r2 :: rest)) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. inversion H; subst.
+      exact (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)).
+Qed.
+
+Lemma optimize_rules_snat_vmaps : forall rs n d n' d' rs',
+  optimize_rules_snat n d rs = (n', d', rs') -> sd_vmaps d' = sd_vmaps d.
+Proof.
+  induction rs as [rs IH] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' H. destruct rs as [| r1 [| r2 rest]].
+  - cbn in H; inversion H; subst; reflexivity.
+  - cbn in H; inversion H; subst; reflexivity.
+  - rewrite optimize_rules_snat_cons2 in H.
+    destruct (snat_merge_pair r1 r2) as [[[[[f v1] v2] T1] T2]|]; cbv zeta in H.
+    + remember (optimize_rules_snat (S n) _ rest) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. inversion H; subst.
+      exact (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)).
+    + remember (optimize_rules_snat n d (r2 :: rest)) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. inversion H; subst.
+      exact (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)).
+Qed.
+
+Lemma optimize_rules_snat_mono : forall rs n d n' d' rs',
+  optimize_rules_snat n d rs = (n', d', rs') -> n <= n'.
+Proof.
+  induction rs as [rs IH] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' H. destruct rs as [| r1 [| r2 rest]].
+  - cbn in H; inversion H; subst; lia.
+  - cbn in H; inversion H; subst; lia.
+  - rewrite optimize_rules_snat_cons2 in H.
+    destruct (snat_merge_pair r1 r2) as [[[[[f v1] v2] T1] T2]|]; cbv zeta in H.
+    + remember (optimize_rules_snat (S n) _ rest) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. inversion H; subst.
+      pose proof (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)). lia.
+    + remember (optimize_rules_snat n d (r2 :: rest)) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. inversion H; subst.
+      exact (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)).
+Qed.
+
+(** The synthesised data-map names are [mapname k] for [k >= n]; any OTHER name's
+    [sd_maps] lookup is stable across the pass. *)
+Lemma optimize_rules_snat_maps_assoc_stable : forall rs n d n' d' rs' nm X,
+  optimize_rules_snat n d rs = (n', d', rs') ->
+  (forall j, n <= j -> nm <> mapname j) ->
+  assoc_str nm (sd_maps d') X = assoc_str nm (sd_maps d) X.
+Proof.
+  induction rs as [rs IH] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' nm X H Hnm. destruct rs as [| r1 [| r2 rest]].
+  - cbn in H; inversion H; subst; reflexivity.
+  - cbn in H; inversion H; subst; reflexivity.
+  - rewrite optimize_rules_snat_cons2 in H.
+    destruct (snat_merge_pair r1 r2) as [[[[[f v1] v2] T1] T2]|]; cbv zeta in H.
+    + remember (optimize_rules_snat (S n)
+                  {| sd_sets := sd_sets d; sd_vmaps := sd_vmaps d;
+                     sd_maps := (mapname n, dmap2 v1 v2 T1 T2) :: sd_maps d |} rest)
+        as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. injection H as _ Hd _; subst d'.
+      erewrite (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ nm X (eq_sym E)
+                  ltac:(intros j Hj; apply Hnm; lia)).
+      cbn [sd_maps assoc_str].
+      destruct (String.eqb nm (mapname n)) eqn:Eq.
+      * apply String.eqb_eq in Eq. exfalso. apply (Hnm n); [lia | exact Eq].
+      * reflexivity.
+    + remember (optimize_rules_snat n d (r2 :: rest)) as t eqn:E.
+      destruct t as [[m'' dd''] rr'']. injection H as _ Hd _; subst d'.
+      exact (IH (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ nm X (eq_sym E) Hnm).
+Qed.
+
+(** ** The chain wrapper. *)
+Definition optimize_chain_snat (n : nat) (d : set_decls) (c : chain)
+  : nat * set_decls * chain :=
+  let '(n', d', rs') := optimize_rules_snat n d (c_rules c) in
+  (n', d', {| c_policy := c_policy c; c_rules := rs' |}).
+
+Lemma optimize_chain_snat_mono : forall n d c n' d' c',
+  optimize_chain_snat n d c = (n', d', c') -> n <= n'.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_snat in H.
+  destruct (optimize_rules_snat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. apply (optimize_rules_snat_mono _ _ _ _ _ _ E).
+Qed.
+
+Lemma optimize_chain_snat_sets : forall n d c n' d' c',
+  optimize_chain_snat n d c = (n', d', c') -> sd_sets d' = sd_sets d.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_snat in H.
+  destruct (optimize_rules_snat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. apply (optimize_rules_snat_sets _ _ _ _ _ _ E).
+Qed.
+
+Lemma optimize_chain_snat_vmaps : forall n d c n' d' c',
+  optimize_chain_snat n d c = (n', d', c') -> sd_vmaps d' = sd_vmaps d.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_snat in H.
+  destruct (optimize_rules_snat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. apply (optimize_rules_snat_vmaps _ _ _ _ _ _ E).
+Qed.
+
+Lemma optimize_chain_snat_maps_assoc_stable : forall n d c n' d' c' nm X,
+  optimize_chain_snat n d c = (n', d', c') ->
+  (forall j, n <= j -> nm <> mapname j) ->
+  assoc_str nm (sd_maps d') X = assoc_str nm (sd_maps d) X.
+Proof.
+  intros n d c n' d' c' nm X H Hnm. unfold optimize_chain_snat in H.
+  destruct (optimize_rules_snat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst.
+  apply (optimize_rules_snat_maps_assoc_stable _ _ _ _ _ _ nm X E Hnm).
+Qed.

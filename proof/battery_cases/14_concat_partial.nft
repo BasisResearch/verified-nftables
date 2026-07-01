@@ -1,0 +1,7 @@
+table ip t {
+  chain c {
+    type filter hook input priority 0; policy accept;
+    ip saddr 10.0.0.1 tcp dport 22 drop
+    ip saddr 10.0.0.1 tcp dport 1-100 accept
+  }
+}
