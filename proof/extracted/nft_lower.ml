@@ -1226,6 +1226,39 @@ let redir_spec ~flags (port : int option) : Syntax.nat_spec =
    (ethertype) instead and are out of scope of this nfproto fix.) *)
 let family_is_inet = function "inet" -> true | _ -> false
 
+(* `reject [with <proto> <name>]` -> the kernel nft_reject (type, code) pair.
+   type: NFT_REJECT_ICMP_UNREACH 0 (icmp/icmpv6 code), TCP_RST 1, ICMPX_UNREACH 2.
+   A BARE `reject` is family-defaulted (nft evaluate.c stmt_reject_default):
+     ip   -> icmp  port-unreach   (0,3)
+     ip6  -> icmpv6 port-unreach  (0,4)
+     inet/bridge/netdev (L2/dual) -> icmpx port-unreach (2,1).
+   Codes verified against {ip,ip6,inet,bridge,netdev}/reject.t.payload. *)
+let icmp_reject_code = function
+  | "net-unreachable" -> 0 | "host-unreachable" -> 1 | "prot-unreachable" -> 2
+  | "port-unreachable" -> 3 | "net-prohibited" -> 9 | "host-prohibited" -> 10
+  | "admin-prohibited" -> 13
+  | s -> raise (Unsupported ("reject icmp code " ^ s))
+let icmpv6_reject_code = function
+  | "no-route" -> 0 | "admin-prohibited" -> 1 | "addr-unreachable" -> 3
+  | "port-unreachable" -> 4 | "policy-fail" -> 5 | "reject-route" -> 6
+  | s -> raise (Unsupported ("reject icmpv6 code " ^ s))
+let icmpx_reject_code = function
+  | "no-route" -> 0 | "port-unreachable" -> 1 | "host-unreachable" -> 2
+  | "admin-prohibited" -> 3
+  | s -> raise (Unsupported ("reject icmpx code " ^ s))
+let reject_type_code family (opts : string) : int * int =
+  (* drop a stray `type` keyword (`reject with icmp type net-unreachable`) *)
+  let ws = L.filter (fun w -> w <> "" && w <> "type")
+             (Stdlib.String.split_on_char ' ' opts) in
+  match ws with
+  | [] -> (match family with
+           | "ip" -> (0, 3) | "ip6" -> (0, 4) | _ -> (2, 1))
+  | ["tcp"; "reset"] -> (1, 0)
+  | "icmp" :: name :: _   -> (0, icmp_reject_code name)
+  | "icmpv6" :: name :: _ -> (0, icmpv6_reject_code name)
+  | "icmpx" :: name :: _  -> (2, icmpx_reject_code name)
+  | _ -> raise (Unsupported ("reject with " ^ opts))
+
 (* A bridge/netdev chain is an L2 chain that can see any ethertype, so nft pins an
    ip/ip6 network match with the LINK-layer ethertype (`meta protocol ==`) rather
    than the NFPROTO nfproto guard it uses in inet.  Map the nfproto byte carried by
@@ -1272,6 +1305,9 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
   let ensure_dep ds = L.iter ensure_dep1 ds in
   L.iter (fun (cl : Nft_ast.clause) ->
     match cl with
+    | Nft_ast.CVerdict (Nft_ast.SVreject opts) ->
+        let (rt, rc) = reject_type_code family opts in
+        verdict := Verdict.Reject (rt, rc)
     | Nft_ast.CVerdict v -> verdict := lower_verdict v
     | Nft_ast.CMatch m ->
         let (dep, mc) = lower_match st m in
