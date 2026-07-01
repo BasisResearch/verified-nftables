@@ -269,6 +269,17 @@ keyatom:
   | OIFNAME       { ["oifname"] }
   | PKTTYPE       { ["pkttype"] }
   | MARK          { ["mark"] }
+  (* generic IDENT-led protocol selector: protocols whose names are NOT reserved
+     keyword tokens (arp, ah, esp, comp, sctp, dccp, udplite, ...) lex as plain
+     IDENTs, e.g. `ah spi 111`, `sctp dport 23`.  The lowering (Nft_lower.key_field)
+     resolves the (proto, field) pair to a payload load; an unknown pair is a clean
+     `Unsupported "selector: ..."`, so this cannot mis-parse into wrong bytecode. *)
+  | IDENT IDENT       { [$1; $2] }
+  (* address-typed sub-fields: `arp saddr ip`, `arp daddr ether` — the third token
+     is a base/family keyword that selects the field offset. *)
+  | IDENT IDENT IP    { [$1; $2; "ip"] }
+  | IDENT IDENT IP6   { [$1; $2; "ip6"] }
+  | IDENT IDENT ETHER { [$1; $2; "ether"] }
 
 (* fib selector keys (may be dot-concatenated) and the fib result column.  The
    selector keys `iif`/`oif`/`mark` lex as keyword tokens, not IDENT. *)

@@ -135,6 +135,13 @@ let sym_icmpv6 = [
 ]
 let sym_pkttype = [ "host",[0]; "unicast",[0]; "broadcast",[1]; "multicast",[2];
                     "other",[3]; "otherhost",[3]; ]
+(* ARP operation codes (2-byte network-order field at arp header + 6).  arp.c
+   arp_op_tbl: request 1, reply 2, rrequest 3, rreply 4, inrequest 8,
+   inreply 9, nak 10. *)
+let sym_arpop = [
+  "request",[0;1]; "reply",[0;2]; "rrequest",[0;3]; "rreply",[0;4];
+  "inrequest",[0;8]; "inreply",[0;9]; "nak",[0;10];
+]
 (* /etc/services subset (extend as corpora demand). *)
 let sym_service = [
   "ftp-data",20; "ftp",21; "ssh",22; "telnet",23; "smtp",25; "domain",53;
@@ -158,6 +165,7 @@ type kind =
   | KIfname | KIfindex | KIp4 | KIp6 | KPort | KL4proto | KNfproto | KEthertype
   | KCtstate | KMark | KIcmp | KIcmpv6 | KPkttype | KFibType | KTcpflag | KNum of int
   | KCtdir   (* conntrack direction: original=0 / reply=1, a 1-byte register *)
+  | KArpop   (* ARP operation: symbolic (request/reply/...) or numeric, 2-byte NBO *)
   (* host-endian (little-endian on x86) integer of [n] bytes; used for the value
      of `ct <key> set` / `meta <key> set` where the kernel register width is
      key-specific (e.g. ct zone is a u16 -> [KNumLe 2], ct label a 128-bit value
@@ -221,6 +229,8 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
   | KFibType, Nft_ast.Vnum n -> bytes_of_int_le 4 n
   | KNum w, Nft_ast.Vnum n -> bytes_of_int w n
   | KNumLe w, Nft_ast.Vnum n -> bytes_of_int_le w n
+  | KArpop, Nft_ast.Vnum n -> bytes_of_int 2 n
+  | KArpop, Nft_ast.Vsym s -> lookup "arp operation" sym_arpop s
   | KCtdir, Nft_ast.Vnum n -> [n land 0xff]
   | KCtdir, Nft_ast.Vsym s ->
       (match s with "original" -> [0] | "reply" -> [1]
@@ -230,7 +240,7 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
 
 (* the byte width a kind compares at (for building a prefix mask) *)
 let width_of_kind = function
-  | KIp4 -> 4 | KIp6 -> 16 | KPort | KEthertype -> 2
+  | KIp4 -> 4 | KIp6 -> 16 | KPort | KEthertype | KArpop -> 2
   | KCtstate | KMark | KIfindex | KFibType -> 4 | KNum w -> w | KNumLe w -> w
   | KCtdir -> 1 | _ -> 1
 
@@ -306,6 +316,12 @@ type dep = dep1 list
 
 let dep_l4 = function
   | "tcp" -> [DL4 [6]] | "udp" -> [DL4 [17]]
+  (* IP-protocol-numbered transport / auth / compression headers: nft guards each
+     payload load with `meta l4proto == <ipproto>` (golden inet/{ah,esp,comp,sctp,
+     dccp,udplite}.t.payload).  These carry NO nfproto guard (valid over both L3
+     families), exactly like tcp/udp. *)
+  | "ah" -> [DL4 [51]] | "esp" -> [DL4 [50]] | "comp" -> [DL4 [108]]
+  | "sctp" -> [DL4 [132]] | "dccp" -> [DL4 [33]] | "udplite" -> [DL4 [136]]
   (* icmp/icmpv6 are NETWORK-protocol-LINKED L4 protocols: nft emits the nfproto
      guard BEFORE the l4proto guard (payload.c proto_icmp/proto_icmp6 are linked
      to the IPv4/IPv6 network bases).  Order matches the golden byte sequence. *)
@@ -416,6 +432,47 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
   | ["ctdir"; d; "ip"; "daddr"]  -> (Syntax.FCtDir ("dst_ip", d),    KIp4, none)
   | ["ctdir"; d; "ip6"; "saddr"] -> (Syntax.FCtDir ("src_ip6", d),   KIp6, none)
   | ["ctdir"; d; "ip6"; "daddr"] -> (Syntax.FCtDir ("dst_ip6", d),   KIp6, none)
+  (* ---- ARP header (NFT_PAYLOAD_NETWORK_HEADER; arp is a single-L3 family so
+     nft emits NO nfproto dependency).  Offsets from arp.c / golden arp.t.payload:
+     htype@0 ptype@2 hlen@4 plen@5 operation@6, sender/target hw+proto addrs. ---- *)
+  | ["arp"; "htype"]     -> (Syntax.FPayload (Packet.PNetwork, 0, 2), KNum 2, none)
+  | ["arp"; "ptype"]     -> (Syntax.FPayload (Packet.PNetwork, 2, 2), KEthertype, none)
+  | ["arp"; "hlen"]      -> (Syntax.FPayload (Packet.PNetwork, 4, 1), KNum 1, none)
+  | ["arp"; "plen"]      -> (Syntax.FPayload (Packet.PNetwork, 5, 1), KNum 1, none)
+  | ["arp"; "operation"] -> (Syntax.FPayload (Packet.PNetwork, 6, 2), KArpop, none)
+  | ["arp"; "saddr"; "ether"] -> (Syntax.FPayload (Packet.PNetwork, 8, 6),  KNum 6, none)
+  | ["arp"; "saddr"; "ip"]    -> (Syntax.FPayload (Packet.PNetwork, 14, 4), KIp4, none)
+  | ["arp"; "daddr"; "ether"] -> (Syntax.FPayload (Packet.PNetwork, 18, 6), KNum 6, none)
+  | ["arp"; "daddr"; "ip"]    -> (Syntax.FPayload (Packet.PNetwork, 24, 4), KIp4, none)
+  (* ---- AH (IPPROTO_AH 51), transport header.  nexthdr@0 hdrlength@1 reserved@2
+     spi@4 sequence@8 (golden inet/ah.t.payload). ---- *)
+  | ["ah"; "nexthdr"]    -> (Syntax.FPayload (Packet.PTransport, 0, 1), KL4proto, dep_l4 "ah")
+  | ["ah"; "hdrlength"]  -> (Syntax.FPayload (Packet.PTransport, 1, 1), KNum 1, dep_l4 "ah")
+  | ["ah"; "reserved"]   -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2, dep_l4 "ah")
+  | ["ah"; "spi"]        -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4, dep_l4 "ah")
+  | ["ah"; "sequence"]   -> (Syntax.FPayload (Packet.PTransport, 8, 4), KNum 4, dep_l4 "ah")
+  (* ---- ESP (IPPROTO_ESP 50), transport header: spi@0 sequence@4. ---- *)
+  | ["esp"; "spi"]       -> (Syntax.FPayload (Packet.PTransport, 0, 4), KNum 4, dep_l4 "esp")
+  | ["esp"; "sequence"]  -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4, dep_l4 "esp")
+  (* ---- COMP (IPPROTO_COMP 108), transport header: nexthdr@0 flags@1 cpi@2. ---- *)
+  | ["comp"; "nexthdr"]  -> (Syntax.FPayload (Packet.PTransport, 0, 1), KL4proto, dep_l4 "comp")
+  | ["comp"; "flags"]    -> (Syntax.FPayload (Packet.PTransport, 1, 1), KNum 1, dep_l4 "comp")
+  | ["comp"; "cpi"]      -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2, dep_l4 "comp")
+  (* ---- SCTP (IPPROTO_SCTP 132), transport header: sport@0 dport@2 vtag@4
+     checksum@8 (golden inet/sctp.t.payload). ---- *)
+  | ["sctp"; "sport"]    -> (Syntax.FPayload (Packet.PTransport, 0, 2), KPort, dep_l4 "sctp")
+  | ["sctp"; "dport"]    -> (Syntax.FPayload (Packet.PTransport, 2, 2), KPort, dep_l4 "sctp")
+  | ["sctp"; "vtag"]     -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4, dep_l4 "sctp")
+  | ["sctp"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 8, 4), KNum 4, dep_l4 "sctp")
+  (* ---- DCCP (IPPROTO_DCCP 33), transport header: sport@0 dport@2. ---- *)
+  | ["dccp"; "sport"]    -> (Syntax.FPayload (Packet.PTransport, 0, 2), KPort, dep_l4 "dccp")
+  | ["dccp"; "dport"]    -> (Syntax.FPayload (Packet.PTransport, 2, 2), KPort, dep_l4 "dccp")
+  (* ---- UDP-Lite (IPPROTO_UDPLITE 136), transport header: sport@0 dport@2
+     cscov@4 checksum@6 (golden inet/udplite.t.payload). ---- *)
+  | ["udplite"; "sport"]    -> (Syntax.FPayload (Packet.PTransport, 0, 2), KPort, dep_l4 "udplite")
+  | ["udplite"; "dport"]    -> (Syntax.FPayload (Packet.PTransport, 2, 2), KPort, dep_l4 "udplite")
+  | ["udplite"; "cscov"]    -> (Syntax.FPayload (Packet.PTransport, 4, 2), KNum 2, dep_l4 "udplite")
+  | ["udplite"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2, dep_l4 "udplite")
   | _ -> raise (Unsupported ("selector: " ^ S.concat " " kp))
 
 (* ---------- prefix mask ---------- *)
