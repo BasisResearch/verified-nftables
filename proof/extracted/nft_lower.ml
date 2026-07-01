@@ -142,6 +142,9 @@ let sym_service = [
   "ntp",123; "imap",143; "snmp",161; "bgp",179; "https",443; "submission",587;
   "imaps",993; "pop3s",995; "mysql",3306; "rdp",3389; "nfs",2049;
   "syncthing",22000; "wireguard",51820; "openvpn",1194;
+  "http-alt",8080; "https-alt",8443; "domain-s",853; "socks",1080;
+  "printer",515; "ipp",631; "ldap",389; "ldaps",636; "smtps",465;
+  "sip",5060; "kerberos",88; "rsync",873; "irc",6667; "xmpp-client",5222;
 ]
 
 let lookup ctx tbl s =
@@ -402,6 +405,17 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
   | ["ct"; "id"]         -> (Syntax.FCtId,        KNumLe 4, none)
   | ["ct"; "expiration"] -> (Syntax.FCtExpiration,KNumLe 4, none)
   | ["ct"; "zone"]       -> (Syntax.FCtGen Packet.CKzone, KNumLe 2, none)
+  (* ---- direction-qualified conntrack tuple (FCtDir key strings match nft's
+     `ct load <key>` render: src_ip/dst_ip/src_ip6/dst_ip6/proto_src/proto_dst/
+     zone/protocol) ---- *)
+  | ["ctdir"; d; "zone"]         -> (Syntax.FCtDir ("zone", d),      KNumLe 2, none)
+  | ["ctdir"; d; "protocol"]     -> (Syntax.FCtDir ("protocol", d),  KL4proto, none)
+  | ["ctdir"; d; "proto-src"]    -> (Syntax.FCtDir ("proto_src", d), KPort, none)
+  | ["ctdir"; d; "proto-dst"]    -> (Syntax.FCtDir ("proto_dst", d), KPort, none)
+  | ["ctdir"; d; "ip"; "saddr"]  -> (Syntax.FCtDir ("src_ip", d),    KIp4, none)
+  | ["ctdir"; d; "ip"; "daddr"]  -> (Syntax.FCtDir ("dst_ip", d),    KIp4, none)
+  | ["ctdir"; d; "ip6"; "saddr"] -> (Syntax.FCtDir ("src_ip6", d),   KIp6, none)
+  | ["ctdir"; d; "ip6"; "daddr"] -> (Syntax.FCtDir ("dst_ip6", d),   KIp6, none)
   | _ -> raise (Unsupported ("selector: " ^ S.concat " " kp))
 
 (* ---------- prefix mask ---------- *)

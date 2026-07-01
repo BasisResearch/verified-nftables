@@ -31,6 +31,10 @@
     "pkttype", PKTTYPE; "mark", MARK;
     (* bitwise binary operators (nft `meta mark and 0x3`, `ct mark or 0x1`) *)
     "and", AND; "or", OR; "xor", XOR;
+    (* conntrack tuple direction (`ct original ip saddr`, `ct reply proto-src`);
+       also usable as a symbolic VALUE (`ct direction original`), handled in the
+       grammar's `value` rule. *)
+    "original", ORIGINAL; "reply", REPLY;
   ]
 
   let ident_or_kw (s : string) : token =

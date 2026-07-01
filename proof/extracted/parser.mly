@@ -38,7 +38,7 @@
 %token IIF OIF IIFNAME OIFNAME PKTTYPE MARK
 /* operators / punctuation */
 %token LBRACE RBRACE COLON COMMA DOT SLASH EQUALS NE EQ BANG DASH
-%token AMP PIPE CARET AND OR XOR
+%token AMP PIPE CARET AND OR XOR ORIGINAL REPLY
 /* separators */
 %token NEWLINE SEMI
 /* literals */
@@ -117,7 +117,7 @@ junktok:
   | INT {} | IPV4 {} | IPV6 {} | IDENT {} | STRING {} | VAR {} | AT {}
   | COLON {} | COMMA {} | DOT {} | SLASH {} | EQUALS {} | NE {} | EQ {} | BANG {}
   | DASH {} | SEMI {} | NEWLINE {}
-  | AMP {} | PIPE {} | CARET {} | AND {} | OR {} | XOR {}
+  | AMP {} | PIPE {} | CARET {} | AND {} | OR {} | XOR {} | ORIGINAL {} | REPLY {}
   | TYPE {} | HOOK {} | PRIORITY {} | POLICY {} | COMMENT {} | VMAP {} | FLAGS {}
   | ELEMENTS {} | SET {} | MAP {} | TABLE {} | CHAIN {} | DEFINE {} | INCLUDE {}
   | ACCEPT {} | DROP {} | CONTINUE {} | RETURN {} | JUMP {} | GOTO {} | QUEUE {}
@@ -220,6 +220,10 @@ binop:
   | OR  {"or"}  | PIPE  {"or"}
   | XOR {"xor"} | CARET {"xor"}
 
+ctdir:
+  | ORIGINAL { "original" }
+  | REPLY    { "reply" }
+
 (* ---- match conditions ---- *)
 matchc:
   | concat_keys rhs { { m_keys = $1; m_rhs = $2 } }
@@ -251,6 +255,11 @@ keyatom:
   | META PKTTYPE  { ["meta"; "pkttype"] }
   | CT IDENT      { ["ct"; $2] }
   | CT MARK       { ["ct"; "mark"] }   (* `mark` lexes as the MARK keyword *)
+  (* conntrack tuple, direction-qualified: `ct original zone`,
+     `ct reply proto-src`, `ct original ip saddr`, `ct reply ip6 daddr` *)
+  | CT ctdir IDENT     { ["ctdir"; $2; $3] }
+  | CT ctdir IP IDENT  { ["ctdir"; $2; "ip"; $4] }
+  | CT ctdir IP6 IDENT { ["ctdir"; $2; "ip6"; $4] }
   (* fib (routing-table) lookup: `fib <key>[. <key>...] <result>`, e.g.
      `fib daddr type` or a concatenated selector `fib saddr . iif oif`. *)
   | FIB fib_sel fib_result { ["fib"; Stdlib.String.concat "." $2; $3] }
@@ -322,6 +331,9 @@ value:
   | UDP    { Vsym "udp" }
   | ICMP   { Vsym "icmp" }
   | ICMPV6 { Vsym "icmpv6" }
+  (* `original`/`reply` are also symbolic values (`ct direction original`) *)
+  | ORIGINAL { Vsym "original" }
+  | REPLY    { Vsym "reply" }
 
 (* ---- verdict-map (`vmap { k : verdict, ... }`) ---- *)
 vmapset:
