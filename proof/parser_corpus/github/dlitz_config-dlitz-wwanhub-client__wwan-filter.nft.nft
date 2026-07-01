@@ -1,0 +1,44 @@
+# Restrict wwan interface(s) to use allow wireguard
+table inet config-dlitz-wwanhub-client
+delete table inet config-dlitz-wwanhub-client
+table inet config-dlitz-wwanhub-client {
+	define dns_ports = { 53 comment "DNS", 853 comment "DNS-over-TLS" }
+
+	set wwan_ifnames {
+		type ifname
+		flags interval
+		elements = { "ww*" }
+	}
+
+	set wireguard_fwmarks {
+		type mark
+		elements = { 51840 }
+	}
+
+	chain input {
+		type filter hook input priority filter; policy accept
+		iiftype ether iifname @wwan_ifnames jump input_wwan
+	}
+	chain input_wwan {
+		meta l4proto { icmp, icmpv6 } counter accept
+		ct state established counter accept
+		counter drop
+	}
+	chain forward {
+		type filter hook forward priority filter; policy accept
+		iiftype ether iifname @wwan_ifnames counter drop
+		oiftype ether oifname @wwan_ifnames counter drop
+	}
+	chain output {
+		type filter hook output priority filter; policy accept
+		oiftype ether oifname @wwan_ifnames jump output_wwan
+	}
+	chain output_wwan {
+		meta l4proto { icmp, icmpv6 } counter accept
+		meta mark @wireguard_fwmarks counter accept comment "wireguard-over-wwan fwmark"
+		udp dport { $dns_ports } counter accept
+		tcp dport { $dns_ports } counter accept
+		counter drop
+	}
+}
+# vim:set ft=nftables noexpandtab:

@@ -1,0 +1,58 @@
+#!/usr/sbin/nft -f
+
+# Ruleset for Router r2 (Connects DMZ/Transit <-> Internet, handles NAT)
+
+flush ruleset
+
+table ip nat {
+    chain postrouting {
+        type nat hook postrouting priority 100; # Standard NAT priority
+        policy accept;
+
+        # masquerade traffic from BOTH internal networks leaving towards Internet
+        ip saddr { 10.1.0.0/24, 10.12.0.0/24 } oifname "r2-eth0" masquerade comment "NAT internal nets to Internet"
+    }
+}
+
+table inet filter {
+
+    chain forward {
+        type filter hook forward priority 0;
+        policy drop; # default: drop traffic we don't explicitly allow
+
+        # 1. allow established and related connections (replies)
+        ct state established,related accept comment "Allow return traffic"
+
+        # 2. allow WS LAN (via r1) -> Internet
+        # traffic coming IN r2-eth12 (from r1) with LAN source, going OUT r2-eth0 (Internet)
+        iifname "r2-eth12" ip saddr 10.1.0.0/24 oifname "r2-eth0" accept comment "Allow LAN to Internet"
+
+        # 3. allow DMZ -> Internet
+        # traffic coming IN r2-eth12 (from DMZ) with DMZ source, going OUT r2-eth0 (Internet)
+        iifname "r2-eth12" ip saddr 10.12.0.0/24 oifname "r2-eth0" accept comment "Allow DMZ to Internet"
+
+        # 4. allow Internet -> DMZ Servers
+        # traffic coming IN r2-eth0 (Internet) going OUT r2-eth12 (DMZ), destined for DMZ subnet
+        iifname "r2-eth0" oifname "r2-eth12" ip daddr 10.12.0.0/24 accept comment "Allow Internet to DMZ"
+
+        # 5. block Internet -> WS LAN
+        # traffic coming IN r2-eth0 destined for 10.1.0.0/24 is blocked by default policy
+
+        iifname "r2-eth0" oifname "r2-eth12" ip daddr 10.12.0.0/24 tcp dport 30000-31000 accept comment "Allow PASV data"
+    }
+
+    chain input {
+        type filter hook input priority 0;
+        policy drop; # default: drop traffic destined for the router itself
+
+        iif lo accept comment "allow loopback traffic"
+        ct state established,related accept comment "Allow replies to router"
+        # allow ping TO the router for diagnostics (optional)
+        ip protocol icmp accept comment "Allow ping to r2 interfaces"
+    }
+
+    chain output {
+        type filter hook output priority 0;
+        policy accept; # allow router to send traffic 
+    }
+}

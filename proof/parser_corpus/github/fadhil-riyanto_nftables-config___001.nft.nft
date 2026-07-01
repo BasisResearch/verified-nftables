@@ -1,0 +1,9 @@
+
+flush ruleset
+
+table ip6 filte {
+	chain input {
+		type filter hook input priority 0;
+		policy drop;
+	}
+}

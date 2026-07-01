@@ -1,0 +1,85 @@
+#!/usr/sbin/nft -f
+
+# Flush the rule set
+flush ruleset
+
+define ipv4_my_net= { 127.0.0.1/32, 192.168.0.0/16, 10.0.0.0/8 }
+define ipv6_my_net= { ::1/128 }
+
+# ipv4 nftables
+table ip filter {
+        chain INPUT {
+                type filter hook input priority filter; policy accept;
+                udp dport 53 counter accept
+                udp sport 53 counter accept
+                tcp dport 53 counter accept
+                tcp sport 53 counter accept
+                ct state new,established,related tcp dport 22 ip saddr $ipv4_my_net counter accept
+                tcp dport 22 drop
+        }
+
+        chain FORWARD {
+                type filter hook forward priority filter; policy accept;
+        }
+
+        chain OUTPUT {
+                type filter hook output priority filter; policy accept;
+        }
+}
+
+table ip raw {
+        chain PREROUTING {
+                type filter hook prerouting priority raw; policy accept;
+                udp dport 53 counter notrack
+                udp sport 53 counter notrack
+                tcp dport 53 counter notrack
+                tcp sport 53 counter notrack
+        }
+
+        chain OUTPUT {
+                type filter hook output priority raw; policy accept;
+                udp dport 53 counter notrack
+                udp sport 53 counter notrack
+                tcp dport 53 counter notrack
+                tcp sport 53 counter notrack
+        }
+}
+
+# ipv6 nftables
+table ip6 filter {
+        chain INPUT {
+                type filter hook input priority filter; policy accept;
+                udp dport 53 counter accept
+                udp sport 53 counter accept
+                tcp dport 53 counter accept
+                tcp sport 53 counter accept
+                ct state new,established,related tcp dport 22 ip6 saddr $ipv6_my_net counter accept
+                tcp dport 22 drop
+        }
+
+        chain FORWARD {
+                type filter hook forward priority filter; policy accept;
+        }
+
+        chain OUTPUT {
+                type filter hook output priority filter; policy accept;
+        }
+}
+
+table ip6 raw {
+        chain PREROUTING {
+                type filter hook prerouting priority raw; policy accept;
+                udp dport 53 counter notrack
+                udp sport 53 counter notrack
+                tcp dport 53 counter notrack
+                tcp sport 53 counter notrack
+        }
+
+        chain OUTPUT {
+                type filter hook output priority raw; policy accept;
+                udp dport 53 counter notrack
+                udp sport 53 counter notrack
+                tcp dport 53 counter notrack
+                tcp sport 53 counter notrack
+        }
+}

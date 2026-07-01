@@ -1,0 +1,62 @@
+#!/usr/sbin/nft -f
+
+table ip netsec_tbl{
+    
+    # ---- Set for Brute-Force Attackers ----
+    set ssh_flood {
+        type ipv4_addr
+        flags timeout
+        }
+
+
+    chain netsec_forward {
+        type filter hook forward priority 0 ; policy drop ; #Forward default is DROP
+        
+        # Comment this out later - Part 5
+        ip saddr @ssh_flood update @ssh_flood {ip saddr timeout 1m} drop #Drop packets from Brute-Force Attackers
+
+
+        # ----- Main 2 rules - Allow established, limit concurrent connections -----
+        tcp dport {ssh} ct state established,related accept;
+        tcp flags syn tcp dport 22 meter toomanyestablished { ip saddr ct count over 3 } reject with tcp reset;
+
+
+        # ----- Part 4: Brute-Force Detection -----
+        #tcp dport 22 ct state new tcp flags syn limit rate over 5/minute update @ssh_flood {ip saddr timeout 1m};
+        
+
+        #Allow ssh
+        ip protocol tcp tcp dport {ssh} accept;
+        ip protocol tcp tcp sport {ssh} accept;
+    }
+
+    # ----- Part 5: Rerouting Traffic -----
+    chain netsec_pre{
+        type nat hook prerouting priority -100 ; policy accept ;
+        # ----- Reroute traffic to honeypot -----
+        #ip saddr @ssh_flood counter dnat to 10.10.2.20
+    }
+
+    #Block input to the firewall
+    chain netsec_input{
+        type filter hook input priority 0 ; policy drop ;
+    }
+
+}
+
+
+
+
+#deprecated parts:
+#tcp dport {ssh} limit rate over 5/minute counter log prefix "ssh.flood: " drop; #this appears to work but I wanted a better version
+#tcp dport 22 ct state new tcp flags syn meter ssh_flood { ip saddr timeout 1m limit rate over 5/minute } drop; #like ^ but a little better
+
+#add table ip netsec_tbl
+
+#add chain netsec_tbl netsec_forward { type filter hook forward priority 0 ; policy drop ; }
+#add chain netsec_tbl netsec_input { type filter hook input priority 0 ; policy drop ; }
+
+
+#add rule netsec_tbl netsec_forward tcp dport {ssh, 2222} accept;
+#add rule netsec_tbl netsec_forward tcp sport {ssh, 2222} accept;
+#tcp flags syn tcp dport 22 meter toomanyestablished { ip saddr ct count over 3 } reject with tcp reset

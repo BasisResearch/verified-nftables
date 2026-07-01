@@ -1,0 +1,55 @@
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+define wlan_ifaces = { wlan0, wlan1 };
+
+table inet filter {
+
+    chain input {
+        type filter hook input priority filter;
+        policy accept;
+
+        iif $wlan_ifaces ip protocol icmp accept
+        iif $wlan_ifaces tcp dport 53 accept
+        iif $wlan_ifaces udp dport 53 accept
+        iif $wlan_ifaces udp dport 67 accept
+        iif $wlan_ifaces drop
+    }
+
+    chain forward {
+        type filter hook forward priority filter;
+        policy drop;
+
+        # wlan0 (10.42.0.0/24)
+        ip saddr 10.42.0.0/24 iifname wlan0 accept
+        ip daddr 10.42.0.0/24 oifname wlan0 ct state { established, related } accept
+
+        # wlan1 (10.42.1.0/24)
+        ip saddr 10.42.1.0/24 iifname wlan1 accept
+        ip daddr 10.42.1.0/24 oifname wlan1 ct state { established, related } accept
+
+        # Isolate hotspots from each other
+        iifname wlan0 oifname wlan1 drop
+        iifname wlan1 oifname wlan0 drop
+    }
+
+    chain output {
+        type filter hook output priority filter;
+        policy accept;
+    }
+}
+
+table ip nat {
+
+    chain postrouting {
+        type nat hook postrouting priority srcnat;
+        policy accept;
+
+        # SNAT for wlan0
+        ip saddr 10.42.0.0/24 oifname eth0 snat to 192.168.1.253
+
+        # SNAT for wlan1
+        ip saddr 10.42.1.0/24 oifname eth0 snat to 192.168.1.252
+    }
+}

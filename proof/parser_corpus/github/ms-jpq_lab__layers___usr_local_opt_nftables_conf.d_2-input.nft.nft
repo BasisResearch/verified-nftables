@@ -1,0 +1,29 @@
+# NL
+
+table inet user {
+  set external_ports {
+    type  inet_proto . inet_service
+    flags interval
+    elements = { tcp . ssh }
+  }
+
+  set internal_ports {
+    type  inet_proto . inet_service
+    flags interval
+  }
+
+  set infra_ports {
+    type  inet_proto . inet_service
+    flags interval
+  }
+
+  chain input {
+    meta nfproto ipv6 udp dport dhcpv6-client mark set mark | $MARK_ACCEPT comment "Allow DHCPv6 client"
+
+    iifname "lo" mark set mark | $MARK_ACCEPT comment "Allow local traffic"
+
+                                                   meta l4proto . th dport @external_ports mark set mark | $MARK_ACCEPT comment "Allow whitelisted external ports"
+    iifname @internal_ifs                          meta l4proto . th dport @infra_ports    mark set mark | $MARK_ACCEPT comment "Allow whitelisted infrastructure ports"
+    iifname @internal_ifs iifname != @isolated_ifs meta l4proto . th dport @internal_ports mark set mark | $MARK_ACCEPT comment "Allow whitelisted internal ports"
+  }
+}

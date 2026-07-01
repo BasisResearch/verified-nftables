@@ -1,0 +1,11 @@
+table inet vpt_$name {
+    chain forward {
+        type filter hook forward priority -10; policy accept;
+        iifname "vpt*" accept
+        oifname "vpt*" accept
+    }
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        ip saddr $subnet masquerade random
+    }
+}

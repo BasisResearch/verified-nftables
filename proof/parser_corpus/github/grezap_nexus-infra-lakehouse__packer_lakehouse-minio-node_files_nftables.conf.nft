@@ -1,0 +1,42 @@
+#!/usr/sbin/nft -f
+#
+# lakehouse-minio-node -- nftables ruleset (Phase 0.L.1 baseline; cold-clone
+# safety net). The TF role-overlay-minio-nftables-backplane.tf is the canonical
+# source of truth.
+#
+# nic0 = VMnet11 (client S3 API 9000 + console 9001 + node_exporter 9100),
+# nic1 = VMnet10 (backplane: inter-node erasure/heal/lock traffic on 9000). Per
+# memory/feedback_cluster_template_nftables_backplane.md the VMnet10 trust rule
+# is what makes the distributed peer plane work.
+
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        iif "lo" accept
+        ct state { established, related } accept
+        ct state invalid drop
+        ip protocol icmp   accept
+        ip6 nexthdr icmpv6 accept
+
+        iifname "nic0" ip saddr 192.168.70.0/24 tcp dport 22   accept comment "SSH from VMnet11"
+        iifname "nic0" ip saddr 192.168.70.0/24 tcp dport 9100 accept comment "node_exporter from VMnet11"
+
+        # Trust the VMnet10 cluster backplane (MinIO distributed peer traffic on
+        # 9000: erasure read/write, heal, distributed locks). Whole-segment trust
+        # is canonical.
+        iifname "nic1" ip saddr 192.168.10.0/24 accept comment "trusted cluster backplane (VMnet10)"
+
+        # Client access from the lab (VMnet11):
+        #   9000  MinIO S3 API
+        #   9001  MinIO Console (web UI)
+        iifname "nic0" ip saddr 192.168.70.0/24 tcp dport 9000 accept comment "MinIO S3 API from VMnet11"
+        iifname "nic0" ip saddr 192.168.70.0/24 tcp dport 9001 accept comment "MinIO Console from VMnet11"
+
+        counter drop
+    }
+    chain forward { type filter hook forward priority 0; policy drop; }
+    chain output  { type filter hook output priority 0; policy accept; }
+}

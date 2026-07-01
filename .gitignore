@@ -21,3 +21,4 @@ vm/mkosi.crt
 
 # Editor backups
 *~
+__pycache__/

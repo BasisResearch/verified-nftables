@@ -1,0 +1,35 @@
+#!/usr/sbin/nft -f
+# setup-secure-mode: Default nftables firewall ruleset
+# Allows SSH, blocks all other incoming traffic
+
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        # Accept established and related connections
+        ct state established,related accept
+
+        # Accept loopback traffic
+        iifname "lo" accept
+
+        # Accept ICMP (ping)
+        ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
+
+        # Accept SSH connections (port 22)
+        tcp dport 22 accept
+
+        # Log and drop everything else
+        counter drop
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}

@@ -1,0 +1,59 @@
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table inet filter {
+        chain input {
+                type filter hook input priority filter; policy accept;
+        }
+
+        chain forward {
+                type filter hook forward priority filter; policy accept;
+                tcp flags syn jump mss_clamping
+        }
+
+        chain output {
+                type filter hook output priority filter; policy accept;
+        }
+
+        chain mss_clamping {
+                oifname "wan0" return
+                oifname "eth1" return
+                tcp option maxseg size set rt mtu
+        }
+}
+table ip nat {
+        set gscan {
+                type ipv4_addr
+                flags interval
+                elements = { 92.222.184.0/24, 92.222.185.0/24,
+                             92.222.186.0/24, 167.114.37.0/24 }
+        }
+
+        chain prerouting {
+                type nat hook prerouting priority dstnat; policy accept;
+                iifname "wan0" jump ingress
+                iifname "eth1" jump ingress
+        }
+
+        chain postrouting {
+                type nat hook postrouting priority srcnat; policy accept;
+                oifname "wan0" jump egress
+                oifname "eth1" jump egress
+        }
+
+        chain ingress {
+                icmp type echo-request ip saddr @gscan return
+                jump prerouting_dnat
+        }
+
+        chain egress {
+                jump postrouting_snat
+        }
+
+        chain prerouting_dnat {
+        }
+
+        chain postrouting_snat {
+        }
+}

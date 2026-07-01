@@ -1,0 +1,17 @@
+table ip firewall {
+	chain input {
+		type filter hook input priority filter; policy drop;
+		iif "lo" accept
+		ct state established accept
+		iif "enp105s0f1" ip saddr 10.100.0.0/24 accept
+		iif "enp33s0f1" udp dport 51820 accept
+		iif "wg0" ip saddr 10.55.0.0/24 accept
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+		ct state established accept
+		iif "enp105s0f1" ip saddr 10.100.0.0/24 accept
+		iif "wg0" ip saddr 10.55.0.0/24 accept
+	}
+}

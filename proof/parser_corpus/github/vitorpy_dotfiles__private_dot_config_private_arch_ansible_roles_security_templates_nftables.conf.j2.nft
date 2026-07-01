@@ -1,0 +1,37 @@
+#!/usr/bin/nft -f
+
+flush ruleset
+
+table inet filter {
+  chain input {
+    type filter hook input priority 0;
+    policy drop;
+
+    iifname "lo" accept
+{% for interface in arch_firewall_trusted_interfaces | default([]) %}
+    iifname "{{ interface }}" accept
+{% endfor %}
+    ct state established,related accept
+    ct state invalid drop
+
+    ip protocol icmp accept
+    ip6 nexthdr ipv6-icmp accept
+
+{% for port in arch_firewall_allowed_tcp_ports | default([]) %}
+    tcp dport {{ port }} accept
+{% endfor %}
+{% for port in arch_firewall_allowed_udp_ports | default([]) %}
+    udp dport {{ port }} accept
+{% endfor %}
+  }
+
+  chain forward {
+    type filter hook forward priority 0;
+    policy drop;
+  }
+
+  chain output {
+    type filter hook output priority 0;
+    policy accept;
+  }
+}

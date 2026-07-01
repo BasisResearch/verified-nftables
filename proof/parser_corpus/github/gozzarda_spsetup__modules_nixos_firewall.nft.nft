@@ -1,0 +1,65 @@
+#! /usr/sbin/nft -f
+
+flush ruleset
+
+# Block all internet traffic except the contest servers
+table ip filter {
+    chain INPUT {
+        # Drop everything by default
+        type filter hook input priority filter; policy drop;
+
+        # Allow loopback
+        iifname "lo" counter accept
+
+        # Allow established/related connections
+        ct state {established, related} counter accept
+
+        # Allow icmp
+        ip protocol icmp accept
+    }
+
+    chain FORWARD {
+        # Drop everything by default
+        type filter hook forward priority filter; policy accept;
+    }
+
+    chain OUTPUT {
+        # Drop everything by default
+        type filter hook output priority filter; policy drop;
+
+        # Allow loopback
+        oifname "lo" counter accept
+
+        # sppcontests.org
+        ip daddr 170.64.169.12 tcp dport {http, https} counter accept
+
+        # contest.sppcontests.org
+        ip daddr 170.64.253.143 tcp dport {http, https} counter accept
+
+        # backup
+        ip daddr 170.64.242.1 tcp dport {http, https} counter accept
+
+        # Allow DNS
+        tcp dport 53 accept comment "accept DNS"
+        udp dport 53 accept comment "accept DNS"
+
+        # Allow NTP
+        tcp dport 123 accept comment "accept NTP"
+        udp dport 123 accept comment "accept NTP"
+    }
+}
+
+# Drop all IPv6 traffic
+table ip6 filter {
+    chain INPUT {
+        type filter hook input priority filter; policy drop;
+    }
+
+    chain FORWARD {
+        type filter hook forward priority filter; policy drop;
+    }
+
+    chain OUTPUT {
+        type filter hook output priority filter; policy drop;
+    }
+}

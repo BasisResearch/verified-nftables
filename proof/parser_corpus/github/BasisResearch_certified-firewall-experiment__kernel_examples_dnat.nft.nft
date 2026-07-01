@@ -1,0 +1,9 @@
+# dnat delegation: redirect tcp dport 80 to a local listener on :2222.
+# Exercises the verified core delegating to nf_nat (binding via nf_nat_setup_info)
+# with stock conntrack + packet mangling.
+table ip nat {
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+		tcp dport 80 dnat to 192.0.2.1:2222
+	}
+}

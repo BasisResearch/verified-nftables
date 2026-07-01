@@ -1,0 +1,79 @@
+
+
+chain redirect_dns {
+	# 否则（即将向公网发送DNS），重定向回本机
+	tcp dport 53 ip daddr != @localhost4 redirect to :53;
+	udp dport 53 ip daddr != @localhost4 redirect to :53;
+	tcp dport 53 ip6 daddr != @localhost6 redirect to :53;
+	udp dport 53 ip6 daddr != @localhost6 redirect to :53;
+	return;
+}
+chain redirect_dns6 {
+	# 	ip6 daddr != @localhost6 tcp dport 53 dnat to 10.0.0.1:53;
+	# 	ip6 daddr != @localhost6 udp dport 53 dnat to 10.0.0.1:53;
+}
+
+chain trace_chain1 {
+	type nat hook prerouting priority -1;
+	# ip saddr 10.0.1.6 tcp dport 80 meta nftrace set 1;
+	# ip saddr 10.0.5.0/24  meta nftrace set 1;
+}
+
+
+chain trace_chain2 {
+	type nat hook output priority -1;
+	# ip saddr 10.0.1.6 tcp dport 80 meta nftrace set 1;
+	# ip daddr 10.0.5.0/24 udp dport 68 meta nftrace set 1;
+}
+
+chain input {
+	type filter hook input priority filter;
+	ct state established,related accept;
+}
+
+chain prerouting {
+	type nat hook prerouting priority filter;
+	ct state established,related accept;
+
+	ip daddr 169.254.169.254 reject with tcp reset;
+
+	iifname != "wan" jump redirect_dns;
+	iifname != "ppp0" jump redirect_dns;
+
+	# iifname == "br-lan" jump trans_proxy;
+
+}
+chain trans_proxy {
+	# udp dport 53 tproxy to :1 accept
+	# tcp dport 53 tproxy to :1 accept
+	# ip saddr 10.0.1.6 tcp dport 80 meta mark set 1 accept;
+	# meta mark 1 tproxy ip to :3272
+	# ip saddr 10.0.1.6 udp dport 0-65535 tproxy ip to :3272 meta mark set 1 accept;
+
+	# ip saddr 10.0.1.6 tcp dport {80,443} counter redirect to :3273;
+
+	return;
+}
+
+chain forward {
+	type filter hook forward priority 1;
+	ct state established,related accept;
+
+	ip daddr 169.254.169.254 reject with tcp reset;
+}
+
+chain postrouting {
+	type nat hook postrouting priority filter;
+	ct state established,related accept;
+}
+
+chain output {
+	type nat hook output priority filter;
+	ct state established,related accept;
+
+	# OUTPUT链是本机发出的请求，如果出口是公网，就转给本机dns
+	# oifname "wan" jump redirect_dns;
+	# oifname "ppp0" jump redirect_dns;
+
+	ip daddr 169.254.169.254 reject with tcp reset;
+}

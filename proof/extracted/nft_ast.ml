@@ -23,6 +23,7 @@ type value =
   | Vsym    of string              (* a bareword: symbolic constant / service / ifname *)
   | Vstr    of string              (* a double-quoted string, e.g. "eth0" *)
   | Vip4    of int list            (* a dotted IPv4 literal, already 4 bytes *)
+  | Vip6    of int list            (* an IPv6 literal, already 16 bytes (big-endian) *)
   | Vvar    of string              (* a `$name` reference to a `define` *)
   | Vprefix of value * int         (* a CIDR prefix, e.g. 192.168.50.0/24 *)
   | Vrange  of value * value       (* an inclusive range, e.g. 29811-29814 *)
@@ -70,7 +71,9 @@ type sstmt =
   | StComment   of string
   | StCounter
   | StLog       of string          (* options string (e.g. the prefix), verbatim *)
-  | StLimit     of int * string * bool  (* rate [over] N / unit; bool = over/invert *)
+  | StLimit     of int * string * bool * int * bool
+                          (* rate, time-unit, over/invert, burst, is-byte-rate;
+                             byte-rate values are already scaled to bytes *)
   | StMasquerade
   | StSnat      of value option * int option  (* `snat to <addr>[:<port>]` *)
   | StDnat      of value option * int option  (* `dnat to <addr>[:<port>]` *)
@@ -87,6 +90,10 @@ type clause =
   | CVmapRef of keypath list * string              (* `<key>[.<key>...] vmap @named_map` *)
   | CVerdict of verdict
   | CStmt    of sstmt
+  | CBitmatch of keypath * string * value * rhs
+                          (* `<sel> and|or|xor <mask> <relop> <val>`, e.g.
+                             `meta mark and 0x3 == 0x1`; nft lowers this to a
+                             bitwise `(field & m) ^ x` then a compare *)
 
 type srule = clause list
 

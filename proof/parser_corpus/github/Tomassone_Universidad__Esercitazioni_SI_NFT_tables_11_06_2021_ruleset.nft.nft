@@ -1,0 +1,42 @@
+flush ruleset
+table ip filter {
+  # 6) Infine bloccare tutto il traffico non elencato nei punti 2, 3, 5
+  chain INPUT {
+    type filter hook input priority 0; policy drop;
+
+    # 1) Consentire qualsiasi traffico sull'interfaccia di loopback
+    iif lo accept
+
+    # 2) Consentire il traffico delle connessioni HTTP entranti
+    tcp dport 80 accept
+
+    # 3) Consentire connessioni SSH uscenti verso la rete host-only 192.168.56.0/24 
+    ip saddr 192.168.56.0/24 tcp sport 22 ct state established accept
+
+    # 5) Consentire la risoluzione dei nomi DNS
+    udp sport 53 ct state established accept
+  }
+
+  chain OUTPUT {
+    type filter hook output priority 0; policy drop;
+
+    # 1) Consentire qualsiasi traffico sull'interfaccia di loopback
+    oif lo accept
+
+    # 2) Consentire il traffico delle connessioni HTTP entranti
+    tcp sport 80 ct state established accept
+
+    # 3) Consentire connessioni SSH uscenti verso la rete host-only 192.168.56.0/24 
+    ip daddr 192.168.56.0/24 tcp dport 22 accept
+
+    # 5) Consentire la risoluzione dei nomi DNS
+    udp dport 53 accept
+  }
+
+  # 4) Bloccare l'inoltro del traffico proveniente dalla rete host-only verso altre destinazioni
+  chain FORWARD {
+    type filter hook forward priority 0; policy accept;
+
+    ip saddr 192.168.56.0/24 ip daddr != 192.168.56.0/24 drop
+  }
+}

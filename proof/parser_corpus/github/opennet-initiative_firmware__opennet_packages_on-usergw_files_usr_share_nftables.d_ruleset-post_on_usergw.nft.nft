@@ -1,0 +1,14 @@
+#
+# Erstelle eine extra Tabelle mit Firewallregeln. So können wir ein
+# einfaches 'flush' aller Regeln zwischendurch durchfuehren.
+#
+
+# Stelle zuerst sicher, dass die Tabelle leer ist bevor wir sie mit Regeln fuellen.
+table inet on_usergw_table
+flush table inet on_usergw_table
+
+table inet on_usergw_table {
+	chain on_service_relay_dnat {
+		type nat hook prerouting priority dstnat; policy accept;
+	}
+}

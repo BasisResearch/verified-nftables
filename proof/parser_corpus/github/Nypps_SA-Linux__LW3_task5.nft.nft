@@ -1,0 +1,8 @@
+#!/usr/sbin/nft -f
+
+table ip filter {
+	chain input {
+		type filter hook input priority 0;
+		tcp dport 80 ip saddr 192.168.32.32 accept;
+	}
+}

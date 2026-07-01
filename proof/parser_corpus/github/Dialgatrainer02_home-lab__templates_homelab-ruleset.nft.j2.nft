@@ -1,0 +1,82 @@
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+#requires testing
+table inet filter {
+        define lan_subnet = {{ nftables_lan_subnet }}
+        define loki_server = {{ nftables_loki_server }}
+        define prometheus_server = {{ nftables_prometheus_server }}
+        define torrent_port = {{ nftables_torrent_port }}
+        chain INPUT {
+            type filter hook input priority filter
+            # drop all be default
+            policy drop
+            # Accept packets in established and related state, drop invalid packets
+            ct state vmap { established:accept, related:accept, invalid:drop }
+            # allow loopback
+            iifname lo accept
+{% if inventory_hostname != "wireguard-oci" %}
+            # allow ssh connections from inside lan subnet 
+            ip saddr $lan_subnet tcp dport ssh accept
+{% else %}
+            tcp sport $torrent_port accept
+            tcp dport ssh accept # add rate limit and blocking
+{% endif %}
+            # rate limit pings
+            meta l4proto icmp icmp type echo-request limit rate over 10/second burst 4 packets drop
+            # allow service's ports to comunicate
+            tcp dport 9100 ip saddr $prometheus_server accept
+            tcp dport 3100 ip saddr $loki_server accept
+{% if 'dns' in group_names %}
+            meta l4proto {tcp, udp} th dport 53 accept # allow dns 
+            meta l4proto {tcp, udp} th dport 853 accept # allow dns over tls
+            tcp dport 80 ip saddr $lan_subnet accept
+{% endif %}
+{% if 'wireguard' in group_names %}
+            iifname wg0 accept
+            udp dport {53,51820} accept
+            meta l4proto { tcp,udp} th dport 8118 accept
+{% endif %}
+        }
+        chain OUTPUT {
+            type filter hook output priority filter
+            policy accept
+            # drop invalid packets
+            ct state invalid drop
+            # drop promtail packets if not goignt to loki as otherwise they are exposed 
+            tcp dport 3100 ip daddr !=$loki_server drop
+            tcp dport 9100 ip daddr !=$prometheus_server drop
+{% if 'wireguard' in group_names%}
+           # allow 53 rather than block
+{% else %}
+            meta l4proto {tcp, udp} th sport 853 ip daddr !=$lan_subnet drop
+            meta l4proto {tcp, udp} th sport 53 ip daddr !=$lan_subnet drop
+             # meta l4proto {tcp, udp} th sport 53 ip daddr != 1.1.1.1 drop
+{%endif%}
+{% if 'wireguard' in group_names %}
+#             oifname wg0 accept
+{% endif %}
+        }
+}
+
+{% if inventory_hostname == "wireguard-oci" %}
+table ip wireguard {
+        define torrent_port = {{ nftables_torrent_port }}
+	chain wireguard_masquerare {
+		type nat hook postrouting priority srcnat; policy accept;
+		counter packets 0 bytes 0 masquerade
+	}
+        chain prerouting {
+                type nat hook prerouting priority -100; policy accept;
+                tcp dport $torrent_port dnat ip to 10.50.0.2:$torrent_port 
+        }
+}
+table ip6 wireguard {
+	chain wireguard_chain {
+		type nat hook postrouting priority srcnat; policy accept;
+		counter packets 0 bytes 0 masquerade
+	}
+}
+
+{% endif %}

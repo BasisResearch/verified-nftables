@@ -1,0 +1,54 @@
+#!/usr/sbin/nft -f
+
+add table inet filter
+add chain inet filter INPUT { type filter hook input priority 0; policy drop; }
+add chain inet filter FORWARD { type filter hook forward priority 0; policy drop; }
+add chain inet filter OUTPUT { type filter hook output priority 0; policy accept; }
+
+# Allow all traffic from localhost
+add rule inet filter INPUT iifname "lo" counter accept
+
+# Allow related and established connections
+add rule inet filter INPUT ct state related,established counter accept
+
+# Drop malformed/spoofed packets
+add rule inet filter INPUT ct state invalid drop
+
+# Port scan trap (using port 21 as the trap)
+add set inet filter banip { type ipv4_addr; flags dynamic,timeout; }
+add set inet filter banip_v6 { type ipv6_addr; flags dynamic,timeout; }
+add rule inet filter INPUT tcp dport 21 ct state new limit rate 30/minute log prefix "banip: "
+add rule inet filter INPUT tcp dport 21 ct state new add @banip { ip saddr timeout 300s }
+add rule inet filter INPUT ip saddr @banip update @banip { ip saddr timeout 300s } drop
+add rule inet filter INPUT tcp dport 21 ct state new limit rate 30/minute log prefix "banip_v6: "
+add rule inet filter INPUT tcp dport 21 ct state new add @banip_v6 { ip6 saddr timeout 300s }
+add rule inet filter INPUT ip6 saddr @banip_v6 update @banip_v6 { ip6 saddr timeout 300s } drop
+
+# Drop all null packets (NULL attack)
+add rule inet filter INPUT tcp flags 0x0 / fin,syn,rst,psh,ack,urg counter drop
+
+# Drop malformed xmas packets
+add rule inet filter INPUT tcp flags fin,syn,rst,psh,ack,urg / fin,syn,rst,psh,ack,urg counter drop
+
+# Drop new packets that don't use the syn flag
+add rule inet filter INPUT tcp flags != syn / fin,syn,rst,ack ct state new counter drop
+
+# Limit SYN packets per IP (connection attacks)
+add rule inet filter INPUT meta nfproto ipv4 tcp dport { 2200, 80, 443, 8388, 2005, 22 } tcp flags & (fin|syn|rst|ack) == syn meter syn-flood-meter-v4 { ip saddr timeout 30s limit rate 8/second burst 5 packets } accept
+add rule inet filter INPUT meta nfproto ipv4 tcp dport { 2200, 80, 443, 8388, 2005, 22 } tcp flags & (fin|syn|rst|ack) == syn limit rate 30/minute log prefix "syn-flood-v4: " drop
+add rule inet filter INPUT meta nfproto ipv6 tcp dport { 2200, 80, 443, 8388, 2005, 22 } tcp flags & (fin|syn|rst|ack) == syn meter syn-flood-meter-v6 { ip6 saddr timeout 30s limit rate 8/second burst 5 packets }  accept
+add rule inet filter INPUT meta nfproto ipv6 tcp dport { 2200, 80, 443, 8388, 2005, 22 } tcp flags & (fin|syn|rst|ack) == syn limit rate 30/minute log prefix "syn-flood-v6: " drop
+
+# Limit icmp echo-request (ping flood)
+add rule inet filter INPUT icmp type echo-request limit rate 1/second burst 3 packets accept
+add rule inet filter INPUT icmpv6 type echo-request limit rate 1/second burst 3 packets accept
+
+add table inet nat
+add chain inet nat PREROUTING { type nat hook prerouting priority -100; policy accept; }
+add chain inet nat INPUT { type nat hook input priority 100; policy accept; }
+add chain inet nat OUTPUT { type nat hook output priority -100; policy accept; }
+add chain inet nat POSTROUTING { type nat hook postrouting priority 100; policy accept; }
+
+# Flush ruleset: nft flush ruleset
+# Apply ruleset: nft -f ruleset.nft
+# Save ruleset: nft -s list ruleset | tee /etc/nftables.conf

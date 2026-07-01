@@ -1,0 +1,269 @@
+#!/usr/sbin/nft -f
+
+#flush ruleset                           # 清空规则集；去除，防止误删 docker 的配置
+
+define var1 = 1234                      # 定义变量
+define var2 = 1234                      # 定义变量
+define vars = { $var1, $var2}           # 引用变量
+
+
+# 经过 艰苦卓绝 的研究，VM(虚拟机) Bridge 模式是无法作为 旁路由/透明代理 的，理由如下:
+#     @ref {其他解释文档} https://blog.csdn.net/txl199106/article/details/39324485
+#     @ref {完全相同的场景} https://github.com/wangyu-/UDPspeeder/issues/87
+#     Bridge 模式网络拓扑图如下:
+#         Router -> Host NIC - bridge - VMnet0(虚拟交换机) -> Host/VM1/VM2
+#     由于 Router 直接相连的只有 Host NIC，
+#     所以 Router 就只能获取到 Host NIC 的 MAC 地址
+#     所以在 Router 上，所有 VM 的 MAC 和 Host 的 MAC 地址是一样，当 VM 作为默认网关时，流量只能发送到 Host      
+# 
+# @trap 因为 tcpdump 是工作在 数据链路层，而 netfilter 是运行在 Linux 内核中的，
+#       所以 tcpdump 无法 capture iptables/nftables 中处理的包
+#       如果想查看 netfilter 中包的处理过程，可以使用 iptables/nftables 的日志功能
+
+
+
+# 打印所有数据包 Debug 时使用:
+# 
+# 对应的命令行命令: 
+# nft create table inet tb_log_all { comment \"\"\; }
+# nft create chain inet tb_log_all chain_log_all { type filter hook ingress priority raw + 5\; policy accept\; comment \"\"\; }         # ingress require Linux kernel>=5.10
+# nft add rule     inet tb_log_all chain_log_all log prefix \"kh-nf-trace-log: \" level debug flags all continue         # 输出信息到 kernel log 中，可以使用 dmsg 或 syslog 查看
+# nft add rule     inet tb_log_all chain_log_all meta nftrace set 1 continue
+#
+table netdev tb_log_all {
+    chain chain_log_all {
+        # ingress require Linux kernel>=5.10 且 必须设置 device 参数
+        type filter hook ingress device ens33 priority filter - 5; policy accept; comment "";
+
+        # 输出信息到 kernel log 中，可以使用 dmsg 或 syslog 查看
+        #log prefix "kh-nf-trace-log: " level debug flags all continue
+
+        # shell> nft monitor trace 查看
+        #meta protocol {ip, ip6, arp} meta l4proto {icmp, icmpv6} meta nftrace set 1 continue
+        meta l4proto {icmp, icmpv6} meta nftrace set 1 continue
+    }
+}
+
+
+
+
+table ip tb_v2ray {
+    # 根据 域名 解析出来的 VPS 的 IPv4 地址的 集合，
+    # 因为 VPS 使用 CDN 做转发，所以 IPv4 地址会变
+    # @trap 不再需要安装 ipset 和 dnsmasq；NFT 自带名为 set 的元素类型，可用于替代 ipset
+    set vps4 {
+        type            ipv4_addr                   # 表示当前 Set 存放的内容是 IPv4 地址
+        # timeout         1d2h3m4s                    # 整个 Set 中的元素超时时间
+        # flags           interval, timeout           # interval 表示 Set 中包含 IP 地址范围；timeout 表示 Set 中的元素有过期时间
+        # gc-interval     1d2h3m4s                    # 垃圾回收器 执行的 时间间隔
+
+        # Set 初始元素配置
+        elements = {
+            223.5.5.5,
+            223.6.6.6
+        }
+
+        # size            16                   # 当前 Set 最多能保存多少个元素
+        # policy          performance         # 集合选择策略
+        # counter                             # 为集合中 每个元素 分配一个 计数器
+    }
+
+    # IPv4 Transparent Proxy
+    # 代理局域网设备流量
+    # @trap 该配置也会处理 本机请求 的响应数据，因为响应是从外部发送到本地的，所以肯定会走 prerouting
+    chain chain_lan_v2ray {
+        type filter hook prerouting priority filter + 5; policy accept; comment "";
+
+        # 禁止直接访问本机 transparentIn 监听端口，会造成死循环
+        # 这里为了方便，把所有 dest port = transparentIn 端口 的流量全禁了，可能造成误杀
+        udp dport 12345 drop
+        tcp dport 12345 drop
+
+
+        udp dport { 123 } accept                                # 放行 ntp 协议
+
+        ip daddr 127.0.0.0/8 accept                             # 回环地址
+        ip daddr 10.0.0.0/8 accept                              # 私有地址
+        ip daddr 172.16.0.0/12 accept                           # 私有地址
+
+        ip saddr != 192.168.0.0/16 accept                       # 非当前网段的 packet 不走 v2ray，防止被蹭 VPS
+        ip daddr 192.168.0.0/16 udp dport != {53,5353} accept   # 私有地址，53 端口除外（因为要使用 V2Ray 解析 DNS）
+        ip daddr 192.168.0.0/16 tcp dport != {53,5353} accept   # 私有地址，53 端口除外（因为要使用 V2Ray 解析 DNS），
+                                                                # 避免 V2Ray 无法启动时无法连网关的 SSH，
+                                                                # 如果你配置的是其他网段（如 10.x.x.x 等），则修改成自己的
+        ip daddr 224.0.0.0-255.255.255.255 accept               # 跳过 D 类 和 E 类地址，即 224.0.0.0 朝上的地址，其中 255.255.255.255 为 全局广播地址
+
+        
+
+        ip daddr @vps4 accept                                   # 如果目标 ip 地址在名为 vps4 的 ipset 中，那么放行
+
+        # 直连 SO_MARK 为 0xff 的流量(0xff 是 16 进制数，数值上等同与上面V2Ray 配置的 255)，此规则目的是解决v2ray占用大量CPU（https://github.com/v2ray/v2ray-core/issues/2621）
+        # 原因: 
+        #     当 v2ray.config.json dns.servers 中配置了 localhost 时，本机发出的查询默认 DNS 服务器(一般也是 192.168.0.0/16 网段的)的请求时
+        #     由于 localhost 发出的请求不受 v2ray 控制，所以没有 SO_MARK=255 标记，
+        #     经过 chain_local_v2ray 打了 SO_MARK=2 标记后，traffic 经过 路由表 reroute 后会回到 PREROUTING，然后经过这里 (Netfilter 特性: 在 OUTPUT 链打标记(mark)会使相应的包重路由到 PREROUTING 链上)
+        #     然后进入 transparentIn，然后经过 routing.rule 从 dnsOut(sockopt.mark=255) 流出
+        #     由于 dnsOut 是将流量重新发送到 PREROUTING 链来进入 v2ray 内建的 DNS,所以回再次回到这里
+        #     如果这里不直连 SO_MARK=255 的包，那会使 traffic 再次进入 transparentIn，造成死循环
+        # meta mark 255 accept          # 老写法
+        socket mark 255 accept          # 新写法
+
+        # 给 TCP, UDP 打标记 SO_MARK=2，并修改目标 IP:PORT, 然后使用 路由表 reroute 到新的目标 IP:PORT 
+        # @巨神坑 tproxy to IP:PORT 并不会使 packet 发送到指定 IP:PORT，实际还是需要经过 路由表，
+        #        所以这里实际控制 packet 流向的配置是 meta mark set 2，并不是 tproxy
+        #        如果这里配置了跟 chain_local_v2ray 中不同的 mark 值(例如：1)，由于 enableV2rayTProxy.sh 中没有配置对 SO_MARK=1 的路由信息，
+        #        从而导致来自 LAN 的流量不会进入 transparentIn，而不被代理
+        #        但是本机流量依旧能成功，可能是 chain_local_v2ray 设置的 mark 值在此处同样有效(即：多次设置 mark 不会覆盖，只会追加)
+        #ip protocol { tcp, udp } tproxy to 127.0.0.1:12345 meta mark set 2 meta nftrace set 1 accept    # debug 或 shell> nft monitor trace 时使用
+        ip protocol { tcp, udp } tproxy to 127.0.0.1:12345 meta mark set 2 accept
+
+    }
+
+    # 代理本机流量
+    chain chain_local_v2ray {
+        type route hook output priority filter + 5; policy accept; comment "";
+
+        # 禁止直接访问本机 transparentIn 监听端口，会造成死循环
+        # 这里为了方便，把所有 dest port = transparentIn 端口 的流量全禁了，可能造成误杀
+        udp dport 12345 drop
+        tcp dport 12345 drop
+
+
+        udp dport { 123 } accept                                # 放行 ntp 协议
+
+        ip daddr 127.0.0.0/8 accept                             # 回环地址
+        ip daddr 10.0.0.0/8 accept                              # 私有地址
+        ip daddr 172.16.0.0/12 accept                           # 私有地址
+        
+        ip daddr 192.168.0.0/16 udp dport != {53,5353} accept   # 私有地址，53 端口除外（因为要使用 V2Ray 解析 DNS）
+        ip daddr 192.168.0.0/16 tcp dport != {53,5353} accept   # 私有地址，53 端口除外（因为要使用 V2Ray 解析 DNS），
+                                                                # 避免 V2Ray 无法启动时无法连网关的 SSH，
+                                                                # 如果你配置的是其他网段（如 10.x.x.x 等），则修改成自己的
+        ip daddr 224.0.0.0-255.255.255.255 accept               # 跳过 D 类 和 E 类地址，即 224.0.0.0 朝上的地址，其中 255.255.255.255 为 全局广播地址
+
+        ip daddr @vps4 accept                                   # 如果目标 ip 地址在名为 vps4 的 ipset 中，那么放行
+
+        # 直连 SO_MARK 为 0xff 的流量(0xff 是 16 进制数，数值上等同与上面V2Ray 配置的 255)，此规则目的是避免代理本机(网关)流量出现回环问题
+        # meta mark 255 accept          # 老写法
+        socket mark 255 accept          # 新写法
+
+        # 打标记，作为 路由表 的分流条件
+        # 坑: 因为这里的配置不是 shell 命令，所以 路由规则 无法写在这里，需要独立写 shell 命令，不能忘
+        ip protocol { tcp, udp }  meta mark set 2               # 给 TCP, UDP 打标记 2，重路由
+    }
+
+
+
+
+}
+
+
+table ip6 tb_v2ray_ip6 {
+
+    # 根据 域名 解析出来的 VPS 的 IPv6 地址的 集合，
+    # 因为 VPS 使用 CDN 做转发，所以 IPv6 地址会变
+    # @trap 不再需要安装 ipset 和 dnsmasq；NFT 自带名为 set 的元素类型，可用于替代 ipset
+    set vps6 {
+        type            ipv6_addr                   # 表示当前 Set 存放的内容是 IPv6 地址
+        # timeout         1d2h3m4s                    # 整个 Set 中的元素超时时间
+        # flags           interval, timeout           # interval 表示 Set 中包含 IP 地址范围；timeout 表示 Set 中的元素有过期时间
+        # gc-interval     1d2h3m4s                    # 垃圾回收器 执行的 时间间隔
+
+        # Set 初始元素配置
+        elements = {
+            ::1
+        }
+
+        # size            16                   # 当前 Set 最多能保存多少个元素
+        # policy          performance         # 集合选择策略
+        # counter                             # 为集合中 每个元素 分配一个 计数器
+    }
+
+    # IPv6 Transparent Proxy
+    # 代理局域网设备流量
+    # @trap 该配置也会处理 本机请求 的响应数据，因为响应是从外部发送到本地的，所以肯定会走 prerouting
+    chain chain_lan_v2ray_ip6 {
+        type filter hook prerouting priority filter + 5; policy accept; comment "";
+
+        # 禁止直接访问本机 transparentIn 监听端口，会造成死循环
+        # 这里为了方便，把所有 dest port = transparentIn 端口 的流量全禁了，可能造成误杀
+        udp dport 12345 drop
+        tcp dport 12345 drop
+
+
+        udp dport { 123 } accept                                # 放行 ntp 协议
+
+        ip6 daddr ::1/128 accept                                # 回环地址
+        ip6 daddr fc00::/7 accept                               # Unique-local(全球唯一本地地址) 放行
+        ip6 daddr ff00::/8 accept                               # 组播地址 放行
+
+        
+        # Link-local(链路本地地址，即: LAN) 放行
+        #ip6 saddr != 2408:8240:941b:e551::/64 accept            # 非当前网段的 packet 不走 v2ray，防止被蹭 VPS
+        ip6 daddr fe80::/10 udp dport != {53,5353} accept       # 私有地址，53 端口除外（因为要使用 V2Ray 解析 DNS）
+        ip6 daddr fe80::/10 tcp dport != {53,5353} accept       # 私有地址，53 端口除外（因为要使用 V2Ray 解析 DNS），
+                                                                # 避免 V2Ray 无法启动时无法连网关的 SSH，
+                                                                # 如果你配置的是其他网段（如 10.x.x.x 等），则修改成自己的
+
+
+        ip6 daddr @vps6 accept                                   # 如果目标 ip 地址在名为 vps6 的 ipset 中，那么放行
+
+        # 因为 Netfilter 特性: 在 OUTPUT 链打标记(mark)会使相应的包重路由到 PREROUTING 链上; 
+        # 而 v2ray outbound 中配置的 sockopt.mark=255 就是在 OUTPUT 链上打的，所以这里要直连 SO_MARK=255 的包，防止死循环
+        # 直连 SO_MARK 为 0xff 的流量(0xff 是 16 进制数，数值上等同与上面V2Ray 配置的 255)，此规则目的是解决v2ray占用大量CPU（https://github.com/v2ray/v2ray-core/issues/2621）
+        # meta mark 255 accept          # 老写法
+        socket mark 255 accept          # 新写法
+
+        # 给 TCP, UDP 打标记 SO_MARK=2，并修改目标 IP:PORT, 然后使用 路由表 reroute 到新的目标 IP:PORT 
+        # @巨神坑 tproxy to IP:PORT 并不会使 packet 发送到指定 IP:PORT，实际还是需要经过 路由表，
+        #        所以这里实际控制 packet 流向的配置是 meta mark set 2，并不是 tproxy
+        #        如果这里配置了跟 chain_local_v2ray_ip6 中不同的 mark 值(例如：1)，由于 enableV2rayTProxy.sh 中没有配置对 SO_MARK=1 的路由信息，
+        #        从而导致来自 LAN 的流量不会进入 transparentIn，而不被代理
+        #        但是本机流量依旧能成功，可能是 chain_local_v2ray_ip6 设置的 mark 值在此处同样有效(即：多次设置 mark 不会覆盖，只会追加)
+        #meta l4proto { tcp, udp } tproxy to [::1]:12345 meta mark set 2 meta nftrace set 1 accept        # debug 或 shell> nft monitor trace 时使用
+        meta l4proto { tcp, udp } tproxy to [::1]:12345 meta mark set 2 accept
+    }
+
+
+    # 代理本机流量
+    chain chain_local_v2ray_ip6 {
+        type route hook output priority filter + 5; policy accept; comment "";
+
+        # 禁止直接访问本机 transparentIn 监听端口，会造成死循环
+        # 这里为了方便，把所有 dest port = transparentIn 端口 的流量全禁了，可能造成误杀
+        udp dport 12345 drop
+        tcp dport 12345 drop
+
+
+        udp dport { 123 } accept                                # 放行 ntp 协议
+
+        ip6 daddr ::1/128 accept                                # 回环地址
+        ip6 daddr fc00::/7 accept                               # Unique-local(全球唯一本地地址) 放行
+        ip6 daddr ff00::/8 accept                               # 组播地址 放行
+        
+        # Link-local(本地链接地址) 放行
+        ip6 daddr fe80::/10 udp dport != {53,5353} accept       # 私有地址，53 端口除外（因为要使用 V2Ray 解析 DNS）
+        ip6 daddr fe80::/10 tcp dport != {53,5353} accept       # 私有地址，53 端口除外（因为要使用 V2Ray 解析 DNS），
+                                                                # 避免 V2Ray 无法启动时无法连网关的 SSH，
+                                                                # 如果你配置的是其他网段（如 10.x.x.x 等），则修改成自己的
+
+        ip6 daddr @vps6 accept                                   # 如果目标 ip 地址在名为 vps6 的 ipset 中，那么放行
+
+        # 直连 SO_MARK 为 0xff 的流量(0xff 是 16 进制数，数值上等同与上面V2Ray 配置的 255)，此规则目的是避免代理本机(网关)流量出现回环问题
+        # meta mark 255 accept          # 老写法
+        socket mark 255 accept          # 新写法
+
+        # 打标记，作为 路由表 的分流条件
+        # 坑: 因为这里的配置不是 shell 命令，所以 路由规则 无法写在这里，需要独立写 shell 命令，不能忘
+        meta l4proto { tcp, udp }  meta mark set 2               # 给 TCP, UDP 打标记 2，重路由
+    }
+
+}
+
+# 新建 DIVERT 规则，避免已有连接的包二次通过 TPROXY，理论上有一定的性能提升
+table inet tb_divert {
+    chain chain_divert {
+        type filter hook prerouting priority mangle - 5; policy accept; comment "";
+        meta l4proto {tcp} socket transparent 1 meta mark set 2 accept            # 匹配 socket "IP_TRANSPARENT" option 的值，如果匹配则打标记为 2，重路由
+    }
+}

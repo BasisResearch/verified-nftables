@@ -1,0 +1,16 @@
+table inet gateway {
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+		iif "eth0" meta l4proto { tcp, udp } th dport != __WG_LISTEN_PORT__ dnat ip to __WG_LINK_ADDRESS__
+	}
+
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		oifname "wg0" masquerade
+	}
+
+	chain mangle {
+		type filter hook forward priority mangle; policy accept;
+		oifname "wg0" tcp flags syn tcp option maxseg size set rt mtu
+	}
+}

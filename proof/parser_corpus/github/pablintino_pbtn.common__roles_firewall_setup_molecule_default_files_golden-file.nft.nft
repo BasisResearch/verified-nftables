@@ -1,0 +1,50 @@
+#!/usr/sbin/nft -f
+
+
+flush ruleset
+
+table inet firewall {
+
+    chain inbound {
+        type filter hook input priority 0; policy drop;
+
+        # Drop IPv6 support by explicetly dropping IPv6 traffic
+        ip version 6 drop
+        tcp dport 22 accept
+        iifname "lo" ip saddr != 127.0.0.0/8 limit rate 100/minute burst 150 packets log prefix "IN - LO INVALID ADDR: " comment "Rate limit logging for loopback non local packets"
+        iifname "lo" ip saddr != 127.0.0.0/8 drop comment "Drop loopback iface non local packets"
+        iifname "lo" accept comment "Permit all traffic in to loopback interface"
+        ct state established,related accept comment "Permit established/related connections"
+        tcp flags != syn ct state new limit rate 100/minute burst 150 packets log prefix "IN - New !SYN: " comment "Rate limit logging for new connections that do not have the SYN TCP flag set"
+        tcp flags != syn ct state new counter drop comment "Drop new connections that do not have the SYN TCP flag set"
+        tcp flags & (fin|syn) == (fin|syn) limit rate 100/minute burst 150 packets log prefix "IN - TCP FIN|SIN: " comment "Rate limit logging for TCP packets with invalid fin/syn flag set"
+        tcp flags & (fin|syn) == (fin|syn) counter drop comment "Drop TCP packets with invalid fin/syn flag set"
+        tcp flags & (syn|rst) == (syn|rst) limit rate 100/minute burst 150 packets log prefix "IN - TCP SYN|RST: " comment "Rate limit logging for TCP packets with invalid syn/rst flag set"
+        tcp flags & (syn|rst) == (syn|rst) counter drop comment "Drop TCP packets with invalid syn/rst flag set"
+        tcp flags & (fin|syn|rst|psh|ack|urg) < (fin) limit rate 100/minute burst 150 packets log prefix "IN - FIN:" comment "Rate limit logging for invalid TCP flags (fin|syn|rst|psh|ack|urg) < (fin)"
+        tcp flags & (fin|syn|rst|psh|ack|urg) < (fin) counter drop comment "Drop TCP packets with flags (fin|syn|rst|psh|ack|urg) < (fin)"
+        tcp flags & (fin|syn|rst|psh|ack|urg) == (fin|psh|urg) limit rate 100/minute burst 150 packets log prefix "IN - FIN|PSH|URG:" comment "Rate limit logging for invalid TCP flags (fin|syn|rst|psh|ack|urg) == (fin|psh|urg)"
+        tcp flags & (fin|syn|rst|psh|ack|urg) == (fin|psh|urg) counter drop comment "Drop TCP packets with flags (fin|syn|rst|psh|ack|urg) == (fin|psh|urg)"
+        ct state invalid limit rate 100/minute burst 150 packets log flags all prefix "IN - Invalid: " comment "Rate limit logging for traffic with invalid connection state"
+        ct state invalid counter drop comment "Drop traffic with invalid connection state"
+    }
+
+    chain outbound {
+        type filter hook output priority 0; policy drop;
+
+        # Drop IPv6 support by explicetly dropping IPv6 traffic
+        ip version 6 drop
+        tcp sport 22 accept
+        oifname "lo" ip daddr != 127.0.0.0/8 limit rate 100/minute burst 150 packets log prefix "IN - LO INVALID ADDR: " comment "Rate limit logging for loopback non local output packets"
+        oifname "lo" ip daddr != 127.0.0.0/8 drop comment "Drop loopback iface non local output packets"
+        oifname "lo" accept comment "Permit all traffic out of loopback interface"
+        ct state established,related counter accept comment "Permit established/related connections"
+        ct state invalid limit rate 100/minute burst 150 packets log flags all prefix "OUT - Invalid: " comment "Rate limit logging for traffic with invalid connection state"
+        ct state invalid counter drop comment "Drop traffic with invalid connection state"
+    }
+
+    chain forward {
+        # Drop everything (assumes this device is not a router)
+        type filter hook forward priority 0; policy drop;
+    }
+}

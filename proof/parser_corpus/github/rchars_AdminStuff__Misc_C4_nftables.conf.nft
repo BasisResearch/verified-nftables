@@ -1,0 +1,28 @@
+define out_if = "out0"
+define lan_if = "br0"
+
+table inet filter {
+    chain input {
+        type filter hook input priority filter;
+        iifname lo accept
+        iifname $lan_if accept
+        iifname $out_if ct state established,related accept
+        counter drop
+    }
+    chain forward {
+        type filter hook forward priority filter;
+        iifname $lan_if oifname $out_if accept
+        iifname $out_if oifname $lan_if ct state established,related accept
+        counter drop
+    }
+    chain output {
+        type filter hook output priority filter;
+    }
+}
+
+table ip nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat;
+        oifname $out_if masquerade
+    }
+}

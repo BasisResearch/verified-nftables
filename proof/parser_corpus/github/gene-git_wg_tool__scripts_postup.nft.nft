@@ -1,0 +1,69 @@
+#!/usr/bin/nft -f
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: © 2022-present  Gene C <arch@sapience.com>
+#
+# Wireguard postup
+#
+# Network Assumptions for VPN server :
+# ------------------------------------
+#   - vpn server has access to the DNS servers used by wg configs via local lan
+#   - vpn server has access to internet via local lan
+#   - no other nft rules are being used at same time
+#   - This script NATs vpn traffic via the local LAN
+#   - ensure ip forwarding is on
+#     sysctl -w net.ipv4.ip_forward=1
+#     and add to /etc/sysctl.d/sysctl.conf :
+#       net.ipv4.ip_forward = 1
+#
+# Adjust as appropriate if network setup is different and see alternate postup examples.
+# See the alternate script for another example.
+#
+# What it does:
+# -------------
+#   NAT from wireguard iface (e.g. wg0) -> local network
+#   similar to what is done for normal firewall, where nat is from internal network to internet,
+#   For this use case,  internal is wg0 and "internet" is local lan network
+#
+# Packets destined for local lan (e.g. DNS servers) will be routed to local lan. 
+# Packets destined elsewhere will use vpn server default route(s) (via lan). 
+# e.g. Packets destined for internet will go out via local lan (NAT'd) to internet and
+# on the local lan, these NAT'd packets will look like all other vpn server traffic.
+#
+#
+define vpn_net = 10.99.99.0/24  # must match server config
+define lan_ip = 10.0.0.1        # real lan ip of wg server
+define lan_iface = eno1         # lan interface
+
+define wg = wg0
+
+flush ruleset
+table inet t_filter {
+    chain input {
+        type filter hook input priority -50 
+        policy accept
+    }
+
+    chain output {
+        type filter hook output priority 0 
+        policy accept
+    }
+
+    chain forward {
+        type filter hook forward priority -50; policy drop;
+
+        iifname $wg accept
+        iifname $lan_iface accept
+        ct status dnat accept
+    }
+}
+
+table inet t_nat {
+    chain preroute {
+        type nat hook prerouting priority -100; policy accept;
+    }
+
+    chain postroute {
+        type nat hook postrouting priority 100; policy accept;
+        oifname $lan_iface ip saddr $vpn_net snat to $lan_ip
+    }
+}

@@ -1,0 +1,38 @@
+table ip nat2 {
+	set se5_dport {
+		type inet_service
+		elements = { 2200, 2204, 2205, 2206, 2207,
+			     2209 }
+	}
+
+	set se5_remote_addr {
+		type ipv4_addr
+		elements = { 192.168.192.2, 192.168.192.204,
+			     192.168.192.205, 192.168.192.206,
+			     192.168.192.207, 192.168.192.209 }
+	}
+
+	map se5_addr {
+		type inet_service : ipv4_addr . inet_service
+		elements = { 2200 : 192.168.192.1 . 992, 2204 : 192.168.192.204 . 992, 2205 : 192.168.192.205 . 992, 2206 : 192.168.192.206 . 992, 2207 : 192.168.192.207 . 992,
+			     2209 : 192.168.192.209 . 992 }
+	}
+
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+		ip daddr 185.233.13.101 tcp dport @se5_dport counter packets 4 bytes 208 dnat ip to tcp dport map @se5_addr
+	}
+
+	chain input {
+		type nat hook input priority srcnat; policy accept;
+	}
+
+	chain output {
+		type nat hook output priority dstnat; policy accept;
+	}
+
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		ip daddr @se5_remote_addr tcp dport 992 counter packets 4 bytes 208 snat to 192.168.192.107
+	}
+}

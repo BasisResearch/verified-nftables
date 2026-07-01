@@ -1,0 +1,32 @@
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table ip filter {
+        chain NGINX_INP {
+{%- for addrs in salt['mine.get'](tgt='lb-*', fun='network.ip_addrs', tgt_type='glob').values() %}
+                ip saddr {{ addrs[0] }} tcp dport { 80,443,8080 } ct state new counter accept
+{%- endfor %}
+        }
+        #chain PHP_FPM_INP {
+        #        tcp dport 9000 ct state new counter accept
+        #}
+        chain INPUT {
+                type filter hook input priority filter; policy drop;
+                ct state invalid counter drop
+                iifname "lo" counter accept
+                #tcp dport 22 ct state new counter accept
+                ct state established,related counter accept
+                counter jump NGINX_INP
+                #counter jump PHP_FPM_INP
+        }
+
+        chain FORWARD {
+                type filter hook forward priority filter; policy drop;
+        }
+
+        chain OUTPUT {
+                type filter hook output priority filter; policy drop;
+                ct state established,related,new counter accept
+        }
+}

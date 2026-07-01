@@ -154,6 +154,7 @@ let lookup ctx tbl s =
 type kind =
   | KIfname | KIfindex | KIp4 | KIp6 | KPort | KL4proto | KNfproto | KEthertype
   | KCtstate | KMark | KIcmp | KIcmpv6 | KPkttype | KFibType | KTcpflag | KNum of int
+  | KCtdir   (* conntrack direction: original=0 / reply=1, a 1-byte register *)
   (* host-endian (little-endian on x86) integer of [n] bytes; used for the value
      of `ct <key> set` / `meta <key> set` where the kernel register width is
      key-specific (e.g. ct zone is a u16 -> [KNumLe 2], ct label a 128-bit value
@@ -182,6 +183,7 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
   | KIfindex, Nft_ast.Vnum n -> bytes_of_int_le 4 n
   | KIfindex, (Nft_ast.Vsym s | Nft_ast.Vstr s) -> bytes_of_int_le 4 (nametoindex s)
   | KIp4, Nft_ast.Vip4 b -> b
+  | KIp6, Nft_ast.Vip6 b -> b
   | KIp6, Nft_ast.Vip4 b -> b           (* a v4-mapped literal in a v6 context *)
   | KPort, Nft_ast.Vnum n -> bytes_of_int 2 n
   | KPort, Nft_ast.Vsym s -> bytes_of_int 2 (L.assoc_opt s sym_service
@@ -216,13 +218,18 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
   | KFibType, Nft_ast.Vnum n -> bytes_of_int_le 4 n
   | KNum w, Nft_ast.Vnum n -> bytes_of_int w n
   | KNumLe w, Nft_ast.Vnum n -> bytes_of_int_le w n
+  | KCtdir, Nft_ast.Vnum n -> [n land 0xff]
+  | KCtdir, Nft_ast.Vsym s ->
+      (match s with "original" -> [0] | "reply" -> [1]
+       | _ -> raise (Unsupported ("ct direction " ^ s)))
   | _, Nft_ast.Vvar n -> raise (Unsupported ("unresolved $" ^ n))
   | _ -> raise (Unsupported "value/selector type mismatch")
 
 (* the byte width a kind compares at (for building a prefix mask) *)
 let width_of_kind = function
   | KIp4 -> 4 | KIp6 -> 16 | KPort | KEthertype -> 2
-  | KCtstate | KMark | KIfindex | KFibType -> 4 | KNum w -> w | KNumLe w -> w | _ -> 1
+  | KCtstate | KMark | KIfindex | KFibType -> 4 | KNum w -> w | KNumLe w -> w
+  | KCtdir -> 1 | _ -> 1
 
 (* A kind stored HOST-ENDIAN (little-endian on x86) in the register, like the
    kernel holds `meta mark` / `ct mark` (BYTEORDER_HOST_ENDIAN).  For these,
@@ -347,6 +354,54 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
   | ["fib"; sel; "oif"]     -> (Syntax.FFib (sel, Packet.FRoif), KNum 4, none)
   | ["ct"; "state"]      -> (Syntax.FCtState, KCtstate, none)
   | ["ct"; "mark"]       -> (Syntax.FCtMark, KMark, none)
+  (* ---- additional IPv4 header fields (network-order payload loads) ---- *)
+  | ["ip"; "ttl"]        -> (Syntax.FIp4Ttl,    KNum 1, [DNfproto [2]])
+  | ["ip"; "length"]     -> (Syntax.FIp4Totlen, KNum 2, [DNfproto [2]])
+  | ["ip"; "id"]         -> (Syntax.FIp4Id,     KNum 2, [DNfproto [2]])
+  | ["ip"; "frag-off"]   -> (Syntax.FIp4FragOff,KNum 2, [DNfproto [2]])
+  | ["ip"; "checksum"]   -> (Syntax.FIp4Csum,   KNum 2, [DNfproto [2]])
+  (* ---- additional IPv6 header fields ---- *)
+  | ["ip6"; "length"]    -> (Syntax.FPayload (Packet.PNetwork, 4, 2), KNum 2, [DNfproto [10]])
+  | ["ip6"; "hoplimit"]  -> (Syntax.FPayload (Packet.PNetwork, 7, 1), KNum 1, [DNfproto [10]])
+  | ["ip6"; "nexthdr"]   -> (Syntax.FPayload (Packet.PNetwork, 6, 1), KL4proto, [DNfproto [10]])
+  (* ---- additional TCP header fields (network-order payload loads) ---- *)
+  | ["tcp"; "sequence"]  -> (Syntax.FTcpSeq, KNum 4, dep_l4 "tcp")
+  | ["tcp"; "ackseq"]    -> (Syntax.FTcpAck, KNum 4, dep_l4 "tcp")
+  | ["tcp"; "window"]    -> (Syntax.FPayload (Packet.PTransport, 14, 2), KNum 2, dep_l4 "tcp")
+  | ["tcp"; "checksum"]  -> (Syntax.FPayload (Packet.PTransport, 16, 2), KNum 2, dep_l4 "tcp")
+  | ["tcp"; "urgptr"]    -> (Syntax.FPayload (Packet.PTransport, 18, 2), KNum 2, dep_l4 "tcp")
+  (* ---- UDP header fields ---- *)
+  | ["udp"; "length"]    -> (Syntax.FUdpLen,  KNum 2, dep_l4 "udp")
+  | ["udp"; "checksum"]  -> (Syntax.FUdpCsum, KNum 2, dep_l4 "udp")
+  (* ---- ICMP / ICMPv6 header fields ---- *)
+  | ["icmp"; "code"]     -> (Syntax.FIcmpCode, KNum 1, dep_l4 "icmp")
+  | ["icmp"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2, dep_l4 "icmp")
+  | ["icmp"; "id"]       -> (Syntax.FPayload (Packet.PTransport, 4, 2), KNum 2, dep_l4 "icmp")
+  | ["icmp"; "seq"] | ["icmp"; "sequence"]
+                         -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2, dep_l4 "icmp")
+  | ["icmp"; "gateway"]  -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4, dep_l4 "icmp")
+  | ["icmp"; "mtu"]      -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2, dep_l4 "icmp")
+  | ["icmpv6"; "code"]     -> (Syntax.FIcmpCode, KNum 1, dep_l4 "icmpv6")
+  | ["icmpv6"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2, dep_l4 "icmpv6")
+  | ["icmpv6"; "id"]       -> (Syntax.FPayload (Packet.PTransport, 4, 2), KNum 2, dep_l4 "icmpv6")
+  | ["icmpv6"; "seq"] | ["icmpv6"; "sequence"]
+                           -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2, dep_l4 "icmpv6")
+  | ["icmpv6"; "mtu"]      -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4, dep_l4 "icmpv6")
+  (* ---- host-endian meta register fields (u32/u16 host order) ---- *)
+  | ["meta"; "length"] | ["meta"; "len"] -> (Syntax.FMetaLen,   KNumLe 4, none)
+  | ["meta"; "cpu"]    -> (Syntax.FMetaCpu,   KNumLe 4, none)
+  | ["meta"; "skuid"]  -> (Syntax.FMetaSkuid, KNumLe 4, none)
+  | ["meta"; "skgid"]  -> (Syntax.FMetaSkgid, KNumLe 4, none)
+  | ["meta"; "iifgroup"] -> (Syntax.FMetaGen Packet.MKiifgroup, KNumLe 4, none)
+  | ["meta"; "oifgroup"] -> (Syntax.FMetaGen Packet.MKoifgroup, KNumLe 4, none)
+  | ["meta"; "cgroup"]   -> (Syntax.FMetaGen Packet.MKcgroup,   KNumLe 4, none)
+  | ["meta"; "iiftype"]  -> (Syntax.FMetaIiftype, KNumLe 2, none)
+  | ["meta"; "oiftype"]  -> (Syntax.FMetaOiftype, KNumLe 2, none)
+  (* ---- host-endian conntrack register fields ---- *)
+  | ["ct"; "direction"]  -> (Syntax.FCtDirection, KCtdir,  none)
+  | ["ct"; "id"]         -> (Syntax.FCtId,        KNumLe 4, none)
+  | ["ct"; "expiration"] -> (Syntax.FCtExpiration,KNumLe 4, none)
+  | ["ct"; "zone"]       -> (Syntax.FCtGen Packet.CKzone, KNumLe 2, none)
   | _ -> raise (Unsupported ("selector: " ^ S.concat " " kp))
 
 (* ---------- prefix mask ---------- *)
@@ -401,7 +456,7 @@ let lower_verdict : Nft_ast.verdict -> Verdict.verdict = function
 let interval_of_value st (k : kind) (v : Nft_ast.value) : Bytes.data * Bytes.data =
   match resolve_var st v with
   | Nft_ast.Vrange (a, b) -> (enc_atom k a, enc_atom k b)
-  | Nft_ast.Vprefix (Nft_ast.Vip4 b, len) ->
+  | Nft_ast.Vprefix ((Nft_ast.Vip4 b | Nft_ast.Vip6 b), len) ->
       let w = width_of_kind k in let mask = prefix_mask w len in
       let net = band b mask in
       let bcast = L.map2 (fun n m -> n lor (m lxor 0xff)) net mask in
@@ -424,7 +479,7 @@ let interval_of_value st (k : kind) (v : Nft_ast.value) : Bytes.data * Bytes.dat
 let interval_of_value_be st (k : kind) (v : Nft_ast.value) : Bytes.data * Bytes.data =
   match resolve_var st v with
   | Nft_ast.Vrange (a, b) -> (enc_atom_be k a, enc_atom_be k b)
-  | Nft_ast.Vprefix (Nft_ast.Vip4 b, len) ->
+  | Nft_ast.Vprefix ((Nft_ast.Vip4 b | Nft_ast.Vip6 b), len) ->
       let w = width_of_kind k in let mask = prefix_mask w len in
       let net = band b mask in
       let bcast = L.map2 (fun n m -> n lor (m lxor 0xff)) net mask in
@@ -467,6 +522,7 @@ let interval_of_decl_elem st (types : string list) (v : Nft_ast.value)
       (match v' with
        | Nft_ast.Vrange (a, b) -> (bytes_of_typeatom st t a, bytes_of_typeatom st t b)
        | Nft_ast.Vprefix _ when t = "ipv4_addr" -> interval_of_value st KIp4 v'
+       | Nft_ast.Vprefix _ when t = "ipv6_addr" -> interval_of_value st KIp6 v'
        | _ -> let b = bytes_of_typeatom st t v' in (b, b))
   | _, Nft_ast.Vconcat vs when L.length vs = L.length types ->
       (* CONCATENATED element (NFT_SET_CONCAT): the kernel ranges EACH field
@@ -479,6 +535,8 @@ let interval_of_decl_elem st (types : string list) (v : Nft_ast.value)
         | Nft_ast.Vrange (a, b) -> (bytes_of_typeatom st t a, bytes_of_typeatom st t b)
         | Nft_ast.Vprefix (Nft_ast.Vip4 _, _) when t = "ipv4_addr" ->
             interval_of_value st KIp4 v
+        | Nft_ast.Vprefix (Nft_ast.Vip6 _, _) when t = "ipv6_addr" ->
+            interval_of_value st KIp6 v
         | Nft_ast.Vprefix _ ->
             raise (Unsupported "CIDR/prefix in concatenated set element for non-ipv4 field")
         | v' -> let b = bytes_of_typeatom st t v' in (b, b) in
@@ -632,7 +690,7 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
                  Syntax.MRangeT (f, [Syntax.TByteorder (true, w, w)], neg,
                                  enc_atom_be k a, enc_atom_be k b)
              | Nft_ast.Vrange (a, b) -> Syntax.MRange (f, neg, enc_atom k a, enc_atom k b)
-             | Nft_ast.Vprefix (Nft_ast.Vip4 bs, len) ->
+             | Nft_ast.Vprefix ((Nft_ast.Vip4 bs | Nft_ast.Vip6 bs), len) ->
                  let w = width_of_kind k in let mask = prefix_mask w len in
                  Syntax.MMasked (f, neg, mask, L.init w (fun _ -> 0), band bs mask)
              | Nft_ast.Vset elems
@@ -732,13 +790,15 @@ let lower_stmt st (s : Nft_ast.sstmt) : Syntax.stmt option =
 let stmt_is_terminal_accept = function
   | Nft_ast.StMasquerade | Nft_ast.StSnat _ | Nft_ast.StDnat _ -> true | _ -> false
 
-let limit_spec rate unit_ over : Packet.limit_spec =
+let limit_spec rate unit_ over burst bytes : Packet.limit_spec =
   let u = match unit_ with
     | "second"->0 | "minute"->1 | "hour"->2 | "day"->3 | "week"->4
     | _ -> raise (Unsupported ("limit unit " ^ unit_)) in
   (* bit 0 of ls_flags = NFT_LIMIT_F_INV ("over"); the data-plane semantics XOR
-     the under/not-exceeded test with this bit (Semantics.v eval_matchcond_body). *)
-  { Packet.ls_rate = rate; ls_unit = u; ls_burst = 5; ls_bytes = false;
+     the under/not-exceeded test with this bit (Semantics.v eval_matchcond_body).
+     [ls_burst]/[ls_bytes] now carry the parsed burst and packet-vs-byte rate
+     (nft: `kbytes`->1024, packet default burst 5, byte default burst 0). *)
+  { Packet.ls_rate = rate; ls_unit = u; ls_burst = burst; ls_bytes = bytes;
     ls_flags = (if over then 1 else 0) }
 
 (* The L3 NAT address family for a NAT statement in a chain of table [family].  The
@@ -829,6 +889,31 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
     | Nft_ast.CMatch m ->
         let (dep, mc) = lower_match st m in
         ensure_dep dep; push (Syntax.BMatch mc)
+    | Nft_ast.CBitmatch (kp, op, mask, r) ->
+        (* `<field> and|or|xor <m> <relop> <v>` -> nft's `bitwise reg =
+           (reg & mask) ^ xor` then a compare (Syntax.MMasked semantics:
+           `((field & mask) ^ xor) cmp v`).  nft realises the three ops as:
+             and m : mask=m,   xor=0        or m : mask=~m, xor=m
+             xor m : mask=~0,  xor=m
+           (golden any/meta.t.payload `meta mark and 0x3`, any/ct.t.payload
+           `ct mark or 0x23`).  All bytes are in the field's own byte order
+           ([enc_atom]), so the byte-wise complement matches nft's register
+           display (host-endian mark: ~0x23 -> 0xffffffdc). *)
+        let (f, k, dep) = key_field kp in
+        ensure_dep dep;
+        let w = width_of_kind k in
+        let mbytes = enc_atom k (resolve_var st mask) in
+        let vbytes = (match r.Nft_ast.payload with
+          | Nft_ast.SEvalue v -> enc_atom k (resolve_var st v)
+          | _ -> raise (Unsupported "bitwise mask match needs a single-value rhs")) in
+        let comp = L.map (fun x -> x lxor 0xff) in
+        let ones = L.init w (fun _ -> 0xff) and zeros = L.init w (fun _ -> 0) in
+        let (mask', xorb) = match op with
+          | "and" -> (mbytes, zeros)
+          | "or"  -> (comp mbytes, mbytes)
+          | "xor" -> (ones, mbytes)
+          | _ -> raise (Unsupported ("bitwise op " ^ op)) in
+        push (Syntax.BMatch (Syntax.MMasked (f, r.Nft_ast.neg, mask', xorb, vbytes)))
     | Nft_ast.CVmap (kps, entries) ->
         if !vmap <> None then raise (Unsupported "more than one verdict map in a rule");
         let triples = L.map key_field kps in
@@ -873,8 +958,8 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
         (match fields with
          | [f] -> vmap := Some { Syntax.vm_fields = []; vm_keyf = Some (f, []); vm_name = name }
          | _   -> vmap := Some { Syntax.vm_fields = fields; vm_keyf = None; vm_name = name })
-    | Nft_ast.CStmt (Nft_ast.StLimit (r, u, over)) ->
-        push (Syntax.BMatch (Syntax.MLimit (limit_spec r u over)))
+    | Nft_ast.CStmt (Nft_ast.StLimit (r, u, over, burst, bytes)) ->
+        push (Syntax.BMatch (Syntax.MLimit (limit_spec r u over burst bytes)))
     | Nft_ast.CStmt s ->
         if stmt_is_terminal_accept s then verdict := Verdict.Accept;
         (match s with

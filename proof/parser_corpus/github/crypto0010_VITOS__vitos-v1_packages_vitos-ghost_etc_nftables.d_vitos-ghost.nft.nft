@@ -1,0 +1,34 @@
+# /etc/nftables.d/vitos-ghost.nft
+#
+# Kill-switch ruleset applied inside a ghost netns. Allows lo, an
+# established WireGuard interface (wg0), and Tor's local SOCKS port
+# (9050). Drops everything else, including DNS to anything other than
+# the dnscrypt-proxy on localhost.
+
+table inet vitos_ghost {
+  chain input {
+    type filter hook input priority 0; policy drop;
+    iif lo accept
+    iifname "wg0" accept
+    ct state established,related accept
+    icmp type echo-request limit rate 1/second accept
+    counter drop
+  }
+
+  chain output {
+    type filter hook output priority 0; policy drop;
+    oif lo accept
+    oifname "wg0" accept
+    # WireGuard UDP handshake/keepalive on the underlying veth
+    udp dport 51820 accept
+    # Allow connecting to the local Tor SOCKS / dnscrypt only
+    ip daddr 127.0.0.1 tcp dport { 9050, 9053 } accept
+    ip daddr 127.0.0.1 udp dport 53 accept
+    ct state established,related accept
+    counter drop
+  }
+
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+  }
+}

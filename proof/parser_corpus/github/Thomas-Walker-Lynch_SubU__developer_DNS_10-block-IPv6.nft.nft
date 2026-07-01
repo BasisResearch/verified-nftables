@@ -1,0 +1,27 @@
+# write /etc/nftables.d/10-block-IPv6.nft — drop all IPv6
+def configure(prov, planner, WriteFileMeta):
+    wfm = WriteFileMeta(
+        dpath="/etc/nftables.d",
+        fname="10-block-IPv6.nft",
+        owner="root",
+        mode=0o644,
+    )
+    planner.displace(wfm)
+    planner.copy(wfm, content="""\
+table inet NO-IPV6 {
+  chain input {
+    type filter hook input priority -300; policy accept;
+    meta nfproto ipv6 counter comment "drop all IPv6 inbound" drop;
+  }
+
+  chain output {
+    type filter hook output priority -300; policy accept;
+    meta nfproto ipv6 counter comment "drop all IPv6 outbound" drop;
+  }
+
+  chain forward {
+    type filter hook forward priority -300; policy accept;
+    meta nfproto ipv6 counter comment "drop all IPv6 forward" drop;
+  }
+}
+""")

@@ -1,0 +1,224 @@
+#!/usr/sbin/nft -f
+
+# =============================================================================
+# MARITIME ZERO TRUST ARCHITECTURE
+# NFTABLES PERIMETER FIREWALL
+#
+# Percorso:
+#
+# client → firewall → Envoy
+#
+# L'indirizzo sorgente originale viene preservato affinché OPA possa
+# riconoscere vpn_net, satellite_net, corporate_net o public_net.
+# =============================================================================
+
+# Rimuove il ruleset preesistente prima di applicare la configurazione.
+flush ruleset
+
+
+# =============================================================================
+# NAT
+# =============================================================================
+
+table ip nat {
+
+    # -------------------------------------------------------------------------
+    # PREROUTING
+    #
+    # Il nome pep_gateway risolve nell'indirizzo del firewall sulla rete
+    # del client. Il firewall sostituisce solamente la destinazione:
+    #
+    # firewall:8443 → Envoy:8443
+    #
+    # Non viene effettuato SNAT o masquerade, quindi l'IP sorgente del client
+    # rimane visibile a Envoy e OPA.
+    # -------------------------------------------------------------------------
+    chain prerouting {
+        type nat hook prerouting priority dstnat;
+        policy accept;
+
+        # Client della VPN → Envoy.
+        ip saddr ${NFTABLES_VPN_NET} \
+        ip daddr ${NFTABLES_FW_VPN_IP} \
+        tcp dport ${NFTABLES_PEP_PORT} \
+        dnat to ${NFTABLES_ENVOY_IP}:${NFTABLES_PEP_PORT}
+
+        # Client della rete satellitare → Envoy.
+        ip saddr ${NFTABLES_SATELLITE_NET} \
+        ip daddr ${NFTABLES_FW_SATELLITE_IP} \
+        tcp dport ${NFTABLES_PEP_PORT} \
+        dnat to ${NFTABLES_ENVOY_IP}:${NFTABLES_PEP_PORT}
+
+        # Client della rete corporate → Envoy.
+        ip saddr ${NFTABLES_CORPORATE_NET} \
+        ip daddr ${NFTABLES_FW_CORPORATE_IP} \
+        tcp dport ${NFTABLES_PEP_PORT} \
+        dnat to ${NFTABLES_ENVOY_IP}:${NFTABLES_PEP_PORT}
+
+        # Client della rete pubblica → Envoy.
+        #
+        # OPA potrà quindi negare la richiesta in base alla rete,
+        # invece di produrre un semplice errore di connessione.
+        ip saddr ${NFTABLES_PUBLIC_NET} \
+        ip daddr ${NFTABLES_FW_PUBLIC_IP} \
+        tcp dport ${NFTABLES_PEP_PORT} \
+        dnat to ${NFTABLES_ENVOY_IP}:${NFTABLES_PEP_PORT}
+    }
+}
+
+
+# =============================================================================
+# FILTER
+# =============================================================================
+
+table ip filter {
+
+    # -------------------------------------------------------------------------
+    # INPUT
+    #
+    # Traffico destinato direttamente al container firewall.
+    # -------------------------------------------------------------------------
+    chain input {
+        type filter hook input priority filter;
+        policy drop;
+
+        # Comunicazioni locali.
+        iifname "lo" accept
+
+        # Elimina pacchetti non validi.
+        ct state invalid drop
+
+        # Permette le risposte a connessioni già aperte.
+        ct state established,related accept
+
+        # Permette ping verso il firewall per diagnostica.
+        ip protocol icmp accept
+
+        # Registra e blocca il resto.
+        log prefix "[NFT-INPUT-DROP] " group 0
+        drop
+    }
+
+
+    # -------------------------------------------------------------------------
+    # FORWARD
+    #
+    # Traffico che attraversa il firewall.
+    # -------------------------------------------------------------------------
+    chain forward {
+        type filter hook forward priority filter;
+        policy drop;
+
+        # Elimina pacchetti non validi.
+        ct state invalid drop
+
+        # Permette le risposte delle connessioni già autorizzate.
+        #
+        # Le risposte di Envoy tornano al firewall grazie alle route
+        # configurate nel container pep_gateway.
+        ct state established,related accept
+
+
+        # =====================================================================
+        # VPN → ENVOY
+        # =====================================================================
+
+        ip saddr ${NFTABLES_VPN_NET} \
+        ip daddr ${NFTABLES_ENVOY_IP} \
+        tcp dport ${NFTABLES_PEP_PORT} \
+        ct state new \
+        counter \
+        accept
+
+
+        # =====================================================================
+        # SATELLITE → ENVOY
+        # =====================================================================
+
+        ip saddr ${NFTABLES_SATELLITE_NET} \
+        ip daddr ${NFTABLES_ENVOY_IP} \
+        tcp dport ${NFTABLES_PEP_PORT} \
+        ct state new \
+        counter \
+        accept
+
+
+        # =====================================================================
+        # CORPORATE → ENVOY
+        # =====================================================================
+
+        ip saddr ${NFTABLES_CORPORATE_NET} \
+        ip daddr ${NFTABLES_ENVOY_IP} \
+        tcp dport ${NFTABLES_PEP_PORT} \
+        ct state new \
+        counter \
+        accept
+
+
+        # =====================================================================
+        # PUBLIC → ENVOY
+        # =====================================================================
+
+        ip saddr ${NFTABLES_PUBLIC_NET} \
+        ip daddr ${NFTABLES_ENVOY_IP} \
+        tcp dport ${NFTABLES_PEP_PORT} \
+        ct state new \
+        counter \
+        accept
+
+
+        # =====================================================================
+        # MOVIMENTO LATERALE
+        # =====================================================================
+
+        # VPN → satellite non permesso.
+        ip saddr ${NFTABLES_VPN_NET} \
+        ip daddr ${NFTABLES_SATELLITE_NET} \
+        log prefix "[NFT-LATERAL-VPN-SAT] " group 0 \
+        drop
+
+        # Satellite → VPN non permesso.
+        ip saddr ${NFTABLES_SATELLITE_NET} \
+        ip daddr ${NFTABLES_VPN_NET} \
+        log prefix "[NFT-LATERAL-SAT-VPN] " group 0 \
+        drop
+
+        # Public → VPN non permesso.
+        ip saddr ${NFTABLES_PUBLIC_NET} \
+        ip daddr ${NFTABLES_VPN_NET} \
+        log prefix "[NFT-LATERAL-PUB-VPN] " group 0 \
+        drop
+
+        # Public → satellite non permesso.
+        ip saddr ${NFTABLES_PUBLIC_NET} \
+        ip daddr ${NFTABLES_SATELLITE_NET} \
+        log prefix "[NFT-LATERAL-PUB-SAT] " group 0 \
+        drop
+
+        # Public → corporate non permesso.
+        ip saddr ${NFTABLES_PUBLIC_NET} \
+        ip daddr ${NFTABLES_CORPORATE_NET} \
+        log prefix "[NFT-LATERAL-PUB-CORP] " group 0 \
+        drop
+
+
+        # =====================================================================
+        # DEFAULT DENY
+        # =====================================================================
+
+        log prefix "[NFT-FORWARD-DROP] " group 0
+        drop
+    }
+
+
+    # -------------------------------------------------------------------------
+    # OUTPUT
+    #
+    # Il firewall può effettuare connessioni in uscita, ad esempio verso
+    # Splunk HEC per inviare i propri log.
+    # -------------------------------------------------------------------------
+    chain output {
+        type filter hook output priority filter;
+        policy accept;
+    }
+}

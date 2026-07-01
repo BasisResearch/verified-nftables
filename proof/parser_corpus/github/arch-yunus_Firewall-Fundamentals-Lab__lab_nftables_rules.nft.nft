@@ -1,0 +1,31 @@
+# NFTables Lab - Modern Linux Güvenlik Duvarı
+# Iptables'ın modern halefidir.
+
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        # Localhost (lo) trafiğine izin ver
+        iif "lo" accept
+
+        # Mevcut ve ilgili bağlantıları kabul et
+        ct state established,related accept
+
+        # SSH (22) bağlantısına izin ver
+        tcp dport 22 accept
+
+        # HTTP/HTTPS (80, 443) bağlantısına izin ver
+        tcp dport { 80, 443 } accept
+
+        # ICMP (Ping) sınırlı izin
+        ip protocol icmp icmp type echo-request limit rate 1/second accept
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}

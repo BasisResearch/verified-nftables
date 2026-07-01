@@ -1,0 +1,42 @@
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table inet filter {
+  chain input {
+    type filter hook input priority 0;
+    policy drop;
+
+    # Accepter le trafic déjà établi
+    ct state established,related accept
+
+    # Autoriser loopback
+    iif "lo" accept
+
+    # Autoriser ICMP
+    ip protocol icmp accept
+    ip6 nexthdr icmpv6 accept
+
+    # Autoriser SSH
+    tcp dport 22 accept
+
+    # Internal app (uniquement depuis srv-web)
+    ip saddr 192.168.56.11 tcp dport 8080 accept
+
+    # Syslog UDP (depuis le LAN lab uniquement)
+    ip saddr 192.168.56.0/24 udp dport 514 accept
+
+    # Autoriser DHCP client
+    udp sport 67 udp dport 68 accept
+  }
+
+  chain forward {
+    type filter hook forward priority 0;
+    policy drop;
+  }
+
+  chain output {
+    type filter hook output priority 0;
+    policy accept;
+  }
+}

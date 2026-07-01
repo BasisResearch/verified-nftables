@@ -1,0 +1,143 @@
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table bridge filter {
+    chain FORWARD {
+        type filter hook forward priority filter; policy drop;
+
+        ct state invalid drop                                                                       comment "early drop of invalid packets"
+        ct state { established, related } accept                                                    comment "accept all connections related to connections made by us"
+
+        ether type arp accept                                                                       comment "without arp, ip is not possible"
+
+        meta l4proto icmpv6 drop                                                                    comment "silently ignore icmpv6 traffic"
+
+        jump SMARTSERVER_FORWARD
+
+        log prefix "DROP [BRIDGE FORWARD]: "
+
+    }
+    chain SMARTSERVER_FORWARD {
+    }
+}
+
+table inet filter {
+    chain INPUT {
+        type filter hook input priority filter; policy drop;
+
+        ct state invalid drop                                                                       comment "early drop of invalid packets"
+        ct state { established, related } accept                                                    comment "accept all connections related to connections made by us"
+
+        iif "lo" accept                                                                             comment "accept loopback"
+        iif != "lo" ip daddr 127.0.0.0/8 drop                                                       comment "drop connections to loopback not coming from loopback"
+        iif != "lo" ip6 daddr ::1 drop                                                              comment "drop connections to loopback not coming from loopback"
+
+        jump SMARTSERVER_BLOCKER
+
+        meta l4proto icmp accept                                                                    comment "accept all icmp types"
+        meta l4proto icmpv6 accept                                                                  comment "accept all icmpv6 types"
+
+        meta l4proto udp ip saddr {{podman_base_network}} th dport 54 accept                        comment "accept podman dns"
+{% if cloud_vpn is defined %}
+        meta l4proto udp ip saddr {{cloud_vpn.interface.network}} th dport 54 accept                comment "accept cloud podman dns"
+{% endif %}
+
+{% if not ipv6_enabled %}
+        ip6 daddr ff02:0000:0000:0000:0000:0000:0000:0001 drop                                      comment "silently ignore neighbor discovery"
+        ip6 daddr ff02:0000:0000:0000:0000:0000:0000:00fb drop                                      comment "silently ignore multicasts"
+{% else %}
+        ip6 daddr ff02:0000:0000:0000:0000:0000:0000:0001 accept                                    comment "accept neighbor discovery"
+        ip6 daddr ff02:0000:0000:0000:0000:0000:0000:00fb accept                                    comment "accept multicasts"
+{% endif %}
+
+        ip daddr 224.0.0.1 accept                                                                   comment "accept IGMPv1 & IGMPv3 multicasts"
+        ip daddr 224.0.0.2 accept                                                                   comment "accept IGMPv2 multicasts"
+        ip daddr 224.0.0.4 accept                                                                   comment "accept IGMPv3 multicasts"
+        ip daddr 224.0.0.251 accept                                                                 comment "accept mDNS multicasts"
+        ip daddr 239.255.255.250 accept                                                             comment "accept service (1900:ssdp, 3702:ws-discovery) broadcast"
+
+        meta l4proto udp ip daddr 255.255.255.255 th sport { 67, 68 } th dport { 67, 68 } drop      comment "silently ignore dhcp broadcasts"
+        meta l4proto udp th dport 9 drop                                                            comment "silently ignore wol (wake on lan) events"
+
+        jump SMARTSERVER_INPUT
+
+        log prefix "DROP [INET INPUT]: "
+    }
+
+    chain FORWARD {
+        type filter hook forward priority filter; policy drop;
+
+        ct state invalid drop                                                                       comment "early drop of invalid packets"
+        ct state { established, related } accept                                                    comment "accept all connections related to connections made by us"
+
+        jump SMARTSERVER_FORWARD
+
+        log prefix "DROP [INET FORWARD]: "
+    }
+
+    chain OUTPUT {
+        type filter hook output priority filter; policy accept;
+    }
+
+    chain SMARTSERVER_BLOCKER {
+    }
+
+    chain SMARTSERVER_INPUT {
+        ip saddr { {{ trusted_subnets | join(', ')}} } accept                                      comment "trusted networks: internal networks => host"
+    }
+
+    chain SMARTSERVER_FORWARD {
+        ip saddr { {{ trusted_subnets | join(', ')}} } accept                                      comment "trusted networks: internal networks => container ports (nat)"
+    }
+}
+
+table ip nat {
+    chain PREROUTING {
+        type nat hook prerouting priority dstnat; policy accept;
+        fib daddr type local jump HOSTPORT_DNAT                                                     comment "external packages arriving"
+    }
+
+    chain INPUT {
+        type nat hook input priority 100; policy accept;
+    }
+
+    chain POSTROUTING {
+        type nat hook postrouting priority srcnat; policy accept;
+        jump HOSTPORT_MASQ
+    }
+
+    chain OUTPUT {
+        type nat hook output priority -100; policy accept;
+        fib daddr type local jump HOSTPORT_DNAT                                                     comment "local packages arriving"
+    }
+
+    chain HOSTPORT_DNAT {
+        meta l4proto udp ip daddr {{podman_base_gateway}} th dport 53 dnat to {{podman_base_gateway}}:54 comment "redirect container dns to podman dns"
+{% if cloud_vpn is defined %}
+        meta l4proto udp ip daddr {{vpn_cloud_services.local.bridge}} th dport 53 dnat to {{vpn_cloud_services.local.bridge}}:54 comment "redirect cloud container dns to podman dns"
+{% endif %}
+
+        jump SMARTSERVER_DNAT
+    }
+
+    chain HOSTPORT_MASQ {
+        mark and 0x2000 == 0x2000 masquerade
+
+        ip saddr {{podman_base_network}} masquerade
+
+        jump SMARTSERVER_MASQ
+    }
+
+    chain HOSTPORT_SETMARK {
+        meta mark set mark or 0x2000
+    }
+
+    chain SMARTSERVER_MASQ {
+    }
+
+    chain SMARTSERVER_DNAT {
+    }
+}
+
+include "/etc/nftables/30_*"

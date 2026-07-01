@@ -19,6 +19,11 @@
   let prio_of_name = function
     | "raw" -> -300 | "mangle" -> -150 | "dstnat" -> -100 | "filter" -> 0
     | "security" -> 50 | "srcnat" -> 100 | "out" -> 100 | _ -> 0
+
+  (* byte-rate unit multiplier (nft: `kbytes`=1024, `mbytes`=1024*1024) *)
+  let byte_scale = function
+    | "bytes" -> 1 | "kbytes" -> 1024 | "mbytes" -> 1024 * 1024
+    | _ -> 1
 %}
 
 /* structural keywords */
@@ -33,11 +38,13 @@
 %token IIF OIF IIFNAME OIFNAME PKTTYPE MARK
 /* operators / punctuation */
 %token LBRACE RBRACE COLON COMMA DOT SLASH EQUALS NE EQ BANG DASH
+%token AMP PIPE CARET AND OR XOR
 /* separators */
 %token NEWLINE SEMI
 /* literals */
 %token <int> INT
 %token <int list> IPV4
+%token <int list> IPV6
 %token <string> IDENT
 %token <string> STRING
 %token <string> VAR
@@ -107,9 +114,10 @@ junk:
   | junk LBRACE junk RBRACE { () }   (* nested braces *)
 
 junktok:
-  | INT {} | IPV4 {} | IDENT {} | STRING {} | VAR {} | AT {}
+  | INT {} | IPV4 {} | IPV6 {} | IDENT {} | STRING {} | VAR {} | AT {}
   | COLON {} | COMMA {} | DOT {} | SLASH {} | EQUALS {} | NE {} | EQ {} | BANG {}
   | DASH {} | SEMI {} | NEWLINE {}
+  | AMP {} | PIPE {} | CARET {} | AND {} | OR {} | XOR {}
   | TYPE {} | HOOK {} | PRIORITY {} | POLICY {} | COMMENT {} | VMAP {} | FLAGS {}
   | ELEMENTS {} | SET {} | MAP {} | TABLE {} | CHAIN {} | DEFINE {} | INCLUDE {}
   | ACCEPT {} | DROP {} | CONTINUE {} | RETURN {} | JUMP {} | GOTO {} | QUEUE {}
@@ -198,10 +206,19 @@ clauses:
 
 clause:
   | matchc                       { CMatch $1 }
+  (* bitwise mask match: `<selector> and|or|xor <mask> <relop> <val>` — a
+     single (non-concatenated) selector; the mask/val are single atoms. *)
+  | keyatom binop value rhs      { CBitmatch ($1, $2, $3, $4) }
   | concat_keys VMAP vmapset     { CVmap ($1, $3) }
   | concat_keys VMAP AT          { CVmapRef ($1, $3) }   (* vmap @named_map *)
   | verdict                      { CVerdict $1 }
   | stmt                         { CStmt $1 }
+
+(* bitwise binary operator: word form (`and`/`or`/`xor`) or symbol (`&`/`|`/`^`) *)
+binop:
+  | AND {"and"} | AMP   {"and"}
+  | OR  {"or"}  | PIPE  {"or"}
+  | XOR {"xor"} | CARET {"xor"}
 
 (* ---- match conditions ---- *)
 matchc:
@@ -292,6 +309,8 @@ value:
   | INT             { Vnum $1 }
   | IPV4            { Vip4 $1 }
   | IPV4 SLASH INT  { Vprefix (Vip4 $1, $3) }
+  | IPV6            { Vip6 $1 }
+  | IPV6 SLASH INT  { Vprefix (Vip6 $1, $3) }
   | STRING          { Vstr $1 }
   | IDENT           { Vsym $1 }
   | VAR             { Vvar $1 }
@@ -329,19 +348,30 @@ verdict:
   | REJECT reject_opt { SVreject $2 }
 
 reject_opt:
-  | /* empty */            { "" }
-  | WITH IDENT             { $2 }
-  | WITH IDENT IDENT       { $2 ^ " " ^ $3 }
-  | WITH IDENT TYPE IDENT  { $2 ^ " type " ^ $4 }
+  | /* empty */             { "" }
+  | WITH IDENT              { $2 }
+  | WITH IDENT IDENT        { $2 ^ " " ^ $3 }
+  | WITH IDENT TYPE IDENT   { $2 ^ " type " ^ $4 }
+  (* `icmp`/`icmpv6`/`tcp` after `with` lex as keyword tokens, not IDENT:
+     `reject with icmp host-unreachable`, `reject with tcp reset`,
+     `reject with icmpv6 type no-route`. *)
+  | WITH ICMP IDENT         { "icmp " ^ $3 }
+  | WITH ICMPV6 IDENT       { "icmpv6 " ^ $3 }
+  | WITH ICMP TYPE IDENT    { "icmp type " ^ $4 }
+  | WITH ICMPV6 TYPE IDENT  { "icmpv6 type " ^ $4 }
+  | WITH TCP IDENT          { "tcp " ^ $3 }
 
 (* ---- statements ---- *)
 stmt:
   | COMMENT STRING            { StComment $2 }
   | COUNTER                   { StCounter }
+  | COUNTER IDENT INT IDENT INT { StCounter }  (* `counter packets N bytes N` *)
   | NOTRACK                   { StNotrack }
   | LOG log_opts              { StLog $2 }
-  | LIMIT RATE INT SLASH IDENT      { StLimit ($3, $5, false) }
-  | LIMIT RATE OVER INT SLASH IDENT { StLimit ($4, $6, true) }
+  | LIMIT RATE limit_over limit_rate limit_burst
+      { let (rate, unit_, bytes) = $4 in
+        let burst = match $5 with Some b -> b | None -> if bytes then 0 else 5 in
+        StLimit (rate, unit_, $3, burst, bytes) }
   | MASQUERADE                { StMasquerade }
   | SNAT nat_to               { let (a,p) = $2 in StSnat (a,p) }
   | DNAT nat_to               { let (a,p) = $2 in StDnat (a,p) }
@@ -353,9 +383,33 @@ stmt:
   | CT IDENT SET value        { StCtSet ($2, $4) }
   | CT MARK SET value         { StCtSet ("mark", $4) }  (* `mark` lexes as MARK, not IDENT *)
 
+(* log options, gathered verbatim into the SLog opts string: `prefix "..."`,
+   `level <lvl>`, `group N`, `flags <f>`, `snaplen N`, `queue-threshold N`, ...
+   A bare IDENT/INT/STRING can only be a log option here (no rule clause starts
+   with one), so gathering greedily is unambiguous and stops at the next
+   keyword-led clause (a verdict/statement/selector). *)
 log_opts:
-  | /* empty */        { "" }
-  | PREFIX STRING      { $2 }
+  | /* empty */          { "" }
+  | log_opts log_opt     { if $1 = "" then $2 else $1 ^ " " ^ $2 }
+log_opt:
+  | PREFIX STRING  { "prefix " ^ $2 }
+  | FLAGS IDENT    { "flags " ^ $2 }
+  | IDENT          { $1 }
+  | INT            { string_of_int $1 }
+  | STRING         { $1 }
+
+(* limit rate:  `[over] N/unit`  (packet rate)  or  `[over] N kbytes/unit` (byte
+   rate).  Returns (scaled-rate, time-unit, is-byte-rate). *)
+limit_over:
+  | /* empty */ { false }
+  | OVER        { true }
+limit_rate:
+  | INT SLASH IDENT        { ($1, $3, false) }              (* N/second      *)
+  | INT IDENT SLASH IDENT  { ($1 * byte_scale $2, $4, true) } (* N kbytes/second *)
+limit_burst:
+  | /* empty */       { None }
+  | IDENT INT         { Some $2 }               (* `burst N`            *)
+  | IDENT INT IDENT   { Some ($2 * byte_scale $3) }  (* `burst N kbytes` / `burst N packets` *)
 
 nat_to:
   | /* empty */          { (None, None) }

@@ -1,0 +1,30 @@
+#!/usr/sbin/nft -f
+# ARKLinux Default-Deny Firewall
+# All external traffic denied by default; loopback only
+
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        iif "lo" accept comment "Allow loopback"
+        ct state established,related accept comment "Allow established"
+        ct state invalid drop comment "Drop invalid"
+        # Uncomment for SSH (installer/operator):
+        # tcp dport 22 accept
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+        oif "lo" accept
+        ip daddr 127.0.0.1/8 accept
+        ip6 daddr ::1/128 accept
+        # All services bound to 127.0.0.1 - deny external
+        ip daddr != 127.0.0.0/8 ip protocol tcp reject
+        ip daddr != 127.0.0.0/8 ip protocol udp reject
+    }
+}
