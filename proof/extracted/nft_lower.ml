@@ -155,6 +155,31 @@ let sym_dscp = [
   "af31",26; "af32",28; "af33",30; "af41",34; "af42",36; "af43",38;
   "ef",46; "be",0; "le",1;
 ]
+(* IGMP message types (nft igmp.c igmp_type_tbl), a 1-byte field. *)
+let sym_igmptype = [
+  "membership-query",[0x11]; "membership-report-v1",[0x12];
+  "membership-report-v2",[0x16]; "leave-group",[0x17];
+  "membership-report-v3",[0x22];
+]
+(* ICMP code names (icmp.c icmp_code_tbl), a 1-byte field. *)
+let sym_icmpcode = [
+  "net-unreachable",[0]; "host-unreachable",[1]; "prot-unreachable",[2];
+  "port-unreachable",[3]; "frag-needed",[4]; "net-prohibited",[9];
+  "host-prohibited",[10]; "admin-prohibited",[13];
+]
+(* ICMPv6 code names (icmpv6.c icmpv6_code_tbl), a 1-byte field. *)
+let sym_icmp6code = [
+  "no-route",[0]; "admin-prohibited",[1]; "addr-unreachable",[3];
+  "port-unreachable",[4]; "policy-fail",[5]; "reject-route",[6];
+]
+(* Mobility-header types (mh.c mh_type_tbl), a 1-byte field. *)
+let sym_mhtype = [
+  "binding-refresh-request",[0]; "home-test-init",[1]; "careof-test-init",[2];
+  "home-test",[3]; "careof-test",[4]; "binding-update",[5];
+  "binding-acknowledgement",[6]; "binding-error",[7]; "fast-binding-update",[8];
+  "fast-binding-acknowledgement",[9]; "fast-binding-advertisement",[10];
+  "experimental-mobility-header",[11]; "home-agent-switch-message",[12];
+]
 let sym_pkttype = [ "host",[0]; "unicast",[0]; "broadcast",[1]; "multicast",[2];
                     "other",[3]; "otherhost",[3]; ]
 (* ARP operation codes (2-byte network-order field at arp header + 6).  arp.c
@@ -186,6 +211,7 @@ let lookup ctx tbl s =
 type kind =
   | KIfname | KIfindex | KIp4 | KIp6 | KPort | KL4proto | KNfproto | KEthertype
   | KCtstate | KCtstatus | KMark | KIcmp | KIcmpv6 | KPkttype | KFibType | KTcpflag | KNum of int
+  | KIgmp | KIcmpcode | KIcmp6code | KMhtype  (* 1-byte symbolic-or-numeric enums *)
   | KCtdir   (* conntrack direction: original=0 / reply=1, a 1-byte register *)
   | KArpop   (* ARP operation: symbolic (request/reply/...) or numeric, 2-byte NBO *)
   (* host-endian (little-endian on x86) integer of [n] bytes; used for the value
@@ -249,6 +275,14 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
   | KIcmpv6, Nft_ast.Vsym s -> lookup "icmpv6 type" sym_icmpv6 s
   | KPkttype, Nft_ast.Vsym s -> lookup "pkttype" sym_pkttype s
   | KPkttype, Nft_ast.Vnum n -> [n land 0xff]
+  | KIgmp, Nft_ast.Vsym s -> lookup "igmp type" sym_igmptype s
+  | KIgmp, Nft_ast.Vnum n -> [n land 0xff]
+  | KIcmpcode, Nft_ast.Vsym s -> lookup "icmp code" sym_icmpcode s
+  | KIcmpcode, Nft_ast.Vnum n -> [n land 0xff]
+  | KIcmp6code, Nft_ast.Vsym s -> lookup "icmpv6 code" sym_icmp6code s
+  | KIcmp6code, Nft_ast.Vnum n -> [n land 0xff]
+  | KMhtype, Nft_ast.Vsym s -> lookup "mh type" sym_mhtype s
+  | KMhtype, Nft_ast.Vnum n -> [n land 0xff]
   | KFibType, Nft_ast.Vsym s -> lookup "fib type" sym_fibtype s
   | KFibType, Nft_ast.Vnum n -> bytes_of_int_le 4 n
   (* a MAC literal is 6 verbatim big-endian bytes (ether saddr/daddr, arp ether). *)
@@ -353,6 +387,8 @@ let dep_l4 = function
      to the IPv4/IPv6 network bases).  Order matches the golden byte sequence. *)
   | "icmp" -> [DNfproto [2]; DL4 [1]]
   | "icmpv6" -> [DNfproto [10]; DL4 [58]]
+  (* IGMP (IPPROTO_IGMP 2) is IPv4-only, linked to the network base like icmp. *)
+  | "igmp" -> [DNfproto [2]; DL4 [2]]
   | _ -> []
 
 (* ---------- TCP options (NFT_EXTHDR tcpopt) ----------
@@ -450,14 +486,19 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
   | ["udp"; "length"]    -> (Syntax.FUdpLen,  KNum 2, dep_l4 "udp")
   | ["udp"; "checksum"]  -> (Syntax.FUdpCsum, KNum 2, dep_l4 "udp")
   (* ---- ICMP / ICMPv6 header fields ---- *)
-  | ["icmp"; "code"]     -> (Syntax.FIcmpCode, KNum 1, dep_l4 "icmp")
+  | ["icmp"; "code"]     -> (Syntax.FIcmpCode, KIcmpcode, dep_l4 "icmp")
+  (* ---- IGMP (IPPROTO_IGMP 2), transport header: type@0 mrt@1 checksum@2
+     (golden ip/igmp.t.payload). ---- *)
+  | ["igmp"; "type"]     -> (Syntax.FPayload (Packet.PTransport, 0, 1), KIgmp,  dep_l4 "igmp")
+  | ["igmp"; "mrt"]      -> (Syntax.FPayload (Packet.PTransport, 1, 1), KNum 1, dep_l4 "igmp")
+  | ["igmp"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2, dep_l4 "igmp")
   | ["icmp"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2, dep_l4 "icmp")
   | ["icmp"; "id"]       -> (Syntax.FPayload (Packet.PTransport, 4, 2), KNum 2, dep_l4 "icmp")
   | ["icmp"; "seq"] | ["icmp"; "sequence"]
                          -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2, dep_l4 "icmp")
   | ["icmp"; "gateway"]  -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4, dep_l4 "icmp")
   | ["icmp"; "mtu"]      -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2, dep_l4 "icmp")
-  | ["icmpv6"; "code"]     -> (Syntax.FIcmpCode, KNum 1, dep_l4 "icmpv6")
+  | ["icmpv6"; "code"]     -> (Syntax.FIcmpCode, KIcmp6code, dep_l4 "icmpv6")
   | ["icmpv6"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2, dep_l4 "icmpv6")
   | ["icmpv6"; "id"]       -> (Syntax.FPayload (Packet.PTransport, 4, 2), KNum 2, dep_l4 "icmpv6")
   | ["icmpv6"; "seq"] | ["icmpv6"; "sequence"]
@@ -528,7 +569,8 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
      cscov@4 checksum@6 (golden inet/udplite.t.payload). ---- *)
   | ["udplite"; "sport"]    -> (Syntax.FPayload (Packet.PTransport, 0, 2), KPort, dep_l4 "udplite")
   | ["udplite"; "dport"]    -> (Syntax.FPayload (Packet.PTransport, 2, 2), KPort, dep_l4 "udplite")
-  | ["udplite"; "cscov"]    -> (Syntax.FPayload (Packet.PTransport, 4, 2), KNum 2, dep_l4 "udplite")
+  | ["udplite"; "cscov"] | ["udplite"; "csumcov"]
+                            -> (Syntax.FPayload (Packet.PTransport, 4, 2), KNum 2, dep_l4 "udplite")
   | ["udplite"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2, dep_l4 "udplite")
   (* ---- IPv6 extension-header selectors (NFT_EXTHDR `exthdr load ipv6`).
      The htype is the exthdr's IPPROTO (hbh=0, rt/srh=43, frag=44, dst=60,
@@ -554,7 +596,7 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
   | ["dst"; "hdrlength"]  -> (Syntax.FExthdr (Packet.EPipv6, 60,  1, 1, false), KNum 1,   [DNfproto [10]])
   | ["mh"; "nexthdr"]     -> (Syntax.FExthdr (Packet.EPipv6, 135, 0, 1, false), KL4proto, [DNfproto [10]])
   | ["mh"; "hdrlength"]   -> (Syntax.FExthdr (Packet.EPipv6, 135, 1, 1, false), KNum 1,   [DNfproto [10]])
-  | ["mh"; "type"]        -> (Syntax.FExthdr (Packet.EPipv6, 135, 2, 1, false), KNum 1,   [DNfproto [10]])
+  | ["mh"; "type"]        -> (Syntax.FExthdr (Packet.EPipv6, 135, 2, 1, false), KMhtype,  [DNfproto [10]])
   | ["mh"; "reserved"]    -> (Syntax.FExthdr (Packet.EPipv6, 135, 3, 1, false), KNum 1,   [DNfproto [10]])
   | ["mh"; "checksum"]    -> (Syntax.FExthdr (Packet.EPipv6, 135, 4, 2, false), KNum 2,   [DNfproto [10]])
   (* ---- TCP options: `tcp option <name> <field>` (byte-aligned fields). ---- *)
