@@ -150,6 +150,92 @@ def collect_payload_units():
     return units
 
 # --------------------------------------------------------------------------
+# STRONG golden check: for each `# rule` block in *.t.payload*, compile the rule
+# in the block's OWN family + hook (from the sibling .t chain spec) and compare
+# nftc's emitted bytecode BYTE-FOR-BYTE to the golden instruction lines.  This is
+# the honest fidelity metric: a rule that compiles (rc 0) but to DIFFERENT
+# bytecode than the golden is a WRONG-BYTECODE unit, NOT a pass.  It answers the
+# weakness of the compile-rc-0 sections above (which only check `nftc` returns 0).
+# --------------------------------------------------------------------------
+def _chain_specs(tfile):
+    specs = {}
+    try:
+        for raw in open(tfile, errors="replace"):
+            s = raw.strip()
+            if s.startswith(":"):
+                body = s[1:]
+                if ";" in body:
+                    n, sp = body.split(";", 1)
+                    specs[n.strip()] = sp.strip()
+    except Exception:
+        pass
+    return specs
+
+def _norm_instr(l):
+    return re.sub(r"\s+", " ", l.strip())
+
+def compile_instr_lines(text):
+    """Compile [text] and return (instr_lines or None, err).  instr_lines are the
+    rendered `[ ... ]` bytecode lines (the leading `table chain` line dropped)."""
+    try:
+        p = subprocess.run([CLI, "compile", "-"], input=text.encode(),
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+    except Exception as e:
+        return None, "harness: %s" % e
+    if p.returncode != 0:
+        return None, p.stderr.decode(errors="replace").strip()
+    lines = [_norm_instr(l) for l in p.stdout.decode(errors="replace").splitlines()
+             if l.strip().startswith("[")]
+    return lines, ""
+
+def golden_payload_report():
+    match = mism = fail = 0
+    fails = collections.defaultdict(list)     # error bucket -> [rule]
+    mismbk = collections.defaultdict(list)    # first-divergent-golden-line -> [rule]
+    for path in sorted(glob.glob(os.path.join(NFT_CORPUS, "tests/py/*/*.t.payload*"))):
+        base = os.path.basename(path)
+        tfile = os.path.join(os.path.dirname(path), re.sub(r"\.payload.*$", "", base))
+        specs = _chain_specs(tfile)
+        lines = open(path, errors="replace").read().splitlines()
+        i = 0
+        while i < len(lines):
+            ln = lines[i]
+            if not ln.startswith("# "):
+                i += 1; continue
+            rule = ln[2:].strip()
+            ctx = lines[i+1].strip() if i+1 < len(lines) else ""
+            m = re.match(r"^(\w+)\s+(\S+)\s+(\S+)", ctx)
+            gold = []
+            j = i + 2
+            while j < len(lines) and lines[j].strip().startswith("["):
+                gold.append(_norm_instr(lines[j])); j += 1
+            i = j
+            if not (m and rule and gold):
+                continue
+            fam, table, chain = m.group(1), m.group(2), m.group(3)
+            spec = specs.get(chain, "type filter hook input priority 0")
+            got, err = compile_instr_lines(wrap_rule(fam, table, chain, spec, rule))
+            if got is None:
+                fail += 1; fails[norm_err(err)].append(rule)
+            elif got == gold:
+                match += 1
+            else:
+                mism += 1
+                diff = next((g for g in gold if g not in set(got)), (gold[0] if gold else ""))
+                mismbk[diff[:60]].append(rule)
+    total = match + mism + fail
+    print("== STRONG golden bytecode check (*.t.payload*, compiled in each block's "
+          "own family+hook, vs the golden bytes) ==")
+    print("   byte-identical: %d/%d (%.1f%%) ; wrong-bytecode: %d ; compile-fail: %d"
+          % (match, total, 100.0*match/total if total else 0, mism, fail))
+    print("   -- top WRONG-BYTECODE buckets (compile rc 0 but bytes != golden) --")
+    for k, v in sorted(mismbk.items(), key=lambda kv: -len(kv[1]))[:12]:
+        print("     %4d  missing/diff golden line: %s" % (len(v), k))
+        print("            e.g. %s" % v[0][:90])
+    print()
+    return match, mism, fail, total
+
+# --------------------------------------------------------------------------
 # whole-file rulesets: shipped nftables examples + mined GitHub configs
 # --------------------------------------------------------------------------
 def collect_file_units():
@@ -210,9 +296,19 @@ def main():
     for name, units, strong in sections:
         ok, total, bug, ooze = report(name, units, strong)
         grand_ok += ok; grand_total += total; grand_bug += bug; grand_ooze += ooze
-    print("==== TOTAL: %d/%d parsed+compiled (%.1f%%) ; parser-bug=%d out-of-model=%d ====" %
+    print("==== TOTAL (weak, compile-rc-0): %d/%d parsed+compiled (%.1f%%) ; "
+          "parser-bug=%d out-of-model=%d ====" %
           (grand_ok, grand_total, 100.0*grand_ok/grand_total if grand_total else 0,
            grand_bug, grand_ooze))
+    print()
+    # The HONEST fidelity metric for the test-corpus payload rules: compare the
+    # emitted bytecode to the golden bytes, so a wrong-bytecode compile is NOT a
+    # pass.  (The whole-file GitHub/example rulesets have no golden bytes, so only
+    # the compile-rc-0 metric applies to them.)
+    gm, gx, gf, gt = golden_payload_report()
+    print("==== HONEST payload fidelity: %d/%d byte-identical to golden (%.1f%%) ; "
+          "%d wrong-bytecode ; %d compile-fail ====" %
+          (gm, gt, 100.0*gm/gt if gt else 0, gx, gf))
 
 if __name__ == "__main__":
     main()
