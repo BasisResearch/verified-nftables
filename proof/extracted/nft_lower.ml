@@ -1275,7 +1275,21 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
     | Nft_ast.CVerdict v -> verdict := lower_verdict v
     | Nft_ast.CMatch m ->
         let (dep, mc) = lower_match st m in
-        ensure_dep dep; push (Syntax.BMatch mc)
+        ensure_dep dep; push (Syntax.BMatch mc);
+        (* An EXPLICIT match on a field nft also uses as an implicit dependency
+           (l4proto / nfproto / protocol / iiftype / ethertype) discharges that
+           dependency: a later selector's implicit guard for the SAME (field,value)
+           must NOT re-emit it.  nft dedups exactly this way, so `meta l4proto 6
+           tcp dport 22` and `ether type vlan vlan id 2` emit the guard ONCE.
+           Register the explicit (field,value) in the dedup set. *)
+        (match mc with
+         | Syntax.MEq (fld, pv) ->
+             (match fld with
+              | Syntax.FMetaL4proto | Syntax.FMetaNfproto | Syntax.FMetaProtocol
+              | Syntax.FMetaIiftype | Syntax.FEtherType ->
+                  if not (L.mem (fld, pv) !deps) then deps := (fld, pv) :: !deps
+              | _ -> ())
+         | _ -> ())
     | Nft_ast.CBitmatch (kp, op, mask, r) ->
         (* `<field> and|or|xor <m> <relop> <v>` -> nft's `bitwise reg =
            (reg & mask) ^ xor` then a compare (Syntax.MMasked semantics:
