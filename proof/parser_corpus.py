@@ -27,14 +27,20 @@ CLI = os.path.join(HERE, "extracted", "_build", "default", "nftc_cli.exe")
 GITHUB_DIR = os.path.join(HERE, "parser_corpus", "github")
 
 # Error-message substrings that denote a construct the verified MODEL genuinely
-# does not represent (so a parse failure is HONESTLY out of scope, not a bug).
-# Keep this list conservative and documented — do NOT hide real bugs here.
+# does not represent, so a parse failure is HONESTLY out of scope rather than a
+# fixable frontend gap.  Kept DELIBERATELY SHORT and conservative: everything
+# else (missing selectors/symbols/services, un-lowered value maps, exthdr/inner
+# grammar, …) is a FIXABLE frontend gap and is counted as a parser-bug, NOT
+# hidden here.  Do NOT pad this list to inflate "out-of-model".
 OUT_OF_MODEL_MARKERS = [
-    "value maps (non-verdict map data) not yet lowered",
-    "limit handled as a match",            # rate-limit as a *match* rhs
-    "iif/oif",                             # interface index needs the live iface table
-    "symbolic constant",                   # named consts we don't model (osf, dccp opts…)
-    "service ",                            # /etc/services name we don't resolve
+    # `iif`/`oif` by interface NAME compares the kernel interface *index*, which
+    # only exists at load time against the live interface table — there is no
+    # faithful compile-time value for it in the packet model (unlike `iifname`,
+    # which we DO support).  This is the one genuinely runtime-dependent match.
+    "resolved to a numeric index at load",
+    # `ct helper|timeout|expectation set` / other non-settable keys: the model's
+    # SCtSet/SMetaSet only carry the settable-register keys; these assign kernel
+    # state the single-packet semantics does not represent.
     "ct key is not settable",
     "meta key is not settable",
 ]
