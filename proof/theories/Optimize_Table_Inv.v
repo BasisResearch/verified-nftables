@@ -29,7 +29,7 @@ From Stdlib Require Import Lia.
 From Stdlib Require Import String.
 Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
-  Compile Optimize Optimize_Merge Optimize_Vmap Optimize_Concat.
+  Compile Optimize Optimize_Merge Optimize_Vmap Optimize_Concat Optimize_ConcatM.
 
 (** ** Part 1: env-agreement on the set/vmap names a rule reads. *)
 
@@ -616,6 +616,217 @@ Proof.
   destruct (optimize_rules_concatN (List.length (c_rules c)) n d (c_rules c))
     as [[m'' dd''] rr''] eqn:E.
   inversion H; subst. apply (optimize_rules_concatN_maps _ _ _ _ _ _ _ E).
+Qed.
+
+(** concatN mints [setname]s bounded by [n']; needed to thread setname-freshness
+    past concatN into the following concatM stage. *)
+Lemma optimize_rules_concatN_keys_bound : forall fuel n d rs n' d' rs' k,
+  optimize_rules_concatN fuel n d rs = (n', d', rs') ->
+  In (setname k) (map fst (sd_sets d')) ->
+  In (setname k) (map fst (sd_sets d)) \/ k < n'.
+Proof.
+  induction fuel as [| fuel IH]; intros n d rs n' d' rs' k H Hin.
+  - cbn in H. inversion H; subst. left; exact Hin.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst. left; exact Hin.
+    + cbn in H. inversion H; subst. left; exact Hin.
+    + rewrite optimize_rules_concatN_consSS in H.
+      destruct (head_value2 r1) as [[[[[f1 a1] f2] b1] body] |] eqn:Ehd.
+      * destruct (take_concat_run r1 (r2 :: rest)) as [ts rest'] eqn:Erun.
+        destruct ts as [| t ts'].
+        -- remember (optimize_rules_concatN fuel n d (r2 :: rest)) as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H. injection H as Hn' Hd' Hr'.
+           subst n' d' rs'. eapply (IH n d (r2 :: rest) m'' dd'' rr'' k (eq_sym Erec) Hin).
+        -- cbv zeta in H.
+           remember (optimize_rules_concatN fuel (S n)
+                       {| sd_sets := (setname n, map pack_tuple ((a1, b1) :: t :: ts'))
+                                     :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H. injection H as Hn' Hd' Hr'.
+           subst n' d' rs'.
+           destruct (IH (S n) _ rest' m'' dd'' rr'' k (eq_sym Erec) Hin) as [Hin_dn | Hlt].
+           ++ cbn [sd_sets map] in Hin_dn. destruct Hin_dn as [Heq | Hin_d].
+              ** apply setname_inj in Heq. subst k. right.
+                 pose proof (optimize_rules_concatN_mono fuel (S n) _ rest' m'' dd'' rr'' (eq_sym Erec)). lia.
+              ** left; exact Hin_d.
+           ++ right; exact Hlt.
+      * remember (optimize_rules_concatN fuel n d (r2 :: rest)) as tt eqn:Erec.
+        destruct tt as [[m'' dd''] rr'']. cbv zeta in H. injection H as Hn' Hd' Hr'.
+        subst n' d' rs'. eapply (IH n d (r2 :: rest) m'' dd'' rr'' k (eq_sym Erec) Hin).
+Qed.
+
+Lemma optimize_chain_concatN_keys_bound : forall n d c n' d' c' k,
+  optimize_chain_concatN n d c = (n', d', c') ->
+  In (setname k) (map fst (sd_sets d')) ->
+  In (setname k) (map fst (sd_sets d)) \/ k < n'.
+Proof.
+  intros n d c n' d' c' k H Hin. unfold optimize_chain_concatN in H.
+  destruct (optimize_rules_concatN (List.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  apply (optimize_rules_concatN_keys_bound _ _ _ _ _ _ _ k E Hin).
+Qed.
+
+(** ** concatM (the guarded transport-key concat pass, Optimize_ConcatM) seam facts,
+    structurally identical to concatN (mints [setname]s, leaves [sd_vmaps]/[sd_maps]). *)
+Lemma optimize_rules_concatM_mono : forall fuel n d rs n' d' rs',
+  optimize_rules_concatM fuel n d rs = (n', d', rs') -> n <= n'.
+Proof.
+  induction fuel as [| fuel IH]; intros n d rs n' d' rs' H.
+  - cbn in H. inversion H; subst; lia.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst; lia.
+    + cbn in H. inversion H; subst; lia.
+    + rewrite optimize_rules_concatM_consSS in H.
+      destruct (head_value2g r1) as [[[[[[f1 a1] gm] f2] b1] body] |] eqn:Ehd.
+      * destruct (take_concatg_run r1 (r2 :: rest)) as [ts rest'] eqn:Erun.
+        destruct ts as [| t ts'].
+        -- remember (optimize_rules_concatM fuel n d (r2 :: rest)) as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H. inversion H; subst.
+           eapply (IH n d (r2 :: rest)); symmetry; exact Erec.
+        -- cbv zeta in H.
+           remember (optimize_rules_concatM fuel (S n) _ rest') as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n'.
+           assert (S n <= m'')
+             by (eapply (IH (S n) _ rest'); symmetry; exact Erec). lia.
+      * remember (optimize_rules_concatM fuel n d (r2 :: rest)) as tt eqn:Erec.
+        destruct tt as [[m'' dd''] rr'']. cbv zeta in H. inversion H; subst.
+        eapply (IH n d (r2 :: rest)); symmetry; exact Erec.
+Qed.
+
+Lemma optimize_rules_concatM_vmaps : forall fuel n d rs n' d' rs',
+  optimize_rules_concatM fuel n d rs = (n', d', rs') -> sd_vmaps d' = sd_vmaps d.
+Proof.
+  induction fuel as [| fuel IH]; intros n d rs n' d' rs' H.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_concatM_consSS in H.
+      destruct (head_value2g r1) as [[[[[[f1 a1] gm] f2] b1] body] |] eqn:Ehd.
+      * destruct (take_concatg_run r1 (r2 :: rest)) as [ts rest'] eqn:Erun.
+        destruct ts as [| t ts'].
+        -- remember (optimize_rules_concatM fuel n d (r2 :: rest)) as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H. inversion H; subst.
+           eapply (IH n d (r2 :: rest)); symmetry; exact Erec.
+        -- cbv zeta in H.
+           remember (optimize_rules_concatM fuel (S n)
+                       {| sd_sets := (setname n, map pack_tuple ((a1, b1) :: t :: ts'))
+                                     :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst d'.
+           rewrite (IH (S n) _ rest' _ dd'' rr'' (eq_sym Erec)). reflexivity.
+      * remember (optimize_rules_concatM fuel n d (r2 :: rest)) as tt eqn:Erec.
+        destruct tt as [[m'' dd''] rr'']. cbv zeta in H. inversion H; subst.
+        eapply (IH n d (r2 :: rest)); symmetry; exact Erec.
+Qed.
+
+Lemma optimize_rules_concatM_maps : forall fuel n d rs n' d' rs',
+  optimize_rules_concatM fuel n d rs = (n', d', rs') -> sd_maps d' = sd_maps d.
+Proof.
+  induction fuel as [| fuel IH]; intros n d rs n' d' rs' H.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_concatM_consSS in H.
+      destruct (head_value2g r1) as [[[[[[f1 a1] gm] f2] b1] body] |] eqn:Ehd.
+      * destruct (take_concatg_run r1 (r2 :: rest)) as [ts rest'] eqn:Erun.
+        destruct ts as [| t ts'].
+        -- remember (optimize_rules_concatM fuel n d (r2 :: rest)) as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H. inversion H; subst.
+           eapply (IH n d (r2 :: rest)); symmetry; exact Erec.
+        -- cbv zeta in H.
+           remember (optimize_rules_concatM fuel (S n)
+                       {| sd_sets := (setname n, map pack_tuple ((a1, b1) :: t :: ts'))
+                                     :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst d'.
+           rewrite (IH (S n) _ rest' _ dd'' rr'' (eq_sym Erec)). reflexivity.
+      * remember (optimize_rules_concatM fuel n d (r2 :: rest)) as tt eqn:Erec.
+        destruct tt as [[m'' dd''] rr'']. cbv zeta in H. inversion H; subst.
+        eapply (IH n d (r2 :: rest)); symmetry; exact Erec.
+Qed.
+
+Lemma optimize_rules_concatM_keys_bound : forall fuel n d rs n' d' rs' k,
+  optimize_rules_concatM fuel n d rs = (n', d', rs') ->
+  In (setname k) (map fst (sd_sets d')) ->
+  In (setname k) (map fst (sd_sets d)) \/ k < n'.
+Proof.
+  induction fuel as [| fuel IH]; intros n d rs n' d' rs' k H Hin.
+  - cbn in H. inversion H; subst. left; exact Hin.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst. left; exact Hin.
+    + cbn in H. inversion H; subst. left; exact Hin.
+    + rewrite optimize_rules_concatM_consSS in H.
+      destruct (head_value2g r1) as [[[[[[f1 a1] gm] f2] b1] body] |] eqn:Ehd.
+      * destruct (take_concatg_run r1 (r2 :: rest)) as [ts rest'] eqn:Erun.
+        destruct ts as [| t ts'].
+        -- remember (optimize_rules_concatM fuel n d (r2 :: rest)) as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H. injection H as Hn' Hd' Hr'.
+           subst n' d' rs'. eapply (IH n d (r2 :: rest) m'' dd'' rr'' k (eq_sym Erec) Hin).
+        -- cbv zeta in H.
+           remember (optimize_rules_concatM fuel (S n)
+                       {| sd_sets := (setname n, map pack_tuple ((a1, b1) :: t :: ts'))
+                                     :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H. injection H as Hn' Hd' Hr'.
+           subst n' d' rs'.
+           destruct (IH (S n) _ rest' m'' dd'' rr'' k (eq_sym Erec) Hin) as [Hin_dn | Hlt].
+           ++ cbn [sd_sets map] in Hin_dn. destruct Hin_dn as [Heq | Hin_d].
+              ** apply setname_inj in Heq. subst k. right.
+                 pose proof (optimize_rules_concatM_mono fuel (S n) _ rest' m'' dd'' rr'' (eq_sym Erec)). lia.
+              ** left; exact Hin_d.
+           ++ right; exact Hlt.
+      * remember (optimize_rules_concatM fuel n d (r2 :: rest)) as tt eqn:Erec.
+        destruct tt as [[m'' dd''] rr'']. cbv zeta in H. injection H as Hn' Hd' Hr'.
+        subst n' d' rs'. eapply (IH n d (r2 :: rest) m'' dd'' rr'' k (eq_sym Erec) Hin).
+Qed.
+
+Lemma optimize_chain_concatM_mono : forall n d c n' d' c',
+  optimize_chain_concatM n d c = (n', d', c') -> n <= n'.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_concatM in H.
+  destruct (optimize_rules_concatM (List.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. apply (optimize_rules_concatM_mono _ _ _ _ _ _ _ E).
+Qed.
+
+Lemma optimize_chain_concatM_vmaps : forall n d c n' d' c',
+  optimize_chain_concatM n d c = (n', d', c') -> sd_vmaps d' = sd_vmaps d.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_concatM in H.
+  destruct (optimize_rules_concatM (List.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. apply (optimize_rules_concatM_vmaps _ _ _ _ _ _ _ E).
+Qed.
+
+Lemma optimize_chain_concatM_maps : forall n d c n' d' c',
+  optimize_chain_concatM n d c = (n', d', c') -> sd_maps d' = sd_maps d.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_concatM in H.
+  destruct (optimize_rules_concatM (List.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. apply (optimize_rules_concatM_maps _ _ _ _ _ _ _ E).
+Qed.
+
+Lemma optimize_chain_concatM_keys_bound : forall n d c n' d' c' k,
+  optimize_chain_concatM n d c = (n', d', c') ->
+  In (setname k) (map fst (sd_sets d')) ->
+  In (setname k) (map fst (sd_sets d)) \/ k < n'.
+Proof.
+  intros n d c n' d' c' k H Hin. unfold optimize_chain_concatM in H.
+  destruct (optimize_rules_concatM (List.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  apply (optimize_rules_concatM_keys_bound _ _ _ _ _ _ _ k E Hin).
 Qed.
 
 (** ** Structural facts about clean rules: their bodies are matches-only and read

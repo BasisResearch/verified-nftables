@@ -70,25 +70,35 @@ the SOURCE address slot:
 - Consider generalising `Optimize_Dnat` to a shared `Optimize_Nat` parametric in
   the kind rather than copy-pasting, if it keeps the proofs clean.
 
-## G2 — concat keys with meta-dependent / non-fixed-width fields  (capability gap)
+## G2 — concat keys with meta-dependent transport fields  ✅ DONE (theories/Optimize_ConcatM.v)
 
-`Optimize_ConcatK`/`Optimize_Concat` fold a concat key only from **fixed-width
-PAYLOAD** fields (`field_fixed_len = Some`). A key that includes a transport field
-like `tcp dport` (which carries an implicit `l4proto == tcp` guard, and whose load
-is gated on that meta match) is NOT folded — so `ip saddr . tcp dport { … }`
-rulesets are only partially consolidated. `nft -o` folds these.
+Landed: a new verified pass `Optimize_ConcatM.v` (composed into `optimize_table`
+right after `concatN`, before `vmapN`).  The frontend lowers `ip saddr X tcp dport Y`
+to the THREE-item body `[MCmp ip_saddr X; MCmp meta_l4proto 6; MCmp tcp_dport Y]` — the
+l4proto guard sits BETWEEN the two selectors, so `head_value2`/`concatN` never see two
+adjacent selectors and under-consolidate.  `concatM` recognises the guarded run
 
-- Model the transport field's `l4proto` dependency faithfully: the concat key
-  element is the transport field guarded by the L4-proto match; the merged
-  `MConcatSet`/set element must carry both. Establish the per-field
-  loadable+width facts under the guard (the concat correctness needs each field's
-  width to split the concat back — a transport field IS fixed-width once the proto
-  is fixed).
-- Extend the recogniser + the width/loadability certificates
-  (`Optimize_ConcatK`'s `Forall2 field_fixed_len` machinery) to admit the guarded
-  transport fields; keep the register-slot padding correct.
-- Verify verdict-preservation and **byte-fidelity against `nft -o`** on real
-  `… . tcp dport` rulesets (these are common in the corpus's nat/set tests).
+    [ MCmp f1 CEq a_i ; GUARD ; MCmp f2 CEq b_i ] ++ rest   (GUARD = MCmp l4proto proto)
+
+and folds it into ONE `[ GUARD ; MConcatSet [f1;f2] false __setN ] ++ rest` — the guard
+HOISTED to the head, matching nft -o's netlink (`[ meta load l4proto ][ cmp ]` precedes
+the `[ lookup ]`).  The guard is kept ABSTRACT in every lemma (guard-agnostic) and pinned
+to `guard_ok` (l4proto) only in the recogniser for firing precision.  Verdict-preservation
+REUSES `eval_rules_run_collapse` + `concat_two_fields_certificate_N` VERBATIM — the guard
+is a pure conjunctive match, transparent to loadability/outcome and factored out of the
+run-collapse `existsb` by boolean algebra (`existsb_guard_factor`, discharged by `btauto`).
+The gen theorem `optimize_table_correct_uncond_gen` is re-proved with the 8th stage
+(new `optimize_chain_concatN_fresh_setname` + `concatN_keys_bound` thread setname-freshness
+past concatN into concatM).  All three headline theorems stay `Closed under the global
+context`; corpus 2532/2532, validate 28/28, semtest/parse-test/e2e green.
+
+Fires end-to-end: `nftc optimize` collapses `ip saddr 1.1.1.1 tcp dport 22 accept /
+ip saddr 2.2.2.2 tcp dport 80 accept` → ONE `ip saddr . tcp dport { 1.1.1.1 . 22,
+2.2.2.2 . 80 } accept` lookup (l4proto guard at head, saddr@reg1, dport@reg9) — BYTE-
+FAITHFUL to `nft --optimize`'s netlink (confirmed in a netns; N-way runs fold too, and
+tcp-vs-udp rulesets correctly do NOT cross-merge, matching nft; no nft bug found).
+Witness: `theories/Concatm_Witness.v` (Compute + `concatm_fires` Example); regression
+gate: `e2e.sh` §B4.
 
 ## G3 — interval / prefix set consolidation  (capability gap)
 

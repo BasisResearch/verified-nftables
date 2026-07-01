@@ -134,6 +134,43 @@ else
   echo "   NOTE: nft --optimize cross-check unavailable in this environment"
 fi
 
+# ---- B4. the verified optimizer folds a GUARDED transport-key concat ---------
+# (G2) `ip saddr A tcp dport P / ip saddr B tcp dport Q` — where `tcp dport` carries
+# its implicit `meta l4proto 6` guard BETWEEN the two selectors — collapses to ONE
+# `ip saddr . tcp dport { A.P, B.Q }` lookup with the l4proto guard hoisted to the
+# head, exactly as `nft --optimize` emits it (guard first, saddr@reg1, dport@reg9).
+echo ">> B4. nftc optimize folds a guarded transport-key concat (matches nft -o)"
+GCONCAT='table ip t {
+  chain c {
+    type filter hook input priority 0; policy accept;
+    ip saddr 1.1.1.1 tcp dport 22 accept
+    ip saddr 2.2.2.2 tcp dport 80 accept
+  }
+}'
+printf '%s\n' "$GCONCAT" > /tmp/e2e_gconcat.nft
+GOPT=$("$NFTC" optimize /tmp/e2e_gconcat.nft)
+echo "$GOPT" | sed 's/^/     /'
+# ONE lookup, the l4proto guard hoisted to the head, dport laid in the 2nd reg slot
+# (reg 9), and a 2-tuple concat set (two 2-field elements).
+glk=$(echo "$GOPT" | grep -c 'lookup reg 1 set __set' || true)
+gguard=$(echo "$GOPT" | grep -c 'meta load l4proto' || true)
+gdport=$(echo "$GOPT" | grep -c 'transport header + 2 => reg 9' || true)
+gset=$(echo "$GOPT" | grep -Ec 'set __set.*=.*0x.* 0x.*,.*0x.* 0x' || true)
+grules=$(echo "$GOPT" | grep -c '^t c' || true)
+if [ "$glk" -eq 1 ] && [ "$gguard" -eq 1 ] && [ "$gdport" -eq 1 ] && \
+   [ "$gset" -ge 1 ] && [ "$grules" -eq 1 ]; then
+  echo "   PASS: 2 guarded tcp-dport rules -> 1 concat lookup (verified merge fired)"
+else
+  echo "   FAIL: guarded concat did not fire (lookups=$glk guard=$gguard dport-reg9=$gdport sets=$gset rules=$grules)"; fail=1
+fi
+# cross-check: nft --optimize folds these into the SAME concat set
+NFTGO=$(printf '%s\n' "$GCONCAT" | unshare -rn nft --optimize -f - 2>/dev/null | grep -c 'ip saddr . tcp dport {' || true)
+if [ "${NFTGO:-0}" -ge 1 ]; then
+  echo "   PASS: nft --optimize agrees (folds 'ip saddr . tcp dport { .. }')"
+else
+  echo "   NOTE: nft --optimize cross-check unavailable in this environment"
+fi
+
 # ---- C. the pipeline runs on the repo's real rulesets -----------------------
 echo ">> C. pipeline runs on real rulesets"
 for f in ../router.nft ../optiplex.nft ../ruleset.nft; do
