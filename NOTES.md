@@ -16,8 +16,10 @@ see [`adversarial.md`](adversarial.md).
 - **Optimizer pipeline** (each pass verified & composed into `optimize_table`):
   base dedup/DCE → **dnat** bare-map → **snat** bare-map → value→set (setsN) →
   K-field concat → meta-mark map (mapN, sound superset) → 2-field concat →
-  **transport-guarded concat** (concatM, e.g. `ip saddr . tcp dport`) → **interval
-  set** (ivset) → value+verdict→vmap. Matches `nft -o` on every safe consolidation.
+  **transport-guarded concat** (concatM, e.g. `ip saddr . tcp dport`) →
+  **transport-guarded single-field set** (setg, e.g. bare `tcp dport { … }` /
+  `udp dport { … }`) → **interval set** (ivset) → value+verdict→vmap. Matches
+  `nft -o` on every safe consolidation.
 - **Untrusted tooling**: the `nftc` CLI (`compile`/`optimize`/`send`), a full
   netlink sender that stands up a whole ruleset atomically (NEWTABLE/CHAIN/SET/…),
   and a rootless-VM end-to-end harness (`make vmtest`).
@@ -28,12 +30,20 @@ see [`adversarial.md`](adversarial.md).
 ## Remaining work
 
 ### Optimizer — the only gaps left vs `nft -o` (all sound under-consolidation)
-Our value→set/vmap merge fires for network-address keys and guarded concats but
-NOT yet for **bare non-network single-field keys** — `tcp dport`, `udp dport`,
-`ct state` (flag masks), `iifname`, `meta mark` (match), `ether saddr` — nor for
-disjoint-prefix unions. `nft` folds each into a set/vmap; we leave sequential
-`cmp` rules (always first-match-equivalent). Closing these is the active
-optimizer track; the differential harness is `proof/difftest_battery.sh`.
+Our value→set/vmap merge fires for network-address keys, guarded concats, and (NEW,
+`Optimize_Setg.v`) the transport-guarded single-field SET — bare `tcp dport { … }` /
+`udp dport { … }` fold to a 2-byte inet_service set exactly as `nft -o` does
+(kernel-confirmed: our `[meta load l4proto][cmp][payload load 2b @ transport+2]
+[lookup]` lowering is byte-identical to the kernel's own, and a netns TCP-probe
+differential shows identical filtering). Still NOT folded:
+- the **differing-verdict** transport variant `tcp dport vmap { 22:drop, 80:accept,
+  … }` — needs a transport-guarded value+verdict→**vmap** pass (analogue of setg
+  building a vmap instead of a set); we soundly leave the sequential guarded `cmp`
+  rules (first-match-equivalent). Battery case `18_tcp_dport_vmap.nft`.
+- other bare non-network single-field keys — `ct state` (flag masks), `iifname`,
+  `meta mark` (match), `ether saddr` — and disjoint-prefix unions.
+The differential harness is `proof/difftest_battery.sh` (cases
+`16_tcp_dport_set` / `17_udp_dport_set` / `18_tcp_dport_vmap`).
 
 ### Data-plane fidelity (compiler/semantics, not the optimizer)
 - **Register byte-order sweep**: the ct_state wire-order bug (model stored it

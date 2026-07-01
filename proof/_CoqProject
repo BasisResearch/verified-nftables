@@ -58,6 +58,7 @@ theories/Optimize_Mapn.v
 theories/Optimize_Dnat.v
 theories/Optimize_Snat.v
 theories/Optimize_ConcatM.v
+theories/Optimize_Setg.v
 theories/Optimize_Ivset.v
 theories/Optimize_Table_Inv.v
 theories/Optimize_Table.v

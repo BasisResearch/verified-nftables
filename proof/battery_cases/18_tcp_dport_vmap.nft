@@ -1,0 +1,8 @@
+table ip t {
+  chain c {
+    type filter hook input priority 0; policy accept;
+    tcp dport 22 drop
+    tcp dport 80 accept
+    tcp dport 443 drop
+  }
+}
