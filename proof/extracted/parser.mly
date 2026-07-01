@@ -45,6 +45,7 @@
 %token <int> INT
 %token <int list> IPV4
 %token <int list> IPV6
+%token <int list> MAC
 %token <string> IDENT
 %token <string> STRING
 %token <string> VAR
@@ -114,7 +115,7 @@ junk:
   | junk LBRACE junk RBRACE { () }   (* nested braces *)
 
 junktok:
-  | INT {} | IPV4 {} | IPV6 {} | IDENT {} | STRING {} | VAR {} | AT {}
+  | INT {} | IPV4 {} | IPV6 {} | MAC {} | IDENT {} | STRING {} | VAR {} | AT {}
   | COLON {} | COMMA {} | DOT {} | SLASH {} | EQUALS {} | NE {} | EQ {} | BANG {}
   | DASH {} | SEMI {} | NEWLINE {}
   | AMP {} | PIPE {} | CARET {} | AND {} | OR {} | XOR {} | ORIGINAL {} | REPLY {}
@@ -344,6 +345,7 @@ value:
   | IPV4 SLASH INT  { Vprefix (Vip4 $1, $3) }
   | IPV6            { Vip6 $1 }
   | IPV6 SLASH INT  { Vprefix (Vip6 $1, $3) }
+  | MAC             { Vmac $1 }
   | STRING          { Vstr $1 }
   | IDENT           { Vsym $1 }
   | VAR             { Vvar $1 }

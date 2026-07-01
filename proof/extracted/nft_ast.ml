@@ -24,6 +24,7 @@ type value =
   | Vstr    of string              (* a double-quoted string, e.g. "eth0" *)
   | Vip4    of int list            (* a dotted IPv4 literal, already 4 bytes *)
   | Vip6    of int list            (* an IPv6 literal, already 16 bytes (big-endian) *)
+  | Vmac    of int list            (* a MAC literal, 6 bytes, e.g. aa:bb:cc:dd:ee:ff *)
   | Vvar    of string              (* a `$name` reference to a `define` *)
   | Vprefix of value * int         (* a CIDR prefix, e.g. 192.168.50.0/24 *)
   | Vrange  of value * value       (* an inclusive range, e.g. 29811-29814 *)

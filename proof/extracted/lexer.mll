@@ -106,6 +106,11 @@ let ws      = [' ' '\t']
    8-group form (>=3 groups so a lone map `key : value` colon never matches) or
    any form containing the `::` zero-run compression.  An optional embedded IPv4
    tail (`::ffff:1.2.3.4`) is allowed in the last group. *)
+let hh      = hex hex
+(* a MAC address literal: exactly six colon-separated 2-hex-digit groups.
+   Matched BEFORE the IPv6 rules so `aa:bb:cc:dd:ee:ff` (which would otherwise
+   lex as a 6-group IPv6 fragment) is recognised as an Ethernet address. *)
+let mac     = hh ':' hh ':' hh ':' hh ':' hh ':' hh
 let h16     = hex hex? hex? hex?
 let v4tail  = digit+ '.' digit+ '.' digit+ '.' digit+
 let g6      = h16 | v4tail
@@ -134,6 +139,8 @@ rule token = parse
   | '$' (ident as s) { VAR s }
   | '@' (ident as s) { AT s }
   | digit+ ('.' digit+)+ as s   { IPV4 (ipv4_bytes s) }
+  | mac as s                    { MAC (Stdlib.List.map (fun g -> int_of_string ("0x" ^ g))
+                                        (Stdlib.String.split_on_char ':' s)) }
   | (ip6full | ip6comp) as s    { IPV6 (ipv6_bytes s) }
   | "0x" hex+ as s              { INT (int_of_string s) }
   | digit+ as s                 { INT (int_of_string s) }

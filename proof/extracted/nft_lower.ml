@@ -242,6 +242,8 @@ let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
   | KPkttype, Nft_ast.Vnum n -> [n land 0xff]
   | KFibType, Nft_ast.Vsym s -> lookup "fib type" sym_fibtype s
   | KFibType, Nft_ast.Vnum n -> bytes_of_int_le 4 n
+  (* a MAC literal is 6 verbatim big-endian bytes (ether saddr/daddr, arp ether). *)
+  | KNum 6, Nft_ast.Vmac b -> b
   | KNum w, Nft_ast.Vnum n -> bytes_of_int w n
   | KNumLe w, Nft_ast.Vnum n -> bytes_of_int_le w n
   | KArpop, Nft_ast.Vnum n -> bytes_of_int 2 n
