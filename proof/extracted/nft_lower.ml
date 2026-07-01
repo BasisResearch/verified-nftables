@@ -635,6 +635,12 @@ let bitfield_sel (kp : Nft_ast.keypath)
   | ["vlan"; "pcp"]      -> Some (Syntax.FPayload (Packet.PLink, 14, 1), 1, [0xe0], [DEther [0x81;0x00]], false)
   | ["vlan"; "dei"] | ["vlan"; "cfi"]
                          -> Some (Syntax.FPayload (Packet.PLink, 14, 1), 1, [0x10], [DEther [0x81;0x00]], false)
+  (* IPv6 fragment-header sub-byte fields (exthdr load ipv6 @ 44, then bitwise):
+     frag-off (13 bits, 0xfff8>>3), more-fragments (0x01), reserved2 (0x06>>1)
+     — golden ip6/frag.t.payload. *)
+  | ["frag"; "frag-off"]       -> Some (Syntax.FExthdr (Packet.EPipv6, 44, 2, 2, false), 2, [0xff;0xf8], [DNfproto [10]], false)
+  | ["frag"; "reserved2"]      -> Some (Syntax.FExthdr (Packet.EPipv6, 44, 3, 1, false), 1, [0x06], [DNfproto [10]], false)
+  | ["frag"; "more-fragments"] -> Some (Syntax.FExthdr (Packet.EPipv6, 44, 3, 1, false), 1, [0x01], [DNfproto [10]], false)
   | _ -> None
 
 (* trailing-zero bit count of a big-endian byte mask = the field's LSB position. *)
