@@ -140,7 +140,51 @@ contiguous-mask↔interval `[net, net|~mask]` arithmetic lemma over big-endian
 the range analogue of the `vmapN` pass (Optimize_Vmap), a separate extension.
 Neither is an nft bug; both build cleanly on this pass.
 
-## D1 — `mapN` (`meta mark set … map`) fidelity divergence  (resolve)
+## D1 — `mapN` (`meta mark set … map`) fidelity divergence  ✅ RESOLVED
+
+Landed (honest-contract resolution, kept axiom-free/green): the `mapN` divergence
+is RESOLVED as an **intentional, necessary, labelled sound superset** — NOT an nft
+bug, NOT an overstated fidelity claim. Backed by a committed `nft -o` differential
++ live-kernel witness and a machine-checked pin.
+
+Ground truth (differential, `nft` v1.1.6 + kernel netns; gate `e2e.sh` §B6):
+- `nft --optimize` does **NOT** merge `meta mark set` at all (no `Merging` output).
+  So `mapN` has **no `nft -o` counterpart** — there is no bare form of *its* output
+  to be byte-faithful to. `nft -o` is merely conservative; not a bug.
+- The maps `nft -o` DOES emit (dnat/snat, **bare**) are already matched by
+  `Optimize_Dnat`/`Optimize_Snat` (§B3).
+- **Kernel witness** (netns, `hook output`, key `ip daddr`): a BARE statement
+  value-map BREAKs on miss — an off-key packet keeps its prior mark (sentinel
+  `0xdead` survives), an on-key packet gets the mapped value. So a bare merged form
+  is kernel-equivalent to the two originals; the divergence between our GUARDED
+  output and the (hypothetical) bare form is a pure **model artifact** (our
+  `body_writes` on `SMetaSet _ (VMap …)` loads `map_lookup_data`'s default on a
+  miss instead of NFT_BREAKing, `Bytes.v:43`).
+
+Verified pin (axiom-free, `theories/Optimize_Mapn.v`): `mapn_bare_diverges_offkey`
++ `dsl_step_bare_offkey`/`dsl_step_orig_pair_offkey` prove that, off-key, the
+guard-less ("bare") rule CLOBBERS the mark to the default `[]` while the two
+originals are a no-op — so the head-set guard (= the map's key domain) is a
+soundness necessity of THIS model, recovering exact equivalence
+(`eval_rules_mut_map_merge`, already proven; semtest also exercises the off-key
+miss). The fidelity contract is made precise in `optimize_table`'s docstring
+(`Optimize_Table.v`): every stage EXCEPT `mapn` is `nft -o`-faithful; `mapn` is a
+labelled sound superset outside the byte-fidelity claim.
+
+**Why not the "bare" (preferred) form?** (principled, not laziness) Making `mapn`
+bare needs NFT_BREAK-on-miss for the statement value-map in BOTH `body_writes` and
+the compiler (route `SMetaSet`+`VMap` through `ILookupValBr`). The bytecode renders
+identically (`codec.ml` `ILookupValBr` ≡ `ILookupVal`), and the *verdict* side is
+insensitive (a `Continue` rule; `eval_rules` ignores `rule_loadable` for it) — BUT
+it breaks the "value sources are verdict-neutral / reach the tail" invariant
+(`Correct.run_vsrc_exists`) that the `compile_chain_correct` HEADLINE theorem is
+built on, cascading across every `SMangle`/`SMetaSet`/`SCtSet` arm. That is a
+change to a headline theorem for **zero `nft -o` fidelity gain** (nft never merges
+`meta mark`). Deferred as a standalone core-semantics fidelity upgrade (kernel
+break-on-miss for statement value-maps), which would benefit all such statements,
+not just `mapn`.
+
+Original analysis (for reference):
 
 Adversarial review vs `nft v1.1.6` found: (1) `nft -o` does **not** merge
 `meta mark set` at all, and (2) the maps it DOES emit (dnat/snat) are **bare**

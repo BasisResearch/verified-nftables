@@ -208,7 +208,25 @@ Proof. trivial. Qed.
     fresh past every name the input declares/reads (read-freshness), and fresh-name
     discipline is threaded by [optimize_chain_setsN_fresh_setname] and the
     cross-namespace stability lemmas (setsN/concatN leave [sd_vmaps] fixed) — the
-    seam lemmas this file provides. *)
+    seam lemmas this file provides.
+
+    *** `nft -o` FIDELITY CONTRACT (precise; see [Optimize_Mapn] D1 note + [e2e.sh]).
+
+    All stages EXCEPT [mapn] emit output that `nft --optimize` (nft v1.1.6) also
+    emits (differentially confirmed, netns): the bare NAT maps ([dnat]/[snat],
+    NFT_BREAK-on-miss), the anonymous value sets ([setsN]), the concat sets
+    ([concatK]/[concatN]/[concatM]), the interval sets ([ivset]) and the verdict
+    maps ([vmapN]).  The [mapn] stage (`meta mark set … map`) is DIFFERENT: `nft -o`
+    does NOT merge `meta mark set` rules at all, so [mapn] is a LABELLED SOUND
+    SUPERSET with no `nft -o` counterpart — NOT part of the byte-fidelity claim, and
+    NOT an nft bug (nft is merely conservative; the merge is verdict/state-preserving
+    per [Optimize_Mapn.eval_rules_mut_map_merge]).  [mapn] emits the HEAD-GUARDED
+    form (a synthesised key set in front of the map) because our model loads a
+    default on a statement value-map miss rather than NFT_BREAKing; the guard makes
+    the lookup always hit, recovering exact equivalence.  Why the guard cannot just
+    be dropped — and why doing so would touch the [compile_chain_correct] headline
+    with no fidelity payoff — is pinned axiom-free in
+    [Optimize_Mapn.mapn_bare_diverges_offkey]. *)
 Definition optimize_table (n : nat) (d : set_decls) (c : chain)
   : nat * set_decls * chain :=
   let '(nD, dD, cD) := optimize_chain_dnat n d (optimize_chain c) in

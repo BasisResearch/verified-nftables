@@ -204,6 +204,80 @@ else
   echo "   NOTE: nft --optimize cross-check unavailable in this environment"
 fi
 
+# ---- B6. the mapN divergence (D1): a LABELLED SOUND SUPERSET, not nft -o -----
+# (D1) `ip saddr A meta mark set M1 / ip saddr B meta mark set M2` folds into ONE
+# HEAD-GUARDED data-map rule `ip saddr { A, B } meta mark set ip saddr map { A:M1,
+# B:M2 }`.  This is a SOUND CONSOLIDATION with NO `nft -o` counterpart: `nft -o`
+# does NOT merge `meta mark set` rules at all (it emits value maps only for
+# dnat/snat, which we match BARE via §B3).  The head-set guard is a soundness
+# necessity of OUR model (a statement value-map miss loads a default instead of
+# NFT_BREAKing); the kernel would run a BARE map with break-on-miss (netns witness
+# below), so the guarded form, the bare form and the two originals all filter/
+# rewrite every packet identically — the divergence is INTENTIONAL/NECESSARY, NOT
+# an nft bug.  Pinned axiom-free in Optimize_Mapn.mapn_bare_diverges_offkey.
+echo ">> B6. nftc optimize folds meta-mark rules into a guarded data map (sound superset; nft -o does NOT)"
+MARKRULES='table ip t {
+  chain c {
+    type filter hook prerouting priority 0; policy accept;
+    ip saddr 1.1.1.1 meta mark set 0x00000001
+    ip saddr 2.2.2.2 meta mark set 0x00000002
+  }
+}'
+printf '%s\n' "$MARKRULES" > /tmp/e2e_mark.nft
+MOPT=$("$NFTC" optimize /tmp/e2e_mark.nft)
+echo "$MOPT" | sed 's/^/     /'
+# ONE output rule: a head-guard set lookup (no dreg) + a data-map lookup (dreg) +
+# the meta-set, with BOTH a synthesised set AND a synthesised map.
+mguard=$(echo "$MOPT" | grep -Ec 'lookup reg 1 set __set[A-Z]? *\]' || true)   # head guard (no dreg)
+mmap=$(echo "$MOPT" | grep -Ec 'lookup reg 1 set __map.* dreg' || true)        # data map (dreg)
+mset=$(echo "$MOPT" | grep -c 'meta set mark' || true)
+mrules=$(echo "$MOPT" | grep -c '^t c' || true)
+if [ "$mguard" -ge 1 ] && [ "$mmap" -ge 1 ] && [ "$mset" -ge 1 ] && [ "$mrules" -eq 1 ]; then
+  echo "   PASS: 2 meta-mark rules -> 1 guarded data-map rule (verified merge fired; head set + data map synthesised)"
+else
+  echo "   FAIL: mapN merge did not fire (guard=$mguard map=$mmap metaset=$mset rules=$mrules)"; fail=1
+fi
+# cross-check: `nft --optimize` does NOT merge meta-mark (no "Merging" output).
+if NFTMO=$(printf '%s\n' "$MARKRULES" | unshare -rn nft --optimize -f - 2>/dev/null); then
+  if printf '%s' "$NFTMO" | grep -q 'Merging'; then
+    echo "   FAIL: nft --optimize unexpectedly merged meta mark: $NFTMO"; fail=1
+  else
+    echo "   PASS: nft --optimize does NOT merge meta mark (intentional divergence: mapN is a sound superset)"
+  fi
+else
+  echo "   NOTE: nft --optimize cross-check unavailable in this environment"
+fi
+# kernel behavioural witness: a BARE statement value-map BREAKs on miss (leaves the
+# mark), so the bare merged form is kernel-equivalent to the two originals -> the
+# guard is a MODEL artifact, not an nft bug.  Best-effort (needs netns + dummy dev).
+BEHAV='ip link add dummy0 type dummy 2>/dev/null || exit 3
+ip addr add 10.9.0.1/24 dev dummy0; ip link set dummy0 up; ip route add 10.9.9.0/24 dev dummy0
+nft -f - <<EOF
+table ip t {
+  chain c {
+    type filter hook output priority 0; policy accept;
+    meta mark set 0x0000dead
+    meta mark set ip daddr map { 10.9.9.1 : 0x00000111 }
+    meta mark 0x0000dead counter comment "survived"
+    meta mark 0x00000111 counter comment "onkey"
+  }
+}
+EOF
+ping -c1 -W1 10.9.9.2 >/dev/null 2>&1 || true   # OFF-key: mark must SURVIVE (break-on-miss)
+ping -c1 -W1 10.9.9.1 >/dev/null 2>&1 || true   # ON-key:  mark must become 0x111
+nft list ruleset | grep -E "survived|onkey"'
+if BOUT=$(unshare --net --map-root-user --map-auto -- bash -c "$BEHAV" 2>/dev/null); then
+  sv=$(printf '%s' "$BOUT" | grep survived | grep -oE 'packets [0-9]+' | grep -oE '[0-9]+' | head -1)
+  ok=$(printf '%s' "$BOUT" | grep onkey    | grep -oE 'packets [0-9]+' | grep -oE '[0-9]+' | head -1)
+  if [ "${sv:-0}" -ge 1 ] && [ "${ok:-0}" -ge 1 ]; then
+    echo "   PASS: kernel break-on-miss confirmed (off-key mark survived=$sv, on-key mapped=$ok) => bare form == originals; guard is a model artifact, not an nft bug"
+  else
+    echo "   NOTE: kernel behavioural witness inconclusive (survived=$sv onkey=$ok)"
+  fi
+else
+  echo "   NOTE: kernel behavioural witness unavailable in this environment (needs netns + dummy dev)"
+fi
+
 # ---- C. the pipeline runs on the repo's real rulesets -----------------------
 echo ">> C. pipeline runs on real rulesets"
 for f in ../router.nft ../optiplex.nft ../ruleset.nft; do

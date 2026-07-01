@@ -272,6 +272,148 @@ Proof.
 Qed.
 
 (* ================================================================== *)
+(** ** D1 — the head-guard is a SOUNDNESS NECESSITY of THIS model, NOT an
+    `nft -o` fidelity claim: a machine-checked account of the [mapN] divergence.
+
+    Ground truth (differentially confirmed against `nft` v1.1.6 AND the live
+    kernel in an unprivileged netns; regression gate: [e2e.sh] §B6):
+
+      - `nft --optimize` does NOT merge `meta mark set` rules AT ALL.  It emits a
+        value map only for the NAT verdict-statements `dnat`/`snat`, and those it
+        emits BARE — which we ALREADY match byte-for-byte via [Optimize_Dnat] /
+        [Optimize_Snat] (their bare maps use the NFT_BREAK-on-miss NAT terminal,
+        [terminal_loadable]'s [map_has_key], [Semantics.v:783]).  So [mapN] is a
+        SOUND SUPERSET with NO `nft -o` counterpart: there is no bare form of ITS
+        output to be byte-faithful to.  `nft -o` is merely conservative here — this
+        is NOT an nft bug (the two originals and either merged form filter/rewrite
+        every packet identically).
+
+      - The KERNEL executes a bare statement value-map with NFT_BREAK-on-miss: a
+        packet whose key is ABSENT from the map leaves the mark UNTOUCHED.  Netns
+        witness (hook output, key = `ip daddr`): pre-set a sentinel mark 0xdead,
+        then a bare `meta mark set ip daddr map { 10.9.9.1 : 0x111 }`; an OFF-key
+        packet (10.9.9.2) keeps 0xdead (the map lookup BREAKs, no write), an ON-key
+        packet (10.9.9.1) gets 0x111.  So a BARE merged rule is KERNEL-equivalent to
+        the two originals.
+
+      - OUR model's statement value-map ([body_writes] on [SMetaSet _ (VMap …)],
+        [Semantics.v:1992]) loads [map_lookup_data]'s default ([], [Bytes.v:39]) on
+        a miss rather than breaking (a modelling gap [Bytes.v:43] already flags).
+        Under THAT model a BARE merged rule would CLOBBER the mark to [] off-key,
+        diverging from the originals.  The head-SET guard (= the map's key domain)
+        fires the merged rule ONLY on-key, so the lookup always HITS and the model's
+        default-on-miss is never reached — recovering exact equivalence
+        ([eval_rules_mut_map_merge]).
+
+    Consequence for the pipeline's fidelity contract: [mapN] is a labelled sound
+    superset OUTSIDE the `nft -o` byte-fidelity claim (which is carried by the
+    dnat/snat/set/concat/interval passes).  Making [mapN] BARE would need
+    NFT_BREAK-on-miss for the statement value-map in [body_writes] AND in the
+    compiler (route [SMetaSet]+[VMap] through [ILookupValBr]) — but that breaks the
+    "value sources are verdict-neutral / reach the tail" invariant
+    ([Correct.run_vsrc_exists]) that [compile_chain_correct] is built on, cascading
+    across every [SMangle]/[SMetaSet]/[SCtSet] arm — a change to a HEADLINE theorem
+    that buys NO `nft -o` fidelity (nft never merges `meta mark`).  We therefore
+    keep the sound guarded form and PIN the divergence precisely below.
+
+    The two facts, axiom-free: off-key, the guard-less ("bare") rule writes the map
+    DEFAULT [[]] while the two originals are a NO-OP.  So the guard is required
+    PURELY for the STATE model — the verdict is preserved either way
+    ([eval_rules_map_merge], env-independent). *)
+
+(** The guard-less ("bare") merged rule — what `nft` WOULD emit if it merged
+    `meta mark set`, and what the kernel runs with NFT_BREAK-on-miss. *)
+Definition mk_map_rule_bare (f : field) (mapname : string) (k : meta_key) : rule :=
+  {| r_body := [BStmt (SMetaSet k (VMap [f] [] mapname))];
+     r_verdict := Continue; r_vmap := None; r_nat := None; r_tproxy := None;
+     r_fwd := None; r_queue := None; r_after := [] |}.
+
+Lemma map_lookup_data_offkey : forall x v1 v2 M1 M2,
+  data_eqb x v1 = false -> data_eqb x v2 = false ->
+  map_lookup_data x (map2_map v1 v2 M1 M2) = [].
+Proof.
+  intros x v1 v2 M1 M2 H1 H2. unfold map2_map. cbn [map_lookup_data].
+  rewrite H1, H2. reflexivity.
+Qed.
+
+(** The single-field value-map ([fields = [f]], no transforms) reads the field and
+    looks it up — mirrors the [eval_vsrc] key reduction [body_writes_merged] uses. *)
+Lemma eval_vsrc_vmap_single : forall f name p,
+  eval_vsrc (VMap [f] [] name) p
+  = map_lookup_data (field_value f p) (e_map (pkt_env p) name).
+Proof.
+  intros f name p. cbn [eval_vsrc apply_transforms map List.concat].
+  rewrite app_nil_r. reflexivity.
+Qed.
+
+(** OFF-KEY, the BARE rule CLOBBERS the mark to the map default [[]] (our model's
+    default-on-miss) — where the kernel would instead BREAK and leave it. *)
+Lemma dsl_step_bare_offkey : forall f v1 v2 M1 M2 mapname k p,
+  e_map (pkt_env p) mapname = map2_map v1 v2 M1 M2 ->
+  field_loadable f p = true ->
+  data_eqb (field_value f p) v1 = false ->
+  data_eqb (field_value f p) v2 = false ->
+  dsl_step (mk_map_rule_bare f mapname k) p = set_meta p k [].
+Proof.
+  intros f v1 v2 M1 M2 mapname k p Hmap Hld H1 H2.
+  rewrite (dsl_step_limit_free (mk_map_rule_bare f mapname k) p) by reflexivity.
+  unfold dsl_writes. cbn [mk_map_rule_bare r_body body_writes].
+  cbn [vsrc_loadable fields_loadable forallb]. rewrite Hld, Bool.andb_true_r.
+  rewrite eval_vsrc_vmap_single, Hmap.
+  rewrite (map_lookup_data_offkey _ v1 v2 M1 M2 H1 H2). reflexivity.
+Qed.
+
+(** OFF-KEY, ONE original is a NO-OP (its head match fails). *)
+Lemma dsl_step_orig_offkey : forall f v M k p,
+  field_fixed_len f = Some (List.length v) ->
+  field_loadable f p = true ->
+  data_eqb (field_value f p) v = false ->
+  dsl_step (orig_map_rule f v M k) p = p.
+Proof.
+  intros f v M k p Hfx Hld Hne.
+  rewrite (dsl_step_limit_free (orig_map_rule f v M k) p) by reflexivity.
+  unfold dsl_writes. rewrite (body_writes_orig f v M k p Hfx Hld), Hne. reflexivity.
+Qed.
+
+(** OFF-KEY, the two originals compose to a NO-OP. *)
+Lemma dsl_step_orig_pair_offkey : forall f v1 v2 M1 M2 k p,
+  field_fixed_len f = Some (List.length v1) ->
+  field_fixed_len f = Some (List.length v2) ->
+  field_loadable f p = true ->
+  data_eqb (field_value f p) v1 = false ->
+  data_eqb (field_value f p) v2 = false ->
+  dsl_step (orig_map_rule f v2 M2 k) (dsl_step (orig_map_rule f v1 M1 k) p) = p.
+Proof.
+  intros f v1 v2 M1 M2 k p Hfx1 Hfx2 Hld H1 H2.
+  rewrite (dsl_step_orig_offkey f v1 M1 k p Hfx1 Hld H1).
+  rewrite (dsl_step_orig_offkey f v2 M2 k p Hfx2 Hld H2). reflexivity.
+Qed.
+
+(** *** THE PIN (axiom-free): off-key, the guard-less merged rule and the two
+    originals produce DIFFERENT threaded packets — the bare rule writes the map
+    default [[]], the originals leave the packet untouched.  They coincide ONLY
+    when the mark is already [[]]; for any packet carrying a prior mark (the netns
+    sentinel case) they diverge.  Hence the head-set guard is a SOUNDNESS necessity
+    of this model's default-on-miss, and [mapN] cannot drop it without the
+    NFT_BREAK-on-miss statement-map upgrade. *)
+Theorem mapn_bare_diverges_offkey : forall f v1 v2 M1 M2 mapname k p,
+  e_map (pkt_env p) mapname = map2_map v1 v2 M1 M2 ->
+  field_fixed_len f = Some (List.length v1) ->
+  field_fixed_len f = Some (List.length v2) ->
+  field_loadable f p = true ->
+  data_eqb (field_value f p) v1 = false ->
+  data_eqb (field_value f p) v2 = false ->
+  dsl_step (mk_map_rule_bare f mapname k) p = set_meta p k []
+  /\ dsl_step (orig_map_rule f v2 M2 k) (dsl_step (orig_map_rule f v1 M1 k) p) = p.
+Proof.
+  intros f v1 v2 M1 M2 mapname k p Hmap Hfx1 Hfx2 Hld H1 H2. split.
+  - exact (dsl_step_bare_offkey f v1 v2 M1 M2 mapname k p Hmap Hld H1 H2).
+  - exact (dsl_step_orig_pair_offkey f v1 v2 M1 M2 k p Hfx1 Hfx2 Hld H1 H2).
+Qed.
+
+Print Assumptions mapn_bare_diverges_offkey.
+
+(* ================================================================== *)
 (** ** The executable pairwise pass. *)
 
 From Stdlib Require Import Wellfounded Arith.Wf_nat.
