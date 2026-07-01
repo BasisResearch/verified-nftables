@@ -524,7 +524,7 @@ let key_field (kp : Nft_ast.keypath) : Syntax.field * kind * dep =
   | ["icmpv6"; "id"]       -> (Syntax.FPayload (Packet.PTransport, 4, 2), KNum 2, dep_l4 "icmpv6")
   | ["icmpv6"; "seq"] | ["icmpv6"; "sequence"]
                            -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2, dep_l4 "icmpv6")
-  | ["icmpv6"; "mtu"]      -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4, dep_l4 "icmpv6")
+  | ["icmpv6"; "mtu"]      -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4, dep_l4 "icmpv6" @ [DIcmpType 2])
   (* ---- host-endian meta register fields (u32/u16 host order) ---- *)
   | ["meta"; "length"] | ["meta"; "len"] -> (Syntax.FMetaLen,   KNumLe 4, none)
   | ["meta"; "cpu"]    -> (Syntax.FMetaCpu,   KNumLe 4, none)
@@ -1322,10 +1322,20 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
   let ensure_dep1 = function
     | DL4 pv -> push_dep Syntax.FMetaL4proto pv
     | DNfproto pv ->
-        if family_is_inet family then push_dep Syntax.FMetaNfproto pv
+        (* nft keys the network-base dependency on the LAYER, not the value: once a
+           `meta nfproto` (inet) / `meta protocol` (L2) match exists in the rule,
+           a later selector's implicit network guard is suppressed EVEN IF its value
+           differs (golden inet/icmp.t.payload `meta nfproto ipv4 icmpv6 type ...`
+           emits nfproto==2 ONCE, not a second nfproto==10).  No golden rule ever
+           emits two nfproto loads, so this value-independent suppression is faithful. *)
+        if family_is_inet family then
+          (if not (L.exists (fun (fk,_) -> fk = Syntax.FMetaNfproto) !deps)
+           then push_dep Syntax.FMetaNfproto pv)
         else if family_is_l2 family then
           (match nfproto_ethertype pv with
-           | Some et -> push_dep Syntax.FMetaProtocol et
+           | Some et ->
+               if not (L.exists (fun (fk,_) -> fk = Syntax.FMetaProtocol) !deps)
+               then push_dep Syntax.FMetaProtocol et
            | None -> ())
     | DL2proto et -> if family_is_l2 family then push_dep Syntax.FMetaProtocol et
     | DIiftype et -> if family <> "bridge" then push_dep Syntax.FMetaIiftype et
