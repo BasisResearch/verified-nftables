@@ -156,9 +156,19 @@ let render_decls (d : Semantics.set_decls) : string =
              else Codec.render_value lo ^ "-" ^ Codec.render_value hi) elems) in
       Buffer.add_string buf (Printf.sprintf "  set %s = { %s }\n" nm pts))
     d.Semantics.sd_sets;
+  let render_vd = function
+    | Verdict.Accept -> "accept" | Verdict.Drop -> "drop"
+    | Verdict.Continue -> "continue" | Verdict.Reject _ -> "reject"
+    | Verdict.Queue _ -> "queue" | Verdict.Return -> "return"
+    | Verdict.Jump n -> "jump " ^ n | Verdict.Goto n -> "goto " ^ n in
   L.iter
-    (fun (nm, _entries) ->
-      Buffer.add_string buf (Printf.sprintf "  map %s = { ... }\n" nm))
+    (fun (nm, entries) ->
+      let pts = String.concat ", "
+          (L.map (fun ((lo, hi), w) ->
+             let k = if lo = hi then Codec.render_value lo
+                     else Codec.render_value lo ^ "-" ^ Codec.render_value hi in
+             k ^ " : " ^ render_vd w) entries) in
+      Buffer.add_string buf (Printf.sprintf "  map %s = { %s }\n" nm pts))
     d.Semantics.sd_vmaps;
   Buffer.contents buf
 
