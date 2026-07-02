@@ -196,6 +196,19 @@ optimizer soundly declines every one.
   overlap slips past userspace, but the wider-first (dead-rule) order fails the
   **kernel** `pipapo` endpoint check (`Could not process rule: File exists`).
 - **09 — we exceed nft** (sound superset; not a defect on either side).
+- **20 — `ct state` bitmask union (labelled sound divergence).** Two adjacent
+  bitmask rules `ct state new accept` / `ct state established accept` (each a
+  `(state & bit) != 0` test) fold to ONE rule. `nft --optimize` folds them to the
+  SET form `ct state { new, established }`, which nft compiles to an EXACT set
+  lookup `state ∈ {0x8,0x2}` — a NARROWER object than the union: it differs from
+  the originals on a multi-bit state such as `established|untracked` (0x42), which
+  the originals MATCH but the exact set does not. Our model admits multi-bit ct
+  states (`Ct_State.v`), so nft's exact-set fold is not verdict-preserving here; we
+  emit the SOUND bitmask-union `ct state new,established` (nft's own comma-list
+  compilation, `(state & 0xa) != 0`) instead — verdict-equivalent to the originals
+  and kernel-equivalent (real `ct state` is single-bit, so union and exact-set
+  coincide in-kernel; netns packet-probe confirms fall-through 0 = 0).
+  Pass: `theories/Optimize_Ctmask.v`.
 
 ## Provenance / trust
 

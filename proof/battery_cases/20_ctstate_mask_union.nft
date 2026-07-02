@@ -1,0 +1,7 @@
+table inet t {
+  chain c {
+    type filter hook input priority 0; policy drop;
+    ct state new accept
+    ct state established accept
+  }
+}

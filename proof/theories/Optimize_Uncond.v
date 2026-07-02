@@ -34,7 +34,7 @@ From Stdlib Require Import String.
 Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
   Compile Correct Optimize Optimize_Merge Optimize_Vmap Optimize_Vmapg Optimize_Concat Optimize_ConcatK
-  Optimize_ConcatM Optimize_Setg Optimize_Ivset Optimize_Ivsetg Optimize_Absorb
+  Optimize_ConcatM Optimize_Setg Optimize_Ivset Optimize_Ivsetg Optimize_Absorb Optimize_Ctmask
   Optimize_Mapn Optimize_Dnat Optimize_Snat Optimize_Table_Inv Optimize_Table Optimize_Normalize.
 
 Local Open Scope nat_scope.
@@ -3792,6 +3792,41 @@ Proof.
   - lia.
 Qed.
 
+(** *** ctmask-stage freshness transfer: a merged bitmask-union rule reads exactly
+    its base rule's names, so all three fresh-name predicates survive the pass. *)
+Lemma ctmask_chain_set_fresh : forall n c,
+  Forall (rule_set_fresh n) (c_rules c) ->
+  Forall (rule_set_fresh n) (c_rules (ctmask_chain c)).
+Proof.
+  intros n c HF. unfold ctmask_chain. cbn [c_rules].
+  apply optimize_rules_ctmask_Forall; [| exact HF].
+  intros r1 r2 f m1 m2 z body Hp HP1. unfold rule_set_fresh in *.
+  intros k Hk. rewrite (ctmask_merged_body_set_names r1 r2 f m1 m2 z body Hp).
+  apply HP1. exact Hk.
+Qed.
+
+Lemma ctmask_chain_vmap_fresh : forall n c,
+  Forall (rule_vmap_fresh n) (c_rules c) ->
+  Forall (rule_vmap_fresh n) (c_rules (ctmask_chain c)).
+Proof.
+  intros n c HF. unfold ctmask_chain. cbn [c_rules].
+  apply optimize_rules_ctmask_Forall; [| exact HF].
+  intros r1 r2 f m1 m2 z body Hp HP1. unfold rule_vmap_fresh in *.
+  intros k Hk. rewrite (ctmask_merged_vmap_name r1 f m1 m2 z body).
+  apply HP1. exact Hk.
+Qed.
+
+Lemma ctmask_chain_nat_map_fresh : forall n c,
+  Forall (rule_nat_map_fresh n) (c_rules c) ->
+  Forall (rule_nat_map_fresh n) (c_rules (ctmask_chain c)).
+Proof.
+  intros n c HF. unfold ctmask_chain. cbn [c_rules].
+  apply optimize_rules_ctmask_Forall; [| exact HF].
+  intros r1 r2 f m1 m2 z body Hp HP1. unfold rule_nat_map_fresh in *.
+  intros k Hk. rewrite (ctmask_merged_nat_map_name r1 f m1 m2 z body).
+  apply HP1. exact Hk.
+Qed.
+
 (** *** UNCONDITIONAL [optimize_table] correctness (arbitrary [d], with read-freshness
     of the base-optimised chain in BOTH namespaces — NO [rules_clean]). *)
 Theorem optimize_table_correct_uncond_gen : forall n d c n' d' c' base p,
@@ -3819,7 +3854,20 @@ Proof.
     by (rewrite HcA; apply absorb_chain_Forall; exact Hrv).
   assert (Hrm_A : Forall (rule_nat_map_fresh n) (c_rules cA))
     by (rewrite HcA; apply absorb_chain_Forall; exact Hrm).
-  destruct (optimize_chain_dnat n d cA) as [[nD dD] cD] eqn:ED.
+  (* ctmask stage (Optimize_Ctmask): counter/decls pass through UNCHANGED
+     (nT = n, dT = d); rules are rewritten (adjacent `ct state`/bitmask-union folds)
+     but every merged rule reads EXACTLY its base rule's names, so all three
+     rule-level freshness facts transfer. *)
+  destruct (optimize_chain_ctmask n d cA) as [[nT dT] cT] eqn:ET.
+  pose proof (optimize_chain_ctmask_eq n d cA) as Hct.
+  rewrite ET in Hct. injection Hct as HnT HdT HcT. subst nT dT.
+  assert (Hrs_T : Forall (rule_set_fresh n) (c_rules cT))
+    by (rewrite HcT; apply ctmask_chain_set_fresh; exact Hrs_A).
+  assert (Hrv_T : Forall (rule_vmap_fresh n) (c_rules cT))
+    by (rewrite HcT; apply ctmask_chain_vmap_fresh; exact Hrv_A).
+  assert (Hrm_T : Forall (rule_nat_map_fresh n) (c_rules cT))
+    by (rewrite HcT; apply ctmask_chain_nat_map_fresh; exact Hrm_A).
+  destruct (optimize_chain_dnat n d cT) as [[nD dD] cD] eqn:ED.
   destruct (optimize_chain_snat nD dD cD) as [[nS dS] cS] eqn:ES.
   destruct (optimize_chain_setsN nS dS cS) as [[n1 d1] c1] eqn:E1.
   destruct (optimize_chain_concatK n1 d1 c1) as [[nK dK] cK] eqn:EK.
@@ -3831,18 +3879,18 @@ Proof.
   destruct (optimize_chain_ivsetg nI dI cI) as [[nIg dIg] cIg] eqn:EIg.
   destruct (optimize_chain_vmapNg nIg dIg cIg) as [[nVg dVg] cVg] eqn:EVg.
   (* dnat stage: counter monotone, sd_sets/sd_vmaps preserved, freshness threaded *)
-  pose proof (optimize_chain_dnat_mono n d cA nD dD cD ED) as HmnD.
+  pose proof (optimize_chain_dnat_mono n d cT nD dD cD ED) as HmnD.
   assert (Hfs_D : forall k, nD <= k -> ~ In (setname k) (map fst (sd_sets dD))).
-  { intros k Hk. rewrite (optimize_chain_dnat_sets n d cA nD dD cD ED).
+  { intros k Hk. rewrite (optimize_chain_dnat_sets n d cT nD dD cD ED).
     apply Hfs. lia. }
   assert (Hfv_D : forall k, nD <= k -> ~ In (vmapname k) (map fst (sd_vmaps dD))).
-  { intros k Hk. rewrite (optimize_chain_dnat_vmaps n d cA nD dD cD ED).
+  { intros k Hk. rewrite (optimize_chain_dnat_vmaps n d cT nD dD cD ED).
     apply Hfv. lia. }
   assert (Hfm_D : forall k, nD <= k -> ~ In (mapname k) (map fst (sd_maps dD))).
-  { apply (optimize_chain_dnat_fresh_mapname n d cA nD dD cD ED Hfm). }
-  pose proof (optimize_chain_dnat_output_set_fresh n d cA nD dD cD ED Hrs_A) as Hrs_D.
-  pose proof (optimize_chain_dnat_output_vmap_fresh n d cA nD dD cD ED Hrv_A) as Hrv_D.
-  pose proof (optimize_chain_dnat_output_nat_map_fresh n d cA nD dD cD ED Hrm_A) as Hrm_D.
+  { apply (optimize_chain_dnat_fresh_mapname n d cT nD dD cD ED Hfm). }
+  pose proof (optimize_chain_dnat_output_set_fresh n d cT nD dD cD ED Hrs_T) as Hrs_D.
+  pose proof (optimize_chain_dnat_output_vmap_fresh n d cT nD dD cD ED Hrv_T) as Hrv_D.
+  pose proof (optimize_chain_dnat_output_nat_map_fresh n d cT nD dD cD ED Hrm_T) as Hrm_D.
   (* snat stage: structurally identical to dnat (mints [mapname]s on the SOURCE slot),
      threaded on top of the dnat outputs *)
   pose proof (optimize_chain_snat_mono nD dD cD nS dS cS ES) as HmnS.
@@ -3921,8 +3969,8 @@ Proof.
   rewrite (optimize_chain_concatK_correct_uncond n1 d1 c1 nK dK cK base p EK Hfs1 Hrs1).
   rewrite (optimize_chain_setsN_correct_uncond nS dS cS n1 d1 c1 base p E1 Hfs_S Hrs_S).
   rewrite (optimize_chain_snat_eval nD dD cD nS dS cS base p ES Hfm_D Hrm_D).
-  rewrite (optimize_chain_dnat_eval n d cA nD dD cD base p ED Hfm Hrm_A).
-  rewrite HcA, absorb_chain_eval. apply optimize_chain_correct.
+  rewrite (optimize_chain_dnat_eval n d cT nD dD cD base p ED Hfm Hrm_T).
+  rewrite HcT, ctmask_chain_eval, HcA, absorb_chain_eval. apply optimize_chain_correct.
 Qed.
 
 (** *** The fresh-counter seed: choose the start counter STRICTLY above the length
