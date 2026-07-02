@@ -62,10 +62,10 @@ Theorem packet2_sees_packet1_ctmark_set :
     pkt_ct_present p1 = true ->
     pkt_flow p2 = pkt_flow p1 ->
     let e1 := snd (eval_chain_mut_env ctmark_chain p1) in
-    field_value FCtMark (set_env p2 e1) = [1].
+    field_value FCtMark (set_env p2 e1) = [1;0;0;0].
 Proof.
   intros p1 p2 Hpres Hflow. cbn - [eval_chain_mut_env].
-  unfold field_value, do_load. cbn. unfold set_ct. rewrite Hpres. cbn.
+  unfold field_value, do_load, ct_load. cbn. unfold set_ct. rewrite Hpres. cbn.
   rewrite Hflow. rewrite data_eqb_refl. reflexivity.
 Qed.
 
@@ -79,7 +79,7 @@ Theorem flow_mark_overrides_packet2_oracle :
     pkt_flow p2 = pkt_flow p1 ->
     pkt_ct p2 CKmark = [9] ->
     let e1 := snd (eval_chain_mut_env ctmark_chain p1) in
-    field_value FCtMark (set_env p2 e1) = [1] /\
+    field_value FCtMark (set_env p2 e1) = [1;0;0;0] /\
     field_value FCtMark (set_env p2 e1) <> [9].
 Proof.
   intros p1 p2 Hpres Hflow _. split.
@@ -96,7 +96,7 @@ Theorem other_flow_unaffected :
     pkt_ct_present p1 = true ->
     pkt_flow p2 <> pkt_flow p1 ->
     let e1 := snd (eval_chain_mut_env ctmark_chain p1) in
-    field_value FCtMark (set_env p2 e1) = e_ct (pkt_env p1) (pkt_flow p2) CKmark.
+    field_value FCtMark (set_env p2 e1) = ct_load CKmark (e_ct (pkt_env p1) (pkt_flow p2) CKmark).
 Proof.
   intros p1 p2 Hpres Hflow. cbn - [eval_chain_mut_env].
   unfold field_value, do_load. cbn. unfold set_ct. rewrite Hpres. cbn.
@@ -131,7 +131,7 @@ Theorem no_entry_set_invisible_to_packet2 :
     pkt_ct_present p1 = false ->
     pkt_flow p2 = pkt_flow p1 ->
     let e1 := snd (eval_chain_mut_env ctmark_chain p1) in
-    field_value FCtMark (set_env p2 e1) = e_ct (pkt_env p1) (pkt_flow p1) CKmark.
+    field_value FCtMark (set_env p2 e1) = ct_load CKmark (e_ct (pkt_env p1) (pkt_flow p1) CKmark).
 Proof.
   intros p1 p2 Hpres Hflow. cbn - [eval_chain_mut_env].
   unfold field_value, do_load. cbn. unfold set_ct. rewrite Hpres. cbn.

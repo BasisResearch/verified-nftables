@@ -615,6 +615,12 @@ Definition field_fixed_len (f : field) : option nat :=
      ([Syntax.meta_load_len]).  This lets the value->set / vmap / concat merges fold a
      meta-mark run just like a payload field, with the SAME membership certificate. *)
   | LMeta k          => meta_fixed_len k
+  (* A fixed-width CONNTRACK scalar (e.g. `ct mark`, a u32) loads at its kernel
+     register width — [ct_fixed_len] — which [do_load]/[ct_load] normalises the read
+     to ([Syntax.ct_load_len]).  This lets the value->set / vmap / concat merges fold
+     a `ct mark` run just like a payload/meta field, with the SAME membership
+     certificate, matching `nft -o`'s `ct mark { … }`. *)
+  | LCt k            => ct_fixed_len k
   | _ => None
   end.
 
@@ -628,6 +634,8 @@ Proof.
   destruct (field_load f) eqn:Efl; try discriminate.
   - (* LMeta: normalised to the fixed register width, unconditionally *)
     cbn [do_load]. apply meta_load_len. exact Hfx.
+  - (* LCt: normalised to the fixed register width, unconditionally *)
+    cbn [do_load]. apply ct_load_len. exact Hfx.
   - (* LPayload *)
     inversion Hfx; subst.
     cbn [do_load]. apply payload_loaded_len. exact Hld.
@@ -1597,4 +1605,25 @@ Example optimize_rules_sets_folds_skuid :
         sd_vmaps := []; sd_maps := [] |},
      [ mk_head (MConcatSet [FMetaSkuid] false (setname 0)) []
                (wit_meta_rule FMetaSkuid [232;3;0;0]) ]).
+Proof. reflexivity. Qed.
+
+(* ct mark 5/6 => set { 0x05, 0x06 } (u32, little-endian [5;0;0;0]/[6;0;0;0]).  With
+   [ct_fixed_len CKmark = Some 4] the value->set merge now FIRES on a `ct mark` run,
+   exactly as it does on `meta mark` — matching `nft -o`'s `ct mark { 5, 6 }`. *)
+Example value_merge_fires_ctmark :
+  value_merge_pair (wit_meta_rule FCtMark [5;0;0;0])
+                   (wit_meta_rule FCtMark [6;0;0;0])
+  = Some (FCtMark, [5;0;0;0], [6;0;0;0], []).
+Proof. reflexivity. Qed.
+
+(* End-to-end at the rule-list level: the `ct mark` pair collapses into ONE rule
+   ([MConcatSet] over a fresh `__set`) plus the minted 2-element set. *)
+Example optimize_rules_sets_folds_ctmark :
+  optimize_rules_sets 0 {| sd_sets := []; sd_vmaps := []; sd_maps := [] |}
+    [wit_meta_rule FCtMark [5;0;0;0]; wit_meta_rule FCtMark [6;0;0;0]]
+  = (1,
+     {| sd_sets := [(setname 0, [([5;0;0;0],[5;0;0;0]); ([6;0;0;0],[6;0;0;0])])];
+        sd_vmaps := []; sd_maps := [] |},
+     [ mk_head (MConcatSet [FCtMark] false (setname 0)) []
+               (wit_meta_rule FCtMark [5;0;0;0]) ]).
 Proof. reflexivity. Qed.

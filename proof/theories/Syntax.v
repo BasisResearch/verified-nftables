@@ -201,11 +201,54 @@ Proof.
   apply Nat.min_l. apply Nat.le_add_l.
 Qed.
 
+(** *** Fixed-width conntrack selectors.
+
+    A `ct` register is likewise a fixed-width slot.  [ct mark] (NFT_CT_MARK) is a
+    u32: nft_ct.c's nft_ct_get_eval does [*dest = READ_ONCE(ct->mark)] into the
+    4-byte register (ct->mark is a u32).  The abstract oracle/table [e_ct] carries
+    NO width, so a raw load could report any length.  [ct_fixed_len] pins the kernel
+    register width for the ct keys we treat as fixed-width scalars, and [ct_load]
+    NORMALISES the read to exactly that width (zero-pad the high bytes / truncate to
+    the u32 slot).  This makes [length (do_load (LCt CKmark) p) = 4] UNCONDITIONALLY
+    — a genuine fidelity improvement (the read now has the kernel's fixed slot width,
+    and ct mark is host-endian little-endian so the high-order zero pad is on the
+    right, matching the frontend's 4-byte lowering, see parse_test's [mark99]) and
+    the length fact the value->set merge needs on a ct key
+    ([Optimize_Merge.field_fixed_len_loaded]).  Keys left [None] read raw (their
+    width is variable / a fixed byte sequence already, e.g. state/direction). *)
+Definition ct_fixed_len (k : ct_key) : option nat :=
+  match k with
+  (* [ct mark] is a u32 register (net/netfilter/nft_ct.c, nft_ct_get_eval NFT_CT_MARK:
+     [*dest = READ_ONCE(ct->mark)] into a 4-byte reg).  Pinning the width lets the
+     value->set / vmap / concat merges fold a `ct mark` run exactly as for `meta mark`
+     (same membership certificate [field_fixed_len_loaded]), matching `nft -o`'s
+     `ct mark { … }` consolidation.  Other ct keys stay [None] (state/direction are a
+     fixed 4-/1-byte sequence already; the rest are variable / unmodelled width). *)
+  | CKmark => Some 4
+  | _      => None
+  end.
+
+(** Normalise a ct read to its fixed register width (pad the high bytes with zero /
+    truncate); the identity on keys whose width is unmodelled. *)
+Definition ct_load (k : ct_key) (d : data) : data :=
+  match ct_fixed_len k with
+  | Some w => List.firstn w (d ++ List.repeat 0 w)
+  | None   => d
+  end.
+
+Lemma ct_load_len : forall k w d,
+  ct_fixed_len k = Some w -> List.length (ct_load k d) = w.
+Proof.
+  intros k w d Hk. unfold ct_load. rewrite Hk.
+  rewrite List.length_firstn, List.length_app, List.repeat_length.
+  apply Nat.min_l. apply Nat.le_add_l.
+Qed.
+
 (** Evaluate a load against a packet. *)
 Definition do_load (ld : loaddesc) (p : packet) : data :=
   match ld with
   | LMeta k         => meta_load k (pkt_meta p k)
-  | LCt k           =>
+  | LCt k           => ct_load k
       (* EVERY conntrack key is read from the SHARED, flow-keyed conntrack table
          [e_ct] at THIS packet's flow ([pkt_flow]) — NOT from a free per-packet
          oracle.  This mirrors the kernel: nft_ct_get_eval first does
@@ -250,13 +293,13 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
          break is enforced by [load_ok] below, which makes the enclosing match FAIL;
          the value computed here is only ever consumed when [load_ok] held (the entry
          is present), so the [CKdirection]/[_] branches read the live entry/direction. *)
-      match k with
+      (match k with
       | CKstate => if pkt_untracked p then [0;0;0;64]
                    else if pkt_ct_present p then e_ct (pkt_env p) (pkt_flow p) k
                    else [0;0;0;1]
       | CKdirection => if pkt_ctdir_orig p then [0] else [1]
       | _ => e_ct (pkt_env p) (pkt_flow p) k
-      end
+      end)
   | LRt k           => e_rt (pkt_env p) k
   | LSocket k       => pkt_sock p k
   | LNumgen spec    =>
