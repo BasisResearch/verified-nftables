@@ -143,6 +143,13 @@ Example tut_next_slash24_not_blocked :
        under tutorial_chains budget tut_fuel).
 Proof. intro H. nft_unfold. vm_compute in H. discriminate. Qed.
 
+(** NOT an unfinished proof: this [Goal] deliberately states the FALSE claim
+    refuted above, and [Fail now nft_decide] succeeds precisely because the
+    tactic CANNOT close it — the build breaks if [nft_decide] ever "proves" a
+    false property.  [Abort] discards the goal, so nothing unproven enters the
+    environment (checked: every named result in this file [Print Assumptions]es
+    to "Closed under the global context").  Same pattern as
+    [Nft_Demo_Concrete.demo_nft_decide_cannot_prove_false]. *)
 Goal tutorial_input denies (mk_tut 192 168 101 7)
        under tutorial_chains budget tut_fuel.
 Proof. Fail now nft_decide. Abort.
