@@ -1555,6 +1555,38 @@ Example value_merge_fires_nfproto :
   = Some (FMetaNfproto, [6], [17], []).
 Proof. reflexivity. Qed.
 
+(* iifname "lo"/"eth0" — the 16-byte IFNAMSIZ interface-name register.  The frontend
+   lowers a non-wildcard name to its 16-byte zero-padded value, [normalize_mc] rewrites
+   the [MEq] to [MCmp _ CEq], and (with [meta_fixed_len MKiifname = Some 16]) the
+   value->set merge now fires — `iifname { lo, eth0 }`, matching `nft -o`. *)
+Definition ifn16 (bs : data) : data := List.firstn 16 (bs ++ List.repeat 0 16).
+Example value_merge_fires_iifname :
+  value_merge_pair (wit_meta_rule FMetaIifname (ifn16 [108;111]))          (* "lo"   *)
+                   (wit_meta_rule FMetaIifname (ifn16 [101;116;104;48]))   (* "eth0" *)
+  = Some (FMetaIifname, ifn16 [108;111], ifn16 [101;116;104;48], []).
+Proof. reflexivity. Qed.
+
+(* oifname, same 16-byte interface-name register (output side). *)
+Example value_merge_fires_oifname :
+  value_merge_pair (wit_meta_rule FMetaOifname (ifn16 [108;111]))
+                   (wit_meta_rule FMetaOifname (ifn16 [101;116;104;48]))
+  = Some (FMetaOifname, ifn16 [108;111], ifn16 [101;116;104;48], []).
+Proof. reflexivity. Qed.
+
+(* End-to-end at the rule-list level: the iifname pair collapses into ONE rule
+   ([MConcatSet] over a fresh `__set`) plus the minted 2-element set. *)
+Example optimize_rules_sets_folds_iifname :
+  optimize_rules_sets 0 {| sd_sets := []; sd_vmaps := []; sd_maps := [] |}
+    [wit_meta_rule FMetaIifname (ifn16 [108;111]);
+     wit_meta_rule FMetaIifname (ifn16 [101;116;104;48])]
+  = (1,
+     {| sd_sets := [(setname 0, [(ifn16 [108;111], ifn16 [108;111]);
+                                 (ifn16 [101;116;104;48], ifn16 [101;116;104;48])])];
+        sd_vmaps := []; sd_maps := [] |},
+     [ mk_head (MConcatSet [FMetaIifname] false (setname 0)) []
+               (wit_meta_rule FMetaIifname (ifn16 [108;111])) ]).
+Proof. reflexivity. Qed.
+
 (* End-to-end at the rule-list level: [optimize_rules_sets] collapses the skuid pair
    into ONE rule (a [MConcatSet] over a fresh `__set`) plus the minted 2-element set. *)
 Example optimize_rules_sets_folds_skuid :

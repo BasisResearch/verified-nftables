@@ -161,12 +161,27 @@ Definition meta_fixed_len (k : meta_key) : option nat :=
      value->set / vmap / concat merges fold a run over these keys exactly as for [meta mark]
      (same membership certificate [field_fixed_len_loaded]), matching `nft -o`'s
      `meta skuid { … }` / `meta l4proto { … }` / `meta nfproto { … }` consolidation.
-     Keys left [None] read raw (variable / unmodelled width, e.g. interface-name strings). *)
+     Keys left [None] read raw (variable / unmodelled width). *)
   | MKmark => Some 4
   | MKskuid => Some 4
   | MKskgid => Some 4
   | MKl4proto => Some 1
   | MKnfproto => Some 1
+  (* Interface-name keys are a FIXED IFNAMSIZ=16-byte register: the kernel
+     ([net/netfilter/nft_meta.c], nft_meta_get_eval NFT_META_IIFNAME/OIFNAME) does
+     [strncpy(dest, dev->name, IFNAMSIZ)] into a 16-byte, zero-padded register slot.
+     Pinning the width to 16 makes [do_load]/[meta_load] normalise every iif/oifname
+     read to exactly this register (zero-pad a short name, truncate a longer one) —
+     a fidelity improvement that also matches how nft lowers a NON-wildcard name to a
+     full 16-byte cmp (see [Ifname_Exact]).  This is what lets the value->set merge
+     fold `iifname "lo"; iifname "eth0"` into `iifname { lo, eth0 }` soundly: on the
+     fixed-width register a full-width set membership coincides with the per-rule
+     16-byte compare.  A trailing-'*' wildcard still lowers to a SHORT prefix cmp and
+     is folded by neither (its value width < 16). *)
+  | MKiifname => Some 16
+  | MKoifname => Some 16
+  | MKbri_iifname => Some 16
+  | MKbri_oifname => Some 16
   | _      => None
   end.
 
