@@ -54,7 +54,7 @@ Definition masq_spec : nat_spec :=
 (* The masquerade rule = the single rule of the generated postrouting chain,
    reproduced for unfolding; proved equal to the parser output below. *)
 Definition masq_rule : rule :=
-  {| r_body := [(BMatch (MMasked FIp4Saddr false [255; 255; 0; 0] [0; 0; 0; 0] [192; 168; 0; 0]));
+  {| r_body := [(BMatch (MEq (FPayload PNetwork 12 2) [192; 168]));
                 (BMatch (MEq FMetaOifname if_ppp0))];
      r_verdict := Accept; r_vmap := None; r_nat := Some masq_spec;
      r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
@@ -69,7 +69,7 @@ Lemma masq_dsl_step_id : forall p, dsl_step masq_rule p = p.
 Proof.
   intro p. rewrite dsl_step_limit_free by reflexivity.
   unfold dsl_writes, masq_rule; cbn [r_body body_writes].
-  destruct (eval_matchcond (MMasked FIp4Saddr false [255;255;0;0] [0;0;0;0] [192;168;0;0]) p);
+  destruct (eval_matchcond (MEq (FPayload PNetwork 12 2) [192;168]) p);
     [destruct (eval_matchcond (MEq FMetaOifname if_ppp0) p)|]; reflexivity.
 Qed.
 
@@ -108,10 +108,10 @@ Qed.
 (* ============================================================ *)
 (** ** When the masquerade rule APPLIES (saddr in /16 AND oif = ppp0). *)
 
-(* `ip saddr 192.168.0.0/16` masked-matches iff (saddr & 0xffff0000) = 192.168.0.0,
-   i.e. the first two address bytes are 192.168. *)
+(* `ip saddr 192.168.0.0/16` lowers to a byte-aligned PREFIX compare (the first
+   two address bytes equal 192.168) — a 2-byte payload read at network offset 12. *)
 Definition saddr_private (p : packet) : bool :=
-  eval_matchcond (MMasked FIp4Saddr false [255;255;0;0] [0;0;0;0] [192;168;0;0]) p.
+  eval_matchcond (MEq (FPayload PNetwork 12 2) [192;168]) p.
 
 Definition oif_ppp0 (p : packet) : bool :=
   eval_matchcond (MEq FMetaOifname if_ppp0) p.

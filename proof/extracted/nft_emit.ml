@@ -95,7 +95,14 @@ let rec field (f : Syntax.field) : string = match f with
   | Syntax.FMetaGen k -> spf "(FMetaGen %s)" (meta_key k)
   | Syntax.FCtGen k -> spf "(FCtGen %s)" (ct_key k)
   | Syntax.FFib (sel, res) -> spf "(FFib %s %s)" (qstring sel) (fib_result res)
+  (* raw payload slice: byte-aligned address prefixes (`ip saddr a.b.c.0/24`
+     -> FPayload PNetwork 12 3) and the ip6/tcp/igmp raw header fields *)
+  | Syntax.FPayload (b, off, len) -> spf "(FPayload %s %d %d)" (pbase b) off len
   | _ -> raise (Unsupported "field constructor not emittable (extend nft_emit.field)")
+
+and pbase (b : Packet.pbase) : string = match b with
+  | Packet.PLink -> "PLink" | Packet.PNetwork -> "PNetwork"
+  | Packet.PTransport -> "PTransport"
 
 and fib_result (r : Packet.fib_result) : string = match r with
   | Packet.FRoif -> "FRoif" | Packet.FRoifname -> "FRoifname"
@@ -237,7 +244,7 @@ let emit (src_path : string) (p : Nft_lower.parsed) : string =
   pr "   declarations their lookups read.  Properties proved about these terms\n";
   pr "   are properties of the parsed ruleset (and, via compile_table_correct, of\n";
   pr "   the installed bytecode). *)\n\n";
-  pr "From Stdlib Require Import List String.\n";
+  pr "From Stdlib Require Import List String ZArith.\n";
   pr "From Nft Require Import Bytes Verdict Packet Syntax Semantics.\n";
   pr "Import ListNotations.\nOpen Scope string_scope.\n\n";
   (* the declared/anonymous sets & maps *)
@@ -268,7 +275,7 @@ let emit (src_path : string) (p : Nft_lower.parsed) : string =
     pr "Definition %s_hooks : list hooked_chain :=\n  [%s].\n\n" pfx
       (S.concat ";\n   "
          (L.map (fun (cname, _ctype, hook, prio) ->
-            spf "{| hc_hook := %s; hc_prio := %d; hc_env := %s_chains; hc_base := %s_%s |}"
+            spf "{| hc_hook := %s; hc_prio := (%d)%%Z; hc_env := %s_chains; hc_base := %s_%s |}"
               (hook_id hook) prio pfx pfx (sanitize cname)) hooks)))
     p.Nft_lower.p_tables;
   Buffer.contents b

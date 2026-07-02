@@ -12,6 +12,7 @@ theories/Optimize.v
 theories/Eval_Fw.v
 theories/Example_Ruleset.v
 theories/Ruleset_Gen.v
+theories/Tutorial_Gen.v
 theories/Router_Gen.v
 theories/Router_Reach.v
 theories/Router_Forward.v
@@ -70,6 +71,7 @@ theories/Fib_Local.v
 theories/Netstate_MultiAddr.v
 theories/Nft_Demo_Symbolic.v
 theories/Nft_Demo_Concrete.v
+theories/Tutorial_Proofs.v
 theories/Snat_Witness.v
 theories/Concatm_Witness.v
 theories/Ivset_Witness.v

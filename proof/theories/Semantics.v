@@ -4,7 +4,7 @@
     semantics — a function from a packet to the verdict the base chain produces —
     so "semantics preserving" is a literal equality of these functions. *)
 
-From Stdlib Require Import List NArith Bool Lia.
+From Stdlib Require Import List NArith ZArith Bool Lia.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode.
 Import ListNotations.
 (* [String] is left UNimported (it shadows List's [concat]/[length]); the chain
@@ -2777,7 +2777,7 @@ Fixpoint run_ruleset (fuel : nat)
     hook-dependent). *)
 Record hooked_chain : Type := {
   hc_hook : hook_id;
-  hc_prio : nat;
+  hc_prio : Z;   (* kernel hook priority: a SIGNED int (e.g. dnat prerouting -100) *)
   hc_env  : list (String.string * chain);  (* the jump-target chains in its table *)
   hc_base : chain;
 }.
@@ -2785,7 +2785,7 @@ Record hooked_chain : Type := {
 Fixpoint insert_hc (x : hooked_chain) (l : list hooked_chain) : list hooked_chain :=
   match l with
   | [] => [x]
-  | y :: ys => if Nat.leb (hc_prio x) (hc_prio y) then x :: y :: ys else y :: insert_hc x ys
+  | y :: ys => if Z.leb (hc_prio x) (hc_prio y) then x :: y :: ys else y :: insert_hc x ys
   end.
 Fixpoint sort_hc (l : list hooked_chain) : list hooked_chain :=
   match l with [] => [] | x :: xs => insert_hc x (sort_hc xs) end.

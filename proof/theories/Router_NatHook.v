@@ -44,7 +44,7 @@
        [input_hook_world_locked] closed it for verdicts.
    ========================================================================== *)
 
-From Stdlib Require Import List String NArith Lia.
+From Stdlib Require Import List String NArith ZArith Lia.
 Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics Router_Gen.
 From Nft Require Import Router_Reach Router_Hooks.
@@ -160,8 +160,8 @@ Qed.
     NOTHING at postrouting — the private source LEAKS un-NATted. *)
 
 Definition global_hooks_natbug : list hooked_chain :=
-  [{| hc_hook := Hinput;   hc_prio := 0; hc_env := global_chains; hc_base := global_inbound |};
-   {| hc_hook := Hforward; hc_prio := 0; hc_env := global_chains; hc_base := global_forward |}].
+  [{| hc_hook := Hinput;   hc_prio := (0)%Z; hc_env := global_chains; hc_base := global_inbound |};
+   {| hc_hook := Hforward; hc_prio := (0)%Z; hc_env := global_chains; hc_base := global_forward |}].
 
 (* Under the bug, [select_hook] at postrouting is EMPTY (no chain registered). *)
 Lemma bug_no_postrouting_chain :
@@ -211,9 +211,9 @@ Qed.
    leaks: postrouting then has no registered chain, identical to the dropped-entry
    bug at the postrouting hook. *)
 Definition global_hooks_wronghook : list hooked_chain :=
-  [{| hc_hook := Hinput;   hc_prio := 0;   hc_env := global_chains; hc_base := global_inbound |};
-   {| hc_hook := Hforward; hc_prio := 0;   hc_env := global_chains; hc_base := global_forward |};
-   {| hc_hook := Hinput;   hc_prio := 100; hc_env := global_chains; hc_base := global_postrouting |}].
+  [{| hc_hook := Hinput;   hc_prio := (0)%Z;   hc_env := global_chains; hc_base := global_inbound |};
+   {| hc_hook := Hforward; hc_prio := (0)%Z;   hc_env := global_chains; hc_base := global_forward |};
+   {| hc_hook := Hinput;   hc_prio := (100)%Z; hc_env := global_chains; hc_base := global_postrouting |}].
 
 Lemma wronghook_no_postrouting_chain :
   select_hook global_hooks_wronghook Hpostrouting = [].

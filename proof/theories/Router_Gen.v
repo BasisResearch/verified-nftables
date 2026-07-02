@@ -4,7 +4,7 @@
    are properties of the parsed ruleset (and, via compile_table_correct, of
    the installed bytecode). *)
 
-From Stdlib Require Import List String.
+From Stdlib Require Import List String ZArith.
 From Nft Require Import Bytes Verdict Packet Syntax Semantics.
 Import ListNotations.
 Open Scope string_scope.
@@ -70,10 +70,10 @@ Definition global_forward : chain :=
 
 Definition global_postrouting : chain :=
   {| c_policy := Accept;
-   c_rules := [{| r_body := [(BMatch (MMasked FIp4Saddr false [255; 255; 0; 0] [0; 0; 0; 0] [192; 168; 0; 0]));
+   c_rules := [{| r_body := [(BMatch (MEq (FPayload PNetwork 12 2) [192; 168]));
              (BMatch (MEq FMetaOifname [112; 112; 112; 48; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0]))];
      r_verdict := Accept; r_vmap := None;
-     r_nat := (Some {| nat_addr_imm := None; nat_field := None; nat_map := None; nat_src := None; nat_kind := "masq"; nat_family := "ip"; nat_extra := NXnone; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
+     r_nat := (Some {| nat_addr_imm := None; nat_field := None; nat_map := None; nat_src := None; nat_extra := NXnone; nat_kind := "masq"; nat_family := "ip"; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
 
 Definition global_chains : list (string * chain) :=
   [("inbound_world", global_inbound_world);
@@ -83,7 +83,7 @@ Definition global_chains : list (string * chain) :=
    ("postrouting", global_postrouting)].
 
 Definition global_hooks : list hooked_chain :=
-  [{| hc_hook := Hinput; hc_prio := 0; hc_env := global_chains; hc_base := global_inbound |};
-   {| hc_hook := Hforward; hc_prio := 0; hc_env := global_chains; hc_base := global_forward |};
-   {| hc_hook := Hpostrouting; hc_prio := 100; hc_env := global_chains; hc_base := global_postrouting |}].
+  [{| hc_hook := Hinput; hc_prio := (0)%Z; hc_env := global_chains; hc_base := global_inbound |};
+   {| hc_hook := Hforward; hc_prio := (0)%Z; hc_env := global_chains; hc_base := global_forward |};
+   {| hc_hook := Hpostrouting; hc_prio := (100)%Z; hc_env := global_chains; hc_base := global_postrouting |}].
 

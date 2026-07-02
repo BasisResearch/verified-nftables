@@ -41,6 +41,11 @@ Proof.
         fields_loadable, field_loadable, load_ok.
       cbn -[field_value pkt_env read_payload_ok].
       rewrite ?Hok, Hobr, ?app_nil_r, Henv, ?concat_set_mem_single, Hnotin.
+      (* the frontend's `ether type ip` dependency guard sits (symbolically stuck)
+         before the daddr match; step past the first two conjuncts — the daddr ∉
+         @vmaddrs conjunct is false, killing the rule for EVERY frame, so the gap
+         needs no IPv4 hypothesis *)
+      apply Bool.andb_false_intro2. apply Bool.andb_false_intro2.
       vm_compute. reflexivity. }
   (* the hass rule does not fire either (its guard is obrname br.1, not br.20) *)
   erewrite erj_skip.

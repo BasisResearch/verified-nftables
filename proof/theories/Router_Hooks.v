@@ -31,7 +31,7 @@
    input hook DROPs.
    ========================================================================== *)
 
-From Stdlib Require Import List String.
+From Stdlib Require Import List String ZArith.
 From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen.
 From Nft Require Import Router_Input Router_Forward Router_Private.
 Import ListNotations.
@@ -48,7 +48,7 @@ Lemma select_input :
   select_hook global_hooks Hinput = [(global_chains, global_inbound)].
 Proof.
   unfold select_hook, global_hooks.
-  cbn [filter hook_eqb map sort_hc insert_hc hc_hook hc_prio hc_env hc_base Nat.leb].
+  cbn [filter hook_eqb map sort_hc insert_hc hc_hook hc_prio hc_env hc_base Z.leb].
   reflexivity.
 Qed.
 
@@ -56,7 +56,7 @@ Lemma select_forward :
   select_hook global_hooks Hforward = [(global_chains, global_forward)].
 Proof.
   unfold select_hook, global_hooks.
-  cbn [filter hook_eqb map sort_hc insert_hc hc_hook hc_prio hc_env hc_base Nat.leb].
+  cbn [filter hook_eqb map sort_hc insert_hc hc_hook hc_prio hc_env hc_base Z.leb].
   reflexivity.
 Qed.
 
@@ -64,7 +64,7 @@ Lemma select_postrouting :
   select_hook global_hooks Hpostrouting = [(global_chains, global_postrouting)].
 Proof.
   unfold select_hook, global_hooks.
-  cbn [filter hook_eqb map sort_hc insert_hc hc_hook hc_prio hc_env hc_base Nat.leb].
+  cbn [filter hook_eqb map sort_hc insert_hc hc_hook hc_prio hc_env hc_base Z.leb].
   reflexivity.
 Qed.
 
@@ -160,9 +160,9 @@ Qed.
     a real LAN packet. *)
 
 Definition global_hooks_bug : list hooked_chain :=
-  [{| hc_hook := Hinput;       hc_prio := 0;   hc_env := global_chains; hc_base := global_forward |};
-   {| hc_hook := Hforward;     hc_prio := 0;   hc_env := global_chains; hc_base := global_inbound |};
-   {| hc_hook := Hpostrouting; hc_prio := 100; hc_env := global_chains; hc_base := global_postrouting |}].
+  [{| hc_hook := Hinput;       hc_prio := (0)%Z;   hc_env := global_chains; hc_base := global_forward |};
+   {| hc_hook := Hforward;     hc_prio := (0)%Z;   hc_env := global_chains; hc_base := global_inbound |};
+   {| hc_hook := Hpostrouting; hc_prio := (100)%Z; hc_env := global_chains; hc_base := global_postrouting |}].
 
 (* pkt_lan_smtp = LAN packet on eth1, ct-new, unlisted service tcp/25.
    Proven DROPPED by the real input chain in Router_Private.pkt_lan_smtp_dropped. *)

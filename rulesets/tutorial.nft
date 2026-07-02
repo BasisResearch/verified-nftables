@@ -1,0 +1,11 @@
+#!/usr/sbin/nft -f
+# Tutorial ruleset: block exactly one IPv4 range, accept everything else.
+# Used by proof/CONFIG_PROOFS.md ("Tutorial" section) and theories/Tutorial_Proofs.v,
+# which prove: a packet is dropped IFF its source address is in 192.168.100.0/24.
+
+table ip tutorial {
+  chain input {
+    type filter hook input priority 0; policy accept;
+    ip saddr 192.168.100.0/24 drop
+  }
+}

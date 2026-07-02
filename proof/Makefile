@@ -44,6 +44,7 @@ parse-test: proofs
 gen: lib
 	cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/optiplex.nft > ../theories/Optiplex_Gen.v
 	cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/ruleset.nft  > ../theories/Ruleset_Gen.v
+	cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/tutorial.nft > ../theories/Tutorial_Gen.v
 
 # Build/check every .v listed in _CoqProject; Extract.v writes extracted/*.ml.
 proofs: $(COQMAKE)

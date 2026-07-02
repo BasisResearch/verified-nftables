@@ -28,7 +28,7 @@
     [Nft_Config_Demo.v]).  This file is purely ADDITIVE: it edits no existing
     definition and reproves no existing theorem differently. *)
 
-From Stdlib Require Import List String NArith.
+From Stdlib Require Import List String NArith Arith Lia.
 From Nft Require Import Bytes Verdict Packet Syntax Semantics Nftval Eval_Fw.
 Import ListNotations.
 Open Scope string_scope.
@@ -183,3 +183,180 @@ Ltac nft_eval Hpe :=
 
 (** [nft_field]: reduce a concrete [field_is]/[field_value] goal to its bytes. *)
 Ltac nft_field := nft_unfold; vm_compute; reflexivity.
+
+(* ================================================================== *)
+(** * Exactness support — "this chain blocks EXACTLY that range".
+
+    An exactness theorem is an IFF: the chain drops [p] *iff* the address is in
+    the range.  The one-directional demos above never need to reason about the
+    packet on the NON-matching side; the lemmas here supply that, so a user can
+    prove an iff without touching the evaluator internals:
+
+    - [nft_match_MEq_iff]          an [MEq] match is definitionally a PREFIX
+                                   equation on the field's bytes;
+    - [nft_payload_prefix] and its address instances [nft_saddr_prefix] /
+      [nft_daddr_prefix]           the parser's k-byte prefix field (what
+                                   `ip saddr a.b.c.0/24` lowers to) reads the
+                                   first k bytes of the 4-byte address field;
+    - [read_payload_ok_shorter]    well-formedness of the shorter prefix read
+                                   follows from the natural 4-byte hypothesis;
+    - [bytes3_eq_iff]/[bytes4_eq_iff]  byte-list equations <-> per-byte
+                                   conjunctions (the range statement a user reads);
+    - [nft_single_rule_drop_iff] / [nft_single_rule_accept_iff]
+                                   a one-rule accept-policy chain drops iff its
+                                   rule fires — the chain-level iff;
+    - [nft_prefix_chain_drop_iff] / [nft_prefix_chain_accept_iff]
+                                   the packaged headline: an accept-policy chain
+                                   whose single rule drops on a payload-prefix
+                                   match drops [p] IFF the prefix equation holds.
+
+    Worked end-to-end instance: [Tutorial_Proofs.v] (for
+    [rulesets/tutorial.nft]; guide: proof/CONFIG_PROOFS.md, "Tutorial"). *)
+
+(** An [MEq] match fires iff the prefix equation holds ([MEq] is a prefix
+    compare: [Semantics.eval_matchcond_body]). *)
+Lemma nft_match_MEq_iff : forall f v p,
+  nft_match_fires (MEq f v) p
+  <-> firstn (List.length v) (field_value f p) = v.
+Proof.
+  intros f v p. unfold nft_match_fires. cbn [eval_matchcond_body].
+  apply data_eqb_true_iff.
+Qed.
+
+(** A shorter payload read at the same offset is a [firstn] of a longer one
+    (both are [firstn]s of the same [skipn]). *)
+Lemma nft_payload_prefix : forall b off k w p, k <= w ->
+  field_value (FPayload b off k) p = firstn k (field_value (FPayload b off w) p).
+Proof.
+  intros b off k w p Hkw. unfold field_value. cbn [field_load do_load].
+  destruct b; unfold read_payload, slice;
+    rewrite firstn_firstn, Nat.min_l by lia; reflexivity.
+Qed.
+
+(** Address instances: [FIp4Saddr]/[FIp4Daddr] are the 4-byte payload reads at
+    network offsets 12/16, so their k-byte prefix fields are [firstn k] of them. *)
+Lemma nft_saddr_prefix : forall k p, k <= 4 ->
+  field_value (FPayload PNetwork 12 k) p = firstn k (field_value FIp4Saddr p).
+Proof.
+  intros k p Hk.
+  change (field_value FIp4Saddr p) with (field_value (FPayload PNetwork 12 4) p).
+  now apply nft_payload_prefix.
+Qed.
+
+Lemma nft_daddr_prefix : forall k p, k <= 4 ->
+  field_value (FPayload PNetwork 16 k) p = firstn k (field_value FIp4Daddr p).
+Proof.
+  intros k p Hk.
+  change (field_value FIp4Daddr p) with (field_value (FPayload PNetwork 16 4) p).
+  now apply nft_payload_prefix.
+Qed.
+
+(** Reading fewer bytes at the same offset stays in bounds. *)
+Lemma read_payload_ok_shorter : forall b off k w p, k <= w ->
+  read_payload_ok b off w p = true -> read_payload_ok b off k p = true.
+Proof.
+  intros b off k w p Hkw H. unfold read_payload_ok in *.
+  apply Bool.andb_true_iff in H as [Hl Hlen].
+  apply Bool.andb_true_iff; split; [exact Hl|].
+  apply Bool.negb_true_iff in Hlen. apply Bool.negb_true_iff.
+  apply Nat.ltb_ge in Hlen. apply Nat.ltb_ge. lia.
+Qed.
+
+(** Byte-tuple equations, as the per-byte conjunctions a range statement uses. *)
+Lemma bytes3_eq_iff : forall a b c x y z : nat,
+  [a; b; c] = [x; y; z] <-> a = x /\ b = y /\ c = z.
+Proof.
+  split.
+  - intro H. injection H. tauto.
+  - intros (-> & -> & ->). reflexivity.
+Qed.
+
+Lemma bytes4_eq_iff : forall a b c d x y z w : nat,
+  [a; b; c; d] = [x; y; z; w] <-> a = x /\ b = y /\ c = z /\ d = w.
+Proof.
+  split.
+  - intro H. injection H. tauto.
+  - intros (-> & -> & -> & ->). reflexivity.
+Qed.
+
+(** A one-rule chain with Accept policy drops [p] IFF its rule fires (given the
+    rule loads on [p] and its outcome is a terminal [Drop]). *)
+Lemma nft_single_rule_drop_iff : forall fuel cs r p,
+  rule_loadable r p = true ->
+  outcome r p = Some Drop ->
+  (nft_drops (S fuel) cs {| c_policy := Accept; c_rules := [r] |} p
+   <-> rule_applies r p = true).
+Proof.
+  intros fuel cs r p Hld Hout.
+  unfold nft_drops, nft_yields, eval_table. cbn [c_rules c_policy].
+  rewrite erj_cons, Hld, Hout. cbn [andb].
+  destruct (rule_applies r p).
+  - split; reflexivity.
+  - rewrite erj_empty. split; discriminate.
+Qed.
+
+(** …and accepts [p] IFF its rule does NOT fire. *)
+Lemma nft_single_rule_accept_iff : forall fuel cs r p,
+  rule_loadable r p = true ->
+  outcome r p = Some Drop ->
+  (nft_accepts (S fuel) cs {| c_policy := Accept; c_rules := [r] |} p
+   <-> rule_applies r p = false).
+Proof.
+  intros fuel cs r p Hld Hout.
+  unfold nft_accepts, nft_yields, eval_table. cbn [c_rules c_policy].
+  rewrite erj_cons, Hld, Hout. cbn [andb].
+  destruct (rule_applies r p).
+  - split; discriminate.
+  - rewrite erj_empty. split; reflexivity.
+Qed.
+
+(** The packaged headline lemmas: an Accept-policy chain whose single rule is
+    "payload-prefix match => Drop" (exactly what `ip saddr a.b.c.0/24 drop`
+    parses to) drops [p] IFF the prefix equation holds — and accepts [p] IFF it
+    does not.  The only packet hypothesis is that the read is in bounds. *)
+Lemma nft_prefix_chain_drop_iff : forall fuel cs b off len v p,
+  read_payload_ok b off len p = true ->
+  (nft_drops (S fuel) cs
+     {| c_policy := Accept;
+        c_rules := [{| r_body := [BMatch (MEq (FPayload b off len) v)];
+                       r_verdict := Drop; r_vmap := None; r_nat := None;
+                       r_tproxy := None; r_fwd := None; r_queue := None;
+                       r_after := [] |}] |} p
+   <-> firstn (List.length v) (field_value (FPayload b off len) p) = v).
+Proof.
+  intros fuel cs b off len v p Hok.
+  eapply iff_trans.
+  { apply nft_single_rule_drop_iff.
+    - unfold rule_loadable. cbn. now rewrite Hok.
+    - reflexivity. }
+  unfold rule_applies. cbn [r_body rule_applies_walk].
+  unfold eval_matchcond. cbn [match_loadable].
+  unfold field_loadable. cbn [field_load load_ok]. rewrite Hok.
+  rewrite !Bool.andb_true_l, Bool.andb_true_r.
+  apply data_eqb_true_iff.
+Qed.
+
+Lemma nft_prefix_chain_accept_iff : forall fuel cs b off len v p,
+  read_payload_ok b off len p = true ->
+  (nft_accepts (S fuel) cs
+     {| c_policy := Accept;
+        c_rules := [{| r_body := [BMatch (MEq (FPayload b off len) v)];
+                       r_verdict := Drop; r_vmap := None; r_nat := None;
+                       r_tproxy := None; r_fwd := None; r_queue := None;
+                       r_after := [] |}] |} p
+   <-> firstn (List.length v) (field_value (FPayload b off len) p) <> v).
+Proof.
+  intros fuel cs b off len v p Hok.
+  eapply iff_trans.
+  { apply nft_single_rule_accept_iff.
+    - unfold rule_loadable. cbn. now rewrite Hok.
+    - reflexivity. }
+  unfold rule_applies. cbn [r_body rule_applies_walk].
+  unfold eval_matchcond. cbn [match_loadable eval_matchcond_body].
+  unfold field_loadable. cbn [field_load load_ok]. rewrite Hok.
+  rewrite !Bool.andb_true_l, Bool.andb_true_r.
+  split.
+  - intros Hf He. apply data_eqb_true_iff in He. congruence.
+  - intro Hne. destruct (data_eqb _ _) eqn:E; [|reflexivity].
+    apply data_eqb_true_iff in E. contradiction.
+Qed.

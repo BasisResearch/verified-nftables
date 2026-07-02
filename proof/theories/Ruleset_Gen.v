@@ -4,7 +4,7 @@
    are properties of the parsed ruleset (and, via compile_table_correct, of
    the installed bytecode). *)
 
-From Stdlib Require Import List String.
+From Stdlib Require Import List String ZArith.
 From Nft Require Import Bytes Verdict Packet Syntax Semantics.
 Import ListNotations.
 Open Scope string_scope.
@@ -67,4 +67,8 @@ Definition firewall_chains : list (string * chain) :=
    ("inbound_ipv6", firewall_inbound_ipv6);
    ("inbound", firewall_inbound);
    ("forward", firewall_forward)].
+
+Definition firewall_hooks : list hooked_chain :=
+  [{| hc_hook := Hinput; hc_prio := (0)%Z; hc_env := firewall_chains; hc_base := firewall_inbound |};
+   {| hc_hook := Hforward; hc_prio := (0)%Z; hc_env := firewall_chains; hc_base := firewall_forward |}].
 

@@ -4,7 +4,7 @@
    are properties of the parsed ruleset (and, via compile_table_correct, of
    the installed bytecode). *)
 
-From Stdlib Require Import List String.
+From Stdlib Require Import List String ZArith.
 From Nft Require Import Bytes Verdict Packet Syntax Semantics.
 Import ListNotations.
 Open Scope string_scope.
@@ -28,8 +28,8 @@ Definition decls : set_decls :=
    ("__set13", [([6], [6]); ([17], [17])]);
    ("__set14", [([0; 0; 0; 2], [0; 0; 0; 2]); ([0; 0; 0; 4], [0; 0; 0; 4])]);
    ("__set15", [([153; 0; 0; 0], [153; 0; 0; 0]); ([0; 1; 0; 0], [0; 1; 0; 0])]);
-   ("__set16", [([118; 98; 45; 106; 101; 108; 108; 121; 115; 101; 101; 114; 114; 0; 0; 0], [118; 98; 45; 106; 101; 108; 108; 121; 115; 101; 101; 114; 114; 0; 0; 0]); ([118; 98; 45; 115; 97; 98; 110; 122; 98; 100; 0; 0; 0; 0; 0; 0], [118; 98; 45; 115; 97; 98; 110; 122; 98; 100; 0; 0; 0; 0; 0; 0]); ([118; 98; 45; 114; 97; 100; 97; 114; 0; 0; 0; 0; 0; 0; 0; 0], [118; 98; 45; 114; 97; 100; 97; 114; 0; 0; 0; 0; 0; 0; 0; 0])]);
-   ("__set17", [([118; 98; 45; 106; 101; 108; 108; 121; 115; 101; 101; 114; 114; 0; 0; 0], [118; 98; 45; 106; 101; 108; 108; 121; 115; 101; 101; 114; 114; 0; 0; 0]); ([118; 98; 45; 115; 97; 98; 110; 122; 98; 100; 0; 0; 0; 0; 0; 0], [118; 98; 45; 115; 97; 98; 110; 122; 98; 100; 0; 0; 0; 0; 0; 0]); ([118; 98; 45; 114; 97; 100; 97; 114; 0; 0; 0; 0; 0; 0; 0; 0], [118; 98; 45; 114; 97; 100; 97; 114; 0; 0; 0; 0; 0; 0; 0; 0])]);
+   ("__set16", [([118; 98; 45; 106; 101; 108; 108; 121; 0; 0; 0; 0; 0; 0; 0; 0], [118; 98; 45; 106; 101; 108; 108; 121; 0; 0; 0; 0; 0; 0; 0; 0]); ([118; 98; 45; 115; 97; 98; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0], [118; 98; 45; 115; 97; 98; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0]); ([118; 98; 45; 114; 97; 100; 97; 114; 0; 0; 0; 0; 0; 0; 0; 0], [118; 98; 45; 114; 97; 100; 97; 114; 0; 0; 0; 0; 0; 0; 0; 0])]);
+   ("__set17", [([118; 98; 45; 106; 101; 108; 108; 121; 0; 0; 0; 0; 0; 0; 0; 0], [118; 98; 45; 106; 101; 108; 108; 121; 0; 0; 0; 0; 0; 0; 0; 0]); ([118; 98; 45; 115; 97; 98; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0], [118; 98; 45; 115; 97; 98; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0]); ([118; 98; 45; 114; 97; 100; 97; 114; 0; 0; 0; 0; 0; 0; 0; 0], [118; 98; 45; 114; 97; 100; 97; 114; 0; 0; 0; 0; 0; 0; 0; 0])]);
    ("__set18", [([0; 0; 0; 2], [0; 0; 0; 2]); ([0; 0; 0; 4], [0; 0; 0; 4])])];
    sd_vmaps := [];
    sd_maps := [] |}.
@@ -52,34 +52,34 @@ Definition filter_prerouting : chain :=
              (BMatch (MConcatSet [FMetaL4proto] false "__set0"));
              (BMatch (MEq FThDport [13; 61]));
              (BStmt (SMetaSet MKmark (VImm [153; 0; 0; 0])));
-             (BStmt (SLog "[nft:rdppre]"))];
+             (BStmt (SLog "prefix [nft:rdppre]"))];
      r_verdict := Accept; r_vmap := None;
-     r_nat := (Some {| nat_addr_imm := Some [192; 168; 51; 186]; nat_field := None; nat_map := None; nat_src := None; nat_kind := "dnat"; nat_family := "ip"; nat_extra := NXnone; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
+     r_nat := (Some {| nat_addr_imm := (Some [192; 168; 51; 186]); nat_field := None; nat_map := None; nat_src := None; nat_extra := NXnone; nat_kind := "dnat"; nat_family := "ip"; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
    {| r_body := [(BMatch (MConcatSet [FMetaIifname] false "__set1"));
              (BMatch (MEq (FFib "daddr" FRtype) [2; 0; 0; 0]));
              (BMatch (MConcatSet [FMetaL4proto] false "__set2"));
              (BMatch (MConcatSet [FThDport] false "__set3"));
              (BStmt (SMetaSet MKmark (VImm [153; 0; 0; 0])));
-             (BStmt (SLog "[nft:rdppre]"))];
+             (BStmt (SLog "prefix [nft:rdppre]"))];
      r_verdict := Accept; r_vmap := None;
-     r_nat := (Some {| nat_addr_imm := Some [192; 168; 51; 186]; nat_field := None; nat_map := None; nat_src := None; nat_kind := "dnat"; nat_family := "ip"; nat_extra := NXnone; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
+     r_nat := (Some {| nat_addr_imm := (Some [192; 168; 51; 186]); nat_field := None; nat_map := None; nat_src := None; nat_extra := NXnone; nat_kind := "dnat"; nat_family := "ip"; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
    {| r_body := [(BMatch (MConcatSet [FMetaIifname] false "__set4"));
              (BMatch (MEq (FFib "daddr" FRtype) [2; 0; 0; 0]));
              (BMatch (MConcatSet [FMetaL4proto] false "__set5"));
              (BMatch (MConcatSet [FThDport] false "__set6"));
              (BStmt (SMetaSet MKmark (VImm [153; 0; 0; 0])));
-             (BStmt (SLog "[nft:rdppre]"))];
+             (BStmt (SLog "prefix [nft:rdppre]"))];
      r_verdict := Accept; r_vmap := None;
-     r_nat := (Some {| nat_addr_imm := Some [192; 168; 51; 186]; nat_field := None; nat_map := None; nat_src := None; nat_kind := "dnat"; nat_family := "ip"; nat_extra := NXnone; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
+     r_nat := (Some {| nat_addr_imm := (Some [192; 168; 51; 186]); nat_field := None; nat_map := None; nat_src := None; nat_extra := NXnone; nat_kind := "dnat"; nat_family := "ip"; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
 
 Definition filter_postrouting : chain :=
   {| c_policy := Accept;
    c_rules := [{| r_body := [(BMatch (MEq FMetaMark [153; 0; 0; 0]));
-             (BStmt (SLog "[nft:rdppost]"))];
+             (BStmt (SLog "prefix [nft:rdppost]"))];
      r_verdict := Accept; r_vmap := None;
-     r_nat := (Some {| nat_addr_imm := None; nat_field := None; nat_map := None; nat_src := None; nat_kind := "masq"; nat_family := "inet"; nat_extra := NXnone; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
+     r_nat := (Some {| nat_addr_imm := None; nat_field := None; nat_map := None; nat_src := None; nat_extra := NXnone; nat_kind := "masq"; nat_family := "inet"; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
 
 Definition filter_input : chain :=
   {| c_policy := Drop;
@@ -114,7 +114,7 @@ Definition filter_input : chain :=
 
    {| r_body := [(BMatch (MEq FMetaIifname [108; 97; 110; 48; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0]));
              (BMatch (MEq FMetaNfproto [2]));
-             (BMatch (MMasked FIp4Saddr false [255; 255; 255; 0] [0; 0; 0; 0] [192; 168; 50; 0]));
+             (BMatch (MEq (FPayload PNetwork 12 3) [192; 168; 50]));
              (BMatch (MEq FMetaL4proto [6]));
              (BMatch (MEq FThDport [8; 1]))];
      r_verdict := Accept; r_vmap := None;
@@ -153,7 +153,7 @@ Definition filter_input : chain :=
    {| r_body := [(BMatch (MEq FMetaIifname [108; 97; 110; 48; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0]));
              (BMatch (MEq FMetaL4proto [17]));
              (BMatch (MEq FThDport [178; 179]));
-             (BStmt (SLog "[nft:wg]"))];
+             (BStmt (SLog "prefix [nft:wg]"))];
      r_verdict := Accept; r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
@@ -166,17 +166,17 @@ Definition filter_input : chain :=
    {| r_body := [(BMatch (MEq FMetaPkttype [0]));
              (BMatch (MLimit {| ls_rate := 5; ls_unit := 0; ls_burst := 5; ls_bytes := false; ls_flags := 0 |}));
              (BStmt (SCounter 0 0))];
-     r_verdict := (Reject 0 0); r_vmap := None;
+     r_verdict := (Reject 2 3); r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
-   {| r_body := [(BStmt (SLog "[nft:reject]"));
+   {| r_body := [(BStmt (SLog "prefix [nft:reject]"));
              (BStmt (SCounter 0 0))];
      r_verdict := Continue; r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
 
 Definition filter_forward : chain :=
   {| c_policy := Drop;
-   c_rules := [{| r_body := [(BStmt (SLog "[forwarding]"))];
+   c_rules := [{| r_body := [(BStmt (SLog "prefix [forwarding]"))];
      r_verdict := Continue; r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
@@ -193,7 +193,7 @@ Definition filter_forward : chain :=
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
    {| r_body := [(BMatch (MConcatSet [FMetaMark] false "__set15"));
-             (BStmt (SLog "[nft:rdpforward]"))];
+             (BStmt (SLog "prefix [nft:rdpforward]"))];
      r_verdict := Accept; r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
 
@@ -202,6 +202,12 @@ Definition filter_chains : list (string * chain) :=
    ("postrouting", filter_postrouting);
    ("input", filter_input);
    ("forward", filter_forward)].
+
+Definition filter_hooks : list hooked_chain :=
+  [{| hc_hook := Hprerouting; hc_prio := (-100)%Z; hc_env := filter_chains; hc_base := filter_prerouting |};
+   {| hc_hook := Hpostrouting; hc_prio := (100)%Z; hc_env := filter_chains; hc_base := filter_postrouting |};
+   {| hc_hook := Hinput; hc_prio := (0)%Z; hc_env := filter_chains; hc_base := filter_input |};
+   {| hc_hook := Hforward; hc_prio := (0)%Z; hc_env := filter_chains; hc_base := filter_forward |}].
 
 (* ===== table bridge vmfilter ===== *)
 
@@ -243,12 +249,14 @@ Definition vmfilter_scanner : chain :=
 Definition vmfilter_output : chain :=
   {| c_policy := Accept;
    c_rules := [{| r_body := [(BMatch (MEq (FMetaGen MKbri_oifname) [98; 114; 46; 50; 48; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0]));
+             (BMatch (MEq FMetaProtocol [8; 0]));
              (BMatch (MConcatSet [FIp4Daddr] false "vmaddrs"));
              (BMatch (MConcatSet [FIp4Daddr; FMetaOifname] true "vmantispoof"))];
      r_verdict := Drop; r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
    {| r_body := [(BMatch (MEq (FMetaGen MKbri_oifname) [98; 114; 46; 49; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0]));
+             (BMatch (MEq FMetaProtocol [8; 0]));
              (BMatch (MEq FIp4Daddr [192; 168; 100; 2]));
              (BMatch (MNeq FMetaOifname [118; 98; 45; 104; 97; 115; 115; 0; 0; 0; 0; 0; 0; 0; 0; 0]))];
      r_verdict := Drop; r_vmap := None;
@@ -264,7 +272,8 @@ Definition vmfilter_forward : chain :=
      r_verdict := Accept; r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
-   {| r_body := [(BMatch (MEq FIp4Protocol [1]))];
+   {| r_body := [(BMatch (MEq FMetaProtocol [8; 0]));
+             (BMatch (MEq FIp4Protocol [1]))];
      r_verdict := Accept; r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
 
@@ -286,11 +295,6 @@ Definition vmfilter_forward : chain :=
 
    {| r_body := [(BMatch (MEq (FMetaGen MKbri_iifname) [98; 114; 46; 49; 49; 48; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0]))];
      r_verdict := (Goto "cam"); r_vmap := None;
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
-
-   {| r_body := [(BStmt (SLog "[nft:bridge]"));
-             (BStmt (SCounter 0 0))];
-     r_verdict := Continue; r_vmap := None;
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
 
 Definition vmfilter_chains : list (string * chain) :=
@@ -300,4 +304,8 @@ Definition vmfilter_chains : list (string * chain) :=
    ("scanner", vmfilter_scanner);
    ("output", vmfilter_output);
    ("forward", vmfilter_forward)].
+
+Definition vmfilter_hooks : list hooked_chain :=
+  [{| hc_hook := Houtput; hc_prio := (0)%Z; hc_env := vmfilter_chains; hc_base := vmfilter_output |};
+   {| hc_hook := Hforward; hc_prio := (0)%Z; hc_env := vmfilter_chains; hc_base := vmfilter_forward |}].
 
