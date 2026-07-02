@@ -35,7 +35,7 @@ faithfully reason about `ct` and `fib` expressions, which depend on
 conntracking and routing tables states.
 
 There are multiple motivations for this project. First, I want to
-eventually use the formal semantics to complement the
+eventually use the formal semantics to supplement the
 sparse and incomplete documentation of nftables. For example, my home
 router uses the bitwise `&` operator to allow inbound IPv6 traffic to
 a specific machine whose IPv6 prefix is dynamically allocated by the
