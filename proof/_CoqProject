@@ -61,6 +61,7 @@ theories/Optimize_ConcatM.v
 theories/Optimize_Setg.v
 theories/Optimize_Ivset.v
 theories/Optimize_Ivsetg.v
+theories/Optimize_Ivmixg.v
 theories/Optimize_Absorb.v
 theories/Optimize_Vmapg.v
 theories/Optimize_Table_Inv.v
