@@ -167,6 +167,22 @@ Definition meta_fixed_len (k : meta_key) : option nat :=
   | MKskgid => Some 4
   | MKl4proto => Some 1
   | MKnfproto => Some 1
+  (* More fixed-width meta SCALARS at their kernel register widths
+     (net/netfilter/nft_meta.c, nft_meta_get_eval):
+       [pkttype]  NFT_META_PKTTYPE  -> nft_reg_store8  (skb->pkt_type, u8, 1 byte);
+       [cpu]      NFT_META_CPU      -> nft_reg_store32 (smp_processor_id(), u32, 4 bytes);
+       [protocol] NFT_META_PROTOCOL -> nft_reg_store16 ((__force u16)skb->protocol,
+                                                        u16, 2 bytes).
+     Pinning the width lets the value->set / vmap / concat merges fold a run over
+     these keys exactly as for [meta mark] (same membership certificate
+     [field_fixed_len_loaded]), matching `nft -o`'s
+     `meta pkttype { host, broadcast }` / `meta cpu { … }` / `meta protocol { … }`
+     consolidation.  The compiled per-rule cmp already carries exactly this width
+     (nft_lower: KPkttype=1, KNumLe 4=cpu, KEthertype=2), so the set membership
+     coincides with the per-rule full-width compare. *)
+  | MKpkttype => Some 1
+  | MKcpu => Some 4
+  | MKprotocol => Some 2
   (* Interface-name keys are a FIXED IFNAMSIZ=16-byte register: the kernel
      ([net/netfilter/nft_meta.c], nft_meta_get_eval NFT_META_IIFNAME/OIFNAME) does
      [strncpy(dest, dev->name, IFNAMSIZ)] into a 16-byte, zero-padded register slot.
