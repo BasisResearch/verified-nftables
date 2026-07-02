@@ -66,6 +66,7 @@ theories/Optimize_Absorb.v
 theories/Optimize_Vmapg.v
 theories/Optimize_Table_Inv.v
 theories/Optimize_Ctmask.v
+theories/Optimize_Dscp.v
 theories/Optimize_Table.v
 theories/Optimize_Normalize.v
 theories/Optimize_Uncond.v
