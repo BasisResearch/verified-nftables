@@ -41,6 +41,32 @@ From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
 Import ListNotations.
 Local Open Scope nat_scope.
 
+(** [guard_okn gm]: the NETWORK-LAYER counterpart of [Optimize_ConcatM.guard_ok]
+    (l4proto) and [Optimize_Setg.guard_okl2] (iiftype).  A bare network-address
+    selector `ip saddr X` / `ip daddr X` / `ip6 saddr X` / `ip6 daddr X` is lowered by
+    the frontend in the `inet` family WITH an implicit `meta nfproto == <family>`
+    dependency prepended (NFPROTO_IPV4 = 2 / NFPROTO_IPV6 = 10): the body becomes
+    [MCmp FMetaNfproto CEq [family] ; MCmp f CEq v] — the nfproto guard sits BEFORE the
+    address cmp, exactly the [Optimize_Vmapg] guarded single-selector shape.  Admitting
+    this guard lets the SAME N-way verdict-map pass fold a run of differing-verdict
+    `ip saddr <A> <w>` rules into ONE `ip saddr vmap { A : wA, .. }` lookup, precisely
+    as `nft --optimize` does.
+
+    The address fields [FIp4Saddr]/[FIp4Daddr] = [LPayload PNetwork _ 4] and
+    [FIp6Saddr]/[FIp6Daddr] = [LPayload PNetwork _ 16] have [field_fixed_len] pinned to
+    [Some 4] / [Some 16] — the exact fixed-width certificate [vmap_run_pairG] already
+    demands of a transport port, so the merge is sound.  Distinct address literals are
+    disjoint exact points => a VALID single-field vmap (no overlapping-interval defect).
+
+    Every lemma in this module is guard-AGNOSTIC (soundness never inspects [gm]); the
+    guard whitelist is purely an nft-fidelity gate, so admitting the nfproto guard adds
+    a new fold WITHOUT weakening any proof. *)
+Definition guard_okn (gm : matchcond) : bool :=
+  match gm with
+  | MCmp FMetaNfproto CEq _ => true
+  | _ => false
+  end.
+
 (** ** The guarded original / merged shells. *)
 
 (** The guarded original: a pure-terminal rule [mk_vmap_base w] behind the two head
@@ -163,7 +189,7 @@ Definition vmap_run_pairG (r1 r2 : rule)
   match head_valueGs r1, head_valueGs r2 with
   | Some (gm1, f1, v1, rest1), Some (gm2, f2, v2, rest2) =>
       if matchcond_eq_dec gm1 gm2 then
-      if guard_ok gm1 then
+      if guard_ok gm1 || guard_okn gm1 then
       if field_eq_dec f1 f2 then
       if list_eq_dec body_item_eq_dec rest1 rest2 then
       match field_fixed_len f1 with
@@ -196,7 +222,7 @@ Proof.
   destruct (head_valueGs r1) as [[[[gm1 f1] u1] s1] |] eqn:H1; [| discriminate].
   destruct (head_valueGs r2) as [[[[gm2 f2] u2] s2] |] eqn:H2; [| discriminate].
   destruct (matchcond_eq_dec gm1 gm2) as [Egm |]; [| discriminate]. subst gm2.
-  destruct (guard_ok gm1) eqn:Egok; [| discriminate].
+  destruct (guard_ok gm1 || guard_okn gm1) eqn:Egok; [| discriminate].
   destruct (field_eq_dec f1 f2) as [Ef |]; [| discriminate]. subst f2.
   destruct (list_eq_dec body_item_eq_dec s1 s2) as [Es |]; [| discriminate]. subst s2.
   destruct (field_fixed_len f1) as [len |] eqn:Hfx; [| discriminate].

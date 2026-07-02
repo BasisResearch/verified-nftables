@@ -484,9 +484,24 @@ Proof.
   - apply (IH Hrest).
 Qed.
 
+(** A meta field that the frontend inserts as an IMPLICIT protocol/transport GUARD
+    (`meta l4proto` before a `tcp`/`udp` selector; `meta nfproto` as the address
+    family).  [nft -o] never makes such a guard a CONCAT component — it HOISTS it to
+    the head (see [Optimize_ConcatM], the transport-guarded 2-field concat).  Now that
+    these keys are fixed-width ([meta_fixed_len]), the plain K-field recogniser would
+    otherwise greedily absorb the guard into the tuple, diverging from nft's shape; we
+    exclude them here so the guarded case is handled by [Optimize_ConcatM] exactly as
+    before (guard hoisted, disjoint 2-field concat). *)
+Definition concat_guard_field (f : field) : bool :=
+  match f with FMetaL4proto | FMetaNfproto => true | _ => false end.
+
+Definition no_guard_fields (ps : list (field * data)) : bool :=
+  forallb (fun fa => negb (concat_guard_field (fst fa))) ps.
+
 (** Two rules form an eligible K-field (K>=3) concat-merge pair: same fields, same
-    tail body, same end fields, both fixed-width.  Returns the shared fields, the
-    two rows, and the shared body. *)
+    tail body, same end fields, both fixed-width, and NONE of the fields is an implicit
+    protocol/transport guard.  Returns the shared fields, the two rows, and the shared
+    body. *)
 Definition concat_mergeK_pair (r1 r2 : rule)
   : option (list field * list data * list data * list body_item) :=
   let '(ps1, b1) := take_mcmp_prefix (r_body r1) in
@@ -496,9 +511,10 @@ Definition concat_mergeK_pair (r1 r2 : rule)
   if list_eq_dec body_item_eq_dec b1 b2 then
   if fields_fixed ps1 then
   if fields_fixed ps2 then
+  if no_guard_fields ps1 then
   if rule_end_eqb r1 r2 then
     Some (map fst ps1, map snd ps1, map snd ps2, b1)
-  else None else None else None else None else None else None.
+  else None else None else None else None else None else None else None.
 
 Lemma concat_mergeK_pair_shape : forall r1 r2 fields row1 row2 body,
   concat_mergeK_pair r1 r2 = Some (fields, row1, row2, body) ->
@@ -516,6 +532,7 @@ Proof.
   destruct (list_eq_dec body_item_eq_dec b1 b2) as [Hb|]; [|discriminate].
   destruct (fields_fixed ps1) eqn:Hx1; [|discriminate].
   destruct (fields_fixed ps2) eqn:Hx2; [|discriminate].
+  destruct (no_guard_fields ps1) eqn:Hng; [|discriminate].
   destruct (rule_end_eqb r1 r2) eqn:Hend; [|discriminate].
   injection H as Hfields Hrow1 Hrow2 Hbody. subst fields row1 row2 body.
   pose proof (head_self_orig r1 ps1 b1 E1) as Hr1.

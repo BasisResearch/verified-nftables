@@ -29,7 +29,7 @@ From Stdlib Require Import Lia.
 Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
   Compile Correct Optimize Optimize_Merge Optimize_Vmap Optimize_Vmapg Optimize_Concat Optimize_ConcatK
-  Optimize_ConcatM Optimize_Setg Optimize_Ivset Optimize_Absorb Optimize_Mapn Optimize_Dnat Optimize_Snat Optimize_Table_Inv.
+  Optimize_ConcatM Optimize_Setg Optimize_Ivset Optimize_Ivsetg Optimize_Ivmixg Optimize_Absorb Optimize_Ctmask Optimize_Dscp Optimize_Mapn Optimize_Dnat Optimize_Snat Optimize_Table_Inv.
 
 (** ** Step 1: the base pass preserves [rules_clean].
 
@@ -230,7 +230,8 @@ Proof. trivial. Qed.
 Definition optimize_table (n : nat) (d : set_decls) (c : chain)
   : nat * set_decls * chain :=
   let '(nA, dA, cA) := optimize_chain_absorb n d (optimize_chain c) in
-  let '(nD, dD, cD) := optimize_chain_dnat nA dA cA in
+  let '(nT, dT, cT) := optimize_chain_ctmask nA dA cA in
+  let '(nD, dD, cD) := optimize_chain_dnat nT dT cT in
   let '(nS, dS, cS) := optimize_chain_snat nD dD cD in
   let '(n1, d1, c1) := optimize_chain_setsN nS dS cS in
   let '(nK, dK, cK) := optimize_chain_concatK n1 d1 c1 in
@@ -239,7 +240,10 @@ Definition optimize_table (n : nat) (d : set_decls) (c : chain)
   let '(nG, dG, cG) := optimize_chain_concatM n2 d2 c2 in
   let '(nGs, dGs, cGs) := optimize_chain_setg nG dG cG in
   let '(nI, dI, cI) := optimize_chain_ivset nGs dGs cGs in
-  let '(nVg, dVg, cVg) := optimize_chain_vmapNg nI dI cI in
+  let '(nDs, dDs, cDs) := optimize_chain_dscp nI dI cI in
+  let '(nIg, dIg, cIg) := optimize_chain_ivsetg nDs dDs cDs in
+  let '(nMx, dMx, cMx) := optimize_chain_ivmixg nIg dIg cIg in
+  let '(nVg, dVg, cVg) := optimize_chain_vmapNg nMx dMx cMx in
   optimize_chain_vmapN nVg dVg cVg.
 
 (** ** Correctness of [optimize_table] lives in [Optimize_Uncond.v], where it is

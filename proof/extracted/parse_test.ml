@@ -380,7 +380,7 @@ let check_optiplex_mark () =
   check "masquerade rule fires on mark" (Semantics.rule_applies post1 p_out = true);
   (* masquerade SOURCE-NAT: the packet leaving postrouting has its ip saddr
      rewritten to the address of the interface it exits (e_ifaddr oifname). *)
-  let eth0 = ascii "eth0" and eth0_ip = [203;0;113;5] in   (* TEST-NET-3 *)
+  let eth0 = ifname16 "eth0" and eth0_ip = [203;0;113;5] in   (* TEST-NET-3; 16-byte iface register *)
   let env_if = { env with Packet.e_ifaddrs = (fun n -> ifaddrs_of (if n = eth0 then eth0_ip else [])) } in
   let p_masq =                                             (* marked, exits eth0 *)
     { (mk_pkt ~env:env_if ()) with
@@ -833,7 +833,7 @@ let check_redir_hook () =
       r_nat = Some sp; r_tproxy = None; r_fwd = None; r_queue = None;
       r_after = [] } in
   (* inbound interface eth0 has a non-loopback primary address 203.0.113.5 *)
-  let eth0 = ascii "eth0" and eth0_ip = [203;0;113;5] in
+  let eth0 = ifname16 "eth0" and eth0_ip = [203;0;113;5] in   (* 16-byte iface register *)
   let env =
     { (Nft_parse.parse_string
          "table ip nat {\n  chain c { type nat hook output priority 0; }\n}\n")

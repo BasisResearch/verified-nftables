@@ -615,6 +615,12 @@ Definition field_fixed_len (f : field) : option nat :=
      ([Syntax.meta_load_len]).  This lets the value->set / vmap / concat merges fold a
      meta-mark run just like a payload field, with the SAME membership certificate. *)
   | LMeta k          => meta_fixed_len k
+  (* A fixed-width CONNTRACK scalar (e.g. `ct mark`, a u32) loads at its kernel
+     register width — [ct_fixed_len] — which [do_load]/[ct_load] normalises the read
+     to ([Syntax.ct_load_len]).  This lets the value->set / vmap / concat merges fold
+     a `ct mark` run just like a payload/meta field, with the SAME membership
+     certificate, matching `nft -o`'s `ct mark { … }`. *)
+  | LCt k            => ct_fixed_len k
   | _ => None
   end.
 
@@ -628,6 +634,8 @@ Proof.
   destruct (field_load f) eqn:Efl; try discriminate.
   - (* LMeta: normalised to the fixed register width, unconditionally *)
     cbn [do_load]. apply meta_load_len. exact Hfx.
+  - (* LCt: normalised to the fixed register width, unconditionally *)
+    cbn [do_load]. apply ct_load_len. exact Hfx.
   - (* LPayload *)
     inversion Hfx; subst.
     cbn [do_load]. apply payload_loaded_len. exact Hld.
@@ -1515,3 +1523,107 @@ Qed.
     N-rule run into a single N-element anonymous set. *)
 
 (** *** Chain-level N-WAY value->set: verdict-preserving end-to-end, axiom-free. *)
+
+(** ** Non-vacuity witnesses: the value->set merge now FIRES on the fixed-width meta
+    SCALAR keys [skuid]/[skgid] (u32) and [l4proto]/[nfproto] (u8), exactly as it
+    already did on [meta mark].  Each [value_merge_pair] recognises the adjacent
+    `meta K v1 accept` / `meta K v2 accept` pair and returns the two point values,
+    so [optimize_rules_sets] rewrites the pair into a single [MConcatSet] over a
+    fresh `__setN` = `{ v1, v2 }` — the `meta K { v1, v2 } accept` fold. *)
+Definition wit_meta_rule (f : field) (v : data) : rule :=
+  {| r_body := [BMatch (MCmp f CEq v)];
+     r_verdict := Accept; r_vmap := None; r_nat := None;
+     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+
+(* meta skuid 1000/1001 => set { 0xe8030000, 0xe9030000 } (u32, little-endian). *)
+Example value_merge_fires_skuid :
+  value_merge_pair (wit_meta_rule FMetaSkuid [232;3;0;0])
+                   (wit_meta_rule FMetaSkuid [233;3;0;0])
+  = Some (FMetaSkuid, [232;3;0;0], [233;3;0;0], []).
+Proof. reflexivity. Qed.
+
+(* meta skgid, same u32 family. *)
+Example value_merge_fires_skgid :
+  value_merge_pair (wit_meta_rule FMetaSkgid [6;0;0;0])
+                   (wit_meta_rule FMetaSkgid [17;0;0;0])
+  = Some (FMetaSkgid, [6;0;0;0], [17;0;0;0], []).
+Proof. reflexivity. Qed.
+
+(* meta l4proto 6/17 => set { 0x06, 0x11 } (u8). *)
+Example value_merge_fires_l4proto :
+  value_merge_pair (wit_meta_rule FMetaL4proto [6])
+                   (wit_meta_rule FMetaL4proto [17])
+  = Some (FMetaL4proto, [6], [17], []).
+Proof. reflexivity. Qed.
+
+(* meta nfproto 6/17 => set { 0x06, 0x11 } (u8). *)
+Example value_merge_fires_nfproto :
+  value_merge_pair (wit_meta_rule FMetaNfproto [6])
+                   (wit_meta_rule FMetaNfproto [17])
+  = Some (FMetaNfproto, [6], [17], []).
+Proof. reflexivity. Qed.
+
+(* iifname "lo"/"eth0" — the 16-byte IFNAMSIZ interface-name register.  The frontend
+   lowers a non-wildcard name to its 16-byte zero-padded value, [normalize_mc] rewrites
+   the [MEq] to [MCmp _ CEq], and (with [meta_fixed_len MKiifname = Some 16]) the
+   value->set merge now fires — `iifname { lo, eth0 }`, matching `nft -o`. *)
+Definition ifn16 (bs : data) : data := List.firstn 16 (bs ++ List.repeat 0 16).
+Example value_merge_fires_iifname :
+  value_merge_pair (wit_meta_rule FMetaIifname (ifn16 [108;111]))          (* "lo"   *)
+                   (wit_meta_rule FMetaIifname (ifn16 [101;116;104;48]))   (* "eth0" *)
+  = Some (FMetaIifname, ifn16 [108;111], ifn16 [101;116;104;48], []).
+Proof. reflexivity. Qed.
+
+(* oifname, same 16-byte interface-name register (output side). *)
+Example value_merge_fires_oifname :
+  value_merge_pair (wit_meta_rule FMetaOifname (ifn16 [108;111]))
+                   (wit_meta_rule FMetaOifname (ifn16 [101;116;104;48]))
+  = Some (FMetaOifname, ifn16 [108;111], ifn16 [101;116;104;48], []).
+Proof. reflexivity. Qed.
+
+(* End-to-end at the rule-list level: the iifname pair collapses into ONE rule
+   ([MConcatSet] over a fresh `__set`) plus the minted 2-element set. *)
+Example optimize_rules_sets_folds_iifname :
+  optimize_rules_sets 0 {| sd_sets := []; sd_vmaps := []; sd_maps := [] |}
+    [wit_meta_rule FMetaIifname (ifn16 [108;111]);
+     wit_meta_rule FMetaIifname (ifn16 [101;116;104;48])]
+  = (1,
+     {| sd_sets := [(setname 0, [(ifn16 [108;111], ifn16 [108;111]);
+                                 (ifn16 [101;116;104;48], ifn16 [101;116;104;48])])];
+        sd_vmaps := []; sd_maps := [] |},
+     [ mk_head (MConcatSet [FMetaIifname] false (setname 0)) []
+               (wit_meta_rule FMetaIifname (ifn16 [108;111])) ]).
+Proof. reflexivity. Qed.
+
+(* End-to-end at the rule-list level: [optimize_rules_sets] collapses the skuid pair
+   into ONE rule (a [MConcatSet] over a fresh `__set`) plus the minted 2-element set. *)
+Example optimize_rules_sets_folds_skuid :
+  optimize_rules_sets 0 {| sd_sets := []; sd_vmaps := []; sd_maps := [] |}
+    [wit_meta_rule FMetaSkuid [232;3;0;0]; wit_meta_rule FMetaSkuid [233;3;0;0]]
+  = (1,
+     {| sd_sets := [(setname 0, [([232;3;0;0],[232;3;0;0]); ([233;3;0;0],[233;3;0;0])])];
+        sd_vmaps := []; sd_maps := [] |},
+     [ mk_head (MConcatSet [FMetaSkuid] false (setname 0)) []
+               (wit_meta_rule FMetaSkuid [232;3;0;0]) ]).
+Proof. reflexivity. Qed.
+
+(* ct mark 5/6 => set { 0x05, 0x06 } (u32, little-endian [5;0;0;0]/[6;0;0;0]).  With
+   [ct_fixed_len CKmark = Some 4] the value->set merge now FIRES on a `ct mark` run,
+   exactly as it does on `meta mark` — matching `nft -o`'s `ct mark { 5, 6 }`. *)
+Example value_merge_fires_ctmark :
+  value_merge_pair (wit_meta_rule FCtMark [5;0;0;0])
+                   (wit_meta_rule FCtMark [6;0;0;0])
+  = Some (FCtMark, [5;0;0;0], [6;0;0;0], []).
+Proof. reflexivity. Qed.
+
+(* End-to-end at the rule-list level: the `ct mark` pair collapses into ONE rule
+   ([MConcatSet] over a fresh `__set`) plus the minted 2-element set. *)
+Example optimize_rules_sets_folds_ctmark :
+  optimize_rules_sets 0 {| sd_sets := []; sd_vmaps := []; sd_maps := [] |}
+    [wit_meta_rule FCtMark [5;0;0;0]; wit_meta_rule FCtMark [6;0;0;0]]
+  = (1,
+     {| sd_sets := [(setname 0, [([5;0;0;0],[5;0;0;0]); ([6;0;0;0],[6;0;0;0])])];
+        sd_vmaps := []; sd_maps := [] |},
+     [ mk_head (MConcatSet [FCtMark] false (setname 0)) []
+               (wit_meta_rule FCtMark [5;0;0;0]) ]).
+Proof. reflexivity. Qed.

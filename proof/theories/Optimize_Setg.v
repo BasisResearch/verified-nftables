@@ -36,9 +36,36 @@ From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
 Import ListNotations.
 Local Open Scope nat_scope.
 
+(** [guard_okl2 gm]: the L2 counterpart of [Optimize_ConcatM.guard_ok].  A bare
+    link-layer selector `ether saddr X` / `ether daddr X` is lowered by the frontend
+    (in every family whose interfaces are not guaranteed ethernet — ip/ip6/inet/netdev)
+    WITH an implicit `meta iiftype == ARPHRD_ETHER (1)` dependency prepended: the body
+    becomes [MCmp FMetaIiftype CEq [0;1] ; MCmp FEtherSaddr CEq v] (see
+    [nft_lower.ml]'s [DIiftype] dep).  That guard sits BEFORE the address cmp — exactly
+    the [Optimize_Setg] guarded single-selector shape — so recognising it lets this
+    same N-way value->set pass fold `ether saddr 00:11:.. accept; ether saddr 00:11:..
+    accept` into `ether saddr { .., .. } accept`, precisely as `nft --optimize` does.
+
+    The 6-byte MAC field [FEtherSaddr]/[FEtherDaddr] is [LPayload PLink 6/0 6], so
+    [field_fixed_len] pins its width at [Some 6] — the exact same fixed-width side
+    condition [value_mergeGs_pair] already demands of a transport port, and the reason
+    the merge is sound (the [MCmp]'s prefix equality coincides with the set's full-width
+    membership).  Distinct MAC literals are disjoint singletons, so the synthesised
+    single-field rbtree set is a VALID nftables object (no overlapping-interval defect).
+
+    Every lemma in this module is guard-AGNOSTIC (soundness never inspects [gm]); the
+    guard whitelist is purely an nft-fidelity gate, so admitting the iiftype guard adds
+    a new fold WITHOUT weakening any proof. *)
+Definition guard_okl2 (gm : matchcond) : bool :=
+  match gm with
+  | MCmp FMetaIiftype CEq _ => true
+  | _ => false
+  end.
+
 (** The guarded original / merged rule shells.  [gm] is the shared guard matchcond
     (kept ABSTRACT — every lemma below is guard-agnostic; the recogniser pins it to
-    the l4proto dependency via [guard_ok] for nft fidelity). *)
+    the l4proto dependency ([guard_ok]) or the L2 iiftype dependency ([guard_okl2])
+    for nft fidelity). *)
 Definition orig_ruleGs (f : field) (gm : matchcond) (v : data)
     (body : list body_item) (r1 : rule) : rule :=
   mk_head gm (BMatch (MCmp f CEq v) :: body) r1.
@@ -84,7 +111,7 @@ Definition value_mergeGs_pair (r1 r2 : rule)
   match head_valueGs r1, head_valueGs r2 with
   | Some (gm1, f1, v1, rest1), Some (gm2, f2, v2, rest2) =>
       if matchcond_eq_dec gm1 gm2 then
-      if guard_ok gm1 then
+      if guard_ok gm1 || guard_okl2 gm1 then
       if field_eq_dec f1 f2 then
       if list_eq_dec body_item_eq_dec rest1 rest2 then
       if list_eq_dec Nat.eq_dec v1 v2 then None
@@ -115,7 +142,7 @@ Proof.
   destruct (head_valueGs r1) as [[[[gm1 f1] u1] s1] |] eqn:H1; [| discriminate].
   destruct (head_valueGs r2) as [[[[gm2 f2] u2] s2] |] eqn:H2; [| discriminate].
   destruct (matchcond_eq_dec gm1 gm2) as [Egm |]; [| discriminate]. subst gm2.
-  destruct (guard_ok gm1) eqn:Egok; [| discriminate].
+  destruct (guard_ok gm1 || guard_okl2 gm1) eqn:Egok; [| discriminate].
   destruct (field_eq_dec f1 f2) as [Ef |]; [| discriminate]. subst f2.
   destruct (list_eq_dec body_item_eq_dec s1 s2) as [Es |]; [| discriminate]. subst s2.
   destruct (list_eq_dec Nat.eq_dec u1 u2) as [Eu |]; [discriminate |].
