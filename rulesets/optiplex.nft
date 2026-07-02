@@ -1,9 +1,6 @@
 #!/usr/bin/nft -f
 # vim:set ts=2 sw=2 et:
 
-# IPv4/IPv6 Simple & Safe firewall ruleset.
-# More examples in /usr/share/nftables/ and /usr/share/doc/nftables/examples/.
-
 define windows = 192.168.51.186
 define lan = lan0
 
@@ -33,7 +30,6 @@ table inet filter {
     iifname br.20 tcp dport https accept comment "allow incoming https request from the vms"
     iifname br.20 udp dport 51820 accept comment "allow incoming wireguard"
     iifname $lan ip saddr 192.168.50.0/24 tcp dport 2049 accept comment "give everyone access to nfs share"
-    # iifname br.1 udp dport 68 accept comment "allow incoming dhcp"
     iifname vlan.25 udp dport 67 accept comment "allow incoming printer dhcp request"
     iifname {$lan, home} tcp dport {ssh, http, https, 1246} accept comment "allow services"
     iifname {$lan, home} meta l4proto {tcp, udp} th dport 22000 accept comment "allow syncthing"
@@ -56,19 +52,8 @@ table inet filter {
     iifname immich accept
     ct state {established, related} accept comment "allow tracked connections"
     mark {0x99,0x100} log prefix "[nft:rdpforward]" accept
-    # iifname home oifname br.20 meta l4proto {tcp, udp} th dport 3389 ip daddr $windows accept
-    # enable to allow the brother printer to update its firmware 
-    # remember to also enable ipv4 forwarding
-    # ct state {established, related} accept comment "allow tracked connections"
-    # iifname vlan.25 oifname $lan accept
-    # log prefix "[nft:forward]"
   }
 
-  # chain post {
-  #   type nat hook postrouting priority srcnat
-
-  #   iifname vlan.25 oifname $lan masquerade
-  # }
 }
 
 
@@ -130,16 +115,11 @@ table bridge vmfilter {
 
   chain vm {
 	iifname vlan.20 udp sport 67 accept
-	# sunshine?
-	# iifname vlan.20 oifname vnet* ip daddr $windows accept
 	oifname vlan.20 accept
-	iifname {vb-jellyseerr,vb-sabnzbd,vb-radar} oifname {vb-jellyseerr,vb-sabnzbd,vb-radar} accept
-	# iifname vb-gentoo oifname vb-forgejo accept
+	iifname {vb-jelly,vb-sab,vb-radar} oifname {vb-jelly,vb-sab,vb-radar} accept
   }
 
   chain iot {
-	# iifname vlan.1 udp dport 67 accept
-	# oifname vlan.1 iifname iot accept
 	accept
   }
 
@@ -155,8 +135,6 @@ table bridge vmfilter {
         type filter hook output priority filter
 	policy accept
 
-	
-	# meta obrname br.20 ip daddr . oifname != @vmantispoof drop
 	meta obrname br.20 ip daddr @vmaddrs ip daddr . oifname != @vmantispoof drop
 	meta obrname br.1 ip daddr 192.168.100.2 oifname != vb-hass drop
   }
@@ -174,6 +152,5 @@ table bridge vmfilter {
 	meta ibrname br.20 goto vm
 	meta ibrname br.3 goto scanner
 	meta ibrname br.110 goto cam
-	log prefix "[nft:bridge]" counter
     }
 }
