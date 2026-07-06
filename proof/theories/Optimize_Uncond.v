@@ -35,7 +35,7 @@ Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
   Compile Correct Optimize Optimize_Merge Optimize_Vmap Optimize_Vmapg Optimize_Concat Optimize_ConcatK
   Optimize_ConcatM Optimize_Setg Optimize_Ivset Optimize_Ivsetg Optimize_Ivmixg Optimize_Absorb Optimize_Ctmask
-  Optimize_Dscp Optimize_Mapn Optimize_Dnat Optimize_Snat Optimize_Table_Inv Optimize_Table Optimize_Normalize.
+  Optimize_Dscp Optimize_Ivsett Optimize_Mapn Optimize_Dnat Optimize_Snat Optimize_Table_Inv Optimize_Table Optimize_Normalize.
 
 Local Open Scope nat_scope.
 
@@ -1197,6 +1197,145 @@ Proof.
           - apply (optimize_rules_dscp_vmaps fuel n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec)).
           - apply (optimize_rules_dscp_maps fuel n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec)).
           - intros nm X Hf. apply (optimize_rules_dscp_assoc_stable fuel n d (r2 :: rest)
+                                    m'' dd'' rr'' nm X (eq_sym Erec) Hf).
+          - exact Hf1. }
+        rewrite (rule_loadable_agree_gen r1 p base dd'' d Hda1).
+        rewrite (rule_applies_agree_gen r1 p base dd'' d Hda1).
+        rewrite (outcome_agree_gen r1 p base dd'' d Hda1). reflexivity.
+Qed.
+
+(** *** ivsett (host-order interval / range set consolidation, Optimize_Ivsett).
+    Structurally identical to [ivset], but the run's heads are transformed ranges
+    [MRangeT f ts false lo hi] and the synthesised set head is [MSetT f ts false __setN]
+    — the byteorder transform [ts] is carried IDENTICALLY on both, and the membership
+    certificate ([msett_ivs_existsb]) collapses the [MSetT] to the run's [existsb]. *)
+Theorem optimize_rules_ivsett_correct_uncond : forall fuel rs n d n' d' rs' base p,
+  optimize_rules_ivsett fuel n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  Forall (rule_set_fresh n) rs ->
+  eval_rules rs' (set_env p (env_with_sets base d'))
+  = eval_rules rs  (set_env p (env_with_sets base d)).
+Proof.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' base p H Hfresh Hrf.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_ivsett_consSS in H.
+      inversion Hrf as [| ? ? Hf1 Hrf_tail]; subst.
+      destruct (head_ivsett r1) as [[[[[f ts] lo1] hi1] body] |] eqn:Ehd.
+      * destruct (take_ivsett_run r1 (r2 :: rest)) as [ivs rest'] eqn:Erun.
+        pose proof (take_ivsett_run_shape r1 f ts lo1 hi1 body (r2 :: rest) ivs rest' Ehd Erun) as Hsplit.
+        destruct ivs as [| iv ivs'].
+        -- remember (optimize_rules_ivsett fuel n d (r2 :: rest)) as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           cbn [eval_rules].
+           rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
+           assert (Hda1 : decls_agree_rule base dd'' d r1).
+           { apply (decls_agree_rule_setseam base d dd'' r1 n).
+             - apply (optimize_rules_ivsett_vmaps fuel n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec)).
+             - apply (optimize_rules_ivsett_maps fuel n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec)).
+             - intros nm X Hf. apply (optimize_rules_ivsett_assoc_stable fuel n d (r2 :: rest)
+                                       m'' dd'' rr'' nm X (eq_sym Erec) Hf).
+             - exact Hf1. }
+           rewrite (rule_loadable_agree_gen r1 p base dd'' d Hda1).
+           rewrite (rule_applies_agree_gen r1 p base dd'' d Hda1).
+           rewrite (outcome_agree_gen r1 p base dd'' d Hda1). reflexivity.
+        -- cbv zeta in H.
+           remember (optimize_rules_ivsett fuel (S n)
+                       {| sd_sets := (setname n, (lo1, hi1) :: iv :: ivs') :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           set (ivsAll := (lo1, hi1) :: iv :: ivs') in *.
+           set (dn := {| sd_sets := (setname n, ivsAll) :: sd_sets d;
+                         sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) in *.
+           assert (Hrun_eq : r1 :: r2 :: rest
+                   = map (fun iv0 => mk_head (MRangeT f ts false (fst iv0) (snd iv0)) body r1) ivsAll
+                     ++ rest').
+           { subst ivsAll. cbn [map app fst snd]. f_equal.
+             - apply (head_ivsett_canon r1 f ts lo1 hi1 body Ehd).
+             - exact Hsplit. }
+           assert (Hrf_rest' : Forall (rule_set_fresh (S n)) rest').
+           { eapply Forall_impl; [intros r Hr; apply (rule_set_fresh_mono n (S n) r); [lia | exact Hr] |].
+             assert (Hsub : Forall (rule_set_fresh n) rest').
+             { rewrite Hsplit in Hrf_tail. apply Forall_app in Hrf_tail. exact (proj2 Hrf_tail). }
+             exact Hsub. }
+           assert (Htail : eval_rules rr'' (set_env p (env_with_sets base dd''))
+                           = eval_rules rest' (set_env p (env_with_sets base dn))).
+           { eapply (IH rest' (S n) dn m'' dd'' rr'' base p (eq_sym Erec)); [| exact Hrf_rest'].
+             intros k Hk Hin. subst dn; cbn [sd_sets map] in Hin.
+             destruct Hin as [Heq | Hin].
+             - apply setname_inj in Heq. lia.
+             - apply (Hfresh k); [lia | exact Hin]. }
+           assert (Hlook : e_set (pkt_env (set_env p (env_with_sets base dd''))) (setname n)
+                           = ivsAll).
+           { cbn [set_env with_pkt_env pkt_env]. rewrite e_set_declared.
+             erewrite (optimize_rules_ivsett_assoc_stable fuel (S n) dn _ _ _ _
+                         (setname n) _ (eq_sym Erec)).
+             - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
+             - intros k Hk Heq. apply setname_inj in Heq. lia. }
+           set (qd := set_env p (env_with_sets base dd'')) in *.
+           assert (Hcert : eval_matchcond (MSetT f ts false (setname n)) qd
+                   = existsb (fun iv0 => eval_matchcond (MRangeT f ts false (fst iv0) (snd iv0)) qd) ivsAll).
+           { apply (msett_ivs_existsb f ts ivsAll (setname n) qd). exact Hlook. }
+           transitivity (eval_rules
+             (map (fun m => mk_head m body r1)
+                  (map (fun iv0 => MRangeT f ts false (fst iv0) (snd iv0)) ivsAll)
+              ++ rr'') qd).
+           { apply (eval_rules_run_merge_abs
+                      (map (fun iv0 => MRangeT f ts false (fst iv0) (snd iv0)) ivsAll)
+                      (fun q => field_loadable f q) body r1
+                      (MSetT f ts false (setname n)) rr'' qd).
+             - subst ivsAll. discriminate.
+             - intros m Hm. apply (match_loadable_ranget_run f ts ivsAll qd m Hm).
+             - apply match_loadable_msett.
+             - rewrite Hcert. rewrite existsb_map_eq. reflexivity. }
+           rewrite List.map_map.
+           assert (Htail' : eval_rules rr'' qd = eval_rules rest' qd).
+           { rewrite Htail. unfold qd.
+             apply (eval_rules_agree_gen rest' p base dn dd'').
+             intros r Hr. apply decls_agree_rule_sym.
+             apply (decls_agree_rule_setseam base dn dd'' r (S n)).
+             - apply (optimize_rules_ivsett_vmaps fuel (S n) dn rest' m'' dd'' rr'' (eq_sym Erec)).
+             - apply (optimize_rules_ivsett_maps fuel (S n) dn rest' m'' dd'' rr'' (eq_sym Erec)).
+             - intros nm X Hf. apply (optimize_rules_ivsett_assoc_stable fuel (S n) dn rest'
+                                       m'' dd'' rr'' nm X (eq_sym Erec) Hf).
+             - rewrite Forall_forall in Hrf_rest'. apply Hrf_rest'; exact Hr. }
+           rewrite (eval_rules_app_cong
+                      (map (fun iv0 => mk_head (MRangeT f ts false (fst iv0) (snd iv0)) body r1) ivsAll)
+                      rr'' rest' qd Htail').
+           rewrite <- Hrun_eq.
+           assert (Hvm_dd : sd_vmaps dd'' = sd_vmaps d).
+           { rewrite (optimize_rules_ivsett_vmaps fuel (S n) dn rest' m'' dd'' rr'' (eq_sym Erec)).
+             subst dn; reflexivity. }
+           assert (Hmaps_dd : sd_maps dd'' = sd_maps d).
+           { rewrite (optimize_rules_ivsett_maps fuel (S n) dn rest' m'' dd'' rr'' (eq_sym Erec)).
+             subst dn; reflexivity. }
+           assert (Hassoc_dd : forall nm X, (forall k, n <= k -> nm <> setname k) ->
+                     assoc_str nm (sd_sets dd'') X = assoc_str nm (sd_sets d) X).
+           { intros nm X Hf.
+             rewrite (optimize_rules_ivsett_assoc_stable fuel (S n) dn rest' m'' dd'' rr'' nm X
+                        (eq_sym Erec) (fun k Hk => Hf k ltac:(lia))).
+             subst dn; cbn [sd_sets assoc_str].
+             destruct (String.eqb nm (setname n)) eqn:Eq.
+             - apply String.eqb_eq in Eq. exfalso. apply (Hf n (Nat.le_refl n) Eq).
+             - reflexivity. }
+           unfold qd. apply (eval_rules_agree_gen (r1 :: r2 :: rest) p base dd'' d).
+           intros r Hr. apply (decls_agree_rule_setseam base d dd'' r n Hvm_dd Hmaps_dd Hassoc_dd).
+           rewrite Forall_forall in Hrf. apply Hrf; exact Hr.
+      * remember (optimize_rules_ivsett fuel n d (r2 :: rest)) as t eqn:Erec.
+        destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        cbn [eval_rules].
+        rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
+        assert (Hda1 : decls_agree_rule base dd'' d r1).
+        { apply (decls_agree_rule_setseam base d dd'' r1 n).
+          - apply (optimize_rules_ivsett_vmaps fuel n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec)).
+          - apply (optimize_rules_ivsett_maps fuel n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec)).
+          - intros nm X Hf. apply (optimize_rules_ivsett_assoc_stable fuel n d (r2 :: rest)
                                     m'' dd'' rr'' nm X (eq_sym Erec) Hf).
           - exact Hf1. }
         rewrite (rule_loadable_agree_gen r1 p base dd'' d Hda1).
@@ -2789,6 +2928,114 @@ Proof.
                      | apply (IH n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec) Hrf_tail)].
 Qed.
 
+(** *** ivsett output-freshness (its own [setname] namespace + [vmap] pass-through). *)
+Lemma body_set_names_cons_mranget : forall f ts lo hi body,
+  body_set_names (BMatch (MRangeT f ts false lo hi) :: body) = body_set_names body.
+Proof. reflexivity. Qed.
+
+Lemma optimize_rules_ivsett_output_set_fresh : forall fuel n d rs n' d' rs',
+  optimize_rules_ivsett fuel n d rs = (n', d', rs') ->
+  Forall (rule_set_fresh n) rs ->
+  Forall (rule_set_fresh n') rs'.
+Proof.
+  induction fuel as [| fuel IH]; intros n d rs n' d' rs' H Hrf.
+  - cbn in H. inversion H; subst; exact Hrf.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst; exact Hrf.
+    + cbn in H. inversion H; subst; exact Hrf.
+    + rewrite optimize_rules_ivsett_consSS in H.
+      inversion Hrf as [| ? ? Hf1 Hrf_tail]; subst.
+      destruct (head_ivsett r1) as [[[[[f ts] lo1] hi1] body] |] eqn:Ehd.
+      * destruct (take_ivsett_run r1 (r2 :: rest)) as [ivs rest'] eqn:Erun.
+        pose proof (take_ivsett_run_shape r1 f ts lo1 hi1 body (r2 :: rest) ivs rest' Ehd Erun) as Hsplit.
+        destruct ivs as [| iv ivs'].
+        -- remember (optimize_rules_ivsett fuel n d (r2 :: rest)) as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           assert (Hmono : n <= m'')
+             by (apply (optimize_rules_ivsett_mono fuel n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec))).
+           constructor.
+           ++ apply (rule_set_fresh_mono n m'' r1 Hmono Hf1).
+           ++ apply (IH n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec) Hrf_tail).
+        -- cbv zeta in H.
+           remember (optimize_rules_ivsett fuel (S n)
+                       {| sd_sets := (setname n, (lo1, hi1) :: iv :: ivs') :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           assert (Hmono : S n <= m'')
+             by (apply (optimize_rules_ivsett_mono fuel (S n) _ rest' m'' dd'' rr'' (eq_sym Erec))).
+           assert (Hrf_rest' : Forall (rule_set_fresh (S n)) rest').
+           { eapply Forall_impl; [intros r Hr; apply (rule_set_fresh_mono n (S n) r); [lia | exact Hr] |].
+             rewrite Hsplit in Hrf_tail. apply Forall_app in Hrf_tail. exact (proj2 Hrf_tail). }
+           constructor.
+           ++ intros k Hk Hin.
+              rewrite (body_set_names_mk_head_MSetT f ts (setname n) body r1) in Hin.
+              rewrite <- (body_set_names_cons_mranget f ts lo1 hi1 body) in Hin.
+              rewrite <- (head_ivsett_rbody r1 f ts lo1 hi1 body Ehd) in Hin.
+              destruct Hin as [Heq | Hin].
+              ** apply setname_inj in Heq. lia.
+              ** apply (Hf1 k); [lia | exact Hin].
+           ++ apply (IH (S n) _ rest' m'' dd'' rr'' (eq_sym Erec) Hrf_rest').
+      * remember (optimize_rules_ivsett fuel n d (r2 :: rest)) as t eqn:Erec.
+        destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        assert (Hmono : n <= m'')
+          by (apply (optimize_rules_ivsett_mono fuel n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec))).
+        constructor.
+        -- apply (rule_set_fresh_mono n m'' r1 Hmono Hf1).
+        -- apply (IH n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec) Hrf_tail).
+Qed.
+
+Lemma optimize_rules_ivsett_output_vmap_fresh : forall fuel n d rs n' d' rs',
+  optimize_rules_ivsett fuel n d rs = (n', d', rs') ->
+  Forall (rule_vmap_fresh n) rs ->
+  Forall (rule_vmap_fresh n') rs'.
+Proof.
+  induction fuel as [| fuel IH]; intros n d rs n' d' rs' H Hrf.
+  - cbn in H. inversion H; subst; exact Hrf.
+  - destruct rs as [| r1 [| r2 rest] ].
+    + cbn in H. inversion H; subst; exact Hrf.
+    + cbn in H. inversion H; subst; exact Hrf.
+    + rewrite optimize_rules_ivsett_consSS in H.
+      inversion Hrf as [| ? ? Hf1 Hrf_tail]; subst.
+      destruct (head_ivsett r1) as [[[[[f ts] lo1] hi1] body] |] eqn:Ehd.
+      * destruct (take_ivsett_run r1 (r2 :: rest)) as [ivs rest'] eqn:Erun.
+        pose proof (take_ivsett_run_shape r1 f ts lo1 hi1 body (r2 :: rest) ivs rest' Ehd Erun) as Hsplit.
+        destruct ivs as [| iv ivs'].
+        -- remember (optimize_rules_ivsett fuel n d (r2 :: rest)) as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           assert (Hmono : n <= m'')
+             by (apply (optimize_rules_ivsett_mono fuel n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec))).
+           constructor; [apply (rule_vmap_fresh_mono n m'' r1 Hmono Hf1)
+                        | apply (IH n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec) Hrf_tail)].
+        -- cbv zeta in H.
+           remember (optimize_rules_ivsett fuel (S n)
+                       {| sd_sets := (setname n, (lo1, hi1) :: iv :: ivs') :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           assert (Hmono : S n <= m'')
+             by (apply (optimize_rules_ivsett_mono fuel (S n) _ rest' m'' dd'' rr'' (eq_sym Erec))).
+           assert (Hrf_rest' : Forall (rule_vmap_fresh (S n)) rest').
+           { eapply Forall_impl; [intros r Hr; apply (rule_vmap_fresh_mono n (S n) r); [lia | exact Hr] |].
+             rewrite Hsplit in Hrf_tail. apply Forall_app in Hrf_tail. exact (proj2 Hrf_tail). }
+           constructor.
+           ++ intros k Hk Hin.
+              rewrite (rule_vmap_name_mk_head (MSetT f ts false (setname n)) body r1) in Hin.
+              apply (Hf1 k); [lia | exact Hin].
+           ++ apply (IH (S n) _ rest' m'' dd'' rr'' (eq_sym Erec) Hrf_rest').
+      * remember (optimize_rules_ivsett fuel n d (r2 :: rest)) as t eqn:Erec.
+        destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        assert (Hmono : n <= m'')
+          by (apply (optimize_rules_ivsett_mono fuel n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec))).
+        constructor; [apply (rule_vmap_fresh_mono n m'' r1 Hmono Hf1)
+                     | apply (IH n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec) Hrf_tail)].
+Qed.
 
 (** *** ivset output-freshness (its own [setname] namespace + [vmap] pass-through). *)
 Lemma optimize_rules_ivset_output_set_fresh : forall fuel n d rs n' d' rs',
@@ -4031,6 +4278,54 @@ Proof.
   apply (optimize_rules_dscp_output_set_fresh _ _ _ _ _ _ _ E Hrf).
 Qed.
 
+(** *** ivsett chain-level wrappers (host-order interval-set pass). *)
+Lemma optimize_chain_ivsett_correct_uncond : forall n d c n' d' c' base p,
+  optimize_chain_ivsett n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  Forall (rule_set_fresh n) (c_rules c) ->
+  eval_chain c' (set_env p (env_with_sets base d'))
+  = eval_chain c  (set_env p (env_with_sets base d)).
+Proof.
+  intros n d c n' d' c' base p H Hfs Hrf. unfold optimize_chain_ivsett in H.
+  destruct (optimize_rules_ivsett (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain. cbn [c_rules c_policy].
+  rewrite (optimize_rules_ivsett_correct_uncond (Datatypes.length (c_rules c)) (c_rules c) n d
+             m'' dd'' rr'' base p E Hfs Hrf). reflexivity.
+Qed.
+
+Lemma optimize_chain_ivsett_output_vmap_fresh : forall n d c n' d' c',
+  optimize_chain_ivsett n d c = (n', d', c') ->
+  Forall (rule_vmap_fresh n) (c_rules c) -> Forall (rule_vmap_fresh n') (c_rules c').
+Proof.
+  intros n d c n' d' c' H Hrf. unfold optimize_chain_ivsett in H.
+  destruct (optimize_rules_ivsett (Datatypes.length (c_rules c)) n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. cbn [c_rules].
+  apply (optimize_rules_ivsett_output_vmap_fresh _ _ _ _ _ _ _ E Hrf).
+Qed.
+
+Lemma optimize_chain_ivsett_fresh_setname : forall n d c n' d' c',
+  optimize_chain_ivsett n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n' <= k -> ~ In (setname k) (map fst (sd_sets d'))).
+Proof.
+  intros n d c n' d' c' H Hfresh k Hk Hin.
+  pose proof (optimize_chain_ivsett_mono n d c n' d' c' H) as Hmono.
+  destruct (optimize_chain_ivsett_keys_bound n d c n' d' c' k H Hin) as [Hin_d | Hlt].
+  - apply (Hfresh k); [lia | exact Hin_d].
+  - lia.
+Qed.
+
+Lemma optimize_chain_ivsett_output_set_fresh : forall n d c n' d' c',
+  optimize_chain_ivsett n d c = (n', d', c') ->
+  Forall (rule_set_fresh n) (c_rules c) -> Forall (rule_set_fresh n') (c_rules c').
+Proof.
+  intros n d c n' d' c' H Hrf. unfold optimize_chain_ivsett in H.
+  destruct (optimize_rules_ivsett (Datatypes.length (c_rules c)) n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst. cbn [c_rules].
+  apply (optimize_rules_ivsett_output_set_fresh _ _ _ _ _ _ _ E Hrf).
+Qed.
+
 (** *** ivsetg chain-level wrappers (guarded interval-set pass). *)
 Lemma optimize_chain_ivsetg_correct_uncond : forall n d c n' d' c' base p,
   optimize_chain_ivsetg n d c = (n', d', c') ->
@@ -4536,7 +4831,8 @@ Proof.
   destruct (optimize_chain_concatM n2 d2 c2) as [[nG dG] cG] eqn:EG.
   destruct (optimize_chain_setg nG dG cG) as [[nGs dGs] cGs] eqn:EGs.
   destruct (optimize_chain_ivset nGs dGs cGs) as [[nI dI] cI] eqn:EI.
-  destruct (optimize_chain_dscp nI dI cI) as [[nDs dDs] cDs] eqn:EDs.
+  destruct (optimize_chain_ivsett nI dI cI) as [[nIt dIt] cIt] eqn:EIt.
+  destruct (optimize_chain_dscp nIt dIt cIt) as [[nDs dDs] cDs] eqn:EDs.
   destruct (optimize_chain_ivsetg nDs dDs cDs) as [[nIg dIg] cIg] eqn:EIg.
   destruct (optimize_chain_ivmixg nIg dIg cIg) as [[nMx dMx] cMx] eqn:EMx.
   destruct (optimize_chain_vmapNg nMx dMx cMx) as [[nVg dVg] cVg] eqn:EVg.
@@ -4573,7 +4869,8 @@ Proof.
   pose proof (optimize_chain_concatM_mono n2 d2 c2 nG dG cG EG) as HmnG.
   pose proof (optimize_chain_setg_mono nG dG cG nGs dGs cGs EGs) as HmnGs.
   pose proof (optimize_chain_ivset_mono nGs dGs cGs nI dI cI EI) as HmnI.
-  pose proof (optimize_chain_dscp_mono nI dI cI nDs dDs cDs EDs) as HmnDs.
+  pose proof (optimize_chain_ivsett_mono nI dI cI nIt dIt cIt EIt) as HmnIt.
+  pose proof (optimize_chain_dscp_mono nIt dIt cIt nDs dDs cDs EDs) as HmnDs.
   pose proof (optimize_chain_ivsetg_mono nDs dDs cDs nIg dIg cIg EIg) as HmnIg.
   pose proof (optimize_chain_ivmixg_mono nIg dIg cIg nMx dMx cMx EMx) as HmnMx.
   (* setname-freshness threading through setsN, concatK, mapn, concatN (all mint setnames) *)
@@ -4594,8 +4891,10 @@ Proof.
   { rewrite (optimize_chain_setg_vmaps nG dG cG nGs dGs cGs EGs). exact HvmG. }
   assert (HvmI : sd_vmaps dI = sd_vmaps dS).
   { rewrite (optimize_chain_ivset_vmaps nGs dGs cGs nI dI cI EI). exact HvmGs. }
+  assert (HvmIt : sd_vmaps dIt = sd_vmaps dS).
+  { rewrite (optimize_chain_ivsett_vmaps nI dI cI nIt dIt cIt EIt). exact HvmI. }
   assert (HvmDs : sd_vmaps dDs = sd_vmaps dS).
-  { rewrite (optimize_chain_dscp_vmaps nI dI cI nDs dDs cDs EDs). exact HvmI. }
+  { rewrite (optimize_chain_dscp_vmaps nIt dIt cIt nDs dDs cDs EDs). exact HvmIt. }
   assert (HvmIg : sd_vmaps dIg = sd_vmaps dS).
   { rewrite (optimize_chain_ivsetg_vmaps nDs dDs cDs nIg dIg cIg EIg). exact HvmDs. }
   assert (HfvIg : forall k, nIg <= k -> ~ In (vmapname k) (map fst (sd_vmaps dIg))).
@@ -4623,11 +4922,16 @@ Proof.
   pose proof (optimize_chain_ivset_output_vmap_fresh nGs dGs cGs nI dI cI EI HrvGs) as HrvI.
   pose proof (optimize_chain_ivset_fresh_setname nGs dGs cGs nI dI cI EI HfsGs) as HfsI.
   pose proof (optimize_chain_ivset_output_set_fresh nGs dGs cGs nI dI cI EI HrsGs) as HrsI.
+  (* ivsett stage (host-order interval->set): mints [setname]s, preserves sd_vmaps,
+     threads setname-decl-freshness + rule_set/vmap-freshness into dscp. *)
+  pose proof (optimize_chain_ivsett_output_vmap_fresh nI dI cI nIt dIt cIt EIt HrvI) as HrvIt.
+  pose proof (optimize_chain_ivsett_fresh_setname nI dI cI nIt dIt cIt EIt HfsI) as HfsIt.
+  pose proof (optimize_chain_ivsett_output_set_fresh nI dI cI nIt dIt cIt EIt HrsI) as HrsIt.
   (* dscp stage (masked-payload value->set): mints [setname]s, preserves sd_vmaps,
      threads setname-decl-freshness + rule_set/vmap-freshness into ivsetg. *)
-  pose proof (optimize_chain_dscp_output_vmap_fresh nI dI cI nDs dDs cDs EDs HrvI) as HrvDs.
-  pose proof (optimize_chain_dscp_fresh_setname nI dI cI nDs dDs cDs EDs HfsI) as HfsDs.
-  pose proof (optimize_chain_dscp_output_set_fresh nI dI cI nDs dDs cDs EDs HrsI) as HrsDs.
+  pose proof (optimize_chain_dscp_output_vmap_fresh nIt dIt cIt nDs dDs cDs EDs HrvIt) as HrvDs.
+  pose proof (optimize_chain_dscp_fresh_setname nIt dIt cIt nDs dDs cDs EDs HfsIt) as HfsDs.
+  pose proof (optimize_chain_dscp_output_set_fresh nIt dIt cIt nDs dDs cDs EDs HrsIt) as HrsDs.
   pose proof (optimize_chain_ivsetg_output_vmap_fresh nDs dDs cDs nIg dIg cIg EIg HrvDs) as HrvIg.
   (* ivsetg setname-decl-freshness + rule_set_fresh, threaded into the ivmixg stage. *)
   pose proof (optimize_chain_ivsetg_fresh_setname nDs dDs cDs nIg dIg cIg EIg HfsDs) as HfsIg.
@@ -4641,7 +4945,8 @@ Proof.
   rewrite (optimize_chain_vmapNg_correct_uncond nMx dMx cMx nVg dVg cVg base p EVg HfvMx HrvMx).
   rewrite (optimize_chain_ivmixg_correct_uncond nIg dIg cIg nMx dMx cMx base p EMx HfsIg HrsIg).
   rewrite (optimize_chain_ivsetg_correct_uncond nDs dDs cDs nIg dIg cIg base p EIg HfsDs HrsDs).
-  rewrite (optimize_chain_dscp_correct_uncond nI dI cI nDs dDs cDs base p EDs HfsI HrsI).
+  rewrite (optimize_chain_dscp_correct_uncond nIt dIt cIt nDs dDs cDs base p EDs HfsIt HrsIt).
+  rewrite (optimize_chain_ivsett_correct_uncond nI dI cI nIt dIt cIt base p EIt HfsI HrsI).
   rewrite (optimize_chain_ivset_correct_uncond nGs dGs cGs nI dI cI base p EI HfsGs HrsGs).
   rewrite (optimize_chain_setg_correct_uncond nG dG cG nGs dGs cGs base p EGs HfsG HrsG).
   rewrite (optimize_chain_concatM_correct_uncond n2 d2 c2 nG dG cG base p EG Hfs2 Hrs2).
