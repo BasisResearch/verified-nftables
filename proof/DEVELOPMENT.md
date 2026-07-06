@@ -8,10 +8,10 @@ corpus**: the verified compiler reproduces the real tool's bytecode on
 **2532 / 2532 (100%)** of the corpus's rule-blocks, with **zero mismatches** on
 the supported subset.
 
-This implements the *"Goal for now"* in `../instructions.org` (Rocq only, no VST
-yet): specify the DSL, specify the control-plane bytecode, write a verified
-semantics-preserving compiler, and a verified optimization pass — and validate
-the model against a real corpus rather than hand-written examples.
+This implements the project's *"Goal for now"* (Rocq only, no VST yet): specify
+the DSL, specify the control-plane bytecode, write a verified semantics-preserving
+compiler, and a verified optimization pass — and validate the model against a real
+corpus rather than hand-written examples.
 
 > **Read this before trusting the 100%.** "2532/2532" is *control-plane
 > byte-identity of single base chains* — it says the compiler emits the same
@@ -20,8 +20,9 @@ the model against a real corpus rather than hand-written examples.
 > correctness theorem is **vacuous** in several important dimensions because the
 > DSL semantics and the bytecode VM *share* the same abstractions. See
 > **"Known semantic gaps"** below. The corpus could never reveal these (it never
-> populates a set, never uses a jump, always abstracts stateful values), and
-> declaring the work "complete" on it was premature — see `../issues.org`.
+> populates a set, never uses a jump, always abstracts stateful values), so
+> declaring the work "complete" on it would be premature — the "Known semantic
+> gaps" section and [`../NOTES.md`](../NOTES.md) track what remains.
 
 > **Data-plane fidelity audit (2026-06) — many gaps below are now CLOSED.** After the
 > work logged here, the data-plane semantics was hardened by an **adversarial red/blue
@@ -287,7 +288,7 @@ corpus round-trip.
 | `extracted/glue.ml` | *untrusted* glue: builds chains, renders nft-format bytecode (forward test) |
 | `extracted/lexer.mll` `parser.mly` `nft_ast.ml` `nft_lower.ml` `nft_parse.ml` | *untrusted* **`.nft` text → `Syntax` AST frontend** (TODO 9): ocamllex+Menhir surface parser → lowering (define/symbol resolution, implicit-l4proto deps, CIDR/range/concat, anonymous-set/vmap → `env`, `include` expansion) → `Nft_parse.parse_file` |
 | `extracted/nft_emit.ml` `nft2coq.ml` | *untrusted* **AST → Coq emitter**: serialise the parsed chains + `set_decls`/`env` as Coq `Definition`s (`make gen`), so proofs reason about the parser's real output |
-| `theories/Optiplex_Gen.v` `Ruleset_Gen.v` | **generated** by `nft2coq` from `../rulesets/optiplex.nft` / `../rulesets/ruleset.nft` (the parser's output as Coq terms; kernel-checked) |
+| `theories/Optiplex_Gen.v` `Ruleset_Gen.v` `Router_Gen.v` `Tutorial_Gen.v` | **generated** by `nft2coq` from the matching `../rulesets/*.nft` (`make gen`; the parser's output as Coq terms, kernel-checked). `Tutorial_Gen.v` backs the [`CONFIG_PROOFS.md`](CONFIG_PROOFS.md) tutorial |
 | `theories/Optiplex_Antispoof.v` | **anti-spoofing** proofs about the parsed `optiplex.nft` bridge `output` chain (+ legit-traffic-allowed); all axiom-free |
 | `theories/Optiplex_Antispoof_Gaps.v` | **adversarial** proofs: the binding is unenforced outside `@vmaddrs` / off br.20 (real bypasses), axiom-free |
 | `theories/Optiplex_Mark.v` | **firewall-mark** proofs about the parsed prerouting/postrouting chains: marking RDP traffic, mark-gated masquerade, cross-hook flow; axiom-free |
@@ -849,7 +850,7 @@ synthesises them with no new constructor. All three headline `nft -o` merge
 families (value→set, value+verdict→vmap, two-selector→concat-set) are now ported
 as runnable, verdict-preserving, axiom-free passes.
 
-### TODO 8 — (future, per `../instructions.org`) Data-plane interpreter + VST
+### TODO 8 — (future) Data-plane interpreter + VST
 A data-plane bytecode *interpreter* spec (what the C engine does to a packet) and
 VST proofs that the C interpreter meets it (CompCert/clightgen). This is the
 "end-to-end verified implementation" north star beyond the control-plane compiler.

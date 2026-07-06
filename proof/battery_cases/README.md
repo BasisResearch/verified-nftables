@@ -104,18 +104,29 @@ past userspace and are adjudicated by the **kernel** set backend (`pipapo`).
 | 17 | udp_dport_set | bare `udp dport` values, same verdict → set | **MATCH** — *landed this run* (bare-transport-port-set) |
 | 18 | tcp_dport_vmap | bare `tcp dport` distinct values, differing verdicts → vmap | **MATCH** — *landed (`Optimize_Vmapg`, guarded value+verdict→vmap)*: the l4proto-guarded run folds to `tcp dport vmap { 22:drop, 80:accept, 443:drop }`, byte-identical to `nft -o`; kernel-loaded + data-plane-equivalent to the 3 originals |
 | 19 | meta_mark_set | bare `meta mark` values, same verdict → set | **MATCH** — *landed this run* (metafield-fixedwidth-set, `Optimize_Merge`) |
+| 20 | ctstate_mask_union | bitmask `ct state new; established`, same verdict | **MATCH (sound variant) / nft BUG** — we fold to the sound union `state & 0xa != 0` (`Optimize_Ctmask`); nft's exact-set `{new, established}` is the **bitmask defect** — unsound on multi-bit states (see the §20 note below) |
 | — | MINIMAL_…_failclosed_bug | canonical duplicate of 03 (filename is historical) | **nft BUG** — minimal repro of the single-field-overlap defect |
 
 ## Is "absolutely no gap" achieved?
 
-**No.** A previous revision claimed no *sound-to-close* gap remained (treating
-14/15 as principled soundness declines). That was an error — see the 2026-07
-correction under Residue: shapes **14/15 are genuine, closeable modeling gaps**
-(`nft -o`'s fold is verdict-correct; we can't yet produce it because we don't
-model ordered interval sets). Every *disjoint-key* consolidation is matched or
-exceeded, and every overlapping-key case `nft -o` gets wrong is soundly declined;
-but closing 14/15 requires a real semantics extension and is **open work**. The
-two families targeted this run are now fully matched:
+**No** — two open gaps remain (tracked canonically in [`../../NOTES.md`](../../NOTES.md)):
+
+- **G1 — differing-verdict multi-field concat → concat vmap** (soundly closeable,
+  no new semantics). The *same-verdict* concat→set case already folds; the open
+  case is `ip saddr X tcp dport Y accept; … drop` → `saddr . tcp dport vmap { … }`.
+  No stage today produces a *concat-keyed vmap*. Spec: a new `Optimize_ConcatVmap.v`
+  (= `Optimize_ConcatM` × `Optimize_Vmap`). A substantial new proof, deferred by
+  the 2026-07-02 G-round rather than half-landed.
+- **Shapes 14/15 — strictly-interior overlapping-verdict concat → vmap** (needs a
+  semantics extension). `nft -o`'s fold *is* verdict-correct (the concat `pipapo`
+  set is ordered → resolves to the lowest rule index), but our `Semantics.v` models
+  set/vmap lookup as unordered/disjoint-key, so we can't yet produce it. Real open
+  work.
+
+Every *disjoint-key* consolidation is matched or exceeded; every case `nft -o` gets
+wrong — the overlapping-key unloadable merge (03/04/07/13/MINIMAL) and the
+bitmask-field exact-set (20) — is soundly declined. The two families targeted the
+run this file was first written for are now fully matched:
 
 - **bare-transport-port-set** (16, 17): bare `tcp/udp dport { … }` fold to a
   2-byte `inet_service` set exactly as `nft -o`, kernel-byte-identical lowering.

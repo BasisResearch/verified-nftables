@@ -13,66 +13,80 @@ see [`adversarial.md`](adversarial.md).
   precondition. All three headline theorems `Closed under the global context`.
 - **Register-free source AST** (`Syntax.v`): nat/tproxy/fwd/queue terminals and the
   dup/dynset statements name VALUES; the compiler allocates every netlink register.
-- **Optimizer pipeline** (each pass verified & composed into `optimize_table`):
-  base dedup/DCE → **dnat** bare-map → **snat** bare-map → value→set (setsN) →
-  K-field concat → meta-mark map (mapN, sound superset) → 2-field concat →
-  **transport-guarded concat** (concatM, e.g. `ip saddr . tcp dport`) →
-  **transport-guarded single-field set** (setg, e.g. bare `tcp dport { … }` /
-  `udp dport { … }`) → **interval set** (ivset) → value+verdict→vmap. Matches
-  `nft -o` on every safe consolidation.
+- **Optimizer pipeline** (base dedup/DCE + **18** verified consolidation passes,
+  each machine-checked & composed into `optimize_table` — see `Optimize_Table.v`
+  for the exact order). The families now folded (each verdict-preserving,
+  kernel-datapath-checked):
+  - **value → SET**: network addresses (`setsN`); transport ports & `ether saddr`
+    L2 (`setg`); fixed-width meta scalars — `mark`/`skuid`/`skgid`/`l4proto`/
+    `nfproto`/`pkttype`/`cpu`/`protocol` — plus `iifname`/`oifname` strings and
+    scalar `ct mark` (`Optimize_Merge`).
+  - **value+verdict → VMAP**: network address + transport + `ether saddr` L2
+    (`vmapNg`), network (`vmapN`), `ip dscp` (`dscpv`).
+  - **interval RANGE → set**: network (`ivset`), host-order `ct mark` (`ivsett`),
+    guarded transport/inet (`ivsetg`), mixed point+range (`ivmixg`).
+  - **concat**: K-field (`concatK`), 2-field (`concatN`), transport-guarded
+    (`concatM`, e.g. `ip saddr . tcp dport`).
+  - **maps**: `dnat`/`snat` bare-map, meta-mark map (`mapn`, sound superset).
+  - **`ct state` bitmask-UNION** (`ctmask` — the *sound* `state & 0x0a != 0`,
+    NOT nft's exact-set; see the nft bitmask defect below), **`ip dscp` masked
+    set** (`dscp`), same-verdict **prefix absorption** `/24 ⊂ /16 → /16` (`absorb`).
+
+  Matches `nft -o` on every *representable, verdict-preserving* consolidation, and
+  **exceeds** it where nft declines (e.g. `saddr → meta mark` map).
 - **Untrusted tooling**: the `nftc` CLI (`compile`/`optimize`/`send`), a full
   netlink sender that stands up a whole ruleset atomically (NEWTABLE/CHAIN/SET/…),
   and a rootless-VM end-to-end harness (`make vmtest`).
-- **nft --optimize defect found**: it merges overlapping-key rules into an
-  interval set/vmap **without checking representability**, emitting an unloadable
-  ruleset (nftables correctly rejects it — in userspace for single-field overlaps,
-  in the kernel for dead-rule concats — and the `-f` transaction aborts with 0
-  rules applied). A valid disjoint merge exists; nft doesn't compute it. Our
-  optimizer soundly declines. Full analysis + reproducer under
-  `proof/battery_cases/` (`README.md`).
+- **Two `nft --optimize` defects found** (we soundly decline both; full analysis +
+  reproducers under `proof/battery_cases/`):
+  1. **Overlapping-key merge → unloadable ruleset.** It merges overlapping-key
+     rules into an interval set/vmap **without checking representability**;
+     nftables correctly rejects the result (userspace `intervals.c` for
+     single-field overlaps, kernel `pipapo` for dead-rule concats), so `-f`
+     aborts with **0 rules applied**. A valid disjoint merge exists; nft doesn't
+     compute it.
+  2. **Bitmask-field exact-set merge → changed verdict.** For bitmask fields
+     (`ct state`, `tcp flags`) a single rule compiles to a *bit-test*
+     (`bitwise & mask; cmp neq 0`), but nft folds `{a, b}` into an *exact-value*
+     set (dropping the bitwise). A packet with extra bits set (e.g. `tcp flags`
+     `0x12` = SYN+ACK) matches the bit-test but misses the exact set → the fold
+     silently changes the verdict. We instead fold the *sound* same-verdict
+     mask-union (`state & (a|b) != 0`, one masked compare; `Optimize_Ctmask`).
 
 ## Remaining work
 
-### Optimizer — all DISJOINT-key consolidations matched; one real gap left (14/15)
-Every consolidation the differential battery (`proof/difftest_battery.sh`, 20 shapes,
-`proof/battery_cases/README.md`) surfaces over **disjoint keys** is now MATCHed or
-EXCEEDed by our verified optimizer, each a machine-checked axiom-free pass composed
-into `optimize_table_uncond`:
-- transport-guarded single-field SET (`Optimize_Setg.v`) — bare `tcp/udp dport { … }`;
-- transport-guarded value+verdict → **VMAP** (`Optimize_Vmapg.v`) — `tcp dport vmap
-  { 22:drop, 80:accept, … }` (shape 18);
-- fixed-width metafield SET (`Optimize_Merge.v`) — `meta mark`, and adjacent-prefix
-  union (shape 06) folds here to an interval-equivalent set;
-- same-verdict prefix **ABSORPTION** (`Optimize_Absorb.v`) — `10.0.0.0/24` inside
-  `10.0.0.0/16` collapses to the covering `/16` (shape 05);
-- plus the pre-existing network-address set/vmap, K-field concat, guarded concat,
-  interval set, dnat/snat bare-map stages.
-All kernel-confirmed (netns packet-level verdict differential, not just loadability).
+### Optimizer — one soundly-closeable gap (G1) + one needing new semantics (14/15)
+The pipeline (above) MATCHes or EXCEEDs `nft -o` on every
+*representable, verdict-preserving* consolidation the differential battery
+(`proof/difftest_battery.sh`, `proof/battery_cases/README.md`) surfaces — all
+kernel-confirmed by netns packet-level verdict differential, not just loadability.
+What remains open:
 
-**Open gap — shapes 14/15 (overlapping-verdict concat→vmap, narrower-first).**
-CORRECTION (2026-07): these were previously mislabeled "soundness-necessary declines."
-They are in fact **genuine modeling gaps** — `nft -o`'s fold *is* verdict-correct. A
-concatenated interval set (kernel `pipapo`) is an *ordered* first-match structure
-(lookup returns the lowest rule index via `pipapo_refill`/`__builtin_ctzl`), and nft
-emits the vmap elements in rule order, so `dport 22→drop, 50→accept` matches first-match
-exactly (datapath-verified); the wrong (dead-rule) order is refused by the kernel. We
-decline only because `Semantics.v` models set/vmap lookup as unordered/disjoint-key and
-does not yet model ordered interval sets. **Closing 14/15 needs that semantics
-extension** + a pass folding only the live (narrower-first) overlap case — real open
-work, not trivial. See `proof/battery_cases/README.md` for the full corrected analysis
-and the kernel-source citations.
+- **G1 — differing-verdict multi-field concat → concat VMAP** (soundly closeable,
+  no new semantics; the honest deferral from the 2026-07-02 G1–G4 round). The
+  *same-verdict* concat→SET case already folds (`concatK/N/M`); the open case is
+  `ip saddr X tcp dport Y accept; … Z drop` → `saddr . tcp dport vmap { X.Y :
+  accept, … : drop }`. No stage today produces a *concat-keyed vmap* (every vmap
+  stage has a single-field key; every concat stage yields a single-verdict set).
+  Spec: a new `Optimize_ConcatVmap.v` = `Optimize_ConcatM` (multi-field concat-key
+  recogniser) × `Optimize_Vmap` (`assoc_verdict` first-match order), composed
+  between `concatM` and `setg`. A substantial new proof, not a template tweak.
 
-The remaining non-matches that are **not** our gaps are one `nft --optimize`
-**defect**: it merges rules into an interval set/vmap **without checking the result is
-representable**, so it emits an **unloadable** overlapping set — overlapping single-field
-keys (03/07/13/MINIMAL, unrepresentable in *either* backend since `/24⊂/16` shares a
-start; caught in nft **userspace** `intervals.c` before netlink) or a dead-rule concat
-(04, caught by the **kernel** `pipapo` endpoint check). In apply mode the transaction
-aborts (`exit 1`, 0 rules applied); a valid *disjoint* merge exists (e.g. `{ /24 : drop,
-10.0.1.0-10.0.255.255 : accept }`) but nft doesn't compute it. nftables core is correct;
-the bug is in `src/optimize.c`. We soundly decline. Untested-by-the-battery field types
-(`ct state` flag-masks, `iifname` strings, `ether saddr` L2) have no battery shape yet — a
-consolidation pass for them is possible future work, not a known divergence.
+- **Shapes 14/15 — strictly-interior overlapping-verdict concat → vmap** (needs a
+  semantics extension). `nft -o`'s fold *is* verdict-correct here: a concatenated
+  interval set (kernel `pipapo`) is an *ordered* first-match structure (lookup
+  returns the lowest rule index, `pipapo_refill`/`__builtin_ctzl`), and nft emits
+  the elements in rule order, so `dport 22→drop, 50→accept` matches first-match
+  (datapath-verified); the wrong (dead-rule) order is refused by the kernel. We
+  decline only because `Semantics.v` models set/vmap lookup as unordered/disjoint-key.
+  Closing it needs modeling the kernel's ordered/rule-indexed interval-set
+  semantics — genuine open work.
+
+The remaining non-matches are **not our gaps** — they are the two `nft --optimize`
+defects (see "What's shipped" above): the overlapping-key unloadable merge
+(battery 03/04/07/13/MINIMAL) and the bitmask-field exact-set verdict change
+(`ct state`/`tcp flags`). We decline both. See `proof/battery_cases/README.md` for
+the per-shape classification and kernel-source citations.
 
 ### Data-plane fidelity (compiler/semantics, not the optimizer)
 - **Register byte-order sweep**: the ct_state wire-order bug (model stored it

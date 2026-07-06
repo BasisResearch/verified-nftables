@@ -2,9 +2,9 @@
 
 > Secondary, future-facing scaffold. The substance of this repo is the
 > Rocq-verified nftables compiler under [`proof/`](proof/DEVELOPMENT.md); this
-> environment exists for the *later* data-plane (VST) work described in
-> `instructions.org`. See the top-level [README.md](README.md) for the
-> verification story.
+> environment exists for the *later* data-plane (VST) work (future-facing
+> scaffold, not the current verification effort). See the top-level
+> [README.md](README.md) for the verification story.
 
 A reproducible Linux **kernel development environment**: download an upstream
 kernel from kernel.org, compile it, and boot it in a lightweight VM where you

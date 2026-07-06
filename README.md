@@ -129,5 +129,5 @@ kernel state and requires `--commit`, otherwise it dry-runs). Flags: `--table T`
 | `make lib` / `make example` | build the reusable `nftc` library / build+run its standalone consumer demo |
 | `make gen` | regenerate the parser-output Coq terms (`theories/*_Gen.v`) from the `.nft` sources |
 
-Sample rulesets to try the CLI on live in `rulesets/`: `rulesets/ruleset.nft`, `rulesets/router.nft`,
-`optiplex.nft`.
+Sample rulesets to try the CLI on live in `rulesets/`: `rulesets/ruleset.nft`,
+`rulesets/router.nft`, `rulesets/optiplex.nft`, `rulesets/tutorial.nft`.
