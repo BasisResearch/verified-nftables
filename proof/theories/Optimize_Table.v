@@ -29,7 +29,7 @@ From Stdlib Require Import Lia.
 Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
   Compile Correct Optimize Optimize_Merge Optimize_Vmap Optimize_Vmapg Optimize_Concat Optimize_ConcatK
-  Optimize_ConcatM Optimize_Setg Optimize_Ivset Optimize_Ivsetg Optimize_Ivmixg Optimize_Absorb Optimize_Ctmask Optimize_Dscp Optimize_Ivsett Optimize_Mapn Optimize_Dnat Optimize_Snat Optimize_Table_Inv.
+  Optimize_ConcatM Optimize_Setg Optimize_Ivset Optimize_Ivsetg Optimize_Ivmixg Optimize_Absorb Optimize_Ctmask Optimize_Dscp Optimize_Dscpv Optimize_Ivsett Optimize_Mapn Optimize_Dnat Optimize_Snat Optimize_Table_Inv.
 
 (** ** Step 1: the base pass preserves [rules_clean].
 
@@ -245,7 +245,8 @@ Definition optimize_table (n : nat) (d : set_decls) (c : chain)
   let '(nIg, dIg, cIg) := optimize_chain_ivsetg nDs dDs cDs in
   let '(nMx, dMx, cMx) := optimize_chain_ivmixg nIg dIg cIg in
   let '(nVg, dVg, cVg) := optimize_chain_vmapNg nMx dMx cMx in
-  optimize_chain_vmapN nVg dVg cVg.
+  let '(nDv, dDv, cDv) := optimize_chain_dscpv nVg dVg cVg in
+  optimize_chain_vmapN nDv dDv cDv.
 
 (** ** Correctness of [optimize_table] lives in [Optimize_Uncond.v], where it is
     proved UNCONDITIONALLY — with NO [rules_clean] and NO caller-supplied freshness
