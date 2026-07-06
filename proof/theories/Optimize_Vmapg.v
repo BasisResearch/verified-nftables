@@ -58,9 +58,19 @@ Local Open Scope nat_scope.
     demands of a transport port, so the merge is sound.  Distinct address literals are
     disjoint exact points => a VALID single-field vmap (no overlapping-interval defect).
 
+    The SAME guard-agnostic pass also folds the L2 arm (gap G3): a run of
+    differing-verdict `ether saddr <MAC> <w>` rules — lowered by the frontend with the
+    implicit `meta iiftype == ARPHRD_ETHER (1)` dependency ([Optimize_Setg.guard_okl2],
+    [nft_lower.ml]'s [DIiftype]) — folds into ONE `ether saddr vmap { MAC : w, .. }`
+    lookup.  The 6-byte MAC field [FEtherSaddr]/[FEtherDaddr] has [field_fixed_len]
+    pinned to [Some 6], the same fixed-width certificate [vmap_run_pairG] demands;
+    distinct MAC literals are disjoint exact points => a VALID single-field vmap.  The
+    recogniser's guard whitelist below therefore admits [guard_ok] (l4proto) OR
+    [guard_okn] (nfproto) OR [guard_okl2] (iiftype).
+
     Every lemma in this module is guard-AGNOSTIC (soundness never inspects [gm]); the
-    guard whitelist is purely an nft-fidelity gate, so admitting the nfproto guard adds
-    a new fold WITHOUT weakening any proof. *)
+    guard whitelist is purely an nft-fidelity gate, so admitting the nfproto/iiftype
+    guards adds new folds WITHOUT weakening any proof. *)
 Definition guard_okn (gm : matchcond) : bool :=
   match gm with
   | MCmp FMetaNfproto CEq _ => true
@@ -189,7 +199,7 @@ Definition vmap_run_pairG (r1 r2 : rule)
   match head_valueGs r1, head_valueGs r2 with
   | Some (gm1, f1, v1, rest1), Some (gm2, f2, v2, rest2) =>
       if matchcond_eq_dec gm1 gm2 then
-      if guard_ok gm1 || guard_okn gm1 then
+      if guard_ok gm1 || guard_okn gm1 || guard_okl2 gm1 then
       if field_eq_dec f1 f2 then
       if list_eq_dec body_item_eq_dec rest1 rest2 then
       match field_fixed_len f1 with
@@ -222,7 +232,7 @@ Proof.
   destruct (head_valueGs r1) as [[[[gm1 f1] u1] s1] |] eqn:H1; [| discriminate].
   destruct (head_valueGs r2) as [[[[gm2 f2] u2] s2] |] eqn:H2; [| discriminate].
   destruct (matchcond_eq_dec gm1 gm2) as [Egm |]; [| discriminate]. subst gm2.
-  destruct (guard_ok gm1 || guard_okn gm1) eqn:Egok; [| discriminate].
+  destruct (guard_ok gm1 || guard_okn gm1 || guard_okl2 gm1) eqn:Egok; [| discriminate].
   destruct (field_eq_dec f1 f2) as [Ef |]; [| discriminate]. subst f2.
   destruct (list_eq_dec body_item_eq_dec s1 s2) as [Es |]; [| discriminate]. subst s2.
   destruct (field_fixed_len f1) as [len |] eqn:Hfx; [| discriminate].
