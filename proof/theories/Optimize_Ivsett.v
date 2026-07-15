@@ -32,7 +32,7 @@
     over the interval set [(lo_1,hi_1); …; (lo_N,hi_N)] — exactly nft's consolidation,
     with the SAME transforms carried in both the original ranges and the merged set head.
 
-    SOUNDNESS.  The transformed value [v = apply_transforms ts (field_value f p)] is the
+    SOUNDNESS.  The transformed value [v = apply_transforms ts (field_value f e p)] is the
     SAME operand in both an [MRangeT]'s range test ([data_in_iv v (lo,hi)]) and the
     [MSetT]'s membership ([set_mem v = existsb (data_in_iv v)]), so the merged head is
     EXACTLY the [existsb] disjunction of the run's ranges ([msett_ivs_existsb]) — with NO
@@ -66,12 +66,12 @@ Definition ranget_ok (ts : list transform) : bool :=
 
 (** *** The membership certificate: an [MSetT] over an interval set is EXACTLY the
     [existsb] disjunction of the corresponding [MRangeT] matches (same transforms). *)
-Lemma eval_mranget_iv : forall f ts lo hi q,
-  eval_matchcond (MRangeT f ts false lo hi) q
+Lemma eval_mranget_iv : forall f ts lo hi e q,
+  eval_matchcond (MRangeT f ts false lo hi) e q
   = andb (field_loadable f q)
-         (data_in_iv (apply_transforms ts (field_value f q)) (lo, hi)).
+         (data_in_iv (apply_transforms ts (field_value f e q)) (lo, hi)).
 Proof.
-  intros f ts lo hi q.
+  intros f ts lo hi e q.
   unfold eval_matchcond, eval_matchcond_body, match_loadable.
   unfold eval_range, data_in_iv. cbn [fst snd]. reflexivity.
 Qed.
@@ -84,12 +84,12 @@ Lemma match_loadable_msett : forall f ts name q,
   match_loadable (MSetT f ts false name) q = field_loadable f q.
 Proof. reflexivity. Qed.
 
-Lemma msett_ivs_existsb : forall f ts ivs name q,
-  e_set (pkt_env q) name = ivs ->
-  eval_matchcond (MSetT f ts false name) q
-  = existsb (fun iv => eval_matchcond (MRangeT f ts false (fst iv) (snd iv)) q) ivs.
+Lemma msett_ivs_existsb : forall f ts ivs name e q,
+  e_set e name = ivs ->
+  eval_matchcond (MSetT f ts false name) e q
+  = existsb (fun iv => eval_matchcond (MRangeT f ts false (fst iv) (snd iv)) e q) ivs.
 Proof.
-  intros f ts ivs name q Hset.
+  intros f ts ivs name e q Hset.
   unfold eval_matchcond at 1, eval_matchcond_body at 1.
   cbn [match_loadable].
   destruct (field_loadable f q) eqn:Hld; cbn [andb].

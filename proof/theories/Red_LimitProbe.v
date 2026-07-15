@@ -41,9 +41,9 @@ Definition env1 : env :=
      e_connlimit := fun _ => []; e_ct := fun _ _ => []; e_nat := fun _ => None;
      e_numgen := fun _ => 0 |}.
 
-Definition mkpkt (e : env) (flow : data) : packet :=
-  {| pkt_env := e; pkt_meta := fun _ => [];
-     pkt_ct := fun _ => []; pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
+Definition mkpkt (flow : data) : packet :=
+  {| pkt_meta := fun _ => [];
+     pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := []; pkt_th := []; pkt_ih := [];
      pkt_tnl := []; pkt_fibkey := fun _ => [];
      pkt_numgen := fun _ => [9;9;9;9];
@@ -60,14 +60,14 @@ Definition rule_lim : rule :=
 Definition chain_lim : chain := {| c_policy := Drop; c_rules := [rule_lim] |}.
 
 (* Packet 1 of the flow, against the fresh (1 token) env. *)
-Definition pk1 : packet := mkpkt env1 [1;1].
+Definition pk1 : packet := mkpkt [1;1].
 
 (* Run the chain on packet 1, threading the env it leaves (the consumed bucket). *)
-Definition res1 : verdict * env := eval_chain_mut_env chain_lim pk1.
+Definition res1 : verdict * env := eval_chain_mut_env chain_lim env1 pk1.
 
 (* Packet 2 of the SAME flow, carrying the env packet 1 left (bucket now empty). *)
-Definition pk2 : packet := mkpkt (snd res1) [1;1].
-Definition v2 : verdict := fst (eval_chain_mut_env chain_lim pk2).
+Definition pk2 : packet := mkpkt [1;1].
+Definition v2 : verdict := fst (eval_chain_mut_env chain_lim (snd res1) pk2).
 
 (* Packet 1 PASSES the limit and is ACCEPTED (one token available). *)
 Lemma p1_accepted : fst res1 = Accept.
@@ -91,9 +91,9 @@ Proof. cbn. discriminate. Qed.
 (* ---- The VM side agrees: the compiled bytecode consumes the same bucket. ---- *)
 Definition prog_lim : program := compile_chain chain_lim.
 
-Definition vres1 : verdict * env := run_chain_mut_env prog_lim Drop pk1.
-Definition vpk2 : packet := mkpkt (snd vres1) [1;1].
-Definition vv2 : verdict := fst (run_chain_mut_env prog_lim Drop vpk2).
+Definition vres1 : verdict * env := run_chain_mut_env prog_lim Drop env1 pk1.
+Definition vpk2 : packet := mkpkt [1;1].
+Definition vv2 : verdict := fst (run_chain_mut_env prog_lim Drop (snd vres1) vpk2).
 
 Lemma vm_p1_accepted : fst vres1 = Accept.
 Proof. reflexivity. Qed.

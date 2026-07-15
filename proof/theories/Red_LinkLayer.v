@@ -74,8 +74,8 @@ Definition env0 : env :=
    SOURCE-MAC bytes [6..12) are exactly src_mac — to show the guard, not the byte
    length, is what makes the load BREAK. *)
 Definition locally_generated : packet :=
-  {| pkt_env := env0; pkt_meta := fun _ => [];
-     pkt_ct := fun _ => []; pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
+  {| pkt_meta := fun _ => [];
+     pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := [0;0;0;0;0;0] ++ src_mac ++ [0x08;0x00];   (* 14-byte L2 header *)
      pkt_nh := []; pkt_th := []; pkt_ih := [];
      pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
@@ -89,8 +89,8 @@ Definition locally_generated : packet :=
 (* The SAME packet but WITH a built MAC header (e.g. a forwarded/ingress packet at
    prerouting/forward): the `ether saddr` load succeeds and the rule DROPS. *)
 Definition has_l2 : packet :=
-  {| pkt_env := env0; pkt_meta := fun _ => [];
-     pkt_ct := fun _ => []; pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
+  {| pkt_meta := fun _ => [];
+     pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := [0;0;0;0;0;0] ++ src_mac ++ [0x08;0x00];
      pkt_nh := []; pkt_th := []; pkt_ih := [];
      pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
@@ -110,12 +110,12 @@ Proof. vm_compute. reflexivity. Qed.
 (* Consequently the rule is SKIPPED and the chain falls through to its accept
    policy — exactly the kernel verdict; an unguarded L2 read would Drop here. *)
 Theorem model_accepts_like_kernel :
-  eval_chain output_chain locally_generated = Accept.
+  eval_chain output_chain env0 locally_generated = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The same property holds via the stateful evaluator. *)
 Theorem model_accepts_like_kernel_mut :
-  eval_chain_mut output_chain locally_generated = Accept.
+  eval_chain_mut output_chain env0 locally_generated = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* With a built MAC header the load succeeds and the rule legitimately DROPS,
@@ -125,7 +125,7 @@ Lemma ether_load_ok_with_mac_header :
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem model_drops_with_mac_header :
-  eval_chain output_chain has_l2 = Drop.
+  eval_chain output_chain env0 has_l2 = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 (* For contrast: the analogous TRANSPORT load DOES carry its own guard — the model

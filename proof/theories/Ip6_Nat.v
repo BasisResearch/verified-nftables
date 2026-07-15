@@ -41,29 +41,25 @@ Definition ip6_snat_rule : rule :=
    len 16) to the target operand.  NAT is FLOW-STATEFUL ([e_nat], Packet.v): on the first
    packet of a flow ([e_nat .. = None]) the address rewrite is exactly as before AND
    the mapping is stored; the network header is unchanged by that env write. *)
-Lemma ip6_dnat_apply : forall h p,
+Lemma ip6_dnat_apply : forall h e p,
   pkt_ctdir_orig p = true ->
-  e_nat (pkt_env p) (pkt_flow p) = None ->
-  apply_nat h ip6_dnat_rule p
-    = store_nat_mapping (set_daddr "ip6" p tgt6)
-        (Some (slice (pkt_nh p) 24 16), Some tgt6, None, None).
+  e_nat e (pkt_flow p) = None ->
+  snd (apply_nat h ip6_dnat_rule e p) = set_daddr "ip6" p tgt6.
 Proof.
-  intros h p Horig Hnone. unfold apply_nat, ip6_dnat_rule, ip6_dnat_spec.
-  cbn -[set_daddr store_nat_mapping e_nat pkt_env pkt_flow tgt6 slice pkt_nh].
+  intros h e p Horig Hnone. unfold apply_nat, ip6_dnat_rule, ip6_dnat_spec.
+  cbn -[set_daddr store_nat_mapping e_nat pkt_flow tgt6 slice pkt_nh].
   rewrite Hnone.
   unfold apply_nat_tuple, nat_orig_addr, nat_is_src, nat_addrfamily, nat_operand_addr.
   cbn -[set_daddr store_nat_mapping tgt6 slice pkt_nh]. rewrite ?Horig; reflexivity.
 Qed.
 
-Lemma ip6_snat_apply : forall h p,
+Lemma ip6_snat_apply : forall h e p,
   pkt_ctdir_orig p = true ->
-  e_nat (pkt_env p) (pkt_flow p) = None ->
-  apply_nat h ip6_snat_rule p
-    = store_nat_mapping (set_saddr "ip6" p tgt6)
-        (Some (slice (pkt_nh p) 8 16), Some tgt6, None, None).
+  e_nat e (pkt_flow p) = None ->
+  snd (apply_nat h ip6_snat_rule e p) = set_saddr "ip6" p tgt6.
 Proof.
-  intros h p Horig Hnone. unfold apply_nat, ip6_snat_rule, ip6_snat_spec.
-  cbn -[set_saddr store_nat_mapping e_nat pkt_env pkt_flow tgt6 slice pkt_nh].
+  intros h e p Horig Hnone. unfold apply_nat, ip6_snat_rule, ip6_snat_spec.
+  cbn -[set_saddr store_nat_mapping e_nat pkt_flow tgt6 slice pkt_nh].
   rewrite Hnone.
   unfold apply_nat_tuple, nat_orig_addr, nat_is_src, nat_addrfamily, nat_operand_addr.
   cbn -[set_saddr store_nat_mapping tgt6 slice pkt_nh]. rewrite ?Horig; reflexivity.
@@ -71,11 +67,11 @@ Qed.
 
 (* Reading the IPv6 destination back: after the ip6 dnat, `ip6 daddr` IS the
    16-byte target (for a well-formed IPv6 header, >= 40 bytes). *)
-Lemma ip6_daddr_after_set : forall p v,
+Lemma ip6_daddr_after_set : forall e p v,
   40 <= List.length (pkt_nh p) -> List.length v = 16 ->
-  field_value FIp6Daddr (set_daddr "ip6" p v) = v.
+  field_value FIp6Daddr e (set_daddr "ip6" p v) = v.
 Proof.
-  intros p v Hlen Hv.
+  intros e p v Hlen Hv.
   unfold field_value; cbn [field_load do_load]; unfold read_payload.
   rewrite set_daddr_nh;
     change (daddr_slot "ip6") with (24, 16);
@@ -91,11 +87,11 @@ Proof.
   rewrite firstn_O, app_nil_r, firstn_all2 by lia. reflexivity.
 Qed.
 
-Lemma ip6_saddr_after_set : forall p v,
+Lemma ip6_saddr_after_set : forall e p v,
   40 <= List.length (pkt_nh p) -> List.length v = 16 ->
-  field_value FIp6Saddr (set_saddr "ip6" p v) = v.
+  field_value FIp6Saddr e (set_saddr "ip6" p v) = v.
 Proof.
-  intros p v Hlen Hv.
+  intros e p v Hlen Hv.
   unfold field_value; cbn [field_load do_load]; unfold read_payload.
   rewrite set_saddr_nh;
     change (saddr_slot "ip6") with (8, 16);
@@ -133,7 +129,7 @@ Definition e0 : env :=
      e_quota := fun _ => 0; e_ifaddrs := fun _ => []; e_ifaddrs6 := fun _ => []; e_connlimit := fun _ => [];
      e_ct := fun _ _ => []; e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
 Definition pkt6 : packet :=
-  {| pkt_env := e0; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
+  {| pkt_meta := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := seq 0 40; pkt_th := []; pkt_ih := []; pkt_tnl := [];
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
@@ -142,11 +138,11 @@ Definition pkt6 : packet :=
      pkt_inner := fun _ _ _ _ => []; pkt_have_l2 := true; pkt_have_l4 := false; pkt_fragoff := 0; pkt_flow := []; pkt_untracked := false; pkt_ctdir_orig := true; pkt_ct_present := true |}.
 
 Theorem ip6_dnat_dest_is_target :
-  field_value FIp6Daddr (apply_nat Hprerouting ip6_dnat_rule pkt6) = tgt6.
+  field_value FIp6Daddr e0 (snd (apply_nat Hprerouting ip6_dnat_rule e0 pkt6)) = tgt6.
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem ip6_snat_src_is_target :
-  field_value FIp6Saddr (apply_nat Hprerouting ip6_snat_rule pkt6) = tgt6.
+  field_value FIp6Saddr e0 (snd (apply_nat Hprerouting ip6_snat_rule e0 pkt6)) = tgt6.
 Proof. vm_compute. reflexivity. Qed.
 
 (** ** IPv6 masquerade rewrites the FULL 16-byte IPv6 source (family-aware).
@@ -188,7 +184,7 @@ Definition e6 : env :=
 (* A 40-byte IPv6 packet whose source slot (bytes 8..23) holds distinguishable
    markers 108..123, so an untouched source is detectable byte-for-byte. *)
 Definition pkt6m : packet :=
-  {| pkt_env := e6; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
+  {| pkt_meta := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := seq 100 40; pkt_th := []; pkt_ih := []; pkt_tnl := [];
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
@@ -200,24 +196,24 @@ Definition pkt6m : packet :=
    interface's IPv6 address [if6] (= ipv6_dev_get_saddr), reading back via
    FIp6Saddr (network bytes 8..23). *)
 Theorem masq6_src_is_ipv6_ifaddr :
-  field_value FIp6Saddr (apply_nat Hpostrouting masq6_rule pkt6m) = if6.
+  field_value FIp6Saddr e6 (snd (apply_nat Hpostrouting masq6_rule e6 pkt6m)) = if6.
 Proof. vm_compute. reflexivity. Qed.
 
 (* Dually: bytes 8..11 of the IPv6 source are NOT the original markers
    [108;109;110;111] — they are the new IPv6 ifaddr's first 4 bytes.  (Under an
    ip4-width splice the markers would survive, proving the source untouched.) *)
 Theorem masq6_does_rewrite_ipv6_source_prefix :
-  firstn 4 (skipn 8 (pkt_nh (apply_nat Hpostrouting masq6_rule pkt6m)))
+  firstn 4 (skipn 8 (pkt_nh (snd (apply_nat Hpostrouting masq6_rule e6 pkt6m))))
     <> [108;109;110;111].
 Proof. vm_compute. discriminate. Qed.
 
 (* The full 16-byte IPv6 source slot (8..23) is exactly [if6] — including the tail
    bytes 16..23 the family-blind model left untouched. *)
 Theorem masq6_full_source_slot :
-  firstn 16 (skipn 8 (pkt_nh (apply_nat Hpostrouting masq6_rule pkt6m))) = if6.
+  firstn 16 (skipn 8 (pkt_nh (snd (apply_nat Hpostrouting masq6_rule e6 pkt6m)))) = if6.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The network-header length is preserved (no 12-byte shift/corruption). *)
 Theorem masq6_nh_len_preserved :
-  List.length (pkt_nh (apply_nat Hpostrouting masq6_rule pkt6m)) = 40.
+  List.length (pkt_nh (snd (apply_nat Hpostrouting masq6_rule e6 pkt6m))) = 40.
 Proof. vm_compute. reflexivity. Qed.

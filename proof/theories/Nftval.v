@@ -329,11 +329,11 @@ Definition meq_typed (f : field) (v : nftval) : matchcond := MEq f (encode v).
 
 (** It is definitionally the byte-level [MEq] on [encode v]: the typed equality
     match agrees with the byte-level [eval_matchcond_body]. *)
-Lemma meq_encode_agrees : forall f v p,
-  eval_matchcond_body (meq_typed f v) p
-    = data_eqb (List.firstn (List.length (encode v)) (field_value f p)) (encode v).
+Lemma meq_encode_agrees : forall f v e p,
+  eval_matchcond_body (meq_typed f v) e p
+    = data_eqb (List.firstn (List.length (encode v)) (field_value f e p)) (encode v).
 Proof.
-  intros f v p. reflexivity.
+  intros f v e p. reflexivity.
 Qed.
 
 (** Sharper form for a FULL-WIDTH typed value (one whose encoding has the
@@ -342,23 +342,23 @@ Qed.
     equality match is the byte-level equality of the first [width_of ty] bytes of
     the field against [encode v].  This makes precise that the typed match is the
     REAL kernel cmp over the register slot. *)
-Lemma meq_encode_full_width : forall f v p,
+Lemma meq_encode_full_width : forall f v e p,
   wf v ->
-  eval_matchcond_body (meq_typed f v) p
-    = data_eqb (List.firstn (width_of (type_of v)) (field_value f p)) (encode v).
+  eval_matchcond_body (meq_typed f v) e p
+    = data_eqb (List.firstn (width_of (type_of v)) (field_value f e p)) (encode v).
 Proof.
-  intros f v p Hwf. simpl. rewrite (encode_length v Hwf). reflexivity.
+  intros f v e p Hwf. simpl. rewrite (encode_length v Hwf). reflexivity.
 Qed.
 
 (** Consequently: a typed equality match SUCCEEDS exactly when the field's
     leading [encode v] bytes ARE [encode v] — i.e. when the byte-level view of
     the field decodes (at the right width) to the typed value [v], for a
     well-formed [v].  This ties [decode]/[encode] to a real match outcome. *)
-Lemma meq_typed_true_iff : forall f v p,
-  eval_matchcond_body (meq_typed f v) p = true
-    <-> List.firstn (List.length (encode v)) (field_value f p) = encode v.
+Lemma meq_typed_true_iff : forall f v e p,
+  eval_matchcond_body (meq_typed f v) e p = true
+    <-> List.firstn (List.length (encode v)) (field_value f e p) = encode v.
 Proof.
-  intros f v p. rewrite meq_encode_agrees. apply data_eqb_true_iff.
+  intros f v e p. rewrite meq_encode_agrees. apply data_eqb_true_iff.
 Qed.
 
 (** And when it matches a well-formed value, [decode] of the matched field slice
@@ -366,13 +366,13 @@ Qed.
     "typed match agrees with the byte-level match, through the translation" lemma:
     a successful byte-level [MEq] against [encode v] is observationally a match of
     the TYPED value [v]. *)
-Lemma meq_typed_decodes : forall f v p,
+Lemma meq_typed_decodes : forall f v e p,
   wf v ->
-  data_wf (List.firstn (width_of (type_of v)) (field_value f p)) ->
-  eval_matchcond_body (meq_typed f v) p = true ->
-  decode (type_of v) (List.firstn (width_of (type_of v)) (field_value f p)) = Some v.
+  data_wf (List.firstn (width_of (type_of v)) (field_value f e p)) ->
+  eval_matchcond_body (meq_typed f v) e p = true ->
+  decode (type_of v) (List.firstn (width_of (type_of v)) (field_value f e p)) = Some v.
 Proof.
-  intros f v p Hwf Hdwf Hmatch.
+  intros f v e p Hwf Hdwf Hmatch.
   apply meq_typed_true_iff in Hmatch.
   rewrite (encode_length v Hwf) in Hmatch.
   rewrite Hmatch. apply decode_encode. exact Hwf.

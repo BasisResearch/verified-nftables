@@ -101,8 +101,8 @@ theorem is stated against is **not** faithful in these areas. Grouped by kind:
   neutral.)
 - ✅ **Dynamic sets (`add`/`update`/`delete @s {key}`)** *(FIXED 2026-06)*: a `dynset`
   whose target is a SET (no map data) now MUTATES the named-set state in the env
-  instead of being verdict-neutral.  `set_env_dynset`/`env_set_upd` (in `Semantics.v`)
-  insert the exact element `[key,key]` (add/update — so a later `set_mem` on `key`
+  instead of being verdict-neutral.  `env_set_upd` (in `Semantics.v`)
+  inserts the exact element `[key,key]` (add/update — so a later `set_mem` on `key`
   succeeds) or drop it (delete); this is threaded through the mutation machinery
   (`run_rule_writes` on `IDynset _ None`, `body_writes` on `SDynset _ _ _ []`), so a
   LATER rule's `lookup @s` observes the element this rule learned — the dynamic-set
@@ -113,8 +113,8 @@ theorem is stated against is **not** faithful in these areas. Grouped by kind:
   is learned by rule 1 and matched by rule 2, flipping the verdict the old
   verdict-neutral model gave (DROP) to ACCEPT, with VM = DSL.
 - ✅ **Map dynsets (`add @m {key : field}`)** *(FIXED 2026-06)*: a dynset whose data
-  is a packet FIELD now learns `key -> data` in the value map (`env_map_upd`/
-  `set_env_dynset_map`); the compiled `IDynset _ (Some dreg) true` (the `fdata`
+  is a packet FIELD now learns `key -> data` in the value map (`env_map_upd`);
+  the compiled `IDynset _ (Some dreg) true` (the `fdata`
   flag marks a field-sourced data register, vs an immediate one) threads the same
   write, so a later `@m`-keyed map lookup observes it.  Also carried by
   `compile_chain_mut_correct`.  semtest (5c): `add @m {ip saddr : tcp dport};
@@ -153,7 +153,7 @@ mostly closed — see the per-item markers and TODO 3)* — a statement that doe
   earlier writes). `eval_rules_mut`/`run_program_mut` (and `eval/run_chain_mut`)
   thread the writes so a later rule observes an earlier `set`. A **set-`dynset`**
   (`add`/`update`/`delete @s {key}`) likewise mutates the env's named-set state
-  (`run_rule_writes` on `IDynset _ None` → `set_env_dynset`; `body_writes` on
+  (`run_rule_writes` on `IDynset _ None` → `env_set_upd`; `body_writes` on
   `SDynset _ _ _ []`), so a later `lookup @s` sees the learned element — the
   dynamic-set feedback loop (semtest 5b). The theorem
   **`compile_chain_mut_correct`** (axiom-free) proves
@@ -312,15 +312,15 @@ The entry points are restated (with `Print Assumptions`) in
 set. Two of the most-cited statements:
 
 ```coq
-Theorem compile_chain_correct : forall c p,
-  run_chain (compile_chain c) (c_policy c) p = eval_chain c p.
+Theorem compile_chain_correct : forall c e p,
+  run_chain (compile_chain c) (c_policy c) e p = eval_chain c e p.
 
 (* whole-pipeline optimizer correctness, for ANY input chain — no rules_clean,
    no caller freshness side-condition (freshness is internal via seed_start): *)
 Theorem optimize_table_uncond_correct : forall c base p n' d' c',
   optimize_table_uncond c = (n', d', c') ->
-  eval_chain c' (set_env p (env_with_sets base d'))
-  = eval_chain c (set_env p (env_with_sets base empty_decls)).
+  eval_chain c' (env_with_sets base d') p
+  = eval_chain c (env_with_sets base empty_decls) p.
 
 Theorem optimize_table_uncond_compile_correct : ...  (* same, to the COMPILED bytecode *)
 ```
@@ -662,8 +662,8 @@ global context`.
 - `theories/Semantics.v` — verdict semantics (`eval_chain`/`run_chain`, jump-aware
   `eval_table`/`run_table`, hook `eval_ruleset`/`eval_hook`); **mutation** machinery
   (`run_rule_writes`/`body_writes`, `eval_chain_mut`/`run_chain_mut`); **cross-packet**
-  (`eval_chain_mut_env`/`run_chain_mut_env`/`seq_eval_env`); env mutators
-  (`set_meta`/`set_ct`/`set_env_dynset`/`set_env_dynset_map`/`env_set_upd`/`env_map_upd`).
+  (`eval_chain_mut_env`/`run_chain_mut_env`/`seq_eval_env`); packet/env mutators
+  (`set_meta`/`set_ct`/`env_set_upd`/`env_map_upd`).
 - `theories/Correct.v` — all the theorems and their scaffolding.
 - `theories/Extract.v` — **add any function you want to call from `semtest.ml` to the
   `Separate Extraction` list** (else "Unbound value Semantics.X").
@@ -677,9 +677,11 @@ global context`.
 ## Architecture: the state & mutation machinery (reuse these patterns)
 
 **Design rule for state.** State that *accumulates* or is *shared/named* lives in
-`env` (carried inside `packet.pkt_env`); a purely per-packet abstraction is a
-packet-field oracle (`pkt_meta`, `pkt_ct`, `pkt_sock`, …). The correctness theorems
-quantify over the whole `env`, so anything in `env` is automatically non-vacuous.
+`env` — an EXPLICIT argument of every evaluator (`eval : … -> env -> packet -> …`;
+the mutation evaluators also RETURN the env they leave); a purely per-packet
+abstraction is a packet-field oracle (`pkt_meta`, `pkt_sock`, …). The correctness
+theorems quantify over the whole `env`, so anything in `env` is automatically
+non-vacuous.
 
 **To relocate a per-packet oracle into `env`** (e.g. the conntrack TODO): change
 BOTH `Syntax.do_load` (the relevant `L*` case) and the matching VM load case in
@@ -720,7 +722,7 @@ semantics. `IDynset`'s `fdata : bool` is the worked example.
 
 **Cross-packet preservation.** `eval_chain_mut_env`/`run_chain_mut_env` return
 `(verdict, env)`; `seq_eval_env` threads that env into the next packet;
-`compile_seq_mut_correct` is the theorem. Per-packet fields (`pkt_meta`/`pkt_ct`)
+`compile_seq_mut_correct` is the theorem. Per-packet fields (`pkt_meta`/`pkt_sock`/…)
 are *not* carried across packets (they are local), only `env` is.
 
 ## Remaining work (TODOs for a fresh session)
@@ -750,10 +752,10 @@ abstracted away.
 1. `Packet.v`: add a `flow_key` type (model as `data`, the canonicalised 5-tuple)
    and `e_ct : flow_key -> ct_key -> data` to `env`; add `pkt_flowkey : flow_key`
    to `packet` (packet-determined, like `pkt_fibkey`).
-2. `Syntax.do_load`: `LCt k => e_ct (pkt_env p) (pkt_flowkey p) k`. Mirror in the VM
+2. `Syntax.do_load`: `LCt k => e_ct e (pkt_flowkey p) k`. Mirror in the VM
    `ICtLoad` case in `Semantics.run_rule` AND `run_rule_writes`.
 3. Replace `set_ct` (packet mutator) with an `env`-level `env_ct_upd e flow k v`
-   + `set_env_ct p k v := set_env p (env_ct_upd (pkt_env p) (pkt_flowkey p) k v)`.
+   (threaded through the `env` half of the evaluators' state).
    `ICtSet`/`SCtSet` then mutate `env` (like the dynset), so a `ct mark set` is
    visible to later rules AND (via `seq_eval_env`) later packets of the same flow.
 4. `Correct.v`: the `SCtSet` case in `run_compile_body_writes` moves from the

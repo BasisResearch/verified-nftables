@@ -4,7 +4,11 @@ What exactly is proved, by which theorem, under which evaluator, and is it
 axiom-free — without reading 3000 lines of `Correct.v`.
 
 - Machine-checked entry-point restatements: [`theories/Main.v`](theories/Main.v)
-  (each followed by `Print Assumptions`).
+  (each followed by `Print Assumptions`).  Main.v also carries the
+  **pre-split ratchet corollaries** (`pre_split_*`): every pre-state-split
+  headline statement — which quantified over ONE packet record bundling the
+  shared world — restated over the bundled pair `Packet.pstate`
+  (`ps_env`/`ps_wire`), each an `exact`/`apply` of its post-split successor.
 - Axiom gate: `make axioms` re-checks every HEADLINE theorem below (plus the
   supporting strata) from the compiled `.vo` files and fails on anything but
   `Closed under the global context`.
@@ -44,8 +48,8 @@ Scope notes (each also sits on the theorem in the source):
 |---|---|---|
 | `compile_chain_correct` | SUPPORTING (stratum 1: one chain, pure verdict) | from `run_program_compile_chain`; consumed by the optimizer headline via `compile_chain_sets_correct` |
 | `compile_chain_sets_correct` (Corollary) | SUPPORTING | corollary of `compile_chain_correct` at `env_with_sets`; consumed by `optimize_table_uncond_compile_correct` |
-| `compile_chain_mut_correct` | SUPPORTING (stratum 2: + in-traversal mutation) | from `run_program_mut_compile_chain` / `vm_step_dsl_step` |
-| `compile_chain_mut_env_correct` | SUPPORTING (stratum 3: + env the chain leaves) | from `run_program_mut_env_compile_chain` |
+| `compile_chain_mut_correct` | SUPPORTING (stratum 2: + in-traversal mutation) | **derived**: the `fst` projection of stratum 3 (`run_program_mut_env_fst` / `eval_rules_mut_env_fst`), no second induction |
+| `compile_chain_mut_env_correct` | SUPPORTING (stratum 3: + env the chain leaves) | from `run_program_mut_env_compile_chain`, one induction over the per-rule step equation `vm_rule_step_compile_rule` (`vm_rule_step (compile_rule r) e p = dsl_rule_step r e p` under `mut_wf`) |
 | `compile_seq_mut_correct` | **HEADLINE** (mutation/sequence axis) | = `compile_chain_mut_env_correct` + `seq_eval_env_ext` |
 | `compile_table_correct` | SUPPORTING (stratum 5: + jump/goto/return) | from `run_eval_rules_j`; consumed by `compile_ruleset_correct` |
 | `eval_chain_eq_table_jumpfree` | SUPPORTING (fidelity bridge: `eval_chain` = `eval_table` on jump-free chains) | from `eval_rules_jumpfree_eq_j` |
@@ -87,18 +91,21 @@ Scope notes (each also sits on the theorem in the source):
 
 ## 3. The evaluator matrix
 
-Nine DSL entry points (`Semantics.v`) with near-identical signatures have
-**disjoint** feature coverage; nothing in a signature reveals what an
-evaluator silently drops. Rows are the entry points; every "no" cell names the
-bridging theorem that relates the evaluator to the one that does cover the
-feature, or says `no bridging theorem`.
+Nine DSL entry points (`Semantics.v`) have **disjoint** feature coverage.
+Every evaluator takes the shared mutable world as an explicit `env` argument
+(`eval : … -> env -> packet -> …`); an evaluator that "returns env" hands back
+the world it LEAVES (`… -> option verdict * env`), so the signature shows the
+state flow — but not which features an evaluator silently drops.  Rows are the
+entry points; every "no" cell names the bridging theorem that relates the
+evaluator to the one that does cover the feature, or says `no bridging
+theorem`.
 
 | entry point | threads writes | returns env | jump/goto/return | NAT effect | multi-chain |
 |---|---|---|---|---|---|
 | `eval_rules` (+`eval_chain`) | no — *no bridging theorem* | no — *no bridging theorem* | no — bridge `eval_rules_jumpfree_eq_j` (= `eval_rules_j` on jump-free rules) | no — *no bridging theorem* | no — bridge `eval_chain_eq_table_jumpfree` (jump-free chains) |
-| `eval_rules_mut` (+`eval_chain_mut`) | **yes** (`dsl_step`) | no — *no bridging theorem* | no — *no bridging theorem* | no — bridge `eval_rules_trace_verdict` (trace verdict = mut verdict unless `trace_nat_drops`) | no — *no bridging theorem* |
+| `eval_rules_mut` (+`eval_chain_mut`) | **yes** (`dsl_rule_step`) | no — bridge `eval_rules_mut_env_fst` / `eval_chain_mut_env_fst` (`eval_rules_mut` = `fst` of `eval_rules_mut_env`) | no — *no bridging theorem* | no — bridge `eval_rules_trace_verdict` (trace verdict = mut verdict unless `trace_nat_drops`) | no — *no bridging theorem* |
 | `eval_rules_mut_env` (+`eval_chain_mut_env`) | **yes** | **yes** | no — *no bridging theorem* | no — *no bridging theorem* | no — *no bridging theorem* |
-| `eval_rules_trace` (+`eval_chain_trace`) | **yes** | returns whole packet (`chain_out`) | no — *no bridging theorem* | **yes** (`apply_nat`, `trace_nat_drops`) | no — *no bridging theorem* (chains composed manually via `chain_out`) |
+| `eval_rules_trace` (+`eval_chain_trace`) | **yes** | **yes** (returns `env * packet`; `chain_out`) | no — *no bridging theorem* | **yes** (`apply_nat`, `trace_nat_drops`) | no — *no bridging theorem* (chains composed manually via `chain_out`) |
 | `eval_rules_j` / `eval_table` | no — *no bridging theorem* | no — *no bridging theorem* | **yes** (fuel-bounded) | no — *no bridging theorem* | **user chains** (jump targets) |
 | `eval_ruleset` | no — *no bridging theorem* | no — *no bridging theorem* | **yes** (via `eval_table`) | no — *no bridging theorem* | **base chains** across tables |
 | `eval_hook` | no — *no bridging theorem* | no — *no bridging theorem* | **yes** | no — *no bridging theorem* | **hook dispatch** (priority-ordered) |
@@ -113,13 +120,26 @@ writes and follows jumps, and no theorem relates the mutation strand
 
 The bytecode VM mirrors the DSL rows one-for-one (`run_rule(s)`,
 `run_program(_mut,_mut_env)`, `run_rules_j`/`run_table`, `run_ruleset`); each
-compile theorem in §2 equates one DSL row with its VM mirror.
+compile theorem in §2 equates one DSL row with its VM mirror.  The VM mirror of
+the `fst` bridge is `run_program_mut_env_fst` / `run_chain_mut_env_fst`.
+
+Every mutation/trace evaluator consumes a single per-rule STEP function —
+`dsl_rule_step` (DSL) / `vm_rule_step` (VM), each returning the pair
+(loadability-guarded verdict, `(env, packet)` left: writes + numgen advance +
+limiter consumption).  The DSL/VM agreement obligation is the one equation
+`vm_rule_step_compile_rule : mut_wf r = true -> vm_rule_step (compile_rule r) e p
+= dsl_rule_step r e p` (`Correct.v`).  `mut_wf` itself is stated entirely on the
+source AST: its numgen conjunct is the syntactic `rule_numgen_free`
+(`Semantics.v`), which equals the bytecode-side `numgen_free_prog (compile_rule
+r)` by `Correct.numgen_free_compile_rule` (the old-shape hypothesis is restored
+verbatim by `Correct.mut_wf_prog_eq`).
 
 ## 4. Axiom-freedom gates
 
 - `make axioms` — `Print Assumptions` over the HEADLINE set + the `Correct.v`
   strata + the optimizer DSL form (10 theorems); fails on anything but
-  `Closed under the global context`.
+  `Closed under the global context`.  The `pre_split_*` ratchet corollaries in
+  `Main.v` are guarded by in-file `Print Assumptions` on every `make proofs`.
 - In-file build-time guards (`Print Assumptions` runs on every `make proofs`):
   end of `Correct.v` (all 8 compiler strata), end of `Optimize_Uncond.v` (both
   optimizer entry points), all of `theories/Main.v` (the four entry-point

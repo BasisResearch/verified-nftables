@@ -30,7 +30,7 @@
     = data_bitops _ mask xor] with the [MMasked] head), over the fresh N-entry point
     vmap [map vmap_pt ((v1,w1)::…)].
 
-    SOUNDNESS.  The masked field value [X = data_bitops (field_value f p) mask xor] is
+    SOUNDNESS.  The masked field value [X = data_bitops (field_value f e p) mask xor] is
     the SAME operand in both the [MMasked] equality and the vmap key; membership of a
     point entry [(v,v,w)] resolves through [assoc_verdict] by [data_in_iv X (v,v) =
     data_eqb X v] ([data_in_iv_point]), which — under the fixed-width side condition
@@ -52,7 +52,7 @@ Local Open Scope nat_scope.
 
     [mk_vmap_rule_t f ts nm body] is [Optimize_Vmap.mk_vmap_rule] with the vmap KEY
     field carrying the transforms [ts] (here [ [TBitAnd mask xor] ]): the key read is
-    [apply_transforms ts (field_value f p)] instead of the raw [field_value f p]. *)
+    [apply_transforms ts (field_value f e p)] instead of the raw [field_value f e p]. *)
 Definition mk_vmap_rule_t (f : field) (ts : list transform) (nm : String.string)
     (body : list body_item) : rule :=
   {| r_body := body;
@@ -70,27 +70,27 @@ Definition orig_rule_m (f : field) (mask xor v : data) (body : list body_item)
 (** *** Bridges: the masked original agrees with the plain [orig_rule] on loadability
     and outcome (both differ only in the head match, whose [match_loadable] is
     [field_loadable f] either way, and whose contribution [outcome_mk_head] strips). *)
-Lemma orig_rule_m_loadable_eq : forall f mask xor v body w p,
-  rule_loadable (orig_rule_m f mask xor v body w) p
-  = rule_loadable (orig_rule f v body w) p.
+Lemma orig_rule_m_loadable_eq : forall f mask xor v body w e p,
+  rule_loadable (orig_rule_m f mask xor v body w) e p
+  = rule_loadable (orig_rule f v body w) e p.
 Proof.
   intros. unfold orig_rule_m, orig_rule.
   rewrite !rule_loadable_mk_head, match_loadable_mmasked. cbn [match_loadable].
   reflexivity.
 Qed.
 
-Lemma orig_rule_m_applies : forall f mask xor v body w p,
-  rule_applies (orig_rule_m f mask xor v body w) p
-  = eval_matchcond (MMasked f false mask xor v) p && rule_applies_walk body p.
+Lemma orig_rule_m_applies : forall f mask xor v body w e p,
+  rule_applies (orig_rule_m f mask xor v body w) e p
+  = eval_matchcond (MMasked f false mask xor v) e p && rule_applies_walk body e p.
 Proof. intros. unfold orig_rule_m. apply rule_applies_mk_head. Qed.
 
-Lemma orig_rule_m_outcome_clean : forall f mask xor v body w p,
+Lemma orig_rule_m_outcome_clean : forall f mask xor v body w e p,
   body_synproxy_stops body p = false ->
   body_has_notrack body = false ->
   terminal w = true ->
-  outcome (orig_rule_m f mask xor v body w) p = Some w.
+  outcome (orig_rule_m f mask xor v body w) e p = Some w.
 Proof.
-  intros f mask xor v body w p Hsp Hnt Hw.
+  intros f mask xor v body w e p Hsp Hnt Hw.
   unfold orig_rule_m. rewrite outcome_mk_head, Hsp.
   unfold outcome_core, body_thread, mk_vmap_base. cbn [r_vmap]. rewrite Hnt.
   apply (terminal_outcome_vmap_base w p Hw).
@@ -98,73 +98,73 @@ Qed.
 
 (** ** The masked point-key certificate. *)
 
-Lemma eval_mmasked_point : forall f mask xor v q,
+Lemma eval_mmasked_point : forall f mask xor v e q,
   field_loadable f q = true ->
-  length (data_bitops (field_value f q) mask xor) = length v ->
-  eval_matchcond (MMasked f false mask xor v) q
-  = data_eqb (data_bitops (field_value f q) mask xor) v.
+  length (data_bitops (field_value f e q) mask xor) = length v ->
+  eval_matchcond (MMasked f false mask xor v) e q
+  = data_eqb (data_bitops (field_value f e q) mask xor) v.
 Proof.
-  intros f mask xor v q Hld Hlen.
+  intros f mask xor v e q Hld Hlen.
   unfold eval_matchcond, eval_matchcond_body. rewrite match_loadable_mmasked, Hld.
   cbn [andb]. unfold eval_cmp. rewrite <- Hlen, List.firstn_all. reflexivity.
 Qed.
 
 (** The width certificate: when [f] loads, the masked value has the field's fixed
     width, which equals each stored point's width. *)
-Lemma dscpv_key_width : forall f (mask xor v : data) p,
+Lemma dscpv_key_width : forall f (mask xor v : data) e p,
   field_fixed_len f = Some (length v) ->
   length mask = length v -> length xor = length v ->
   field_loadable f p = true ->
-  length (data_bitops (field_value f p) mask xor) = length v.
+  length (data_bitops (field_value f e p) mask xor) = length v.
 Proof.
-  intros f mask xor v p Hfx Hm Hx Hld.
-  pose proof (field_fixed_len_loaded f (length v) p Hfx Hld) as Hfv.
-  rewrite (data_bitops_length_eq (field_value f p) mask xor).
+  intros f mask xor v e p Hfx Hm Hx Hld.
+  pose proof (field_fixed_len_loaded f (length v) e p Hfx Hld) as Hfv.
+  rewrite (data_bitops_length_eq (field_value f e p) mask xor).
   - exact Hfv.
   - rewrite Hfv, Hm; reflexivity.
   - rewrite Hm, Hx; reflexivity.
 Qed.
 
 (** The masked first-match scan (over MMasked equalities). *)
-Fixpoint first_match_m (f : field) (mask xor : data) (q : packet)
+Fixpoint first_match_m (f : field) (mask xor : data) (e : env) (q : packet)
     (l : list (data * verdict)) : option verdict :=
   match l with
   | [] => None
-  | (v, w) :: tl => if eval_matchcond (MMasked f false mask xor v) q then Some w
-                    else first_match_m f mask xor q tl
+  | (v, w) :: tl => if eval_matchcond (MMasked f false mask xor v) e q then Some w
+                    else first_match_m f mask xor e q tl
   end.
 
 (** [assoc_verdict] over the N-entry point map with the MASKED key = [first_match_m]. *)
-Lemma assoc_verdict_points_m : forall es f mask xor q,
+Lemma assoc_verdict_points_m : forall es f mask xor e q,
   (forall v w, In (v, w) es -> field_loadable f q = true ->
-     length (data_bitops (field_value f q) mask xor) = length v) ->
+     length (data_bitops (field_value f e q) mask xor) = length v) ->
   field_loadable f q = true ->
-  assoc_verdict (data_bitops (field_value f q) mask xor) (map vmap_pt es)
-  = first_match_m f mask xor q es.
+  assoc_verdict (data_bitops (field_value f e q) mask xor) (map vmap_pt es)
+  = first_match_m f mask xor e q es.
 Proof.
-  intros es f mask xor q Hlen Hld.
+  intros es f mask xor e q Hlen Hld.
   induction es as [| [v w] es IH]; [reflexivity|].
   cbn [map]. unfold vmap_pt at 1. cbn [fst snd assoc_verdict first_match_m].
   rewrite data_in_iv_point_eqb.
-  rewrite (eval_mmasked_point f mask xor v q Hld (Hlen v w (or_introl eq_refl) Hld)).
-  destruct (data_eqb (data_bitops (field_value f q) mask xor) v) eqn:E; [reflexivity|].
+  rewrite (eval_mmasked_point f mask xor v e q Hld (Hlen v w (or_introl eq_refl) Hld)).
+  destruct (data_eqb (data_bitops (field_value f e q) mask xor) v) eqn:E; [reflexivity|].
   apply IH. intros v' w' Hin Hld'. apply (Hlen v' w'); [right; exact Hin | exact Hld'].
 Qed.
 
 (** The merged rule's [outcome_core] over an N-entry point map with the masked key. *)
-Lemma outcome_core_dscpvN : forall es f mask xor q nm body,
-  e_vmap (pkt_env q) nm = map vmap_pt es ->
+Lemma outcome_core_dscpvN : forall es f mask xor e q nm body,
+  e_vmap e nm = map vmap_pt es ->
   (forall v w, In (v, w) es -> field_loadable f q = true ->
-     length (data_bitops (field_value f q) mask xor) = length v) ->
+     length (data_bitops (field_value f e q) mask xor) = length v) ->
   field_loadable f q = true ->
-  outcome_core (mk_vmap_rule_t f [TBitAnd mask xor] nm body) q
-  = first_match_m f mask xor q es.
+  outcome_core (mk_vmap_rule_t f [TBitAnd mask xor] nm body) e q
+  = first_match_m f mask xor e q es.
 Proof.
-  intros es f mask xor q nm body Hvm Hlen Hld.
+  intros es f mask xor e q nm body Hvm Hlen Hld.
   unfold outcome_core, mk_vmap_rule_t. cbn [r_vmap vm_keyf vm_name vm_fields].
   cbn [apply_transforms fold_left apply_transform]. rewrite Hvm.
-  rewrite (assoc_verdict_points_m es f mask xor q Hlen Hld).
-  destruct (first_match_m f mask xor q es) eqn:Efm; [reflexivity|].
+  rewrite (assoc_verdict_points_m es f mask xor e q Hlen Hld).
+  destruct (first_match_m f mask xor e q es) eqn:Efm; [reflexivity|].
   unfold terminal_outcome, mk_vmap_rule_t.
   cbn [r_nat r_tproxy r_fwd r_queue r_verdict r_after terminal]. reflexivity.
 Qed.
@@ -175,39 +175,39 @@ Qed.
     DIFFERENT-verdict masked rules, whose merged vmap [nm] carries the N point entries
     [map vmap_pt es], collapses to ONE [mk_vmap_rule_t] over the transform-keyed vmap.
     Mirrors [Optimize_Vmap.eval_rules_vmap_mergeN] with the raw key replaced by the
-    masked key [data_bitops (field_value f p) mask xor]. *)
-Lemma eval_rules_dscpv_mergeN : forall f mask xor nm es body rest p,
-  e_vmap (pkt_env p) nm = map vmap_pt es ->
+    masked key [data_bitops (field_value f e p) mask xor]. *)
+Lemma eval_rules_dscpv_mergeN : forall f mask xor nm es body rest e p,
+  e_vmap e nm = map vmap_pt es ->
   (forall v w, In (v, w) es -> field_fixed_len f = Some (length v)) ->
   (forall v w, In (v, w) es -> length mask = length v) ->
   (forall v w, In (v, w) es -> length xor = length v) ->
   (forall v w, In (v, w) es -> terminal w = true) ->
   body_synproxy_stops body p = false ->
   body_has_notrack body = false ->
-  eval_rules (mk_vmap_rule_t f [TBitAnd mask xor] nm body :: rest) p
-  = eval_rules (map (fun vw => orig_rule_m f mask xor (fst vw) body (snd vw)) es ++ rest) p.
+  eval_rules (mk_vmap_rule_t f [TBitAnd mask xor] nm body :: rest) e p
+  = eval_rules (map (fun vw => orig_rule_m f mask xor (fst vw) body (snd vw)) es ++ rest) e p.
 Proof.
-  intros f mask xor nm es body rest p Hvm Hfx Hmw Hxw Hterm Hsp Hnt.
+  intros f mask xor nm es body rest e p Hvm Hfx Hmw Hxw Hterm Hsp Hnt.
   (* merged rule loadable / applies *)
-  assert (HmL : rule_loadable (mk_vmap_rule_t f [TBitAnd mask xor] nm body) p
+  assert (HmL : rule_loadable (mk_vmap_rule_t f [TBitAnd mask xor] nm body) e p
                 = body_loadable_walk body p && field_loadable f p).
   { unfold rule_loadable, mk_vmap_rule_t. cbn [r_body]. rewrite Hsp.
     unfold body_thread. cbn [r_body]. rewrite Hnt.
     unfold end_loadable. cbn [r_vmap]. unfold vmap_loadable.
     cbn [r_vmap vm_keyf vm_name vm_fields].
     destruct (field_loadable f p) eqn:Hfld; cbn [andb].
-    - destruct (assoc_verdict (apply_transforms [TBitAnd mask xor] (field_value f p))
-                              (e_vmap (pkt_env p) nm));
+    - destruct (assoc_verdict (apply_transforms [TBitAnd mask xor] (field_value f e p))
+                              (e_vmap e nm));
         rewrite ?Bool.andb_true_r; reflexivity.
     - rewrite Bool.andb_false_r. reflexivity. }
-  assert (HmA : rule_applies (mk_vmap_rule_t f [TBitAnd mask xor] nm body) p
-                = rule_applies_walk body p) by reflexivity.
+  assert (HmA : rule_applies (mk_vmap_rule_t f [TBitAnd mask xor] nm body) e p
+                = rule_applies_walk body e p) by reflexivity.
   cbn [eval_rules]. rewrite HmL, HmA.
   destruct (field_loadable f p) eqn:Hfld; cbn [andb].
   - (* f loads: merged outcome = first_match_m; the run scans the same keys *)
     rewrite Bool.andb_true_r.
-    assert (Hmout : outcome (mk_vmap_rule_t f [TBitAnd mask xor] nm body) p
-                    = first_match_m f mask xor p es).
+    assert (Hmout : outcome (mk_vmap_rule_t f [TBitAnd mask xor] nm body) e p
+                    = first_match_m f mask xor e p es).
     { unfold outcome, mk_vmap_rule_t. cbn [r_body]. rewrite Hsp.
       unfold body_thread. cbn [r_body]. rewrite Hnt.
       change ({| r_body := body; r_verdict := Continue;
@@ -215,25 +215,25 @@ Proof.
                                    vm_name := nm |};
                  r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None;
                  r_after := [] |}) with (mk_vmap_rule_t f [TBitAnd mask xor] nm body).
-      apply (outcome_core_dscpvN es f mask xor p nm body Hvm
+      apply (outcome_core_dscpvN es f mask xor e p nm body Hvm
                (fun v w Hin Hld =>
-                  dscpv_key_width f mask xor v p (Hfx v w Hin) (Hmw v w Hin) (Hxw v w Hin) Hld)
+                  dscpv_key_width f mask xor v e p (Hfx v w Hin) (Hmw v w Hin) (Hxw v w Hin) Hld)
                Hfld). }
     rewrite Hmout.
     destruct (body_loadable_walk body p) eqn:HbL; cbn [andb].
-    + destruct (rule_applies_walk body p) eqn:HbA; cbn [andb].
+    + destruct (rule_applies_walk body e p) eqn:HbA; cbn [andb].
       * (* body loads & applies: induct on es, matching first_match_m to the run *)
         clear HmL HmA Hmout Hvm.
         induction es as [| [v w] es IH]; cbn [map app first_match_m fst snd].
         -- reflexivity.
         -- cbn [eval_rules].
            rewrite orig_rule_m_loadable_eq, orig_rule_m_applies,
-                   (orig_rule_m_outcome_clean f mask xor v body w p Hsp Hnt
+                   (orig_rule_m_outcome_clean f mask xor v body w e p Hsp Hnt
                       (Hterm v w (or_introl eq_refl))).
            rewrite orig_rule_loadable. cbn [match_loadable].
            rewrite Hfld, HbL, Hsp. cbn [andb].
            rewrite HbA. cbn [andb].
-           destruct (eval_matchcond (MMasked f false mask xor v) p) eqn:Ev.
+           destruct (eval_matchcond (MMasked f false mask xor v) e p) eqn:Ev.
            ++ rewrite (Hterm v w (or_introl eq_refl)). reflexivity.
            ++ apply IH.
               ** intros v' w' Hin. apply (Hfx v' w'); right; exact Hin.

@@ -55,8 +55,7 @@ Definition env0 : env :=
    oracle is irrelevant on this branch (do_load's CKstate reads the UNTRACKED latch,
    not the [pkt_ct_present = false] INVALID value, once notrack has run). *)
 Definition pkt_noentry : packet :=
-  {| pkt_env := env0; pkt_meta := fun _ => [];
-     pkt_ct := fun k => match k with CKstate => [0;0;0;8] | _ => [] end;
+  {| pkt_meta := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := []; pkt_th := []; pkt_ih := [];
      pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
@@ -68,17 +67,17 @@ Definition pkt_noentry : packet :=
 (* On the NO-ENTRY packet the intra-rule `notrack` latches IP_CT_UNTRACKED before
    the SAME rule's `ct state untracked` match, which therefore SUCCEEDS. *)
 Lemma intra_match_succeeds_after_notrack :
-  rule_applies intra_rule pkt_noentry = true.
+  rule_applies intra_rule env0 pkt_noentry = true.
 Proof. vm_compute. reflexivity. Qed.
 
 (* KERNEL-FAITHFUL: the model ACCEPTS the no-entry packet the kernel ACCEPTS. *)
 Theorem model_accepts_like_kernel_eval_chain :
-  eval_chain intra_chain pkt_noentry = Accept.
+  eval_chain intra_chain env0 pkt_noentry = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The stateful threading evaluator agrees. *)
 Theorem model_accepts_like_kernel_eval_chain_mut :
-  eval_chain_mut intra_chain pkt_noentry = Accept.
+  eval_chain_mut intra_chain env0 pkt_noentry = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* KERNEL GUARD: on a packet that ALREADY has a conntrack ENTRY
@@ -87,8 +86,8 @@ Proof. vm_compute. reflexivity. Qed.
    the match FAILS, and the chain falls through to its Drop policy.  This is exactly
    nft_notrack_eval's `if (ct || ctinfo == IP_CT_UNTRACKED) return;`. *)
 (* Env recording the live conntrack entry's state as ESTABLISHED ([0;0;0;2]);
-   [do_load (LCt CKstate)] reads [e_ct (pkt_env p)], so the live state must live in
-   the env (not the [pkt_ct] oracle, which a present-entry CKstate read ignores). *)
+   [do_load (LCt CKstate)] reads [e_ct e] at the packet's flow, so the
+   live state lives in the shared flow-keyed table. *)
 Definition env_est : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
@@ -98,8 +97,7 @@ Definition env_est : env :=
      e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
 
 Definition pkt_est : packet :=
-  {| pkt_env := env_est; pkt_meta := fun _ => [];
-     pkt_ct := fun _ => [];
+  {| pkt_meta := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := []; pkt_th := []; pkt_ih := [];
      pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
@@ -111,9 +109,9 @@ Definition pkt_est : packet :=
 (* notrack is a no-op on the entry-present packet: its ct state is read as the live
    ESTABLISHED value, so `ct state untracked` does NOT match and the rule is skipped. *)
 Lemma intra_match_noop_on_entry :
-  rule_applies intra_rule pkt_est = false.
+  rule_applies intra_rule env_est pkt_est = false.
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem model_drops_entry_present_packet :
-  eval_chain intra_chain pkt_est = Drop.
+  eval_chain intra_chain env_est pkt_est = Drop.
 Proof. vm_compute. reflexivity. Qed.

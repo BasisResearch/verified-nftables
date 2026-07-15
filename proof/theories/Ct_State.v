@@ -40,8 +40,7 @@ Definition e0_st (st : data) : env :=
 
 (* A packet whose conntrack-state register is [st] (stored in the flow table). *)
 Definition pkt_ctstate (st : data) : packet :=
-  {| pkt_env := e0_st st; pkt_meta := fun _ => [];
-     pkt_ct := fun _ => [];
+  {| pkt_meta := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := []; pkt_th := []; pkt_ih := []; pkt_tnl := [];
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
@@ -58,29 +57,29 @@ Definition m_estab_old : matchcond := MEq FCtState [0;0;0;2].
 
 (* The bitmask form matches a pure established state (= 2). *)
 Theorem estab_matches_pure :
-  eval_matchcond m_estab (pkt_ctstate [0;0;0;2]) = true.
+  eval_matchcond m_estab (e0_st [0;0;0;2]) (pkt_ctstate [0;0;0;2]) = true.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The KEY case: established | untracked (= 2|64 = 66) has the established bit
    set.  Real nft ACCEPTS it (66 & 2 = 2 != 0); the new lowering matches it. *)
 Theorem estab_matches_established_plus_other :
-  eval_matchcond m_estab (pkt_ctstate [0;0;0;66]) = true.
+  eval_matchcond m_estab (e0_st [0;0;0;66]) (pkt_ctstate [0;0;0;66]) = true.
 Proof. vm_compute. reflexivity. Qed.
 
 (* A state without the established bit (= new = 8) does NOT match. *)
 Theorem estab_misses_without_bit :
-  eval_matchcond m_estab (pkt_ctstate [0;0;0;8]) = false.
+  eval_matchcond m_estab (e0_st [0;0;0;8]) (pkt_ctstate [0;0;0;8]) = false.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The exact-equality (MEq) alternative WRONGLY rejects the established|other
    packet: a strict under-approximation that loses every multi-bit state. *)
 Theorem old_meq_wrongly_rejects :
-  eval_matchcond m_estab_old (pkt_ctstate [0;0;0;66]) = false.
+  eval_matchcond m_estab_old (e0_st [0;0;0;66]) (pkt_ctstate [0;0;0;66]) = false.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The two lowerings genuinely DIFFER on that packet — the bitmask form is
    observably load-bearing exactly there. *)
 Theorem fix_changes_behaviour :
-  eval_matchcond m_estab     (pkt_ctstate [0;0;0;66])
-    <> eval_matchcond m_estab_old (pkt_ctstate [0;0;0;66]).
+  eval_matchcond m_estab (e0_st [0;0;0;66]) (pkt_ctstate [0;0;0;66])
+    <> eval_matchcond m_estab_old (e0_st [0;0;0;66]) (pkt_ctstate [0;0;0;66]).
 Proof. vm_compute. discriminate. Qed.

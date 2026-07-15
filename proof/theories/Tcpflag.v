@@ -44,7 +44,7 @@ Definition e0 : env :=
 (* A TCP packet whose flags byte (transport header + 13) is [fl].
    FTcpFlags = LPayload PTransport 13 1 reads pkt_th at offset 13, length 1. *)
 Definition pkt_tcpflags (fl : nat) : packet :=
-  {| pkt_env := e0; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
+  {| pkt_meta := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := [];
      pkt_th := [0;0;0;0;0;0;0;0;0;0;0;0;0;fl];
@@ -69,62 +69,62 @@ Definition m_ne_cwr : matchcond := MNeq FTcpFlags [128].
 
 (* The bitmask form matches a pure SYN packet (flags = 0x02). *)
 Theorem syn_matches_pure_syn :
-  eval_matchcond m_syn (pkt_tcpflags 2) = true.
+  eval_matchcond m_syn e0 (pkt_tcpflags 2) = true.
 Proof. vm_compute. reflexivity. Qed.
 
 (* THE KEY case: a SYN|ACK packet (flags = 0x12 = 18) has the SYN bit set.
    Real nft ACCEPTS it for `tcp flags syn` (0x12 & 0x02 = 2 != 0); the new
    lowering matches it. *)
 Theorem syn_matches_synack :
-  eval_matchcond m_syn (pkt_tcpflags 18) = true.
+  eval_matchcond m_syn e0 (pkt_tcpflags 18) = true.
 Proof. vm_compute. reflexivity. Qed.
 
 (* A packet without the SYN bit (flags = 0x10 = ACK only) does NOT match. *)
 Theorem syn_misses_ack_only :
-  eval_matchcond m_syn (pkt_tcpflags 16) = false.
+  eval_matchcond m_syn e0 (pkt_tcpflags 16) = false.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The exact-equality (MEq) alternative WRONGLY rejects the SYN|ACK packet: a strict
    under-approximation that rejects every multi-flag packet. *)
 Theorem old_meq_wrongly_rejects_synack :
-  eval_matchcond m_syn_old (pkt_tcpflags 18) = false.
+  eval_matchcond m_syn_old e0 (pkt_tcpflags 18) = false.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The two lowerings genuinely DIFFER on the SYN|ACK packet — the bitmask form
    is observably load-bearing exactly there. *)
 Theorem fix_changes_behaviour :
-  eval_matchcond m_syn     (pkt_tcpflags 18)
-    <> eval_matchcond m_syn_old (pkt_tcpflags 18).
+  eval_matchcond m_syn e0 (pkt_tcpflags 18)
+    <> eval_matchcond m_syn_old e0 (pkt_tcpflags 18).
 Proof. vm_compute. discriminate. Qed.
 
 (* The BANG form `tcp flags ! syn` = (flags & syn) == 0 is the complement of the
    implicit form: it REJECTS SYN|ACK (the SYN bit is set) and ACCEPTS ACK-only. *)
 Theorem not_syn_rejects_synack :
-  eval_matchcond m_not_syn (pkt_tcpflags 18) = false.
+  eval_matchcond m_not_syn e0 (pkt_tcpflags 18) = false.
 Proof. vm_compute. reflexivity. Qed.
 Theorem not_syn_accepts_ack_only :
-  eval_matchcond m_not_syn (pkt_tcpflags 16) = true.
+  eval_matchcond m_not_syn e0 (pkt_tcpflags 16) = true.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The EXPLICIT `tcp flags == syn` is genuine exact equality: it REJECTS SYN|ACK
    (0x12 <> 0x02) but ACCEPTS a pure SYN (0x02 == 0x02).  This is the only form
    that is equality, and it differs from the implicit/bitmask form on SYN|ACK. *)
 Theorem eq_syn_rejects_synack :
-  eval_matchcond m_syn_eq (pkt_tcpflags 18) = false.
+  eval_matchcond m_syn_eq e0 (pkt_tcpflags 18) = false.
 Proof. vm_compute. reflexivity. Qed.
 Theorem eq_syn_accepts_pure_syn :
-  eval_matchcond m_syn_eq (pkt_tcpflags 2) = true.
+  eval_matchcond m_syn_eq e0 (pkt_tcpflags 2) = true.
 Proof. vm_compute. reflexivity. Qed.
 Theorem implicit_and_explicit_differ :
-  eval_matchcond m_syn (pkt_tcpflags 18)
-    <> eval_matchcond m_syn_eq (pkt_tcpflags 18).
+  eval_matchcond m_syn e0 (pkt_tcpflags 18)
+    <> eval_matchcond m_syn_eq e0 (pkt_tcpflags 18).
 Proof. vm_compute. discriminate. Qed.
 
 (* The explicit `tcp flags != cwr` is a plain cmp neq (NOT a bitmask test): it
    matches any flags value other than exactly 0x80. *)
 Theorem ne_cwr_matches_non_cwr :
-  eval_matchcond m_ne_cwr (pkt_tcpflags 2) = true.
+  eval_matchcond m_ne_cwr e0 (pkt_tcpflags 2) = true.
 Proof. vm_compute. reflexivity. Qed.
 Theorem ne_cwr_misses_exact_cwr :
-  eval_matchcond m_ne_cwr (pkt_tcpflags 128) = false.
+  eval_matchcond m_ne_cwr e0 (pkt_tcpflags 128) = false.
 Proof. vm_compute. reflexivity. Qed.

@@ -67,34 +67,34 @@ Definition mk_snat_rule (f : field) (mapname : string) : rule :=
 
 (** *** [outcome] of either rule is [Some Accept] (a NAT terminal), with no
     synproxy/vmap to intervene. *)
-Lemma outcome_orig_snat : forall f v T p, outcome (orig_snat_rule f v T) p = Some Accept.
+Lemma outcome_orig_snat : forall f v T e p, outcome (orig_snat_rule f v T) e p = Some Accept.
 Proof.
-  intros f v T p. unfold outcome, orig_snat_rule.
+  intros f v T e p. unfold outcome, orig_snat_rule.
   cbn [body_synproxy_stops r_body body_matches].
   unfold outcome_core. cbn [r_vmap r_nat]. reflexivity.
 Qed.
 
-Lemma outcome_mk_snat : forall f mapname p, outcome (mk_snat_rule f mapname) p = Some Accept.
+Lemma outcome_mk_snat : forall f mapname e p, outcome (mk_snat_rule f mapname) e p = Some Accept.
 Proof. intros. reflexivity. Qed.
 
 (** *** [rule_applies] of the original rule is the head [MCmp] eval; the merged
     rule (empty body) always applies. *)
-Lemma applies_orig_snat : forall f v T p,
-  rule_applies (orig_snat_rule f v T) p = eval_matchcond (MCmp f CEq v) p.
+Lemma applies_orig_snat : forall f v T e p,
+  rule_applies (orig_snat_rule f v T) e p = eval_matchcond (MCmp f CEq v) e p.
 Proof.
-  intros f v T p. unfold rule_applies, orig_snat_rule.
+  intros f v T e p. unfold rule_applies, orig_snat_rule.
   cbn [r_body rule_applies_walk body_matches]. apply andb_true_r.
 Qed.
 
-Lemma applies_mk_snat : forall f mapname p, rule_applies (mk_snat_rule f mapname) p = true.
+Lemma applies_mk_snat : forall f mapname e p, rule_applies (mk_snat_rule f mapname) e p = true.
 Proof. reflexivity. Qed.
 
 (** *** [rule_loadable] of the original rule = the head field loads (its terminal
     is an immediate, always loadable). *)
-Lemma loadable_orig_snat : forall f v T p,
-  rule_loadable (orig_snat_rule f v T) p = field_loadable f p.
+Lemma loadable_orig_snat : forall f v T e p,
+  rule_loadable (orig_snat_rule f v T) e p = field_loadable f p.
 Proof.
-  intros f v T p. unfold rule_loadable, orig_snat_rule, end_loadable, tail_loadable.
+  intros f v T e p. unfold rule_loadable, orig_snat_rule, end_loadable, tail_loadable.
   cbn [r_body body_loadable_walk body_item_loadable body_synproxy_stops body_thread
        r_after r_vmap terminal_loadable terminal_outcome r_nat r_tproxy r_fwd r_queue
        nat_src nat_map nat_field snat_imm_spec forallb].
@@ -103,11 +103,11 @@ Qed.
 
 (** *** [rule_loadable] of the merged rule = the field loads AND its value is a
     KEY of the map (else the terminal data-map lookup BREAKs — NFT_BREAK). *)
-Lemma loadable_mk_snat : forall f mapname p,
-  rule_loadable (mk_snat_rule f mapname) p
-  = field_loadable f p && map_has_key (field_value f p) (e_map (pkt_env p) mapname).
+Lemma loadable_mk_snat : forall f mapname e p,
+  rule_loadable (mk_snat_rule f mapname) e p
+  = field_loadable f p && map_has_key (field_value f e p) (e_map e mapname).
 Proof.
-  intros f mapname p.
+  intros f mapname e p.
   unfold rule_loadable, mk_snat_rule, end_loadable, tail_loadable, terminal_loadable,
     terminal_outcome, snat_map_spec.
   cbn [r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after body_loadable_walk
@@ -120,14 +120,14 @@ Qed.
     the break-on-miss ([loadable_mk_snat]'s [map_has_key]) is what makes the
     head-guard-free map sound. *)
 Theorem eval_rules_snat_merge : forall (f : field) (v1 v2 T1 T2 : data)
-    (mapname : string) (rest : list rule) (p : packet),
-  e_map (pkt_env p) mapname = dmap2 v1 v2 T1 T2 ->
+    (mapname : string) (rest : list rule) (e : env) (p : packet),
+  e_map e mapname = dmap2 v1 v2 T1 T2 ->
   field_fixed_len f = Some (List.length v1) ->
   field_fixed_len f = Some (List.length v2) ->
-  eval_rules (mk_snat_rule f mapname :: rest) p
-  = eval_rules (orig_snat_rule f v1 T1 :: orig_snat_rule f v2 T2 :: rest) p.
+  eval_rules (mk_snat_rule f mapname :: rest) e p
+  = eval_rules (orig_snat_rule f v1 T1 :: orig_snat_rule f v2 T2 :: rest) e p.
 Proof.
-  intros f v1 v2 T1 T2 mapname rest p Hmap Hfx1 Hfx2.
+  intros f v1 v2 T1 T2 mapname rest e p Hmap Hfx1 Hfx2.
   cbn [eval_rules].
   rewrite loadable_mk_snat, applies_mk_snat, outcome_mk_snat.
   rewrite loadable_orig_snat, applies_orig_snat, outcome_orig_snat.
@@ -135,12 +135,12 @@ Proof.
   rewrite Hmap, map_has_key_dmap2.
   destruct (field_loadable f p) eqn:Hld.
   - (* field loads: relate the head MCmp matches to the data_eqb disjunction *)
-    rewrite (eval_mcmp_point f v1 p Hld (field_fixed_len_loaded f (List.length v1) p Hfx1 Hld)).
-    rewrite (eval_mcmp_point f v2 p Hld (field_fixed_len_loaded f (List.length v2) p Hfx2 Hld)).
-    rewrite (data_eqb_sym (field_value f p) v1), (data_eqb_sym (field_value f p) v2).
+    rewrite (eval_mcmp_point f v1 e p Hld (field_fixed_len_loaded f (List.length v1) e p Hfx1 Hld)).
+    rewrite (eval_mcmp_point f v2 e p Hld (field_fixed_len_loaded f (List.length v2) e p Hfx2 Hld)).
+    rewrite (data_eqb_sym (field_value f e p) v1), (data_eqb_sym (field_value f e p) v2).
     cbn [andb terminal].
-    destruct (data_eqb v1 (field_value f p)); cbn [orb];
-      destruct (data_eqb v2 (field_value f p)); reflexivity.
+    destruct (data_eqb v1 (field_value f e p)); cbn [orb];
+      destruct (data_eqb v2 (field_value f e p)); reflexivity.
   - (* field does not load: every rule BREAKs (rule_loadable false) -> fall through *)
     cbn [andb]. reflexivity.
 Qed.
@@ -151,28 +151,28 @@ Qed.
     right address (not just "some accept"). *)
 
 (** The merged operand resolves to the map value at the key. *)
-Lemma nat_operand_addr_snat_eq : forall h f m T p,
-  map_lookup_data (field_value f p) (e_map (pkt_env p) m) = T ->
-  nat_operand_addr h (snat_map_spec f m) p = nat_operand_addr h (snat_imm_spec T) p.
+Lemma nat_operand_addr_snat_eq : forall h f m T e p,
+  map_lookup_data (field_value f e p) (e_map e m) = T ->
+  nat_operand_addr h (snat_map_spec f m) e p = nat_operand_addr h (snat_imm_spec T) e p.
 Proof.
-  intros h f m T p Hlk. unfold nat_operand_addr, nat_has_addr, nat_addr.
+  intros h f m T e p Hlk. unfold nat_operand_addr, nat_has_addr, nat_addr.
   cbn [nat_kind nat_src nat_map nat_field nat_addr_imm snat_map_spec snat_imm_spec].
   rewrite nat_map_key_single, Hlk. reflexivity.
 Qed.
 
 (** THE data-plane merge: the bare map rule's NAT effect equals that of a
     `snat to <map value at the key>` rule — at EVERY hook and flow state. *)
-Theorem apply_nat_snat_eq : forall h f m T p,
-  map_lookup_data (field_value f p) (e_map (pkt_env p) m) = T ->
-  apply_nat h (mk_snat_rule f m) p = apply_nat h (orig_snat_rule f [] T) p.
+Theorem apply_nat_snat_eq : forall h f m T e p,
+  map_lookup_data (field_value f e p) (e_map e m) = T ->
+  apply_nat h (mk_snat_rule f m) e p = apply_nat h (orig_snat_rule f [] T) e p.
 Proof.
-  intros h f m T p Hlk.
+  intros h f m T e p Hlk.
   unfold apply_nat, mk_snat_rule, orig_snat_rule. cbn [r_nat].
-  destruct (e_nat (pkt_env p) (pkt_flow p)) as [mm |].
-  - apply apply_nat_tuple_indep; reflexivity.
+  destruct (e_nat e (pkt_flow p)) as [mm |].
+  - f_equal.
   - destruct (pkt_ctdir_orig p); [| reflexivity].
     rewrite (nat_orig_addr_indep (snat_map_spec f m) (snat_imm_spec T) p eq_refl eq_refl).
-    rewrite (nat_operand_addr_snat_eq h f m T p Hlk).
+    rewrite (nat_operand_addr_snat_eq h f m T e p Hlk).
     cbn [nat_port_num nat_orig_port nat_extra snat_map_spec snat_imm_spec].
     rewrite (apply_nat_tuple_indep (snat_map_spec f m) (snat_imm_spec T) p _ eq_refl eq_refl).
     reflexivity.
@@ -181,13 +181,13 @@ Qed.
 (** Specialised to the two-key map: hitting key [v1] applies [T1]; key [v2]
     (distinct) applies [T2] — the merged rule's translation matches whichever
     original would have fired. *)
-Corollary apply_nat_snat_merge1 : forall h f v1 v2 T1 T2 m p,
-  e_map (pkt_env p) m = dmap2 v1 v2 T1 T2 ->
-  data_eqb (field_value f p) v1 = true ->
-  apply_nat h (mk_snat_rule f m) p = apply_nat h (orig_snat_rule f v1 T1) p.
+Corollary apply_nat_snat_merge1 : forall h f v1 v2 T1 T2 m e p,
+  e_map e m = dmap2 v1 v2 T1 T2 ->
+  data_eqb (field_value f e p) v1 = true ->
+  apply_nat h (mk_snat_rule f m) e p = apply_nat h (orig_snat_rule f v1 T1) e p.
 Proof.
-  intros h f v1 v2 T1 T2 m p Hmap Hv1.
-  transitivity (apply_nat h (orig_snat_rule f [] T1) p).
+  intros h f v1 v2 T1 T2 m e p Hmap Hv1.
+  transitivity (apply_nat h (orig_snat_rule f [] T1) e p).
   - apply apply_nat_snat_eq.
     rewrite Hmap. unfold dmap2. cbn [map_lookup_data]. rewrite Hv1. reflexivity.
   - unfold apply_nat, orig_snat_rule. cbn [r_nat]. reflexivity.

@@ -37,8 +37,8 @@ Definition empty_env : env :=
      e_ct := fun _ _ => []; e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
 
 Definition bad_pkt : packet :=
-  {| pkt_env := empty_env;
-     pkt_meta := fun _ => []; pkt_ct := fun _ => []; pkt_sock := fun _ => [];
+  {|
+     pkt_meta := fun _ => []; pkt_sock := fun _ => [];
      pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := []; pkt_th := []; pkt_ih := []; pkt_tnl := [];
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
@@ -55,13 +55,13 @@ Proof. reflexivity. Qed.
 (** *** The fix, at the single-match level: a negated transport match does NOT
     apply when its load breaks — it is [false], NOT spuriously [true]. *)
 Theorem neq_dport_short_no_match :
-  eval_matchcond (MNeq FThDport [0; 22]) bad_pkt = false.
+  eval_matchcond (MNeq FThDport [0; 22]) empty_env bad_pkt = false.
 Proof. reflexivity. Qed.
 
 (** For contrast: the *non-negated* equality match is also [false] (the rule does
     not match either way — the break is independent of the comparison). *)
 Theorem eq_dport_short_no_match :
-  eval_matchcond (MEq FThDport [0; 22]) bad_pkt = false.
+  eval_matchcond (MEq FThDport [0; 22]) empty_env bad_pkt = false.
 Proof. reflexivity. Qed.
 
 (** *** The fix, at the chain level: a chain whose only rule is
@@ -76,28 +76,28 @@ Definition dropneq_chain : chain :=
                      r_after := [] |} ] |}.
 
 Theorem chain_dropneq_short_accepts :
-  eval_chain dropneq_chain bad_pkt = Accept.
+  eval_chain dropneq_chain empty_env bad_pkt = Accept.
 Proof. reflexivity. Qed.
 
 (** And the OLD incorrect verdict ([Drop]) is now disprovable — the chain does not
     drop. *)
 Theorem chain_dropneq_short_not_drop :
-  eval_chain dropneq_chain bad_pkt <> Drop.
+  eval_chain dropneq_chain empty_env bad_pkt <> Drop.
 Proof. discriminate. Qed.
 
 (** The compiled bytecode agrees (via [compile_chain_correct]): the installed
     netlink program also ACCEPTS the no-L4 packet — the VM's [IPayloadLoad] breaks
     exactly as the kernel does. *)
 Theorem chain_dropneq_short_accepts_bytecode :
-  run_chain (compile_chain dropneq_chain) (c_policy dropneq_chain) bad_pkt = Accept.
+  run_chain (compile_chain dropneq_chain) (c_policy dropneq_chain) empty_env bad_pkt = Accept.
 Proof. rewrite compile_chain_correct. apply chain_dropneq_short_accepts. Qed.
 
 (** A first-fragment-style packet (L4 present but [pkt_fragoff <> 0]) likewise
     breaks a transport read: a non-first fragment carries no usable transport
     header. *)
 Definition frag_pkt : packet :=
-  {| pkt_env := empty_env;
-     pkt_meta := fun _ => []; pkt_ct := fun _ => []; pkt_sock := fun _ => [];
+  {|
+     pkt_meta := fun _ => []; pkt_sock := fun _ => [];
      pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := []; pkt_th := [9; 9; 9; 9]; pkt_ih := []; pkt_tnl := [];
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
@@ -108,9 +108,9 @@ Definition frag_pkt : packet :=
      pkt_fragoff := 8; pkt_flow := []; pkt_untracked := false; pkt_ctdir_orig := true; pkt_ct_present := true |}.   (* a non-first fragment *)
 
 Theorem neq_dport_frag_no_match :
-  eval_matchcond (MNeq FThDport [0; 22]) frag_pkt = false.
+  eval_matchcond (MNeq FThDport [0; 22]) empty_env frag_pkt = false.
 Proof. reflexivity. Qed.
 
 Theorem chain_dropneq_frag_accepts :
-  eval_chain dropneq_chain frag_pkt = Accept.
+  eval_chain dropneq_chain empty_env frag_pkt = Accept.
 Proof. reflexivity. Qed.

@@ -2,7 +2,7 @@
 
     The base model (Syntax.v:212) computes a `fib` load as
 
-      do_load (LFib sel res) p = lpm_fib (e_routes (pkt_env p)) (pkt_fibkey p sel) res
+      do_load (LFib sel res) e p = lpm_fib (e_routes e) (pkt_fibkey p sel) res
 
     with two infidelities this file removes:
 
@@ -13,7 +13,7 @@
           addr = (priv->flags & NFTA_FIB_F_DADDR) ? iph->daddr : iph->saddr;
 
         — the lookup KEY *is* the header daddr/saddr.  In our model the real daddr
-        is [field_value FIp4Daddr p = read_payload PNetwork 16 4 p] (FIp4Daddr =
+        is [field_value FIp4Daddr e p = read_payload PNetwork 16 4 p] (FIp4Daddr =
         LPayload PNetwork 16 4, Syntax.v:95).  We pin the oracle to those bytes
         with a [fibkey_wf] predicate and PROVE [fib_key_is_daddr] etc.
 
@@ -82,15 +82,15 @@ Definition fibkey_wf (p : packet) : Prop :=
   pkt_fibkey p "saddr . iif" = read_payload PNetwork 12 4 p.
 
 (** Under [fibkey_wf] the oracle key for "daddr" IS the real daddr field value.
-    ([field_value FIp4Daddr p] is [read_payload PNetwork 16 4 p] by definition,
+    ([field_value FIp4Daddr e p] is [read_payload PNetwork 16 4 p] by definition,
     Syntax.v:95,144,222.) *)
-Lemma fib_key_is_daddr : forall p,
-  fibkey_wf p -> pkt_fibkey p "daddr" = field_value FIp4Daddr p.
-Proof. intros p [Hd _]. exact Hd. Qed.
+Lemma fib_key_is_daddr : forall e p,
+  fibkey_wf p -> pkt_fibkey p "daddr" = field_value FIp4Daddr e p.
+Proof. intros e p [Hd _]. exact Hd. Qed.
 
-Lemma fib_key_is_saddr : forall p,
-  fibkey_wf p -> pkt_fibkey p "saddr" = field_value FIp4Saddr p.
-Proof. intros p [_ [Hs _]]. exact Hs. Qed.
+Lemma fib_key_is_saddr : forall e p,
+  fibkey_wf p -> pkt_fibkey p "saddr" = field_value FIp4Saddr e p.
+Proof. intros e p [_ [Hs _]]. exact Hs. Qed.
 
 (** The iif-scoped selectors read the SAME address bytes as their host-wide form. *)
 Lemma fib_key_iif_same_daddr : forall p,
@@ -103,13 +103,13 @@ Proof. intros p [_ [Hs [_ Hsi]]]. rewrite Hs, Hsi. reflexivity. Qed.
 
 (** Consequently the BASE fib load, on a wf packet, looks the address up at the
     real daddr bytes — the oracle is gone. *)
-Lemma fib_daddr_load_is_real : forall p res,
+Lemma fib_daddr_load_is_real : forall e p res,
   fibkey_wf p ->
-  field_value (FFib "daddr" res) p
-    = lpm_fib (e_routes (pkt_env p)) (field_value FIp4Daddr p) res.
+  field_value (FFib "daddr" res) e p
+    = lpm_fib (e_routes e) (field_value FIp4Daddr e p) res.
 Proof.
-  intros p res Hwf. unfold field_value; simpl.
-  rewrite (fib_key_is_daddr p Hwf). reflexivity.
+  intros e p res Hwf. unfold field_value; simpl.
+  rewrite (fib_key_is_daddr e p Hwf). reflexivity.
 Qed.
 
 (* ================================================================= *)
@@ -304,33 +304,32 @@ Qed.
     key de-oracled AND host-wide type-local computed.  In particular it FIRES
     (= RTN_LOCAL) iff the real daddr is in the local set, regardless of ingress
     iface. *)
-Theorem fib_daddr_type_base_is_kernel : forall p lo_ca hi_ca tbl,
+Theorem fib_daddr_type_base_is_kernel : forall e p lo_ca hi_ca tbl,
   fibkey_wf p ->
-  key_covered lo_ca hi_ca (field_value FIp4Daddr p) ->
-  e_routes (pkt_env p) = compile_local_table lo_ca hi_ca tbl ->
-  field_value (FFib "daddr" FRtype) p = fib_addr_type tbl (field_value FIp4Daddr p).
+  key_covered lo_ca hi_ca (field_value FIp4Daddr e p) ->
+  e_routes e = compile_local_table lo_ca hi_ca tbl ->
+  field_value (FFib "daddr" FRtype) e p = fib_addr_type tbl (field_value FIp4Daddr e p).
 Proof.
-  intros p lo_ca hi_ca tbl Hwf Hcov Hroutes.
-  rewrite (fib_daddr_load_is_real p FRtype Hwf), Hroutes.
+  intros e p lo_ca hi_ca tbl Hwf Hcov Hroutes.
+  rewrite (fib_daddr_load_is_real e p FRtype Hwf), Hroutes.
   apply lpm_fib_compiled_is_addr_type. exact Hcov.
 Qed.
 
 (** Cross-iface locality, on the BASE semantics: a wf packet on ANY iface whose
     real daddr is a host-configured local address is `type local`.  Two packets
     with the same routes + same daddr (differing only in MKiif) agree. *)
-Theorem fib_daddr_local_iif_independent : forall p p' lo_ca hi_ca tbl,
+Theorem fib_daddr_local_iif_independent : forall e p p' lo_ca hi_ca tbl,
   fibkey_wf p -> fibkey_wf p' ->
-  key_covered lo_ca hi_ca (field_value FIp4Daddr p) ->
-  e_routes (pkt_env p)  = compile_local_table lo_ca hi_ca tbl ->
-  e_routes (pkt_env p') = compile_local_table lo_ca hi_ca tbl ->
-  field_value FIp4Daddr p = field_value FIp4Daddr p' ->
-  field_value (FFib "daddr" FRtype) p = field_value (FFib "daddr" FRtype) p'.
+  key_covered lo_ca hi_ca (field_value FIp4Daddr e p) ->
+  e_routes e = compile_local_table lo_ca hi_ca tbl ->
+  field_value FIp4Daddr e p = field_value FIp4Daddr e p' ->
+  field_value (FFib "daddr" FRtype) e p = field_value (FFib "daddr" FRtype) e p'.
 Proof.
-  intros p p' lo_ca hi_ca tbl Hwf Hwf' Hcov Hr Hr' Hdaddr.
-  rewrite (fib_daddr_type_base_is_kernel p lo_ca hi_ca tbl Hwf Hcov Hr).
-  assert (Hcov' : key_covered lo_ca hi_ca (field_value FIp4Daddr p'))
+  intros e p p' lo_ca hi_ca tbl Hwf Hwf' Hcov Hr Hdaddr.
+  rewrite (fib_daddr_type_base_is_kernel e p lo_ca hi_ca tbl Hwf Hcov Hr).
+  assert (Hcov' : key_covered lo_ca hi_ca (field_value FIp4Daddr e p'))
     by (unfold key_covered in *; rewrite <- Hdaddr; exact Hcov).
-  rewrite (fib_daddr_type_base_is_kernel p' lo_ca hi_ca tbl Hwf' Hcov' Hr').
+  rewrite (fib_daddr_type_base_is_kernel e p' lo_ca hi_ca tbl Hwf' Hcov' Hr).
   rewrite Hdaddr. reflexivity.
 Qed.
 
@@ -412,9 +411,8 @@ Definition demo_fibkey (nh : list byte) : string -> data :=
          else [].
 
 Definition mk_demo_packet (nh : list byte) : packet :=
-  {| pkt_env := env_demo;
+  {|
      pkt_meta := fun _ => [];
-     pkt_ct := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := nh; pkt_th := []; pkt_ih := []; pkt_tnl := [];
      pkt_fibkey := demo_fibkey nh; pkt_numgen := fun _ => []; pkt_osf := [];
@@ -435,29 +433,29 @@ Lemma pkt_remote_wf : fibkey_wf pkt_remote.
 Proof. unfold fibkey_wf, pkt_remote; simpl. repeat split; reflexivity. Qed.
 
 (** The real daddr of [pkt_local] is 10.0.0.5. *)
-Example pkt_local_daddr : field_value FIp4Daddr pkt_local = daddr_local.
+Example pkt_local_daddr : field_value FIp4Daddr env_demo pkt_local = daddr_local.
 Proof. vm_compute. reflexivity. Qed.
 
 (** FIRES on the base semantics: `fib daddr type` of [pkt_local] is RTN_LOCAL
     ( = fib_local from Optiplex_Mark.v). *)
 Example fib_base_fires :
-  field_value (FFib "daddr" FRtype) pkt_local = RTN_LOCAL.
+  field_value (FFib "daddr" FRtype) env_demo pkt_local = RTN_LOCAL.
 Proof. vm_compute. reflexivity. Qed.
 
 (** DOES NOT FIRE on the base semantics: `fib daddr type` of [pkt_remote]
     (daddr 10.0.0.9) is NOT RTN_LOCAL. *)
 Example fib_base_no_fire :
-  field_value (FFib "daddr" FRtype) pkt_remote <> RTN_LOCAL.
+  field_value (FFib "daddr" FRtype) env_demo pkt_remote <> RTN_LOCAL.
 Proof. vm_compute. discriminate. Qed.
 
 (** And it equals the kernel [fib_addr_type] of the real daddr (the de-oracled,
     host-wide, byte-derived answer) — derived via the general theorem, NOT
     assumed. *)
 Example fib_base_is_kernel_demo :
-  field_value (FFib "daddr" FRtype) pkt_local
-    = fib_addr_type tbl_demo (field_value FIp4Daddr pkt_local).
+  field_value (FFib "daddr" FRtype) env_demo pkt_local
+    = fib_addr_type tbl_demo (field_value FIp4Daddr env_demo pkt_local).
 Proof.
-  apply (fib_daddr_type_base_is_kernel pkt_local [0;0;0;0] [255;255;255;255] tbl_demo).
+  apply (fib_daddr_type_base_is_kernel env_demo pkt_local [0;0;0;0] [255;255;255;255] tbl_demo).
   - apply pkt_local_wf.
   - unfold key_covered. vm_compute. reflexivity.
   - reflexivity.

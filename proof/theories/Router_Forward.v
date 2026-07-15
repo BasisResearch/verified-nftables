@@ -64,8 +64,8 @@ Definition fw_fuel : nat := 8.
 (* The `iifname eth1` match the parser emitted, exactly as the kernel evaluates it:
    the [MEq FMetaIifname if_eth1] condition (an exact compare of the iif register
    against the 16-byte "eth1"). *)
-Definition iif_eth1 (p : packet) : bool :=
-  eval_matchcond_body (MEq FMetaIifname if_eth1) p.
+Definition iif_eth1 (e : env) (p : packet) : bool :=
+  eval_matchcond_body (MEq FMetaIifname if_eth1) e p.
 
 (* The ct-state verdict map [__map3] the parser emitted (point-interval entries). *)
 Definition map3 : list (data * data * verdict) :=
@@ -113,13 +113,13 @@ Lemma assoc_new    : assoc_verdict cts_new map3 = None.
 Proof. vm_compute. reflexivity. Qed.
 
 (* Keep the field reads and the vmap lookup opaque so [cbn] leaves
-   [assoc_verdict (field_value FCtState p) map3] folded instead of expanding it. *)
+   [assoc_verdict (field_value FCtState e p) map3] folded instead of expanding it. *)
 Opaque field_value assoc_verdict.
 
 (** ** The forward chain's two rules, as a clean verdict over the ct-state and iif.
 
     Rule 1 is the ct-state vmap [__map3]; rule 2 is `MEq FMetaIifname eth1 -> Accept`.
-    Under [pkt_env p = gen_env] the vmap lookups are concrete:
+    Under [e = gen_env] the vmap lookups are concrete:
       estab/related -> Accept, invalid -> Drop, anything else -> MISS (fall through).
     The vmap rule body is empty (no payload load), the iifname rule loads a meta
     register (always loadable), so [rule_loadable] is [true] throughout. *)
@@ -131,13 +131,13 @@ Definition r2_fwd : rule :=
      r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
 
 (* Its load always succeeds (a meta iifname read never BREAKs). *)
-Lemma r2_loadable : forall p, rule_loadable r2_fwd p = true.
-Proof. intro p. reflexivity. Qed.
+Lemma r2_loadable : forall e p, rule_loadable r2_fwd e p = true.
+Proof. intros e p. reflexivity. Qed.
 
 (* It applies exactly when the iifname is eth1. *)
-Lemma r2_applies : forall p, rule_applies r2_fwd p = iif_eth1 p.
+Lemma r2_applies : forall e p, rule_applies r2_fwd e p = iif_eth1 e p.
 Proof.
-  intro p. unfold rule_applies, r2_fwd; cbn [r_body rule_applies_walk].
+  intros e p. unfold rule_applies, r2_fwd; cbn [r_body rule_applies_walk].
   unfold eval_matchcond, iif_eth1.
   rewrite Bool.andb_true_r.
   (* [match_loadable (MEq FMetaIifname _) p = field_loadable FMetaIifname p = true]. *)
@@ -145,42 +145,38 @@ Proof.
 Qed.
 
 (* When it applies, its outcome is the terminal Accept (no vmap, static verdict). *)
-Lemma r2_outcome : forall p, outcome r2_fwd p = Some Accept.
-Proof. intro p. reflexivity. Qed.
+Lemma r2_outcome : forall e p, outcome r2_fwd e p = Some Accept.
+Proof. intros e p. reflexivity. Qed.
 
 (* The forward chain's verdict, fully symbolically reduced from [global_forward]:
    stepping rule 1 (ct vmap) then rule 2 (iifname) then policy DROP.  Since the ct
    vmap [__map3] can only yield Accept/Drop/MISS (no Continue/Jump — see
    [assoc_map3_eq]), the verdict is a closed cascade of byte-equality tests with NO
    undetermined branch. *)
-Lemma forward_eval_unfold : forall p,
-  pkt_env p = gen_env ->
-  eval_table fw_fuel global_chains global_forward p =
-    (if data_eqb cts_established (field_value FCtState p) then Accept
-     else if data_eqb cts_related (field_value FCtState p) then Accept
-     else if data_eqb cts_invalid (field_value FCtState p) then Drop
-     else if iif_eth1 p then Accept else Drop).
+Lemma forward_eval_unfold : forall e p,
+  e = gen_env ->
+  eval_table fw_fuel global_chains global_forward e p =
+    (if data_eqb cts_established (field_value FCtState e p) then Accept
+     else if data_eqb cts_related (field_value FCtState e p) then Accept
+     else if data_eqb cts_invalid (field_value FCtState e p) then Drop
+     else if iif_eth1 e p then Accept else Drop).
 Proof.
-  intros p Hpe.
+  intros e p Hpe.
   unfold eval_table, fw_fuel, global_forward, global_chains.
   cbn [c_rules c_policy].
   rewrite erj_cons.
   (* rule 1: ct-state vmap.  rule_loadable: empty body, vmap key meta-load = ok. *)
   unfold rule_loadable, rule_applies, outcome, outcome_core;
-    cbn -[eval_rules_j assoc_verdict pkt_env field_value iif_eth1].
-  rewrite Hpe. unfold gen_env, env_with_sets;
     cbn -[eval_rules_j assoc_verdict field_value iif_eth1].
-  (* the ct vmap key is [field_value FCtState p] (vm_keyf = Some (FCtState, []), no
-     transforms), and the lookup table is exactly [map3]; classify it. *)
-  change [([0;0;0;2], [0;0;0;2], Accept);
-          ([0;0;0;4], [0;0;0;4], Accept);
-          ([0;0;0;1], [0;0;0;1], Drop)] with map3.
+  (* the ct vmap key is [field_value FCtState e p] (vm_keyf = Some (FCtState, []), no
+     transforms), and the lookup table under [e = gen_env] is exactly [map3]. *)
+  replace (e_vmap e "__map3") with map3 by (rewrite Hpe; reflexivity).
   rewrite assoc_map3_eq.
-  destruct (data_eqb cts_established (field_value FCtState p)) eqn:He;
+  destruct (data_eqb cts_established (field_value FCtState e p)) eqn:He;
     [ cbn -[eval_rules_j]; reflexivity | ].
-  destruct (data_eqb cts_related (field_value FCtState p)) eqn:Hr;
+  destruct (data_eqb cts_related (field_value FCtState e p)) eqn:Hr;
     [ cbn -[eval_rules_j]; reflexivity | ].
-  destruct (data_eqb cts_invalid (field_value FCtState p)) eqn:Hi;
+  destruct (data_eqb cts_invalid (field_value FCtState e p)) eqn:Hi;
     [ cbn -[eval_rules_j]; reflexivity | ].
   (* vmap MISS: fall through to rule 2 (iifname eth1). *)
   cbn -[eval_rules_j data_eqb field_value eval_matchcond_body iif_eth1].
@@ -193,7 +189,7 @@ Proof.
             r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}
     with r2_fwd.
   rewrite r2_loadable, r2_applies, r2_outcome. cbn [andb].
-  destruct (iif_eth1 p) eqn:Heq;
+  destruct (iif_eth1 e p) eqn:Heq;
     cbn -[eval_rules_j iif_eth1]; rewrite ?erj_nil; reflexivity.
 Qed.
 
@@ -201,25 +197,25 @@ Qed.
 
 (* THE CRUX: a `new` (unsolicited, not estab/related) packet whose ingress is NOT
    eth1 (the LAN) is DROPPED — so world(ppp0)->private is never forwarded. *)
-Theorem forward_unsolicited_dropped : forall p,
-  pkt_env p = gen_env ->
-  field_value FCtState p = cts_new ->
-  iif_eth1 p = false ->
-  eval_table fw_fuel global_chains global_forward p = Drop.
+Theorem forward_unsolicited_dropped : forall e p,
+  e = gen_env ->
+  field_value FCtState e p = cts_new ->
+  iif_eth1 e p = false ->
+  eval_table fw_fuel global_chains global_forward e p = Drop.
 Proof.
-  intros p Hpe Hct Hiif.
-  rewrite (forward_eval_unfold p Hpe), Hct, Hiif. vm_compute. reflexivity.
+  intros e p Hpe Hct Hiif.
+  rewrite (forward_eval_unfold e p Hpe), Hct, Hiif. vm_compute. reflexivity.
 Qed.
 
 (* The same crux phrased directly on ppp0 (the world interface): a new packet
    arriving on ppp0 is dropped. *)
-Theorem forward_ppp0_dropped : forall p,
-  pkt_env p = gen_env ->
-  field_value FCtState p = cts_new ->
-  field_value FMetaIifname p = if_ppp0 ->
-  eval_table fw_fuel global_chains global_forward p = Drop.
+Theorem forward_ppp0_dropped : forall e p,
+  e = gen_env ->
+  field_value FCtState e p = cts_new ->
+  field_value FMetaIifname e p = if_ppp0 ->
+  eval_table fw_fuel global_chains global_forward e p = Drop.
 Proof.
-  intros p Hpe Hct Hiif.
+  intros e p Hpe Hct Hiif.
   apply forward_unsolicited_dropped; auto.
   unfold iif_eth1, eval_matchcond_body. rewrite Hiif. vm_compute. reflexivity.
 Qed.
@@ -227,49 +223,49 @@ Qed.
 (* The ct-state `invalid -> drop` vmap entry FIRES — an invalid packet is dropped
    at forward even if it ingresses on eth1 (the LAN), because the vmap terminal
    Drop precedes the eth1 accept rule. *)
-Theorem forward_invalid_dropped : forall p,
-  pkt_env p = gen_env ->
-  field_value FCtState p = cts_invalid ->
-  eval_table fw_fuel global_chains global_forward p = Drop.
+Theorem forward_invalid_dropped : forall e p,
+  e = gen_env ->
+  field_value FCtState e p = cts_invalid ->
+  eval_table fw_fuel global_chains global_forward e p = Drop.
 Proof.
-  intros p Hpe Hct.
-  rewrite (forward_eval_unfold p Hpe), Hct. vm_compute. reflexivity.
+  intros e p Hpe Hct.
+  rewrite (forward_eval_unfold e p Hpe), Hct. vm_compute. reflexivity.
 Qed.
 
 (** ** The accept paths (non-vacuity of the drop properties' contrapositive). *)
 
 (* Established connections are forwarded (the vmap `established -> accept`). *)
-Theorem forward_established_accepted : forall p,
-  pkt_env p = gen_env ->
-  field_value FCtState p = cts_established ->
-  eval_table fw_fuel global_chains global_forward p = Accept.
+Theorem forward_established_accepted : forall e p,
+  e = gen_env ->
+  field_value FCtState e p = cts_established ->
+  eval_table fw_fuel global_chains global_forward e p = Accept.
 Proof.
-  intros p Hpe Hct.
-  rewrite (forward_eval_unfold p Hpe), Hct. vm_compute. reflexivity.
+  intros e p Hpe Hct.
+  rewrite (forward_eval_unfold e p Hpe), Hct. vm_compute. reflexivity.
 Qed.
 
 (* Related connections are forwarded (the vmap `related -> accept`). *)
-Theorem forward_related_accepted : forall p,
-  pkt_env p = gen_env ->
-  field_value FCtState p = cts_related ->
-  eval_table fw_fuel global_chains global_forward p = Accept.
+Theorem forward_related_accepted : forall e p,
+  e = gen_env ->
+  field_value FCtState e p = cts_related ->
+  eval_table fw_fuel global_chains global_forward e p = Accept.
 Proof.
-  intros p Hpe Hct.
-  rewrite (forward_eval_unfold p Hpe), Hct. vm_compute. reflexivity.
+  intros e p Hpe Hct.
+  rewrite (forward_eval_unfold e p Hpe), Hct. vm_compute. reflexivity.
 Qed.
 
 (* A new connection ingressing on the LAN (eth1) IS forwarded (the `iifname eth1
    accept` rule fires after the vmap misses) — the accept path is REAL, so
    [forward_unsolicited_dropped]'s "not eth1" hypothesis is the only thing standing
    between this packet and a DROP. *)
-Theorem forward_eth1_accepted : forall p,
-  pkt_env p = gen_env ->
-  field_value FCtState p = cts_new ->
-  field_value FMetaIifname p = if_eth1 ->
-  eval_table fw_fuel global_chains global_forward p = Accept.
+Theorem forward_eth1_accepted : forall e p,
+  e = gen_env ->
+  field_value FCtState e p = cts_new ->
+  field_value FMetaIifname e p = if_eth1 ->
+  eval_table fw_fuel global_chains global_forward e p = Accept.
 Proof.
-  intros p Hpe Hct Hiif.
-  rewrite (forward_eval_unfold p Hpe), Hct.
+  intros e p Hpe Hct Hiif.
+  rewrite (forward_eval_unfold e p Hpe), Hct.
   unfold iif_eth1, eval_matchcond_body. rewrite Hiif.
   vm_compute. reflexivity.
 Qed.
@@ -277,23 +273,23 @@ Qed.
 (** ** The EXACT characterisation: the forward chain accepts iff one of the three
        faithful accept paths holds; otherwise it drops (no third verdict). *)
 
-Theorem forward_accept_iff : forall p,
-  pkt_env p = gen_env ->
-  ( eval_table fw_fuel global_chains global_forward p = Accept
+Theorem forward_accept_iff : forall e p,
+  e = gen_env ->
+  ( eval_table fw_fuel global_chains global_forward e p = Accept
     <->
-    ( field_value FCtState p = cts_established
-      \/ field_value FCtState p = cts_related
-      \/ ( field_value FCtState p <> cts_invalid
-           /\ iif_eth1 p = true ) ) ).
+    ( field_value FCtState e p = cts_established
+      \/ field_value FCtState e p = cts_related
+      \/ ( field_value FCtState e p <> cts_invalid
+           /\ iif_eth1 e p = true ) ) ).
 Proof.
-  intros p Hpe. rewrite (forward_eval_unfold p Hpe).
-  destruct (data_eqb cts_established (field_value FCtState p)) eqn:Hest.
+  intros e p Hpe. rewrite (forward_eval_unfold e p Hpe).
+  destruct (data_eqb cts_established (field_value FCtState e p)) eqn:Hest.
   { (* established *)
     apply data_eqb_true_iff in Hest. split; [ intros _ | reflexivity ]. auto. }
-  destruct (data_eqb cts_related (field_value FCtState p)) eqn:Hrel.
+  destruct (data_eqb cts_related (field_value FCtState e p)) eqn:Hrel.
   { (* related *)
     apply data_eqb_true_iff in Hrel. split; [ intros _ | reflexivity ]. auto. }
-  destruct (data_eqb cts_invalid (field_value FCtState p)) eqn:Hinv.
+  destruct (data_eqb cts_invalid (field_value FCtState e p)) eqn:Hinv.
   { (* invalid: chain DROPs (never Accept), and the invalid disjunct is excluded *)
     apply data_eqb_true_iff in Hinv. split.
     - discriminate.
@@ -305,7 +301,7 @@ Proof.
   split.
   - (* Accept here iff iif=eth1 *)
     intro Hacc.
-    destruct (iif_eth1 p) eqn:Heq; [ | discriminate Hacc ].
+    destruct (iif_eth1 e p) eqn:Heq; [ | discriminate Hacc ].
     right; right; split; [ | reflexivity ].
     intro Hc. rewrite <- Hc in Hinv. rewrite data_eqb_refl in Hinv; discriminate.
   - intros [He | [He | [_ Heq]]].
@@ -330,9 +326,9 @@ Definition env_fwd : env :=
 
 (* An unsolicited packet: NEW ct-state, ingress on ppp0 (the world). *)
 Definition pkt_world : packet :=
-  {| pkt_env := env_fwd;
+  {|
      pkt_meta := fun k => if meta_eqb k MKiifname then if_ppp0 else [];
-     pkt_ct := fun _ => []; pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
+     pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := []; pkt_th := []; pkt_ih := [];
      pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
      pkt_osf := []; pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
@@ -342,14 +338,14 @@ Definition pkt_world : packet :=
      pkt_ctdir_orig := true; pkt_ct_present := true |}.
 
 (* The witness is genuinely NEW-state on ppp0 (the security hyps are satisfiable). *)
-Lemma pkt_world_ct  : field_value FCtState pkt_world = cts_new.
+Lemma pkt_world_ct  : field_value FCtState env_fwd pkt_world = cts_new.
 Proof. vm_compute. reflexivity. Qed.
-Lemma pkt_world_iif : iif_eth1 pkt_world = false.
+Lemma pkt_world_iif : iif_eth1 env_fwd pkt_world = false.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The CORRECT forward chain DROPS this unsolicited world packet. *)
 Theorem pkt_world_dropped :
-  eval_table fw_fuel global_chains global_forward pkt_world = Drop.
+  eval_table fw_fuel global_chains global_forward env_fwd pkt_world = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 (* [bug_forward] = the forward chain with the `iifname eth1` GUARD REMOVED, so rule 2
@@ -373,13 +369,13 @@ Definition bug_forward : chain :=
    open-forwarding leak that [forward_unsolicited_dropped] / [pkt_world_dropped] rule
    out: the Internet would reach internal hosts. *)
 Theorem bug_world_accepted :
-  eval_table fw_fuel global_chains bug_forward pkt_world = Accept.
+  eval_table fw_fuel global_chains bug_forward env_fwd pkt_world = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* Hence the forward verdict property DISCRIMINATES the bug: on the same world packet
    the parser's chain DROPs while the de-guarded chain ACCEPTs — the discrimination a
    forward property had to make, and which the prior postrouting-only set could not. *)
 Theorem forward_property_discriminates_bug :
-  eval_table fw_fuel global_chains global_forward pkt_world
-  <> eval_table fw_fuel global_chains bug_forward pkt_world.
+  eval_table fw_fuel global_chains global_forward env_fwd pkt_world
+  <> eval_table fw_fuel global_chains bug_forward env_fwd pkt_world.
 Proof. rewrite pkt_world_dropped, bug_world_accepted. discriminate. Qed.

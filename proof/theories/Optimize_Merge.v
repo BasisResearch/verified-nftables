@@ -25,7 +25,7 @@
 
     This file proves the GENERAL two-rule adjacent merge ([eval_rules_merge2])
     from a single matchcond-level *disjunction certificate*
-      [eval_matchcond m12 p = eval_matchcond m1 p || eval_matchcond m2 p]
+      [eval_matchcond m12 e p = eval_matchcond m1 e p || eval_matchcond m2 e p]
       [match_loadable  m12 p = match_loadable  m1 p  (= match_loadable m2 p)]
     and the rules being otherwise identical (same tail body, same verdict/vmap/
     nat/…/after).
@@ -70,38 +70,38 @@ Local Open Scope nat_scope.
               the per-value outcome is what the merged rule reproduces);
       - [Ha]  the merged rule applies iff EITHER original applies (the head
               selector is the disjunction of the two originals' selectors). *)
-Lemma eval_rules_merge2 : forall r1 r2 r12 rest p,
-  rule_loadable r12 p = rule_loadable r1 p ->
-  rule_loadable r12 p = rule_loadable r2 p ->
-  outcome r12 p = outcome r1 p ->
-  outcome r12 p = outcome r2 p ->
-  rule_applies r12 p = orb (rule_applies r1 p) (rule_applies r2 p) ->
-  eval_rules (r12 :: rest) p = eval_rules (r1 :: r2 :: rest) p.
+Lemma eval_rules_merge2 : forall r1 r2 r12 rest e p,
+  rule_loadable r12 e p = rule_loadable r1 e p ->
+  rule_loadable r12 e p = rule_loadable r2 e p ->
+  outcome r12 e p = outcome r1 e p ->
+  outcome r12 e p = outcome r2 e p ->
+  rule_applies r12 e p = orb (rule_applies r1 e p) (rule_applies r2 e p) ->
+  eval_rules (r12 :: rest) e p = eval_rules (r1 :: r2 :: rest) e p.
 Proof.
-  intros r1 r2 r12 rest p Hl1 Hl2 Ho1 Ho2 Ha.
+  intros r1 r2 r12 rest e p Hl1 Hl2 Ho1 Ho2 Ha.
   (* normalise everything onto r1's loadability/outcome *)
-  assert (Hl2' : rule_loadable r1 p = rule_loadable r2 p) by (rewrite <- Hl1; exact Hl2).
-  assert (Ho2' : outcome r1 p = outcome r2 p) by (rewrite <- Ho1; exact Ho2).
+  assert (Hl2' : rule_loadable r1 e p = rule_loadable r2 e p) by (rewrite <- Hl1; exact Hl2).
+  assert (Ho2' : outcome r1 e p = outcome r2 e p) by (rewrite <- Ho1; exact Ho2).
   cbn [eval_rules].
   rewrite Hl1, Ho1, Ha.
-  destruct (rule_loadable r1 p) eqn:EL.
+  destruct (rule_loadable r1 e p) eqn:EL.
   - (* loadable on r1 (hence on r2 and r12) *)
     rewrite <- Hl2'. cbn [andb].
-    destruct (rule_applies r1 p) eqn:Ea1; cbn [orb].
+    destruct (rule_applies r1 e p) eqn:Ea1; cbn [orb].
     + (* r1 applies: merged fires with outcome r1 = same as r1 *)
-      destruct (outcome r1 p) as [v |] eqn:Eo.
+      destruct (outcome r1 e p) as [v |] eqn:Eo.
       * destruct (terminal v) eqn:Et; [reflexivity|].
         cbn [eval_rules].
-        destruct (rule_applies r2 p) eqn:Ea2; cbn [andb].
+        destruct (rule_applies r2 e p) eqn:Ea2; cbn [andb].
         -- rewrite <- Ho2', Et. reflexivity.
         -- reflexivity.
       * cbn [eval_rules].
-        destruct (rule_applies r2 p) eqn:Ea2; cbn [andb].
+        destruct (rule_applies r2 e p) eqn:Ea2; cbn [andb].
         -- rewrite <- Ho2'. reflexivity.
         -- reflexivity.
     + (* r1 does not apply: merged applies iff r2 applies *)
       cbn [andb eval_rules].
-      destruct (rule_applies r2 p) eqn:Ea2; cbn [andb].
+      destruct (rule_applies r2 e p) eqn:Ea2; cbn [andb].
       * rewrite <- Ho2'. reflexivity.
       * reflexivity.
   - (* not loadable: merged skipped, r1 skipped, r2 also skipped *)
@@ -143,49 +143,49 @@ Proof. intros. unfold body_thread. rewrite has_notrack_mk_head. reflexivity. Qed
 
 (* end-loadability and outcome-core of [mk_head] only read the (shared) end-fields
    of the record, NOT the body — so two [mk_head]s over the same [r] agree there. *)
-Lemma end_loadable_mk_head : forall m rest r q,
-  end_loadable (mk_head m rest r) q = end_loadable r q.
+Lemma end_loadable_mk_head : forall m rest r e q,
+  end_loadable (mk_head m rest r) e q = end_loadable r e q.
 Proof.
   intros. unfold end_loadable, tail_loadable, terminal_loadable, vmap_loadable,
     terminal_outcome. reflexivity.
 Qed.
 
-Lemma outcome_core_mk_head : forall m rest r q,
-  outcome_core (mk_head m rest r) q = outcome_core r q.
+Lemma outcome_core_mk_head : forall m rest r e q,
+  outcome_core (mk_head m rest r) e q = outcome_core r e q.
 Proof.
   intros. unfold outcome_core, terminal_outcome. reflexivity.
 Qed.
 
 (* loadability of the merged head reduces to: head match loads + tail body loads +
    shared end loads.  Pulling the head out makes the dependence on [m] explicit. *)
-Lemma rule_loadable_mk_head : forall m rest r p,
-  rule_loadable (mk_head m rest r) p =
+Lemma rule_loadable_mk_head : forall m rest r e p,
+  rule_loadable (mk_head m rest r) e p =
     match_loadable m p &&
     (body_loadable_walk rest p &&
      (if body_synproxy_stops rest p then true
-      else end_loadable r (body_thread rest p))).
+      else end_loadable r e (body_thread rest p))).
 Proof.
-  intros m rest r p. unfold rule_loadable.
+  intros m rest r e p. unfold rule_loadable.
   rewrite synproxy_stops_mk_head, body_thread_mk_head, end_loadable_mk_head.
   (* body_loadable_walk (BMatch m :: rest) = match_loadable m p && walk rest *)
   cbn [r_body body_loadable_walk body_item_loadable].
   rewrite Bool.andb_assoc. reflexivity.
 Qed.
 
-Lemma outcome_mk_head : forall m rest r p,
-  outcome (mk_head m rest r) p =
+Lemma outcome_mk_head : forall m rest r e p,
+  outcome (mk_head m rest r) e p =
     if body_synproxy_stops rest p then Some Drop
-    else outcome_core r (body_thread rest p).
+    else outcome_core r e (body_thread rest p).
 Proof.
-  intros m rest r p. unfold outcome.
+  intros m rest r e p. unfold outcome.
   rewrite synproxy_stops_mk_head, body_thread_mk_head, outcome_core_mk_head.
   reflexivity.
 Qed.
 
-Lemma rule_applies_mk_head : forall m rest r p,
-  rule_applies (mk_head m rest r) p = eval_matchcond m p && rule_applies_walk rest p.
+Lemma rule_applies_mk_head : forall m rest r e p,
+  rule_applies (mk_head m rest r) e p = eval_matchcond m e p && rule_applies_walk rest e p.
 Proof.
-  intros m rest r p. unfold rule_applies.
+  intros m rest r e p. unfold rule_applies.
   cbn [r_body rule_applies_walk]. reflexivity.
 Qed.
 
@@ -194,14 +194,14 @@ Qed.
     rule [mk_head m12 rest r1] replaces the adjacent pair and preserves the
     verdict.  [r2] must be [mk_head m2 rest r1] — i.e. agree with [r1] on every
     field BUT the head value — which is exactly nft's [rules_eq] eligibility. *)
-Theorem eval_rules_value_merge : forall m1 m2 m12 rest r1 rest2 p,
+Theorem eval_rules_value_merge : forall m1 m2 m12 rest r1 rest2 e p,
   (forall q, match_loadable m12 q = match_loadable m1 q) ->
   (forall q, match_loadable m12 q = match_loadable m2 q) ->
-  (forall q, eval_matchcond m12 q = orb (eval_matchcond m1 q) (eval_matchcond m2 q)) ->
-  eval_rules (mk_head m12 rest r1 :: rest2) p
-    = eval_rules (mk_head m1 rest r1 :: mk_head m2 rest r1 :: rest2) p.
+  (forall q, eval_matchcond m12 e q = orb (eval_matchcond m1 e q) (eval_matchcond m2 e q)) ->
+  eval_rules (mk_head m12 rest r1 :: rest2) e p
+    = eval_rules (mk_head m1 rest r1 :: mk_head m2 rest r1 :: rest2) e p.
 Proof.
-  intros m1 m2 m12 rest r1 rest2 p Hml1 Hml2 Hev.
+  intros m1 m2 m12 rest r1 rest2 e p Hml1 Hml2 Hev.
   apply eval_rules_merge2.
   - (* rule_loadable r12 = rule_loadable r1 *)
     rewrite !rule_loadable_mk_head. rewrite Hml1. reflexivity.
@@ -430,19 +430,19 @@ Fixpoint dedup_adj (rs : list rule) : list rule :=
   | _ => rs
   end.
 
-Lemma eval_rules_drop_dup : forall r rest p,
-  eval_rules (r :: rest) p = eval_rules (r :: r :: rest) p.
+Lemma eval_rules_drop_dup : forall r rest e p,
+  eval_rules (r :: rest) e p = eval_rules (r :: r :: rest) e p.
 Proof.
-  intros r rest p. apply eval_rules_merge2; try reflexivity.
+  intros r rest e p. apply eval_rules_merge2; try reflexivity.
   rewrite Bool.orb_diag. reflexivity.
 Qed.
 
-Lemma eval_rules_dedup_adj : forall rs p, eval_rules (dedup_adj rs) p = eval_rules rs p.
+Lemma eval_rules_dedup_adj : forall rs e p, eval_rules (dedup_adj rs) e p = eval_rules rs e p.
 Proof.
   (* induction on length: both recursive calls are on the strictly shorter tail
      [r2 :: rest] of [r1 :: r2 :: rest]. *)
   intro rs. remember (length rs) as n eqn:Hn. revert rs Hn.
-  induction n as [n IH] using (well_founded_induction Nat.lt_wf_0); intros rs Hn p.
+  induction n as [n IH] using (well_founded_induction Nat.lt_wf_0); intros rs Hn e p.
   destruct rs as [| r1 [| r2 rest]]; try reflexivity.
   cbn [dedup_adj]. destruct (rule_eq_dec r1 r2) as [Heq | Hne].
   - (* drop the duplicate [r2 = r1]: dedup_adj (r2::rest), then re-insert via drop_dup *)
@@ -460,7 +460,7 @@ Qed.
     certificate instantiated with [m1 = MRange f false [lo] [mid]],
     [m2 = MRange f false [S mid] [hi]], [m12 = MRange f false [lo] [hi]].  Its
     soundness needs the single-byte contiguity [range_byte_split], which holds when
-    the field's loaded value is ONE byte — the GUARD [length (field_value f p) = 1].
+    the field's loaded value is ONE byte — the GUARD [length (field_value f e p) = 1].
     (A multi-byte field would compare its bound as a prefix, for which a contiguous
     two-element set is NOT a single range; hence the guard, exactly the kind of
     side-condition nft's own range-coalescing assumes on a fixed-width selector.)
@@ -471,20 +471,20 @@ Lemma mrange_byte_loadable : forall f neg lo hi p,
   match_loadable (MRange f neg lo hi) p = field_loadable f p.
 Proof. reflexivity. Qed.
 
-Lemma mrange_byte_disjunction : forall f lo mid hi p,
+Lemma mrange_byte_disjunction : forall f lo mid hi e p,
   lo <= mid -> mid < hi ->
-  length (field_value f p) = 1 ->
-  eval_matchcond (MRange f false [lo] [hi]) p
-  = orb (eval_matchcond (MRange f false [lo] [mid]) p)
-        (eval_matchcond (MRange f false [S mid] [hi]) p).
+  length (field_value f e p) = 1 ->
+  eval_matchcond (MRange f false [lo] [hi]) e p
+  = orb (eval_matchcond (MRange f false [lo] [mid]) e p)
+        (eval_matchcond (MRange f false [S mid] [hi]) e p).
 Proof.
-  intros f lo mid hi p Hlm Hmh Hlen.
+  intros f lo mid hi e p Hlm Hmh Hlen.
   unfold eval_matchcond, eval_matchcond_body. cbn [match_loadable].
   destruct (field_loadable f p) eqn:Hld; cbn [andb];
     [| reflexivity ].
   unfold eval_range. cbn [andb].
-  (* field_value f p is a single byte [x] *)
-  destruct (field_value f p) as [| x [| ? ?]] eqn:Ev; cbn [length] in Hlen;
+  (* field_value f e p is a single byte [x] *)
+  destruct (field_value f e p) as [| x [| ? ?]] eqn:Ev; cbn [length] in Hlen;
     try discriminate Hlen.
   exact (range_byte_split lo mid hi x Hlm Hmh).
 Qed.
@@ -499,14 +499,14 @@ Qed.
     The two adjacent single-byte-range rules collapse to one, on every packet for
     which the merged field is single-byte (the guard, as a per-packet hypothesis).
     [rest2] is the remainder of the chain; [r1] supplies the shared verdict/end. *)
-Theorem eval_rules_range_value_merge : forall f lo mid hi rest r1 rest2 p,
+Theorem eval_rules_range_value_merge : forall f lo mid hi rest r1 rest2 e p,
   lo <= mid -> mid < hi ->
-  length (field_value f p) = 1 ->
-  eval_rules (mk_head (MRange f false [lo] [hi]) rest r1 :: rest2) p
+  length (field_value f e p) = 1 ->
+  eval_rules (mk_head (MRange f false [lo] [hi]) rest r1 :: rest2) e p
   = eval_rules (mk_head (MRange f false [lo] [mid]) rest r1
-                :: mk_head (MRange f false [S mid] [hi]) rest r1 :: rest2) p.
+                :: mk_head (MRange f false [S mid] [hi]) rest r1 :: rest2) e p.
 Proof.
-  intros f lo mid hi rest r1 rest2 p Hlm Hmh Hlen.
+  intros f lo mid hi rest r1 rest2 e p Hlm Hmh Hlen.
   (* the three certificate hypotheses are needed only at THIS packet p, but
      [eval_rules_value_merge] quantifies them over all q.  We instead apply the
      abstract [eval_rules_merge2] directly, discharging its obligations at p. *)
@@ -516,7 +516,7 @@ Proof.
   - rewrite !outcome_mk_head. reflexivity.
   - rewrite !outcome_mk_head. reflexivity.
   - rewrite !rule_applies_mk_head.
-    rewrite (mrange_byte_disjunction f lo mid hi p Hlm Hmh Hlen).
+    rewrite (mrange_byte_disjunction f lo mid hi e p Hlm Hmh Hlen).
     rewrite Bool.andb_orb_distrib_l. reflexivity.
 Qed.
 
@@ -536,14 +536,14 @@ Definition optimize_chain2 (c : chain) : chain :=
     Optimize_Table.v / DEVELOPMENT.md); it remains only as the historical
     consecutive-duplicate pass.  Successor:
     [Optimize_Uncond.optimize_table_uncond_correct]. *)
-Theorem optimize_chain2_correct : forall c p,
-  eval_chain (optimize_chain2 c) p = eval_chain c p.
+Theorem optimize_chain2_correct : forall c e p,
+  eval_chain (optimize_chain2 c) e p = eval_chain c e p.
 Proof.
-  intros c p. unfold eval_chain, optimize_chain2. cbn [c_rules c_policy].
+  intros c e p. unfold eval_chain, optimize_chain2. cbn [c_rules c_policy].
   rewrite eval_rules_dedup_adj.
-  change (match eval_rules (c_rules (optimize_chain c)) p with
+  change (match eval_rules (c_rules (optimize_chain c)) e p with
           | Some v => v | None => c_policy (optimize_chain c) end)
-    with (eval_chain (optimize_chain c) p).
+    with (eval_chain (optimize_chain c) e p).
   apply optimize_chain_correct.
 Qed.
 
@@ -561,7 +561,7 @@ Qed.
     parser ([nft_lower.ml intern_anon_set]) mints a fresh `__setN`, pushes its
     elements onto the table's set declarations, and lowers the inline `{ … }` to
     [MConcatSet ([f], neg, "__setN")] — a reference BY NAME, membership read at run
-    time from [e_set (pkt_env p) "__setN"].  So this pass needs NO new constructor:
+    time from [e_set e "__setN"].  So this pass needs NO new constructor:
     it lifts the merge to the TABLE / [set_decls] level, minting `__setN` with a
     fresh counter, reusing the EXISTING named-set machinery.
 
@@ -577,14 +577,14 @@ Proof.
   intros x v. rewrite data_in_iv_point. apply data_eqb_sym.
 Qed.
 
-Lemma concat_set_two_points : forall f v1 v2 name q,
-  e_set (pkt_env q) name = [(v1, v1); (v2, v2)] ->
-  (field_loadable f q = true -> length (field_value f q) = length v1) ->
-  (field_loadable f q = true -> length (field_value f q) = length v2) ->
-  eval_matchcond (MConcatSet [f] false name) q
-  = orb (eval_matchcond (MCmp f CEq v1) q) (eval_matchcond (MCmp f CEq v2) q).
+Lemma concat_set_two_points : forall f v1 v2 name e q,
+  e_set e name = [(v1, v1); (v2, v2)] ->
+  (field_loadable f q = true -> length (field_value f e q) = length v1) ->
+  (field_loadable f q = true -> length (field_value f e q) = length v2) ->
+  eval_matchcond (MConcatSet [f] false name) e q
+  = orb (eval_matchcond (MCmp f CEq v1) e q) (eval_matchcond (MCmp f CEq v2) e q).
 Proof.
-  intros f v1 v2 name q Hset H1 H2.
+  intros f v1 v2 name e q Hset H1 H2.
   unfold eval_matchcond, eval_matchcond_body.
   cbn [match_loadable fields_loadable forallb].
   rewrite Bool.andb_true_r.
@@ -636,12 +636,12 @@ Definition field_fixed_len (f : field) : option nat :=
   | _ => None
   end.
 
-Lemma field_fixed_len_loaded : forall f len q,
+Lemma field_fixed_len_loaded : forall f len e q,
   field_fixed_len f = Some len ->
   field_loadable f q = true ->
-  length (field_value f q) = len.
+  length (field_value f e q) = len.
 Proof.
-  intros f len q Hfx Hld. unfold field_fixed_len in Hfx.
+  intros f len e q Hfx Hld. unfold field_fixed_len in Hfx.
   unfold field_loadable, field_value in *.
   destruct (field_load f) eqn:Efl; try discriminate.
   - (* LMeta: normalised to the fixed register width, unconditionally *)
@@ -799,30 +799,29 @@ Definition rule_clean (r : rule) : bool :=
 Definition rules_clean (rs : list rule) : bool := forallb rule_clean rs.
 
 Lemma do_load_env_with_sets : forall ld p base d1 d2,
-  do_load ld (set_env p (env_with_sets base d1))
-  = do_load ld (set_env p (env_with_sets base d2)).
+  do_load ld (env_with_sets base d1) p
+  = do_load ld (env_with_sets base d2) p.
 Proof.
   intros ld p base d1 d2.
-  unfold do_load, set_env, env_with_sets; cbn.
+  unfold do_load, env_with_sets; cbn.
   destruct ld; try reflexivity; try (destruct k; reflexivity).
 Qed.
 
 Lemma field_value_env_with_sets : forall f p base d1 d2,
-  field_value f (set_env p (env_with_sets base d1))
-  = field_value f (set_env p (env_with_sets base d2)).
+  field_value f (env_with_sets base d1) p
+  = field_value f (env_with_sets base d2) p.
 Proof. intros. unfold field_value. apply do_load_env_with_sets. Qed.
 
 Lemma eval_matchcond_clean_env : forall m p base d1 d2,
   mc_clean m = true ->
-  eval_matchcond m (set_env p (env_with_sets base d1))
-  = eval_matchcond m (set_env p (env_with_sets base d2)).
+  eval_matchcond m (env_with_sets base d1) p
+  = eval_matchcond m (env_with_sets base d2) p.
 Proof.
   intros m p base d1 d2 Hc.
   unfold eval_matchcond, eval_matchcond_body, match_loadable.
   destruct m; cbn in Hc; try discriminate;
-    rewrite ?field_value_env_with_sets;
     repeat (match goal with
-            | |- context[field_value ?f (set_env p (env_with_sets base d1))] =>
+            | |- context[field_value ?f (env_with_sets base d1) p] =>
                 rewrite (field_value_env_with_sets f p base d1 d2)
             end);
     reflexivity.
@@ -830,8 +829,8 @@ Qed.
 
 Lemma rule_applies_clean_env : forall body p base d1 d2,
   forallb bi_clean body = true ->
-  rule_applies_walk body (set_env p (env_with_sets base d1))
-  = rule_applies_walk body (set_env p (env_with_sets base d2)).
+  rule_applies_walk body (env_with_sets base d1) p
+  = rule_applies_walk body (env_with_sets base d2) p.
 Proof.
   induction body as [| b body IH]; intros p base d1 d2 Hc; [reflexivity|].
   cbn [forallb] in Hc. apply Bool.andb_true_iff in Hc as [Hb Hrest].
@@ -839,19 +838,6 @@ Proof.
   cbn [rule_applies_walk].
   rewrite (eval_matchcond_clean_env m p base d1 d2 Hb).
   rewrite (IH p base d1 d2 Hrest). reflexivity.
-Qed.
-
-Lemma body_item_loadable_clean_env : forall b p base d1 d2,
-  bi_clean b = true ->
-  body_item_loadable b (set_env p (env_with_sets base d1))
-  = body_item_loadable b (set_env p (env_with_sets base d2)).
-Proof.
-  intros b p base d1 d2 Hc. destruct b as [m | s]; cbn [bi_clean] in Hc; [| discriminate].
-  cbn [body_item_loadable match_loadable].
-  destruct m; cbn in Hc; try discriminate;
-    cbn [match_loadable];
-    rewrite ?field_value_env_with_sets; try reflexivity;
-    unfold fields_loadable, field_loadable; reflexivity.
 Qed.
 
 Lemma body_synproxy_stops_clean : forall body p,
@@ -873,28 +859,14 @@ Proof.
   cbn [body_has_notrack]. apply (IH Hrest).
 Qed.
 
-Lemma body_loadable_clean_env : forall body p base d1 d2,
-  forallb bi_clean body = true ->
-  body_loadable_walk body (set_env p (env_with_sets base d1))
-  = body_loadable_walk body (set_env p (env_with_sets base d2)).
-Proof.
-  intros body p base d1 d2 Hc.
-  rewrite !body_loadable_walk_no_synproxy by (apply body_synproxy_stops_clean; exact Hc).
-  revert Hc. induction body as [| b body IH]; intro Hc; [reflexivity|].
-  cbn [forallb] in Hc. apply Bool.andb_true_iff in Hc as [Hb Hrest].
-  cbn [forallb].
-  rewrite (body_item_loadable_clean_env b p base d1 d2 Hb).
-  rewrite (IH Hrest). reflexivity.
-Qed.
-
 Lemma rule_clean_env : forall r p base d1 d2,
   rule_clean r = true ->
-  rule_loadable r (set_env p (env_with_sets base d1))
-    = rule_loadable r (set_env p (env_with_sets base d2))
-  /\ rule_applies r (set_env p (env_with_sets base d1))
-    = rule_applies r (set_env p (env_with_sets base d2))
-  /\ outcome r (set_env p (env_with_sets base d1))
-    = outcome r (set_env p (env_with_sets base d2)).
+  rule_loadable r (env_with_sets base d1) p
+    = rule_loadable r (env_with_sets base d2) p
+  /\ rule_applies r (env_with_sets base d1) p
+    = rule_applies r (env_with_sets base d2) p
+  /\ outcome r (env_with_sets base d1) p
+    = outcome r (env_with_sets base d2) p.
 Proof.
   intros r p base d1 d2 Hc.
   unfold rule_clean in Hc.
@@ -916,7 +888,6 @@ Proof.
     by (apply body_has_notrack_clean; exact Hbody).
   repeat split.
   - unfold rule_loadable.
-    rewrite (body_loadable_clean_env _ p base d1 d2 Hbody).
     rewrite !Hns. unfold body_thread. rewrite Hnt.
     unfold end_loadable. rewrite Hv.
     unfold tail_loadable, terminal_loadable, terminal_outcome.
@@ -930,8 +901,8 @@ Qed.
 
 Lemma eval_rules_clean_env : forall rs p base d1 d2,
   rules_clean rs = true ->
-  eval_rules rs (set_env p (env_with_sets base d1))
-  = eval_rules rs (set_env p (env_with_sets base d2)).
+  eval_rules rs (env_with_sets base d1) p
+  = eval_rules rs (env_with_sets base d2) p.
 Proof.
   induction rs as [| r rs IH]; intros p base d1 d2 Hc; [reflexivity|].
   cbn [rules_clean forallb] in Hc. apply Bool.andb_true_iff in Hc as [Hr Hrest].
@@ -940,13 +911,13 @@ Proof.
   rewrite (IH p base d1 d2 Hrest). reflexivity.
 Qed.
 
-Lemma eval_rules_cons_cong : forall r rest1 rest2 p,
-  eval_rules rest1 p = eval_rules rest2 p ->
-  eval_rules (r :: rest1) p = eval_rules (r :: rest2) p.
+Lemma eval_rules_cons_cong : forall r rest1 rest2 e p,
+  eval_rules rest1 e p = eval_rules rest2 e p ->
+  eval_rules (r :: rest1) e p = eval_rules (r :: rest2) e p.
 Proof.
-  intros r rest1 rest2 p H. cbn [eval_rules].
-  destruct (rule_loadable r p && rule_applies r p); [| exact H].
-  destruct (outcome r p) as [v |]; [| exact H].
+  intros r rest1 rest2 e p H. cbn [eval_rules].
+  destruct (rule_loadable r e p && rule_applies r e p); [| exact H].
+  destruct (outcome r e p) as [v |]; [| exact H].
   destruct (terminal v); [reflexivity | exact H].
 Qed.
 
@@ -1082,33 +1053,33 @@ Qed.
     matches the point test [MCmp f CEq v] — i.e. the [existsb] disjunction over the
     run.  Generalises [concat_set_two_points] from 2 to N elements. *)
 (** A point [MCmp f CEq v] over a field loaded at the value's full width is exactly
-    [data_eqb (field_value f q) v] (no [firstn] truncation). *)
-Lemma eval_mcmp_point : forall f v q,
+    [data_eqb (field_value f e q) v] (no [firstn] truncation). *)
+Lemma eval_mcmp_point : forall f v e q,
   field_loadable f q = true ->
-  length (field_value f q) = length v ->
-  eval_matchcond (MCmp f CEq v) q = data_eqb (field_value f q) v.
+  length (field_value f e q) = length v ->
+  eval_matchcond (MCmp f CEq v) e q = data_eqb (field_value f e q) v.
 Proof.
-  intros f v q Hld Hlen.
+  intros f v e q Hld Hlen.
   unfold eval_matchcond, eval_matchcond_body, match_loadable.
   rewrite Hld. cbn [andb]. unfold eval_cmp.
   rewrite <- Hlen, List.firstn_all. reflexivity.
 Qed.
 
-Lemma eval_mcmp_point_unload : forall f v q,
+Lemma eval_mcmp_point_unload : forall f v e q,
   field_loadable f q = false ->
-  eval_matchcond (MCmp f CEq v) q = false.
+  eval_matchcond (MCmp f CEq v) e q = false.
 Proof.
-  intros f v q Hld.
+  intros f v e q Hld.
   unfold eval_matchcond, match_loadable. rewrite Hld. reflexivity.
 Qed.
 
-Lemma concat_set_existsb : forall f vals name q,
-  e_set (pkt_env q) name = map (fun v => (v, v)) vals ->
-  (forall v, In v vals -> field_loadable f q = true -> length (field_value f q) = length v) ->
-  eval_matchcond (MConcatSet [f] false name) q
-  = existsb (fun v => eval_matchcond (MCmp f CEq v) q) vals.
+Lemma concat_set_existsb : forall f vals name e q,
+  e_set e name = map (fun v => (v, v)) vals ->
+  (forall v, In v vals -> field_loadable f q = true -> length (field_value f e q) = length v) ->
+  eval_matchcond (MConcatSet [f] false name) e q
+  = existsb (fun v => eval_matchcond (MCmp f CEq v) e q) vals.
 Proof.
-  intros f vals name q Hset Hlen.
+  intros f vals name e q Hset Hlen.
   unfold eval_matchcond at 1, eval_matchcond_body at 1.
   cbn [match_loadable fields_loadable forallb].
   rewrite Bool.andb_true_r.
@@ -1117,9 +1088,9 @@ Proof.
     rewrite existsb_map_eq.
     apply existsb_ext. intros v Hv.
     rewrite data_in_iv_point_eqb.
-    rewrite (eval_mcmp_point f v q Hld (Hlen v Hv eq_refl)). reflexivity.
+    rewrite (eval_mcmp_point f v e q Hld (Hlen v Hv eq_refl)). reflexivity.
   - symmetry. apply existsb_false_forall. intros v Hv.
-    apply (eval_mcmp_point_unload f v q Hld).
+    apply (eval_mcmp_point_unload f v e q Hld).
 Qed.
 
 
@@ -1140,34 +1111,34 @@ Qed.
     value->set and concat-set N-way passes (both have a single shared verdict); the
     vmap pass needs the value-DEPENDENT analogue and is handled separately. *)
 Lemma eval_rules_run_collapse :
-  forall (rs : list rule) (LL : bool) (O : option verdict) rm rest p,
+  forall (rs : list rule) (LL : bool) (O : option verdict) rm rest e p,
   rs <> [] ->
-  (forall r, In r rs -> rule_loadable r p = LL) ->
-  (forall r, In r rs -> outcome r p = O) ->
-  rule_loadable rm p = LL ->
-  outcome rm p = O ->
-  rule_applies rm p = existsb (fun r => rule_applies r p) rs ->
-  eval_rules (rm :: rest) p = eval_rules (rs ++ rest) p.
+  (forall r, In r rs -> rule_loadable r e p = LL) ->
+  (forall r, In r rs -> outcome r e p = O) ->
+  rule_loadable rm e p = LL ->
+  outcome rm e p = O ->
+  rule_applies rm e p = existsb (fun r => rule_applies r e p) rs ->
+  eval_rules (rm :: rest) e p = eval_rules (rs ++ rest) e p.
 Proof.
-  intros rs LL O rm rest p Hne HL HO Hrl Hro Hra.
+  intros rs LL O rm rest e p Hne HL HO Hrl Hro Hra.
   cbn [eval_rules]. rewrite Hrl, Hro, Hra.
-  (* characterise eval_rules (rs ++ rest) p *)
+  (* characterise eval_rules (rs ++ rest) e p *)
   assert (Hrun :
-    eval_rules (rs ++ rest) p
-    = if (LL && existsb (fun r => rule_applies r p) rs) then
+    eval_rules (rs ++ rest) e p
+    = if (LL && existsb (fun r => rule_applies r e p) rs) then
         match O with
-        | Some v => if terminal v then Some v else eval_rules rest p
-        | None => eval_rules rest p
+        | Some v => if terminal v then Some v else eval_rules rest e p
+        | None => eval_rules rest e p
         end
-      else eval_rules rest p).
+      else eval_rules rest e p).
   { assert (Hterm :
-        (match O with Some w => if terminal w then Some w else eval_rules rest p
-                    | None => eval_rules rest p end = eval_rules rest p)
+        (match O with Some w => if terminal w then Some w else eval_rules rest e p
+                    | None => eval_rules rest e p end = eval_rules rest e p)
         \/ (exists v, O = Some v /\ terminal v = true)).
     { destruct O as [v |]; [destruct (terminal v) eqn:Et;
         [ right; eauto | left; reflexivity ] | left; reflexivity ]. }
     destruct Hterm as [Htarget | [v [EO Ev]]].
-    - transitivity (eval_rules rest p).
+    - transitivity (eval_rules rest e p).
       2:{ rewrite Htarget. destruct (LL && _); reflexivity. }
       clear Hne Hra Hrl Hro. revert HL HO.
       induction rs as [| r rs IH]; intros HL HO; [reflexivity|].
@@ -1175,7 +1146,7 @@ Proof.
       rewrite (HL r (or_introl eq_refl)), (HO r (or_introl eq_refl)).
       rewrite (IH (fun r' Hr' => HL r' (or_intror Hr'))
                   (fun r' Hr' => HO r' (or_intror Hr'))).
-      destruct (LL && rule_applies r p); [ rewrite Htarget; reflexivity | reflexivity ].
+      destruct (LL && rule_applies r e p); [ rewrite Htarget; reflexivity | reflexivity ].
     - rewrite EO. clear Hne Hra Hrl Hro. revert HL HO.
       induction rs as [| r rs IH]; intros HL HO.
       + cbn [app eval_rules existsb]. rewrite Bool.andb_false_r. reflexivity.
@@ -1185,54 +1156,54 @@ Proof.
                     (fun r' Hr' => HO r' (or_intror Hr'))).
         cbn [existsb]. rewrite EO, Ev.
         destruct LL; cbn [andb]; [| reflexivity].
-        destruct (rule_applies r p); cbn [orb]; reflexivity. }
+        destruct (rule_applies r e p); cbn [orb]; reflexivity. }
   rewrite Hrun. reflexivity.
 Qed.
 
 Lemma eval_rules_run_merge_abs :
-  forall (ms : list matchcond) (ML : packet -> bool) body r1 m12 rest p,
+  forall (ms : list matchcond) (ML : packet -> bool) body r1 m12 rest e p,
   ms <> [] ->
   (forall m, In m ms -> match_loadable m p = ML p) ->
   match_loadable m12 p = ML p ->
-  eval_matchcond m12 p = existsb (fun m => eval_matchcond m p) ms ->
-  eval_rules (mk_head m12 body r1 :: rest) p
-  = eval_rules (map (fun m => mk_head m body r1) ms ++ rest) p.
+  eval_matchcond m12 e p = existsb (fun m => eval_matchcond m e p) ms ->
+  eval_rules (mk_head m12 body r1 :: rest) e p
+  = eval_rules (map (fun m => mk_head m body r1) ms ++ rest) e p.
 Proof.
-  intros ms ML body r1 m12 rest p Hne HmlAll Hml Hev.
+  intros ms ML body r1 m12 rest e p Hne HmlAll Hml Hev.
   (* Abbreviations for the shared loadability path, applies-walk, outcome. *)
   set (L := body_loadable_walk body p &&
             (if body_synproxy_stops body p then true
-             else end_loadable r1 (body_thread body p))).
-  set (A := rule_applies_walk body p).
+             else end_loadable r1 e (body_thread body p))).
+  set (A := rule_applies_walk body e p).
   set (O := if body_synproxy_stops body p then Some Drop
-            else outcome_core r1 (body_thread body p)).
+            else outcome_core r1 e (body_thread body p)).
   (* Each [mk_head m body r1] has loadable = match_loadable m p && L,
-     applies = eval_matchcond m p && A, outcome = O. *)
-  assert (Hload : forall m, rule_loadable (mk_head m body r1) p
+     applies = eval_matchcond m e p && A, outcome = O. *)
+  assert (Hload : forall m, rule_loadable (mk_head m body r1) e p
                             = match_loadable m p && L).
   { intro m. rewrite rule_loadable_mk_head. reflexivity. }
-  assert (Happ : forall m, rule_applies (mk_head m body r1) p
-                           = eval_matchcond m p && A).
+  assert (Happ : forall m, rule_applies (mk_head m body r1) e p
+                           = eval_matchcond m e p && A).
   { intro m. rewrite rule_applies_mk_head. reflexivity. }
-  assert (Hout : forall m, outcome (mk_head m body r1) p = O).
+  assert (Hout : forall m, outcome (mk_head m body r1) e p = O).
   { intro m. rewrite outcome_mk_head. reflexivity. }
   (* The merged single rule: *)
   cbn [eval_rules]. rewrite (Hload m12), (Happ m12), (Hout m12).
   rewrite Hml, Hev.
-  (* Now the RHS: the run. We characterise eval_rules (run ++ rest) p by induction
+  (* Now the RHS: the run. We characterise eval_rules (run ++ rest) e p by induction
      on ms, exposing that ML and L and A and O are shared across the run. *)
-  (* Generalise: prove eval_rules (run ++ rest) p depends only on existsb. *)
+  (* Generalise: prove eval_rules (run ++ rest) e p depends only on existsb. *)
   assert (Hrun :
-    eval_rules (map (fun m => mk_head m body r1) ms ++ rest) p
-    = if ((ML p && L) && (existsb (fun m => eval_matchcond m p) ms && A)) then
+    eval_rules (map (fun m => mk_head m body r1) ms ++ rest) e p
+    = if ((ML p && L) && (existsb (fun m => eval_matchcond m e p) ms && A)) then
         match O with
-        | Some v => if terminal v then Some v else eval_rules rest p
-        | None => eval_rules rest p
+        | Some v => if terminal v then Some v else eval_rules rest e p
+        | None => eval_rules rest e p
         end
-      else eval_rules rest p).
+      else eval_rules rest e p).
   { clear Hev Hml m12.
     (* CASE on the common outcome O: if it is non-terminal (or None), the run NEVER
-       terminates, so the WHOLE [run ++ rest] reduces to [eval_rules rest p] (and so
+       terminates, so the WHOLE [run ++ rest] reduces to [eval_rules rest e p] (and so
        does the target's [match O] branch, on either side of the [if]).  Only a
        TERMINAL [Some v] makes first-match position matter. *)
     assert (Hterm : (match O with
@@ -1243,39 +1214,39 @@ Proof.
     { destruct O as [v |]; [destruct (terminal v) eqn:Et; [right; eauto | left; reflexivity]
                           | left; reflexivity]. }
     destruct Hterm as [Hnt | [v [EO Ev]]].
-    - (* non-terminal / None: both sides are eval_rules rest p *)
+    - (* non-terminal / None: both sides are eval_rules rest e p *)
       assert (Htarget :
         match O with
-        | Some w => if terminal w then Some w else eval_rules rest p
-        | None => eval_rules rest p
-        end = eval_rules rest p).
+        | Some w => if terminal w then Some w else eval_rules rest e p
+        | None => eval_rules rest e p
+        end = eval_rules rest e p).
       { clearbody O. destruct O as [w |]; [ destruct (terminal w) eqn:Etw;
           [ exfalso; clear -Hnt Etw; cbn in Hnt; congruence | reflexivity ]
           | reflexivity ]. }
-      transitivity (eval_rules rest p).
+      transitivity (eval_rules rest e p).
       2:{ rewrite Htarget. destruct ((ML p && L) && _); reflexivity. }
-      (* LHS: induct, every rule falls through to eval_rules rest p *)
+      (* LHS: induct, every rule falls through to eval_rules rest e p *)
       clear Hne Hnt. revert HmlAll. induction ms as [| m ms IH]; intro HmlAll.
       + reflexivity.
       + cbn [map app eval_rules].
         rewrite (Hload m), (Happ m), (Hout m).
         rewrite (IH (fun mm Hmm => HmlAll mm (or_intror Hmm))).
-        destruct (match_loadable m p && L && (eval_matchcond m p && A));
+        destruct (match_loadable m p && L && (eval_matchcond m e p && A));
           [ rewrite Htarget; reflexivity | reflexivity ].
     - (* terminal Some v: first-match position matters *)
       rewrite EO. clear Hne. revert HmlAll. induction ms as [| m ms IH]; intro HmlAll.
-      + (* empty: existsb [] = false, both sides eval_rules rest p *)
+      + (* empty: existsb [] = false, both sides eval_rules rest e p *)
         cbn [map app eval_rules existsb]. rewrite Bool.andb_false_r. reflexivity.
       + cbn [map app eval_rules].
         rewrite (Hload m), (Happ m), (Hout m).
         rewrite (HmlAll m (or_introl eq_refl)). cbn [existsb].
         rewrite (IH (fun mm Hmm => HmlAll mm (or_intror Hmm))).
         rewrite EO, Ev.
-        (* boolean case split: ML p && L, A, eval_matchcond m p, existsb ms *)
+        (* boolean case split: ML p && L, A, eval_matchcond m e p, existsb ms *)
         destruct (ML p && L); cbn [andb]; [| reflexivity].
         destruct A; [| rewrite !Bool.andb_false_r; reflexivity ].
         rewrite !Bool.andb_true_r.
-        destruct (eval_matchcond m p); cbn [orb andb]; reflexivity. }
+        destruct (eval_matchcond m e p); cbn [orb andb]; reflexivity. }
   rewrite Hrun. reflexivity.
 Qed.
 
@@ -1491,14 +1462,14 @@ Proof.
 Qed.
 
 (** Congruence of [eval_rules] under a shared prefix. *)
-Lemma eval_rules_app_cong : forall pre t1 t2 p,
-  eval_rules t1 p = eval_rules t2 p ->
-  eval_rules (pre ++ t1) p = eval_rules (pre ++ t2) p.
+Lemma eval_rules_app_cong : forall pre t1 t2 e p,
+  eval_rules t1 e p = eval_rules t2 e p ->
+  eval_rules (pre ++ t1) e p = eval_rules (pre ++ t2) e p.
 Proof.
-  induction pre as [| r pre IH]; intros t1 t2 p H; [exact H|].
+  induction pre as [| r pre IH]; intros t1 t2 e p H; [exact H|].
   cbn [app eval_rules].
-  destruct (rule_loadable r p && rule_applies r p); [| apply IH; exact H].
-  destruct (outcome r p) as [v |]; [| apply IH; exact H].
+  destruct (rule_loadable r e p && rule_applies r e p); [| apply IH; exact H].
+  destruct (outcome r e p) as [v |]; [| apply IH; exact H].
   destruct (terminal v); [reflexivity | apply IH; exact H].
 Qed.
 

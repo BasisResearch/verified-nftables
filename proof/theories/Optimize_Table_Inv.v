@@ -46,24 +46,20 @@ Definition mc_set_name (m : matchcond) : option string :=
 Lemma eval_matchcond_agree : forall m p base d1 d2,
   (forall nm, mc_set_name m = Some nm ->
      e_set (env_with_sets base d1) nm = e_set (env_with_sets base d2) nm) ->
-  eval_matchcond m (set_env p (env_with_sets base d1))
-  = eval_matchcond m (set_env p (env_with_sets base d2)).
+  eval_matchcond m (env_with_sets base d1) p
+  = eval_matchcond m (env_with_sets base d2) p.
 Proof.
   intros m p base d1 d2 Hag.
   unfold eval_matchcond, eval_matchcond_body, match_loadable.
   destruct m; cbn [mc_set_name] in Hag;
-    rewrite ?field_value_env_with_sets;
     repeat (match goal with
-            | |- context[field_value ?f (set_env p (env_with_sets base d1))] =>
+            | |- context[field_value ?f (env_with_sets base d1) p] =>
                 rewrite (field_value_env_with_sets f p base d1 d2)
             end);
     try reflexivity.
-  - (* MConcatSet *) cbn [set_env with_pkt_env pkt_env].
-    rewrite (Hag _ eq_refl). reflexivity.
-  - (* MSetT *) cbn [set_env with_pkt_env pkt_env].
-    rewrite (Hag _ eq_refl). reflexivity.
-  - (* MConcatSetT *) cbn [set_env with_pkt_env pkt_env].
-    rewrite (Hag _ eq_refl). reflexivity.
+  - (* MConcatSet *) rewrite (Hag _ eq_refl). reflexivity.
+  - (* MSetT *) rewrite (Hag _ eq_refl). reflexivity.
+  - (* MConcatSetT *) rewrite (Hag _ eq_refl). reflexivity.
 Qed.
 
 (** Set names read by a body (its matchconds). *)
@@ -89,26 +85,9 @@ Proof.
   apply in_flat_map. exists m. split; [exact Hm |]. rewrite Hnm. left; reflexivity.
 Qed.
 
-(** The loadability of a matchcond is env-stable (it only ever consults
-    [field_value], never [e_set]/[e_vmap]). *)
-Lemma match_loadable_env : forall m p base d1 d2,
-  match_loadable m (set_env p (env_with_sets base d1))
-  = match_loadable m (set_env p (env_with_sets base d2)).
-Proof.
-  intros m p base d1 d2. unfold match_loadable.
-  destruct m; rewrite ?field_value_env_with_sets;
-    repeat (match goal with
-            | |- context[field_value ?f (set_env p (env_with_sets base d1))] =>
-                rewrite (field_value_env_with_sets f p base d1 d2)
-            end);
-    try reflexivity;
-    unfold fields_loadable;
-    repeat (match goal with
-            | |- context[field_value ?f (set_env p (env_with_sets base d1))] =>
-                rewrite (field_value_env_with_sets f p base d1 d2)
-            end);
-    reflexivity.
-Qed.
+(* (loadability predicates no longer take the env at all, so the old
+   [match_loadable_env]-style stability lemmas are gone: stability is now a
+   typing fact, visible in the signatures.) *)
 
 (** A body all of whose items are matchconds (no statements).  Every lookup rule a
     merge pass emits ([MConcatSet] head + clean match tail, or a vmap rule whose
@@ -140,156 +119,41 @@ Definition decls_agree_rule (base : env) (d1 d2 : set_decls) (r : rule) : Prop :
   (forall nm, In nm (rule_nat_map_name r) ->
      e_map (env_with_sets base d1) nm = e_map (env_with_sets base d2) nm).
 
-(** Env-stability of the load primitives: they read only the packet's payload /
-    conntrack / exthdr geometry — fields [with_pkt_env] copies verbatim — never the
-    set/vmap environment. *)
-Lemma load_ok_env : forall ld p base d1 d2,
-  load_ok ld (set_env p (env_with_sets base d1))
-  = load_ok ld (set_env p (env_with_sets base d2)).
-Proof.
-  intros ld p base d1 d2. unfold load_ok, set_env, with_pkt_env.
-  destruct ld; try reflexivity; try (destruct k; reflexivity).
-Qed.
-
-Lemma field_loadable_env : forall f p base d1 d2,
-  field_loadable f (set_env p (env_with_sets base d1))
-  = field_loadable f (set_env p (env_with_sets base d2)).
-Proof. intros. unfold field_loadable. apply load_ok_env. Qed.
-
-Lemma fields_loadable_env : forall fs p base d1 d2,
-  fields_loadable fs (set_env p (env_with_sets base d1))
-  = fields_loadable fs (set_env p (env_with_sets base d2)).
-Proof.
-  intros fs p base d1 d2. unfold fields_loadable.
-  apply forallb_ext_in. intros f _. apply field_loadable_env.
-Qed.
-
-Lemma vsrc_loadable_env : forall vs p base d1 d2,
-  vsrc_loadable vs (set_env p (env_with_sets base d1))
-  = vsrc_loadable vs (set_env p (env_with_sets base d2)).
-Proof.
-  intros vs p base d1 d2. destruct vs; cbn [vsrc_loadable];
-    try reflexivity;
-    try apply field_loadable_env; apply fields_loadable_env.
-Qed.
-
-Lemma synproxy_loadable_env : forall p base d1 d2,
-  synproxy_loadable (set_env p (env_with_sets base d1))
-  = synproxy_loadable (set_env p (env_with_sets base d2)).
-Proof.
-  intros. unfold synproxy_loadable, read_payload_ok, set_env, with_pkt_env. reflexivity.
-Qed.
-
 (** [terminal_loadable] reads [e_set]/[e_vmap] never, but a map-sourced NAT operand
     reads [e_map] at its [nat_map] name (the break-on-miss test); given the two decls
     agree there ([rule_nat_map_name]), it is env-stable. *)
 Lemma terminal_loadable_env : forall r p base d1 d2,
   (forall nm, In nm (rule_nat_map_name r) ->
      e_map (env_with_sets base d1) nm = e_map (env_with_sets base d2) nm) ->
-  terminal_loadable r (set_env p (env_with_sets base d1))
-  = terminal_loadable r (set_env p (env_with_sets base d2)).
+  terminal_loadable r (env_with_sets base d1) p
+  = terminal_loadable r (env_with_sets base d2) p.
 Proof.
   intros r p base d1 d2 Hmap. unfold terminal_loadable.
   destruct (r_nat r) as [n |] eqn:Hrn.
-  { destruct (nat_src n) as [vs |]; [apply vsrc_loadable_env|].
+  { destruct (nat_src n) as [vs |]; [reflexivity|].
     destruct (nat_map n) as [[[fields ts] name] |] eqn:Hnm.
-    - rewrite (fields_loadable_env fields p base d1 d2).
-      replace (nat_map_key fields ts (set_env p (env_with_sets base d1)))
-         with (nat_map_key fields ts (set_env p (env_with_sets base d2))).
+    - replace (nat_map_key fields ts (env_with_sets base d1) p)
+         with (nat_map_key fields ts (env_with_sets base d2) p).
       2:{ unfold nat_map_key. destruct fields as [| f0 fr]; [reflexivity|].
           rewrite (field_value_env_with_sets f0 p base d2 d1).
           rewrite (map_ext _ _ (fun f => field_value_env_with_sets f p base d2 d1)).
           reflexivity. }
-      cbn [set_env with_pkt_env pkt_env].
       rewrite (Hmap name)
         by (unfold rule_nat_map_name; rewrite Hrn, Hnm; left; reflexivity).
       reflexivity.
-    - destruct (nat_field n) as [[f ?] |]; [apply field_loadable_env| reflexivity]. }
-  destruct (r_tproxy r); [reflexivity|].
-  destruct (r_fwd r) as [w |].
-  { apply vsrc_loadable_env. }
-  destruct (r_queue r) as [q |].
-  { apply vsrc_loadable_env. }
+    - reflexivity. }
   reflexivity.
-Qed.
-
-Lemma stmt_loadable_env : forall s p base d1 d2,
-  stmt_loadable s (set_env p (env_with_sets base d1))
-  = stmt_loadable s (set_env p (env_with_sets base d2)).
-Proof.
-  intros s p base d1 d2. destruct s; cbn [stmt_loadable];
-    try reflexivity;
-    try apply vsrc_loadable_env; try apply fields_loadable_env;
-    apply synproxy_loadable_env.
-Qed.
-
-Lemma synproxy_stops_env : forall p base d1 d2,
-  synproxy_stops (set_env p (env_with_sets base d1))
-  = synproxy_stops (set_env p (env_with_sets base d2)).
-Proof.
-  intros. unfold synproxy_stops, synproxy_flags, read_payload, set_env, with_pkt_env.
-  reflexivity.
-Qed.
-
-(** [terminal_outcome] of a matches-only rule is env-stable: it reads only static
-    end fields and (on a [Continue] fall-through) the [r_after] statements, which
-    consult only the packet. *)
-Lemma stmts_after_outcome_env : forall ss p base d1 d2,
-  stmts_after_outcome ss (set_env p (env_with_sets base d1))
-  = stmts_after_outcome ss (set_env p (env_with_sets base d2)).
-Proof.
-  induction ss as [| s ss IH]; intros p base d1 d2; [reflexivity|].
-  destruct s; cbn [stmts_after_outcome];
-    try (rewrite (stmt_loadable_env _ p base d1 d2);
-         match goal with
-         | |- context[if ?b then _ else _] => destruct b
-         end; [apply IH | reflexivity]).
-  - (* SSynproxy *)
-    rewrite (synproxy_loadable_env p base d1 d2).
-    destruct (synproxy_loadable (set_env p (env_with_sets base d2))); [| reflexivity].
-    rewrite (synproxy_stops_env p base d1 d2).
-    match goal with |- context[if ?b then _ else _] => destruct b end;
-      [reflexivity | apply IH].
-Qed.
-
-Lemma terminal_outcome_env : forall r p base d1 d2,
-  terminal_outcome r (set_env p (env_with_sets base d1))
-  = terminal_outcome r (set_env p (env_with_sets base d2)).
-Proof.
-  intros r p base d1 d2. unfold terminal_outcome.
-  destruct (r_nat r); [reflexivity|].
-  destruct (r_tproxy r); [reflexivity|].
-  destruct (r_fwd r); [reflexivity|].
-  destruct (r_queue r); [reflexivity|].
-  destruct (r_verdict r); try reflexivity.
-  apply stmts_after_outcome_env.
 Qed.
 
 Lemma tail_loadable_env : forall r p base d1 d2,
   (forall nm, In nm (rule_nat_map_name r) ->
      e_map (env_with_sets base d1) nm = e_map (env_with_sets base d2) nm) ->
-  tail_loadable r (set_env p (env_with_sets base d1))
-  = tail_loadable r (set_env p (env_with_sets base d2)).
+  tail_loadable r (env_with_sets base d1) p
+  = tail_loadable r (env_with_sets base d2) p.
 Proof.
   intros r p base d1 d2 Hmap. unfold tail_loadable.
   rewrite (terminal_loadable_env r p base d1 d2 Hmap).
-  rewrite (terminal_outcome_env r p base d1 d2).
-  rewrite (forallb_ext_in
-             (fun s => stmt_loadable s (set_env p (env_with_sets base d1)))
-             (fun s => stmt_loadable s (set_env p (env_with_sets base d2)))
-             (r_after r) (fun s _ => stmt_loadable_env s p base d1 d2)).
   reflexivity.
-Qed.
-
-(** [vmap_loadable] reads only [field_value], so it is env-stable. *)
-Lemma vmap_loadable_env : forall ov p base d1 d2,
-  vmap_loadable ov (set_env p (env_with_sets base d1))
-  = vmap_loadable ov (set_env p (env_with_sets base d2)).
-Proof.
-  intros ov p base d1 d2. unfold vmap_loadable.
-  destruct ov as [vm |]; [| reflexivity].
-  destruct (vm_keyf vm) as [[f ?] |];
-    [apply field_loadable_env | apply fields_loadable_env].
 Qed.
 
 (** [end_loadable] AGREES across two decls that agree on the rule's vmap name. *)
@@ -298,26 +162,24 @@ Lemma end_loadable_agree : forall r p base d1 d2,
      e_vmap (env_with_sets base d1) nm = e_vmap (env_with_sets base d2) nm) ->
   (forall nm, In nm (rule_nat_map_name r) ->
      e_map (env_with_sets base d1) nm = e_map (env_with_sets base d2) nm) ->
-  end_loadable r (set_env p (env_with_sets base d1))
-  = end_loadable r (set_env p (env_with_sets base d2)).
+  end_loadable r (env_with_sets base d1) p
+  = end_loadable r (env_with_sets base d2) p.
 Proof.
   intros r p base d1 d2 Hag Hmap. unfold end_loadable.
   destruct (r_vmap r) as [vm |] eqn:Ev; [| apply tail_loadable_env; exact Hmap].
-  rewrite (vmap_loadable_env (Some vm) p base d1 d2).
   assert (Hk : (let key := match vm_keyf vm with
-                 | Some (f, ts) => apply_transforms ts (field_value f (set_env p (env_with_sets base d1)))
-                 | None => List.concat (map (fun f => field_value f (set_env p (env_with_sets base d1))) (vm_fields vm))
+                 | Some (f, ts) => apply_transforms ts (field_value f (env_with_sets base d1) p)
+                 | None => List.concat (map (fun f => field_value f (env_with_sets base d1) p) (vm_fields vm))
                  end in key)
              = (let key := match vm_keyf vm with
-                 | Some (f, ts) => apply_transforms ts (field_value f (set_env p (env_with_sets base d2)))
-                 | None => List.concat (map (fun f => field_value f (set_env p (env_with_sets base d2))) (vm_fields vm))
+                 | Some (f, ts) => apply_transforms ts (field_value f (env_with_sets base d2) p)
+                 | None => List.concat (map (fun f => field_value f (env_with_sets base d2) p) (vm_fields vm))
                  end in key)).
   { cbn zeta. destruct (vm_keyf vm) as [[f ts] |].
     - rewrite (field_value_env_with_sets f p base d1 d2). reflexivity.
     - rewrite (map_ext _ _ (fun f => field_value_env_with_sets f p base d1 d2)).
       reflexivity. }
   cbn zeta. cbn zeta in Hk. rewrite Hk.
-  cbn [set_env with_pkt_env pkt_env].
   rewrite (Hag (vm_name vm)) by (unfold rule_vmap_name; rewrite Ev; left; reflexivity).
   destruct (assoc_verdict _ (e_vmap (env_with_sets base d2) (vm_name vm)));
     [reflexivity |].

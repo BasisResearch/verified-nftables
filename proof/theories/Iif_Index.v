@@ -26,9 +26,8 @@ Definition e0 : env :=
 
 (* Build a packet whose numeric iif metadata is [idx]. *)
 Definition pkt_iif (idx : data) : packet :=
-  {| pkt_env := e0;
+  {|
      pkt_meta := fun k => match k with MKiif => idx | _ => [] end;
-     pkt_ct := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := []; pkt_th := []; pkt_ih := []; pkt_tnl := [];
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
@@ -56,16 +55,16 @@ Proof. eexists; eexists; reflexivity. Qed.
 (* A packet that genuinely arrived on lo (numeric iif index 1) MATCHES `iif lo`.
    The refuted ASCII alternative (MEq FMetaIif [108;111]) makes this FALSE. *)
 Theorem iif_lo_matches_real_lo_packet :
-  eval_matchcond m_iif_lo (pkt_iif [1;0;0;0]) = true.
+  eval_matchcond m_iif_lo e0 (pkt_iif [1;0;0;0]) = true.
 Proof. vm_compute. reflexivity. Qed.
 
 (* A packet on a different interface (index 2) does NOT match. *)
 Theorem iif_lo_misses_other_iface :
-  eval_matchcond m_iif_lo (pkt_iif [2;0;0;0]) = false.
+  eval_matchcond m_iif_lo e0 (pkt_iif [2;0;0;0]) = false.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The impossible ASCII-meta packet (iif = ASCII "lo") does not match:
    the model compares against the numeric index, not the name string. *)
 Theorem iif_lo_rejects_ascii_meta :
-  eval_matchcond m_iif_lo (pkt_iif [108;111]) = false.
+  eval_matchcond m_iif_lo e0 (pkt_iif [108;111]) = false.
 Proof. vm_compute. reflexivity. Qed.

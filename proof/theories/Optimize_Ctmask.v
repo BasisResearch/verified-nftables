@@ -129,19 +129,19 @@ Qed.
 (** The eval-level disjunction certificate: on ANY packet, the union-mask
     [MMasked] equals the [orb] of the two single-mask [MMasked]s, when the xor and
     compared value are the SAME all-zero vector [z] of the masks' width. *)
-Lemma mmasked_ctmask_disjunction : forall f m1 m2 z p,
+Lemma mmasked_ctmask_disjunction : forall f m1 m2 z e p,
   length m1 = length z -> length m2 = length z ->
   Forall (fun b => b = 0) z ->
-  eval_matchcond (MMasked f true (data_or m1 m2) z z) p
-  = orb (eval_matchcond (MMasked f true m1 z z) p)
-        (eval_matchcond (MMasked f true m2 z z) p).
+  eval_matchcond (MMasked f true (data_or m1 m2) z z) e p
+  = orb (eval_matchcond (MMasked f true m1 z z) e p)
+        (eval_matchcond (MMasked f true m2 z z) e p).
 Proof.
-  intros f m1 m2 z p Hl1 Hl2 Hz.
+  intros f m1 m2 z e p Hl1 Hl2 Hz.
   unfold eval_matchcond. cbn [match_loadable].
   destruct (field_loadable f p) eqn:Hld; cbn [andb]; [| reflexivity].
   unfold eval_matchcond_body. cbn [eval_cmp].
   (* body(mask) = negb (data_eqb (firstn (length z) (data_bitops s mask z)) z) *)
-  set (s := field_value f p) in *.
+  set (s := field_value f e p) in *.
   rewrite !firstn_all2 by apply data_bitops_len_le.
   rewrite (ctmask_disj_body z s m1 m2 Hl1 Hl2 Hz).
   rewrite Bool.negb_andb. reflexivity.
@@ -247,22 +247,22 @@ Definition ctmask_merged (f : field) (m1 m2 z : data) (body : list body_item)
 (** *** Two-rule correctness: an eligible pair collapses to its merged rule,
     preserving every verdict.  Reuses [eval_rules_value_merge] with the bitmask
     disjunction certificate. *)
-Lemma eval_rules_ctmask_correct : forall r1 r2 f m1 m2 z body rest p,
+Lemma eval_rules_ctmask_correct : forall r1 r2 f m1 m2 z body rest e p,
   ctmask_pair r1 r2 = Some (f, m1, m2, z, body) ->
-  eval_rules (ctmask_merged f m1 m2 z body r1 :: rest) p
-  = eval_rules (r1 :: r2 :: rest) p.
+  eval_rules (ctmask_merged f m1 m2 z body r1 :: rest) e p
+  = eval_rules (r1 :: r2 :: rest) e p.
 Proof.
-  intros r1 r2 f m1 m2 z body rest p H.
+  intros r1 r2 f m1 m2 z body rest e p H.
   destruct (ctmask_pair_facts r1 r2 f m1 m2 z body H)
     as [Hr1 [Hr2 [Hl1 [Hl2 Hz]]]].
   unfold ctmask_merged.
   transitivity (eval_rules (mk_head (MMasked f true m1 z z) body r1
-                            :: mk_head (MMasked f true m2 z z) body r1 :: rest) p).
+                            :: mk_head (MMasked f true m2 z z) body r1 :: rest) e p).
   - apply (eval_rules_value_merge (MMasked f true m1 z z) (MMasked f true m2 z z)
-             (MMasked f true (data_or m1 m2) z z) body r1 rest p).
+             (MMasked f true (data_or m1 m2) z z) body r1 rest e p).
     + intro q. reflexivity.
     + intro q. reflexivity.
-    + intro q. apply (mmasked_ctmask_disjunction f m1 m2 z q Hl1 Hl2 Hz).
+    + intro q. apply (mmasked_ctmask_disjunction f m1 m2 z e q Hl1 Hl2 Hz).
   - rewrite <- Hr1, <- Hr2. reflexivity.
 Qed.
 
@@ -284,14 +284,14 @@ Fixpoint optimize_rules_ctmask (fuel : nat) (rs : list rule) : list rule :=
     end
   end.
 
-Lemma optimize_rules_ctmask_eval : forall fuel rs p,
-  eval_rules (optimize_rules_ctmask fuel rs) p = eval_rules rs p.
+Lemma optimize_rules_ctmask_eval : forall fuel rs e p,
+  eval_rules (optimize_rules_ctmask fuel rs) e p = eval_rules rs e p.
 Proof.
-  induction fuel as [| fuel IH]; intros rs p; [reflexivity |].
+  induction fuel as [| fuel IH]; intros rs e p; [reflexivity |].
   destruct rs as [| r1 [| r2 rest]]; try reflexivity.
   cbn [optimize_rules_ctmask].
   destruct (ctmask_pair r1 r2) as [[[[[f m1] m2] z] body] |] eqn:Ep.
-  - rewrite IH. apply (eval_rules_ctmask_correct r1 r2 f m1 m2 z body rest p Ep).
+  - rewrite IH. apply (eval_rules_ctmask_correct r1 r2 f m1 m2 z body rest e p Ep).
   - apply eval_rules_cons_cong. apply IH.
 Qed.
 
@@ -352,10 +352,10 @@ Lemma optimize_chain_ctmask_eq : forall n d c,
   optimize_chain_ctmask n d c = (n, d, ctmask_chain c).
 Proof. reflexivity. Qed.
 
-Lemma ctmask_chain_eval : forall c p,
-  eval_chain (ctmask_chain c) p = eval_chain c p.
+Lemma ctmask_chain_eval : forall c e p,
+  eval_chain (ctmask_chain c) e p = eval_chain c e p.
 Proof.
-  intros c p. unfold eval_chain, ctmask_chain. cbn [c_rules c_policy].
+  intros c e p. unfold eval_chain, ctmask_chain. cbn [c_rules c_policy].
   rewrite optimize_rules_ctmask_eval. reflexivity.
 Qed.
 

@@ -39,12 +39,17 @@ Inductive ct_key : Type :=
     `nf_ct_labels(...)`), so that EVERY later packet of the same flow reads V back
     (nft_ct_get_eval: `ct = nf_ct_get(skb,&ctinfo); *dest = READ_ONCE(ct->mark)`).
     These are [CKmark] (NFT_CT_MARK) and [CKlabel] (NFT_CT_LABELS); the model has no
-    separate secmark key (it folds into mark/label coverage).  Every OTHER key
-    ([CKstate], [CKdirection], [CKexpiration], counters, [CKzone], …) is computed
-    by the kernel PER-skb from the flow's current state and is NOT a value the rule
-    can store back, so it stays a per-packet oracle ([pkt_ct]).  [CKevent]
-    (NFT_CT_EVENTMASK) is settable but configures event delivery — it is never read
-    back by `ct ... get`, so it is not modelled as persistent state either. *)
+    separate secmark key (it folds into mark/label coverage).
+
+    EVERY conntrack key — writable or not — is read from the SHARED, flow-keyed
+    conntrack table [e_ct] at the packet's flow ([Syntax.do_load]'s [LCt] case),
+    mirroring the kernel's nf_ct_get(skb) selecting the flow's entry and deriving
+    the key from it.  [ct_writable] only gates the WRITE path ([set_ct] in
+    Semantics.v): a read-only key ([CKstate], [CKexpiration], counters, [CKzone],
+    …) is computed by the kernel from the flow's current state and is NOT a value
+    a rule can store back.  [CKevent] (NFT_CT_EVENTMASK) is settable but
+    configures event delivery — it is never read back by `ct ... get`, so it is
+    not modelled as persistent state either. *)
 Definition ct_writable (k : ct_key) : bool :=
   match k with
   | CKmark | CKlabel => true
@@ -292,8 +297,8 @@ Record env : Type := {
                                                 mirroring the kernel's nf_ct_get(skb)
                                                 selecting the shared entry by tuple +
                                                 WRITE_ONCE/READ_ONCE(ct->mark).  This
-                                                is the cross-packet state a per-packet
-                                                [pkt_ct] oracle could not express. *)
+                                                state is genuinely CROSS-packet: it is
+                                                keyed by flow, not per packet. *)
   e_nat : data -> option (option data * option data * option nat * option data);
                             (* the SHARED, flow-keyed NAT-mapping table: the
                                translation tuple the kernel ESTABLISHES ONCE on the
@@ -361,10 +366,17 @@ Proof.
   - reflexivity.
 Qed.
 
+(** A packet is ONE skb's worth of state: wire bytes, kernel-computed metadata,
+    per-traversal flags, and the per-packet nondeterminism oracles.  The shared,
+    mutable cross-packet world (named sets/maps, conntrack, NAT mappings, routes,
+    interface addresses, limiter buckets — the [env] above) is NOT part of a
+    packet: every evaluator takes the env as an explicit parameter beside the
+    packet, and the mutation evaluators return the env they leave
+    ([Semantics.eval_rules_mut_env : list rule -> env -> packet ->
+    option verdict * env]), so a type signature shows exactly which state flows
+    where. *)
 Record packet : Type := {
-  pkt_env  : env;                (* the named set/map state (see [env] above) *)
   pkt_meta : meta_key -> data;   (* kernel-computed metadata *)
-  pkt_ct   : ct_key -> data;     (* conntrack state *)
   pkt_sock : socket_key -> data; (* socket-state oracle *)
   pkt_eh   : exthdr_proto -> nat -> nat -> nat -> bool -> data;
                             (* exthdr: proto htype off len present?  present=true
@@ -379,9 +391,12 @@ Record packet : Type := {
                                     address): genuinely packet-determined.  The
                                     routing-table LOOKUP on this key is computed by
                                     [lpm_fib] against the shared [e_routes]. *)
-  pkt_numgen : numgen_spec -> data;  (* oracle: numgen output (per-packet abstraction
-                                        of a global counter; cannot distinguish two
-                                        firings of one packet — see DEVELOPMENT.md) *)
+  pkt_numgen : numgen_spec -> data;  (* oracle: the output of `numgen random`
+                                        (nft_ng_random_gen: get_random_u32 — genuinely
+                                        per-packet).  The INCREMENTAL generator does NOT
+                                        read this: `numgen inc` reads the shared counter
+                                        [e_numgen] (see [Syntax.do_load]'s [LNumgen]
+                                        case and [env_numgen_upd] in Semantics.v). *)
   pkt_osf  : data;                   (* oracle: OS-fingerprint value (packet-determined) *)
   pkt_tunnel : string -> data;    (* oracle: a tunnel-metadata field by name *)
   pkt_symhash : nat -> nat -> data;  (* oracle: symmetric packet hash (mod, offset) *)
@@ -427,7 +442,7 @@ Record packet : Type := {
                                A SUBSEQUENT `ct state` read then returns
                                NF_CT_STATE_UNTRACKED_BIT (= 64) (nft_ct_get_eval's
                                NFT_CT_STATE `else if (ctinfo == IP_CT_UNTRACKED)` branch),
-                               not the per-packet oracle.  Per-packet-traversal state:
+                               not the flow entry's stored state.  Per-packet-traversal state:
                                every packet starts FALSE (tracked); the flag is set by
                                [set_untracked] and read by [do_load (LCt CKstate)].  It is
                                NOT cross-packet — the kernel re-runs conntrack per skb. *)
@@ -436,7 +451,7 @@ Record packet : Type := {
                                entry.  Two packets of the same connection (both
                                directions: the kernel normalises by tuple) carry the
                                SAME [pkt_flow], so a `ct mark set V` on one is read back
-                               as [e_ct (pkt_env p) (pkt_flow p) CKmark] by the other.
+                               as [e_ct e (pkt_flow p) CKmark] by the other.
                                Derived from the (direction-normalised) 5-tuple; modelled
                                here as an opaque packet-determined value (the kernel
                                computes the tuple from the headers).
@@ -489,12 +504,24 @@ Record packet : Type := {
                                packet with an entry). *)
 }.
 
+(** ** [pstate]: the bundled (env, packet) pair — the pre-split statement shape.
+
+    Before the state split, [packet] carried the whole mutable world in a
+    [pkt_env] field, and every theorem quantified over that bundled record.
+    [pstate] is that shape as an explicit pair, kept SOLELY so each pre-split
+    headline theorem can be restated verbatim as a corollary over it
+    (see Main.v): a pre-split packet value is exactly a [pstate]. *)
+Record pstate : Type := {
+  ps_env  : env;     (* the shared mutable world the old packet embedded *)
+  ps_wire : packet;  (* the per-packet state: wire bytes, flags, oracles *)
+}.
+
 (** ** Single-field record-update combinators ("withers").
 
     [coq-record-update] is not available in-tree, so we provide the handful of
     per-field functional setters the semantics actually mutate, each defined ONCE
     as a full record literal.  Every semantic setter (set_meta / set_ct /
-    set_nh_field / set_th_field / set_untracked / set_env / ...) is then a thin
+    set_nh_field / set_th_field / set_untracked / ...) is then a thin
     composition over these, instead of re-listing all 25 packet (resp. 13 env)
     fields.  Records are non-primitive, so [pkt_X (with_pkt_Y p v)] reduces by
     [cbn]/[simpl]/[vm_compute] to a projection of a constructor — the same normal
@@ -561,20 +588,9 @@ Definition with_e_numgen (e : env) (v : numgen_spec -> nat) : env :=
      e_limit := e_limit e; e_quota := e_quota e; e_connlimit := e_connlimit e;
      e_ct := e_ct e; e_nat := e_nat e; e_numgen := v |}.
 
-(** Replace just the named packet field, copying the other 24. *)
-Definition with_pkt_env (p : packet) (v : env) : packet :=
-  {| pkt_env := v; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
-     pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
-     pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
-     pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
-     pkt_tunnel := pkt_tunnel p; pkt_symhash := pkt_symhash p; pkt_xfrm := pkt_xfrm p;
-     pkt_ctdir := pkt_ctdir p; pkt_inner := pkt_inner p;
-     pkt_have_l2 := pkt_have_l2 p; pkt_have_l4 := pkt_have_l4 p; pkt_fragoff := pkt_fragoff p;
-     pkt_flow := pkt_flow p; pkt_untracked := pkt_untracked p;
-     pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
-
+(** Replace just the named packet field, copying the other 23. *)
 Definition with_pkt_meta (p : packet) (v : meta_key -> data) : packet :=
-  {| pkt_env := pkt_env p; pkt_meta := v; pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
+  {| pkt_meta := v; pkt_sock := pkt_sock p;
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
@@ -585,7 +601,7 @@ Definition with_pkt_meta (p : packet) (v : meta_key -> data) : packet :=
      pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
 
 Definition with_pkt_nh (p : packet) (v : list byte) : packet :=
-  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
+  {| pkt_meta := pkt_meta p; pkt_sock := pkt_sock p;
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := v; pkt_th := pkt_th p;
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
@@ -596,7 +612,7 @@ Definition with_pkt_nh (p : packet) (v : list byte) : packet :=
      pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
 
 Definition with_pkt_th (p : packet) (v : list byte) : packet :=
-  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
+  {| pkt_meta := pkt_meta p; pkt_sock := pkt_sock p;
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := v;
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;
@@ -607,7 +623,7 @@ Definition with_pkt_th (p : packet) (v : list byte) : packet :=
      pkt_ctdir_orig := pkt_ctdir_orig p; pkt_ct_present := pkt_ct_present p |}.
 
 Definition with_pkt_untracked (p : packet) (v : bool) : packet :=
-  {| pkt_env := pkt_env p; pkt_meta := pkt_meta p; pkt_ct := pkt_ct p; pkt_sock := pkt_sock p;
+  {| pkt_meta := pkt_meta p; pkt_sock := pkt_sock p;
      pkt_eh := pkt_eh p; pkt_lh := pkt_lh p; pkt_nh := pkt_nh p; pkt_th := pkt_th p;
      pkt_ih := pkt_ih p; pkt_tnl := pkt_tnl p; pkt_fibkey := pkt_fibkey p;
      pkt_numgen := pkt_numgen p; pkt_osf := pkt_osf p;

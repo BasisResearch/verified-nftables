@@ -267,7 +267,7 @@ Proof.
 Qed.
 
 (** Evaluate a load against a packet. *)
-Definition do_load (ld : loaddesc) (p : packet) : data :=
+Definition do_load (ld : loaddesc) (e : env) (p : packet) : data :=
   match ld with
   | LMeta k         => meta_load k (pkt_meta p k)
   | LCt k           => ct_load k
@@ -317,12 +317,12 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
          is present), so the [CKdirection]/[_] branches read the live entry/direction. *)
       (match k with
       | CKstate => if pkt_untracked p then [0;0;0;64]
-                   else if pkt_ct_present p then e_ct (pkt_env p) (pkt_flow p) k
+                   else if pkt_ct_present p then e_ct e (pkt_flow p) k
                    else [0;0;0;1]
       | CKdirection => if pkt_ctdir_orig p then [0] else [1]
-      | _ => e_ct (pkt_env p) (pkt_flow p) k
+      | _ => e_ct e (pkt_flow p) k
       end)
-  | LRt k           => e_rt (pkt_env p) k
+  | LRt k           => e_rt e k
   | LSocket k       => pkt_sock p k
   | LNumgen spec    =>
       (* `numgen inc` reads the SHARED, persistent counter from the env and renders
@@ -332,10 +332,10 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
          (ng_random = true: get_random_u32) is genuinely per-packet, so it stays the
          oracle [pkt_numgen]. *)
       if ng_random spec then pkt_numgen p spec
-      else numgen_inc_value spec (e_numgen (pkt_env p) spec)
+      else numgen_inc_value spec (e_numgen e spec)
   | LOsf            => pkt_osf p
   | LExthdr ep h o l pr => pkt_eh p ep h o l pr
-  | LFib sel res    => lpm_fib (e_routes (pkt_env p)) (pkt_fibkey p sel) res
+  | LFib sel res    => lpm_fib (e_routes e) (pkt_fibkey p sel) res
   | LCtDir key dir  => pkt_ctdir p key dir
   | LXfrm dir sp key => pkt_xfrm p dir sp key
   | LTunnel key      => pkt_tunnel p key
@@ -344,9 +344,9 @@ Definition do_load (ld : loaddesc) (p : packet) : data :=
   | LPayload b o l  => read_payload b o l p
   end.
 
-(** The value of a field in a packet. *)
-Definition field_value (f : field) (p : packet) : data :=
-  do_load (field_load f) p.
+(** The value of a field, read against the shared env [e] and packet [p]. *)
+Definition field_value (f : field) (e : env) (p : packet) : data :=
+  do_load (field_load f) e p.
 
 (** Whether an extension-header / TCP-option / SCTP-chunk VALUE load finds its
     target present.  Derived from the SAME underlying existence oracle the

@@ -15,7 +15,7 @@
     (NFT_SET_CONCAT): the parser mints a fresh `__setN`, pushes its per-field packed
     elements onto the table's set declarations, and lowers the inline `{ … }` to
     [MConcatSet ([f1;f2], neg, "__setN")] — a reference resolved at run time from
-    [e_set (pkt_env p) "__setN"], matched by [concat_set_mem] (the kernel's per-field
+    [e_set e "__setN"], matched by [concat_set_mem] (the kernel's per-field
     cross-product).  So this pass needs NO new constructor: it lifts the merge to the
     TABLE / [set_decls] level, minting `__setN` with a fresh counter, reusing the
     EXISTING [MConcatSet] / [sd_sets] / [concat_set_mem] machinery — exactly as the
@@ -135,23 +135,23 @@ Qed.
     exactly the [orb] of the two per-row conjunctions
       [ (f1=a1 AND f2=b1) OR (f1=a2 AND f2=b2) ]
     where each [fi=x] is the original [MCmp fi CEq x] test. *)
-Lemma concat_two_fields_certificate : forall f1 f2 a1 b1 a2 b2 name q,
-  e_set (pkt_env q) name = [(pack2 a1 b1, pack2 a1 b1); (pack2 a2 b2, pack2 a2 b2)] ->
-  (field_loadable f1 q = true -> List.length (field_value f1 q) = List.length a1) ->
-  (field_loadable f2 q = true -> List.length (field_value f2 q) = List.length b1) ->
-  (field_loadable f1 q = true -> List.length (field_value f1 q) = List.length a2) ->
-  (field_loadable f2 q = true -> List.length (field_value f2 q) = List.length b2) ->
-  eval_matchcond (MConcatSet [f1; f2] false name) q
-  = orb (andb (eval_matchcond (MCmp f1 CEq a1) q) (eval_matchcond (MCmp f2 CEq b1) q))
-        (andb (eval_matchcond (MCmp f1 CEq a2) q) (eval_matchcond (MCmp f2 CEq b2) q)).
+Lemma concat_two_fields_certificate : forall f1 f2 a1 b1 a2 b2 name e q,
+  e_set e name = [(pack2 a1 b1, pack2 a1 b1); (pack2 a2 b2, pack2 a2 b2)] ->
+  (field_loadable f1 q = true -> List.length (field_value f1 e q) = List.length a1) ->
+  (field_loadable f2 q = true -> List.length (field_value f2 e q) = List.length b1) ->
+  (field_loadable f1 q = true -> List.length (field_value f1 e q) = List.length a2) ->
+  (field_loadable f2 q = true -> List.length (field_value f2 e q) = List.length b2) ->
+  eval_matchcond (MConcatSet [f1; f2] false name) e q
+  = orb (andb (eval_matchcond (MCmp f1 CEq a1) e q) (eval_matchcond (MCmp f2 CEq b1) e q))
+        (andb (eval_matchcond (MCmp f1 CEq a2) e q) (eval_matchcond (MCmp f2 CEq b2) e q)).
 Proof.
-  intros f1 f2 a1 b1 a2 b2 name q Hset Ha1 Hb1 Ha2 Hb2.
+  intros f1 f2 a1 b1 a2 b2 name e q Hset Ha1 Hb1 Ha2 Hb2.
   (* compute the two RHS MCmp tests *)
-  assert (Em1a : forall x, eval_matchcond (MCmp f1 CEq x) q
-                 = field_loadable f1 q && eval_cmp CEq (field_value f1 q) x).
+  assert (Em1a : forall x, eval_matchcond (MCmp f1 CEq x) e q
+                 = field_loadable f1 q && eval_cmp CEq (field_value f1 e q) x).
   { intro x. reflexivity. }
-  assert (Em2b : forall x, eval_matchcond (MCmp f2 CEq x) q
-                 = field_loadable f2 q && eval_cmp CEq (field_value f2 q) x).
+  assert (Em2b : forall x, eval_matchcond (MCmp f2 CEq x) e q
+                 = field_loadable f2 q && eval_cmp CEq (field_value f2 e q) x).
   { intro x. reflexivity. }
   rewrite !Em1a, !Em2b.
   unfold eval_matchcond, eval_matchcond_body.
@@ -170,9 +170,9 @@ Proof.
   (* membership step: [apply] (not [rewrite]) so full conversion bridges the
      [data] / [list byte] list-element annotation. *)
   etransitivity;
-    [ apply (concat_set_two_tuples_mem (field_value f1 q) (field_value f2 q)
+    [ apply (concat_set_two_tuples_mem (field_value f1 e q) (field_value f2 e q)
                a1 b1 a2 b2 Ha1 Hb1 Ha2 Hb2) | ].
-  (* each MCmp f CEq x reduces to data_eqb (firstn (length x) (field_value f q)) x;
+  (* each MCmp f CEq x reduces to data_eqb (firstn (length x) (field_value f e q)) x;
      length guard collapses firstn to the whole value *)
   unfold eval_cmp.
   rewrite <- Ha1, <- Hb1, <- Ha2, <- Hb2, !List.firstn_all.
@@ -219,19 +219,19 @@ Proof. intros. unfold body_thread. rewrite has_notrack_bmatch. reflexivity. Qed.
     preserves [eval_rules] on every packet.  This is the two-field analogue of
     [eval_rules_value_merge] / [eval_rules_range_value_merge], discharged through the
     abstract [eval_rules_merge2]. *)
-Theorem eval_rules_concat_merge2 : forall f1 f2 a1 b1 a2 b2 name body r1 rest p,
-  eval_matchcond (MConcatSet [f1; f2] false name) p
-    = orb (andb (eval_matchcond (MCmp f1 CEq a1) p) (eval_matchcond (MCmp f2 CEq b1) p))
-          (andb (eval_matchcond (MCmp f1 CEq a2) p) (eval_matchcond (MCmp f2 CEq b2) p)) ->
+Theorem eval_rules_concat_merge2 : forall f1 f2 a1 b1 a2 b2 name body r1 rest e p,
+  eval_matchcond (MConcatSet [f1; f2] false name) e p
+    = orb (andb (eval_matchcond (MCmp f1 CEq a1) e p) (eval_matchcond (MCmp f2 CEq b1) e p))
+          (andb (eval_matchcond (MCmp f1 CEq a2) e p) (eval_matchcond (MCmp f2 CEq b2) e p)) ->
   match_loadable (MConcatSet [f1; f2] false name) p
     = match_loadable (MCmp f1 CEq a1) p && match_loadable (MCmp f2 CEq b1) p ->
   match_loadable (MConcatSet [f1; f2] false name) p
     = match_loadable (MCmp f1 CEq a2) p && match_loadable (MCmp f2 CEq b2) p ->
-  eval_rules (merged_rule2 f1 f2 name body r1 :: rest) p
+  eval_rules (merged_rule2 f1 f2 name body r1 :: rest) e p
   = eval_rules (orig_rule2 f1 f2 a1 b1 body r1
-                :: orig_rule2 f1 f2 a2 b2 body r1 :: rest) p.
+                :: orig_rule2 f1 f2 a2 b2 body r1 :: rest) e p.
 Proof.
-  intros f1 f2 a1 b1 a2 b2 name body r1 rest p Hcert Hl1 Hl2.
+  intros f1 f2 a1 b1 a2 b2 name body r1 rest e p Hcert Hl1 Hl2.
   unfold merged_rule2, orig_rule2.
   apply eval_rules_merge2.
   - (* loadable merged = loadable orig1 *)
@@ -495,38 +495,38 @@ Qed.
 
 (** Matchcond-level N-way concat certificate: the merged head is the [existsb] over
     the run of the per-row two-field conjunctions. *)
-Lemma concat_two_fields_certificate_N : forall f1 f2 tuples name q,
-  e_set (pkt_env q) name = map pack_tuple tuples ->
+Lemma concat_two_fields_certificate_N : forall f1 f2 tuples name e q,
+  e_set e name = map pack_tuple tuples ->
   (forall a b, In (a, b) tuples -> field_loadable f1 q = true ->
-               List.length (field_value f1 q) = List.length a) ->
+               List.length (field_value f1 e q) = List.length a) ->
   (forall a b, In (a, b) tuples -> field_loadable f2 q = true ->
-               List.length (field_value f2 q) = List.length b) ->
-  eval_matchcond (MConcatSet [f1; f2] false name) q
-  = existsb (fun ab => andb (eval_matchcond (MCmp f1 CEq (fst ab)) q)
-                            (eval_matchcond (MCmp f2 CEq (snd ab)) q)) tuples.
+               List.length (field_value f2 e q) = List.length b) ->
+  eval_matchcond (MConcatSet [f1; f2] false name) e q
+  = existsb (fun ab => andb (eval_matchcond (MCmp f1 CEq (fst ab)) e q)
+                            (eval_matchcond (MCmp f2 CEq (snd ab)) e q)) tuples.
 Proof.
-  intros f1 f2 tuples name q Hset Ha Hb.
+  intros f1 f2 tuples name e q Hset Ha Hb.
   unfold eval_matchcond at 1, eval_matchcond_body at 1.
   cbn [match_loadable fields_loadable forallb]. rewrite Bool.andb_true_r.
   destruct (field_loadable f1 q) eqn:Hf1; cbn [andb].
   - destruct (field_loadable f2 q) eqn:Hf2; cbn [andb].
     + (* both load: reduce both sides over the run *)
       cbn [xorb]. rewrite Hset.
-      change (map (fun f => field_value f q) [f1; f2])
-        with [field_value f1 q; field_value f2 q].
+      change (map (fun f => field_value f e q) [f1; f2])
+        with [field_value f1 e q; field_value f2 e q].
       etransitivity;
-        [ apply (concat_set_mem_existsb (field_value f1 q) (field_value f2 q) tuples
+        [ apply (concat_set_mem_existsb (field_value f1 e q) (field_value f2 e q) tuples
                    (fun a b Hin => Ha a b Hin eq_refl) (fun a b Hin => Hb a b Hin eq_refl)) | ].
       apply existsb_ext. intros [a b] Hin. cbn [fst snd].
-      rewrite (eval_mcmp_point f1 a q Hf1 (Ha a b Hin eq_refl)).
-      rewrite (eval_mcmp_point f2 b q Hf2 (Hb a b Hin eq_refl)).
+      rewrite (eval_mcmp_point f1 a e q Hf1 (Ha a b Hin eq_refl)).
+      rewrite (eval_mcmp_point f2 b e q Hf2 (Hb a b Hin eq_refl)).
       reflexivity.
     + (* f2 fails: merged false; every row's f2 conjunct false *)
       symmetry. apply existsb_false_forall. intros [a b] _. cbn [fst snd].
-      rewrite (eval_mcmp_point_unload f2 b q Hf2). apply Bool.andb_false_r.
+      rewrite (eval_mcmp_point_unload f2 b e q Hf2). apply Bool.andb_false_r.
   - (* f1 fails: merged false; every row's f1 conjunct false *)
     symmetry. apply existsb_false_forall. intros [a b] _. cbn [fst snd].
-    rewrite (eval_mcmp_point_unload f1 a q Hf1). reflexivity.
+    rewrite (eval_mcmp_point_unload f1 a e q Hf1). reflexivity.
 Qed.
 
 (** ** Executable N-WAY concat pass.
@@ -608,35 +608,35 @@ Proof. reflexivity. Qed.
 (** orig_rule2's loadability / outcome are INDEPENDENT of the two head values (the
     head [MCmp]s contribute only their field loadability, which is value-free), and
     its [rule_applies] is the per-row two-field conjunction times the body walk. *)
-Lemma orig_rule2_loadable_indep : forall f1 f2 a b a' b' body r1 p,
-  rule_loadable (orig_rule2 f1 f2 a b body r1) p
-  = rule_loadable (orig_rule2 f1 f2 a' b' body r1) p.
+Lemma orig_rule2_loadable_indep : forall f1 f2 a b a' b' body r1 e p,
+  rule_loadable (orig_rule2 f1 f2 a b body r1) e p
+  = rule_loadable (orig_rule2 f1 f2 a' b' body r1) e p.
 Proof.
   intros. unfold orig_rule2. rewrite !rule_loadable_mk_head.
   rewrite !synproxy_stops_bmatch, !body_thread_bmatch.
   cbn [body_loadable_walk body_item_loadable match_loadable]. reflexivity.
 Qed.
 
-Lemma orig_rule2_outcome_indep : forall f1 f2 a b a' b' body r1 p,
-  outcome (orig_rule2 f1 f2 a b body r1) p
-  = outcome (orig_rule2 f1 f2 a' b' body r1) p.
+Lemma orig_rule2_outcome_indep : forall f1 f2 a b a' b' body r1 e p,
+  outcome (orig_rule2 f1 f2 a b body r1) e p
+  = outcome (orig_rule2 f1 f2 a' b' body r1) e p.
 Proof.
   intros. unfold orig_rule2. rewrite !outcome_mk_head.
   rewrite !synproxy_stops_bmatch, !body_thread_bmatch. reflexivity.
 Qed.
 
-Lemma orig_rule2_applies : forall f1 f2 a b body r1 p,
-  rule_applies (orig_rule2 f1 f2 a b body r1) p
-  = andb (andb (eval_matchcond (MCmp f1 CEq a) p) (eval_matchcond (MCmp f2 CEq b) p))
-         (rule_applies_walk body p).
+Lemma orig_rule2_applies : forall f1 f2 a b body r1 e p,
+  rule_applies (orig_rule2 f1 f2 a b body r1) e p
+  = andb (andb (eval_matchcond (MCmp f1 CEq a) e p) (eval_matchcond (MCmp f2 CEq b) e p))
+         (rule_applies_walk body e p).
 Proof.
   intros. unfold orig_rule2. rewrite rule_applies_mk_head.
   cbn [rule_applies_walk]. rewrite Bool.andb_assoc. reflexivity.
 Qed.
 
-Lemma merged_rule2_loadable_eq_orig : forall f1 f2 name a b body r1 p,
-  rule_loadable (merged_rule2 f1 f2 name body r1) p
-  = rule_loadable (orig_rule2 f1 f2 a b body r1) p.
+Lemma merged_rule2_loadable_eq_orig : forall f1 f2 name a b body r1 e p,
+  rule_loadable (merged_rule2 f1 f2 name body r1) e p
+  = rule_loadable (orig_rule2 f1 f2 a b body r1) e p.
 Proof.
   intros. unfold merged_rule2, orig_rule2. rewrite !rule_loadable_mk_head.
   rewrite !synproxy_stops_bmatch, !body_thread_bmatch.
@@ -644,17 +644,17 @@ Proof.
   rewrite Bool.andb_true_r, <- !Bool.andb_assoc. reflexivity.
 Qed.
 
-Lemma merged_rule2_outcome_eq_orig : forall f1 f2 name a b body r1 p,
-  outcome (merged_rule2 f1 f2 name body r1) p
-  = outcome (orig_rule2 f1 f2 a b body r1) p.
+Lemma merged_rule2_outcome_eq_orig : forall f1 f2 name a b body r1 e p,
+  outcome (merged_rule2 f1 f2 name body r1) e p
+  = outcome (orig_rule2 f1 f2 a b body r1) e p.
 Proof.
   intros. unfold merged_rule2, orig_rule2. rewrite !outcome_mk_head.
   rewrite !synproxy_stops_bmatch, !body_thread_bmatch. reflexivity.
 Qed.
 
-Lemma merged_rule2_applies : forall f1 f2 name body r1 p,
-  rule_applies (merged_rule2 f1 f2 name body r1) p
-  = andb (eval_matchcond (MConcatSet [f1; f2] false name) p) (rule_applies_walk body p).
+Lemma merged_rule2_applies : forall f1 f2 name body r1 e p,
+  rule_applies (merged_rule2 f1 f2 name body r1) e p
+  = andb (eval_matchcond (MConcatSet [f1; f2] false name) e p) (rule_applies_walk body e p).
 Proof.
   intros. unfold merged_rule2. rewrite rule_applies_mk_head. reflexivity.
 Qed.

@@ -24,7 +24,7 @@
     [MSetT f [TBitAnd mask xor] false __setN] — set membership of the TRANSFORMED
     (masked) field value — over the fresh N-element point set [map (v,v) vals].
 
-    SOUNDNESS.  The masked field value [X = data_bitops (field_value f p) mask xor] is
+    SOUNDNESS.  The masked field value [X = data_bitops (field_value f e p) mask xor] is
     the SAME operand in both the [MMasked] equality and the [MSetT] lookup (they share
     [apply_transforms [TBitAnd mask xor] = data_bitops _ mask xor]); membership of a
     point set [map (v,v) vals] is byte-equality [X = v] ([data_in_iv_point]), so the
@@ -60,24 +60,24 @@ Qed.
     run's [MMasked f false mask xor v] equalities — when the masked value's width
     equals each element's width (so [MMasked]'s [firstn]-truncated equality coincides
     with the set's full-width membership). *)
-Lemma mmasked_set_existsb : forall f mask xor vals name q,
-  e_set (pkt_env q) name = map (fun v => (v, v)) vals ->
+Lemma mmasked_set_existsb : forall f mask xor vals name e q,
+  e_set e name = map (fun v => (v, v)) vals ->
   (forall v, In v vals -> field_loadable f q = true ->
-     length (data_bitops (field_value f q) mask xor) = length v) ->
-  eval_matchcond (MSetT f [TBitAnd mask xor] false name) q
-  = existsb (fun v => eval_matchcond (MMasked f false mask xor v) q) vals.
+     length (data_bitops (field_value f e q) mask xor) = length v) ->
+  eval_matchcond (MSetT f [TBitAnd mask xor] false name) e q
+  = existsb (fun v => eval_matchcond (MMasked f false mask xor v) e q) vals.
 Proof.
-  intros f mask xor vals name q Hset Hlen.
+  intros f mask xor vals name e q Hset Hlen.
   unfold eval_matchcond at 1, eval_matchcond_body at 1.
   cbn [match_loadable].
   destruct (field_loadable f q) eqn:Hld; cbn [andb].
   - (* loadable: set membership = existsb of the point equalities *)
     cbn [xorb]. unfold apply_transforms; cbn [fold_left apply_transform].
-    set (X := data_bitops (field_value f q) mask xor) in *.
+    set (X := data_bitops (field_value f e q) mask xor) in *.
     unfold set_mem. rewrite Hset. rewrite existsb_map_eq.
     apply existsb_ext. intros v Hv.
     rewrite data_in_iv_point.
-    (* RHS term: eval_matchcond (MMasked ..) q = firstn-eq on X *)
+    (* RHS term: eval_matchcond (MMasked ..) e q = firstn-eq on X *)
     unfold eval_matchcond, eval_matchcond_body. cbn [match_loadable]. rewrite Hld.
     cbn [andb eval_cmp]. fold X.
     assert (Hl : length X = length v) by (apply (Hlen v Hv eq_refl)).
