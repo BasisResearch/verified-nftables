@@ -11,7 +11,7 @@
 ROCQBIN ?=
 COQMAKE  = CoqMakefile
 
-.PHONY: all proofs glue lib example semtest difftest corpus byteorder-gate validate parse-test gen clean cli e2e nl-send parser-corpus
+.PHONY: all proofs glue lib example semtest difftest corpus byteorder-gate validate parse-test gen clean cli e2e nl-send parser-corpus axioms
 
 all: proofs glue
 
@@ -99,6 +99,26 @@ parser-corpus: cli
 # check these; this uses nft as an external oracle).
 validate: glue
 	./extracted/_build/default/corpus_test.exe validate
+
+# Axiom-freedom gate: Print Assumptions over the THEOREMS.md HEADLINE set plus
+# the Correct.v strata (needs the .vo files — run after `make proofs`).  Prints
+# one verdict line per theorem and fails unless EVERY one is "Closed under the
+# global context" (i.e. no axiom, no Admitted, anywhere in its proof).
+AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
+  compile_chain_mut_env_correct compile_seq_mut_correct compile_table_correct \
+  compile_ruleset_correct compile_hook_correct compile_seq_correct \
+  optimize_table_uncond_correct optimize_table_uncond_compile_correct
+
+axioms:
+	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond.\n'; \
+	  for t in $(AXIOM_GATE_THEOREMS); do printf 'Print Assumptions %s.\n' "$$t"; done; } \
+	| coqtop -R . Nft 2>/dev/null \
+	| grep -E 'Closed under the global context|Axioms' \
+	| { fail=0; for t in $(AXIOM_GATE_THEOREMS); do \
+	      if ! read -r line; then echo "$$t: NO VERDICT (build theories first: make proofs)"; fail=1; break; fi; \
+	      echo "$$t: $$line"; \
+	      case "$$line" in *"Closed under the global context"*) ;; *) fail=1 ;; esac; \
+	    done; exit $$fail; }
 
 clean:
 	-[ -f $(COQMAKE) ] && $(MAKE) -f $(COQMAKE) clean || true

@@ -526,6 +526,12 @@ Definition optimize_chain (c : chain) : chain :=
   {| c_policy := c_policy c;
      c_rules  := dce (prune_noops (map (fun r => simplify_rule (dedup_rule r)) (c_rules c))) |}.
 
+(** SUPERSEDED (as a standalone result) by
+    [Optimize_Uncond.optimize_table_uncond_correct]: the shipped optimizer is
+    the 18-stage [Optimize_Table.optimize_table] pipeline, whose unconditional
+    end-to-end theorem subsumes this one.  [optimize_chain] itself survives as
+    the pipeline's base stage, and this theorem is reused there as that stage's
+    correctness lemma. *)
 Theorem optimize_chain_correct : forall c p,
   eval_chain (optimize_chain c) p = eval_chain c p.
 Proof.

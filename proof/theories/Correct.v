@@ -1,9 +1,33 @@
-(** * Correct: the compiler is semantics preserving.
+(** * Correct: the compiler is semantics preserving — the theorem strata.
 
-    Main result [compile_chain_correct]: for every base chain and every packet,
-    running the compiled control-plane bytecode yields exactly the verdict the
-    declarative semantics assigns.  Equivalently, the netlink ruleset [nft] would
-    install filters packets exactly as the DSL specifies. *)
+    This file proves, bottom-up, that compiling a DSL ruleset to control-plane
+    bytecode preserves its packet semantics, one evaluator stratum at a time.
+    Each stratum covers one feature axis of the semantics; the full map of
+    which theorem is HEADLINE / SUPPORTING / DEMO — and the evaluator feature
+    matrix — is in [proof/THEOREMS.md], with machine-checked entry-point
+    restatements in [theories/Main.v].
+
+      1. [compile_chain_correct]         — one base chain, pure verdict
+                                           ([eval_chain] = [run_chain]).
+      2. [compile_chain_mut_correct]     — + in-traversal mutation
+                                           (meta/ct set, dynset learning).
+      3. [compile_chain_mut_env_correct] — + the env the chain LEAVES.
+      4. [compile_seq_mut_correct]       — + threading that env across a
+                                           packet sequence (HEADLINE,
+                                           mutation/sequence axis).
+      5. [compile_table_correct]         — + jump/goto/return over a chain
+                                           environment (fuel-bounded).
+      6. [compile_ruleset_correct] / [compile_hook_correct] — + multi-table /
+                                           hook dispatch (HEADLINE, compiler
+                                           axis: the top of the jump-aware
+                                           strand).
+      7. [compile_seq_correct]           — a per-packet congruence corollary
+                                           of 6 under an arbitrary external
+                                           env step.
+
+    The mutation strand (2–4) and the jump strand (5–6) are verified on
+    SEPARATE evaluators; mutation x jump/goto is not jointly verified
+    (see the evaluator matrix in THEOREMS.md / Semantics.v). *)
 
 From Stdlib Require Import List NArith Bool Lia PeanoNat.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile.
@@ -2511,7 +2535,13 @@ Proof.
     + rewrite (run_rule_compile_rule_break r p Hrl). cbn [andb]. apply IH.
 Qed.
 
-(** ** Main theorem: semantic preservation. *)
+(** ** Stratum 1: single-chain semantic preservation (pure verdict).
+
+    The base stratum: for every base chain and every packet, the compiled
+    bytecode yields exactly the verdict of the declarative [eval_chain].  This
+    is the weakest stratum — no mutation threading, no jump dispatch; the
+    ruleset/hook-level result is [compile_hook_correct] below, and the strata
+    map lives in proof/THEOREMS.md. *)
 Theorem compile_chain_correct : forall c p,
   run_chain (compile_chain c) (c_policy c) p = eval_chain c p.
 Proof.
@@ -2525,7 +2555,7 @@ Qed.
     elements declared for [s] ([e_set_declared]).  So the membership semantics is
     tied to the declared set object, not to an inlined copy or a disconnected
     oracle.  (Corollary of [compile_chain_correct], which holds for every env.) *)
-Theorem compile_chain_sets_correct : forall c base d p,
+Corollary compile_chain_sets_correct : forall c base d p,
   run_chain (compile_chain c) (c_policy c) (set_env p (env_with_sets base d))
   = eval_chain c (set_env p (env_with_sets base d)).
 Proof. intros. apply compile_chain_correct. Qed.
@@ -2697,7 +2727,7 @@ Proof.
   rewrite IH. reflexivity.
 Qed.
 
-(** ** Phase B main theorem: the compiler preserves in-traversal mutation.
+(** ** Stratum 2: the compiler preserves in-traversal mutation.
 
     The compiled bytecode's meta/ct effect equals the declarative one for ANY
     rule — matches, meta/ct sets (with non-degenerate operands), AND every other
@@ -2779,7 +2809,7 @@ Proof.
   rewrite run_program_mut_compile_chain by exact Hall. reflexivity.
 Qed.
 
-(** ** Cross-packet preservation: the env a chain LEAVES is preserved too.
+(** ** Stratum 3: the env a chain LEAVES is preserved too.
 
     The same well-formedness gives that the compiled VM and the DSL agree not only
     on the verdict but on the *environment the chain leaves* — including any
@@ -2823,11 +2853,15 @@ Proof.
   rewrite Hext. destruct (ev2 e p) as [v e']. f_equal. apply IH.
 Qed.
 
-(** Stateful cross-packet preservation for the LEARNING done by the ruleset itself:
-    threading the env a chain leaves (dynset-learned sets/maps) into the next
+(** ** Stratum 4 (HEADLINE, mutation/sequence axis): stateful cross-packet
+    preservation for the LEARNING done by the ruleset itself.
+
+    Threading the env a chain leaves (dynset-learned sets/maps) into the next
     packet, the compiled VM reproduces the DSL sequence.  So a `add @s {…}` on an
     earlier packet is visible to a `lookup @s` on a later one, end-to-end and
-    compiler-preserved — the cross-packet half of the dynamic-set feedback loop. *)
+    compiler-preserved — the cross-packet half of the dynamic-set feedback loop.
+    Unlike [compile_seq_correct] below, the env evolution here is generated by
+    the ruleset itself ([eval_chain_mut_env]), not by an arbitrary step. *)
 Theorem compile_seq_mut_correct : forall c e packets,
   forallb mut_wf (c_rules c) = true ->
   seq_eval_env (fun e' p => run_chain_mut_env (compile_chain c) (c_policy c) (set_env p e')) e packets
@@ -2837,7 +2871,8 @@ Proof.
   apply compile_chain_mut_env_correct. exact Hall.
 Qed.
 
-(** ** Multi-chain semantic preservation (jump / goto / return + user chains).
+(** ** Stratum 5: multi-chain semantic preservation (jump / goto / return +
+    user chains).
 
     The compiled jump-aware VM agrees with the DSL interpreter for *every* fuel
     and *every* chain environment — so the compiler preserves the packet verdict
@@ -2895,7 +2930,8 @@ Qed.
     [compile_table_correct] this gives: for a jump-free base chain the compiled
     single-chain bytecode equals the faithful [eval_table] — and for a chain that
     DOES jump, the faithful semantics is [eval_table]/[run_table]
-    ([compile_table_correct]), NOT [eval_chain]. *)
+    ([compile_table_correct]), NOT [eval_chain].  ([eval_table] is mutation-free,
+    like [eval_rules]: neither side of this bridge threads writes.) *)
 Lemma eval_rules_jumpfree_eq_j : forall fuel cs rs p,
   List.length rs < fuel ->
   rules_jumpfree rs p = true ->
@@ -2926,9 +2962,10 @@ Proof.
 Qed.
 
 (** Hence on a jump-free base chain the COMPILED single-chain bytecode reproduces
-    the faithful environment-aware [eval_table] — the headline compiler result and
-    the faithful semantics line up exactly on [eval_chain]'s valid domain. *)
-Theorem compile_chain_faithful_jumpfree : forall fuel cs c p,
+    the faithful environment-aware [eval_table] — the single-chain compiler result
+    and the faithful semantics line up exactly on [eval_chain]'s valid domain.
+    (Corollary of [compile_chain_correct] + [eval_chain_eq_table_jumpfree].) *)
+Corollary compile_chain_faithful_jumpfree : forall fuel cs c p,
   List.length (c_rules c) < fuel ->
   chain_jumpfree c p = true ->
   run_chain (compile_chain c) (c_policy c) p = eval_table fuel cs c p.
@@ -2938,7 +2975,7 @@ Proof.
   apply eval_chain_eq_table_jumpfree; assumption.
 Qed.
 
-(** ** Regression: the faithful semantics does NOT ignore a jump.
+(** ** Regression pins (DEMO): the faithful semantics does NOT ignore a jump.
 
     A base chain whose only rule is [jump "deny"], with ["deny"] a chain that
     DROPs, must DROP — netfilter runs the target chain (nf_tables_core.c JUMP/GOTO
@@ -2960,22 +2997,22 @@ Definition rg_deny : chain := {| c_policy := Accept; c_rules := [rg_drop_rule] |
 Definition rg_cs : list (String.string * chain) := [("deny", rg_deny)].
 
 (** (A) the faithful interpreter runs the target chain and DROPs (matches nft). *)
-Theorem faithful_table_jump_drops : forall p, eval_table 10 rg_cs rg_base p = Drop.
+Example faithful_table_jump_drops : forall p, eval_table 10 rg_cs rg_base p = Drop.
 Proof. reflexivity. Qed.
 
 (** (B) and the compiled jump-aware VM agrees (via [compile_table_correct]). *)
-Theorem compiled_table_jump_drops : forall p,
+Example compiled_table_jump_drops : forall p,
   run_table 10 (compile_env rg_cs) (compile_chain rg_base) (c_policy rg_base) p = Drop.
 Proof. intro p. rewrite compile_table_correct. apply faithful_table_jump_drops. Qed.
 
 (** (C) the base chain's only rule is NOT jump-free, so it is correctly OUTSIDE
     the domain of [eval_chain_eq_table_jumpfree] — i.e. the bridge does not (and
     cannot) certify the unfaithful [eval_chain] result on it. *)
-Theorem rg_base_not_jumpfree : forall p, chain_jumpfree rg_base p = false.
+Example rg_base_not_jumpfree : forall p, chain_jumpfree rg_base p = false.
 Proof. reflexivity. Qed.
 Local Close Scope string_scope.
 
-(** ** Ruleset-level preservation: multi-table / multi-hook dispatch.
+(** ** Stratum 6 (HEADLINE, compiler axis): multi-table / multi-hook dispatch.
 
     Compiling each base chain (and its jump-target environment) and running the
     netfilter dispatch over the compiled bases reproduces the DSL dispatch — so
@@ -3015,11 +3052,13 @@ Proof.
   rewrite !(Hext e p). f_equal. apply IH.
 Qed.
 
-(** Stateful preservation: running a packet sequence with the compiled hook
-    dispatch — threading a shared environment that [step] mutates between packets
-    (rate limiters / quotas / conntrack counts) — reproduces the DSL run.  So the
-    compiler preserves verdicts even when a packet's verdict depends on state
-    *accumulated from earlier packets*. *)
+(** Congruence corollary of [compile_hook_correct]: it quantifies over an
+    ARBITRARY, unconstrained [step : verdict -> env -> env] — the env evolution
+    between packets is supplied by the caller, NOT generated by the ruleset — so
+    this is a per-packet congruence lifted over a sequence, not a proof that the
+    ruleset's own state accumulation is preserved.  For the env evolution
+    generated by the ruleset itself (dynset learning threaded packet-to-packet)
+    see [compile_seq_mut_correct] above. *)
 Theorem compile_seq_correct : forall fuel rs h step e packets,
   seq_eval (fun e' p => run_ruleset fuel (map compile_base (select_hook rs h)) (set_env p e'))
            step e packets
@@ -3027,3 +3066,18 @@ Theorem compile_seq_correct : forall fuel rs h step e packets,
 Proof.
   intros. apply seq_eval_ext. intros e' p. apply compile_hook_correct.
 Qed.
+
+(** ** Axiom-freedom audit (build-time guard; mirrors Optimize_Uncond.v).
+
+    Every compiler stratum in this file must print "Closed under the global
+    context"; an introduced axiom / [Admitted] would surface in the build log
+    here and fail `make axioms` (which re-checks the THEOREMS.md HEADLINE set
+    from the compiled .vo files). *)
+Print Assumptions compile_chain_correct.
+Print Assumptions compile_chain_mut_correct.
+Print Assumptions compile_chain_mut_env_correct.
+Print Assumptions compile_seq_mut_correct.
+Print Assumptions compile_table_correct.
+Print Assumptions compile_ruleset_correct.
+Print Assumptions compile_hook_correct.
+Print Assumptions compile_seq_correct.

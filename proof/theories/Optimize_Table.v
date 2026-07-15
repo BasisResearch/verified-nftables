@@ -179,13 +179,6 @@ Proof.
   exact H.
 Qed.
 
-(** Base [optimize_chain] does not depend on the set/map environment, so its
-    [eval_chain] is the same under any [d]. *)
-Lemma optimize_chain_eval_any_env : forall c p e1 e2,
-  eval_chain (optimize_chain c) (set_env p e1) = eval_chain c (set_env p e2) ->
-  True.
-Proof. trivial. Qed.
-
 (** ** Step 2 (first rung): compose base [optimize_chain] then the N-WAY value->set
     pass.  Step 1 supplies the [rules_clean] hypothesis the [setsN] theorem needs. *)
 

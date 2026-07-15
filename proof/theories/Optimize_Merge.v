@@ -43,11 +43,11 @@
     discipline ([setname_inj]).  Every theorem is axiom-free (Print Assumptions:
     Closed under the global context).
 
-    [optimize_chain2] (= the existing pipeline then [dedup_adj]) remains as the
-    consecutive-duplicate pass.  NOTE on fidelity: the earlier contiguous-range
-    certificate [eval_rules_range_value_merge] models `6,7 => 6-7` as a RANGE, but
-    `nft -o` actually emits a discrete SET `{ 6, 7 }`; the value->set pass above is
-    the faithful consolidation and emits the discrete elements. *)
+    [optimize_chain2] (= the base [optimize_chain] then [dedup_adj]) remains as
+    the consecutive-duplicate pass (SUPERSEDED — not in the shipped pipeline;
+    see the marker on [optimize_chain2_correct]).  The contiguous-range
+    certificate [eval_rules_range_value_merge] is likewise SUPERSEDED and
+    known-unfaithful to `nft -o`; the fidelity note sits on the theorem itself. *)
 
 From Stdlib Require Import Ascii String.
 From Stdlib Require Import List PeanoNat Bool Lia Wellfounded Arith.Wf_nat.
@@ -489,7 +489,14 @@ Proof.
   exact (range_byte_split lo mid hi x Hlm Hmh).
 Qed.
 
-(** The two adjacent single-byte-range rules collapse to one, on every packet for
+(** SUPERSEDED and KNOWN-UNFAITHFUL to `nft -o`: this contiguous-range
+    certificate models `6,7 => 6-7` as a RANGE, but `nft -o` actually emits a
+    discrete SET `{ 6, 7 }`.  The faithful consolidation is the value->set pass
+    below ([optimize_rules_sets]; shipped as the [setsN] stage of
+    [Optimize_Table.optimize_table]), which emits the discrete elements.  Kept
+    as a historical certificate; used by no shipped pass.
+
+    The two adjacent single-byte-range rules collapse to one, on every packet for
     which the merged field is single-byte (the guard, as a per-packet hypothesis).
     [rest2] is the remainder of the chain; [r1] supplies the shared verdict/end. *)
 Theorem eval_rules_range_value_merge : forall f lo mid hi rest r1 rest2 p,
@@ -524,6 +531,11 @@ Definition optimize_chain2 (c : chain) : chain :=
   {| c_policy := c_policy (optimize_chain c);
      c_rules  := dedup_adj (c_rules (optimize_chain c)) |}.
 
+(** SUPERSEDED: [optimize_chain2] is NOT composed into the shipped
+    [Optimize_Table.optimize_table] pipeline (whose stage list is in
+    Optimize_Table.v / DEVELOPMENT.md); it remains only as the historical
+    consecutive-duplicate pass.  Successor:
+    [Optimize_Uncond.optimize_table_uncond_correct]. *)
 Theorem optimize_chain2_correct : forall c p,
   eval_chain (optimize_chain2 c) p = eval_chain c p.
 Proof.
