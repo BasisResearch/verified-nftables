@@ -1,10 +1,10 @@
 (** * SYN-proxy is verdict-bearing, NOT a no-op.
 
-    The red agent showed the model was UNSOUND: the `synproxy` statement was
-    verdict-neutral, so a rule whose only action is `synproxy` was a complete
-    verdict no-op ([eval_chain {synproxy} p = policy] for EVERY packet).  The
-    kernel (net/netfilter/nft_synproxy.c, nft_synproxy_do_eval / _eval_v4)
-    disagrees in every interesting case:
+    A verdict-neutral `synproxy` statement would make a rule whose only action
+    is `synproxy` a complete verdict no-op ([eval_chain {synproxy} p = policy]
+    for EVERY packet) — UNSOUND.  The kernel (net/netfilter/nft_synproxy.c,
+    nft_synproxy_do_eval / _eval_v4) is verdict-bearing in every interesting
+    case:
 
       - non-TCP packet  => NFT_BREAK (line 117): the rule does NOT apply;
       - TCP SYN         => NF_STOLEN (line 61): the SYN is answered with a
@@ -12,7 +12,7 @@
       - TCP client ACK  => NF_STOLEN (valid) / NF_DROP (rejected) — STOPS;
       - other TCP       => implicit NFT_CONTINUE (fall through).
 
-    The fix models the control-flow outcome the single-packet semantics can see:
+    The model captures the control-flow outcome the single-packet semantics can see:
     a non-TCP packet makes the rule unloadable (NFT_BREAK, via the TCP-flags
     transport load), a SYN/ACK packet STOPS traversal — modelled as the terminal
     verdict [Drop] (the documented behaviour: doc/statements.txt:55, "reject and
@@ -21,9 +21,8 @@
     packet resolution, exactly as Reject's ICMP / Queue's hand-off are), and a
     non-SYN/non-ACK TCP packet falls through (NFT_CONTINUE).
 
-    These theorems witness that the model is no longer the verdict no-op the red
-    agent exploited, and that the compiled bytecode agrees (via
-    [compile_chain_correct]). *)
+    These theorems witness that the model is not a verdict no-op, and that the
+    compiled bytecode agrees (via [compile_chain_correct]). *)
 
 From Stdlib Require Import List String Bool.
 From Nft Require Import Bytes Verdict Packet Syntax Semantics Compile Correct.
@@ -76,7 +75,7 @@ Definition synproxy_rule : rule :=
 Definition synproxy_chain : chain :=
   {| c_policy := Accept; c_rules := [ synproxy_rule ] |}.
 
-(** *** The red agent's no-op is gone: a SYN packet STOPS at the synproxy. *)
+(** *** A SYN packet STOPS at the synproxy — the statement is verdict-bearing. *)
 Theorem syn_pkt_stopped : eval_chain synproxy_chain syn_pkt = Drop.
 Proof. reflexivity. Qed.
 
@@ -94,10 +93,9 @@ Proof. reflexivity. Qed.
 Theorem non_tcp_falls_through : eval_chain synproxy_chain non_tcp_pkt = Accept.
 Proof. reflexivity. Qed.
 
-(** The CENTRAL refutation of the red agent's incorrect property: the synproxy
-    rule is NOT a verdict no-op.  The analogue of [synproxy_is_verdict_noop]
-    ([forall p, eval_chain synproxy_chain p = <policy>]) is FALSE — the SYN packet
-    is a counterexample. *)
+(** The CENTRAL refutation: the synproxy rule is NOT a verdict no-op.  The
+    no-op property ([forall p, eval_chain synproxy_chain p = <policy>]) is
+    FALSE — the SYN packet is a counterexample. *)
 Theorem synproxy_is_NOT_verdict_noop :
   ~ (forall p, eval_chain synproxy_chain p = c_policy synproxy_chain).
 Proof.

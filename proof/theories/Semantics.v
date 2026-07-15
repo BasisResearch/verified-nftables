@@ -326,7 +326,21 @@ Definition set_untracked (p : packet) : packet :=
 (** Update the SHARED `numgen inc` counter [e_numgen] for instance [spec]: INCREMENT
     it by one, leaving every other instance's counter — and every other env
     component — unchanged.  Mirrors the kernel's atomic_cmpxchg advancing the
-    instance's [atomic_t *counter] by one per evaluation (nft_ng_inc_gen). *)
+    instance's [atomic_t *counter] by one per evaluation (nft_ng_inc_gen).
+
+    [e_numgen spec] (Packet.v) denotes the COUNT of evaluations the instance has
+    performed so far: the kernel stores the last returned [nval]; the model stores
+    the eval count [c], from which the kernel's stored value is recovered as
+    [c mod modulus].  Each `numgen inc` expression has its OWN counter, keyed by
+    [numgen_spec] (nft_ng_inc_init allocates one per expression).  A load reads
+    [(e_numgen spec mod ng_mod spec) + ng_offset spec] (big-endian, 4 bytes) and
+    this update then makes the NEXT evaluation — this packet's later firing or the
+    next packet's — read the successor: successive evals are round-robin
+    0,1,…,N-1,0,….  The increment is threaded across packets by
+    [run_rule_writes]/[body_writes] exactly like the dynset/ct/nat env writes.
+    ONLY the incremental generator (ng_random = false) uses [e_numgen]; the RANDOM
+    generator (nft_ng_random_gen: get_random_u32) is the genuine per-packet oracle
+    [pkt_numgen]. *)
 Definition env_numgen_upd (e : env) (spec : numgen_spec) : env :=
   with_e_numgen e
     (fun s => if numgen_eqb spec s then S (e_numgen e s) else e_numgen e s).
@@ -897,12 +911,12 @@ Proof.
 Qed.
 
 (** The *value* a value-source computes into register 1 — the operand of a
-    set/mangle/NAT statement.  This is the value-level meaning the verdict proof
-    previously delegated to the corpus; [run_vsrc_value] (in Correct) proves the
-    compiled operand leaves exactly this in reg 1, which is the foundation for
-    modelling mutation (Phase B): a `meta mark set vs` writes [eval_vsrc vs p].
+    set/mangle/NAT statement.  [run_vsrc_value] (in Correct) proves the compiled
+    operand leaves exactly this in reg 1; this is the foundation for modelling
+    mutation: a `meta mark set vs` writes [eval_vsrc vs p].
     (Defined to mirror the bytecode, incl. its simplifications — faithfulness of
-    e.g. jhash-over-concatenation to the kernel is a separate, Phase-D, matter.) *)
+    e.g. jhash-over-concatenation to the kernel is checked separately, by the
+    corpus/validate gates.) *)
 Definition eval_vsrc (vs : vsrc) (p : packet) : data :=
   match vs with
   | VImm v      => v
@@ -1408,8 +1422,8 @@ Definition env_nat_upd (e : env) (fl : data)
     [ct = nf_ct_get(skb, &ctinfo); if (ct == NULL || nf_ct_is_template(ct)) return;]
     — the SET is a NO-OP when the packet has no conntrack entry.  So we gate the
     write on [pkt_ct_present p]: an entryless packet's `ct mark/label set` leaves
-    [e_ct] (and the whole packet) unchanged, exactly mirroring the Round-1 [notrack]
-    fix that gated [set_untracked] on the dual guard.  This rules out the
+    [e_ct] (and the whole packet) unchanged, exactly mirroring how [set_untracked]
+    gates the [notrack] latch on the dual guard.  This rules out the
     cross-packet bug where a later same-flow entry-bearing packet would read back a
     mark the kernel never wrote. *)
 Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
@@ -2287,8 +2301,9 @@ Definition nat_port_bytes (pmin : nat) : data := N_to_data 2 (N.of_nat pmin).
     DESTINATION port ([set_dport]) — exactly the [NF_NAT_MANIP_{SRC,DST}] split of
     [tcp_manip_pkt] (nf_nat_proto.c).  Address-only NAT ([nat_port_num] = None) leaves
     the port byte-for-byte unchanged. *)
-(** REGISTER-FREE / bug-fixed: the port is the VALUE [lo] (a 2-byte port operand),
-    not [nat_port_bytes] of a register index (the old [nat_pmin] conflated the two).
+(** REGISTER-FREE: the port is the VALUE [lo] (a 2-byte port operand), never
+    [nat_port_bytes] of a register index — the two must not be conflated (a
+    register index is compile-time bookkeeping, [Compile.nat_pmin_reg]).
     A concat-map port ([NXmap_port]) is a runtime map value, not statically modelled. *)
 Definition apply_nat_port (is_src : bool) (ns : nat_spec) (p : packet) : packet :=
   match nat_extra ns with
@@ -2441,8 +2456,8 @@ Definition store_nat_mapping (p : packet) (m : option data * option data * optio
       ([apply_nat_tuple]) and does NOT re-read the operand — so two same-flow packets
       with different saddrs both get the translation chosen on packet 1.
 
-    This is the exact analogue of the Round-1 conntrack-mark fix, now for the NAT
-    tuple.  The verdict side is untouched (NAT is terminal-Accept), so
+    This is the exact analogue of the flow-keyed conntrack-mark state [e_ct], for
+    the NAT tuple.  The verdict side is untouched (NAT is terminal-Accept), so
     [compile_chain_correct] is unaffected. *)
 
 (** The ORIGINAL (pre-NAT) address of the slot a NAT of kind [ns] rewrites — read

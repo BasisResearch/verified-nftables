@@ -986,7 +986,7 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
                `byteorder reg = hton(reg,4,4)` before the `lookup` and stores the
                interval bounds network-order (golden any/ct.t.payload: an interval
                mark set forces the hton, an exact-element set does not).  We mirror
-               the Round-7 direct-range fix on the set path: emit [MSetT] with a
+               the direct-range lowering on the set path: emit [MSetT] with a
                [TByteorder true w w] transform on the loaded host-endian field and
                big-endian set bounds, so [set_mem] (big-endian lexicographic via
                [data_le]) tests numeric containment.  Without this the LE-stored

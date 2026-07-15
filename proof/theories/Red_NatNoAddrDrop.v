@@ -1,4 +1,4 @@
-(** * NAT-core NF_DROP when the interface has no usable address (Round-3 fix)
+(** * NAT-core NF_DROP when the interface has no usable address
 
     The kernel's NAT core DROPS a packet when the interface it must take an address
     FROM has no usable address:
@@ -13,17 +13,17 @@
       (net/netfilter/nf_nat_masquerade.c:54-58); the IPv6 path likewise drops on
       [nat_ipv6_dev_get_saddr] < 0.
 
-    Before this fix the Rocq trace had NO drop path: [apply_nat] unconditionally
-    spliced the (possibly EMPTY) interface address into the dest/source slot and the
-    rule's terminal verdict was returned verbatim — so `redirect; accept` /
-    `masquerade; accept` always yielded Accept even when the interface had no
-    address, AND wrote a corrupt zero-length address.
+    This theory pins that behaviour: at PREROUTING/POSTROUTING with an address-less
+    interface ([e_ifaddr _ = []]) the trace verdict is [Drop], and no corrupt
+    zero-length address is spliced (the packet is left unrewritten).  It also
+    confirms the kernel's NON-drop cases stay Accept: redirect at OUTPUT (loopback
+    target), and redirect/masquerade when the interface HAS an address.
 
-    This theory proves the FIXED behaviour: at PREROUTING/POSTROUTING with an
-    address-less interface ([e_ifaddr _ = []]) the trace verdict is now [Drop], and
-    no corrupt address is spliced (the packet is left unrewritten).  It also confirms
-    the kernel's NON-drop cases stay Accept: redirect at OUTPUT (loopback target), and
-    redirect/masquerade when the interface HAS an address. *)
+    Regression gate: [redirect_no_inbound_address_drops],
+    [masquerade_no_exit_address_drops], and [redirect_drop_leaves_packet_unrewritten]
+    lock in the NF_DROP path; a model where [apply_nat] unconditionally splices the
+    (possibly empty) address and returns the rule's terminal verdict verbatim makes
+    them unprovable. *)
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.
 Import ListNotations.
@@ -86,14 +86,14 @@ Definition mk_pkt (e : env) : packet :=
 Definition pkt_noaddr   : packet := mk_pkt env_noaddr.
 Definition pkt_withaddr : packet := mk_pkt env_withaddr.
 
-(** ** The FIX: address-less interface => the kernel's NF_DROP, modelled. *)
+(** ** Address-less interface => the kernel's NF_DROP, modelled. *)
 
-(* redirect at PREROUTING over an address-less interface now DROPS. *)
+(* redirect at PREROUTING over an address-less interface DROPS. *)
 Theorem redirect_no_inbound_address_drops :
   eval_chain_trace Hprerouting redir_chain pkt_noaddr = (Drop, pkt_noaddr).
 Proof. vm_compute. reflexivity. Qed.
 
-(* masquerade at POSTROUTING over an address-less interface now DROPS. *)
+(* masquerade at POSTROUTING over an address-less interface DROPS. *)
 Theorem masquerade_no_exit_address_drops :
   eval_chain_trace Hpostrouting masq_chain pkt_noaddr = (Drop, pkt_noaddr).
 Proof. vm_compute. reflexivity. Qed.
@@ -123,15 +123,15 @@ Proof. vm_compute. reflexivity. Qed.
 
 (* The control-plane (compiler / [eval_chain_mut]) verdict is UNAFFECTED: the NAT
    drop is a pure DATA-PLANE refinement living only in the trace, so the verified
-   mut verdict (what [compile_chain_correct] is about) still says Accept.  This is
-   exactly the gap the trace now closes. *)
+   mut verdict (what [compile_chain_correct] is about) still says Accept — the NAT
+   drop is visible only at the trace layer. *)
 Theorem mut_unaffected_still_accepts :
   eval_chain_mut redir_chain pkt_noaddr = Accept
   /\ eval_chain_mut masq_chain pkt_noaddr = Accept.
 Proof. split; vm_compute; reflexivity. Qed.
 
-(* And the trace/mut verdicts now genuinely DIFFER on this packet, tracked exactly
-   by [trace_nat_drops] (the conditional in the corrected [eval_chain_trace_verdict]). *)
+(* And the trace/mut verdicts genuinely DIFFER on this packet, tracked exactly
+   by [trace_nat_drops] (the conditional in [eval_chain_trace_verdict]). *)
 Theorem trace_diverges_from_mut_via_nat_drop :
   trace_nat_drops Hprerouting (c_rules redir_chain) pkt_noaddr = true
   /\ fst (eval_chain_trace Hprerouting redir_chain pkt_noaddr) <> eval_chain_mut redir_chain pkt_noaddr.

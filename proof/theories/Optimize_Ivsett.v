@@ -1,6 +1,7 @@
 (** * Optimize_Ivsett: host-order INTERVAL / range set consolidation (`ct mark`, …).
 
-    Gap G2.  `nft --optimize` folds a run of ADJACENT rules whose differing head is a
+    Battery shape "host-order interval set".  `nft --optimize` folds a run of
+    ADJACENT rules whose differing head is a
     RANGE over the SAME HOST-ENDIAN field (`ct mark`, `meta mark`, iif/oif index, fib
     type — all u32 host-order registers) into ONE interval-set lookup:
 
@@ -489,7 +490,7 @@ Proof.
   apply (optimize_rules_ivsett_keys_bound _ _ _ _ _ _ _ k E Hin).
 Qed.
 
-(** ** Non-vacuity witness (gap G2, `ct mark` interval set): two adjacent
+(** ** Non-vacuity witness (`ct mark` interval set): two adjacent
     `ct mark 10-20 / 21-30 accept` range rules fold to ONE
     `ct mark { 10-20, 21-30 } accept` set rule + a fresh 2-interval set.  The field is
     [FCtMark] with the host-order byteorder transform; bounds are the network-order

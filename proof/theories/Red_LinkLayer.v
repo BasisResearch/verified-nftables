@@ -1,5 +1,4 @@
-(** RED probe (now FIXED): link-layer (L2 / `ether`) payload load — the
-    mac-header-present guard.
+(** Link-layer (L2 / `ether`) payload load — the mac-header-present guard.
 
     ── Kernel truth ─────────────────────────────────────────────────────────────
     nft_payload_eval (net/netfilter/nft_payload.c), the LINK-LAYER base case:
@@ -26,7 +25,7 @@
     on a locally-generated packet (no MAC header) is ACCEPT (the `ether saddr` load
     BREAKs -> rule skipped -> policy accept).
 
-    ── Model (now faithful) ─────────────────────────────────────────────────────
+    ── Model ────────────────────────────────────────────────────────────────────
     The packet record carries [pkt_have_l2 : bool] (= skb_mac_header_was_set(skb)
     && skb_mac_header_len(skb) != 0), and [read_payload_ok] gates the PLink base on
     it, mirroring the existing L4 guard ([pkt_have_l4]/[pkt_fragoff]) on
@@ -37,10 +36,13 @@
 
     So a locally-generated packet ([pkt_have_l2 := false]) BREAKs every `ether`
     load, the rule is skipped, and the chain ACCEPTS — matching the kernel.  An
-    L2-bearing packet ([pkt_have_l2 := true]) reads the link header as before.
+    L2-bearing packet ([pkt_have_l2 := true]) reads the link header.
 
-    The old provable-but-kernel-false [model_drops_what_kernel_accepts] is now
-    UNPROVABLE; the theorems below are the kernel-correct replacements. *)
+    Regression gate: [ether_load_breaks_without_mac_header],
+    [model_accepts_like_kernel]/[_mut], and [model_drops_with_mac_header] lock in
+    the guard; a model regression to an unguarded L2 read (an `ether saddr` rule
+    dropping a locally-generated packet the kernel accepts) makes them
+    unprovable. *)
 
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.
@@ -106,7 +108,7 @@ Lemma ether_load_breaks_without_mac_header :
 Proof. vm_compute. reflexivity. Qed.
 
 (* Consequently the rule is SKIPPED and the chain falls through to its accept
-   policy — exactly the kernel verdict (was: a kernel-false Drop). *)
+   policy — exactly the kernel verdict; an unguarded L2 read would Drop here. *)
 Theorem model_accepts_like_kernel :
   eval_chain output_chain locally_generated = Accept.
 Proof. vm_compute. reflexivity. Qed.

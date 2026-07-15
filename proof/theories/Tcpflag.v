@@ -20,7 +20,7 @@
      explicit `tcp flags == X` -> flags == X         MEq
      explicit `tcp flags != X` -> flags != X         MNeq               (cmp neq)
 
-   The parser now lowers a single positive `tcp flags X` to
+   The parser lowers a single positive `tcp flags X` to
      MMasked FTcpFlags (neg:=true) [X] [0] [0]
    which Semantics.v evaluates as
      eval_cmp CNe (data_bitops flags [X] [0]) [0] = (flags & X) != 0,
@@ -28,7 +28,7 @@
 
    Consequence proven below: a SYN|ACK packet (flags = 0x12 = syn|ack) is
    ACCEPTED by the bitmask form for `tcp flags syn` (real nft: 0x12 & 0x02 = 2
-   != 0) but was REJECTED by the old exact-equality (MEq) encoding
+   != 0) but REJECTED by the refuted exact-equality (MEq) encoding
    (0x12 <> 0x02). *)
 
 From Stdlib Require Import List Bool.
@@ -56,9 +56,9 @@ Definition pkt_tcpflags (fl : nat) : packet :=
 
 (* fin=0x01 syn=0x02 rst=0x04 psh=0x08 ack=0x10 urg=0x20 ecn=0x40 cwr=0x80 *)
 
-(* The matchcond the parser now emits for a single positive `tcp flags syn`. *)
+(* The matchcond the parser emits for a single positive `tcp flags syn`. *)
 Definition m_syn : matchcond := MMasked FTcpFlags true [2] [0] [0].
-(* The old (only buildable / wrong) exact-equality encoding, for contrast. *)
+(* The refuted exact-equality encoding, for contrast. *)
 Definition m_syn_old : matchcond := MEq FTcpFlags [2].
 (* `tcp flags ! syn` (BANG): (flags & syn) == 0. *)
 Definition m_not_syn : matchcond := MMasked FTcpFlags false [2] [0] [0].
@@ -84,14 +84,14 @@ Theorem syn_misses_ack_only :
   eval_matchcond m_syn (pkt_tcpflags 16) = false.
 Proof. vm_compute. reflexivity. Qed.
 
-(* The old MEq encoding WRONGLY rejected the SYN|ACK packet: a strict
+(* The exact-equality (MEq) alternative WRONGLY rejects the SYN|ACK packet: a strict
    under-approximation that rejects every multi-flag packet. *)
 Theorem old_meq_wrongly_rejects_synack :
   eval_matchcond m_syn_old (pkt_tcpflags 18) = false.
 Proof. vm_compute. reflexivity. Qed.
 
-(* So the new and old lowerings genuinely DIFFER on the SYN|ACK packet — the
-   fix changes observable behaviour exactly where the bug was. *)
+(* The two lowerings genuinely DIFFER on the SYN|ACK packet — the bitmask form
+   is observably load-bearing exactly there. *)
 Theorem fix_changes_behaviour :
   eval_matchcond m_syn     (pkt_tcpflags 18)
     <> eval_matchcond m_syn_old (pkt_tcpflags 18).

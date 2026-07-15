@@ -283,54 +283,20 @@ Proof.
 Qed.
 
 (* ================================================================== *)
-(** ** D1 — the head-guard is a SOUNDNESS NECESSITY of THIS model, NOT an
-    `nft -o` fidelity claim: a machine-checked account of the [mapN] divergence.
+(** ** D1 — why the merged rule carries a head-SET guard.
 
-    Ground truth (differentially confirmed against `nft` v1.1.6 AND the live
-    kernel in an unprivileged netns; regression gate: [e2e.sh] §B6):
-
-      - `nft --optimize` does NOT merge `meta mark set` rules AT ALL.  It emits a
-        value map only for the NAT verdict-statements `dnat`/`snat`, and those it
-        emits BARE — which we ALREADY match byte-for-byte via [Optimize_Dnat] /
-        [Optimize_Snat] (their bare maps use the NFT_BREAK-on-miss NAT terminal,
-        [terminal_loadable]'s [map_has_key], [Semantics.v:783]).  So [mapN] is a
-        SOUND SUPERSET with NO `nft -o` counterpart: there is no bare form of ITS
-        output to be byte-faithful to.  `nft -o` is merely conservative here — this
-        is NOT an nft bug (the two originals and either merged form filter/rewrite
-        every packet identically).
-
-      - The KERNEL executes a bare statement value-map with NFT_BREAK-on-miss: a
-        packet whose key is ABSENT from the map leaves the mark UNTOUCHED.  Netns
-        witness (hook output, key = `ip daddr`): pre-set a sentinel mark 0xdead,
-        then a bare `meta mark set ip daddr map { 10.9.9.1 : 0x111 }`; an OFF-key
-        packet (10.9.9.2) keeps 0xdead (the map lookup BREAKs, no write), an ON-key
-        packet (10.9.9.1) gets 0x111.  So a BARE merged rule is KERNEL-equivalent to
-        the two originals.
-
-      - OUR model's statement value-map ([body_writes] on [SMetaSet _ (VMap …)],
-        [Semantics.v:1992]) loads [map_lookup_data]'s default ([], [Bytes.v:39]) on
-        a miss rather than breaking (a modelling gap [Bytes.v:43] already flags).
-        Under THAT model a BARE merged rule would CLOBBER the mark to [] off-key,
-        diverging from the originals.  The head-SET guard (= the map's key domain)
-        fires the merged rule ONLY on-key, so the lookup always HITS and the model's
-        default-on-miss is never reached — recovering exact equivalence
-        ([eval_rules_mut_map_merge]).
-
-    Consequence for the pipeline's fidelity contract: [mapN] is a labelled sound
-    superset OUTSIDE the `nft -o` byte-fidelity claim (which is carried by the
-    dnat/snat/set/concat/interval passes).  Making [mapN] BARE would need
-    NFT_BREAK-on-miss for the statement value-map in [body_writes] AND in the
-    compiler (route [SMetaSet]+[VMap] through [ILookupValBr]) — but that breaks the
-    "value sources are verdict-neutral / reach the tail" invariant
-    ([Correct.run_vsrc_exists]) that [compile_chain_correct] is built on, cascading
-    across every [SMangle]/[SMetaSet]/[SCtSet] arm — a change to a HEADLINE theorem
-    that buys NO `nft -o` fidelity (nft never merges `meta mark`).  We therefore
-    keep the sound guarded form and PIN the divergence precisely below.
-
-    The two facts, axiom-free: off-key, the guard-less ("bare") rule writes the map
-    DEFAULT [[]] while the two originals are a NO-OP.  So the guard is required
-    PURELY for the STATE model — the verdict is preserved either way
-    ([eval_rules_map_merge], env-independent). *)
+    [mapN] is a labelled SOUND SUPERSET of `nft -o`: `nft --optimize` does not
+    merge `meta mark set` rules at all (differentially confirmed against `nft`
+    v1.1.6 and a live-kernel netns; regression gate: [e2e.sh] §B6), so there is
+    no bare `nft` output for [mapN] to be byte-faithful to.  The guard (= the
+    map's key domain) is a soundness necessity of THIS model: the statement
+    value-map ([body_writes] on [SMetaSet _ (VMap …)]) loads [map_lookup_data]'s
+    default [] on a miss (gap flagged at [Bytes.v]'s [map_lookup_data]), whereas
+    the kernel NFT_BREAKs and leaves the mark untouched — so a guard-less merged
+    rule would clobber the mark to [] off-key.  On-key the lookup always hits, so
+    the guarded merge is exactly equivalent ([eval_rules_mut_map_merge]); the
+    verdict is preserved even without the guard ([eval_rules_map_merge]).  The
+    lemmas below pin the off-key divergence of the bare form, axiom-free. *)
 
 (** The guard-less ("bare") merged rule — what `nft` WOULD emit if it merged
     `meta mark set`, and what the kernel runs with NFT_BREAK-on-miss. *)

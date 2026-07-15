@@ -306,7 +306,8 @@ Record env : Type := {
                                nf_nat_manip_pkt).  [e_nat flow = None] means no mapping
                                is established for the flow yet (the first packet
                                computes + stores one); [Some (orig_addr_opt, new_addr_opt,
-                               port_opt)] is the established translation — the ORIGINAL
+                               new_port_opt, orig_port_opt)] is the established
+                               translation — the ORIGINAL
                                (pre-NAT) L3 address of the manip slot (needed to apply the
                                INVERSE manip on reply-direction packets, mirroring the
                                kernel storing both tuples of the conntrack entry), the new
@@ -326,39 +327,17 @@ Record env : Type := {
                                OPPOSITE slot for a reply ([pkt_ctdir_orig = false]) —
                                nf_nat_packet's direction inversion. *)
   e_numgen : numgen_spec -> nat;
-                            (* the SHARED, persistent `numgen inc` counter, keyed by the
-                               numgen instance ([numgen_spec]) — each `numgen inc`
-                               expression has its OWN atomic counter in the kernel
-                               (nft_ng_inc: `atomic_t *counter`, allocated per expression
-                               in nft_ng_inc_init).  This is the COUNT of evaluations the
-                               instance has performed so far (the kernel stores the last
-                               returned [nval]; we store the eval count [c], from which the
-                               kernel's stored value is recovered as [c mod modulus]).  The
-                               value handed to the next evaluation is
-                               [(e_numgen spec mod ng_mod spec) + ng_offset spec] (rendered
-                               big-endian, 4 bytes), and the counter is then INCREMENTED so
-                               the NEXT evaluation (this packet's later firing, or the next
-                               packet's firing) gets the successor — i.e. successive evals
-                               are round-robin 0,1,...,N-1,0,...  This is the cross-packet
-                               state the per-packet [pkt_numgen] oracle could not express
-                               (it let two distinct packets both read 0); the increment is
-                               threaded across packets by [run_rule_writes]/[body_writes]
-                               exactly like the dynset/ct/nat env writes.  ONLY the
-                               incremental generator (ng_random = false) uses this; the
-                               RANDOM generator (ng_random = true,
-                               nft_ng_random_gen: get_random_u32) stays a genuine per-packet
-                               oracle [pkt_numgen]. *)
+                            (* the SHARED, persistent `numgen inc` eval count, keyed by
+                               the numgen instance.  Full read/increment semantics:
+                               [env_numgen_upd]/[set_numgen] in Semantics.v. *)
 }.
 
-(** The DERIVED single primary source address an IPv4 `masquerade` rewrites to:
-    [inet_select_addr] applied to the egress interface's full address list at
-    RT_SCOPE_UNIVERSE — i.e. the first non-secondary, in-scope (global) primary.
-    This is a genuine SELECTION from the multi-address state [e_ifaddrs], not a
-    one-address oracle; the masquerade core then turns a [] result into NF_DROP
-    (nf_nat_masquerade.c).  Keeping the applied shape [e_ifaddr e n : data]
-    identical to the old projection means every downstream definition/theorem that
-    read "the interface's source address" continues to typecheck and now denotes
-    the kernel's selection. *)
+(** [e_ifaddr e n] = the primary global-scope IPv4 address [inet_select_addr]
+    picks from the interface's full address list [e_ifaddrs e n] at
+    RT_SCOPE_UNIVERSE — the first non-secondary, in-scope primary (kernel:
+    inet_select_addr, net/ipv4/devinet.c).  This is the address an IPv4
+    `masquerade` rewrites to; the masquerade core turns a [] result into NF_DROP
+    (nf_nat_masquerade.c). *)
 Definition e_ifaddr (e : env) (n : data) : data :=
   inet_select_addr (e_ifaddrs e n) scope_universe.
 
@@ -367,12 +346,10 @@ Definition e_ifaddr (e : env) (n : data) : data :=
 Definition e_ifaddr6 (e : env) (n : data) : data :=
   inet_select_addr (e_ifaddrs6 e n) scope_universe.
 
-(** [ifaddrs_of v]: the compatibility constructor used by the single-address test
-    environments — an interface whose ONLY address is the global primary [v], or
-    NO address when [v = []].  [e_ifaddr] of such a list is exactly [v], so every
-    literal environment that used to write [e_ifaddr := fun n => f n] is faithfully
-    migrated to [e_ifaddrs := fun n => ifaddrs_of (f n)] with the SAME observable
-    [e_ifaddr] (see [e_ifaddr_ifaddrs_of]). *)
+(** [ifaddrs_of v] = the one-primary-address list: an interface whose ONLY
+    address is the global primary [v], or NO address when [v = []].  It is the
+    canonical way for a single-address test environment to populate [e_ifaddrs];
+    [e_ifaddr] of such a list is exactly [v] ([inet_select_ifaddrs_of]). *)
 Definition ifaddrs_of (v : data) : list ifaddr :=
   if data_eqb v [] then [] else [ mk_primary v ].
 
@@ -520,9 +497,9 @@ Record packet : Type := {
     set_nh_field / set_th_field / set_untracked / set_env / ...) is then a thin
     composition over these, instead of re-listing all 25 packet (resp. 13 env)
     fields.  Records are non-primitive, so [pkt_X (with_pkt_Y p v)] reduces by
-    [cbn]/[simpl]/[vm_compute] to exactly the same normal form as the old inline
-    literal (a projection of a constructor) — the refactor is definitionally
-    transparent and every proof is preserved verbatim.  Adding a field to
+    [cbn]/[simpl]/[vm_compute] to a projection of a constructor — the same normal
+    form as a hand-inlined record literal, so the setters are definitionally
+    transparent to every proof.  Adding a field to
     [packet]/[env] now forces editing ONE literal per record (the wither group
     below) rather than ~14 setters. *)
 

@@ -1,4 +1,5 @@
-(** Round-3 fix (notrack -> ct state untracked), refined by the notrack-no-op round.
+(** Cross-rule statement threading: `notrack` (rule 1) is visible to a LATER
+    rule's `ct state untracked` match, and is a no-op on entry-present packets.
 
     ── Kernel truth ─────────────────────────────────────────────────────────────
     nft_notrack_eval (net/netfilter/nft_ct.c:860-874):
@@ -18,7 +19,7 @@
        packet that ALREADY has an entry the `notrack` is a NO-OP and the later
        `ct state` read returns the entry's REAL state.
 
-    ── Model (fixed) ─────────────────────────────────────────────────────────────
+    ── Model ─────────────────────────────────────────────────────────────────────
     [SNotrack]/[INotrack] apply [set_untracked] in [body_writes]/[run_rule_writes].
     [set_untracked] mirrors the kernel guard: it is a NO-OP when [pkt_ct_present = true]
     and otherwise sets the per-packet-traversal flag [pkt_untracked := true].  The
@@ -28,9 +29,14 @@
     The DSL and the VM apply the SAME [set_untracked], so [compile_chain_correct] stays
     axiom-free.
 
-    Below: on a NO-ENTRY packet `notrack; ct state untracked accept` ACCEPTS (provable,
-    and disprovable before the rule-walk fix); on an ENTRY-present packet `notrack` is a
-    no-op and the chain DROPS (the notrack-no-op refinement). *)
+    Below: on a NO-ENTRY packet `notrack; ct state untracked accept` ACCEPTS; on an
+    ENTRY-present packet `notrack` is a no-op and the chain DROPS.
+
+    Regression gate: [model_accepts_like_kernel], [notrack_forces_untracked_accept],
+    and [model_drops_entry_present_like_kernel] lock in the cross-rule threading +
+    guard; a model that drops statement writes between rules (a later `ct state
+    untracked` reading a stale oracle instead of the latch) makes them
+    unprovable. *)
 
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.
@@ -92,9 +98,8 @@ Lemma untracked_match_succeeds :
   eval_matchcond m_untracked (dsl_writes notrack_only pkt_noentry) = true.
 Proof. vm_compute. reflexivity. Qed.
 
-(* The threading evaluator ACCEPTS the no-entry packet — matching the kernel.  (The
-   old rule-walk model DROPPED it: notrack was skipped and `ct state untracked` read
-   the stale oracle.) *)
+(* The threading evaluator ACCEPTS the no-entry packet — matching the kernel; a
+   model that skipped `notrack` would read a stale oracle here and DROP. *)
 Theorem model_accepts_like_kernel :
   eval_chain_mut notrack_chain pkt_noentry = Accept.
 Proof. vm_compute. reflexivity. Qed.

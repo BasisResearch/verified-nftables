@@ -1,20 +1,21 @@
-(** RED probe (now BLUE-fixed): exthdr / TCP-option / IPv6-extension-header VALUE
-    load HAS a not-present guard.  The kernel BREAKs the rule (it does not match)
-    when the requested option / extension header is ABSENT, but ONLY for a VALUE
-    load; an existence check (NFT_EXTHDR_F_PRESENT) stores 0 and never breaks
+(** An exthdr / TCP-option / IPv6-extension-header VALUE load HAS a not-present
+    guard.  The kernel BREAKs the rule (it does not match) when the requested
+    option / extension header is ABSENT, but ONLY for a VALUE load; an existence
+    check (NFT_EXTHDR_F_PRESENT) stores 0 and never breaks
     (linux net/netfilter/nft_exthdr.c nft_exthdr_{tcp,ipv6,ipv4}_eval err path).
 
-    Before the fix the model treated the exthdr value as a pure oracle that ALWAYS
-    succeeds, so `tcp option maxseg size 1460 drop` on a packet WITHOUT a maxseg
-    option matched-and-DROPPED, where the kernel NFT_BREAKs -> rule skipped ->
-    chain ACCEPTS via its policy (provable-incorrect property, now unprovable).
-
-    The fix: [load_ok (LExthdr ep h _ _ pr)] is [true] for an existence load
+    In the model, [load_ok (LExthdr ep h _ _ pr)] is [true] for an existence load
     (pr=true) and [exthdr_present p ep h] for a VALUE load (pr=false), where
     [exthdr_present] is derived from the SAME existence oracle the F_PRESENT load
-    reports on — so the impossible kernel state "option absent yet value=v" can no
-    longer fire a match.  Both DSL and VM route exthdr loads through this shared
-    predicate (compile_chain_correct stays axiom-free). *)
+    reports on — so the impossible kernel state "option absent yet value=v" cannot
+    fire a match.  Both DSL and VM route exthdr loads through this shared
+    predicate (compile_chain_correct stays axiom-free).
+
+    Regression gate: [exthdr_value_not_loadable_when_absent],
+    [model_accepts_like_kernel]/[_mut], and [exthdr_existence_always_loadable]
+    lock in the guard; a model regression to an always-succeeding exthdr value
+    oracle (`tcp option maxseg size 1460 drop` matching a packet WITHOUT a maxseg
+    option) makes them unprovable. *)
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.
 Import ListNotations.
@@ -44,8 +45,9 @@ Definition env0 : env :=
    reports ABSENT ([0]).  In the kernel nft_exthdr_tcp_eval would `goto err`
    (NFT_BREAK) on the VALUE load, so the rule is SKIPPED and the chain ACCEPTS
    via its policy.  We deliberately make the value oracle return the matching
-   bytes too (the old impossible-in-kernel state) — the model must STILL accept,
-   because the not-present guard refuses to load the value at all. *)
+   bytes too (the impossible-in-kernel state "absent yet value matches") — the
+   model must STILL accept, because the not-present guard refuses to load the
+   value at all. *)
 Definition pkt_no_maxseg : packet :=
   {| pkt_env := env0; pkt_meta := fun _ => [];
      pkt_ct := fun _ => []; pkt_sock := fun _ => [];

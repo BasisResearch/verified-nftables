@@ -1,4 +1,5 @@
-(** RED probe (now BLUE-corrected): single-rule `ct notrack ct state untracked accept`.
+(** Intra-rule statement threading: single-rule `ct notrack ct state untracked
+    accept` — a statement's write is visible to the SAME rule's later matches.
 
     Kernel: a rule's expressions run LEFT TO RIGHT against the running packet
     (nf_tables_core.c nft_rule_dp_for_each_expr).  `ct notrack` (nft_notrack_eval,
@@ -12,15 +13,18 @@
     and SUCCEEDS, so the kernel ACCEPTS.  On a packet that ALREADY has an entry the
     `notrack` is a no-op and `ct state untracked` reads the entry's real state.
 
-    BEFORE the rule-walk fix the model SKIPPED the `notrack` statement when walking a
-    rule's matches ([rule_applies_walk]), so even on a no-entry packet `ct state
-    untracked` did not see the latch and the match FAILED — a provable kernel-false
-    DROP.  The fix threads [set_untracked] into a rule's OWN later matches/terminal
-    ([rule_applies_walk]/[outcome]/[run_rule] all thread it past [SNotrack]/[INotrack]).
-    [set_untracked] now mirrors the kernel guard exactly (it is a NO-OP when
-    [pkt_ct_present = true]), so the model ACCEPTS a NO-ENTRY packet and leaves an
-    entry-present packet's state untouched — matching the kernel.  All theorems below
-    are proved axiom-free by [vm_compute]. *)
+    In the model, [rule_applies_walk]/[outcome]/[run_rule] all thread
+    [set_untracked] past [SNotrack]/[INotrack] into the rule's OWN later
+    matches/terminal, and [set_untracked] mirrors the kernel guard exactly (it is
+    a NO-OP when [pkt_ct_present = true]) — so the model ACCEPTS a NO-ENTRY packet
+    and leaves an entry-present packet's state untouched.  All theorems below are
+    proved axiom-free by [vm_compute].
+
+    Regression gate: [model_accepts_like_kernel_eval_chain]/[_mut] and
+    [model_drops_entry_present_packet] lock in the intra-rule threading + guard;
+    a model that skips statements when walking a rule's matches (the `ct state
+    untracked` match never seeing the same rule's `notrack` latch) makes them
+    unprovable. *)
 
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.
@@ -67,7 +71,7 @@ Lemma intra_match_succeeds_after_notrack :
   rule_applies intra_rule pkt_noentry = true.
 Proof. vm_compute. reflexivity. Qed.
 
-(* KERNEL-FAITHFUL: the model now ACCEPTS the no-entry packet the kernel ACCEPTS. *)
+(* KERNEL-FAITHFUL: the model ACCEPTS the no-entry packet the kernel ACCEPTS. *)
 Theorem model_accepts_like_kernel_eval_chain :
   eval_chain intra_chain pkt_noentry = Accept.
 Proof. vm_compute. reflexivity. Qed.
@@ -77,7 +81,7 @@ Theorem model_accepts_like_kernel_eval_chain_mut :
   eval_chain_mut intra_chain pkt_noentry = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
-(* KERNEL GUARD (the round's fix): on a packet that ALREADY has a conntrack ENTRY
+(* KERNEL GUARD: on a packet that ALREADY has a conntrack ENTRY
    ([pkt_ct_present := true], here ESTABLISHED=2), `notrack` is a NO-OP — the
    `ct state untracked` match reads the entry's REAL state (not the UNTRACKED bit),
    the match FAILS, and the chain falls through to its Drop policy.  This is exactly

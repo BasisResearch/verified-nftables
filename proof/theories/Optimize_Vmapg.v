@@ -58,7 +58,8 @@ Local Open Scope nat_scope.
     demands of a transport port, so the merge is sound.  Distinct address literals are
     disjoint exact points => a VALID single-field vmap (no overlapping-interval defect).
 
-    The SAME guard-agnostic pass also folds the L2 arm (gap G3): a run of
+    The SAME guard-agnostic pass also folds the L2 arm (battery shape
+    "ether-vmap"): a run of
     differing-verdict `ether saddr <MAC> <w>` rules — lowered by the frontend with the
     implicit `meta iiftype == ARPHRD_ETHER (1)` dependency ([Optimize_Setg.guard_okl2],
     [nft_lower.ml]'s [DIiftype]) — folds into ONE `ether saddr vmap { MAC : w, .. }`

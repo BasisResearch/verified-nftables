@@ -1,7 +1,8 @@
 (* ============================================================================
    router.nft — HOOK-LEVEL reachability (the chain<->hook registration is proven).
 
-   Rounds 1-5 characterised each base chain IN ISOLATION via
+   The per-chain files (Router_Input / Router_Forward / Router_Private /
+   Router_Reach) characterise each base chain IN ISOLATION via
        eval_table fuel global_chains global_<chain> p = V,
    with the *prover* hand-selecting which chain corresponds to which hook.  But
    netfilter's actual data-plane decision for a packet is
@@ -13,22 +14,21 @@
    binding "chain C is registered at hook H with priority P" is exactly the
    `type filter hook input priority 0;` line in router.nft.
 
-   THE GAP it closed: the lowering used to DISCARD that declaration
-   (`ITypeHook _ -> ()`), so Router_Gen.v emitted ZERO hook metadata and no
-   theorem ever mentioned a hook.  A planted bug that registers the locked-down
-   `inbound` chain at FORWARD and the permissive `forward` chain at INPUT yields
-   a wide-open router yet satisfies every per-chain property verbatim.
+   Per-chain properties alone cannot see the registration: a planted bug that
+   registers the locked-down `inbound` chain at FORWARD and the permissive
+   `forward` chain at INPUT yields a wide-open router yet satisfies every
+   per-chain property verbatim.
 
-   THE FIX (this round): the generator now emits, from the parser's ITypeHook
-   records, a `global_hooks : list hooked_chain` (Router_Gen.v) — inbound@Hinput
-   prio 0, forward@Hforward prio 0, postrouting@Hpostrouting prio 100.  Here we
-   RE-STATE the security crux at the HOOK level over that parser-emitted
-   registration, prove the iff bridge that transfers the Round 2/3 per-chain
-   results to the hook the packet actually hits, and KILL the swap mutation:
-   `global_hooks_bug` (inbound<->forward swapped onto each other's hooks) FAILS
-   the hook-level theorems while satisfying every per-chain one, witnessed by a
-   real LAN packet (tcp/25) that the bugged input hook ACCEPTs but the correct
-   input hook DROPs.
+   THIS FILE: the generator emits, from the parser's ITypeHook records, a
+   `global_hooks : list hooked_chain` (Router_Gen.v) — inbound@Hinput prio 0,
+   forward@Hforward prio 0, postrouting@Hpostrouting prio 100.  Here we RE-STATE
+   the security crux at the HOOK level over that parser-emitted registration,
+   prove the iff bridge that transfers the per-chain results
+   ([forward_unsolicited_dropped], [world_ingress_locked_down]) to the hook the
+   packet actually hits, and KILL the swap mutation: `global_hooks_bug`
+   (inbound<->forward swapped onto each other's hooks) FAILS the hook-level
+   theorems while satisfying every per-chain one, witnessed by a real LAN packet
+   (tcp/25) that the bugged input hook ACCEPTs but the correct input hook DROPs.
    ========================================================================== *)
 
 From Stdlib Require Import List String ZArith.
@@ -41,8 +41,9 @@ Definition hk_fuel : nat := 8.
 
 (* ------------------------------------------------------------------ *)
 (** ** The registration the PARSER emitted reduces to exactly the chain the
-    Round 2/3 theorems characterise — established by computing select_hook on
-    the parser's global_hooks (NOT a hand-written registration). *)
+    per-chain theorems (Router_Input / Router_Forward) characterise — established
+    by computing select_hook on the parser's global_hooks (NOT a hand-written
+    registration). *)
 
 Lemma select_input :
   select_hook global_hooks Hinput = [(global_chains, global_inbound)].
@@ -97,7 +98,7 @@ Qed.
 (* ------------------------------------------------------------------ *)
 (** ** The hook-level iff bridges: the parser's input/forward hook verdict
     equals the per-chain verdict the existing theorems characterise.  These let
-    every Round 2/3 result transfer to the hook the packet actually hits. *)
+    every per-chain result transfer to the hook the packet actually hits. *)
 
 Theorem input_hook_drop_iff_inbound_drop : forall p,
   eval_hook hk_fuel global_hooks Hinput p = Drop
@@ -117,13 +118,13 @@ Qed.
 
 (* ------------------------------------------------------------------ *)
 (** ** The security crux, RE-STATED at the hook level over the parser-emitted
-    registration.  These are the Round 3 / Round 2 invariants — but now about
-    "what netfilter dispatches at the input/forward hook", not a chain the
-    prover named. *)
+    registration.  These are [world_ingress_locked_down] and
+    [forward_unsolicited_dropped] — but about "what netfilter dispatches at the
+    input/forward hook", not a chain the prover named. *)
 
 (* INPUT hook: a new-state packet arriving on the world interface (ppp0) that is
    not ssh from 81.209.165.42 is DROPPED by whatever chain is registered at the
-   input hook.  (Round 3 world_ingress_locked_down, lifted.) *)
+   input hook.  ([Router_Input.world_ingress_locked_down], lifted.) *)
 Theorem input_hook_world_locked : forall p,
   pkt_env p = gen_env ->
   field_loadable FCtState p = true ->
@@ -141,7 +142,7 @@ Qed.
 
 (* FORWARD hook: unsolicited world->private traffic (new ct-state, not arriving
    on the LAN interface eth1) is NOT forwarded — the NAT-router crux, now at the
-   hook netfilter dispatches.  (Round 2 forward_unsolicited_dropped, lifted.) *)
+   hook netfilter dispatches.  ([Router_Forward.forward_unsolicited_dropped], lifted.) *)
 Theorem forward_hook_unsolicited_dropped : forall p,
   pkt_env p = gen_env ->
   field_value FCtState p = Router_Forward.cts_new ->
@@ -155,7 +156,7 @@ Qed.
 
 (* ------------------------------------------------------------------ *)
 (** ** MUTATION KILL: a registration that swaps inbound<->forward onto each
-    other's hooks.  Every per-chain (Round 1-5) theorem holds verbatim for it
+    other's hooks.  Every per-chain theorem holds verbatim for it
     (none mention global_hooks), but the hook-level theorems FAIL — witnessed by
     a real LAN packet. *)
 

@@ -1,43 +1,18 @@
-(** * Nftval: a typed, high-level VIEW of the low-level register-byte domain.
+(** * Nftval: a typed, verified VIEW of the register-byte domain [data].
 
-    The source semantics ([theories/Bytes.v]) models EVERY nft value as a flat
-    [data = list byte]: an IPv4 address, an L4 port, an interface name, a
-    conntrack-state bitmask, a fib route-type and a plain integer-of-width are
-    all just byte strings, with no high-level type structure.  That is faithful
-    to the kernel register file (registers really are bytes) but discards the
-    distinct nft datatypes that nft's own datatype table (src/datatype.c)
-    distinguishes.
+    [nftval] (tagged by [nfttype]) mirrors nft's datatype table (src/datatype.c);
+    [encode]/[decode] translate to/from the byte representation, with round-trip
+    proofs ([decode_encode]/[encode_decode]).
 
-    This file adds a HIGH-LEVEL typed disjoint union [nftval] (tagged by
-    [nfttype]) and a verified TRANSLATION to/from the byte representation:
-
-      - [encode : nftval -> data]            — the typed value's register bytes;
-      - [decode : nfttype -> data -> option nftval] — read a typed value back.
-
-    CRUCIAL: [encode] is NOT a new invented encoding.  It is a typed VIEW of the
-    SAME bytes the existing compiler/codec already emit ([extracted/nft_lower.ml]
-    [enc_atom]/[bytes_of_int]/[width_of_kind]), byteorder included:
-
-      - integer-of-width / inet_service(port) / ethertype / ct_state are
-        BIG-ENDIAN, encoded with [Bytes.N_to_data] exactly as [bytes_of_int];
-      - ipv4_addr / ipv6_addr / ether_addr / ifname are VERBATIM register bytes
-        (ifname is the 16-byte NUL-padded buffer [ifname_bytes] builds);
-      - fib route-type is HOST-ENDIAN (little-endian on the x86/ARM64-LE host the
-        validate gate runs on), exactly [bytes_of_int_le 4] = [rev] of the 4-byte
-        big-endian encoding.
-
-    The byte-faithfulness witnesses below ([encode_VPort_80] etc.) are checked by
-    [vm_compute] against the concrete corpus/codec bytes (port 80 -> [0;80],
-    nfproto ipv4 -> [2], ethertype ip -> [8;0], ct-state established -> [0;0;0;2],
-    fib type local -> [2;0;0;0]).
-
-    Finally [meq_encode_agrees] RELATES the typed view back to the byte-level
-    [eval_matchcond_body]: a typed equality match (the [MEq] of [encode v]) is
-    exactly the existing byte-level [data_eqb] test on [field_value], so the
-    typed layer is a faithful, USED view — not a cosmetic unused inductive.
-
-    This file is purely ADDITIVE: it edits no existing definition and proves no
-    existing theorem differently. *)
+    [encode] is a typed view of the SAME bytes the compiler/codec emit
+    ([extracted/nft_lower.ml]: [enc_atom]/[bytes_of_int]/[width_of_kind]),
+    byteorder included: integers/ports/ethertype/ct_state are big-endian
+    ([Bytes.N_to_data], as [bytes_of_int]); addresses/ifname are verbatim register
+    bytes ([ifname_bytes]'s 16-byte NUL-padded buffer); fib route-type is
+    host-endian ([bytes_of_int_le 4]).  Agreement evidence: the [vm_compute]
+    witnesses [encode_VPort_80]/[encode_ctstate_established]/etc. below, and
+    [meq_encode_agrees] ties a typed [MEq (encode v)] to the byte-level
+    [data_eqb] test on [field_value]. *)
 
 From Stdlib Require Import List PeanoNat Bool NArith Lia String Ascii.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.

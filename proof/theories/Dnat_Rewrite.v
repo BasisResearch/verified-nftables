@@ -4,11 +4,11 @@
     rewrite the packet's IPv4 DESTINATION address (network-header bytes 16..19,
     where [FIp4Daddr] reads) to the target operand — the kernel's
     [NF_NAT_MANIP_DST] from [NFTNL_EXPR_NAT_REG_ADDR_MIN]
-    (nf_tables.h NFT_NAT_DNAT; netlink_linearize.c:1304).  Before the fix the
-    whole-chain trace ([eval_chain_trace] / [apply_nat]) left a dnat packet
-    UNCHANGED — `chain_out dnat_chain p = p` was provable.  These theorems prove
-    the opposite: the trace now performs the destination rewrite, and the formerly
-    "total no-op" property is refuted on a concrete packet. *)
+    (nf_tables.h NFT_NAT_DNAT; netlink_linearize.c:1304).  These theorems pin
+    that data-plane effect: the whole-chain trace ([eval_chain_trace] /
+    [apply_nat]) performs the destination rewrite, and the naive "NAT modelled as
+    plain accept" alternative — under which `chain_out dnat_chain p = p` would be
+    provable — is refuted on a concrete packet ([dnat_is_not_noop]). *)
 From Stdlib Require Import List String NArith Lia.
 Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.
@@ -34,9 +34,9 @@ Proof. reflexivity. Qed.
 Lemma dnat_addr_target : forall p, nat_addr dnat_spec p = [10;0;0;1].
 Proof. reflexivity. Qed.
 
-(* The dnat NAT effect destination-rewrites to the target operand.  NAT is now
-   FLOW-STATEFUL (Round-2): on the first packet of a flow ([e_nat .. = None]) the
-   destination is rewritten exactly as before AND the mapping is stored; the
+(* The dnat NAT effect destination-rewrites to the target operand.  NAT is
+   FLOW-STATEFUL ([e_nat], Packet.v): on the first packet of a flow
+   ([e_nat .. = None]) the destination is rewritten AND the mapping is stored; the
    observable network header is unchanged by the [store_nat_mapping] env write. *)
 Lemma dnat_apply : forall h p,
   pkt_ctdir_orig p = true ->
@@ -120,10 +120,10 @@ Proof.
   apply daddr_after_set; [assumption | reflexivity].
 Qed.
 
-(* The infidelity is REFUTED: any packet whose current destination differs from
-   the dnat target (and whose IPv4 header is well-formed) is NOT returned verbatim
-   by the dnat chain — the destination IS rewritten.  This is the analogue of the
-   formerly-provable (and false) `chain_out dnat_chain p = p`. *)
+(* Any packet whose current destination differs from the dnat target (and whose
+   IPv4 header is well-formed) is NOT returned verbatim by the dnat chain — the
+   destination IS rewritten.  This refutes the kernel-false no-op
+   `chain_out dnat_chain p = p` for such packets. *)
 Theorem dnat_is_not_noop : forall p,
   pkt_ctdir_orig p = true ->
   e_nat (pkt_env p) (pkt_flow p) = None ->
@@ -140,9 +140,9 @@ Qed.
     A `redirect` is a destination-NAT whose target the kernel core picks by the
     hook: at the OUTPUT hook (NF_INET_LOCAL_OUT) "local packets go to loopback"
     (IPv4 127.0.0.1 / IPv6 ::1), while at PRE_ROUTING it uses the inbound
-    interface's primary address.  The model's [apply_nat] now threads the hook and
-    mirrors this exactly; the old behaviour (always the iif address) was
-    kernel-incorrect for the output hook. *)
+    interface's primary address.  The model's [apply_nat] threads the hook and
+    mirrors this exactly (always using the iif address would be kernel-incorrect
+    for the output hook). *)
 Definition redir_spec (fam : string) : nat_spec :=
   {| nat_addr_imm := None; nat_field := None; nat_map := None; nat_src := None;
      nat_kind := "redir"; nat_family := fam;
@@ -205,11 +205,11 @@ Proof.
   reflexivity.
 Qed.
 
-(* The fix is observable on a well-formed IPv4 packet: when the inbound-interface
-   address is NOT the loopback (the usual case) and the address slot is 4 bytes,
-   reading `ip daddr` back after an OUTPUT-hook redirect yields 127.0.0.1, whereas
-   after a PRE_ROUTING redirect it yields the iif address — so the two hooks
-   diverge.  Before the fix [apply_nat] was hook-blind and these coincided. *)
+(* The hook dependence is observable on a well-formed IPv4 packet: when the
+   inbound-interface address is NOT the loopback (the usual case) and the address
+   slot is 4 bytes, reading `ip daddr` back after an OUTPUT-hook redirect yields
+   127.0.0.1, whereas after a PRE_ROUTING redirect it yields the iif address — so
+   the two hooks diverge (a hook-blind [apply_nat] would make them coincide). *)
 Theorem redir_output_differs_from_prerouting : forall p,
   pkt_ctdir_orig p = true ->
   e_nat (pkt_env p) (pkt_flow p) = None ->
@@ -237,11 +237,10 @@ Qed.
     A `dnat to A.B.C.D:PORT` rewrites BOTH the L3 destination address AND the L4
     DESTINATION port (TCP/UDP header bytes 2..3).  The kernel loads [PORT] into the
     proto-min register and [nf_nat_proto.c]/[tcp_manip_pkt] writes it into the
-    header (`*portptr = newport`, nf_nat_proto.c:163-172).  Before the fix the model
-    ignored [nat_port_num]/[nat_extra] entirely, so the transport header (and hence the
-    port) was provably left byte-for-byte unchanged — `pkt_th (chain_out …) = pkt_th p`.
-    These theorems prove the opposite: the port IS now rewritten, and the
-    formerly-provable no-op is refuted. *)
+    header (`*portptr = newport`, nf_nat_proto.c:163-172).  These theorems pin
+    the port write: the port IS rewritten, refuting the address-only alternative
+    (a model ignoring [nat_port_num]/[nat_extra]) under which
+    `pkt_th (chain_out …) = pkt_th p` would be provable. *)
 
 (* `dnat to 10.0.0.1:8080`: same address operand, plus port 8080 in nat_port_num. *)
 Definition dnat_port_spec : nat_spec :=
@@ -258,7 +257,7 @@ Lemma dnat_port_bytes_8080 : nat_port_bytes 8080 = [31; 144].
 Proof. reflexivity. Qed.
 
 (* The dnat-with-port effect: address rewrite followed by the L4 dest-port write,
-   plus the stored flow mapping (Round-2).  The stored tuple records both the
+   plus the stored flow mapping ([e_nat]).  The stored tuple records both the
    address and the port operand. *)
 Lemma dnat_port_apply : forall h p,
   pkt_ctdir_orig p = true ->
@@ -333,9 +332,10 @@ Proof.
   apply dport_after_set; [rewrite set_daddr_th_len; exact Hth | reflexivity].
 Qed.
 
-(* The infidelity is REFUTED: the dnat-with-port chain does NOT leave the transport
-   header unchanged (the red agent's [dnat_port_NOT_rewritten] is now false) — the
-   L4 destination port IS rewritten whenever the current dport differs from 8080. *)
+(* The dnat-with-port chain does NOT leave the transport header unchanged — the
+   L4 destination port IS rewritten whenever the current dport differs from 8080
+   (refuting the port-ignoring alternative, under which
+   [pkt_th (chain_out …) = pkt_th p] would hold). *)
 Theorem dnat_port_rewrites_th : forall p,
   pkt_ctdir_orig p = true ->
   e_nat (pkt_env p) (pkt_flow p) = None ->
@@ -483,10 +483,10 @@ Qed.
     The kernel's [nf_nat_ipv4_manip_pkt] (nf_nat_proto.c:329-333) runs
     [csum_replace4(&iph->check, old_addr, new_addr)] in the SAME step as writing
     the new address, so the IPv4 header checksum (network bytes 10..11) is updated
-    incrementally (RFC 1624).  The model now mirrors this in [set_daddr]/[set_saddr]
-    (via [set_nh_addr_ip4] -> [csum_update_field]).  A red probe of the form
+    incrementally (RFC 1624).  The model mirrors this in [set_daddr]/[set_saddr]
+    (via [set_nh_addr_ip4] -> [csum_update_field]).  The stale-checksum property
     `ip_csum (chain_out dnat_chain p) = ip_csum p` — asserting the checksum is
-    UNCHANGED after a rewrite — is therefore now provably FALSE on a packet whose
+    UNCHANGED after a rewrite — is therefore provably FALSE on a packet whose
     destination actually changes.
 
     [ip_csum] names the IPv4 header checksum slot (bytes 10..11). *)
@@ -517,7 +517,7 @@ Definition pkt4 : packet :=
      pkt_inner := fun _ _ _ _ => []; pkt_have_l2 := true; pkt_have_l4 := true; pkt_fragoff := 0; pkt_flow := []; pkt_untracked := false; pkt_ctdir_orig := true; pkt_ct_present := true |}.
 
 (* The dnat rewrites the destination 1.2.3.4 -> 10.0.0.1, so the IPv4 header
-   checksum slot MUST change.  The red property [ip_csum out = ip_csum p] is FALSE. *)
+   checksum slot MUST change: the stale-checksum property [ip_csum out = ip_csum p] is FALSE. *)
 Theorem dnat_updates_ip_checksum :
   ip_csum (chain_out dnat_chain pkt4) <> ip_csum pkt4.
 Proof. vm_compute. discriminate. Qed.
@@ -537,11 +537,12 @@ Proof. vm_compute. reflexivity. Qed.
     (nf_nat_proto.c:324) ALWAYS runs [l4proto_manip_pkt] BEFORE the address splice;
     for TCP, [tcp_manip_pkt] (nf_nat_proto.c:177) calls [nf_csum_update] ->
     [inet_proto_csum_replace4(&hdr->check, ..., oldip, newip, true)]
-    (nf_nat_proto.c:417), INDEPENDENT of any port change.  The model now mirrors
+    (nf_nat_proto.c:417), INDEPENDENT of any port change.  The model mirrors
     this: [set_daddr]/[set_saddr] thread [set_l4_csum_addr], which updates the L4
-    checksum slot (TCP @ transport 16..17, UDP @ 6..7) for the address delta.  A
-    red probe `tcp_csum (chain_out dnat_chain p) = tcp_csum p` — asserting the TCP
-    checksum is UNCHANGED after an address-only dnat — is now provably FALSE.
+    checksum slot (TCP @ transport 16..17, UDP @ 6..7) for the address delta.  The
+    stale-checksum property `tcp_csum (chain_out dnat_chain p) = tcp_csum p` —
+    asserting the TCP checksum is UNCHANGED after an address-only dnat — is
+    provably FALSE.
 
     [tcp_csum] names the TCP checksum slot (transport bytes 16..17). *)
 Definition tcp_csum (p : packet) : data := slice (pkt_th p) 16 2.
@@ -562,8 +563,8 @@ Definition pkt4tcp : packet :=
      pkt_inner := fun _ _ _ _ => []; pkt_have_l2 := true; pkt_have_l4 := true; pkt_fragoff := 0; pkt_flow := []; pkt_untracked := false; pkt_ctdir_orig := true; pkt_ct_present := true |}.
 
 (* The dnat changes the destination 1.2.3.4 -> 10.0.0.1, so the TCP checksum slot
-   MUST change (the pseudo-header covers the address).  The red property
-   [tcp_csum out = tcp_csum p] — the certified falsehood — is now FALSE. *)
+   MUST change (the pseudo-header covers the address): the stale-checksum property
+   [tcp_csum out = tcp_csum p] is FALSE. *)
 Theorem dnat_updates_tcp_checksum :
   tcp_csum (chain_out dnat_chain pkt4tcp) <> tcp_csum pkt4tcp.
 Proof. vm_compute. discriminate. Qed.
@@ -590,7 +591,7 @@ Proof. vm_compute. reflexivity. Qed.
     and [__udp_manip_pkt] (nf_nat_proto.c:55) guards the ENTIRE checksum update
     (`nf_csum_update` + `inet_proto_csum_replace2` + the CSUM_MANGLED_0 fixup) under
     `if (do_csum)`.  So a dnat/snat changing the L3 address on a UDP packet whose
-    checksum is 0 leaves that field byte-for-byte 0.  The model now mirrors this:
+    checksum is 0 leaves that field byte-for-byte 0.  The model mirrors this:
     [set_l4_csum_addr] gates the UDP (mandatory=false) update on a non-zero existing
     checksum, so a zero stays zero.
 
@@ -611,9 +612,9 @@ Definition pkt4udp0 : packet :=
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
      pkt_inner := fun _ _ _ _ => []; pkt_have_l2 := true; pkt_have_l4 := true; pkt_fragoff := 0; pkt_flow := []; pkt_untracked := false; pkt_ctdir_orig := true; pkt_ct_present := true |}.
 
-(* CORRECTED behavior: the zero UDP checksum is LEFT ZERO after an address dnat
-   (the kernel's do_csum=false path).  This is the property the old red probe
-   showed UNPROVABLE before the fix; it now holds by reflexivity. *)
+(* The zero UDP checksum is LEFT ZERO after an address dnat
+   (the kernel's do_csum=false path, udp_manip_pkt: a zero UDP checksum on IPv4
+   means "no checksum" and must stay zero).  Holds by reflexivity. *)
 Theorem dnat_leaves_zero_udp_checksum_zero :
   udp_csum (chain_out dnat_chain pkt4udp0) = udp_csum pkt4udp0.
 Proof. vm_compute. reflexivity. Qed.

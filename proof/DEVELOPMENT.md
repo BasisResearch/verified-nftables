@@ -570,6 +570,26 @@ threading a fresh-name counter and a `set_decls` accumulator:
 17. `optimize_chain_dscpv` — dscp verdict map
 18. `optimize_chain_vmapN` — N-way value+verdict → verdict map
 
+**`nft -o` fold-shape ledger.** Each consolidation stage targets a concrete
+`nft --optimize` fold shape (differentially confirmed against host `nft`; the
+battery cases live under `battery_cases/`). Shapes are referred to by name —
+historical branch-local "gap G*n*" numbers were retired because two audit
+branches assigned the same numbers to different shapes:
+
+| shape | example fold | pass module | fidelity |
+|---|---|---|---|
+| snat bare-map | `ip saddr A snat to T` runs → `snat to ip saddr map { A : T, .. }` | `Optimize_Snat` | matches `nft -o` (bare map) |
+| dnat bare-map | `ip daddr A dnat to T` runs → `dnat to ip daddr map { .. }` | `Optimize_Dnat` | matches `nft -o` (bare map) |
+| value set | `tcp dport P accept` runs → `tcp dport { P1, P2 } accept` | `Optimize_Merge` (setsN) / `Optimize_Setg` | matches `nft -o` |
+| interval set | `ip saddr lo-hi accept` runs → `ip saddr { lo1-hi1, .. }` | `Optimize_Ivset`/`_Ivsetg` | matches `nft -o` |
+| host-order interval set | `ct mark 10-20 accept` runs → `ct mark { 10-20, .. }` (hton transform) | `Optimize_Ivsett` | matches `nft -o` |
+| mixed value/interval | guarded mixed runs → one set | `Optimize_Ivmixg` | matches `nft -o` |
+| concat set | `ip saddr A tcp dport P` runs → `ip saddr . tcp dport { A . P, .. }` | `Optimize_Concat*` | matches `nft -o` |
+| verdict map | `tcp dport P <verdict>` runs, differing verdicts → `vmap { P : v, .. }` | `Optimize_Vmap`/`_Vmapg` | matches `nft -o` |
+| ether-vmap | `ether saddr MAC <verdict>` runs → `ether saddr vmap { .. }` | `Optimize_Vmapg` | matches `nft -o` |
+| dscp-masked-vmap | `ip dscp N <verdict>` runs → `ip dscp vmap { .. }` (masked key) | `Optimize_Dscpv` (+ `Optimize_Dscp` for same-verdict) | matches `nft -o` |
+| mark-map merge | `ip daddr A meta mark set M` runs → guarded `meta mark set ip daddr map { .. }` | `Optimize_Mapn` | sound superset — `nft -o` does not fold `meta mark set` (see `Optimize_Mapn.v` §D1) |
+
 The seam theorem `optimize_chain_clean` (`Optimize_Table.v`) feeds the base
 pass's output into the stage proofs. Whole-pipeline correctness — with **no**
 precondition on the input chain — is `optimize_table_uncond_correct`, and its

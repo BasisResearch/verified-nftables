@@ -10,17 +10,17 @@
       meta iifname "dummy*"  =>  cmp eq reg1 0x64756d6d 0x79
                                  (golden any/meta.t.payload:224-225; just the "dummy" prefix)
 
-    The parser previously lowered EVERY non-wildcard name to its bare ASCII bytes
-    (no zero pad).  The model evaluates MEq as a prefix compare
-    [data_eqb (firstn (length v) field) v], so an unpadded literal collapsed both
-    kernel encodings into ONE prefix match: `iifname "dummy0"` would then match an
-    interface named "dummy0extra", which the kernel's full 16-byte compare rejects.
-    This is the UNSOUND over-approximation fixed in nft_lower.ml (ifname_bytes now
-    zero-pads a non-wildcard name to 16 bytes; a trailing unescaped '*' still emits
-    the short prefix; an escaped trailing '\*' is a literal '*' and is padded).
+    The model evaluates MEq as a prefix compare
+    [data_eqb (firstn (length v) field) v], so the zero pad is load-bearing:
+    lowering a non-wildcard name to its bare ASCII bytes (no pad) would collapse
+    both kernel encodings into ONE prefix match — `iifname "dummy0"` matching an
+    interface named "dummy0extra", which the kernel's full 16-byte compare rejects
+    (an unsound over-approximation).  nft_lower.ml's [ifname_bytes] therefore
+    zero-pads a non-wildcard name to 16 bytes; a trailing unescaped '*' emits the
+    short prefix; an escaped trailing '\*' is a literal '*' and is padded.
 
-    Here we pin the now-correct behaviour: the exact 16-byte register value is the
-    only one that matches, and a same-prefix interface is rejected. *)
+    Here we pin that behaviour: the exact 16-byte register value is the only one
+    that matches, and a same-prefix interface is rejected. *)
 
 From Stdlib Require Import List Bool.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.
@@ -42,7 +42,7 @@ Definition pkt_ifn (nm : data) : packet :=
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
      pkt_inner := fun _ _ _ _ => []; pkt_have_l2 := true; pkt_have_l4 := false; pkt_fragoff := 0; pkt_flow := []; pkt_untracked := false; pkt_ctdir_orig := true; pkt_ct_present := true |}.
 
-(* "dummy0" as the FIXED fix now emits it: 16-byte zero-padded (IFNAMSIZ). *)
+(* "dummy0" as [ifname_bytes] emits it: 16-byte zero-padded (IFNAMSIZ). *)
 Definition iif_dummy0_16 : data :=
   [100;117;109;109;121;48; 0;0;0;0; 0;0;0;0; 0;0].
 Definition m_exact := MEq FMetaIifname iif_dummy0_16.
@@ -62,22 +62,22 @@ Theorem exact_matches_dummy0 :
   eval_matchcond m_exact (pkt_ifn reg_dummy0) = true.
 Proof. vm_compute. reflexivity. Qed.
 
-(** The exact 16-byte match REJECTS a same-prefix but distinct interface — this
-    is the soundness the fix restores (the old unpadded literal accepted it). *)
+(** The exact 16-byte match REJECTS a same-prefix but distinct interface — the
+    soundness the zero pad provides (an unpadded literal accepts it). *)
 Theorem exact_rejects_prefix_iface :
   eval_matchcond m_exact (pkt_ifn reg_dummy0e) = false.
 Proof. vm_compute. reflexivity. Qed.
 
-(** The OLD (buggy) unpadded encoding would have wrongly accepted the distinct
-    interface: a 6-byte prefix value matches both registers.  We exhibit this to
-    document the bug class the fix closes. *)
+(** The refuted UNPADDED encoding wrongly accepts the distinct interface: a
+    6-byte prefix value matches both registers.  Exhibited concretely to
+    document the unsound bug class the pad rules out. *)
 Definition m_buggy := MEq FMetaIifname [100;117;109;109;121;48].
 Theorem old_unpadded_wrongly_accepts_prefix :
   eval_matchcond m_buggy (pkt_ifn reg_dummy0e) = true.
 Proof. vm_compute. reflexivity. Qed.
 
-(** The fix genuinely changes behaviour: on the distinct interface, the padded
-    exact match and the old unpadded match disagree. *)
+(** The two encodings observably differ: on the distinct interface, the padded
+    exact match and the unpadded match disagree. *)
 Theorem fix_changes_behaviour :
   eval_matchcond m_exact (pkt_ifn reg_dummy0e)
     <> eval_matchcond m_buggy (pkt_ifn reg_dummy0e).

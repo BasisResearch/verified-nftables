@@ -1,15 +1,14 @@
 (** * Family-aware NAT address rewrite (IPv6 snat/dnat)
 
     [apply_nat] dispatches the address geometry on [nat_family]: "ip" rewrites the
-    32-bit IPv4 slot, "ip6" the 128-bit IPv6 slot — the kernel chooses 32 vs 128
-    bits by family ([nat_addrlen], netlink_linearize.c:1237).  Before the fix
-    [set_saddr]/[set_daddr] hardcoded the IPv4 slots (src @12 len 4, dst @16 len
-    4), so an ip6 NAT spliced a 16-byte literal into a 4-byte IPv4 slot: the IPv6
-    address (at network offsets 8..23 / 24..39, where [FIp6Saddr]/[FIp6Daddr]
-    read) was NEVER set, and the header was shifted/corrupted by 12 bytes.  These
-    theorems prove the fixed behaviour: an ip6 dnat sets the 16-byte IPv6
-    destination to the target (and an ip6 snat sets the IPv6 source), with the
-    network-header length preserved. *)
+    32-bit IPv4 slot (src @12 len 4, dst @16 len 4), "ip6" the 128-bit IPv6 slot
+    (network offsets 8..23 / 24..39, where [FIp6Saddr]/[FIp6Daddr] read) — the
+    kernel chooses 32 vs 128 bits by family ([nat_addrlen],
+    netlink_linearize.c:1237).  A family-blind splice of a 16-byte literal into
+    the 4-byte IPv4 slot would leave the IPv6 address unset and shift/corrupt the
+    header by 12 bytes.  These theorems pin the family dispatch: an ip6 dnat sets
+    the 16-byte IPv6 destination to the target (and an ip6 snat the IPv6 source),
+    with the network-header length preserved. *)
 From Stdlib Require Import List String NArith Lia.
 Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.
@@ -39,7 +38,7 @@ Definition ip6_snat_rule : rule :=
      r_queue := None; r_after := [] |}.
 
 (* The IPv6 dnat NAT effect destination-rewrites the IPv6 dest slot (off 24,
-   len 16) to the target operand.  NAT is now FLOW-STATEFUL (Round-2): on the first
+   len 16) to the target operand.  NAT is FLOW-STATEFUL ([e_nat], Packet.v): on the first
    packet of a flow ([e_nat .. = None]) the address rewrite is exactly as before AND
    the mapping is stored; the network header is unchanged by that env write. *)
 Lemma ip6_dnat_apply : forall h p,
@@ -113,7 +112,7 @@ Proof.
 Qed.
 
 (* The header length is preserved (no shift/corruption): the network header is
-   the same length after the ip6 NAT.  Before the fix it grew by 12 bytes. *)
+   the same length after the ip6 NAT (an IPv4-slot splice would grow it by 12). *)
 Lemma ip6_dnat_nh_len_preserved : forall p,
   40 <= List.length (pkt_nh p) ->
   List.length (pkt_nh (set_daddr "ip6" p tgt6)) = List.length (pkt_nh p).
@@ -126,8 +125,8 @@ Proof.
   rewrite length_skipn. unfold tgt6. rewrite repeat_length. lia.
 Qed.
 
-(* THE FIX, on a concrete 40-byte IPv6 packet: the IPv6 destination IS now set
-   to the target (the property the red agent proved FALSE before the fix). *)
+(* On a concrete 40-byte IPv6 packet: the IPv6 destination IS set to the
+   target (an ip4-only splice would leave it untouched). *)
 Definition e0 : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
      e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
@@ -155,12 +154,12 @@ Proof. vm_compute. reflexivity. Qed.
     The kernel dispatches masquerade BY FAMILY (nft_masq.c:113-121:
     NFPROTO_IPV6 -> nf_nat_masquerade_ipv6, nf_nat_masquerade.c:241-262), computing
     a 128-bit IPv6 source via ipv6_dev_get_saddr and rewriting the whole 16-byte
-    source — a DIFFERENT value from the IPv4 interface address.  Before the fix the
-    model's masquerade was family-blind: [nat_family = ""] -> "ip", so it spliced
-    the 4-byte IPv4 [e_ifaddr] into bytes 12..15 (the middle of the IPv6 source),
-    leaving the IPv6 source slot (bytes 8..23) NOT rewritten.  The fix gives
-    masquerade a real [nat_family] (the parser threads the ip6 table family) and a
-    family-indexed source ([masq_saddr] picks the 16-byte [e_ifaddr6] for ip6).
+    source — a DIFFERENT value from the IPv4 interface address.  The model's
+    masquerade carries a real [nat_family] (the parser threads the ip6 table
+    family) and a family-indexed source ([masq_saddr] picks the 16-byte
+    [e_ifaddr6] for ip6).  A family-blind masquerade ([nat_family = ""] -> "ip")
+    would splice the 4-byte IPv4 [e_ifaddr] into bytes 12..15 (the middle of the
+    IPv6 source) and leave the IPv6 source slot (bytes 8..23) unrewritten.
     `ip6 masquerade` is valid and in the corpus (tests/py/ip6/masquerade.t). *)
 
 (* The exit interface's IPv6 source (a 16-byte in6_addr), all 0xBB. *)
@@ -187,7 +186,7 @@ Definition e6 : env :=
      e_ct := fun _ _ => []; e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
 
 (* A 40-byte IPv6 packet whose source slot (bytes 8..23) holds distinguishable
-   markers 108..123 (as in the red probe). *)
+   markers 108..123, so an untouched source is detectable byte-for-byte. *)
 Definition pkt6m : packet :=
   {| pkt_env := e6; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
@@ -197,17 +196,16 @@ Definition pkt6m : packet :=
      pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
      pkt_inner := fun _ _ _ _ => []; pkt_have_l2 := true; pkt_have_l4 := false; pkt_fragoff := 0; pkt_flow := []; pkt_untracked := false; pkt_ctdir_orig := true; pkt_ct_present := true |}.
 
-(* THE FIX: an ip6 masquerade rewrites the whole 16-byte IPv6 source to the exit
+(* An ip6 masquerade rewrites the whole 16-byte IPv6 source to the exit
    interface's IPv6 address [if6] (= ipv6_dev_get_saddr), reading back via
    FIp6Saddr (network bytes 8..23). *)
 Theorem masq6_src_is_ipv6_ifaddr :
   field_value FIp6Saddr (apply_nat Hpostrouting masq6_rule pkt6m) = if6.
 Proof. vm_compute. reflexivity. Qed.
 
-(* And the red agent's soundness bug is now FALSE: bytes 8..11 of the IPv6 source
-   are NO LONGER the original markers [108;109;110;111] — they are the new IPv6
-   ifaddr's first 4 bytes.  (Before the fix this equality held, proving the source
-   was untouched.) *)
+(* Dually: bytes 8..11 of the IPv6 source are NOT the original markers
+   [108;109;110;111] — they are the new IPv6 ifaddr's first 4 bytes.  (Under an
+   ip4-width splice the markers would survive, proving the source untouched.) *)
 Theorem masq6_does_rewrite_ipv6_source_prefix :
   firstn 4 (skipn 8 (pkt_nh (apply_nat Hpostrouting masq6_rule pkt6m)))
     <> [108;109;110;111].

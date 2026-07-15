@@ -220,7 +220,8 @@ Lemma data_byteorder_ipv6_per_element :
     = [7;6;5;4;3;2;1;0; 15;14;13;12;11;10;9;8].
 Proof. reflexivity. Qed.
 
-(** And it is NOT the full reversal the old [len]-chunking produced. *)
+(** And the per-element swap is NOT a full 16-byte reversal (nft_byteorder.c
+    swaps size-wide elements, never the whole [len]-wide value). *)
 Lemma data_byteorder_ipv6_not_full_reverse :
   data_byteorder true 8 16 [0;1;2;3;4;5;6;7;8;9;10;11;12;13;14;15]
     <> rev [0;1;2;3;4;5;6;7;8;9;10;11;12;13;14;15].
@@ -281,12 +282,11 @@ Definition set_mem (x : data) (s : list (data * data)) : bool :=
 
 (** Canonical point-interval fact: membership of [x] in the degenerate range
     [(v, v)] IS byte equality (the two [<=] collapse by [data_le_antisym]).  This
-    is the single home for the identity that both the worked-ruleset engine
-    ([Eval_Fw]) and the optimizer ([Optimize_Merge]) previously reproved under a
-    colliding name; downstream files import it from here.  The orientation is the
-    one [data_le_antisym] yields directly ([data_eqb v x], element-first); the
-    optimizer's MCmp goals want the swapped orientation and adapt with one
-    [data_eqb_sym] (see [Optimize_Merge.data_in_iv_point_eqb]). *)
+    is the single home for the identity; both the worked-ruleset engine
+    ([Eval_Fw]) and the optimizer ([Optimize_Merge]) import it from here.  The
+    orientation is the one [data_le_antisym] yields directly ([data_eqb v x],
+    element-first); the optimizer's MCmp goals want the swapped orientation and
+    adapt with one [data_eqb_sym] (see [Optimize_Merge.data_in_iv_point_eqb]). *)
 Lemma data_in_iv_point : forall x v, data_in_iv x (v, v) = data_eqb v x.
 Proof.
   intros x v. unfold data_in_iv; cbn [fst snd].

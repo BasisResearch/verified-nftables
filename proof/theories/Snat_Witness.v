@@ -1,4 +1,4 @@
-(** Fires-witness for the G1 snat bare-map merge: two adjacent
+(** Fires-witness for the snat bare-map merge (Optimize_Snat): two adjacent
     `ip saddr <A>  snat to <T>` rules collapse into ONE bare
     `snat to ip saddr map { A:T1, B:T2 }` rule, synthesising a fresh data MAP. *)
 From Stdlib Require Import List String.

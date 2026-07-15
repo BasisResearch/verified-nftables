@@ -2771,7 +2771,7 @@ Proof.
                      | apply (IH n d (r2 :: rest) m'' dd'' rr'' (eq_sym Erec) Hrf_tail)].
 Qed.
 
-(** *** dscpv.  The masked-payload value+VERDICT->vmap merge (Optimize_Dscpv, gap G4),
+(** *** dscpv.  The masked-payload value+VERDICT->vmap merge (Optimize_Dscpv),
     a verbatim mirror of the vmapNg proof above EXCEPT the recogniser is [head_dscp]
     (the masked [MMasked f false mask xor v] head), the run collapse is
     [eval_rules_dscpv_mergeN] (the transform-keyed vmap), and the merged rule is
@@ -5221,7 +5221,7 @@ Proof.
      threads vmapname-decl-freshness and rule_vmap_fresh into the final vmapN stage. *)
   pose proof (optimize_chain_vmapNg_fresh_vmapname nMx dMx cMx nVg dVg cVg EVg HfvMx) as HfvVg.
   pose proof (optimize_chain_vmapNg_output_vmap_fresh nMx dMx cMx nVg dVg cVg EVg HrvMx) as HrvVg.
-  (* dscpv stage (masked value+verdict->vmap, gap G4): mints [vmapname]s onto sd_vmaps,
+  (* dscpv stage (masked value+verdict->vmap, Optimize_Dscpv): mints [vmapname]s onto sd_vmaps,
      threads vmapname-decl-freshness and rule_vmap_fresh into the final vmapN stage. *)
   pose proof (optimize_chain_dscpv_fresh_vmapname nVg dVg cVg nDv dDv cDv EDv HfvVg) as HfvDv.
   pose proof (optimize_chain_dscpv_output_vmap_fresh nVg dVg cVg nDv dDv cDv EDv HrvVg) as HrvDv.

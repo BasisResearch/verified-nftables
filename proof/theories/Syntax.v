@@ -1,11 +1,17 @@
-(** * Syntax: the declarative nftables DSL.
+(** * Syntax: a lowered, byte-level rule IR (the verified pipeline's source).
 
-    This is the high-level, human-facing surface that [nft] accepts:
-    a ruleset is a list of tables, a table a list of named chains, a chain a
+    A ruleset is a list of tables, a table a list of named chains, a chain a
     policy plus an ordered list of rules, and a rule a conjunction of match
-    conditions terminated by a verdict.
+    conditions terminated by a verdict — but the leaves are LOWERED: match
+    values are pre-encoded register bytes (e.g. [MEq FIp4Saddr [81;209;165;42]],
+    not a typed address literal), and [transform] records the mask/shift/
+    byteorder/jhash operations the lowering inserts in front of a compare.
+    The typed surface syntax -> IR elaboration (datatype `kind` selection and
+    atom encoding) is UNVERIFIED OCaml: [extracted/nft_lower.ml] ([kind],
+    [enc_atom]).  [Nftval.v] provides the verified typed view of the byte
+    domain and proves it agrees with that encoding.
 
-    Each high-level [field] (e.g. "tcp dport") *denotes* a concrete way to read
+    Each [field] (e.g. "tcp dport") *denotes* a concrete way to read
     the packet, given by [field_load].  This denotation is the single source of
     truth shared by the semantics (which reads the field from the packet) and
     the compiler (which emits a load instruction for it).  The offsets here are
@@ -508,8 +514,9 @@ Record vmap_spec : Type := {
     the [INat] that references those registers.  NAT is terminal (it accepts with
     a translation); the packet rewrite itself is a side effect outside the
     single-packet verdict model. *)
-(** The SECONDARY NAT operand — a range-end address or a port range — REGISTER-FREE
-    (was the netlink registers [nat_amax]/[nat_pmin]/[nat_pmax]).  The compiler
+(** The SECONDARY NAT operand — a range-end address or a port range — REGISTER-FREE:
+    it carries operand VALUES, not the netlink register indices
+    (NFTNL_EXPR_NAT_REG_ADDR_MAX / _REG_PROTO_MIN / _REG_PROTO_MAX).  The compiler
     ([compile_terminal]) derives the actual registers: a separate immediate lands in
     the next sequential register (reg 2/3), while a value taken from the PRIMARY
     operand's concat-MAP lands in the next slot register (reg 9 = slot 1). *)

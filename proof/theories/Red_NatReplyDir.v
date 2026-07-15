@@ -1,5 +1,6 @@
-(** RED audit probe (Round 5), NOW the BLUE kernel-correct gate: NAT reply-direction
-    is modelled FAITHFULLY (direction-aware un-NAT).
+(** NAT reply-direction: a stored NAT tuple is applied FORWARD on
+    original-direction packets and INVERTED on reply-direction packets
+    (direction-aware un-NAT).
 
     ── Kernel truth ─────────────────────────────────────────────────────────────
     A NAT translation is DIRECTION-DEPENDENT.  nf_nat_packet (net/netfilter/
@@ -18,15 +19,19 @@
     router address the client originally addressed (9.9.9.9).  The reply's
     DESTINATION (the client 1.1.1.1) is left untouched by a dnat.
 
-    ── Model (AFTER the Round-5 fix) ────────────────────────────────────────────
-    [e_nat] now stores the tuple [(orig_addr, new_addr, new_port, orig_port)] and the packet
-    carries a direction bit [pkt_ctdir_orig] (the kernel's CTINFO2DIR(ctinfo)).
-    [apply_nat]/[apply_nat_tuple] apply the stored tuple FORWARD on an
-    original-direction packet and the INVERSE on a reply: a dnat restores the
-    reply's SOURCE to [orig_addr] and leaves its DESTINATION untouched.  The
-    formerly-provable backwards behaviour (re-applying the forward dnat on the
-    reply destination, leaving the reply source stale) is now UNPROVABLE; the
-    kernel-correct behaviour is proved below, axiom-free, by [vm_compute]. *)
+    ── Model ────────────────────────────────────────────────────────────────────
+    [e_nat] stores the tuple [(orig_addr, new_addr, new_port, orig_port)] and the
+    packet carries a direction bit [pkt_ctdir_orig] (the kernel's
+    CTINFO2DIR(ctinfo)).  [apply_nat]/[apply_nat_tuple] apply the stored tuple
+    FORWARD on an original-direction packet and the INVERSE on a reply: a dnat
+    restores the reply's SOURCE to [orig_addr] and leaves its DESTINATION
+    untouched.
+
+    Regression gate: [reply_nat_is_correct], [reply_nat_not_backwards], and
+    [reply_sport_undone] lock in the direction-aware inverse; a model regression
+    to direction-blind NAT (re-applying the forward dnat on the reply destination
+    and leaving the reply source/port stale at the NAT target) makes them
+    unprovable. *)
 
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.
@@ -100,7 +105,7 @@ Definition reply : packet := mkpkt env_after_fwd [8;8;8;8] [1;1;1;1] false.
 Lemma reply_same_flow : pkt_flow reply = pkt_flow fwd.
 Proof. reflexivity. Qed.
 
-(* ── THE KERNEL-CORRECT BEHAVIOUR (now PROVABLE, formerly false) ──────────────
+(* ── THE KERNEL-CORRECT BEHAVIOUR ──────────────────────────────────────────────
 
    (A) The reply's SOURCE 8.8.8.8 is un-DNAT'd back to the router 9.9.9.9 — the
        inverse manip the kernel applies for the reply direction. *)
@@ -112,7 +117,7 @@ Proof. vm_compute. reflexivity. Qed.
 Lemma reply_daddr_untouched : out_daddr reply = [1;1;1;1].
 Proof. vm_compute. reflexivity. Qed.
 
-(* Headline: the model's reply-direction NAT now MATCHES the kernel exactly.
+(* Headline: the model's reply-direction NAT MATCHES the kernel exactly.
    Kernel on the reply: saddr 8.8.8.8 -> 9.9.9.9, daddr 1.1.1.1 untouched.
    Model  on the reply: saddr 8.8.8.8 -> 9.9.9.9, daddr 1.1.1.1 untouched. *)
 Theorem reply_nat_is_correct :
@@ -120,10 +125,10 @@ Theorem reply_nat_is_correct :
   /\ out_daddr reply = [1;1;1;1].        (* destination left alone *)
 Proof. split; [exact reply_saddr_undone | exact reply_daddr_untouched]. Qed.
 
-(* The reply is NOT translated backwards anymore: its source is NO LONGER left at
-   the dnat target, and its destination is NOT re-rewritten to the dnat target. *)
+(* The reply is NOT translated backwards: its source is not left at the dnat
+   target, and its destination is NOT re-rewritten to the dnat target. *)
 Theorem reply_nat_not_backwards :
-  out_saddr reply <> [8;8;8;8]           (* source no longer stuck at the NAT target *)
+  out_saddr reply <> [8;8;8;8]           (* source not left at the NAT target *)
   /\ out_daddr reply <> [8;8;8;8].       (* destination not re-NAT'd forward *)
 Proof.
   split; [ rewrite reply_saddr_undone | rewrite reply_daddr_untouched ]; discriminate.
@@ -137,7 +142,7 @@ Theorem reply_unestablished_not_natted :
   out_saddr reply_no_mapping = [8;8;8;8] /\ out_daddr reply_no_mapping = [1;1;1;1].
 Proof. split; vm_compute; reflexivity. Qed.
 
-(** ── PORT-NAT REPLY (the Round-7 fix) ─────────────────────────────────────────
+(** ── PORT-NAT REPLY ────────────────────────────────────────────────────────────
 
     A `dnat to 8.8.8.8:8080` rewrites BOTH the destination address AND the
     DESTINATION port on the forward packet.  The kernel's nf_nat_packet runs
@@ -146,10 +151,10 @@ Proof. split; vm_compute; reflexivity. Qed.
     connection's ORIGINAL (pre-DNAT) destination port — tcp_manip_pkt /
     __udp_manip_pkt: `*portptr = newport` (nf_nat_proto.c).
 
-    BEFORE this fix the model stored only the forward port and left the reply's
-    ports byte-for-byte unchanged, so the reply's source port stayed stuck at the
-    dnat target 8080 — a packet the kernel can never emit on that flow.  Now the
-    model stores the original port in the reply tuple and un-rewrites it. *)
+    The model stores the original port as the 4th component of the [e_nat] tuple
+    (mirroring the kernel's reply tuple) and un-rewrites it on the reply; a reply
+    source port stuck at the dnat target 8080 is a packet the kernel can never
+    emit on that flow. *)
 
 (* `dnat to 8.8.8.8:8080`: dest addr 8.8.8.8 (reg 1) + dest port 8080. *)
 Definition dnat_port : nat_spec :=
@@ -203,13 +208,13 @@ Proof. vm_compute. reflexivity. Qed.
 Definition reply_p : packet :=
   mkpkt_p env_after_fwd_p [8;8;8;8] [1;1;1;1] [31;144] [17;92] false.
 
-(* THE FIX: the reply's SOURCE port is un-DNAT'd from 8080 back to the original 80
-   ([0;80]).  This was PROVABLY [31;144] (= 8080, byte-for-byte unchanged) before. *)
+(* The reply's SOURCE port is un-DNAT'd from 8080 back to the original 80
+   ([0;80]) — the inverse port manip. *)
 Theorem reply_sport_undone : out_sport reply_p = [0;80].
 Proof. vm_compute. reflexivity. Qed.
 
-(* The red property is REFUTED: the reply's source port is NO LONGER stuck at the
-   dnat target 8080. *)
+(* Dually: the reply's source port is NOT stuck at the dnat target 8080 (a
+   direction-blind model would leave it there byte-for-byte). *)
 Theorem reply_sport_not_target : out_sport reply_p <> [31;144].
 Proof. rewrite reply_sport_undone. discriminate. Qed.
 

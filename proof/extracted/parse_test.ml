@@ -570,7 +570,7 @@ let check_dnat_rewrite () =
     Semantics.eval_chain_trace Semantics.Hprerouting dnat_saddr_chain g in
   check "a DIFFERENT flow establishes its own mapping (dnat dst = its own saddr 2.2.2.2)"
     (data_eq (Syntax.field_value Syntax.FIp4Daddr g_out) [2;2;2;2]);
-  (* REPLY-DIRECTION un-NAT (Round-5 fix): a fixed `dnat to 8.8.8.8` establishes the
+  (* REPLY-DIRECTION un-NAT: a fixed `dnat to 8.8.8.8` establishes the
      mapping on the original-direction packet (client 1.1.1.1 -> router 9.9.9.9 =>
      dst 8.8.8.8).  The REPLY packet of the SAME flow (server 8.8.8.8 -> client
      1.1.1.1, pkt_ctdir_orig = false) must have its SOURCE un-DNAT'd back to 9.9.9.9
@@ -608,7 +608,7 @@ let check_dnat_rewrite () =
     (data_eq (Syntax.field_value Syntax.FIp4Saddr rep_out) [9;9;9;9]);
   check "reply-dir: reply DESTINATION left untouched (1.1.1.1)"
     (data_eq (Syntax.field_value Syntax.FIp4Daddr rep_out) [1;1;1;1]);
-  (* REPLY-DIRECTION PORT un-NAT (Round-7 fix): `dnat to 8.8.8.8:8080` rewrites the
+  (* REPLY-DIRECTION PORT un-NAT: `dnat to 8.8.8.8:8080` rewrites the
      forward packet's DESTINATION port 80 -> 8080; the kernel's nf_nat_manip_pkt(REPLY)
      un-rewrites the reply's SOURCE port from 8080 back to the original 80
      (tcp_manip_pkt: `*portptr = newport`).  Before the fix the model left the reply
@@ -647,7 +647,7 @@ let check_dnat_rewrite () =
     (not (data_eq (Packet.slice pr_out.Packet.pkt_th 0 2) [31;144]));
   check "reply-dir port: reply DEST port left untouched (client port 4444)"
     (data_eq (Packet.slice pr_out.Packet.pkt_th 2 2) [17;92]);
-  (* ct DIRECTION selector == NAT manip direction (Round-6 fix): in the kernel both
+  (* ct DIRECTION selector == NAT manip direction: in the kernel both
      the `ct direction` selector (nft_ct.c:86) and the NAT forward/reply decision
      (nf_nat_core.c:872) are CTINFO2DIR(ctinfo) of the SAME skb, so they are EQUAL.
      The model now derives `ct direction` from pkt_ctdir_orig (the model's
@@ -1165,7 +1165,7 @@ let check_ct_mark_crosspkt () =
    an entryless packet's `ct mark set` leaves e_ct unchanged, so a later same-flow
    ENTRY-PRESENT packet reads its OWN entry's mark, NOT the bogus value — and a
    `ct mark 0x99 accept` rule does NOT spuriously match in the model.  Dual of the
-   Round-1 notrack no-op fix. *)
+   notrack no-op guard (set_untracked). *)
 let check_ct_set_noop () =
   Printf.printf "=== (I''') ct mark set is a NO-OP on a packet with no conntrack entry ===\n";
   let src =
@@ -2215,7 +2215,7 @@ let check_mark_range () =
    and NO byteorder, so [set_mem]'s big-endian [data_le] compared the LE-stored
    bounds in the wrong byte order: the model REJECTED a mark numerically inside
    the interval that nft ACCEPTS.  Now an interval set over a host-endian field
-   lowers to MSetT + hton(4,4) with BE bounds (mirroring the Round-7 direct-range
+   lowers to MSetT + hton(4,4) with BE bounds (mirroring the direct-range
    fix on the set path), while an EXACT-only set stays a bare MConcatSet (memcmp
    eq is order-independent — nft emits no hton there either). *)
 let check_mark_set () =

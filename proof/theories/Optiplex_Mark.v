@@ -329,13 +329,13 @@ Proof.
 Qed.
 
 (* applying its NAT effect source-rewrites to the exit interface's address AND
-   stores that established mapping in the flow-keyed [e_nat] table.  NAT is now
-   FLOW-STATEFUL (Round-2 fix): on the FIRST packet of a flow ([e_nat .. = None])
+   stores that established mapping in the flow-keyed [e_nat] table.  NAT is
+   FLOW-STATEFUL ([e_nat], Packet.v): on the FIRST packet of a flow ([e_nat .. = None])
    the mapping is computed from the exit interface and STORED; the source address
-   is rewritten exactly as before. *)
+   is rewritten as on any later same-flow packet. *)
 (* The masquerade is in an `inet` table, so its [nat_family] is "inet" and the L3
    family is resolved PER PACKET ([nat_addrfamily_pkt] = [pkt_l3_family p], the
-   audit's inet-runtime-dispatch fidelity fix).  For the IPv4 streaming flow
+   kernel's runtime dispatch for inet tables).  For the IPv4 streaming flow
    [pkt_l3_family p = "ip"], so the masquerade rewrites the IPv4 source slot. *)
 Lemma post1_apply_masq : forall h p,
   pkt_l3_family p = "ip"%string ->

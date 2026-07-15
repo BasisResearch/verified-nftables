@@ -1,6 +1,5 @@
-(** RED probe (now KERNEL-CORRECT, after the blue fix): `limit`/`quota`/`connlimit`
-    are SHARED, CONSUMING token buckets threaded cross-packet, not stateless
-    per-packet oracles.
+(** `limit`/`quota`/`connlimit` are SHARED, CONSUMING token buckets threaded
+    cross-packet, not stateless per-packet oracles.
 
     Kernel nft_limit.c nft_limit_eval:
       delta = tokens - cost;
@@ -13,21 +12,17 @@
     DROP policy applies.  Consecutive packets get DIFFERENT verdicts — the entire
     purpose of a rate limit.  nft_quota.c / nft_connlimit.c likewise accumulate.
 
-    BEFORE the fix the model made the limiter a STATELESS per-packet oracle:
-    [e_limit : limit_spec -> nat] a fixed read, never decremented; two packets
-    threaded through a rate-limit chain read the IDENTICAL token count and got the
-    IDENTICAL verdict — UNSOUND (the model PROVED both packets accepted where the
-    kernel accepts only the first) and TOO WEAK (it could not express "consecutive
-    packets exceeding the rate are dropped").
+    In the model [e_limit] is that shared, consuming bucket: a passing `limit`
+    match DECREMENTS it (cost = 1), and the consumption is threaded across rules
+    and packets by [limit_sweep_body] (DSL) / [limit_sweep_prog] (VM) at the
+    mutation-evaluator boundary — the same threading as the `numgen inc`
+    (e_numgen) / ct-mark (e_ct) / NAT (e_nat) env writes.
 
-    AFTER the fix [e_limit] is a SHARED, CONSUMING bucket: a passing `limit` match
-    DECREMENTS it (cost = 1), and the consumption is threaded across rules and
-    packets by [limit_sweep_body] (DSL) / [limit_sweep_prog] (VM) at the
-    mutation-evaluator boundary — exactly the `numgen inc` (e_numgen) / ct-mark
-    (e_ct) / NAT (e_nat) pattern.  This file proves the kernel-correct property the
-    old model could not: with a bucket of exactly 1 token, packet 1 is ACCEPTED, the
-    bucket is then EMPTY, and packet 2 of the depleted bucket is DROPPED (the chain's
-    policy), so consecutive packets get DIFFERENT verdicts. *)
+    Regression gate: [p1_accepted], [limit_consumed], [p2_dropped], and
+    [limit_actually_limits] (with their VM twins [vm_*]) lock in the
+    consume-and-differ behaviour; a model regression to a stateless per-packet
+    token read (both packets seeing the same count, hence the same verdict)
+    makes them unprovable. *)
 
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile.
@@ -83,13 +78,13 @@ Lemma limit_consumed : e_limit (snd res1) lim1 = 0.
 Proof. reflexivity. Qed.
 
 (* Packet 2 of the depleted bucket is DROPPED — the `limit` match fails (bucket
-   empty), the rule does not continue, and the chain's DROP policy applies.  This is
-   exactly the kernel verdict the OLD per-packet-oracle model could not produce. *)
+   empty), the rule does not continue, and the chain's DROP policy applies —
+   exactly the kernel verdict (nft_limit_eval's EXHAUSTED branch). *)
 Lemma p2_dropped : v2 = Drop.
 Proof. reflexivity. Qed.
 
 (* Consecutive packets through the rate limiter get DIFFERENT verdicts — the entire
-   purpose of a rate limit (the old model PROVED they were identical: UNSOUND). *)
+   purpose of a rate limit; a stateless per-packet token read cannot produce this. *)
 Lemma limit_actually_limits : fst res1 <> v2.
 Proof. cbn. discriminate. Qed.
 
