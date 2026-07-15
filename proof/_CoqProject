@@ -86,4 +86,5 @@ theories/Setl2_Witness.v
 theories/Metaset_Witness.v
 theories/Optimize_Vmapg_Witness.v
 theories/Vmapgn_Witness.v
+theories/Main.v
 theories/Extract.v

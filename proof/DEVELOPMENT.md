@@ -61,11 +61,14 @@ theorem is stated against is **not** faithful in these areas. Grouped by kind:
   DEFINITION lines the corpus emits (`__set%d … / element …`, previously skipped by
   `blocks_of_file`) now round-trip through the data model **642/651 byte-identical**
   (the 9 out are interval sets carrying a `userdata` annotation).
-- ✅ **Conntrack table (`ct`)** *(FIXED by the 2026-06 audit)*: now a shared,
-  flow-keyed table `e_ct : data -> ct_key -> data` in `env`, keyed by the packet's
-  `pkt_flow`. Writable keys (mark/label/secmark) persist across a flow's packets; the
-  read-only keys (state/status/direction/expiration/…) are flow-derived too. See TODO 1
-  and `../adversarial.md`.
+- ✅ **Conntrack table (`ct`)** *(FIXED by the 2026-06 audit)*: the old per-packet
+  `pkt_ct` oracle is replaced by a shared, flow-keyed table
+  `e_ct : data -> ct_key -> data` in `env`, keyed by the packet's `pkt_flow`.
+  Writable keys (mark/label/secmark) persist across a flow's packets (`ct mark
+  set V` on packet 1 is read back by a later packet of the same flow); the
+  read-only keys (state/status/direction/expiration/…) are flow-derived too;
+  `notrack` and `ct … set` follow the kernel's entry-present/absent guards.
+  See TODO 1 and `../adversarial.md`.
 - ⛔ STILL OPEN — `meter` and immediate-data MAP-dynset feedback remain per-packet
   oracles / verdict-neutral. (SET-dynset feedback, FIB, conntrack, and `numgen inc` are
   now modelled — see B below, the `fib` bullets, and `../adversarial.md`.)
@@ -83,11 +86,6 @@ theorem is stated against is **not** faithful in these areas. Grouped by kind:
   semtest (4d): route `10.0.0.0/8 -> oif 3`, `fib saddr oif 3 accept` accepts
   `10.1.2.3`, drops `192.168.1.1`, VM=DSL. (Selector→key parsing is abstracted into
   `pkt_fibkey`; exact ECMP/scope tie-breaking not modelled.)
-- ✅ **Conntrack table (`ct …`)** *(FIXED by the 2026-06 audit)*: the old per-packet
-  `pkt_ct` oracle is replaced by the flow-keyed `e_ct` table (see the bullet above and
-  TODO 1). `ct mark set V` on packet 1 is read back by a later packet of the same
-  `pkt_flow`; `ct state`/direction are flow-derived; `notrack` and `ct … set` follow the
-  kernel's entry-present/absent guards.
 - ✅ **Stateful limiters `limit`/`quota`/`connlimit`** *(FIXED 2026-06)*: relocated
   from per-packet bool oracles into the shared `env` as **remaining-resource counts**
   (`e_limit`/`e_quota`/`e_connlimit : spec -> nat`); the match passes iff
@@ -195,16 +193,19 @@ mostly closed — see the per-item markers and TODO 3)* — a statement that doe
   environment, and `compile_table_correct` proves the compiler preserves the
   whole-ruleset verdict for every fuel (axiom-free; `semtest` battery (4) is an
   executable witness with a real `jump`).
-- ⛔ STILL OPEN — **hooks, chain priorities, multiple tables/families**: a packet
-  really traverses several base chains across hooks (prerouting→input/forward→
-  output→postrouting) in priority order; we still evaluate a *single* base chain
-  (+ its user chains). `family` is a string label. This is netfilter-core
-  dispatch above the per-ruleset semantics; a separate modelling layer.
+- ⛔ STILL OPEN — **the hook *pipeline* and families**: one hook's dispatch is
+  modelled (the two ✅ bullets above), but a packet's traversal of *successive*
+  hooks (prerouting→input/forward→output→postrouting) is composed manually via
+  `chain_out`, not by a single verified pipeline theorem; `family` is a string
+  label, and `ingress`-vs-`netdev` / exact kernel priority tie-breaking are not
+  separately modelled.
 
 **D. Data-semantics infidelities inside modelled features:**
-- **Concat-key padding**: the kernel pads each concatenated set-key field to its
-  4-byte register slot; we omit it, so membership is wrong for sub-4-byte
-  concatenated fields (flagged in `Semantics.v`).
+- ✅ **Concat-key padding** *(FIXED 2026-06, `13ee781`)*: the kernel pads each
+  concatenated set-key field to its 4-byte register slot; stored concat
+  elements are now split by 4-byte register slots (ifname = 16) rather than raw
+  field widths, so sub-4-byte concatenated fields match the kernel layout (see
+  item (5) at the end of this section).
 - ✅ **Interval/prefix sets** (`flags interval`) *(FIXED 2026-06)*: a named set's
   contents are now closed intervals `[lo,hi]` (`e_set : string -> list (data*data)`)
   and membership is `set_mem x = ∃[lo,hi], lo ≤ x ≤ hi` (big-endian order). An exact
@@ -282,7 +283,7 @@ corpus round-trip.
 | `theories/Semantics.v` | packet→verdict semantics for *both* languages |
 | `theories/Compile.v` | the compiler `compile_chain : chain -> program` |
 | `theories/Correct.v` | **`compile_chain_correct`** — semantic preservation |
-| `theories/Optimize.v` | DSL optimizer (dedup + range-simplify + no-op-prune + DCE) + **`optimize_chain_correct`** |
+| `theories/Optimize.v` | rule-local base optimizer pass (dedup + range-simplify + no-op-prune + DCE) + `optimize_chain_correct`; the shipped 18-stage table-level pipeline is `Optimize_Table.v`/`Optimize_Uncond.v` (see "The verified optimizer" below) |
 | `theories/Example_Ruleset.v` | worked example: `../rulesets/ruleset.nft` hand-translated to the AST + 9 axiom-free packet-property proofs (the user-facing use case; the baseline a parser should reproduce — see TODO 9) |
 | `theories/Extract.v` | extraction to `extracted/*.ml` |
 | `extracted/glue.ml` | *untrusted* glue: builds chains, renders nft-format bytecode (forward test) |
@@ -303,7 +304,12 @@ coverage: `make corpus` (clones nftables' `tests/py` once into a cache dir).
 
 ## The theorems (every one `Closed under the global context` — no axioms)
 
-The headline statements (these are what `README.md` leads with):
+**The authoritative map is [`THEOREMS.md`](THEOREMS.md)** — one HEADLINE
+theorem per verified axis, the HEADLINE/STAGE/SUPPORTING/SUPERSEDED/DEMO
+classification of every `Theorem`/`Corollary`, and the evaluator matrix.
+The entry points are restated (with `Print Assumptions`) in
+[`theories/Main.v`](theories/Main.v), and `make axioms` re-checks the whole
+set. Two of the most-cited statements:
 
 ```coq
 Theorem compile_chain_correct : forall c p,
@@ -324,9 +330,14 @@ with a default policy); `run_chain` runs the compiled register-machine bytecode.
 The first says the netlink ruleset we would install filters every packet exactly
 as the DSL specifies; the `optimize_table_uncond` family (in `Optimize_Uncond.v`)
 says the *optimized* chain — and its compiled bytecode — preserves every packet's
-verdict against the synthesised set/map declarations, for **any** input ruleset.
-The earlier per-pass `Optimize.optimize_chain_correct` (the base dedup/simplify
-pass alone changes no verdict) is subsumed by it.
+verdict against the synthesised set/map declarations, for **any** input *chain*
+(no `rules_clean` or freshness precondition). The optimizer theorem is
+**per-chain**: quantified over a single chain and all environments/packets;
+multi-chain/hook preservation is the separate
+`compile_ruleset_correct`/`compile_hook_correct` family, **not composed with
+the optimizer**. The earlier per-pass `Optimize.optimize_chain_correct` (the
+base dedup/simplify pass alone changes no verdict) is subsumed by it
+(SUPERSEDED as a standalone result; it survives as the pipeline's base stage).
 
 The verified core also includes the compile/control-flow theorems below, each
 verified axiom-free by `Print Assumptions` ("Closed under the global context").
@@ -338,7 +349,7 @@ lemmas in `Optimize_Uncond.v`), all likewise axiom-free — re-check any with
 | theorem | what it preserves |
 |---|---|
 | `compile_chain_correct` | a single base chain's per-packet verdict |
-| `optimize_chain_correct` | the optimizer changes no verdict |
+| `optimize_chain_correct` | the rule-local base pass changes no verdict (SUPERSEDED as a standalone result — the shipped pipeline's theorem is `optimize_table_uncond_compile_correct`) |
 | `compile_chain_sets_correct` | a `lookup @s` reads the elements *declared* for `s` (named state as a declared object) |
 | `compile_chain_mut_correct` | in-traversal **mutation** (meta/ct `set`, set-`dynset` learning, field-data map-`dynset` learning) is visible to later rules; holds for *every* rule under `mut_wf` well-formedness |
 | `compile_chain_mut_env_correct` | the **env a chain leaves** (its dynset-learned sets/maps) is preserved too — basis for cross-packet learning |
@@ -347,11 +358,32 @@ lemmas in `Optimize_Uncond.v`), all likewise axiom-free — re-check any with
 | `compiled_table_jump_drops` | a `jump` into a chain that drops is honoured end-to-end (jump-aware drop is not lost) |
 | `compile_ruleset_correct` | multi-table/multi-hook dispatch with netfilter verdict combination |
 | `compile_hook_correct` | hook → priority-ordered base-chain selection |
-| `compile_seq_correct` | **stateful accumulation** across a packet sequence (limiters threaded between packets) |
+| `compile_seq_correct` | per-packet **congruence** lifted over a packet sequence under an **arbitrary step** `verdict -> env -> env` (the between-packet env update is caller-supplied, *not* generated by the ruleset — for ruleset-generated evolution see `compile_seq_mut_correct`) |
 | `compile_seq_mut_correct` | **cross-packet learning**: dynset-learned env threaded between packets, so an earlier packet's `add @s` is seen by a later packet's `lookup @s` |
 
-Re-check anytime with `Print Assumptions <name>` (see the probe in the git
-history) — every one must print "Closed under the global context".
+Re-check anytime with `Print Assumptions <name>` (or `make axioms`) — every
+one must print "Closed under the global context".
+
+**Evaluator matrix** (full version with bridging theorems: `THEOREMS.md` §3).
+The nine DSL entry points — `eval_rules`, `eval_rules_mut`,
+`eval_rules_mut_env`, `eval_rules_trace`, `eval_rules_j`/`eval_table`,
+`eval_ruleset`, `eval_hook`, `seq_eval`, `seq_eval_env` — have near-identical
+signatures but **disjoint** feature coverage:
+
+| entry point | threads writes | returns env | jump/goto/return | NAT effect | multi-chain |
+|---|---|---|---|---|---|
+| `eval_rules` | no | no | no (jump-free domain) | no | no |
+| `eval_rules_mut` | yes (`dsl_step`) | no | no | no | no |
+| `eval_rules_mut_env` | yes | yes | no | no | no |
+| `eval_rules_trace` | yes | (whole packet) | no | yes | no |
+| `eval_rules_j` / `eval_table` | no | no | yes | no | user chains |
+| `eval_ruleset` | no | no | yes | no | base chains |
+| `eval_hook` | no | no | yes | no | hook dispatch |
+| `seq_eval` | no (external step) | threaded between packets | yes (with `eval_hook`) | no | yes |
+| `seq_eval_env` | yes (with `eval_chain_mut_env`) | threaded between packets | no | no | no |
+
+The mutation strand and the jump strand are disjoint: **mutation × jump/goto
+is not jointly verified**.
 
 ## Differential testing against the upstream corpus
 
@@ -435,11 +467,15 @@ a verified distinct-register allocation; nft's debug register *numbering* (the
 128-bit alias for 16-byte-aligned slots) is a tested-glue presentation map
 (`nreg`), validated byte-identically — the dataflow correctness is verified.
 Field count: `all_fields` lists 48 named fields plus the parametric/oracle
-constructors. `fib` (route lookup) and `inner` (tunnel-decapsulated header reads)
-are modeled as explicit oracles keyed by the rule's request — `pkt_fib selector
-result` and `pkt_inner type hdrsize flags innerdesc` — so an inner/fib read can
-never produce a *wrong* verdict, only an abstract one; the inner packet is a
-distinct packet, hence an independent oracle rather than a function of the outer
+constructors. `fib` (route lookup) is *computed*, not oracle'd: the env carries
+a routing table `e_routes : list ([lo,hi] * (fib_result -> data))` and `lpm_fib`
+returns the first route whose destination interval contains the key
+(most-specific-first = longest-prefix-match), with key extraction
+`pkt_fibkey : string -> data` reading the packet bytes the selector names
+(`Fib_Local.v` additionally proves the kernel-faithful host-local type
+behaviour). `inner` (tunnel-decapsulated header reads) remains an explicit
+oracle keyed by the rule's request — `pkt_inner type hdrsize flags innerdesc` —
+because the inner packet is a distinct packet, not a function of the outer
 headers. The `fib` selector/result tokenization (free-form, so the round-trip
 can't self-check it) is confirmed against live `nft` by `make validate`.
 Ordered comparisons (`cmp lt/gt/lte/gte`) use `data_le`, a total order on the
@@ -493,15 +529,53 @@ tproxy terminals (incl. map-sourced operands and vmap fall-through); quota/limit
 stateful breaks; counter/notrack/log/objref/synproxy/last/dynset(add,delete,map,
 immediate)/exthdr-reset/exthdr-write/dup/fwd statements; reject/queue verdicts.
 
-## The verified optimizer (5 passes)
+## The verified optimizer
 
-`optimize_chain` = `dce ∘ prune_noops ∘ (simplify_rule ∘ dedup_rule)*`, all proved
-verdict-preserving (`optimize_chain_correct`, axiom-free):
+Two layers (the shipped entry point is `optimize_table_uncond` in
+`Optimize_Uncond.v`, which is what `Extract.v` extracts and the `nftc` CLI
+runs).
+
+**Layer 1 — rule-local base pass** (`Optimize.optimize_chain` =
+`dce ∘ prune_noops ∘ (simplify_rule ∘ dedup_rule)*`, verdict-preserving,
+axiom-free; SUPERSEDED as a standalone headline, it runs as the pipeline's
+base stage):
 - **dedup_rule** — drop duplicate match conditions (matches commute).
 - **simplify_rule** — singleton range `lo..lo` → `cmp eq/neq`, both plain
   (`MRange`) and transformed (`MRangeT` → `MTransform`).
 - **prune_noops** — drop rules that match-all-and-fall-through.
 - **dce** — drop rules shadowed by an unconditional accept/drop.
+
+**Layer 2 — the table-level `nft -o` consolidation pipeline**
+(`Optimize_Table.optimize_table`): after `normalize_chain`
+(`Optimize_Normalize.v`, head normalisation so the recognisers fire on parser
+output) and the layer-1 base pass, 18 stages run in this composition order,
+threading a fresh-name counter and a `set_decls` accumulator:
+
+1. `optimize_chain_absorb` — subsumed-rule absorption
+2. `optimize_chain_ctmask` — ct-mark mask folding
+3. `optimize_chain_dnat` — dnat runs → one bare dnat map
+4. `optimize_chain_snat` — snat runs → one bare snat map
+5. `optimize_chain_setsN` — N-way value → anonymous set
+6. `optimize_chain_concatK` — K-row two-selector concat set
+7. `optimize_chain_mapn` — mark-map merge (labelled sound superset of `nft -o`)
+8. `optimize_chain_concatN` — N-way concat set
+9. `optimize_chain_concatM` — mixed concat set
+10. `optimize_chain_setg` — guarded value set
+11. `optimize_chain_ivset` — interval (range) set
+12. `optimize_chain_ivsett` — transformed interval set
+13. `optimize_chain_dscp` — dscp value runs
+14. `optimize_chain_ivsetg` — guarded interval set
+15. `optimize_chain_ivmixg` — guarded mixed value/interval set
+16. `optimize_chain_vmapNg` — guarded verdict map
+17. `optimize_chain_dscpv` — dscp verdict map
+18. `optimize_chain_vmapN` — N-way value+verdict → verdict map
+
+The seam theorem `optimize_chain_clean` (`Optimize_Table.v`) feeds the base
+pass's output into the stage proofs. Whole-pipeline correctness — with **no**
+precondition on the input chain — is `optimize_table_uncond_correct`, and its
+compiled-bytecode form `optimize_table_uncond_compile_correct` is the
+optimizer's HEADLINE theorem (both in `Optimize_Uncond.v`, axiom-free; see
+`THEOREMS.md`).
 
 ## The reusable `Nftc` library
 
@@ -548,10 +622,12 @@ context". Re-check the optimizer-pipeline headline (and the compile core) with:
 ```
 cd theories && printf 'From Nft Require Import Correct Optimize_Uncond.\nPrint Assumptions compile_chain_correct.\nPrint Assumptions Optimize_Uncond.optimize_table_uncond_correct.\nPrint Assumptions Optimize_Uncond.optimize_table_uncond_compile_correct.\n' | coqtop -R . Nft | grep -c "Closed under the global context"
 ```
-(plus the compile/control-flow theorems listed above; the in-repo `Print
-Assumptions` guards across `theories/*.v` are checked on every `make proofs`.)
-The 12 theorems are listed in "The theorems" table above. Any new top-level
-theorem must also print `Closed under the global context`.
+or run **`make axioms`**, which checks the whole `THEOREMS.md` HEADLINE set +
+the `Correct.v` strata in one shot (plus the in-repo `Print Assumptions`
+guards across `theories/*.v`, checked on every `make proofs`).
+The theorem strata are listed in "The theorems" table above and classified in
+`THEOREMS.md`. Any new top-level theorem must also print `Closed under the
+global context`.
 
 **Where things live:**
 - `theories/Packet.v` — the `packet` and its `env` (the shared mutable state:

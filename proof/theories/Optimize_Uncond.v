@@ -408,6 +408,7 @@ Qed.
     bare rule READS [e_map (mapname n)] = the freshly-prepended [dmap2], so this is
     NOT env-independent like the meta-mark mapN pass; it threads the agreement infra
     exactly as [setsN] does, plugging in [eval_rules_dnat_merge]. *)
+(** STAGE — composed into [optimize_table_correct_uncond_gen]; not a standalone headline. *)
 Theorem optimize_rules_dnat_eval : forall rs n d n' d' rs' base p,
   optimize_rules_dnat n d rs = (n', d', rs') ->
   (forall k, n <= k -> ~ In (mapname k) (map fst (sd_maps d))) ->
@@ -651,6 +652,7 @@ Qed.
     bare rule READS [e_map (mapname n)] = the freshly-prepended [dmap2], so this is
     NOT env-independent like the meta-mark mapN pass; it threads the agreement infra
     exactly as [setsN] does, plugging in [eval_rules_snat_merge]. *)
+(** STAGE — composed into [optimize_table_correct_uncond_gen]; not a standalone headline. *)
 Theorem optimize_rules_snat_eval : forall rs n d n' d' rs' base p,
   optimize_rules_snat n d rs = (n', d', rs') ->
   (forall k, n <= k -> ~ In (mapname k) (map fst (sd_maps d))) ->
@@ -889,6 +891,7 @@ Qed.
     [decls_agree_rule_*seam] to keep the passed rule env-stable. *)
 
 (** *** setsN. *)
+(** STAGE — composed into [optimize_table_correct_uncond_gen]; not a standalone headline. *)
 Theorem optimize_rules_setsN_correct_uncond : forall fuel rs n d n' d' rs' base p,
   optimize_rules_setsN fuel n d rs = (n', d', rs') ->
   (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
@@ -1044,6 +1047,7 @@ Qed.
     certificate (with the [data_bitops] width discharged from the fixed-width side
     condition), and [eval_rules_run_merge_abs] collapses the run (both merged and run
     heads share [match_loadable = field_loadable f]). *)
+(** STAGE — composed into [optimize_table_correct_uncond_gen]; not a standalone headline. *)
 Theorem optimize_rules_dscp_correct_uncond : forall fuel rs n d n' d' rs' base p,
   optimize_rules_dscp fuel n d rs = (n', d', rs') ->
   (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
@@ -1209,6 +1213,7 @@ Qed.
     [MRangeT f ts false lo hi] and the synthesised set head is [MSetT f ts false __setN]
     — the byteorder transform [ts] is carried IDENTICALLY on both, and the membership
     certificate ([msett_ivs_existsb]) collapses the [MSetT] to the run's [existsb]. *)
+(** STAGE — composed into [optimize_table_correct_uncond_gen]; not a standalone headline. *)
 Theorem optimize_rules_ivsett_correct_uncond : forall fuel rs n d n' d' rs' base p,
   optimize_rules_ivsett fuel n d rs = (n', d', rs') ->
   (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
@@ -1354,6 +1359,7 @@ Lemma body_set_names_cons_mrange : forall f lo hi body,
   body_set_names (BMatch (MRange f false lo hi) :: body) = body_set_names body.
 Proof. reflexivity. Qed.
 
+(** STAGE — composed into [optimize_table_correct_uncond_gen]; not a standalone headline. *)
 Theorem optimize_rules_ivset_correct_uncond : forall fuel rs n d n' d' rs' base p,
   optimize_rules_ivset fuel n d rs = (n', d', rs') ->
   (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
@@ -1497,6 +1503,7 @@ Qed.
     certificate of [ivset] ([concat_set_ivs_existsb]): a single-field [MConcatSet]
     over an interval set is EXACTLY the [existsb] disjunction of the [MRange] matches.
     No fixed-width side-condition. *)
+(** STAGE — composed into [optimize_table_correct_uncond_gen]; not a standalone headline. *)
 Theorem optimize_rules_ivsetg_correct_uncond : forall fuel rs n d n' d' rs' base p,
   optimize_rules_ivsetg fuel n d rs = (n', d', rs') ->
   (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
@@ -1643,6 +1650,7 @@ Qed.
     verdict bridge [eval_melem_mrange] (a point head [MCmp f CEq v] equals the
     degenerate-interval [MRange f false v v] match under the field's FIXED-WIDTH
     guard), applied through the interval membership certificate. *)
+(** STAGE — composed into [optimize_table_correct_uncond_gen]; not a standalone headline. *)
 Theorem optimize_rules_ivmixg_correct_uncond : forall fuel rs n d n' d' rs' base p,
   optimize_rules_ivmixg fuel n d rs = (n', d', rs') ->
   (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
@@ -1795,6 +1803,7 @@ Proof.
 Qed.
 
 (** *** concatN. *)
+(** STAGE — composed into [optimize_table_correct_uncond_gen]; not a standalone headline. *)
 Theorem optimize_rules_concatN_correct_uncond : forall fuel rs n d n' d' rs' base p,
   optimize_rules_concatN fuel n d rs = (n', d', rs') ->
   (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
@@ -1965,6 +1974,7 @@ Qed.
     MConcatSet membership certificate ([concat_two_fields_certificate_N]) is REUSED
     unchanged — the guard is factored out of the run-collapse [existsb] by boolean
     algebra ([existsb_guard_factor]). *)
+(** STAGE — composed into [optimize_table_correct_uncond_gen]; not a standalone headline. *)
 Theorem optimize_rules_concatM_correct_uncond : forall fuel rs n d n' d' rs' base p,
   optimize_rules_concatM fuel n d rs = (n', d', rs') ->
   (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
@@ -2135,6 +2145,7 @@ Qed.
     [concat_set_existsb] (one field, [map (fun v => (v,v)) vals] elements) and the
     HEAD guard [gm] is factored out of the run-collapse [existsb] by
     [existsb_guardhead_factor]. *)
+(** STAGE — composed into [optimize_table_correct_uncond_gen]; not a standalone headline. *)
 Theorem optimize_rules_setg_correct_uncond : forall fuel rs n d n' d' rs' base p,
   optimize_rules_setg fuel n d rs = (n', d', rs') ->
   (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
@@ -2287,6 +2298,7 @@ Qed.
 (** *** concatK (the N>=3-field pairwise concat pass, Optimize_ConcatK).  Mirrors
     the [concatN] correctness but uses [eval_rules_concat_mergeK] (which bundles the
     matchcond certificate + run-collapse) on the two-row merge. *)
+(** STAGE — composed into [optimize_table_correct_uncond_gen]; not a standalone headline. *)
 Theorem optimize_rules_concatK_correct_uncond : forall rs n d n' d' rs' base p,
   optimize_rules_concatK n d rs = (n', d', rs') ->
   (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
@@ -2385,6 +2397,7 @@ Qed.
     vmap pass SOUND on arbitrary input (the merge is genuinely unsound for a
     [notrack] body, since the merged rule reads its key field at the body-threaded
     packet).  Read-freshness is in the [vmapname] namespace. *)
+(** STAGE — composed into [optimize_table_correct_uncond_gen]; not a standalone headline. *)
 Theorem optimize_rules_vmapN_correct_uncond : forall fuel rs n d n' d' rs' base p,
   optimize_rules_vmapN fuel n d rs = (n', d', rs') ->
   (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
@@ -2540,6 +2553,7 @@ Qed.
     on body [BMatch gm :: body] via the SWAP equivalence), and the merged rule is
     [merged_ruleGv].  Read-freshness is in the same [vmapname] namespace, so the SAME
     [rule_vmap_fresh] / [decls_agree_rule_vmapseam] machinery applies. *)
+(** STAGE — composed into [optimize_table_correct_uncond_gen]; not a standalone headline. *)
 Theorem optimize_rules_vmapNg_correct_uncond : forall fuel rs n d n' d' rs' base p,
   optimize_rules_vmapNg fuel n d rs = (n', d', rs') ->
   (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
@@ -2764,6 +2778,7 @@ Qed.
     [mk_vmap_rule_t f [TBitAnd mask xor] name body].  Read-freshness is in the same
     [vmapname] namespace, so the SAME [rule_vmap_fresh] / [decls_agree_rule_vmapseam]
     machinery applies. *)
+(** STAGE — composed into [optimize_table_correct_uncond_gen]; not a standalone headline. *)
 Theorem optimize_rules_dscpv_correct_uncond : forall fuel rs n d n' d' rs' base p,
   optimize_rules_dscpv fuel n d rs = (n', d', rs') ->
   (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
@@ -5296,7 +5311,8 @@ Definition optimize_table_uncond (c : chain) : nat * set_decls * chain :=
   optimize_table (seed_start (optimize_chain c0)) empty_decls c0.
 
 (** END-TO-END, NO HYPOTHESIS ON [c]: the optimised chain, run against the
-    synthesised declarations, has EXACTLY the DSL verdict of the original chain. *)
+    synthesised declarations, has EXACTLY the DSL verdict of the original chain.
+    (SUPPORTING form of the optimizer HEADLINE below: DSL-level, per chain.) *)
 Theorem optimize_table_uncond_correct : forall c base p n' d' c',
   optimize_table_uncond c = (n', d', c') ->
   eval_chain c' (set_env p (env_with_sets base d'))
@@ -5315,8 +5331,13 @@ Proof.
   - apply seed_start_nat_map_fresh.
 Qed.
 
-(** END-TO-END to the BYTECODE: compile the optimised chain, run the VM against the
-    synthesised declarations — EXACTLY the original chain's DSL verdict. *)
+(** HEADLINE (optimizer axis; see proof/THEOREMS.md and theories/Main.v) —
+    END-TO-END to the BYTECODE: compile the optimised chain, run the VM against
+    the synthesised declarations — EXACTLY the original chain's DSL verdict.
+    Scope: PER CHAIN — quantified over a single chain and ALL environments and
+    packets; multi-chain/hook preservation is the separate
+    [compile_ruleset_correct]/[compile_hook_correct] family (Correct.v), not
+    composed with the optimizer. *)
 Theorem optimize_table_uncond_compile_correct : forall c base p n' d' c',
   optimize_table_uncond c = (n', d', c') ->
   run_chain (compile_chain c') (c_policy c') (set_env p (env_with_sets base d'))

@@ -2,7 +2,35 @@
 
     Both the declarative DSL and the bytecode are given the *same* observable
     semantics — a function from a packet to the verdict the base chain produces —
-    so "semantics preserving" is a literal equality of these functions. *)
+    so "semantics preserving" is a literal equality of these functions.
+
+    ** Evaluator matrix: which entry point covers which feature axis.
+
+    Nine DSL entry points evaluate rules.  Each covers ONE feature axis and is
+    silently pure on the others — nothing in the signatures reveals this, so it
+    is pinned here (and, with the bridging theorems for every "no" cell, in
+    proof/THEOREMS.md):
+
+      entry point          | threads writes | returns env | jump/goto/return | NAT effect | multi-chain
+      ---------------------+----------------+-------------+------------------+------------+------------
+      eval_rules           | no             | no          | no (jump-free    | no         | no
+                           |                |             | domain)          |            |
+      eval_rules_mut       | yes (dsl_step) | no          | no               | no         | no
+      eval_rules_mut_env   | yes            | yes         | no               | no         | no
+      eval_rules_trace     | yes            | (packet)    | no               | yes        | no
+      eval_rules_j /       | no             | no          | yes              | no         | user chains
+        eval_table         |                |             |                  |            |
+      eval_ruleset         | no             | no          | yes              | no         | base chains
+      eval_hook            | no             | no          | yes              | no         | hook dispatch
+      seq_eval             | no (external   | threaded    | yes (used with   | no         | yes
+                           | step)          | between pkts| eval_hook)       |            |
+      seq_eval_env         | via ev (used   | threaded    | no               | no         | no
+                           | with mut_env)  | between pkts|                  |            |
+
+    The mutation strand (eval_rules_mut / _mut_env / _trace / seq_eval_env) and
+    the jump strand (eval_rules_j / eval_table / eval_ruleset / eval_hook /
+    seq_eval) are DISJOINT: no evaluator both threads writes and follows jumps,
+    and mutation x jump/goto is not jointly verified. *)
 
 From Stdlib Require Import List NArith ZArith Bool Lia.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode.
@@ -2659,7 +2687,13 @@ Fixpoint prog_lookup (cs : list (String.string * program)) (n : String.string) :
   | (m, prg) :: rest => if String.eqb n m then Some prg else prog_lookup rest n
   end.
 
-(** DSL semantics under a chain environment [cs] (the user-defined chains). *)
+(** DSL semantics under a chain environment [cs] (the user-defined chains).
+
+    Mutation-free domain: like [eval_rules] — and unlike [eval_rules_mut] —
+    this evaluator does NOT thread [dsl_step] writes from one rule to the next;
+    it covers the jump/goto/return axis only (see the evaluator matrix in the
+    header).  A `meta mark set` inside a jump target is silently dropped here;
+    mutation x jump/goto is not jointly verified. *)
 Fixpoint eval_rules_j (fuel : nat) (cs : list (String.string * chain))
                       (rs : list rule) (p : packet) : option verdict :=
   match fuel with
@@ -2746,7 +2780,10 @@ Definition run_table (fuel : nat) (cs : list (String.string * program))
     that ACCEPTs (or falls through to an accept policy) lets the packet proceed to
     the NEXT base chain, while DROP/REJECT/QUEUE is terminal — exactly how
     netfilter propagates a verdict across the chains at a hook.  If every base
-    chain accepts, the packet is accepted. *)
+    chain accepts, the packet is accepted.
+
+    Mutation-free domain: built on [eval_table], so — like it — no writes are
+    threaded between rules, between chains, or between base chains. *)
 Definition base_continues (v : verdict) : bool :=
   match v with Accept | Continue => true | _ => false end.
 
@@ -2797,7 +2834,8 @@ Definition select_hook (rs : list hooked_chain) (h : hook_id)
   map (fun hc => (hc_env hc, hc_base hc))
       (sort_hc (filter (fun hc => hook_eqb (hc_hook hc) h) rs)).
 
-(** Full ruleset evaluation at a hook: select+order the base chains, then dispatch. *)
+(** Full ruleset evaluation at a hook: select+order the base chains, then dispatch.
+    Mutation-free domain: inherits [eval_ruleset]'s — no writes are threaded. *)
 Definition eval_hook (fuel : nat) (rs : list hooked_chain) (h : hook_id) (p : packet) : verdict :=
   eval_ruleset fuel (select_hook rs h) p.
 
@@ -2814,7 +2852,13 @@ Definition set_env (p : packet) (e : env) : packet :=
     from the verdict (e.g. decrement a rate limiter's remaining tokens on accept).
     So a later packet observes the accumulated state — the cross-packet behaviour
     a per-packet oracle could not express.  Generic in [ev] so the DSL and the VM
-    share it (only the per-packet evaluator differs). *)
+    share it (only the per-packet evaluator differs).
+
+    NOTE the scope: [step] is an EXTERNAL, caller-supplied update — the
+    environment evolution is not generated by the ruleset itself, so theorems
+    over [seq_eval] (e.g. [compile_seq_correct]) are per-packet congruences
+    lifted over a sequence.  The ruleset-generated evolution is [seq_eval_env]
+    above (fed by [eval_chain_mut_env]). *)
 Fixpoint seq_eval (ev : env -> packet -> verdict) (step : verdict -> env -> env)
     (e : env) (packets : list packet) : list verdict :=
   match packets with
