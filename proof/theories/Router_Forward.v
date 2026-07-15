@@ -7,11 +7,12 @@
                         ct state vmap {established:accept, related:accept, invalid:drop};
                         iifname eth1 accept }
 
-    Round 1 proved ONLY the postrouting masquerade (a data-plane source-NAT property);
-    the forward chain — where the actual forwarding decision is made — had ZERO proven
-    properties, so a packet arriving on ppp0 (the world) in ct-state `new`, destined for
-    the LAN, had an entirely UNDETERMINED fate under the proofs.  A planted bug that
-    removes the `iifname eth1` guard (open forwarding) survived every prior property.
+    The postrouting masquerade theorems ([Router_Reach]) are data-plane source-NAT
+    properties only; without this file the forward chain — where the actual
+    forwarding decision is made — would have no proven properties, so a packet
+    arriving on ppp0 (the world) in ct-state `new`, destined for the LAN, would
+    have an entirely UNDETERMINED fate, and a planted bug that removes the
+    `iifname eth1` guard (open forwarding) would survive every masquerade property.
 
     This file pins the forward chain's verdict down COMPLETELY, against the
     PARSER-generated [global_forward] (from [Router_Gen]), as an exact characterisation:

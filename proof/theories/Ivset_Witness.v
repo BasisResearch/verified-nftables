@@ -1,4 +1,4 @@
-(** Fires-witness for G3, the interval / range set consolidation.  Two adjacent
+(** Fires-witness for the interval / range set consolidation (Optimize_Ivset).  Two adjacent
     `ip saddr <lo>-<hi> accept` range rules collapse into ONE
     `ip saddr { lo1-hi1, lo2-hi2 } accept` lookup over a synthesised INTERVAL set —
     exactly what `nft --optimize` emits (set flags ANONYMOUS|CONSTANT|INTERVAL,

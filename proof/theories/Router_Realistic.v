@@ -1,9 +1,10 @@
 (** * router.nft new-connection security theorems, RE-STATED over a REALISTIC
-      conntrack environment (the vacuity fix).
+      conntrack environment (non-vacuous hypotheses).
 
-    The Round 2/3/4/6 "new-connection" theorems — [forward_unsolicited_dropped],
-    [world_ingress_locked_down], [inbound_eth1_accept_iff], the hook lifts, etc. —
-    each combine TWO jointly-UNSATISFIABLE hypotheses:
+    The per-chain "new-connection" theorems — [Router_Forward.forward_unsolicited_dropped],
+    [Router_Input.world_ingress_locked_down], [Router_Private.inbound_eth1_accept_iff],
+    and their hook lifts in [Router_Hooks] — each combine TWO jointly-UNSATISFIABLE
+    hypotheses:
 
         pkt_env p = gen_env        AND        field_value FCtState p = cts_new.
 
@@ -21,8 +22,8 @@
     THE FIX (this file).  A vmap/set lookup only reads [e_vmap (pkt_env p) name] /
     [e_set ...]; it does NOT need the WHOLE env to equal [gen_env].  So we relax
     [pkt_env p = gen_env] to exactly what the lookups use — the [e_vmap] CONTENTS —
-    while letting [e_ct] carry a real (NEW) value.  The witness envs the prior rounds
-    used ([env_fwd], [env_in]) already set [e_vmap := e_vmap gen_env], so they meet
+    while letting [e_ct] carry a real (NEW) value.  The existing witness envs
+    ([env_fwd], [env_in]) already set [e_vmap := e_vmap gen_env], so they meet
     the relaxed hypothesis AND carry [cts_new] through [e_ct]: the theorems below are
     therefore proven NON-VACUOUS on the SAME hypotheses they are stated with (the
     [*_witness_*] lemmas discharge every hypothesis on the concrete packet).
@@ -299,9 +300,9 @@ Proof.
 Qed.
 
 (* ============================================================ *)
-(** ** 2b. Relaxed PRIVATE (eth1->inbound_private) characterisation.  Round 4's
-       [inbound_eth1_accept_iff] was ALSO vacuous (same [pkt_env = gen_env] +
-       [cts_new]).  The private sub-chain's lookups read only [e_vmap "__map0"] (the
+(** ** 2b. Relaxed PRIVATE (eth1->inbound_private) characterisation.
+       [Router_Private.inbound_eth1_accept_iff] is ALSO vacuous (same
+       [pkt_env = gen_env] + [cts_new]).  The private sub-chain's lookups read only [e_vmap "__map0"] (the
        concat-service vmap) and [e_limit] (the icmp rate limit, kept ABSTRACT in
        [icmp_ok]); they do NOT need the whole env.  We relax to the [__map0]/[__map1]/
        [__map2] contents and lift to a realistic, non-vacuous iff. *)
@@ -417,9 +418,9 @@ Proof.
 Qed.
 
 (* ============================================================ *)
-(** ** 3. HOOK-LEVEL lifts, realistic.  Round 6's [input_hook_world_locked] and
-       [forward_hook_unsolicited_dropped] were ALSO vacuous (same [pkt_env = gen_env]
-       + [cts_new]).  The registration bridges [input_hook_drop_iff_inbound_drop] /
+(** ** 3. HOOK-LEVEL lifts, realistic.  [Router_Hooks.input_hook_world_locked] and
+       [Router_Hooks.forward_hook_unsolicited_dropped] are ALSO vacuous (same
+       [pkt_env = gen_env] + [cts_new]).  The registration bridges [input_hook_drop_iff_inbound_drop] /
        [forward_hook_drop_iff_forward_drop] are NON-vacuous (no env hypothesis), so
        we lift the realistic CHAIN theorems through them to realistic HOOK theorems
        — what netfilter actually dispatches at each hook, on REAL packets. *)

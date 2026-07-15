@@ -7,15 +7,16 @@
     *dest = READ_ONCE(ct->mark)`).  So `ct mark set 0x1` on packet 1 IS observable
     as `ct mark == 0x1` on packet 2 of the same flow.
 
-    This file used to be the RED audit probe demonstrating the OPPOSITE (the model
-    treated conntrack as a per-packet oracle, so the write left no cross-packet
-    trace).  The BLUE fix made the writable+persistent conntrack keys ([ct_writable]:
-    mark/label) part of the SHARED, flow-keyed env table [e_ct]: [set_ct] now writes
+    In the model the writable+persistent conntrack keys ([ct_writable]: mark/label)
+    live in the SHARED, flow-keyed env table [e_ct]: [set_ct] writes
     [e_ct (pkt_flow p) CKmark] and [do_load (LCt CKmark)] reads it back, so
-    [eval_chain_mut_env]/[set_env] (which already thread [pkt_env]) carry the mark
-    to the next packet.  The three theorems below are the kernel-CORRECT facts the
-    fix makes provable; the old (kernel-false) `..._leaves_env_unchanged` /
-    `packet2_ignores_packet1_ctmark_set` are now UNPROVABLE, as they should be.
+    [eval_chain_mut_env]/[set_env] (which thread [pkt_env]) carry the mark to the
+    next packet of the flow.
+
+    Regression gate: [ctmark_set_persists_in_env], [packet2_sees_packet1_ctmark_set],
+    and [ctmark_set_no_entry_is_noop] lock in flow-keyed persistence; a model
+    regression to a per-packet conntrack oracle (a `ct mark set` leaving no
+    cross-packet trace) makes them unprovable.
 
     SECOND KERNEL GUARD (nft_ct.c:288-290): nft_ct_set_eval FIRST does
     `ct = nf_ct_get(skb, &ctinfo); if (ct == NULL || ...) return;` — so the WRITE is a
@@ -40,9 +41,9 @@ Definition ctmark_set_rule : rule :=
 Definition ctmark_chain : chain :=
   {| c_policy := Drop; c_rules := [ ctmark_set_rule ] |}.
 
-(* KERNEL-CORRECT (now provable): after packet 1 runs `ct mark set 0x1`, the
-   threaded env records mark 0x1 in the SHARED conntrack table at packet 1's flow.
-   (Before the fix this was [pkt_env p1] verbatim — no trace.) *)
+(* After packet 1 runs `ct mark set 0x1`, the threaded env records mark 0x1 in the
+   SHARED conntrack table at packet 1's flow — the write leaves a cross-packet
+   trace, as nft_ct_set_eval's WRITE_ONCE(ct->mark, value) does. *)
 Theorem ctmark_set_persists_in_env :
   forall p1 : packet,
     pkt_ct_present p1 = true ->
@@ -105,11 +106,12 @@ Proof.
   - reflexivity.
 Qed.
 
-(* SECOND KERNEL GUARD — the actual Round-4 fix demonstration.  On a packet with NO
-   conntrack entry ([pkt_ct_present = false]), nft_ct_set_eval returns immediately
-   (`if (ct == NULL || ...) return;`), so `ct mark set` is a NO-OP: it must NOT write
-   the shared flow table.  Before the fix [set_ct] wrote unconditionally, so a later
-   same-flow entry-bearing packet read back a mark the kernel never wrote.  Now: *)
+(* SECOND KERNEL GUARD.  On a packet with NO conntrack entry
+   ([pkt_ct_present = false]), nft_ct_set_eval returns immediately
+   (`if (ct == NULL || ...) return;`, nft_ct.c:288-290), so `ct mark set` is a
+   NO-OP: it must NOT write the shared flow table.  [set_ct] gates on
+   [pkt_ct_present]; an unconditional write would let a later same-flow
+   entry-bearing packet read back a mark the kernel never wrote. *)
 
 (* (a) running the chain on an ENTRYLESS packet leaves e_ct at its prior value. *)
 Theorem ctmark_set_no_entry_is_noop :

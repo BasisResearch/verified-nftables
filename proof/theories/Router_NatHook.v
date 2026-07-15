@@ -2,15 +2,15 @@
    router.nft postrouting masquerade — DATA-PLANE HOOK BRIDGE (the parser's hook
    registration is load-bearing for NAT).
 
-   THE GAP this file closes (the postrouting half of Round 6's chain<->hook bridge,
+   THE GAP this file closes (the postrouting half of the chain<->hook bridge,
    for the DATA PLANE):
 
-   Round 6 lifted the VERDICT-bearing input/forward security theorems to the hook
-   level via [eval_hook hk_fuel global_hooks H...], so a wrong-hook swap of those
-   chains is observable.  But the masquerade NAT — the entire security reason the
-   postrouting chain exists, the crux Rounds 1/5 proved — was NEVER connected to the
-   parser's registration [global_hooks].  Every masquerade theorem in Router_Reach.v
-   is stated as
+   [Router_Hooks] lifts the VERDICT-bearing input/forward security theorems to the
+   hook level via [eval_hook hk_fuel global_hooks H...], so a wrong-hook swap of
+   those chains is observable.  But the masquerade NAT — the entire security reason
+   the postrouting chain exists, the crux [Router_Reach] proves — is not, by
+   itself, connected to the parser's registration [global_hooks].  Every masquerade
+   theorem in Router_Reach.v is stated as
 
        chain_out Hpostrouting global_postrouting p     (Hpostrouting hand-supplied,
                                                          global_postrouting hand-named)
@@ -137,7 +137,8 @@ Proof.
 Qed.
 
 (* CONFIRMED-FLOW stability through the hook: a later packet of an established masq
-   flow is rewritten from the STORED wan (Round 5), now through the parser's hook. *)
+   flow is rewritten from the STORED wan ([Router_Reach]'s flow-stability crux),
+   here through the parser's hook. *)
 Theorem postrouting_hook_confirmed_reuses_stored : forall p oa wan,
   saddr_private p = true ->
   oif_ppp0 p = true ->
@@ -232,7 +233,7 @@ Proof.
 Qed.
 
 (* ================================================================== *)
-(** ** Round 7 — the NF_NAT_MANIP "no usable WAN address" NF_DROP, closed.
+(** ** The NF_NAT_MANIP "no usable WAN address" NF_DROP, at the hook.
 
     THE GAP (medium / missing-flow): the semantics faithfully models
     nf_nat_masquerade.c:54-58 — when masquerade must take the exit interface's
@@ -243,12 +244,13 @@ Qed.
     [postrouting_hook_no_leak] requires a non-private/non-ppp0 packet (SAYS NOTHING
     about a private source out ppp0).  A private 192.168.0.0/16 source egressing ppp0
     on a fresh original-direction flow with no usable exit address sits in the scope
-    of NEITHER theorem: the model drops it (no real leak), but the property set never
-    asserted the Drop verdict OR the no-leak — so a mutation flipping this NF_DROP to
-    a silent accept-and-leave-unrewritten (leaking the internal 192.168.x.y un-NATted
-    to the WAN) satisfies every current NAT theorem verbatim.
+    of NEITHER theorem: the model drops it (no real leak), but without this section
+    the property set would never assert the Drop verdict OR the no-leak — a mutation
+    flipping this NF_DROP to a silent accept-and-leave-unrewritten (leaking the
+    internal 192.168.x.y un-NATted to the WAN) would satisfy every other NAT theorem
+    verbatim.
 
-    THE FIX below: (i) a VERDICT-bearing hook companion [eval_chain_trace_at_hook] to
+    THIS SECTION: (i) a VERDICT-bearing hook companion [eval_chain_trace_at_hook] to
     the data-plane [chain_out_at_hook] (so the verdict, not just [saddr4], is lifted
     through the parser's registration), and (ii) the third-case theorem
     [postrouting_hook_noaddr_drops] — at the parser-registered postrouting hook the
@@ -256,7 +258,7 @@ Qed.
     TRICHOTOMY iff [postrouting_hook_verdict_trichotomy] partitioning the postrouting
     hook verdict (Drop iff private ∧ ppp0 ∧ orig-fresh ∧ no-usable-address), making the
     NF_DROP path load-bearing.  A mutation making [nat_iface_addr_absent] return false
-    flips this verdict to Accept and is now observable. *)
+    flips this verdict to Accept and is observable. *)
 
 (* ------------------------------------------------------------------ *)
 (** *** A VERDICT-bearing data-plane hook evaluator.

@@ -146,8 +146,8 @@ fi
 rm -f "$RS3"
 
 # ---------------------------------------------------------------------------
-# 7. CONCAT-KEY vmap + notrack + fib(missing) round-trip.  These are the
-#    round-2 defects: the optimizer's concatenated-key vmap (`ip protocol . th
+# 7. CONCAT-KEY vmap + notrack + fib(missing) round-trip: the optimizer's
+#    concatenated-key vmap (`ip protocol . th
 #    dport vmap {...}`) must reappear in `nft list ruleset` (NFTA_SET_DESC +
 #    register-padded keys + NFT_SET_CONCAT), and `notrack` / `fib ... missing`
 #    must parse+encode.  We compare our readback against LIVE nft's own readback

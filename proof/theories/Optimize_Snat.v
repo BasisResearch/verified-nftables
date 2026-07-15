@@ -1,4 +1,4 @@
-(** * Optimize_Snat: the BARE snat value-map merge (G1).
+(** * Optimize_Snat: the BARE snat value-map merge.
 
     [nft -o] folds adjacent rules whose only difference is a NAT TARGET into a
     map keyed by a match, emitting the BARE map with NO head-set guard — exactly

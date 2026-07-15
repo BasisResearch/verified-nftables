@@ -1,4 +1,5 @@
-(** Round-2 NAT-flow-state fix demonstration (was: RED audit probe).
+(** NAT is FLOW-STATEFUL: the mapping is computed once, on the first packet of a
+    flow, and reused verbatim for every later packet.
 
     ── Kernel truth ─────────────────────────────────────────────────────────────
     nft_nat_eval (net/netfilter/nft_nat.c:103-126):
@@ -20,8 +21,8 @@
        evaluate to now.  Hence for `dnat to ip saddr`, every same-flow packet gets the
        destination chosen on packet 1, even if a later packet carries a different saddr.
 
-    ── Model (AFTER the Round-2 fix) ────────────────────────────────────────────
-    NAT is now FLOW-STATEFUL.  [env] carries a shared, flow-keyed NAT-mapping table
+    ── Model ────────────────────────────────────────────────────────────────────
+    [env] carries a shared, flow-keyed NAT-mapping table
     [e_nat : data -> option (option data * option data * option nat * option data)]
     (orig addr, new addr, new port, orig port).  [apply_nat] (Semantics.v)
     looks up [e_nat (pkt_flow p)]:
@@ -33,11 +34,13 @@
         verbatim, WITHOUT re-reading the operand — the kernel's
         `if (nf_ct_is_confirmed) return NF_ACCEPT` + nf_nat_manip_pkt-from-stored.
     So two same-flow packets with different saddrs both get the destination chosen on
-    packet 1.  The old per-packet divergence is gone; below we PROVE the kernel-correct
-    "same-flow packets share the stored mapping" property, axiom-free.
+    packet 1 — [e_nat] is to the NAT tuple exactly what [e_ct] is to the conntrack
+    mark (Red_CtMark_Crosspkt.v): shared, flow-keyed, threaded state.
 
-    This is the exact analogue of the Round-1 conntrack-mark fix, now for the NAT
-    tuple. *)
+    Regression gate: [same_flow_shares_stored_nat_mapping] and
+    [packet2_uses_packet1_mapping] lock in "same-flow packets share the stored
+    mapping"; a model regression to per-packet operand re-evaluation (each packet
+    dnat'd to its OWN saddr) makes them unprovable. *)
 
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.
@@ -108,10 +111,10 @@ Lemma mapping_stored_after_p1 :
   e_nat env_after_p1 [7;7] = Some (Some [9;9;9;9], Some [1;1;1;1], None, None).
 Proof. vm_compute. reflexivity. Qed.
 
-(* KERNEL-CORRECT, and now PROVABLE: packet 2 of the SAME flow gets packet 1's
-   stored destination (1.1.1.1), NOT its own saddr (2.2.2.2).  The model reuses the
-   tuple established on packet 1 — exactly what the kernel does (confirmed ct ->
-   rewrite from stored tuple).  This was UNPROVABLE before the Round-2 fix. *)
+(* KERNEL-CORRECT: packet 2 of the SAME flow gets packet 1's stored destination
+   (1.1.1.1), NOT its own saddr (2.2.2.2).  The model reuses the tuple established
+   on packet 1 — exactly what the kernel does (confirmed ct -> rewrite from stored
+   tuple). *)
 Lemma out_daddr_p2 : out_daddr p2 = [1;1;1;1].
 Proof. vm_compute. reflexivity. Qed.
 
@@ -125,7 +128,7 @@ Proof.
 Qed.
 
 (* And explicitly: packet 2's destination is packet 1's saddr (the stored mapping),
-   NOT packet 2's own saddr — the model now follows the stored tuple. *)
+   NOT packet 2's own saddr — the model follows the stored tuple. *)
 Theorem packet2_uses_packet1_mapping :
   out_daddr p2 = [1;1;1;1]            (* = packet 1's saddr, the stored mapping *)
   /\ out_daddr p2 <> [2;2;2;2].       (* NOT packet 2's own saddr *)

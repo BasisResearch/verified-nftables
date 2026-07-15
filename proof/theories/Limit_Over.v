@@ -8,14 +8,14 @@
       nft_quota.c:43       [if (nft_overquota(...) ^ nft_quota_invert(priv)) BREAK],
       nft_connlimit.c:47   [if ((count > limit) ^ priv->invert) BREAK].
 
-    Before the fix [eval_matchcond_body] used the SAME non-inverted form for all
-    three and never inspected the flag, so an `over`/inverted limiter matched
-    identically to the non-inverted form — the model PASSED the flood and
-    DROPPED the conforming traffic, the exact opposite of the kernel.
+    [eval_matchcond_body] XORs the same way.  A model that never inspects the
+    flag matches an `over`/inverted limiter identically to the non-inverted form —
+    PASSING the flood and DROPPING the conforming traffic, the exact opposite of
+    the kernel.
 
-    These theorems pin the corrected behaviour: for a FIXED oracle value, the
-    `over` and non-`over` specs give OPPOSITE match verdicts (the negation of the
-    red agent's "flag ignored" theorems, which are now unprovable). *)
+    These theorems pin the behaviour: for a FIXED oracle value, the `over` and
+    non-`over` specs give OPPOSITE match verdicts; a flag-blind model makes them
+    unprovable. *)
 From Stdlib Require Import List NArith Bool PeanoNat.
 Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.
@@ -33,8 +33,7 @@ Definition c_under : connlimit_spec := {| cl_count := 5; cl_flags := 0 |}.
 Definition c_over  : connlimit_spec := {| cl_count := 5; cl_flags := 1 |}.
 
 (** For the SAME oracle reading, the over form matches iff the non-over form
-    does NOT.  (Contrast the pre-fix [*_over_flag_ignored] theorems, which
-    asserted EQUAL results — no longer provable.) *)
+    does NOT.  (A flag-blind model would prove EQUAL results instead.) *)
 
 Theorem quota_over_flag_flips : forall p,
   e_quota (pkt_env p) q_under = e_quota (pkt_env p) q_over ->
@@ -109,13 +108,12 @@ Proof.
   rewrite (leb_false_of_lt _ _ H). reflexivity.
 Qed.
 
-(** ** The quota now consumes the PACKET LENGTH, not a fixed unit (the fix).
+(** ** The quota consumes the PACKET LENGTH, not a fixed unit.
 
-    Before the fix [env_quota_upd] decremented [e_quota] by exactly 1 per
-    evaluation, so two packets of any size depleted the bucket identically and a
-    quota of N "bytes" passed ~N packets regardless of size.  After the fix the
-    bucket loses the packet's [meta len] (= skb->len) on every evaluation, exactly
-    like byte-mode [limit].  These theorems pin the byte accounting:
+    [env_quota_upd] decrements the bucket by the packet's [meta len] (= skb->len)
+    on every evaluation, exactly like byte-mode [limit].  A fixed unit cost of 1
+    per evaluation would deplete a quota of N "bytes" by ~N packets regardless of
+    size.  These theorems pin the byte accounting:
     (1) the remaining bucket drops by the packet length, and
     (2) a single MTU-sized packet over-spends a small quota in ONE shot. *)
 Definition q_bytes100 : quota_spec := {| q_bytes := 100; q_consumed := 0; q_flags := 0 |}.
@@ -145,17 +143,15 @@ Proof.
   rewrite Hlen, Hq. reflexivity.
 Qed.
 
-(** ** The configured RATE/UNIT/BURST are now LIVE in the data plane.
+(** ** The configured RATE/UNIT/BURST are LIVE in the data plane.
 
-    Before the fix the limiter passed iff [0 < e_limit] — the configured
-    rate/unit/burst were never consulted in the dynamics, so a 1/second and a
-    1/hour limiter were observationally IDENTICAL at the same bucket level (the
-    red agent's [Limit_Inert_RED.rate_is_inert]).  After the fix the per-packet
-    COST and the bucket CAP are genuine functions of those parameters: a
-    1/second packet costs [window(1s)/rate = 1] token while a 1/hour packet costs
-    [window(1h)/rate = 3600], so at the SAME stored bucket level [= 1] the
-    1/second limiter PASSES and the 1/hour limiter FAILS.  Distinct rates give
-    distinct verdicts — the parameters are no longer inert. *)
+    The per-packet COST and the bucket CAP are genuine functions of the
+    configured parameters: a 1/second packet costs [window(1s)/rate = 1] token
+    while a 1/hour packet costs [window(1h)/rate = 3600], so at the SAME stored
+    bucket level [= 1] the 1/second limiter PASSES and the 1/hour limiter FAILS.
+    Distinct rates give distinct verdicts — the parameters are not inert.  (A
+    limiter that passed iff [0 < e_limit], never consulting rate/unit/burst,
+    would make 1/second and 1/hour observationally identical, refuted below.) *)
 Definition r_fast : limit_spec :=        (* 1/second burst 1 (packet rate) *)
   {| ls_rate := 1; ls_unit := 0; ls_burst := 1; ls_bytes := false; ls_flags := 0 |}.
 Definition r_slow : limit_spec :=        (* 1/hour   burst 1 (packet rate) *)
@@ -204,20 +200,19 @@ Proof.
     rewrite Hq, Heq. unfold b_lim; cbn [ls_rate ls_unit ls_burst ls_bytes ls_flags]. reflexivity.
 Qed.
 
-(** ** `connlimit` is a CONNECTION limiter, not a PACKET limiter (the fix).
+(** ** `connlimit` is a CONNECTION limiter, not a PACKET limiter.
 
-    Before the fix [e_connlimit] was a per-instance REMAINING-slot counter that
-    [env_connlimit_upd] decremented by one on EVERY passing packet, ignoring the
-    flow entirely.  So N+1 packets of ONE connection exhausted a `connlimit N` and
-    the (N+1)-th same-flow packet was BLOCKED — something the kernel never does:
-    nft_connlimit.c calls nf_conncount_add_skb, which returns -EEXIST (no-op) for an
-    already-counted connection, so [count] is the number of DISTINCT live
-    connections and the rule BREAKs only when `count > limit` (STRICT >).
+    nft_connlimit.c calls nf_conncount_add_skb, which returns -EEXIST (no-op) for
+    an already-counted connection, so [count] is the number of DISTINCT live
+    connections and the rule BREAKs only when `count > limit` (STRICT >).  A
+    per-instance remaining-slot counter decremented on EVERY passing packet would
+    instead block the (N+1)-th packet of ONE connection — something the kernel
+    never does.
 
-    After the fix [e_connlimit] is the flow-keyed SET of distinct counted
+    In the model [e_connlimit] is the flow-keyed SET of distinct counted
     connections, [set_connlimit] inserts [pkt_flow] IDEMPOTENTLY (the -EEXIST
     dedup), and [connlimit_under] tests [count <= limit].  These theorems pin the
-    corrected, CONNECTION-keyed behaviour. *)
+    CONNECTION-keyed behaviour. *)
 Definition cl1 : connlimit_spec := {| cl_count := 1; cl_flags := 0 |}.
 
 (* Re-adding an already-counted connection is a NO-OP: the count is unchanged, so
@@ -232,11 +227,11 @@ Proof.
   rewrite Hmem. reflexivity.
 Qed.
 
-(* The kernel-faithful refutation of the red property: under `connlimit count 1`,
-   the FIRST packet of a flow is counted (count = 1 <= 1, passes); the SECOND
-   packet of the SAME connection reads the SAME count (the flow is already in the
-   set: dedup), so it ALSO passes.  One connection is NEVER throttled by
-   `connlimit 1`.  (In the old model the 2nd same-flow packet was BLOCKED.) *)
+(* Under `connlimit count 1`, the FIRST packet of a flow is counted
+   (count = 1 <= 1, passes); the SECOND packet of the SAME connection reads the
+   SAME count (the flow is already in the set: dedup), so it ALSO passes.  One
+   connection is NEVER throttled by `connlimit 1` — a packet-decrement model
+   would block the 2nd same-flow packet. *)
 Theorem connlimit1_same_flow_both_pass : forall p1 p2,
   pkt_flow p1 = pkt_flow p2 ->
   e_connlimit (pkt_env p1) cl1 = [] ->

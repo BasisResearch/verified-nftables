@@ -1,19 +1,19 @@
 (** * Regression: a short / absent transport header must NOT match a negated
-    transport condition (the soundness fix for the silent-truncation bug).
+    transport condition (no silent truncation).
 
     Linux nft (net/netfilter/nft_payload.c, nft_payload_eval) BREAKs the rule
     (NFT_BREAK -> the rule does not match, the packet falls through to the next
     rule / the chain policy) when a TRANSPORT-base payload load runs off the end
     of the header, or the packet has no L4 header, or it is an IP fragment.
 
-    The previous model SILENTLY TRUNCATED such a read to a short/empty byte string,
-    so a *negated* transport match (`tcp dport != 22`) spuriously SUCCEEDED on a
-    fragment / short / no-L4 packet (truncated [] != [0;22] = true), and a chain
-    [tcp dport != 22 -> Drop] DROPPED such a packet — both FALSE of real nftables
-    (the kernel breaks; the packet reaches the policy).
+    A model that instead SILENTLY TRUNCATED such a read to a short/empty byte
+    string would make a *negated* transport match (`tcp dport != 22`) spuriously
+    SUCCEED on a fragment / short / no-L4 packet (truncated [] != [0;22] = true),
+    and a chain [tcp dport != 22 -> Drop] would DROP such a packet — both FALSE
+    of real nftables (the kernel breaks; the packet reaches the policy).
 
-    These theorems prove the FIXED behaviour, refuting the red agent's
-    previously-provable incorrect property:
+    These theorems pin the NFT_BREAK behaviour and refute the truncating
+    alternative:
       - [neq_dport_short_no_match]: the negated dport match is [false] on a packet
         with no usable transport header (the load breaks), regardless of negation;
       - [chain_dropneq_short_accepts]: a chain whose only rule is

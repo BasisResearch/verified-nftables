@@ -1,16 +1,6 @@
 (** A conntrack key read on a packet with NO conntrack entry BREAKs the rule
     (kernel-faithful), for EVERY key except `ct state`.
 
-    ── The infidelity this file closes ───────────────────────────────────────────
-    Before this fix, [load_ok (LCt k) p] fell into the catch-all [_ => true]: a
-    conntrack load NEVER broke.  So a `ct mark` / `ct direction` / `ct status` /
-    `ct expiration` / `ct id` / ... match was loadable on EVERY packet, and the rule
-    matched whenever the (oracle/derived) value agreed — even on an UNTRACKED packet
-    (after `notrack`/loopback) or a genuinely INVALID / no-entry packet, which the
-    kernel ALWAYS lets fall through (it never matches such a packet).  The red probe
-    proved, axiom-free, that `ct mark 0x10 accept` and `ct direction original accept`
-    matched a packet with no conntrack entry.
-
     ── Kernel truth (net/netfilter/nft_ct.c) ──────────────────────────────────────
         ct = nf_ct_get(pkt->skb, &ctinfo);            // NULL for an untracked/INVALID skb
         switch (priv->key) {
@@ -26,16 +16,21 @@
     (nft_notrack_eval: nf_ct_set(skb, NULL, IP_CT_UNTRACKED)); for an INVALID packet
     NULL with ctinfo == 0.  Either way every non-state key BREAKs.
 
-    ── Model (fixed) ──────────────────────────────────────────────────────────────
+    ── Model ──────────────────────────────────────────────────────────────────────
     A per-packet [pkt_ct_present] flag records whether `nf_ct_get` returns non-NULL
     (an entry exists).  [load_ok (LCt CKstate) = true] (state is the lone always-
     readable key); [load_ok (LCt k<>CKstate) = pkt_ct_present p] — the non-state load
     BREAKs when there is no entry, exactly mirroring the kernel's NFT_BREAK.  The VM
     ([ICtLoad] in [run_rule]/[run_rule_writes]) gates on the SAME [load_ok], so DSL and
-    VM stay in lock-step (the correctness proof is unchanged and still axiom-free).
+    VM stay in lock-step (compile_chain_correct is axiom-free with this gate).
     [do_load (LCt CKstate)] returns NF_CT_STATE_INVALID_BIT ([0;0;0;1]) on a no-entry,
     non-untracked packet and NF_CT_STATE_UNTRACKED_BIT ([0;0;0;64]) on an untracked one,
-    matching nft_ct.c:68-76. *)
+    matching nft_ct.c:68-76.
+
+    Regression gate: [ctmark_does_not_match_no_entry], [ctdir_does_not_match_no_entry],
+    and [vm_ctmark_load_breaks_no_entry] lock in the no-entry BREAK; a model whose
+    conntrack loads never break (a `ct mark 0x10 accept` matching a packet with no
+    conntrack entry) makes them unprovable. *)
 
 From Stdlib Require Import List Bool.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics.
@@ -103,21 +98,21 @@ Theorem ct_state_reads_invalid_when_no_entry :
   do_load (LCt CKstate) pkt_noentry = [0;0;0;1].
 Proof. reflexivity. Qed.
 
-(** REGRESSION (Round-8 fix): a no-entry / non-untracked packet provably MATCHES
+(** REGRESSION: a no-entry / non-untracked packet provably MATCHES
     `ct state invalid` — the state register [0;0;0;1] equals the immediate the parser
-    emits for the keyword `invalid` ([0;0;0;1]).  Before the fix the model produced
-    [0;0;0;32] (1<<5, a bit the kernel never assigns), so the rule could NEVER match. *)
+    emits for the keyword `invalid` ([0;0;0;1]).  The naive alternative (reading
+    1<<5 = [0;0;0;32], a bit the kernel never assigns) would make this rule
+    unmatchable and is refuted by this theorem. *)
 Theorem ctstate_invalid_matches_no_entry :
   eval_matchcond (MEq FCtState [0;0;0;1]) pkt_noentry = true.
 Proof. reflexivity. Qed.
 
-(** ── 3. THE REFUTATION of the red infidelity.
+(** ── 3. The no-entry BREAK, at the match level.
 
-    `ct mark 0x10 accept` no longer MATCHES the no-entry packet: the match is gated by
-    [match_loadable], which is now [false] (the load BREAKs), so [eval_matchcond]
+    `ct mark 0x10 accept` does NOT match the no-entry packet: the match is gated by
+    [match_loadable], which is [false] (the load BREAKs), so [eval_matchcond]
     returns [false] regardless of the conntrack table value — the rule falls through,
-    exactly as the kernel does.  The red probe's [ctmark_matches_untracked_BUG] is no
-    longer inhabitable for such a packet. *)
+    exactly as the kernel does. *)
 Definition m_ctmark : matchcond := MEq FCtMark [0;0;0;16].
 
 Theorem ctmark_does_not_match_no_entry :

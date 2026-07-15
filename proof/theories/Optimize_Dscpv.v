@@ -1,6 +1,6 @@
 (** * Optimize_Dscpv: masked-payload value+VERDICT->vmap fold for `ip dscp` / `ip6 dscp`.
 
-    Battery shape "dscp-masked-vmap" (gap G4):
+    Battery shape "dscp-masked-vmap":
 
         ip dscp 0x0a accept   ┐
         ip dscp 0x1a drop     ┘   =>   ip dscp vmap { 10 : accept, 26 : drop }

@@ -1,4 +1,4 @@
-(** Fires-witness for the G2 guarded transport-key concat merge: two adjacent
+(** Fires-witness for the guarded transport-key concat merge (Optimize_ConcatM): two adjacent
     `ip saddr <A>  tcp dport <P>  accept` rules — whose `tcp dport` selector carries
     its implicit `meta l4proto 6` guard BETWEEN the two selectors — collapse into ONE
     `ip saddr . tcp dport { A.P, B.Q } accept` lookup with the l4proto guard hoisted

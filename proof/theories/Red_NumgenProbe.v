@@ -1,5 +1,5 @@
-(** RED probe (now KERNEL-CORRECT, after the blue fix): `numgen inc` is a SHARED,
-    persistent round-robin counter, not a per-packet oracle.
+(** `numgen inc` is a SHARED, persistent round-robin counter, not a per-packet
+    oracle.
 
     Kernel nft_numgen.c nft_ng_inc_gen: a SHARED atomic counter, incremented per
     evaluation:  nval = (oval + 1 < modulus) ? oval + 1 : 0;  return nval + offset.
@@ -8,16 +8,16 @@
     and persistent across packets — this is what makes
     `numgen inc mod 2 ... map {0: A, 1: B}` a real per-connection load balancer.
 
-    BEFORE the fix the model made [pkt_numgen : numgen_spec -> data] a PER-PACKET
-    oracle, so two DISTINCT packets could evaluate the SAME `numgen inc mod 2` to the
-    SAME value (e.g. both 0) — UNSOUND (the kernel's round-robin forbids it) and TOO
-    WEAK (the round-robin guarantee was unprovable).
+    In the model `numgen inc` reads the SHARED counter [e_numgen] in the env and
+    the VM mutation evaluator ([run_program_mut_env]) ADVANCES it per evaluation,
+    threading it across packets exactly like the ct/nat/dynset env writes.  (The
+    RANDOM generator, ng_random = true, remains the per-packet oracle
+    [pkt_numgen] — nft_ng_random_gen draws get_random_u32 per packet.)
 
-    AFTER the fix `numgen inc` reads a SHARED counter [e_numgen] in the env and the
-    VM mutation evaluator ([run_program_mut_env]) ADVANCES it per evaluation, threading
-    it across packets exactly like the ct/nat/dynset env writes.  This file proves the
-    kernel-correct property the old model could not: two CONSECUTIVE evaluations of
-    `numgen inc mod 2` produce DIFFERENT, round-robin values. *)
+    Regression gate: [consecutive_numgen_inc_differ], [counter_advanced],
+    [numgen_is_round_robin], and [ng_p3_wraps] lock in the shared round-robin;
+    a model regression to a per-packet numgen oracle (two distinct packets both
+    reading 0) makes them unprovable. *)
 
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile.
@@ -64,7 +64,7 @@ Definition env_after_p1 : env := snd (run_program_mut_env [prog_ng] p1).
    state) — exactly how [run_program_mut_env]/[seq_eval_env] sequence packets. *)
 Definition p2 : packet := mkpkt env_after_p1 [2;2].
 
-(* ---- KERNEL-CORRECT, and now PROVABLE. ---- *)
+(* ---- The kernel-correct round-robin facts. ---- *)
 
 (* Packet 1 (the first evaluation) reads numgen = 0 + offset = 0. *)
 Theorem ng_p1 : ng_of p1 = [0;0;0;0].
@@ -74,14 +74,14 @@ Proof. vm_compute. reflexivity. Qed.
 Theorem counter_advanced : e_numgen env_after_p1 ng2 = 1.
 Proof. vm_compute. reflexivity. Qed.
 
-(* Packet 2 (the next evaluation, same traversal) reads the SUCCESSOR: 1 mod 2 = 1.
-   This is the round-robin step the per-packet oracle could not express. *)
+(* Packet 2 (the next evaluation, same traversal) reads the SUCCESSOR: 1 mod 2 = 1
+   — the round-robin step, which requires the shared cross-packet counter. *)
 Theorem ng_p2 : ng_of p2 = [0;0;0;1].
 Proof. vm_compute. reflexivity. Qed.
 
-(* The headline property the OLD model PROVED FALSE (it proved they were EQUAL):
-   two CONSECUTIVE `numgen inc mod 2` evaluations DIFFER — the kernel's round-robin
-   guarantee.  Now provable, axiom-free. *)
+(* Headline: two CONSECUTIVE `numgen inc mod 2` evaluations DIFFER — the kernel's
+   round-robin guarantee (nft_ng_inc_gen).  Axiom-free; a per-packet numgen oracle
+   would instead let both evaluations read the same value. *)
 Theorem consecutive_numgen_inc_differ : ng_of p1 <> ng_of p2.
 Proof. rewrite ng_p1, ng_p2. discriminate. Qed.
 
