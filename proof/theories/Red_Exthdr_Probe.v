@@ -49,8 +49,8 @@ Definition env0 : env :=
    model must STILL accept, because the not-present guard refuses to load the
    value at all. *)
 Definition pkt_no_maxseg : packet :=
-  {| pkt_env := env0; pkt_meta := fun _ => [];
-     pkt_ct := fun _ => []; pkt_sock := fun _ => [];
+  {| pkt_meta := fun _ => [];
+     pkt_sock := fun _ => [];
      pkt_eh := fun _ _ _ _ pr => if pr then [0] else maxseg_val;
      pkt_lh := []; pkt_nh := []; pkt_th := []; pkt_ih := [];
      pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
@@ -63,8 +63,8 @@ Definition pkt_no_maxseg : packet :=
 (* A packet WITH a maxseg option present and value 1460: existence oracle returns
    [1] (present), value oracle returns the bytes.  The kernel matches -> DROP. *)
 Definition pkt_with_maxseg : packet :=
-  {| pkt_env := env0; pkt_meta := fun _ => [];
-     pkt_ct := fun _ => []; pkt_sock := fun _ => [];
+  {| pkt_meta := fun _ => [];
+     pkt_sock := fun _ => [];
      pkt_eh := fun _ _ _ _ pr => if pr then [1] else maxseg_val;
      pkt_lh := []; pkt_nh := []; pkt_th := []; pkt_ih := [];
      pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
@@ -81,27 +81,27 @@ Proof. vm_compute. reflexivity. Qed.
 
 (* The existence oracle reports the option ABSENT for this packet. *)
 Lemma maxseg_option_is_absent :
-  do_load (LExthdr EPtcpopt 2 0 0 true) pkt_no_maxseg = [0].
+  do_load (LExthdr EPtcpopt 2 0 0 true) env0 pkt_no_maxseg = [0].
 Proof. vm_compute. reflexivity. Qed.
 
 (* KERNEL-CORRECT: an absent maxseg option BREAKs the value load -> the rule does
    not match -> the chain ACCEPTS via its policy.  Holds via BOTH the pure
    evaluator and the stateful (mutation) evaluator. *)
 Theorem model_accepts_like_kernel :
-  eval_chain filter_chain pkt_no_maxseg = Accept.
+  eval_chain filter_chain env0 pkt_no_maxseg = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem model_accepts_like_kernel_mut :
-  eval_chain_mut filter_chain pkt_no_maxseg = Accept.
+  eval_chain_mut filter_chain env0 pkt_no_maxseg = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* KERNEL-CORRECT: a PRESENT maxseg option whose value matches 1460 DROPs. *)
 Theorem model_drops_when_present :
-  eval_chain filter_chain pkt_with_maxseg = Drop.
+  eval_chain filter_chain env0 pkt_with_maxseg = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem model_drops_when_present_mut :
-  eval_chain_mut filter_chain pkt_with_maxseg = Drop.
+  eval_chain_mut filter_chain env0 pkt_with_maxseg = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 (* An EXISTENCE check (present=true) is always loadable even when absent — the

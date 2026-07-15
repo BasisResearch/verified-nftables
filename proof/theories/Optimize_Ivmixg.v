@@ -196,50 +196,50 @@ Qed.
 (** ** The per-element bridge: an element's ORIGINAL head match equals the [MRange]
     match of its interval.  Trivial for a range; for a point it is the degenerate
     interval identity, under the FIXED-WIDTH guard [melem_ok]. *)
-Lemma eval_melem_mrange : forall f e p,
-  melem_ok f e = true ->
-  eval_matchcond (melem_mc f e) p
-  = eval_matchcond (MRange f false (fst (melem_iv e)) (snd (melem_iv e))) p.
+Lemma eval_melem_mrange : forall f el en p,
+  melem_ok f el = true ->
+  eval_matchcond (melem_mc f el) en p
+  = eval_matchcond (MRange f false (fst (melem_iv el)) (snd (melem_iv el))) en p.
 Proof.
-  intros f e p Hok. destruct e as [v | lo hi]; cbn [melem_mc melem_iv fst snd].
+  intros f el en p Hok. destruct el as [v | lo hi]; cbn [melem_mc melem_iv fst snd].
   - unfold melem_ok in Hok.
     destruct (field_fixed_len f) as [len |] eqn:Hfx; [| discriminate].
     apply Nat.eqb_eq in Hok. subst len.
     rewrite eval_mrange_iv.
     destruct (field_loadable f p) eqn:Hld; cbn [andb].
-    + rewrite (eval_mcmp_point f v p Hld (field_fixed_len_loaded f (length v) p Hfx Hld)).
+    + rewrite (eval_mcmp_point f v en p Hld (field_fixed_len_loaded f (length v) en p Hfx Hld)).
       rewrite data_in_iv_point_eqb. reflexivity.
-    + apply (eval_mcmp_point_unload f v p Hld).
+    + apply (eval_mcmp_point_unload f v en p Hld).
   - reflexivity.
 Qed.
 
 (** ** Loadability / outcome / applies of the guarded element shells. *)
 
-Lemma orig_ruleGm_applies : forall f gm e body r1 p,
-  rule_applies (orig_ruleGm f gm e body r1) p
-  = andb (eval_matchcond gm p)
-         (andb (eval_matchcond (melem_mc f e) p) (rule_applies_walk body p)).
+Lemma orig_ruleGm_applies : forall f gm el body r1 e p,
+  rule_applies (orig_ruleGm f gm el body r1) e p
+  = andb (eval_matchcond gm e p)
+         (andb (eval_matchcond (melem_mc f el) e p) (rule_applies_walk body e p)).
 Proof.
   intros. unfold orig_ruleGm. rewrite rule_applies_mk_head.
   cbn [rule_applies_walk]. reflexivity.
 Qed.
 
-Lemma merged_ruleGs_loadable_eq_origm : forall f gm name e body r1 p,
-  rule_loadable (merged_ruleGs f gm name body r1) p
-  = rule_loadable (orig_ruleGm f gm e body r1) p.
+Lemma merged_ruleGs_loadable_eq_origm : forall f gm name el body r1 e p,
+  rule_loadable (merged_ruleGs f gm name body r1) e p
+  = rule_loadable (orig_ruleGm f gm el body r1) e p.
 Proof.
-  intros. destruct e as [v | lo hi]; unfold orig_ruleGm; cbn [melem_mc].
-  - apply (merged_ruleGs_loadable_eq_orig f gm name v body r1 p).
-  - apply (merged_ruleGs_loadable_eq_origr f gm name lo hi body r1 p).
+  intros. destruct el as [v | lo hi]; unfold orig_ruleGm; cbn [melem_mc].
+  - apply (merged_ruleGs_loadable_eq_orig f gm name v body r1 e p).
+  - apply (merged_ruleGs_loadable_eq_origr f gm name lo hi body r1 e p).
 Qed.
 
-Lemma merged_ruleGs_outcome_eq_origm : forall f gm name e body r1 p,
-  outcome (merged_ruleGs f gm name body r1) p
-  = outcome (orig_ruleGm f gm e body r1) p.
+Lemma merged_ruleGs_outcome_eq_origm : forall f gm name el body r1 e p,
+  outcome (merged_ruleGs f gm name body r1) e p
+  = outcome (orig_ruleGm f gm el body r1) e p.
 Proof.
-  intros. destruct e as [v | lo hi]; unfold orig_ruleGm; cbn [melem_mc].
-  - apply (merged_ruleGs_outcome_eq_orig f gm name v body r1 p).
-  - apply (merged_ruleGs_outcome_eq_origr f gm name lo hi body r1 p).
+  intros. destruct el as [v | lo hi]; unfold orig_ruleGm; cbn [melem_mc].
+  - apply (merged_ruleGs_outcome_eq_orig f gm name v body r1 e p).
+  - apply (merged_ruleGs_outcome_eq_origr f gm name lo hi body r1 e p).
 Qed.
 
 (** ** Executable N-WAY guarded mixed-set pass (fuel-driven). *)

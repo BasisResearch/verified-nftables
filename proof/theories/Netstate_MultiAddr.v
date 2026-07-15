@@ -119,18 +119,18 @@ Qed.
     from the multi-address state, not "the one address". *)
 
 (** The egress interface name a packet exits by (the masquerade key). *)
-Definition egress_ifname (p : packet) : data := field_value FMetaOifname p.
+Definition egress_ifname (e : env) (p : packet) : data := field_value FMetaOifname e p.
 
 (** The address LIST masquerade selects from, by family. *)
-Definition masq_ifaddrs (fam : String.string) (p : packet) : list ifaddr :=
+Definition masq_ifaddrs (fam : String.string) (e : env) (p : packet) : list ifaddr :=
   if String.eqb fam nat_fam_ip6
-  then e_ifaddrs6 (pkt_env p) (egress_ifname p)
-  else e_ifaddrs  (pkt_env p) (egress_ifname p).
+  then e_ifaddrs6 e (egress_ifname e p)
+  else e_ifaddrs  e (egress_ifname e p).
 
-Lemma masq_saddr_is_select : forall fam p,
-  masq_saddr fam p = inet_select_addr (masq_ifaddrs fam p) scope_universe.
+Lemma masq_saddr_is_select : forall fam e p,
+  masq_saddr fam e p = inet_select_addr (masq_ifaddrs fam e p) scope_universe.
 Proof.
-  intros fam p. unfold masq_saddr, masq_ifaddrs, egress_ifname.
+  intros fam e p. unfold masq_saddr, masq_ifaddrs, egress_ifname.
   destruct (String.eqb fam nat_fam_ip6).
   - reflexivity.   (* e_ifaddr6 = inet_select_addr (e_ifaddrs6 ...) scope_universe, by definition *)
   - reflexivity.
@@ -140,16 +140,16 @@ Qed.
     address, that address is a CORRECT selection from the egress interface's
     address set — it is the [ifa_local] of the FIRST non-secondary, in-scope
     primary in the interface's list. *)
-Theorem masq_saddr_is_selected_primary : forall fam p a,
-  masq_saddr fam p = a -> a <> [] ->
+Theorem masq_saddr_is_selected_primary : forall fam e p a,
+  masq_saddr fam e p = a -> a <> [] ->
   exists pre ia post,
-    masq_ifaddrs fam p = pre ++ ia :: post
+    masq_ifaddrs fam e p = pre ++ ia :: post
     /\ ifa_local ia = a
     /\ ifa_secondary ia = false
     /\ ifa_scope ia <= scope_universe
     /\ (forall x, In x pre -> ifa_eligible scope_universe x = false).
 Proof.
-  intros fam p a Hsel Hne.
+  intros fam e p a Hsel Hne.
   rewrite masq_saddr_is_select in Hsel.
   destruct (inet_select_addr_is_first_eligible _ _ _ Hsel Hne)
     as (pre & ia & post & Hl & Hloc & Helig & Hpre).
@@ -166,27 +166,27 @@ Print Assumptions masq_saddr_is_selected_primary.
     interface has NO eligible (non-secondary, in-scope) primary address — the
     kernel's `newsrc = inet_select_addr(out,...); if (!newsrc) return NF_DROP;`.
     (Well-formed interface lists: a real [ifa_local] is a non-empty address.) *)
-Theorem masq_drop_iff_no_eligible_addr : forall fam p,
-  ifaddrs_wf (masq_ifaddrs fam p) ->
-  ( (match masq_saddr fam p with [] => true | _ => false end) = true
-    <-> (forall ia, In ia (masq_ifaddrs fam p) -> ifa_eligible scope_universe ia = false) ).
+Theorem masq_drop_iff_no_eligible_addr : forall fam e p,
+  ifaddrs_wf (masq_ifaddrs fam e p) ->
+  ( (match masq_saddr fam e p with [] => true | _ => false end) = true
+    <-> (forall ia, In ia (masq_ifaddrs fam e p) -> ifa_eligible scope_universe ia = false) ).
 Proof.
-  intros fam p Hwf. rewrite masq_saddr_is_select.
+  intros fam e p Hwf. rewrite masq_saddr_is_select.
   rewrite <- (inet_select_addr_empty_iff_no_eligible _ scope_universe Hwf).
-  destruct (inet_select_addr (masq_ifaddrs fam p) scope_universe);
+  destruct (inet_select_addr (masq_ifaddrs fam e p) scope_universe);
     split; intro H; congruence.
 Qed.
 
 (** Tie to the actual trace gate [nat_iface_addr_absent] for a masquerade spec:
     it is precisely the "no eligible address" condition above. *)
-Theorem nat_iface_addr_absent_masq_iff : forall h ns p,
+Theorem nat_iface_addr_absent_masq_iff : forall h ns e p,
   nat_kind ns = nat_masq_kind ->
-  ifaddrs_wf (masq_ifaddrs (nat_addrfamily_pkt ns p) p) ->
-  ( nat_iface_addr_absent h ns p = true
-    <-> (forall ia, In ia (masq_ifaddrs (nat_addrfamily_pkt ns p) p) ->
+  ifaddrs_wf (masq_ifaddrs (nat_addrfamily_pkt ns p) e p) ->
+  ( nat_iface_addr_absent h ns e p = true
+    <-> (forall ia, In ia (masq_ifaddrs (nat_addrfamily_pkt ns p) e p) ->
                     ifa_eligible scope_universe ia = false) ).
 Proof.
-  intros h ns p Hk Hwf. unfold nat_iface_addr_absent.
+  intros h ns e p Hk Hwf. unfold nat_iface_addr_absent.
   rewrite Hk. unfold nat_masq_kind. rewrite String.eqb_refl.
   apply masq_drop_iff_no_eligible_addr; auto.
 Qed.
@@ -263,12 +263,12 @@ Qed.
     route table, `field_value (FFib "daddr" FRtype)` reports the local type-code for
     a host-local destination.  ([pkt_fibkey p "daddr"] is the packet's destination
     key.) *)
-Theorem field_fib_daddr_local_of_host_local : forall p ifaces,
-  e_routes (pkt_env p) = local_routes (pkt_env p) ifaces ->
-  In (pkt_fibkey p "daddr") (host_local_addrs (pkt_env p) ifaces) ->
-  field_value (FFib "daddr" FRtype) p = fib_local_type.
+Theorem field_fib_daddr_local_of_host_local : forall e p ifaces,
+  e_routes e = local_routes e ifaces ->
+  In (pkt_fibkey p "daddr") (host_local_addrs e ifaces) ->
+  field_value (FFib "daddr" FRtype) e p = fib_local_type.
 Proof.
-  intros p ifaces Hroutes Hin.
+  intros e p ifaces Hroutes Hin.
   unfold field_value. cbn [field_load do_load].
   rewrite Hroutes. now apply fib_local_of_host_local.
 Qed.

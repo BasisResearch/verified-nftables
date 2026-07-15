@@ -75,24 +75,24 @@ Qed.
     [Drop], and [Accept] iff it is [Accept] (the only two verdicts the
     policy-resolved [eval_table] returns for these chains). *)
 
-Lemma eval_ruleset_singleton : forall f cs b p,
-  eval_ruleset f [(cs, b)] p =
-  (if base_continues (eval_table f cs b p) then Accept else eval_table f cs b p).
+Lemma eval_ruleset_singleton : forall f cs b e p,
+  eval_ruleset f [(cs, b)] e p =
+  (if base_continues (eval_table f cs b e p) then Accept else eval_table f cs b e p).
 Proof. intros. reflexivity. Qed.
 
-Lemma singleton_hook_drop : forall f cs b p,
-  eval_ruleset f [(cs, b)] p = Drop <-> eval_table f cs b p = Drop.
+Lemma singleton_hook_drop : forall f cs b e p,
+  eval_ruleset f [(cs, b)] e p = Drop <-> eval_table f cs b e p = Drop.
 Proof.
-  intros f cs b p. rewrite eval_ruleset_singleton.
-  destruct (eval_table f cs b p) eqn:E; cbn; split; intro H;
+  intros f cs b e p. rewrite eval_ruleset_singleton.
+  destruct (eval_table f cs b e p) eqn:E; cbn; split; intro H;
     try discriminate; try reflexivity; try assumption.
 Qed.
 
-Lemma singleton_hook_accept : forall f cs b p,
-  eval_table f cs b p = Accept ->
-  eval_ruleset f [(cs, b)] p = Accept.
+Lemma singleton_hook_accept : forall f cs b e p,
+  eval_table f cs b e p = Accept ->
+  eval_ruleset f [(cs, b)] e p = Accept.
 Proof.
-  intros f cs b p H. rewrite eval_ruleset_singleton, H. reflexivity.
+  intros f cs b e p H. rewrite eval_ruleset_singleton, H. reflexivity.
 Qed.
 
 (* ------------------------------------------------------------------ *)
@@ -100,19 +100,19 @@ Qed.
     equals the per-chain verdict the existing theorems characterise.  These let
     every per-chain result transfer to the hook the packet actually hits. *)
 
-Theorem input_hook_drop_iff_inbound_drop : forall p,
-  eval_hook hk_fuel global_hooks Hinput p = Drop
-  <-> eval_table hk_fuel global_chains global_inbound p = Drop.
+Theorem input_hook_drop_iff_inbound_drop : forall e p,
+  eval_hook hk_fuel global_hooks Hinput e p = Drop
+  <-> eval_table hk_fuel global_chains global_inbound e p = Drop.
 Proof.
-  intros p. unfold eval_hook. rewrite select_input.
+  intros e p. unfold eval_hook. rewrite select_input.
   apply singleton_hook_drop.
 Qed.
 
-Theorem forward_hook_drop_iff_forward_drop : forall p,
-  eval_hook hk_fuel global_hooks Hforward p = Drop
-  <-> eval_table hk_fuel global_chains global_forward p = Drop.
+Theorem forward_hook_drop_iff_forward_drop : forall e p,
+  eval_hook hk_fuel global_hooks Hforward e p = Drop
+  <-> eval_table hk_fuel global_chains global_forward e p = Drop.
 Proof.
-  intros p. unfold eval_hook. rewrite select_forward.
+  intros e p. unfold eval_hook. rewrite select_forward.
   apply singleton_hook_drop.
 Qed.
 
@@ -125,17 +125,17 @@ Qed.
 (* INPUT hook: a new-state packet arriving on the world interface (ppp0) that is
    not ssh from 81.209.165.42 is DROPPED by whatever chain is registered at the
    input hook.  ([Router_Input.world_ingress_locked_down], lifted.) *)
-Theorem input_hook_world_locked : forall p,
-  pkt_env p = gen_env ->
+Theorem input_hook_world_locked : forall e p,
+  e = gen_env ->
   field_loadable FCtState p = true ->
   field_loadable FMetaIifname p = true ->
   Router_Input.world_loads p = true ->
-  field_value FCtState p = Router_Input.cts_new ->
-  field_value FMetaIifname p = Router_Input.if_ppp0 ->
-  Router_Input.world_ssh p = false ->
-  eval_hook hk_fuel global_hooks Hinput p = Drop.
+  field_value FCtState e p = Router_Input.cts_new ->
+  field_value FMetaIifname e p = Router_Input.if_ppp0 ->
+  Router_Input.world_ssh e p = false ->
+  eval_hook hk_fuel global_hooks Hinput e p = Drop.
 Proof.
-  intros p Hpe Hl1 Hl2 Hwl Hct Hppp0 Hssh.
+  intros e p Hpe Hl1 Hl2 Hwl Hct Hppp0 Hssh.
   apply input_hook_drop_iff_inbound_drop.
   apply world_ingress_locked_down; assumption.
 Qed.
@@ -143,13 +143,13 @@ Qed.
 (* FORWARD hook: unsolicited world->private traffic (new ct-state, not arriving
    on the LAN interface eth1) is NOT forwarded — the NAT-router crux, now at the
    hook netfilter dispatches.  ([Router_Forward.forward_unsolicited_dropped], lifted.) *)
-Theorem forward_hook_unsolicited_dropped : forall p,
-  pkt_env p = gen_env ->
-  field_value FCtState p = Router_Forward.cts_new ->
-  Router_Forward.iif_eth1 p = false ->
-  eval_hook hk_fuel global_hooks Hforward p = Drop.
+Theorem forward_hook_unsolicited_dropped : forall e p,
+  e = gen_env ->
+  field_value FCtState e p = Router_Forward.cts_new ->
+  Router_Forward.iif_eth1 e p = false ->
+  eval_hook hk_fuel global_hooks Hforward e p = Drop.
 Proof.
-  intros p Hpe Hct Hiif.
+  intros e p Hpe Hct Hiif.
   apply forward_hook_drop_iff_forward_drop.
   apply forward_unsolicited_dropped; assumption.
 Qed.
@@ -171,22 +171,22 @@ Definition global_hooks_bug : list hooked_chain :=
 (* At the CORRECT input hook the parser registers, the unlisted LAN service is
    dropped (inbound_private's service filter rejects tcp/25). *)
 Theorem input_hook_smtp_correct_drop :
-  eval_hook hk_fuel global_hooks Hinput pkt_lan_smtp = Drop.
+  eval_hook hk_fuel global_hooks Hinput env_lan pkt_lan_smtp = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 (* At the BUGGED input hook (global_forward registered there), the bare
    `iif eth1 accept` rule accepts the unlisted LAN service unconditionally —
    bypassing inbound_private's whole service filter. *)
 Theorem input_hook_smtp_bug_accept :
-  eval_hook hk_fuel global_hooks_bug Hinput pkt_lan_smtp = Accept.
+  eval_hook hk_fuel global_hooks_bug Hinput env_lan pkt_lan_smtp = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The observable: the parser's registration and the swapped one disagree on a
    real packet — so the hook-level theorems genuinely depend on the registration
    the parser emitted, not a chain the prover named. *)
 Theorem hook_swap_observable :
-  eval_hook hk_fuel global_hooks     Hinput pkt_lan_smtp
-  <> eval_hook hk_fuel global_hooks_bug Hinput pkt_lan_smtp.
+  eval_hook hk_fuel global_hooks     Hinput env_lan pkt_lan_smtp
+  <> eval_hook hk_fuel global_hooks_bug Hinput env_lan pkt_lan_smtp.
 Proof.
   rewrite input_hook_smtp_correct_drop, input_hook_smtp_bug_accept. discriminate.
 Qed.
@@ -196,5 +196,5 @@ Qed.
    forward chain it puts at input accepts the LAN smtp packet that the locked
    input must drop.  (We witness the discriminating verdict directly.) *)
 Theorem bug_breaks_input_lockdown :
-  eval_hook hk_fuel global_hooks_bug Hinput pkt_lan_smtp <> Drop.
+  eval_hook hk_fuel global_hooks_bug Hinput env_lan pkt_lan_smtp <> Drop.
 Proof. rewrite input_hook_smtp_bug_accept. discriminate. Qed.

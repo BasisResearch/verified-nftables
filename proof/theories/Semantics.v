@@ -30,7 +30,14 @@
     The mutation strand (eval_rules_mut / _mut_env / _trace / seq_eval_env) and
     the jump strand (eval_rules_j / eval_table / eval_ruleset / eval_hook /
     seq_eval) are DISJOINT: no evaluator both threads writes and follows jumps,
-    and mutation x jump/goto is not jointly verified. *)
+    and mutation x jump/goto is not jointly verified.
+
+    Within the mutation strand every evaluator consumes ONE step function per
+    side — [dsl_rule_step] (DSL) / [vm_rule_step] (VM), each returning
+    (guarded verdict, packet left) — and the _mut evaluators are the [fst]
+    projections of the _env ones ([eval_rules_mut_env_fst] /
+    [run_program_mut_env_fst]), so their compiler proofs are derived, not
+    re-proved. *)
 
 From Stdlib Require Import List NArith ZArith Bool Lia.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode.
@@ -189,14 +196,14 @@ Definition lim_max (spec : limit_spec) : nat :=
 
 (** The token count available to THIS evaluation: the stored bucket [e_limit]
     capped at [lim_max] (elapsed-time refill abstracted to +0 in a traversal). *)
-Definition lim_avail (p : packet) (spec : limit_spec) : nat :=
-  Nat.min (e_limit (pkt_env p) spec) (lim_max spec).
+Definition lim_avail (e : env) (p : packet) (spec : limit_spec) : nat :=
+  Nat.min (e_limit e spec) (lim_max spec).
 
 (** The non-inverted "under / not exceeded" test: PASS iff the available tokens
     cover the cost ([delta = tokens - cost >= 0]).  This is the value nft_limit_eval
     returns BEFORE XOR-ing the invert bit. *)
-Definition lim_under (p : packet) (spec : limit_spec) : bool :=
-  Nat.leb (lim_cost p spec) (lim_avail p spec).
+Definition lim_under (e : env) (p : packet) (spec : limit_spec) : bool :=
+  Nat.leb (lim_cost p spec) (lim_avail e p spec).
 
 (** Per-evaluation byte cost charged to a `quota`: the packet's [meta len], i.e.
     the kernel's [skb->len] (nft_overquota: [consumed += skb->len]).  This is the
@@ -210,8 +217,8 @@ Definition quota_cost (p : packet) : nat :=
     remaining terms that is PASS iff [consumed + cost <= quota], i.e. iff
     [cost <= remaining] — a packet landing exactly on the quota still passes.
     Mirrors [lim_under]'s [Nat.leb cost avail]. *)
-Definition quota_under (p : packet) (spec : quota_spec) : bool :=
-  Nat.leb (quota_cost p) (e_quota (pkt_env p) spec).
+Definition quota_under (e : env) (p : packet) (spec : quota_spec) : bool :=
+  Nat.leb (quota_cost p) (e_quota e spec).
 
 (** The list of distinct connection flow-ids counted for a `connlimit` instance
     AFTER (idempotently) accounting for the current packet's connection
@@ -226,8 +233,8 @@ Definition connlimit_after (e : env) (spec : connlimit_spec) (flow : data) : lis
 
 (** The connection COUNT a `connlimit` reads = number of distinct flows after the
     idempotent insert (kernel [count = READ_ONCE(priv->list->count)]). *)
-Definition connlimit_count (p : packet) (spec : connlimit_spec) : nat :=
-  List.length (connlimit_after (pkt_env p) spec (pkt_flow p)).
+Definition connlimit_count (e : env) (p : packet) (spec : connlimit_spec) : nat :=
+  List.length (connlimit_after e spec (pkt_flow p)).
 
 (** The non-inverted "under / not over the connection limit" test.  The kernel
     BREAKs iff [(count > limit) ^ invert] (nft_connlimit.c:47, STRICT >), so the
@@ -236,22 +243,22 @@ Definition connlimit_count (p : packet) (spec : connlimit_spec) : nat :=
     number of packets of ONE connection read the SAME count and a `connlimit N`
     with [N >= 1] never throttles a single connection; and [count <= N] permits up
     to N+1 distinct connections (count breaks only at N+1 > N). *)
-Definition connlimit_under (p : packet) (spec : connlimit_spec) : bool :=
-  negb (Nat.ltb (cl_count spec) (connlimit_count p spec)).
+Definition connlimit_under (e : env) (p : packet) (spec : connlimit_spec) : bool :=
+  negb (Nat.ltb (cl_count spec) (connlimit_count e p spec)).
 
 (** The unguarded comparison body of a match (the original semantics). *)
-Definition eval_matchcond_body (m : matchcond) (p : packet) : bool :=
+Definition eval_matchcond_body (m : matchcond) (e : env) (p : packet) : bool :=
   match m with
-  | MEq  f v => data_eqb (List.firstn (List.length v) (field_value f p)) v
-  | MNeq f v => negb (data_eqb (List.firstn (List.length v) (field_value f p)) v)
+  | MEq  f v => data_eqb (List.firstn (List.length v) (field_value f e p)) v
+  | MNeq f v => negb (data_eqb (List.firstn (List.length v) (field_value f e p)) v)
   | MRange f neg lo hi =>
-      eval_range (if neg then CNe else CEq) (field_value f p) lo hi
+      eval_range (if neg then CNe else CEq) (field_value f e p) lo hi
   | MMasked f neg mask xor v =>
-      eval_cmp (if neg then CNe else CEq) (data_bitops (field_value f p) mask xor) v
-  | MCmp f op v => eval_cmp op (field_value f p) v
+      eval_cmp (if neg then CNe else CEq) (data_bitops (field_value f e p) mask xor) v
+  | MCmp f op v => eval_cmp op (field_value f e p) v
   | MConcatSet fields neg name =>
       (* membership of the concatenated key in the *named* set, whose contents are
-         read from the runtime environment [pkt_env p], not inlined in the rule.
+         read from the runtime environment [e], not inlined in the rule.
          A concatenated set is NFT_SET_CONCAT: the kernel matches EACH FIELD
          against its OWN [lo,hi] independently (the set is the cross-product of
          the per-field intervals, NOT one flat lexicographic interval over the
@@ -259,15 +266,15 @@ Definition eval_matchcond_body (m : matchcond) (p : packet) : bool :=
          [concat_set_mem], which splits each stored element's bound by the
          per-field widths and tests every field separately.  For a single field
          this coincides with the old flat [set_mem] ([concat_set_mem_single]). *)
-      xorb neg (concat_set_mem (map (fun f => field_value f p) fields)
-                         (e_set (pkt_env p) name))
+      xorb neg (concat_set_mem (map (fun f => field_value f e p) fields)
+                         (e_set e name))
   | MTransform f ts op v =>
-      eval_cmp op (apply_transforms ts (field_value f p)) v
+      eval_cmp op (apply_transforms ts (field_value f e p)) v
   | MSetT f ts neg name =>
-      xorb neg (set_mem (apply_transforms ts (field_value f p))
-                         (e_set (pkt_env p) name))
+      xorb neg (set_mem (apply_transforms ts (field_value f e p))
+                         (e_set e name))
   | MRangeT f ts neg lo hi =>
-      eval_range (if neg then CNe else CEq) (apply_transforms ts (field_value f p)) lo hi
+      eval_range (if neg then CNe else CEq) (apply_transforms ts (field_value f e p)) lo hi
   (* Each limiter carries an "over"/invert bit (bit 0 of its flags field).  The
      kernel XORs the under/not-exceeded test with that bit:
        nft_limit.c:48,52  (returns [invert] when tokens remain, [!invert] when
@@ -278,24 +285,24 @@ Definition eval_matchcond_body (m : matchcond) (p : packet) : bool :=
      (match iff NOT exceeded); the over-bit flips it so an inverted limiter
      matches iff the resource is EXCEEDED. *)
   | MLimit spec =>
-      xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (lim_under p spec)
+      xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (lim_under e p spec)
   | MQuota spec =>
-      xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (quota_under p spec)
+      xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (quota_under e p spec)
   | MConnlimit spec =>
-      xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (connlimit_under p spec)
+      xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (connlimit_under e p spec)
   | MConcatSetT elems neg name =>
       (* like [MConcatSet] but each element is transformed before concatenation;
-         contents read from the named set in [pkt_env p].  Per-field membership
+         contents read from the named set in [e].  Per-field membership
          (cross-product of per-field intervals), as for [MConcatSet]. *)
       xorb neg (concat_set_mem
-        (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) elems)
-        (e_set (pkt_env p) name))
+        (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) e p)) elems)
+        (e_set e name))
   end.
 
 (** A match condition: [false] (does not apply) if its load breaks, else the
     ordinary comparison. *)
-Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
-  andb (match_loadable m p) (eval_matchcond_body m p).
+Definition eval_matchcond (m : matchcond) (e : env) (p : packet) : bool :=
+  andb (match_loadable m p) (eval_matchcond_body m e p).
 
 (** A `notrack` statement: force this packet's conntrack state to IP_CT_UNTRACKED for
     the rest of its traversal, so a LATER `ct state` read returns
@@ -314,7 +321,7 @@ Definition eval_matchcond (m : matchcond) (p : packet) : bool :=
     the entry's REAL state, not the UNTRACKED bit.  We mirror this by leaving the
     packet UNCHANGED when [pkt_ct_present p = true].  Only when there is no entry
     ([pkt_ct_present = false]) does [pkt_untracked] flip to [true]; every other
-    packet component — including the per-packet [pkt_ct] oracle and the shared env —
+    packet component — including the shared env and its flow-keyed [e_ct] table —
     is preserved, so that a `ct mark`/other-key read is unaffected.  This is the
     per-packet-traversal state both the DSL ([body_writes]/[rule_applies_walk]) and
     the VM ([run_rule_writes]/[run_rule]) apply on [SNotrack]/[INotrack], keeping the
@@ -354,14 +361,13 @@ Definition env_numgen_upd (e : env) (spec : numgen_spec) : env :=
     Every other instance's bucket — and every other env component — is preserved.
     The new level is therefore a genuine function of [ls_rate]/[ls_unit]/[ls_burst]
     (and the packet length in byte mode), not a fixed decrement-by-one. *)
-Definition lim_newtokens (p : packet) (spec : limit_spec) : nat :=
-  let cap := lim_avail p spec in
+Definition lim_newtokens (e : env) (p : packet) (spec : limit_spec) : nat :=
+  let cap := lim_avail e p spec in
   if Nat.leb (lim_cost p spec) cap then cap - lim_cost p spec else cap.
 
-Definition env_limit_upd (p : packet) (spec : limit_spec) : env :=
-  let e := pkt_env p in
+Definition env_limit_upd (e : env) (p : packet) (spec : limit_spec) : env :=
   with_e_limit e
-    (fun s => if limit_eqb spec s then lim_newtokens p spec else e_limit e s).
+    (fun s => if limit_eqb spec s then lim_newtokens e p spec else e_limit e s).
 
 (** Update the SHARED quota counter [e_quota] for instance [spec] on packet [p]:
     CONSUME the packet's byte length ([quota_cost p], = skb->len) UNCONDITIONALLY
@@ -370,8 +376,7 @@ Definition env_limit_upd (p : packet) (spec : limit_spec) : env :=
     consumption is a saturating subtraction of the cost (nat truncates at 0 once the
     quota is fully spent).  Mirrors byte-mode [limit] ([env_limit_upd], which
     likewise takes [p] and charges [lim_cost p]). *)
-Definition env_quota_upd (p : packet) (spec : quota_spec) : env :=
-  let e := pkt_env p in
+Definition env_quota_upd (e : env) (p : packet) (spec : quota_spec) : env :=
   with_e_quota e
     (fun s => if quota_eqb spec s then e_quota e s - quota_cost p else e_quota e s).
 
@@ -383,8 +388,7 @@ Definition env_quota_upd (p : packet) (spec : quota_spec) : env :=
     already-counted connection does NOT change the set (no double-counting), which is
     why one connection can never exhaust a `connlimit`.  Every other instance's set —
     and every other env component — is preserved. *)
-Definition env_connlimit_upd (p : packet) (spec : connlimit_spec) : env :=
-  let e := pkt_env p in
+Definition env_connlimit_upd (e : env) (p : packet) (spec : connlimit_spec) : env :=
   with_e_connlimit e
     (fun s => if connlimit_eqb spec s
               then connlimit_after e spec (pkt_flow p)
@@ -396,65 +400,47 @@ Definition env_connlimit_upd (p : packet) (spec : connlimit_spec) : env :=
     (this rule's later firing, threaded within the rule, or — through the
     cross-packet env threading by [run_rule_writes]/[body_writes] — the next packet's
     firing) reads the successor.  `numgen random` (ng_random = true) has no counter,
-    so it is a no-op.  Only [pkt_env]'s [e_numgen] changes; every other packet/env
-    component is preserved, so all loadability predicates are invariant under it and
-    the DSL/VM stay in lock-step. *)
-Definition set_numgen (p : packet) (spec : numgen_spec) : packet :=
-  if ng_random spec then p else with_pkt_env p (env_numgen_upd (pkt_env p) spec).
-
-(** [set_numgen] only changes [pkt_env]'s [e_numgen]; it leaves payload / meta / ct /
-    flow / oracle components intact.  Hence loadability predicates and every read
-    EXCEPT a `numgen inc` load are invariant under it. *)
-Lemma read_payload_ok_numgen : forall b o l p spec,
-  read_payload_ok b o l (set_numgen p spec) = read_payload_ok b o l p.
-Proof. intros. unfold set_numgen. destruct (ng_random spec); reflexivity. Qed.
+    so it is a no-op.  Only [e_numgen] changes; every other env component is
+    preserved — and the packet is untouched by construction (the setter is a pure
+    env update), so all loadability predicates are trivially invariant and the
+    DSL/VM stay in lock-step. *)
+Definition set_numgen (e : env) (spec : numgen_spec) : env :=
+  if ng_random spec then e else env_numgen_upd e spec.
 
 (** UPDATE a `limit` token bucket on EVERY evaluation of the limiter on packet [p],
     exactly as the kernel nft_limit_eval (it writes `tokens` on both the pass and the
-    exhausted branch — see [env_limit_upd]/[lim_newtokens]).  Only [pkt_env]'s
-    [e_limit] changes; every other packet/env component is preserved, so all
-    loadability predicates are invariant and the DSL/VM stay lock-step. *)
-Definition set_limit (p : packet) (spec : limit_spec) : packet :=
-  with_pkt_env p (env_limit_upd p spec).
+    exhausted branch — see [env_limit_upd]/[lim_newtokens]).  Only [e_limit]
+    changes; every other env component is preserved and the packet is untouched. *)
+Definition set_limit (e : env) (p : packet) (spec : limit_spec) : env :=
+  env_limit_upd e p spec.
 
 (** CONSUME the packet's byte length ([quota_cost p], = skb->len) from a `quota`
     UNCONDITIONALLY (the kernel accumulates skb->len on every evaluation). *)
-Definition set_quota (p : packet) (spec : quota_spec) : packet :=
-  with_pkt_env p (env_quota_upd p spec).
+Definition set_quota (e : env) (p : packet) (spec : quota_spec) : env :=
+  env_quota_upd e p spec.
 
 (** ACCOUNT for the packet's connection in a `connlimit` instance: IDEMPOTENTLY insert
     [pkt_flow p] into the instance's distinct-connection set on EVERY evaluation (the
     kernel nft_connlimit_do_eval always calls [nf_conncount_add_skb] before reading the
     count, regardless of whether the rule passes; re-adding a counted connection is the
-    -EEXIST no-op).  Only [pkt_env]'s [e_connlimit] changes; every other packet/env
-    component is preserved, so loadability predicates are invariant and the DSL/VM stay
-    lock-step. *)
-Definition set_connlimit (p : packet) (spec : connlimit_spec) : packet :=
-  with_pkt_env p (env_connlimit_upd p spec).
-
-Lemma read_payload_ok_limit : forall b o l p spec,
-  read_payload_ok b o l (set_limit p spec) = read_payload_ok b o l p.
-Proof. reflexivity. Qed.
-Lemma read_payload_ok_quota : forall b o l p spec,
-  read_payload_ok b o l (set_quota p spec) = read_payload_ok b o l p.
-Proof. reflexivity. Qed.
-Lemma read_payload_ok_connlimit : forall b o l p spec,
-  read_payload_ok b o l (set_connlimit p spec) = read_payload_ok b o l p.
-Proof. reflexivity. Qed.
+    -EEXIST no-op).  Only [e_connlimit] changes; every other env component is
+    preserved and the packet is untouched. *)
+Definition set_connlimit (e : env) (p : packet) (spec : connlimit_spec) : env :=
+  env_connlimit_upd e p spec.
 
 (** The cross-packet `numgen inc` COUNTER ADVANCE of running a rule's bytecode: each
     incremental [INumgen] the program contains advances the instance's shared counter
     once (the kernel's per-evaluation atomic increment).  This is applied by the
     MUTATION evaluators ([run_program_mut]/[run_program_mut_env]) to the packet a rule
     leaves, so the NEXT packet of the traversal reads the successor numgen value —
-    threaded through [pkt_env] exactly like a dynset/ct/nat env write.  Keeping the
+    threaded through the explicit env exactly like a dynset/ct/nat env write.  Keeping the
     advance OUT of the per-instruction [run_rule_writes] preserves the load-fields
     lock-step; a `numgen inc` is a verdict-/register effect within a rule, its counter
     bump a cross-packet effect.  (A real ruleset contains no [INumgen]
     ([numgen_free_prog]), so the sweep is the identity there and the compiler's
     mutation correctness is unaffected.) *)
-Definition numgen_sweep_prog (is : list instr) (p : packet) : packet :=
-  fold_left (fun q i => match i with INumgen spec _ => set_numgen q spec | _ => q end) is p.
+Definition numgen_sweep_prog (is : list instr) (e : env) : env :=
+  fold_left (fun e' i => match i with INumgen spec _ => set_numgen e' spec | _ => e' end) is e.
 
 (** Whether a program contains NO incremental [INumgen] (so [numgen_sweep_prog] is the
     identity).  Holds for every compiled real ruleset (numgen has no DSL/parser
@@ -462,11 +448,107 @@ Definition numgen_sweep_prog (is : list instr) (p : packet) : packet :=
 Definition numgen_free_prog (is : list instr) : bool :=
   forallb (fun i => match i with INumgen spec _ => ng_random spec | _ => true end) is.
 
-Lemma numgen_sweep_prog_id : forall is p,
-  numgen_free_prog is = true -> numgen_sweep_prog is p = p.
+(** ** Source-side numgen-freedom.
+
+    [numgen_free_prog] above is a BYTECODE predicate.  The same property is
+    decidable on the SOURCE rule: an incremental [INumgen] arises in compiled
+    code only from a load of an [FNumgen] field, so a rule none of whose field
+    positions (body items, verdict-map key, terminal operand, [r_after]
+    statements) is an incremental [FNumgen] compiles to numgen-free bytecode.
+    [Correct.numgen_free_compile_rule] proves the two agree EXACTLY:
+    [numgen_free_prog (compile_rule r) = rule_numgen_free r] — so a theorem
+    hypothesis can be stated on the source AST without running the compiler. *)
+Definition field_ngfree (f : field) : bool :=
+  match f with FNumgen spec => ng_random spec | _ => true end.
+
+Definition vsrc_ngfree (vs : vsrc) : bool :=
+  match vs with
+  | VImm _ => true
+  | VField f _ => field_ngfree f
+  | VMap fields _ _ | VHash fields _ _ _ _ | VHashMap fields _ _ _ _ _ =>
+      forallb field_ngfree fields
+  | VOr srcs _ => forallb (fun e => field_ngfree (fst e)) srcs
+  | VMapT elems _ => forallb (fun e => field_ngfree (fst e)) elems
+  end.
+
+Definition match_ngfree (m : matchcond) : bool :=
+  match m with
+  | MEq f _ | MNeq f _ | MRange f _ _ _ | MMasked f _ _ _ _
+  | MCmp f _ _ | MTransform f _ _ _ | MSetT f _ _ _ | MRangeT f _ _ _ _ =>
+      field_ngfree f
+  | MConcatSet fields _ _ => forallb field_ngfree fields
+  | MConcatSetT elems _ _ => forallb (fun fe => field_ngfree (fst fe)) elems
+  | MLimit _ | MQuota _ | MConnlimit _ => true
+  end.
+
+Definition stmt_ngfree (s : stmt) : bool :=
+  match s with
+  | SMangle vs _ _ _ _ _ _ => vsrc_ngfree vs
+  | SMetaSet _ vs | SCtSet _ vs => vsrc_ngfree vs
+  | SCtSetDir _ _ vs => vsrc_ngfree vs
+  | SExthdrWrite vs _ _ _ _ => vsrc_ngfree vs
+  | SDupSrc src _ _ => vsrc_ngfree src
+  | SDynset _ _ keyfs dataf => forallb field_ngfree (keyfs ++ dataf)
+  | SObjrefMap keyfs _ => forallb field_ngfree keyfs
+  | SDynsetImm _ _ keyfs _ => forallb field_ngfree keyfs
+  | SCounter _ _ | SNotrack | SLog _ | SObjref _ _ | SSynproxy _ _
+  | SLast _ | SExthdrReset _ _ | SDup _ _ => true
+  end.
+
+Definition body_item_ngfree (it : body_item) : bool :=
+  match it with BMatch m => match_ngfree m | BStmt s => stmt_ngfree s end.
+
+Definition vmap_ngfree (ov : option vmap_spec) : bool :=
+  match ov with
+  | None => true
+  | Some vm => match vm_keyf vm with
+               | Some (f, _) => field_ngfree f
+               | None => forallb field_ngfree (vm_fields vm)
+               end
+  end.
+
+(** The terminal's field positions, mirroring [Compile.compile_terminal]'s
+    dispatch order (nat, then tproxy, then fwd, then queue, then the static
+    verdict): only a nat operand / fwd device / queue number can load a field;
+    tproxy and a static verdict load none. *)
+Definition terminal_ngfree (r : rule) : bool :=
+  match r_nat r with
+  | Some n => match nat_src n with
+              | Some vs => vsrc_ngfree vs
+              | None => match nat_map n with
+                        | Some (fields, _, _) => forallb field_ngfree fields
+                        | None => match nat_field n with
+                                  | Some (f, _) => field_ngfree f
+                                  | None => true
+                                  end
+                        end
+              end
+  | None =>
+  match r_tproxy r with
+  | Some _ => true
+  | None =>
+  match r_fwd r with
+  | Some w => vsrc_ngfree (fwd_dev w)
+  | None =>
+  match r_queue r with
+  | Some q => vsrc_ngfree (q_num q)
+  | None => true
+  end end end end.
+
+(** A rule with no incremental `numgen` in ANY field position.  Stated purely on
+    the source AST; agrees exactly with [numgen_free_prog] of the compiled rule
+    ([Correct.numgen_free_compile_rule]). *)
+Definition rule_numgen_free (r : rule) : bool :=
+  forallb body_item_ngfree (r_body r)
+  && vmap_ngfree (r_vmap r)
+  && terminal_ngfree r
+  && forallb stmt_ngfree (r_after r).
+
+Lemma numgen_sweep_prog_id : forall is e,
+  numgen_free_prog is = true -> numgen_sweep_prog is e = e.
 Proof.
   intros is. unfold numgen_sweep_prog, numgen_free_prog.
-  induction is as [| i is IH]; intros p H; [reflexivity|].
+  induction is as [| i is IH]; intros e H; [reflexivity|].
   cbn [forallb] in H. apply Bool.andb_true_iff in H. destruct H as [Hi Hrest].
   cbn [fold_left]. destruct i; try (apply IH; exact Hrest).
   (* INumgen: ng_random forces set_numgen = identity *)
@@ -485,23 +567,23 @@ Qed.
     `numgen inc`).  The fold is over the running packet, so a second limiter in the
     same rule sees the first one's consumption (the kernel runs limiters
     left-to-right against the running token state). *)
-Definition limit_sweep_prog (is : list instr) (p : packet) : packet :=
-  fold_left (fun q i => match i with
-                        | ILimit spec => set_limit q spec
-                        | IQuota spec => set_quota q spec
-                        | IConnlimit spec => set_connlimit q spec
-                        | _ => q
-                        end) is p.
+Definition limit_sweep_prog (is : list instr) (e : env) (p : packet) : env :=
+  fold_left (fun e' i => match i with
+                         | ILimit spec => set_limit e' p spec
+                         | IQuota spec => set_quota e' p spec
+                         | IConnlimit spec => set_connlimit e' p spec
+                         | _ => e'
+                         end) is e.
 
 (** The DSL analogue: consume the same limiters by walking a rule body's matches.  A
     `limit`/`quota`/`connlimit` is the matchcond [MLimit]/[MQuota]/[MConnlimit]. *)
-Definition limit_sweep_body (body : list body_item) (p : packet) : packet :=
-  fold_left (fun q it => match it with
-                         | BMatch (MLimit spec)    => set_limit q spec
-                         | BMatch (MQuota spec)    => set_quota q spec
-                         | BMatch (MConnlimit spec) => set_connlimit q spec
-                         | _ => q
-                         end) body p.
+Definition limit_sweep_body (body : list body_item) (e : env) (p : packet) : env :=
+  fold_left (fun e' it => match it with
+                          | BMatch (MLimit spec)    => set_limit e' p spec
+                          | BMatch (MQuota spec)    => set_quota e' p spec
+                          | BMatch (MConnlimit spec) => set_connlimit e' p spec
+                          | _ => e'
+                          end) body e.
 
 (** Whether a program contains NO limiter instruction (so [limit_sweep_prog] is the
     identity).  Used to discharge limiter-neutral programs in the same shape as
@@ -509,11 +591,11 @@ Definition limit_sweep_body (body : list body_item) (p : packet) : packet :=
 Definition limit_free_prog (is : list instr) : bool :=
   forallb (fun i => match i with ILimit _ | IQuota _ | IConnlimit _ => false | _ => true end) is.
 
-Lemma limit_sweep_prog_id : forall is p,
-  limit_free_prog is = true -> limit_sweep_prog is p = p.
+Lemma limit_sweep_prog_id : forall is e p,
+  limit_free_prog is = true -> limit_sweep_prog is e p = e.
 Proof.
   intros is. unfold limit_sweep_prog, limit_free_prog.
-  induction is as [| i is IH]; intros p H; [reflexivity|].
+  induction is as [| i is IH]; intros e p H; [reflexivity|].
   cbn [forallb] in H. apply Bool.andb_true_iff in H. destruct H as [Hi Hrest].
   cbn [fold_left]. destruct i; try discriminate Hi; apply IH; exact Hrest.
 Qed.
@@ -528,11 +610,11 @@ Definition limit_free_body (body : list body_item) : bool :=
                      | _ => true
                      end) body.
 
-Lemma limit_sweep_body_id : forall body p,
-  limit_free_body body = true -> limit_sweep_body body p = p.
+Lemma limit_sweep_body_id : forall body e p,
+  limit_free_body body = true -> limit_sweep_body body e p = e.
 Proof.
   intros body. unfold limit_sweep_body, limit_free_body.
-  induction body as [| it body IH]; intros p H; [reflexivity|].
+  induction body as [| it body IH]; intros e p H; [reflexivity|].
   cbn [forallb] in H. apply Bool.andb_true_iff in H. destruct H as [Hi Hrest].
   cbn [fold_left]. destruct it as [m | s]; [destruct m | ];
     try discriminate Hi; apply IH; exact Hrest.
@@ -549,7 +631,6 @@ Qed.
     packet).  These per-projection equalities drive the invariance facts below
     uniformly, regardless of whether the [pkt_ct_present p] guard fires. *)
 Lemma set_untracked_proj : forall p,
-  pkt_env (set_untracked p) = pkt_env p /\
   pkt_meta (set_untracked p) = pkt_meta p /\
   pkt_have_l2 (set_untracked p) = pkt_have_l2 p /\
   pkt_have_l4 (set_untracked p) = pkt_have_l4 p /\
@@ -594,7 +675,7 @@ Lemma load_ok_untracked : forall ld p,
   load_ok ld (set_untracked p) = load_ok ld p.
 Proof.
   intros ld p.
-  destruct (set_untracked_proj p) as (Henv & Hmeta & Hl2 & Hl4 & Hfr & Heh & Hlh & Hnh
+  destruct (set_untracked_proj p) as (Hmeta & Hl2 & Hl4 & Hfr & Heh & Hlh & Hnh
     & Hth & Hih & Htnl & Hinner & Hctp & Hflow).
   destruct ld; cbn [load_ok]; try reflexivity.
   - (* LCt k *) destruct k; try reflexivity; rewrite Hctp; reflexivity.
@@ -669,12 +750,12 @@ Definition body_synproxy_stops (body : list body_item) (p : packet) : bool :=
     the rule first).  Every other statement is verdict-neutral.  When the body has
     no stopping synproxy this is exactly [forallb eval_matchcond (body_matches …)]
     (proved as [rule_applies_no_synproxy]). *)
-Fixpoint rule_applies_walk (body : list body_item) (p : packet) : bool :=
+Fixpoint rule_applies_walk (body : list body_item) (e : env) (p : packet) : bool :=
   match body with
   | [] => true
-  | BMatch m :: rest => eval_matchcond m p && rule_applies_walk rest p
+  | BMatch m :: rest => eval_matchcond m e p && rule_applies_walk rest e p
   | BStmt (SSynproxy _ _) :: rest =>
-      if synproxy_stops p then true else rule_applies_walk rest p
+      if synproxy_stops p then true else rule_applies_walk rest e p
   (* `notrack` forces IP_CT_UNTRACKED for the rest of THIS rule's traversal ONLY
      WHEN no conntrack entry exists yet — exactly nft_notrack_eval's
      `if (ct || ctinfo == IP_CT_UNTRACKED) return;` guard (it is a NO-OP on a
@@ -689,21 +770,21 @@ Fixpoint rule_applies_walk (body : list body_item) (p : packet) : bool :=
      [set_untracked] preserves every loadability/synproxy predicate (it only flips
      [pkt_untracked], and only on a no-entry packet), so the VM stays in lock-step
      (the compiled [INotrack] threads the same [set_untracked]). *)
-  | BStmt SNotrack :: rest => rule_applies_walk rest (set_untracked p)
-  | BStmt _ :: rest => rule_applies_walk rest p
+  | BStmt SNotrack :: rest => rule_applies_walk rest e (set_untracked p)
+  | BStmt _ :: rest => rule_applies_walk rest e p
   end.
-Definition rule_applies (r : rule) (p : packet) : bool :=
-  rule_applies_walk (r_body r) p.
+Definition rule_applies (r : rule) (e : env) (p : packet) : bool :=
+  rule_applies_walk (r_body r) e p.
 
 (** When the body contains no stopping synproxy AND no `notrack` (so the
     [set_untracked] threading never fires), [rule_applies_walk] is exactly
     [forallb eval_matchcond] over the body's matches against the ORIGINAL [p]. *)
-Lemma rule_applies_walk_no_synproxy : forall body p,
+Lemma rule_applies_walk_no_synproxy : forall body e p,
   body_synproxy_stops body p = false ->
   body_has_notrack body = false ->
-  rule_applies_walk body p = forallb (fun m => eval_matchcond m p) (body_matches body).
+  rule_applies_walk body e p = forallb (fun m => eval_matchcond m e p) (body_matches body).
 Proof.
-  induction body as [| it body IH]; intros p Hsp Hnt; [reflexivity|].
+  induction body as [| it body IH]; intros e p Hsp Hnt; [reflexivity|].
   assert (Hcons : forall it0 b, body_synproxy_stops (it0 :: b) p =
             (match it0 with BStmt (SSynproxy _ _) => synproxy_stops p | _ => false end)
             || body_synproxy_stops b p) by reflexivity.
@@ -806,15 +887,16 @@ Definition vmap_loadable (ov : option vmap_spec) (p : packet) : bool :=
     the first field is transformed in place, the rest are taken raw, then all are
     concatenated — exactly the operand the compiler leaves in the key registers
     (cf. [nat_addr] / [compile_terminal]). *)
-Definition nat_map_key (fields : list field) (ts : list transform) (p : packet) : data :=
+Definition nat_map_key (fields : list field) (ts : list transform)
+                       (e : env) (p : packet) : data :=
   match fields with
   | [] => []   (* no key fields: the empty concatenation (matches the VM register key) *)
   | f0 :: frest =>
-      List.concat (apply_transforms ts (field_value f0 p)
-                   :: map (fun f => field_value f p) frest)
+      List.concat (apply_transforms ts (field_value f0 e p)
+                   :: map (fun f => field_value f e p) frest)
   end.
 
-Definition terminal_loadable (r : rule) (p : packet) : bool :=
+Definition terminal_loadable (r : rule) (e : env) (p : packet) : bool :=
   match r_nat r with
   | Some n => match nat_src n with
               | Some vs => vsrc_loadable vs p
@@ -824,7 +906,7 @@ Definition terminal_loadable (r : rule) (p : packet) : bool :=
                            NAT to apply (matches the VM's [ILookupValBr] break). *)
                         | Some (fields, ts, name) =>
                             fields_loadable fields p
-                            && map_has_key (nat_map_key fields ts p) (e_map (pkt_env p) name)
+                            && map_has_key (nat_map_key fields ts e p) (e_map e name)
                         | None => match nat_field n with
                                   | Some (f, _) => field_loadable f p
                                   | None => true
@@ -917,39 +999,39 @@ Qed.
     (Defined to mirror the bytecode, incl. its simplifications — faithfulness of
     e.g. jhash-over-concatenation to the kernel is checked separately, by the
     corpus/validate gates.) *)
-Definition eval_vsrc (vs : vsrc) (p : packet) : data :=
+Definition eval_vsrc (vs : vsrc) (e : env) (p : packet) : data :=
   match vs with
   | VImm v      => v
-  | VField f ts => apply_transforms ts (field_value f p)
+  | VField f ts => apply_transforms ts (field_value f e p)
   | VMap fields ts name =>
       let key := match fields with
                  | [] => apply_transforms ts []
                  | f0 :: frest =>
-                     List.concat (apply_transforms ts (field_value f0 p)
-                                  :: map (fun f => field_value f p) frest)
+                     List.concat (apply_transforms ts (field_value f0 e p)
+                                  :: map (fun f => field_value f e p) frest)
                  end in
-      map_lookup_data key (e_map (pkt_env p) name)
+      map_lookup_data key (e_map e name)
   | VHash fields len seed modulus offset =>
       data_jhash len seed modulus offset
-        (match fields with [] => [] | f0 :: _ => field_value f0 p end)
+        (match fields with [] => [] | f0 :: _ => field_value f0 e p end)
   | VOr srcs final =>
       match srcs with
       | [] => []
       | base :: rest =>
           apply_transforms final
             (fold_left
-               (fun acc e => data_or acc (apply_transforms (snd e) (field_value (fst e) p)))
-               rest (apply_transforms (snd base) (field_value (fst base) p)))
+               (fun acc fe => data_or acc (apply_transforms (snd fe) (field_value (fst fe) e p)))
+               rest (apply_transforms (snd base) (field_value (fst base) e p)))
       end
   | VMapT elems name =>
       map_lookup_data
-        (List.concat (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) p)) elems))
-        (e_map (pkt_env p) name)
+        (List.concat (map (fun fe => apply_transforms (snd fe) (field_value (fst fe) e p)) elems))
+        (e_map e name)
   | VHashMap fields len seed modulus offset name =>
       map_lookup_data
         (data_jhash len seed modulus offset
-           (match fields with [] => [] | f0 :: _ => field_value f0 p end))
-        (e_map (pkt_env p) name)
+           (match fields with [] => [] | f0 :: _ => field_value f0 e p end))
+        (e_map e name)
   end.
 
 (** Look up a key in a verdict map's entries.  Each entry carries a closed
@@ -1004,14 +1086,14 @@ Definition terminal_outcome (r : rule) (p : packet) : option verdict :=
 (** The verdict-map / terminal part of a rule's outcome (the part the compiled
     [compile_end] realises): a vmap hit gives its verdict, a miss falls through to
     the terminal.  This is the outcome IGNORING any body synproxy. *)
-Definition outcome_core (r : rule) (p : packet) : option verdict :=
+Definition outcome_core (r : rule) (e : env) (p : packet) : option verdict :=
   match r_vmap r with
   | Some vm =>
       let key := match vm_keyf vm with
-                 | Some (f, ts) => apply_transforms ts (field_value f p)
-                 | None => List.concat (map (fun f => field_value f p) (vm_fields vm))
+                 | Some (f, ts) => apply_transforms ts (field_value f e p)
+                 | None => List.concat (map (fun f => field_value f e p) (vm_fields vm))
                  end in
-      match assoc_verdict key (e_vmap (pkt_env p) (vm_name vm)) with
+      match assoc_verdict key (e_vmap e (vm_name vm)) with
       | Some v => Some v
       | None   => terminal_outcome r p
       end
@@ -1028,9 +1110,9 @@ Definition outcome_core (r : rule) (p : packet) : option verdict :=
 Definition body_thread (body : list body_item) (p : packet) : packet :=
   if body_has_notrack body then set_untracked p else p.
 
-Definition outcome (r : rule) (p : packet) : option verdict :=
+Definition outcome (r : rule) (e : env) (p : packet) : option verdict :=
   if body_synproxy_stops (r_body r) p then Some Drop
-  else outcome_core r (body_thread (r_body r) p).
+  else outcome_core r e (body_thread (r_body r) p).
 
 (** ** Whole-rule loadability (NFT_BREAK reachability).
 
@@ -1050,8 +1132,8 @@ Definition outcome (r : rule) (p : packet) : option verdict :=
 
 (** Loadability of the part that runs AFTER the verdict map misses: the terminal,
     and — only on a [Continue] fall-through — the post-outcome statements. *)
-Definition tail_loadable (r : rule) (p : packet) : bool :=
-  terminal_loadable r p &&
+Definition tail_loadable (r : rule) (e : env) (p : packet) : bool :=
+  terminal_loadable r e p &&
   (match terminal_outcome r p with
    | None => forallb (fun s => stmt_loadable s p) (r_after r)  (* fall-through: r_after runs *)
    | Some _ => true                                            (* terminal: r_after skipped *)
@@ -1059,19 +1141,19 @@ Definition tail_loadable (r : rule) (p : packet) : bool :=
 
 (** Loadability of a rule's outcome computation (verdict map then terminal),
     mirroring [outcome]'s evaluation order. *)
-Definition end_loadable (r : rule) (p : packet) : bool :=
+Definition end_loadable (r : rule) (e : env) (p : packet) : bool :=
   match r_vmap r with
   | Some vm =>
       vmap_loadable (r_vmap r) p &&
       (let key := match vm_keyf vm with
-                  | Some (f, ts) => apply_transforms ts (field_value f p)
-                  | None => List.concat (map (fun f => field_value f p) (vm_fields vm))
+                  | Some (f, ts) => apply_transforms ts (field_value f e p)
+                  | None => List.concat (map (fun f => field_value f e p) (vm_fields vm))
                   end in
-       match assoc_verdict key (e_vmap (pkt_env p) (vm_name vm)) with
-       | Some _ => true              (* vmap HIT: terminal/r_after unreachable *)
-       | None   => tail_loadable r p (* vmap MISS: terminal runs *)
+       match assoc_verdict key (e_vmap e (vm_name vm)) with
+       | Some _ => true                (* vmap HIT: terminal/r_after unreachable *)
+       | None   => tail_loadable r e p (* vmap MISS: terminal runs *)
        end)
-  | None => tail_loadable r p
+  | None => tail_loadable r e p
   end.
 
 (** Loadability of a body, walked left-to-right: every item must load, but a
@@ -1140,28 +1222,28 @@ Qed.
     latched IP_CT_UNTRACKED, which a vmap KEY that reads `ct state` would observe.
     The VM threads the same [set_untracked] into the compiled tail, so end-loadability
     is taken at [body_thread (r_body r) p] on both sides. *)
-Definition rule_loadable (r : rule) (p : packet) : bool :=
+Definition rule_loadable (r : rule) (e : env) (p : packet) : bool :=
   body_loadable_walk (r_body r) p &&
   (if body_synproxy_stops (r_body r) p then true
-   else end_loadable r (body_thread (r_body r) p)).
+   else end_loadable r e (body_thread (r_body r) p)).
 
 (** Evaluate a rule list.  [None] means "fell through every rule"; [Some v]
     means a terminal verdict [v] was reached.  A [Continue] verdict on an
     applicable rule simply proceeds, exactly like a non-applicable rule. *)
-Fixpoint eval_rules (rs : list rule) (p : packet) : option verdict :=
+Fixpoint eval_rules (rs : list rule) (e : env) (p : packet) : option verdict :=
   match rs with
   | [] => None
   | r :: rest =>
-      if rule_loadable r p && rule_applies r p then
-        match outcome r p with
-        | Some v => if terminal v then Some v else eval_rules rest p
-        | None   => eval_rules rest p
+      if rule_loadable r e p && rule_applies r e p then
+        match outcome r e p with
+        | Some v => if terminal v then Some v else eval_rules rest e p
+        | None   => eval_rules rest e p
         end
-      else eval_rules rest p
+      else eval_rules rest e p
   end.
 
-Definition eval_chain (c : chain) (p : packet) : verdict :=
-  match eval_rules (c_rules c) p with
+Definition eval_chain (c : chain) (e : env) (p : packet) : verdict :=
+  match eval_rules (c_rules c) e p with
   | Some v => v
   | None   => c_policy c
   end.
@@ -1182,43 +1264,43 @@ Definition eval_chain (c : chain) (p : packet) : verdict :=
     a rule list / chain.  On this domain — and only on it — the cheap
     environment-free [eval_chain] coincides with the faithful [eval_table] (see
     [eval_rules_jumpfree_eq_j] / [eval_chain_eq_table_jumpfree] in Correct.v). *)
-Definition outcome_jumpfree (r : rule) (p : packet) : bool :=
-  match outcome r p with
+Definition outcome_jumpfree (r : rule) (e : env) (p : packet) : bool :=
+  match outcome r e p with
   | Some (Jump _) | Some (Goto _) | Some Return => false
   | _ => true
   end.
 
-Definition rules_jumpfree (rs : list rule) (p : packet) : bool :=
-  forallb (fun r => outcome_jumpfree r p) rs.
+Definition rules_jumpfree (rs : list rule) (e : env) (p : packet) : bool :=
+  forallb (fun r => outcome_jumpfree r e p) rs.
 
-Definition chain_jumpfree (c : chain) (p : packet) : bool :=
-  rules_jumpfree (c_rules c) p.
+Definition chain_jumpfree (c : chain) (e : env) (p : packet) : bool :=
+  rules_jumpfree (c_rules c) e p.
 
 (** ** Bytecode VM semantics. *)
 
 (** Run one rule's program over a register file.  [None] means a [cmp] failed
     (the rule does not apply, like netfilter "breaking" out of the rule);
     [Some v] means an [immediate] set verdict [v]. *)
-Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict :=
+Fixpoint run_rule (rf : regfile) (is : rule_prog) (e : env) (p : packet) : option verdict :=
   match is with
   | [] => None
   | IMetaLoad k dst :: rest =>
-      run_rule (set_reg rf dst (meta_load k (pkt_meta p k))) rest p
+      run_rule (set_reg rf dst (meta_load k (pkt_meta p k))) rest e p
   | ICtLoad k dst :: rest =>
-      (* identical to [do_load (LCt k)]: a writable/persistent key reads the SHARED
-         flow-keyed conntrack table, a read-only key the per-packet oracle, EXCEPT
+      (* identical to [do_load (LCt k)]: every key reads the SHARED flow-keyed
+         conntrack table [e_ct] at this packet's flow, EXCEPT that
          a `ct state` read after a `notrack` returns NF_CT_STATE_UNTRACKED_BIT.  A
          conntrack load on a packet with NO entry ([pkt_ct_present = false]) BREAKs the
          rule for EVERY key except [CKstate] (kernel nft_ct.c:81-82 `if (ct == NULL)
          goto err`); gate on the same [load_ok] predicate the DSL uses so DSL/VM stay
          in lock-step. *)
       if load_ok (LCt k) p
-      then run_rule (set_reg rf dst (do_load (LCt k) p)) rest p
+      then run_rule (set_reg rf dst (do_load (LCt k) e p)) rest e p
       else None
   | IRtLoad k dst :: rest =>
-      run_rule (set_reg rf dst (e_rt (pkt_env p) k)) rest p
+      run_rule (set_reg rf dst (e_rt e k)) rest e p
   | ISocketLoad k dst :: rest =>
-      run_rule (set_reg rf dst (pkt_sock p k)) rest p
+      run_rule (set_reg rf dst (pkt_sock p k)) rest e p
   | INumgen spec dst :: rest =>
       (* `numgen inc` reads the SHARED counter value (= [do_load (LNumgen spec) p],
          deterministic from [e_numgen]) into the dreg.  The VERDICT pass reads but
@@ -1227,85 +1309,85 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
          [run_rule_writes]/[body_writes] and threaded to the next packet by
          [run_program_mut_env]/[eval_chain_mut_env] — exactly like a `ct`/`nat`/dynset
          env write.  Reading [do_load] keeps this lock-step with the DSL [outcome]. *)
-      run_rule (set_reg rf dst (do_load (LNumgen spec) p)) rest p
+      run_rule (set_reg rf dst (do_load (LNumgen spec) e p)) rest e p
   | IOsf dst :: rest =>
-      run_rule (set_reg rf dst (pkt_osf p)) rest p
+      run_rule (set_reg rf dst (pkt_osf p)) rest e p
   | IExthdrLoad ep h o l pr dst :: rest =>
       (* A VALUE load (pr=false) of an ABSENT extension-header / TCP-option /
          SCTP-chunk makes the kernel set NFT_BREAK (nft_exthdr_*_eval err path).
          An EXISTENCE load (pr=true) never breaks (stores 0 under F_PRESENT).
          Gate on the same predicate the DSL's [load_ok] uses. *)
       if load_ok (LExthdr ep h o l pr) p
-      then run_rule (set_reg rf dst (pkt_eh p ep h o l pr)) rest p
+      then run_rule (set_reg rf dst (pkt_eh p ep h o l pr)) rest e p
       else None
   | IFibLoad sel res dst :: rest =>
-      run_rule (set_reg rf dst (lpm_fib (e_routes (pkt_env p)) (pkt_fibkey p sel) res)) rest p
+      run_rule (set_reg rf dst (lpm_fib (e_routes e) (pkt_fibkey p sel) res)) rest e p
   | ICtDirLoad key dir dst :: rest =>
-      run_rule (set_reg rf dst (pkt_ctdir p key dir)) rest p
+      run_rule (set_reg rf dst (pkt_ctdir p key dir)) rest e p
   | IXfrmLoad dir sp key dst :: rest =>
-      run_rule (set_reg rf dst (pkt_xfrm p dir sp key)) rest p
+      run_rule (set_reg rf dst (pkt_xfrm p dir sp key)) rest e p
   | ITunnelLoad key dst :: rest =>
-      run_rule (set_reg rf dst (pkt_tunnel p key)) rest p
+      run_rule (set_reg rf dst (pkt_tunnel p key)) rest e p
   | ISymhash m o dst :: rest =>
-      run_rule (set_reg rf dst (pkt_symhash p m o)) rest p
+      run_rule (set_reg rf dst (pkt_symhash p m o)) rest e p
   | IInnerLoad t h fl desc _ dst :: rest =>
-      run_rule (set_reg rf dst (pkt_inner p t h fl desc)) rest p
+      run_rule (set_reg rf dst (pkt_inner p t h fl desc)) rest e p
   | IPayloadLoad b o l dst :: rest =>
       (* A payload read that runs off the end of the header (or a transport read on
          a fragment / no-L4 packet) makes the kernel set the verdict to NFT_BREAK,
          i.e. the rule does NOT match.  Model that as breaking the rule here
          ([None]), rather than loading a truncated value. *)
       if read_payload_ok b o l p
-      then run_rule (set_reg rf dst (read_payload b o l p)) rest p
+      then run_rule (set_reg rf dst (read_payload b o l p)) rest e p
       else None
   | ICmp op src v :: rest =>
-      if eval_cmp op (rf src) v then run_rule rf rest p else None
+      if eval_cmp op (rf src) v then run_rule rf rest e p else None
   | IRange op src lo hi :: rest =>
-      if eval_range op (rf src) lo hi then run_rule rf rest p else None
+      if eval_range op (rf src) lo hi then run_rule rf rest e p else None
   | IBitwise dst src mask xor :: rest =>
-      run_rule (set_reg rf dst (data_bitops (rf src) mask xor)) rest p
+      run_rule (set_reg rf dst (data_bitops (rf src) mask xor)) rest e p
   | IBitwiseOr dst src1 src2 :: rest =>
-      run_rule (set_reg rf dst (data_or (rf src1) (rf src2))) rest p
+      run_rule (set_reg rf dst (data_or (rf src1) (rf src2))) rest e p
   | IBitShift dst src shl amt :: rest =>
-      run_rule (set_reg rf dst (data_shift shl amt (rf src))) rest p
+      run_rule (set_reg rf dst (data_shift shl amt (rf src))) rest e p
   | IByteorder dst src h sz len :: rest =>
-      run_rule (set_reg rf dst (data_byteorder h sz len (rf src))) rest p
+      run_rule (set_reg rf dst (data_byteorder h sz len (rf src))) rest e p
   | IJhash dst src l s m o :: rest =>
-      run_rule (set_reg rf dst (data_jhash l s m o (rf src))) rest p
+      run_rule (set_reg rf dst (data_jhash l s m o (rf src))) rest e p
   | ILookup srcs name neg :: rest =>
-      (* set membership: contents read from the named set in [pkt_env p].  Each
+      (* set membership: contents read from the named set in [e].  Each
          source register holds one concatenated field's value, so [map rf srcs]
          is the per-field value list; [concat_set_mem] tests each field against
          its own per-field interval (NFT_SET_CONCAT cross-product semantics). *)
-      if xorb neg (concat_set_mem (map rf srcs) (e_set (pkt_env p) name))
-      then run_rule rf rest p else None
+      if xorb neg (concat_set_mem (map rf srcs) (e_set e name))
+      then run_rule rf rest e p else None
   | IVmap srcs name :: rest =>
       (* a verdict map: a hit terminates with that verdict; a miss falls through
          to the rest (e.g. a trailing redirect/masquerade), exactly as nft does.
-         Entries are read by [name] from [pkt_env p]. *)
-      match assoc_verdict (List.concat (map rf srcs)) (e_vmap (pkt_env p) name) with
+         Entries are read by [name] from [e]. *)
+      match assoc_verdict (List.concat (map rf srcs)) (e_vmap e name) with
       | Some v => Some v
-      | None   => run_rule rf rest p
+      | None   => run_rule rf rest e p
       end
   | IImmediateData dst v :: rest =>
-      run_rule (set_reg rf dst v) rest p
+      run_rule (set_reg rf dst v) rest e p
   (* Set/mangle: verdict-neutral.  The written value (the operand register) is a
      packet/meta/ct side effect outside the single-packet verdict model, so it is
      dropped here.  The proof therefore certifies these statements preserve the
      verdict; that the emitted bytecode writes the *right* value is covered by the
      differential corpus, not by Rocq. *)
-  | IPayloadWrite _ _ _ _ _ _ _ :: rest => run_rule rf rest p
-  | IMetaSet _ _ :: rest => run_rule rf rest p
-  | ICtSet _ _ :: rest => run_rule rf rest p
+  | IPayloadWrite _ _ _ _ _ _ _ :: rest => run_rule rf rest e p
+  | IMetaSet _ _ :: rest => run_rule rf rest e p
+  | ICtSet _ _ :: rest => run_rule rf rest e p
   | ILookupVal keys name dreg :: rest =>
       run_rule (set_reg rf dreg (map_lookup_data (List.concat (map rf keys))
-                                                 (e_map (pkt_env p) name))) rest p
+                                                 (e_map e name))) rest e p
   | ILookupValBr keys name dreg :: rest =>
       (* a map lookup feeding a terminal operand: BREAK on a miss (the terminal
          does not fire), else load the value and continue. *)
-      if map_has_key (List.concat (map rf keys)) (e_map (pkt_env p) name)
+      if map_has_key (List.concat (map rf keys)) (e_map e name)
       then run_rule (set_reg rf dreg (map_lookup_data (List.concat (map rf keys))
-                                                      (e_map (pkt_env p) name))) rest p
+                                                      (e_map e name))) rest e p
       else None
   | INat _ _ _ _ _ _ _ :: _ => Some Accept   (* terminal *)
   | ITproxy _ _ _ :: _ => Some Accept        (* terminal redirect *)
@@ -1315,36 +1397,36 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
       (* the limit instruction carries NFT_LIMIT_F_INV (bit 0 of ls_flags); the
          kernel BREAKs iff [under_test ^ invert].  Continue iff [match] = the
          negation, i.e. iff the matchcond body is true. *)
-      if xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (lim_under p spec)
-      then run_rule rf rest p else None
+      if xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (lim_under e p spec)
+      then run_rule rf rest e p else None
   | IQuota spec :: rest =>
-      if xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (quota_under p spec)
-      then run_rule rf rest p else None
+      if xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (quota_under e p spec)
+      then run_rule rf rest e p else None
   | IConnlimit spec :: rest =>
-      if xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (connlimit_under p spec)
-      then run_rule rf rest p else None
-  | ICounter _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)
+      if xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (connlimit_under e p spec)
+      then run_rule rf rest e p else None
+  | ICounter _ _ :: rest => run_rule rf rest e p   (* verdict-neutral *)
   (* `notrack` is verdict-neutral but forces IP_CT_UNTRACKED for the rest of this
      rule's traversal: thread [set_untracked] so a later [ICtLoad CKstate] reads
      the untracked bit (lock-step with [rule_applies_walk]'s [SNotrack]). *)
-  | INotrack :: rest      => run_rule rf rest (set_untracked p)
-  | ILog _ :: rest        => run_rule rf rest p
-  | IObjref _ _ :: rest   => run_rule rf rest p   (* verdict-neutral *)
+  | INotrack :: rest      => run_rule rf rest e (set_untracked p)
+  | ILog _ :: rest        => run_rule rf rest e p
+  | IObjref _ _ :: rest   => run_rule rf rest e p   (* verdict-neutral *)
   | ISynproxy _ _ :: rest =>
       (* SYN-proxy: a non-TCP packet BREAKs the rule (NFT_BREAK); a TCP packet with
          SYN or ACK set STOPS traversal (NF_STOLEN/NF_DROP, modelled as terminal
          Drop); any other TCP packet falls through (NFT_CONTINUE).  See
          [synproxy_loadable]/[synproxy_stops]. *)
       if synproxy_loadable p
-      then (if synproxy_stops p then Some Drop else run_rule rf rest p)
+      then (if synproxy_stops p then Some Drop else run_rule rf rest e p)
       else None
-  | ILast _ :: rest       => run_rule rf rest p
-  | IDynset _ _ _ _ _ :: rest => run_rule rf rest p   (* verdict-neutral *)
-  | IExthdrReset _ _ :: rest => run_rule rf rest p (* verdict-neutral *)
-  | IDup _ _ :: rest      => run_rule rf rest p   (* verdict-neutral *)
-  | IObjrefMap _ _ :: rest => run_rule rf rest p  (* verdict-neutral *)
-  | ICtSetDir _ _ _ :: rest => run_rule rf rest p (* verdict-neutral *)
-  | IExthdrWrite _ _ _ _ _ :: rest => run_rule rf rest p (* verdict-neutral *)
+  | ILast _ :: rest       => run_rule rf rest e p
+  | IDynset _ _ _ _ _ :: rest => run_rule rf rest e p   (* verdict-neutral *)
+  | IExthdrReset _ _ :: rest => run_rule rf rest e p (* verdict-neutral *)
+  | IDup _ _ :: rest      => run_rule rf rest e p   (* verdict-neutral *)
+  | IObjrefMap _ _ :: rest => run_rule rf rest e p  (* verdict-neutral *)
+  | ICtSetDir _ _ _ :: rest => run_rule rf rest e p (* verdict-neutral *)
+  | IExthdrWrite _ _ _ _ _ :: rest => run_rule rf rest e p (* verdict-neutral *)
   | IReject t c :: _ => Some (Reject t c)
   | IQueue lo hi b f :: _ => Some (Queue lo hi b f)
   | IImmediate v :: _ => Some v
@@ -1352,18 +1434,18 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (p : packet) : option verdict 
 
 (** Run a base chain's program: ordered per-rule programs, each from a fresh
     (empty) register file, stopping at the first terminal verdict. *)
-Fixpoint run_program (prog : program) (p : packet) : option verdict :=
+Fixpoint run_program (prog : program) (e : env) (p : packet) : option verdict :=
   match prog with
   | [] => None
   | rp :: rest =>
-      match run_rule empty_rf rp p with
-      | Some v => if terminal v then Some v else run_program rest p
-      | None   => run_program rest p
+      match run_rule empty_rf rp e p with
+      | Some v => if terminal v then Some v else run_program rest e p
+      | None   => run_program rest e p
       end
   end.
 
-Definition run_chain (prog : program) (policy : verdict) (p : packet) : verdict :=
-  match run_program prog p with
+Definition run_chain (prog : program) (policy : verdict) (e : env) (p : packet) : verdict :=
+  match run_program prog e p with
   | Some v => v
   | None   => policy
   end.
@@ -1415,8 +1497,8 @@ Definition env_nat_upd (e : env) (fl : data)
     WRITE_ONCE(ct->mark)/READ_ONCE(ct->mark) on the entry [nf_ct_get(skb)] selects.
     The kernel only ever lets a rule WRITE the persistent keys ([ct_writable]:
     mark/label); a read-only key has no setter, so a [set_ct] on one would never be
-    emitted by the parser — but routing it through the same flow table (rather than a
-    dead per-packet oracle) keeps the write faithful and the DSL/VM in lock-step.
+    emitted by the parser — but routing it through the same flow table keeps the
+    write faithful and the DSL/VM in lock-step.
 
     KERNEL GUARD (nft_ct.c:288-290, nft_ct_set_eval):
     [ct = nf_ct_get(skb, &ctinfo); if (ct == NULL || nf_ct_is_template(ct)) return;]
@@ -1426,9 +1508,9 @@ Definition env_nat_upd (e : env) (fl : data)
     gates the [notrack] latch on the dual guard.  This rules out the
     cross-packet bug where a later same-flow entry-bearing packet would read back a
     mark the kernel never wrote. *)
-Definition set_ct (p : packet) (k : ct_key) (v : data) : packet :=
-  if pkt_ct_present p then with_pkt_env p (env_ct_upd (pkt_env p) (pkt_flow p) k v)
-  else p.
+Definition set_ct (e : env) (p : packet) (k : ct_key) (v : data) : env :=
+  if pkt_ct_present p then env_ct_upd e (pkt_flow p) k v
+  else e.
 
 (** Overwrite [len] bytes at offset [off] of a byte list (a header), keeping the
     rest — the payload-write primitive. *)
@@ -1657,7 +1739,7 @@ Qed.
 
 (** Source-NAT a packet: rewrite its source address (the [saddr_slot] for the
     NAT [family]) to [v].  This is the data-plane effect a `snat`/`masquerade`
-    performs; [set_saddr "ip" p (e_ifaddr (pkt_env p) oifname)] realises
+    performs; [set_saddr "ip" p (e_ifaddr e oifname)] realises
     `masquerade` = "use the IP of the interface the packet exits".  For IPv4 the
     IP header checksum is incrementally updated ([set_nh_addr_ip4], mirroring
     [csum_replace4]); IPv6 has no L3 checksum so it is a bare slot splice. *)
@@ -1857,8 +1939,6 @@ Definition env_set_upd (e : env) (op name : String.string) (key : data) : env :=
             else (key, key) :: e_set e n
        else e_set e n).
 
-Definition set_env_dynset (p : packet) (op name : String.string) (key : data) : packet :=
-  with_pkt_env p (env_set_upd (pkt_env p) op name key).
 
 (** The map analogue: a `dynset` whose target is a MAP (`add @m {key : data}`)
     learns the entry [key -> data] in the named value-map [e_map], so a later
@@ -1874,117 +1954,116 @@ Definition env_map_upd (e : env) (op name : String.string) (key dat : data) : en
             else (key, dat) :: e_map e n
        else e_map e n).
 
-Definition set_env_dynset_map (p : packet) (op name : String.string) (key dat : data) : packet :=
-  with_pkt_env p (env_map_upd (pkt_env p) op name key dat).
 
 (** The VM's meta/ct effect of running one rule's bytecode: mirrors [run_rule]'s
     register threading, but instead of a verdict it returns the packet with the
     [IMetaSet]/[ICtSet] writes applied (in execution order; a write only happens
     once the matches before it have passed — a failed cmp/lookup/limit returns the
     packet unchanged, exactly as the verdict run breaks). *)
-Fixpoint run_rule_writes (rf : regfile) (is : list instr) (p : packet) : packet :=
+Fixpoint run_rule_writes (rf : regfile) (is : list instr) (e : env) (p : packet)
+  : env * packet :=
   match is with
-  | [] => p
-  | IMetaLoad k dst :: rest => run_rule_writes (set_reg rf dst (meta_load k (pkt_meta p k))) rest p
+  | [] => (e, p)
+  | IMetaLoad k dst :: rest => run_rule_writes (set_reg rf dst (meta_load k (pkt_meta p k))) rest e p
   | ICtLoad k dst :: rest =>
       (* a conntrack load on a no-entry packet ([pkt_ct_present = false]) breaks the
          rule for every key except [CKstate] (NFT_BREAK): no later statement runs and
          the packet is returned unchanged — mirrors [run_rule] and the payload guard. *)
       if load_ok (LCt k) p
-      then run_rule_writes (set_reg rf dst (do_load (LCt k) p)) rest p
-      else p
-  | IRtLoad k dst :: rest => run_rule_writes (set_reg rf dst (e_rt (pkt_env p) k)) rest p
-  | ISocketLoad k dst :: rest => run_rule_writes (set_reg rf dst (pkt_sock p k)) rest p
+      then run_rule_writes (set_reg rf dst (do_load (LCt k) e p)) rest e p
+      else (e, p)
+  | IRtLoad k dst :: rest => run_rule_writes (set_reg rf dst (e_rt e k)) rest e p
+  | ISocketLoad k dst :: rest => run_rule_writes (set_reg rf dst (pkt_sock p k)) rest e p
   | INumgen spec dst :: rest =>
       (* per-instruction: verdict-/packet-neutral (reads the shared counter value).
          The cross-packet counter ADVANCE is applied by [numgen_sweep_prog] at the
          mutation-evaluator boundary, so the per-instruction write lock-step (and the
          whole load-fields machinery) is preserved. *)
-      run_rule_writes (set_reg rf dst (do_load (LNumgen spec) p)) rest p
-  | IOsf dst :: rest => run_rule_writes (set_reg rf dst (pkt_osf p)) rest p
+      run_rule_writes (set_reg rf dst (do_load (LNumgen spec) e p)) rest e p
+  | IOsf dst :: rest => run_rule_writes (set_reg rf dst (pkt_osf p)) rest e p
   | IExthdrLoad ep h o l pr dst :: rest =>
       (* a VALUE load of an absent exthdr/option breaks the rule (NFT_BREAK): no
          later statement runs, the packet is returned unchanged — mirrors
          [run_rule] and the payload guard below. *)
       if load_ok (LExthdr ep h o l pr) p
-      then run_rule_writes (set_reg rf dst (pkt_eh p ep h o l pr)) rest p
-      else p
-  | IFibLoad sel res dst :: rest => run_rule_writes (set_reg rf dst (lpm_fib (e_routes (pkt_env p)) (pkt_fibkey p sel) res)) rest p
-  | ICtDirLoad key dir dst :: rest => run_rule_writes (set_reg rf dst (pkt_ctdir p key dir)) rest p
-  | IXfrmLoad dir sp key dst :: rest => run_rule_writes (set_reg rf dst (pkt_xfrm p dir sp key)) rest p
-  | ITunnelLoad key dst :: rest => run_rule_writes (set_reg rf dst (pkt_tunnel p key)) rest p
-  | ISymhash m o dst :: rest => run_rule_writes (set_reg rf dst (pkt_symhash p m o)) rest p
+      then run_rule_writes (set_reg rf dst (pkt_eh p ep h o l pr)) rest e p
+      else (e, p)
+  | IFibLoad sel res dst :: rest => run_rule_writes (set_reg rf dst (lpm_fib (e_routes e) (pkt_fibkey p sel) res)) rest e p
+  | ICtDirLoad key dir dst :: rest => run_rule_writes (set_reg rf dst (pkt_ctdir p key dir)) rest e p
+  | IXfrmLoad dir sp key dst :: rest => run_rule_writes (set_reg rf dst (pkt_xfrm p dir sp key)) rest e p
+  | ITunnelLoad key dst :: rest => run_rule_writes (set_reg rf dst (pkt_tunnel p key)) rest e p
+  | ISymhash m o dst :: rest => run_rule_writes (set_reg rf dst (pkt_symhash p m o)) rest e p
   | IInnerLoad t h fl desc _ dst :: rest =>
-      run_rule_writes (set_reg rf dst (pkt_inner p t h fl desc)) rest p
+      run_rule_writes (set_reg rf dst (pkt_inner p t h fl desc)) rest e p
   | IPayloadLoad b o l dst :: rest =>
       (* a broken payload read breaks the rule (NFT_BREAK): no later statement in
          this rule runs, so the packet is returned unchanged — mirrors [run_rule]. *)
       if read_payload_ok b o l p
-      then run_rule_writes (set_reg rf dst (read_payload b o l p)) rest p
-      else p
-  | ICmp op src v :: rest => if eval_cmp op (rf src) v then run_rule_writes rf rest p else p
-  | IRange op src lo hi :: rest => if eval_range op (rf src) lo hi then run_rule_writes rf rest p else p
-  | IBitwise dst src mask xor :: rest => run_rule_writes (set_reg rf dst (data_bitops (rf src) mask xor)) rest p
-  | IBitwiseOr dst src1 src2 :: rest => run_rule_writes (set_reg rf dst (data_or (rf src1) (rf src2))) rest p
-  | IBitShift dst src shl amt :: rest => run_rule_writes (set_reg rf dst (data_shift shl amt (rf src))) rest p
-  | IByteorder dst src h sz len :: rest => run_rule_writes (set_reg rf dst (data_byteorder h sz len (rf src))) rest p
-  | IJhash dst src l s m o :: rest => run_rule_writes (set_reg rf dst (data_jhash l s m o (rf src))) rest p
+      then run_rule_writes (set_reg rf dst (read_payload b o l p)) rest e p
+      else (e, p)
+  | ICmp op src v :: rest => if eval_cmp op (rf src) v then run_rule_writes rf rest e p else (e, p)
+  | IRange op src lo hi :: rest => if eval_range op (rf src) lo hi then run_rule_writes rf rest e p else (e, p)
+  | IBitwise dst src mask xor :: rest => run_rule_writes (set_reg rf dst (data_bitops (rf src) mask xor)) rest e p
+  | IBitwiseOr dst src1 src2 :: rest => run_rule_writes (set_reg rf dst (data_or (rf src1) (rf src2))) rest e p
+  | IBitShift dst src shl amt :: rest => run_rule_writes (set_reg rf dst (data_shift shl amt (rf src))) rest e p
+  | IByteorder dst src h sz len :: rest => run_rule_writes (set_reg rf dst (data_byteorder h sz len (rf src))) rest e p
+  | IJhash dst src l s m o :: rest => run_rule_writes (set_reg rf dst (data_jhash l s m o (rf src))) rest e p
   | ILookup srcs name neg :: rest =>
-      if xorb neg (concat_set_mem (map rf srcs) (e_set (pkt_env p) name))
-      then run_rule_writes rf rest p else p
+      if xorb neg (concat_set_mem (map rf srcs) (e_set e name))
+      then run_rule_writes rf rest e p else (e, p)
   | IVmap srcs name :: rest =>
-      match assoc_verdict (List.concat (map rf srcs)) (e_vmap (pkt_env p) name) with
-      | Some _ => p   (* terminal verdict: traversal stops, no later-rule effect *)
-      | None   => run_rule_writes rf rest p
+      match assoc_verdict (List.concat (map rf srcs)) (e_vmap e name) with
+      | Some _ => (e, p)   (* terminal verdict: traversal stops, no later-rule effect *)
+      | None   => run_rule_writes rf rest e p
       end
-  | IImmediateData dst v :: rest => run_rule_writes (set_reg rf dst v) rest p
-  | IPayloadWrite _ _ _ _ _ _ _ :: rest => run_rule_writes rf rest p
-  | IMetaSet k src :: rest => run_rule_writes rf rest (set_meta p k (rf src))
-  | ICtSet k src :: rest => run_rule_writes rf rest (set_ct p k (rf src))
+  | IImmediateData dst v :: rest => run_rule_writes (set_reg rf dst v) rest e p
+  | IPayloadWrite _ _ _ _ _ _ _ :: rest => run_rule_writes rf rest e p
+  | IMetaSet k src :: rest => run_rule_writes rf rest e (set_meta p k (rf src))
+  | ICtSet k src :: rest => run_rule_writes rf rest (set_ct e p k (rf src)) p
   | ILookupVal keys name dreg :: rest =>
       run_rule_writes (set_reg rf dreg (map_lookup_data (List.concat (map rf keys))
-                                                        (e_map (pkt_env p) name))) rest p
+                                                        (e_map e name))) rest e p
   | ILookupValBr keys name dreg :: rest =>
       (* break on a map miss: no further writes (the terminal does not fire) *)
-      if map_has_key (List.concat (map rf keys)) (e_map (pkt_env p) name)
+      if map_has_key (List.concat (map rf keys)) (e_map e name)
       then run_rule_writes (set_reg rf dreg (map_lookup_data (List.concat (map rf keys))
-                                                             (e_map (pkt_env p) name))) rest p
-      else p
-  | INat _ _ _ _ _ _ _ :: _ => p
-  | ITproxy _ _ _ :: _ => p
-  | IFwd _ _ _ :: _ => p
-  | IQueueSreg _ _ _ :: _ => p
-  | ILimit spec :: rest => if xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (lim_under p spec) then run_rule_writes rf rest p else p
-  | IQuota spec :: rest => if xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (quota_under p spec) then run_rule_writes rf rest p else p
-  | IConnlimit spec :: rest => if xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (connlimit_under p spec) then run_rule_writes rf rest p else p
-  | ICounter _ _ :: rest => run_rule_writes rf rest p
-  | INotrack :: rest => run_rule_writes rf rest (set_untracked p)
-  | ILog _ :: rest => run_rule_writes rf rest p
-  | IObjref _ _ :: rest => run_rule_writes rf rest p
+                                                             (e_map e name))) rest e p
+      else (e, p)
+  | INat _ _ _ _ _ _ _ :: _ => (e, p)
+  | ITproxy _ _ _ :: _ => (e, p)
+  | IFwd _ _ _ :: _ => (e, p)
+  | IQueueSreg _ _ _ :: _ => (e, p)
+  | ILimit spec :: rest => if xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (lim_under e p spec) then run_rule_writes rf rest e p else (e, p)
+  | IQuota spec :: rest => if xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (quota_under e p spec) then run_rule_writes rf rest e p else (e, p)
+  | IConnlimit spec :: rest => if xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (connlimit_under e p spec) then run_rule_writes rf rest e p else (e, p)
+  | ICounter _ _ :: rest => run_rule_writes rf rest e p
+  | INotrack :: rest => run_rule_writes rf rest e (set_untracked p)
+  | ILog _ :: rest => run_rule_writes rf rest e p
+  | IObjref _ _ :: rest => run_rule_writes rf rest e p
   | ISynproxy _ _ :: rest =>
       (* mirrors [run_rule]: a non-TCP packet breaks the rule, a SYN/ACK packet
          stops traversal (terminal) — either way no later statement in this rule
          runs, so the packet is returned unchanged; other TCP packets fall through. *)
       if synproxy_loadable p
-      then (if synproxy_stops p then p else run_rule_writes rf rest p)
-      else p
-  | ILast _ :: rest => run_rule_writes rf rest p
+      then (if synproxy_stops p then (e, p) else run_rule_writes rf rest e p)
+      else (e, p)
+  | ILast _ :: rest => run_rule_writes rf rest e p
   | IDynset op name keyregs None _ :: rest =>
       (* pure-set dynset: insert/remove the concatenated key in the named set, so a
          LATER rule's lookup sees it (the dynamic-set feedback loop). *)
-      run_rule_writes rf rest (set_env_dynset p op name (List.concat (map rf keyregs)))
+      run_rule_writes rf rest (env_set_upd e op name (List.concat (map rf keyregs))) p
   | IDynset op name keyregs (Some dreg) true :: rest =>
       (* map dynset whose data is a packet field: learn key -> data in the map. *)
-      run_rule_writes rf rest (set_env_dynset_map p op name (List.concat (map rf keyregs)) (rf dreg))
-  | IDynset _ _ _ (Some _) false :: rest => run_rule_writes rf rest p   (* immediate-data dynset: env-neutral *)
-  | IExthdrReset _ _ :: rest => run_rule_writes rf rest p
-  | IDup _ _ :: rest => run_rule_writes rf rest p
-  | IObjrefMap _ _ :: rest => run_rule_writes rf rest p
-  | ICtSetDir _ _ _ :: rest => run_rule_writes rf rest p
-  | IExthdrWrite _ _ _ _ _ :: rest => run_rule_writes rf rest p
-  | IReject _ _ :: _ => p
-  | IQueue _ _ _ _ :: _ => p
-  | IImmediate _ :: _ => p
+      run_rule_writes rf rest (env_map_upd e op name (List.concat (map rf keyregs)) (rf dreg)) p
+  | IDynset _ _ _ (Some _) false :: rest => run_rule_writes rf rest e p   (* immediate-data dynset: env-neutral *)
+  | IExthdrReset _ _ :: rest => run_rule_writes rf rest e p
+  | IDup _ _ :: rest => run_rule_writes rf rest e p
+  | IObjrefMap _ _ :: rest => run_rule_writes rf rest e p
+  | ICtSetDir _ _ _ :: rest => run_rule_writes rf rest e p
+  | IExthdrWrite _ _ _ _ _ :: rest => run_rule_writes rf rest e p
+  | IReject _ _ :: _ => (e, p)
+  | IQueue _ _ _ _ :: _ => (e, p)
+  | IImmediate _ :: _ => (e, p)
   end.
 
 (** Is a value-source "simple" (immediate or field)?  These are exactly the
@@ -2024,149 +2103,225 @@ Definition simple_writes (r : rule) : bool := simple_body (r_body r).
     packet mutated so far (so a later operand sees an earlier write); a match that
     fails stops execution, keeping the writes made *before* it (statements before a
     failing match still ran).  This mirrors [run_rule_writes] on the compiled body. *)
-Fixpoint body_writes (body : list body_item) (p : packet) : packet :=
+Fixpoint body_writes (body : list body_item) (e : env) (p : packet) : env * packet :=
   match body with
-  | [] => p
-  | BMatch m :: rest => if eval_matchcond m p then body_writes rest p else p
+  | [] => (e, p)
+  | BMatch m :: rest => if eval_matchcond m e p then body_writes rest e p else (e, p)
   (* A mutating statement whose operand load BREAKs (unloadable payload) stops the
      rule's execution before its write, exactly as [run_rule_writes] breaks at the
-     operand's [IPayloadLoad] — so no write happens and the packet is returned. *)
+     operand's [IPayloadLoad] — so no write happens and the state is returned. *)
   | BStmt (SMetaSet k vs) :: rest =>
-      if vsrc_loadable vs p then body_writes rest (set_meta p k (eval_vsrc vs p)) else p
+      if vsrc_loadable vs p then body_writes rest e (set_meta p k (eval_vsrc vs e p)) else (e, p)
   | BStmt (SCtSet k vs)   :: rest =>
-      if vsrc_loadable vs p then body_writes rest (set_ct p k (eval_vsrc vs p)) else p
+      if vsrc_loadable vs p then body_writes rest (set_ct e p k (eval_vsrc vs e p)) p else (e, p)
   | BStmt (SDynset op name keyfs nil) :: rest =>
       (* pure-set dynset: insert/remove the concatenated key in the named set, so a
          later rule's [lookup @name] observes it (cf. [run_rule_writes]'s IDynset). *)
       if fields_loadable keyfs p
-      then body_writes rest (set_env_dynset p op name
-                               (List.concat (map (fun f => field_value f p) keyfs)))
-      else p
+      then body_writes rest (env_set_upd e op name
+                               (List.concat (map (fun f => field_value f e p) keyfs))) p
+      else (e, p)
   | BStmt (SDynset op name keyfs (d :: ds)) :: rest =>
       (* map dynset with a field-valued data: learn key -> (first data field) in the
          named map.  (Only the first data field is recorded; the corpus never emits a
          multi-field map data, and BOTH sides record exactly this, so DSL = VM.) *)
       if fields_loadable (keyfs ++ d :: ds) p
-      then body_writes rest (set_env_dynset_map p op name
-                               (List.concat (map (fun f => field_value f p) keyfs))
-                               (field_value d p))
-      else p
+      then body_writes rest (env_map_upd e op name
+                               (List.concat (map (fun f => field_value f e p) keyfs))
+                               (field_value d e p)) p
+      else (e, p)
   (* SYN-proxy is meta/ct- and env-neutral, but it BREAKs the rule on a non-TCP
      packet and STOPS (terminal) on a SYN/ACK packet — either way no later
      statement runs (cf. [run_rule_writes]'s ISynproxy); other TCP packets fall
      through. *)
   | BStmt (SSynproxy _ _) :: rest =>
       if synproxy_loadable p
-      then (if synproxy_stops p then p else body_writes rest p)
-      else p
+      then (if synproxy_stops p then (e, p) else body_writes rest e p)
+      else (e, p)
   (* `notrack` forces the packet's conntrack state to IP_CT_UNTRACKED for the rest of
      this traversal, so a LATER `ct state` read (in this rule or a subsequent rule of
      the same traversal, threaded by [eval_rules_mut]) returns
      NF_CT_STATE_UNTRACKED_BIT (kernel nft_notrack_eval + nft_ct_get_eval).  Mirrors
      [run_rule_writes]'s [INotrack]. *)
-  | BStmt SNotrack :: rest => body_writes rest (set_untracked p)
+  | BStmt SNotrack :: rest => body_writes rest e (set_untracked p)
   (* every OTHER statement is meta/ct- and env-neutral, but it still LOADS its
      operand fields; an unloadable load BREAKs the rule (so no later statement
      runs), exactly as [run_rule_writes] breaks at that operand's payload load. *)
-  | BStmt s :: rest => if stmt_loadable s p then body_writes rest p else p
+  | BStmt s :: rest => if stmt_loadable s p then body_writes rest e p else (e, p)
   end.
-Definition dsl_writes (r : rule) (p : packet) : packet := body_writes (r_body r) p.
+Definition dsl_writes (r : rule) (e : env) (p : packet) : env * packet :=
+  body_writes (r_body r) e p.
 
 (** The full cross-rule effect of running a rule [r] on packet [p] in mutation mode:
     its meta/ct/env writes ([dsl_writes]) AND the depletion of every `limit`/`quota`/
     `connlimit` token bucket it evaluates ([limit_sweep_body]).  The next rule — and,
-    through [pkt_env], the next packet of the traversal — observes both, so a rate
+    through the threaded env, the next packet of the traversal — observes both, so a rate
     limit actually limits later packets.  (The limit sweep reads/writes only
     [e_limit]/[e_quota]/[e_connlimit], which [dsl_writes] never touches, so the two
     compose order-independently for those fields.) *)
-Definition dsl_step (r : rule) (p : packet) : packet :=
-  limit_sweep_body (r_body r) (dsl_writes r p).
+Definition dsl_step (r : rule) (e : env) (p : packet) : env * packet :=
+  let '(e', p') := dsl_writes r e p in
+  (limit_sweep_body (r_body r) e' p', p').
 
 (** A limit-free rule's [dsl_step] is just its [dsl_writes] (no limiter consumption);
     so every existing rate-limit-free proof about [dsl_writes]/[eval_chain_trace]
     carries over unchanged. *)
-Lemma dsl_step_limit_free : forall r p,
-  limit_free_body (r_body r) = true -> dsl_step r p = dsl_writes r p.
-Proof. intros r p H. unfold dsl_step. apply limit_sweep_body_id, H. Qed.
+Lemma dsl_step_limit_free : forall r e p,
+  limit_free_body (r_body r) = true -> dsl_step r e p = dsl_writes r e p.
+Proof.
+  intros r e p H. unfold dsl_step.
+  destruct (dsl_writes r e p) as [e' p'].
+  rewrite (limit_sweep_body_id _ _ _ H). reflexivity.
+Qed.
+
+(** ** ONE step function per rule, per side.
+
+    In mutation mode a rule's whole contribution to a traversal is a single STEP:
+    the (loadability-guarded) verdict it produces, paired with the packet it
+    leaves — its meta/ct/env writes, its `numgen inc` counter advance, and the
+    depletion of every limiter it evaluates.  [dsl_rule_step] (DSL side) and
+    [vm_rule_step] (bytecode side) package that step once; every mutation/trace
+    evaluator below consumes ONLY the step functions, so the verdict/effect
+    composition is written here and nowhere else.  The compiler-correctness
+    bridge is one equation: [vm_rule_step (compile_rule r) = dsl_rule_step r]
+    on well-formed rules ([Correct.vm_rule_step_compile_rule]). *)
+Definition dsl_rule_step (r : rule) (e : env) (p : packet)
+  : option verdict * (env * packet) :=
+  (if rule_loadable r e p && rule_applies r e p then outcome r e p else None,
+   dsl_step r e p).
+
+(** The two components are DISTINCT folds by design, not projections of one
+    fixpoint: the verdict pass ([run_rule]) evaluates every load against the
+    packet the rule ENTERED with (matching [rule_applies]/[outcome], which do not
+    see intra-rule writes), while the write pass ([run_rule_writes]) threads each
+    write into the loads after it (matching [body_writes]).  Pairing them here
+    means their composition appears once, and the DSL/VM agreement is discharged
+    by the single equation [vm_rule_step (compile_rule r) = dsl_rule_step r]. *)
+Definition vm_rule_step (is : rule_prog) (e : env) (p : packet)
+  : option verdict * (env * packet) :=
+  (run_rule empty_rf is e p,
+   let '(e', p') := run_rule_writes empty_rf is e p in
+   (limit_sweep_prog is (numgen_sweep_prog is e') p', p')).
 
 (** Mutation-aware rule-list evaluation: every non-terminal rule threads its
     writes to the rest, so a later rule observes an earlier `set` (the write
     happens whether or not the rule's verdict matched — a non-applicable rule
     still ran the statements up to its failing match). *)
-Fixpoint eval_rules_mut (rs : list rule) (p : packet) : option verdict :=
+Fixpoint eval_rules_mut (rs : list rule) (e : env) (p : packet) : option verdict :=
   match rs with
   | [] => None
   | r :: rest =>
-      if rule_loadable r p && rule_applies r p then
-        match outcome r p with
-        | Some v => if terminal v then Some v else eval_rules_mut rest (dsl_step r p)
-        | None   => eval_rules_mut rest (dsl_step r p)
-        end
-      else eval_rules_mut rest (dsl_step r p)
-  end.
-
-Fixpoint run_program_mut (prog : program) (p : packet) : option verdict :=
-  match prog with
-  | [] => None
-  | rp :: rest =>
-      (* the packet a rule LEAVES carries its [run_rule_writes] meta/ct/env writes, its
-         `numgen inc` counter advance ([numgen_sweep_prog]), AND the depletion of every
-         `limit`/`quota`/`connlimit` bucket it evaluated ([limit_sweep_prog]); the next
-         rule (and, through the env, the next packet) sees all three. *)
-      let p' := limit_sweep_prog rp (numgen_sweep_prog rp (run_rule_writes empty_rf rp p)) in
-      match run_rule empty_rf rp p with
-      | Some v => if terminal v then Some v else run_program_mut rest p'
-      | None   => run_program_mut rest p'
+      match dsl_rule_step r e p with
+      | (Some v, (e', p')) => if terminal v then Some v else eval_rules_mut rest e' p'
+      | (None,   (e', p')) => eval_rules_mut rest e' p'
       end
   end.
 
-Definition eval_chain_mut (c : chain) (p : packet) : verdict :=
-  match eval_rules_mut (c_rules c) p with Some v => v | None => c_policy c end.
-Definition run_chain_mut (prog : program) (policy : verdict) (p : packet) : verdict :=
-  match run_program_mut prog p with Some v => v | None => policy end.
+Fixpoint run_program_mut (prog : program) (e : env) (p : packet) : option verdict :=
+  match prog with
+  | [] => None
+  | rp :: rest =>
+      (* [vm_rule_step]: the state a rule LEAVES carries its [run_rule_writes]
+         meta/ct/env writes, its `numgen inc` counter advance, AND the depletion of
+         every `limit`/`quota`/`connlimit` bucket it evaluated; the next rule (and,
+         through the env, the next packet) sees all three. *)
+      match vm_rule_step rp e p with
+      | (Some v, (e', p')) => if terminal v then Some v else run_program_mut rest e' p'
+      | (None,   (e', p')) => run_program_mut rest e' p'
+      end
+  end.
+
+Definition eval_chain_mut (c : chain) (e : env) (p : packet) : verdict :=
+  match eval_rules_mut (c_rules c) e p with Some v => v | None => c_policy c end.
+Definition run_chain_mut (prog : program) (policy : verdict) (e : env) (p : packet) : verdict :=
+  match run_program_mut prog e p with Some v => v | None => policy end.
 
 (** ** Cross-packet persistence of learned state.
 
     A `dynset` learns an element into a named set; that learning must persist to
     the NEXT packet (per-source rate limiting, learning sets, …).  Within one
     packet [eval_rules_mut]/[run_program_mut] thread the mutated packet (hence its
-    [pkt_env]) across rules; to thread it across PACKETS we expose the final
+    env) across rules; to thread it across PACKETS we expose the final
     environment.  [eval_rules_mut_env]/[run_program_mut_env] mirror the verdict
     evaluators but also return the env left after the chain ran (the shared
     set/map/limiter state, NOT the per-packet meta/ct fields, which are local to
     each packet).  On a terminal verdict the env still reflects the writes the
     final rule's body made before the verdict. *)
-Fixpoint eval_rules_mut_env (rs : list rule) (p : packet) : option verdict * env :=
+Fixpoint eval_rules_mut_env (rs : list rule) (e : env) (p : packet)
+  : option verdict * env :=
   match rs with
-  | [] => (None, pkt_env p)
+  | [] => (None, e)
   | r :: rest =>
-      if rule_loadable r p && rule_applies r p then
-        match outcome r p with
-        | Some v => if terminal v then (Some v, pkt_env (dsl_step r p))
-                    else eval_rules_mut_env rest (dsl_step r p)
-        | None   => eval_rules_mut_env rest (dsl_step r p)
-        end
-      else eval_rules_mut_env rest (dsl_step r p)
+      match dsl_rule_step r e p with
+      | (Some v, (e', p')) => if terminal v then (Some v, e')
+                              else eval_rules_mut_env rest e' p'
+      | (None,   (e', p')) => eval_rules_mut_env rest e' p'
+      end
   end.
 
-Fixpoint run_program_mut_env (prog : program) (p : packet) : option verdict * env :=
+Fixpoint run_program_mut_env (prog : program) (e : env) (p : packet)
+  : option verdict * env :=
   match prog with
-  | [] => (None, pkt_env p)
+  | [] => (None, e)
   | rp :: rest =>
-      let p' := limit_sweep_prog rp (numgen_sweep_prog rp (run_rule_writes empty_rf rp p)) in
-      match run_rule empty_rf rp p with
-      | Some v => if terminal v then (Some v, pkt_env p')
-                  else run_program_mut_env rest p'
-      | None   => run_program_mut_env rest p'
+      match vm_rule_step rp e p with
+      | (Some v, (e', p')) => if terminal v then (Some v, e')
+                              else run_program_mut_env rest e' p'
+      | (None,   (e', p')) => run_program_mut_env rest e' p'
       end
   end.
 
 (** Run a base chain in mutation mode, returning the verdict AND the env the chain
     leaves (with any dynset-learned elements), so a packet sequence can thread it. *)
-Definition eval_chain_mut_env (c : chain) (p : packet) : verdict * env :=
-  match eval_rules_mut_env (c_rules c) p with (Some v, e) => (v, e) | (None, e) => (c_policy c, e) end.
-Definition run_chain_mut_env (prog : program) (policy : verdict) (p : packet) : verdict * env :=
-  match run_program_mut_env prog p with (Some v, e) => (v, e) | (None, e) => (policy, e) end.
+Definition eval_chain_mut_env (c : chain) (e : env) (p : packet) : verdict * env :=
+  match eval_rules_mut_env (c_rules c) e p with
+  | (Some v, e') => (v, e') | (None, e') => (c_policy c, e') end.
+Definition run_chain_mut_env (prog : program) (policy : verdict) (e : env) (p : packet)
+  : verdict * env :=
+  match run_program_mut_env prog e p with
+  | (Some v, e') => (v, e') | (None, e') => (policy, e') end.
+
+(** The env-returning evaluators RESTRICT to the verdict-only ones: the verdict
+    component of [eval_rules_mut_env]/[run_program_mut_env] is exactly
+    [eval_rules_mut]/[run_program_mut].  These are the bridges of the evaluator
+    matrix (header): the _mut evaluators are the [fst] projections of the _env
+    evaluators, so a compiler-correctness proof for the _env pair yields the
+    _mut pair for free ([Correct.run_program_mut_compile_chain]). *)
+Lemma eval_rules_mut_env_fst : forall rs e p,
+  fst (eval_rules_mut_env rs e p) = eval_rules_mut rs e p.
+Proof.
+  induction rs as [| r rs IH]; intros e p; [reflexivity|].
+  cbn [eval_rules_mut_env eval_rules_mut].
+  destruct (dsl_rule_step r e p) as [[v|] [e' p']];
+    [destruct (terminal v); [reflexivity | apply IH] | apply IH].
+Qed.
+
+Lemma run_program_mut_env_fst : forall prog e p,
+  fst (run_program_mut_env prog e p) = run_program_mut prog e p.
+Proof.
+  induction prog as [| rp rest IH]; intros e p; [reflexivity|].
+  cbn [run_program_mut_env run_program_mut].
+  destruct (vm_rule_step rp e p) as [[v|] [e' p']];
+    [destruct (terminal v); [reflexivity | apply IH] | apply IH].
+Qed.
+
+(** Chain-level restriction: the verdict component of the env-returning chain
+    evaluators is the _mut chain verdict. *)
+Lemma eval_chain_mut_env_fst : forall c e p,
+  fst (eval_chain_mut_env c e p) = eval_chain_mut c e p.
+Proof.
+  intros c e p. unfold eval_chain_mut_env, eval_chain_mut.
+  rewrite <- eval_rules_mut_env_fst.
+  destruct (eval_rules_mut_env (c_rules c) e p) as [[v|] e']; reflexivity.
+Qed.
+
+Lemma run_chain_mut_env_fst : forall prog policy e p,
+  fst (run_chain_mut_env prog policy e p) = run_chain_mut prog policy e p.
+Proof.
+  intros prog policy e p. unfold run_chain_mut_env, run_chain_mut.
+  rewrite <- run_program_mut_env_fst.
+  destruct (run_program_mut_env prog e p) as [[v|] e']; reflexivity.
+Qed.
 
 (** ** Whole-chain packet trace.
 
@@ -2188,16 +2343,16 @@ Definition run_chain_mut_env (prog : program) (policy : verdict) (p : packet) : 
     ([terminal_loadable]): an explicit value source ([nat_src]), else a named-map
     lookup ([nat_map]), else a (transformed) packet field ([nat_field]), else the
     immediate destined for register 1 ([nat_addr_imm]). *)
-Definition nat_addr (ns : nat_spec) (p : packet) : data :=
+Definition nat_addr (ns : nat_spec) (e : env) (p : packet) : data :=
   match nat_src ns with
-  | Some vs => eval_vsrc vs p
+  | Some vs => eval_vsrc vs e p
   | None =>
   match nat_map ns with
   | Some (fields, ts, name) =>
-      map_lookup_data (nat_map_key fields ts p) (e_map (pkt_env p) name)
+      map_lookup_data (nat_map_key fields ts e p) (e_map e name)
   | None =>
   match nat_field ns with
-  | Some (f, ts) => apply_transforms ts (field_value f p)
+  | Some (f, ts) => apply_transforms ts (field_value f e p)
   | None => match nat_addr_imm ns with Some v => v | None => [] end
   end end end.
 
@@ -2269,10 +2424,10 @@ Definition loopback_addr (family : String.string) : data :=
     loopback address (127.0.0.1 / ::1); otherwise (PRE_ROUTING) the new
     destination is the inbound interface's primary address.  [nft_redir_validate]
     permits only these two hooks. *)
-Definition redir_daddr (h : hook_id) (fam : String.string) (p : packet) : data :=
+Definition redir_daddr (h : hook_id) (fam : String.string) (e : env) (p : packet) : data :=
   match h with
   | Houtput => loopback_addr fam
-  | _ => e_ifaddr (pkt_env p) (field_value FMetaIifname p)
+  | _ => e_ifaddr e (field_value FMetaIifname e p)
   end.
 
 (** The SOURCE address a `masquerade` rewrites to: the exit interface's primary
@@ -2282,10 +2437,10 @@ Definition redir_daddr (h : hook_id) (fam : String.string) (p : packet) : data :
     [e_ifaddr]; an IPv6 masquerade writes the 16-byte [e_ifaddr6] (the kernel
     computes it via ipv6_dev_get_saddr — a DIFFERENT, 128-bit value, not the IPv4
     address).  Keyed by the exit-interface name ([FMetaOifname]). *)
-Definition masq_saddr (fam : String.string) (p : packet) : data :=
+Definition masq_saddr (fam : String.string) (e : env) (p : packet) : data :=
   if String.eqb fam nat_fam_ip6
-  then e_ifaddr6 (pkt_env p) (field_value FMetaOifname p)
-  else e_ifaddr  (pkt_env p) (field_value FMetaOifname p).
+  then e_ifaddr6 e (field_value FMetaOifname e p)
+  else e_ifaddr  e (field_value FMetaOifname e p).
 
 (** The L4 port the kernel writes is [min_proto.all] of the NAT range, loaded as a
     big-endian 16-bit value from the proto-min register ([nft_nat_setup_proto],
@@ -2355,14 +2510,15 @@ Definition nat_is_src (ns : nat_spec) : bool :=
     so both always carry an (implicit) address.  This is the ONLY part of the NAT
     effect that re-reads the current packet, so it is exactly what must be FROZEN at
     the flow's first packet. *)
-Definition nat_operand_addr (h : hook_id) (ns : nat_spec) (p : packet) : option data :=
+Definition nat_operand_addr (h : hook_id) (ns : nat_spec) (e : env) (p : packet)
+  : option data :=
   if String.eqb (nat_kind ns) nat_masq_kind
-  then Some (masq_saddr (nat_addrfamily_pkt ns p) p)
+  then Some (masq_saddr (nat_addrfamily_pkt ns p) e p)
   else if String.eqb (nat_kind ns) nat_redir_kind
-  then Some (redir_daddr h (nat_addrfamily_pkt ns p) p)
+  then Some (redir_daddr h (nat_addrfamily_pkt ns p) e p)
   else if String.eqb (nat_kind ns) nat_snat_kind
        || String.eqb (nat_kind ns) nat_dnat_kind
-  then if nat_has_addr ns then Some (nat_addr ns p) else None
+  then if nat_has_addr ns then Some (nat_addr ns e p) else None
   else None.
 
 (** Apply a (possibly absent) L4 PORT translation [port_opt] to packet [p],
@@ -2431,12 +2587,13 @@ Definition apply_nat_tuple (ns : nat_spec) (p : packet)
     | None => p1
     end.
 
-(** Replace packet [p]'s environment with the flow-keyed NAT mapping [m] STORED at
-    [p]'s flow ([env_nat_upd]).  Every set_*/address rewrite preserves [pkt_env], so
-    this records the established translation into the shared, threaded env exactly
-    where the kernel writes it into the conntrack entry. *)
-Definition store_nat_mapping (p : packet) (m : option data * option data * option nat * option data) : packet :=
-  with_pkt_env p (env_nat_upd (pkt_env p) (pkt_flow p) m).
+(** STORE the flow-keyed NAT mapping [m] at [p]'s flow into the shared env
+    ([env_nat_upd]) — exactly where the kernel writes it into the conntrack
+    entry.  A pure env update: the packet is untouched (the address rewrite is
+    the separate [apply_nat_tuple]). *)
+Definition store_nat_mapping (e : env) (p : packet)
+    (m : option data * option data * option nat * option data) : env :=
+  env_nat_upd e (pkt_flow p) m.
 
 (** The data-plane NAT effect of a terminal rule at hook [h], now FLOW-STATEFUL,
     mirroring [nf_nat_setup_info]/[nft_nat_eval]:
@@ -2496,14 +2653,14 @@ Definition nat_orig_port (ns : nat_spec) (p : packet) : option data :=
       else Some (slice (pkt_th p) 2 2)   (* dest   NAT: original DEST   port *)
   | None => None
   end.
-Definition apply_nat (h : hook_id) (r : rule) (p : packet) : packet :=
+Definition apply_nat (h : hook_id) (r : rule) (e : env) (p : packet) : env * packet :=
   match r_nat r with
   | Some ns =>
-      match e_nat (pkt_env p) (pkt_flow p) with
+      match e_nat e (pkt_flow p) with
       | Some m =>
           (* confirmed flow: reuse the stored tuple (direction-aware), do NOT re-read
              the operand *)
-          apply_nat_tuple ns p m
+          (e, apply_nat_tuple ns p m)
       | None =>
           (* No mapping established yet.  The kernel establishes the NAT tuple only on
              the connection's ORIGINAL-direction packet (nf_nat_setup_info runs on the
@@ -2512,13 +2669,13 @@ Definition apply_nat (h : hook_id) (r : rule) (p : packet) : packet :=
           if pkt_ctdir_orig p then
             (* first packet of the flow (original direction): capture the original
                address, compute the tuple, apply it FORWARD, and STORE it *)
-            let m := (Some (nat_orig_addr ns p), nat_operand_addr h ns p, nat_port_num ns,
+            let m := (Some (nat_orig_addr ns p), nat_operand_addr h ns e p, nat_port_num ns,
                       nat_orig_port ns p) in
-            store_nat_mapping (apply_nat_tuple ns p m) m
+            (store_nat_mapping e p m, apply_nat_tuple ns p m)
           else
-            p
+            (e, p)
       end
-  | None => p
+  | None => (e, p)
   end.
 
 (** The kernel's NAT CORE DROPS a packet when the interface it must take an
@@ -2545,22 +2702,22 @@ Definition apply_nat (h : hook_id) (r : rule) (p : packet) : packet :=
     early, nf_nat_core.c:778-780), so no drop.  Address-carrying snat/dnat never hit
     this path (their operand is an explicit value/map/field, not an interface
     address), so [nat_drops] is false for them. *)
-Definition nat_iface_addr_absent (h : hook_id) (ns : nat_spec) (p : packet) : bool :=
+Definition nat_iface_addr_absent (h : hook_id) (ns : nat_spec) (e : env) (p : packet) : bool :=
   if String.eqb (nat_kind ns) nat_masq_kind
-  then match masq_saddr (nat_addrfamily_pkt ns p) p with [] => true | _ => false end
+  then match masq_saddr (nat_addrfamily_pkt ns p) e p with [] => true | _ => false end
   else if String.eqb (nat_kind ns) nat_redir_kind
   then match h with
        | Houtput => false   (* loopback: never empty, never drops *)
-       | _ => match redir_daddr h (nat_addrfamily_pkt ns p) p with [] => true | _ => false end
+       | _ => match redir_daddr h (nat_addrfamily_pkt ns p) e p with [] => true | _ => false end
        end
   else false.
 
-Definition nat_drops (h : hook_id) (r : rule) (p : packet) : bool :=
+Definition nat_drops (h : hook_id) (r : rule) (e : env) (p : packet) : bool :=
   match r_nat r with
   | Some ns =>
-      match e_nat (pkt_env p) (pkt_flow p) with
+      match e_nat e (pkt_flow p) with
       | Some _ => false                                  (* confirmed flow: reuse stored tuple, no recompute *)
-      | None => pkt_ctdir_orig p && nat_iface_addr_absent h ns p
+      | None => pkt_ctdir_orig p && nat_iface_addr_absent h ns e p
       end
   | None => false
   end.
@@ -2570,48 +2727,45 @@ Definition nat_drops (h : hook_id) (r : rule) (p : packet) : bool :=
     ([apply_nat]) is hook-dependent (an OUTPUT-hooked `redirect` rewrites the
     destination to loopback, not the inbound-interface address), and because the NAT
     core can DROP a packet whose interface has no usable address ([nat_drops]). *)
-Fixpoint eval_rules_trace (h : hook_id) (rs : list rule) (p : packet) : option verdict * packet :=
+Fixpoint eval_rules_trace (h : hook_id) (rs : list rule) (e : env) (p : packet)
+  : option verdict * (env * packet) :=
   match rs with
-  | [] => (None, p)
+  | [] => (None, (e, p))
   | r :: rest =>
-      if rule_loadable r p && rule_applies r p then
-        match outcome r p with
-        | Some v => if terminal v then
-                      (* The NAT core DROPS (returns NF_DROP, overriding the rule's
-                         stated verdict) when the interface it must take an address
-                         from has no usable address ([nat_drops]); the drop happens
-                         BEFORE the address is spliced, so the packet is left
-                         unrewritten.  Otherwise the rule's verdict stands and the
-                         NAT rewrite is applied. *)
-                      if nat_drops h r (dsl_step r p)
-                      then (Some Drop, dsl_step r p)
-                      else (Some v, apply_nat h r (dsl_step r p))
-                    else eval_rules_trace h rest (dsl_step r p)
-        | None   => eval_rules_trace h rest (dsl_step r p)
-        end
-      else eval_rules_trace h rest (dsl_step r p)
+      match dsl_rule_step r e p with
+      | (Some v, (e', p')) =>
+          if terminal v then
+            (* The NAT core DROPS (returns NF_DROP, overriding the rule's stated
+               verdict) when the interface it must take an address from has no
+               usable address ([nat_drops]); the drop happens BEFORE the address is
+               spliced, so the packet is left unrewritten.  Otherwise the rule's
+               verdict stands and the NAT rewrite is applied. *)
+            if nat_drops h r e' p' then (Some Drop, (e', p'))
+            else (Some v, apply_nat h r e' p')
+          else eval_rules_trace h rest e' p'
+      | (None, (e', p')) => eval_rules_trace h rest e' p'
+      end
   end.
 
-Definition eval_chain_trace (h : hook_id) (c : chain) (p : packet) : verdict * packet :=
-  match eval_rules_trace h (c_rules c) p with
-  | (Some v, q) => (v, q) | (None, q) => (c_policy c, q) end.
+Definition eval_chain_trace (h : hook_id) (c : chain) (e : env) (p : packet)
+  : verdict * (env * packet) :=
+  match eval_rules_trace h (c_rules c) e p with
+  | (Some v, s) => (v, s) | (None, s) => (c_policy c, s) end.
 
 (** When does the trace traversal reach a NAT-drop?  This Fixpoint mirrors
     [eval_rules_trace] step-for-step and is [true] exactly when the rule that
     delivers the terminal verdict is a [nat_drops] rule — i.e. when the data-plane
     NAT core overrides the verdict to [Drop].  It is the precise hypothesis under
     which the trace verdict equals the (control-plane) [eval_rules_mut] verdict. *)
-Fixpoint trace_nat_drops (h : hook_id) (rs : list rule) (p : packet) : bool :=
+Fixpoint trace_nat_drops (h : hook_id) (rs : list rule) (e : env) (p : packet) : bool :=
   match rs with
   | [] => false
   | r :: rest =>
-      if rule_loadable r p && rule_applies r p then
-        match outcome r p with
-        | Some v => if terminal v then nat_drops h r (dsl_step r p)
-                    else trace_nat_drops h rest (dsl_step r p)
-        | None   => trace_nat_drops h rest (dsl_step r p)
-        end
-      else trace_nat_drops h rest (dsl_step r p)
+      match dsl_rule_step r e p with
+      | (Some v, (e', p')) => if terminal v then nat_drops h r e' p'
+                              else trace_nat_drops h rest e' p'
+      | (None,   (e', p')) => trace_nat_drops h rest e' p'
+      end
   end.
 
 (** The trace verdict equals the verified [eval_rules_mut] verdict EXCEPT when the
@@ -2621,52 +2775,70 @@ Fixpoint trace_nat_drops (h : hook_id) (rs : list rule) (p : packet) : bool :=
     UNCONDITIONAL equality, which is now genuinely false in the model: the kernel
     DROPS a redirect/masquerade whose interface has no usable address even though
     the rule's stated verdict is Accept. *)
-Lemma eval_rules_trace_verdict : forall h rs p,
-  fst (eval_rules_trace h rs p)
-    = (if trace_nat_drops h rs p then Some Drop else eval_rules_mut rs p).
+Lemma eval_rules_trace_verdict : forall h rs e p,
+  fst (eval_rules_trace h rs e p)
+    = (if trace_nat_drops h rs e p then Some Drop else eval_rules_mut rs e p).
 Proof.
-  induction rs as [|r rest IH]; intros p; simpl; [reflexivity|].
-  destruct (rule_loadable r p && rule_applies r p).
-  - destruct (outcome r p) as [v|]; [|auto].
-    destruct (terminal v); [|auto].
-    destruct (nat_drops h r (dsl_step r p)); reflexivity.
-  - auto.
+  induction rs as [|r rest IH]; intros e p; simpl; [reflexivity|].
+  destruct (rule_loadable r e p && rule_applies r e p).
+  - destruct (outcome r e p) as [v|].
+    + destruct (terminal v).
+      * destruct (dsl_step r e p) as [e' p'].
+        destruct (nat_drops h r e' p'); [reflexivity|].
+        destruct (apply_nat h r e' p'); reflexivity.
+      * destruct (dsl_step r e p) as [e' p']. auto.
+    + destruct (dsl_step r e p) as [e' p']. auto.
+  - destruct (dsl_step r e p) as [e' p']. auto.
 Qed.
+
+(** The verdict half of a DSL step is the loadability-guarded [outcome]; the
+    packet half is [dsl_step] — the projections named, for proofs that only need
+    one half. *)
+Lemma dsl_rule_step_fst : forall r e p,
+  fst (dsl_rule_step r e p)
+  = (if rule_loadable r e p && rule_applies r e p then outcome r e p else None).
+Proof. reflexivity. Qed.
+Lemma dsl_rule_step_snd : forall r e p, snd (dsl_rule_step r e p) = dsl_step r e p.
+Proof. reflexivity. Qed.
 
 (** Specialisation: when no NAT-drop fires, the trace verdict is exactly the
     verified [eval_rules_mut] verdict — the original (now conditional) equality. *)
-Corollary eval_rules_trace_verdict_no_drop : forall h rs p,
-  trace_nat_drops h rs p = false ->
-  fst (eval_rules_trace h rs p) = eval_rules_mut rs p.
+Corollary eval_rules_trace_verdict_no_drop : forall h rs e p,
+  trace_nat_drops h rs e p = false ->
+  fst (eval_rules_trace h rs e p) = eval_rules_mut rs e p.
 Proof.
-  intros h rs p Hnd. rewrite eval_rules_trace_verdict, Hnd. reflexivity.
+  intros h rs e p Hnd. rewrite eval_rules_trace_verdict, Hnd. reflexivity.
 Qed.
 
-Lemma eval_chain_trace_verdict : forall h c p,
-  fst (eval_chain_trace h c p)
-    = (if trace_nat_drops h (c_rules c) p then Drop else eval_chain_mut c p).
+Lemma eval_chain_trace_verdict : forall h c e p,
+  fst (eval_chain_trace h c e p)
+    = (if trace_nat_drops h (c_rules c) e p then Drop else eval_chain_mut c e p).
 Proof.
-  intros h c p. unfold eval_chain_trace, eval_chain_mut.
-  pose proof (eval_rules_trace_verdict h (c_rules c) p) as Hv.
-  destruct (eval_rules_trace h (c_rules c) p) as [[v|] q];
+  intros h c e p. unfold eval_chain_trace, eval_chain_mut.
+  pose proof (eval_rules_trace_verdict h (c_rules c) e p) as Hv.
+  destruct (eval_rules_trace h (c_rules c) e p) as [[v|] s];
     simpl in Hv;
-    destruct (trace_nat_drops h (c_rules c) p).
+    destruct (trace_nat_drops h (c_rules c) e p).
   - inversion Hv; reflexivity.
   - rewrite <- Hv; reflexivity.
   - discriminate Hv.
-  - destruct (eval_rules_mut (c_rules c) p); [discriminate Hv | reflexivity].
+  - destruct (eval_rules_mut (c_rules c) e p); [discriminate Hv | reflexivity].
 Qed.
 
-Corollary eval_chain_trace_verdict_no_drop : forall h c p,
-  trace_nat_drops h (c_rules c) p = false ->
-  fst (eval_chain_trace h c p) = eval_chain_mut c p.
+Corollary eval_chain_trace_verdict_no_drop : forall h c e p,
+  trace_nat_drops h (c_rules c) e p = false ->
+  fst (eval_chain_trace h c e p) = eval_chain_mut c e p.
 Proof.
-  intros h c p Hnd. rewrite eval_chain_trace_verdict, Hnd. reflexivity.
+  intros h c e p Hnd. rewrite eval_chain_trace_verdict, Hnd. reflexivity.
 Qed.
 
 (** Run a whole chain on a packet and return the packet it leaves (the
-    [eval_chain_trace] packet component) — the input to the next chain/hook. *)
-Definition chain_out (h : hook_id) (c : chain) (p : packet) : packet := snd (eval_chain_trace h c p).
+    [eval_chain_trace] packet component) — the input to the next chain/hook —
+    and, symmetrically, the env it leaves. *)
+Definition chain_out (h : hook_id) (c : chain) (e : env) (p : packet) : packet :=
+  snd (snd (eval_chain_trace h c e p)).
+Definition chain_out_env (h : hook_id) (c : chain) (e : env) (p : packet) : env :=
+  fst (snd (eval_chain_trace h c e p)).
 
 (** A packet sequence threaded through a shared, learning environment: each packet
     is evaluated against the current [e], and the env it LEAVES (learned sets/maps)
@@ -2710,78 +2882,78 @@ Fixpoint prog_lookup (cs : list (String.string * program)) (n : String.string) :
     header).  A `meta mark set` inside a jump target is silently dropped here;
     mutation x jump/goto is not jointly verified. *)
 Fixpoint eval_rules_j (fuel : nat) (cs : list (String.string * chain))
-                      (rs : list rule) (p : packet) : option verdict :=
+                      (rs : list rule) (e : env) (p : packet) : option verdict :=
   match fuel with
   | O => None
   | S fuel' =>
     match rs with
     | [] => None
     | r :: rest =>
-      if rule_loadable r p && rule_applies r p then
-        match outcome r p with
-        | None => eval_rules_j fuel' cs rest p
+      if rule_loadable r e p && rule_applies r e p then
+        match outcome r e p with
+        | None => eval_rules_j fuel' cs rest e p
         | Some Return => None
         | Some (Jump n) =>
             match chain_lookup cs n with
-            | Some ch => match eval_rules_j fuel' cs (c_rules ch) p with
+            | Some ch => match eval_rules_j fuel' cs (c_rules ch) e p with
                          | Some v => Some v
-                         | None   => eval_rules_j fuel' cs rest p
+                         | None   => eval_rules_j fuel' cs rest e p
                          end
-            | None => eval_rules_j fuel' cs rest p
+            | None => eval_rules_j fuel' cs rest e p
             end
         | Some (Goto n) =>
             match chain_lookup cs n with
-            | Some ch => eval_rules_j fuel' cs (c_rules ch) p
+            | Some ch => eval_rules_j fuel' cs (c_rules ch) e p
             | None    => None
             end
-        | Some Continue => eval_rules_j fuel' cs rest p
+        | Some Continue => eval_rules_j fuel' cs rest e p
         | Some v => Some v
         end
-      else eval_rules_j fuel' cs rest p
+      else eval_rules_j fuel' cs rest e p
     end
   end.
 
 Definition eval_table (fuel : nat) (cs : list (String.string * chain))
-                      (base : chain) (p : packet) : verdict :=
-  match eval_rules_j fuel cs (c_rules base) p with
+                      (base : chain) (e : env) (p : packet) : verdict :=
+  match eval_rules_j fuel cs (c_rules base) e p with
   | Some v => v
   | None   => c_policy base
   end.
 
 (** Bytecode VM under a compiled chain environment [cs]; mirrors [eval_rules_j]. *)
 Fixpoint run_rules_j (fuel : nat) (cs : list (String.string * program))
-                     (prog : program) (p : packet) : option verdict :=
+                     (prog : program) (e : env) (p : packet) : option verdict :=
   match fuel with
   | O => None
   | S fuel' =>
     match prog with
     | [] => None
     | rp :: rest =>
-      match run_rule empty_rf rp p with
-      | None => run_rules_j fuel' cs rest p
+      match run_rule empty_rf rp e p with
+      | None => run_rules_j fuel' cs rest e p
       | Some Return => None
       | Some (Jump n) =>
           match prog_lookup cs n with
-          | Some prg => match run_rules_j fuel' cs prg p with
+          | Some prg => match run_rules_j fuel' cs prg e p with
                         | Some v => Some v
-                        | None   => run_rules_j fuel' cs rest p
+                        | None   => run_rules_j fuel' cs rest e p
                         end
-          | None => run_rules_j fuel' cs rest p
+          | None => run_rules_j fuel' cs rest e p
           end
       | Some (Goto n) =>
           match prog_lookup cs n with
-          | Some prg => run_rules_j fuel' cs prg p
+          | Some prg => run_rules_j fuel' cs prg e p
           | None     => None
           end
-      | Some Continue => run_rules_j fuel' cs rest p
+      | Some Continue => run_rules_j fuel' cs rest e p
       | Some v => Some v
       end
     end
   end.
 
 Definition run_table (fuel : nat) (cs : list (String.string * program))
-                     (base : program) (policy : verdict) (p : packet) : verdict :=
-  match run_rules_j fuel cs base p with
+                     (base : program) (policy : verdict) (e : env) (p : packet) : verdict :=
+  match run_rules_j fuel cs base e p with
   | Some v => v
   | None   => policy
   end.
@@ -2803,21 +2975,21 @@ Definition base_continues (v : verdict) : bool :=
   match v with Accept | Continue => true | _ => false end.
 
 Fixpoint eval_ruleset (fuel : nat)
-    (bases : list (list (String.string * chain) * chain)) (p : packet) : verdict :=
+    (bases : list (list (String.string * chain) * chain)) (e : env) (p : packet) : verdict :=
   match bases with
   | [] => Accept
   | (cs, base) :: rest =>
-      let v := eval_table fuel cs base p in
-      if base_continues v then eval_ruleset fuel rest p else v
+      let v := eval_table fuel cs base e p in
+      if base_continues v then eval_ruleset fuel rest e p else v
   end.
 
 Fixpoint run_ruleset (fuel : nat)
-    (bases : list (list (String.string * program) * (program * verdict))) (p : packet) : verdict :=
+    (bases : list (list (String.string * program) * (program * verdict))) (e : env) (p : packet) : verdict :=
   match bases with
   | [] => Accept
   | (cs, (base, policy)) :: rest =>
-      let v := run_table fuel cs base policy p in
-      if base_continues v then run_ruleset fuel rest p else v
+      let v := run_table fuel cs base policy e p in
+      if base_continues v then run_ruleset fuel rest e p else v
   end.
 
 (** ** Hook registration: which base chains are active at which hook, and in what
@@ -2851,18 +3023,13 @@ Definition select_hook (rs : list hooked_chain) (h : hook_id)
 
 (** Full ruleset evaluation at a hook: select+order the base chains, then dispatch.
     Mutation-free domain: inherits [eval_ruleset]'s — no writes are threaded. *)
-Definition eval_hook (fuel : nat) (rs : list hooked_chain) (h : hook_id) (p : packet) : verdict :=
-  eval_ruleset fuel (select_hook rs h) p.
+Definition eval_hook (fuel : nat) (rs : list hooked_chain) (h : hook_id)
+                     (e : env) (p : packet) : verdict :=
+  eval_ruleset fuel (select_hook rs h) e p.
 
 (** ** Stateful accumulation across a packet sequence.
 
-    Evaluate a packet against a *given* shared environment, overriding the
-    packet's own [pkt_env] (limiter/quota/conntrack/set state is shared, not
-    per-packet). *)
-Definition set_env (p : packet) (e : env) : packet :=
-  with_pkt_env p e.
-
-(** Run a sequence of packets against a shared, evolving environment [e]: each
+    Run a sequence of packets against a shared, evolving environment [e]: each
     packet is evaluated by [ev] against the current [e], then [step] updates [e]
     from the verdict (e.g. decrement a rate limiter's remaining tokens on accept).
     So a later packet observes the accumulated state — the cross-packet behaviour

@@ -26,21 +26,21 @@ Open Scope string_scope.
     addresses is ACCEPTED — for ANY output interface, including a deliberately
     mismatched one.  The `ip daddr @vmaddrs` guard short-circuits the rule, so the
     (daddr . oifname) binding is never checked.  Stated for every such packet. *)
-Theorem unlisted_daddr_unconstrained : forall p,
-  pkt_env p = gen_env ->
-  field_value Fobrname p = ifreg "br.20" ->
+Theorem unlisted_daddr_unconstrained : forall e p,
+  e = gen_env ->
+  field_value Fobrname e p = ifreg "br.20" ->
   read_payload_ok PNetwork 16 4 p = true ->
-  set_mem (field_value FIp4Daddr p) (e_set gen_env "vmaddrs") = false ->
-  eval_table vm_fuel vmfilter_chains vmfilter_output p = Accept.
+  set_mem (field_value FIp4Daddr e p) (e_set e "vmaddrs") = false ->
+  eval_table vm_fuel vmfilter_chains vmfilter_output e p = Accept.
 Proof.
-  intros p Henv Hobr Hok Hnotin. unfold Fobrname in Hobr.
+  intros e p Henv Hobr Hok Hnotin. unfold Fobrname in Hobr.
   unfold eval_table, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
   (* the antispoof rule does NOT fire: `ip daddr @vmaddrs` is false *)
   erewrite erj_skip.
   2:{ unfold rule_applies, rule_applies_walk, eval_matchcond, match_loadable, eval_matchcond_body,
         fields_loadable, field_loadable, load_ok.
-      cbn -[field_value pkt_env read_payload_ok].
-      rewrite ?Hok, Hobr, ?app_nil_r, Henv, ?concat_set_mem_single, Hnotin.
+      cbn -[field_value read_payload_ok].
+      rewrite ?Hok, Hobr, ?app_nil_r, ?concat_set_mem_single, Hnotin, ?Henv.
       (* the frontend's `ether type ip` dependency guard sits (symbolically stuck)
          before the daddr match; step past the first two conjuncts — the daddr ∉
          @vmaddrs conjunct is false, killing the rule for EVERY frame, so the gap
@@ -49,7 +49,7 @@ Proof.
       vm_compute. reflexivity. }
   (* the hass rule does not fire either (its guard is obrname br.1, not br.20) *)
   erewrite erj_skip.
-  2:{ unfold rule_applies, rule_applies_walk. cbn -[field_value pkt_env]. rewrite Hobr.
+  2:{ unfold rule_applies, rule_applies_walk. cbn -[field_value]. rewrite Hobr.
       vm_compute. reflexivity. }
   reflexivity.
 Qed.
@@ -58,17 +58,17 @@ Qed.
     gentoo's .12 and vikunja's .14).  A frame to .13 may leave br.20 on budget's
     own interface inc-budge — a pairing that WOULD be blocked for a listed
     address — yet it is accepted, because .13 is unprotected. *)
-Theorem spoof_to_unlisted_address : forall p,
-  pkt_env p = gen_env ->
-  field_value Fobrname p = ifreg "br.20" ->
+Theorem spoof_to_unlisted_address : forall e p,
+  e = gen_env ->
+  field_value Fobrname e p = ifreg "br.20" ->
   read_payload_ok PNetwork 16 4 p = true ->
-  field_value FIp4Daddr p = ip4 192 168 51 13 ->        (* not a registered VM *)
-  field_value FMetaOifname p = ifreg "inc-budge" ->     (* a mismatched interface *)
-  eval_table vm_fuel vmfilter_chains vmfilter_output p = Accept.
+  field_value FIp4Daddr e p = ip4 192 168 51 13 ->        (* not a registered VM *)
+  field_value FMetaOifname e p = ifreg "inc-budge" ->     (* a mismatched interface *)
+  eval_table vm_fuel vmfilter_chains vmfilter_output e p = Accept.
 Proof.
-  intros p Henv Hobr Hok Hdaddr Hoif.
+  intros e p Henv Hobr Hok Hdaddr Hoif.
   apply unlisted_daddr_unconstrained; auto.
-  rewrite Hdaddr. vm_compute. reflexivity.
+  rewrite Hdaddr, Henv. vm_compute. reflexivity.
 Qed.
 
 (** ** Risk 2 (egress-port gap): the binding is enforced only on bridge port br.20.
@@ -79,22 +79,22 @@ Qed.
     budget's address (.20) to egress br.3 (e.g. via MAC/FDB poisoning), the
     binding check is bypassed even though .20 is a registered VM address and the
     interface (vb-evil) is not its bound one. *)
-Theorem other_bridge_port_bypasses_binding : forall p,
-  pkt_env p = gen_env ->
-  field_value Fobrname p = ifreg "br.3" ->            (* NOT br.20 *)
-  field_value FIp4Daddr p = ip4 192 168 51 20 ->        (* budget's PROTECTED address *)
-  field_value FMetaOifname p = ifreg "vb-evil" ->       (* not budget's interface *)
-  eval_table vm_fuel vmfilter_chains vmfilter_output p = Accept.
+Theorem other_bridge_port_bypasses_binding : forall e p,
+  e = gen_env ->
+  field_value Fobrname e p = ifreg "br.3" ->            (* NOT br.20 *)
+  field_value FIp4Daddr e p = ip4 192 168 51 20 ->        (* budget's PROTECTED address *)
+  field_value FMetaOifname e p = ifreg "vb-evil" ->       (* not budget's interface *)
+  eval_table vm_fuel vmfilter_chains vmfilter_output e p = Accept.
 Proof.
-  intros p Henv Hobr Hdaddr Hoif. unfold Fobrname in Hobr.
+  intros e p Henv Hobr Hdaddr Hoif. unfold Fobrname in Hobr.
   unfold eval_table, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
   (* antispoof rule: its `meta obrname br.20` guard is false (we are on br.3) *)
   erewrite erj_skip.
-  2:{ unfold rule_applies, rule_applies_walk. cbn -[field_value pkt_env]. rewrite Hobr.
+  2:{ unfold rule_applies, rule_applies_walk. cbn -[field_value]. rewrite Hobr.
       vm_compute. reflexivity. }
   (* hass rule: its `meta obrname br.1` guard is also false *)
   erewrite erj_skip.
-  2:{ unfold rule_applies, rule_applies_walk. cbn -[field_value pkt_env]. rewrite Hobr.
+  2:{ unfold rule_applies, rule_applies_walk. cbn -[field_value]. rewrite Hobr.
       vm_compute. reflexivity. }
   reflexivity.
 Qed.

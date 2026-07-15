@@ -69,8 +69,8 @@ Definition env_withaddr : env :=
      e_connlimit := fun _ => []; e_ct := fun _ _ => []; e_nat := fun _ => None;
      e_numgen := fun _ => 0 |}.
 
-Definition mk_pkt (e : env) : packet :=
-  {| pkt_env := e; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
+Definition mk_pkt : packet :=
+  {| pkt_meta := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := [];
      pkt_nh := [69;0;0;20; 0;0;0;0; 64;6; 0;0] ++ [1;1;1;1] ++ [9;9;9;9];
@@ -83,25 +83,27 @@ Definition mk_pkt (e : env) : packet :=
      pkt_flow := [7;7]; pkt_untracked := false; pkt_ctdir_orig := true;
      pkt_ct_present := true |}.
 
-Definition pkt_noaddr   : packet := mk_pkt env_noaddr.
-Definition pkt_withaddr : packet := mk_pkt env_withaddr.
+Definition pkt_noaddr   : packet := mk_pkt.
+Definition pkt_withaddr : packet := mk_pkt.
 
 (** ** Address-less interface => the kernel's NF_DROP, modelled. *)
 
 (* redirect at PREROUTING over an address-less interface DROPS. *)
 Theorem redirect_no_inbound_address_drops :
-  eval_chain_trace Hprerouting redir_chain pkt_noaddr = (Drop, pkt_noaddr).
+  eval_chain_trace Hprerouting redir_chain env_noaddr pkt_noaddr
+  = (Drop, (env_noaddr, pkt_noaddr)).
 Proof. vm_compute. reflexivity. Qed.
 
 (* masquerade at POSTROUTING over an address-less interface DROPS. *)
 Theorem masquerade_no_exit_address_drops :
-  eval_chain_trace Hpostrouting masq_chain pkt_noaddr = (Drop, pkt_noaddr).
+  eval_chain_trace Hpostrouting masq_chain env_noaddr pkt_noaddr
+  = (Drop, (env_noaddr, pkt_noaddr)).
 Proof. vm_compute. reflexivity. Qed.
 
 (* and the packet is left UNREWRITTEN — no corrupt empty address spliced into the
    destination slot (the drop happens before the address is applied). *)
 Theorem redirect_drop_leaves_packet_unrewritten :
-  snd (eval_chain_trace Hprerouting redir_chain pkt_noaddr) = pkt_noaddr.
+  snd (eval_chain_trace Hprerouting redir_chain env_noaddr pkt_noaddr) = (env_noaddr, pkt_noaddr).
 Proof. vm_compute. reflexivity. Qed.
 
 (** ** The kernel's NON-drop cases stay Accept. *)
@@ -109,16 +111,16 @@ Proof. vm_compute. reflexivity. Qed.
 (* redirect at the OUTPUT hook always targets the loopback address, so it never
    drops even with an address-less interface (nf_nat_redirect_ipv4 LOCAL_OUT). *)
 Theorem redirect_output_loopback_accepts :
-  fst (eval_chain_trace Houtput redir_chain pkt_noaddr) = Accept.
+  fst (eval_chain_trace Houtput redir_chain env_noaddr pkt_noaddr) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* with an interface that HAS an address, redirect/masquerade accept (and rewrite). *)
 Theorem redirect_with_address_accepts :
-  fst (eval_chain_trace Hprerouting redir_chain pkt_withaddr) = Accept.
+  fst (eval_chain_trace Hprerouting redir_chain env_withaddr pkt_withaddr) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem masquerade_with_address_accepts :
-  fst (eval_chain_trace Hpostrouting masq_chain pkt_withaddr) = Accept.
+  fst (eval_chain_trace Hpostrouting masq_chain env_withaddr pkt_withaddr) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The control-plane (compiler / [eval_chain_mut]) verdict is UNAFFECTED: the NAT
@@ -126,13 +128,13 @@ Proof. vm_compute. reflexivity. Qed.
    mut verdict (what [compile_chain_correct] is about) still says Accept — the NAT
    drop is visible only at the trace layer. *)
 Theorem mut_unaffected_still_accepts :
-  eval_chain_mut redir_chain pkt_noaddr = Accept
-  /\ eval_chain_mut masq_chain pkt_noaddr = Accept.
+  eval_chain_mut redir_chain env_noaddr pkt_noaddr = Accept
+  /\ eval_chain_mut masq_chain env_noaddr pkt_noaddr = Accept.
 Proof. split; vm_compute; reflexivity. Qed.
 
 (* And the trace/mut verdicts genuinely DIFFER on this packet, tracked exactly
    by [trace_nat_drops] (the conditional in [eval_chain_trace_verdict]). *)
 Theorem trace_diverges_from_mut_via_nat_drop :
-  trace_nat_drops Hprerouting (c_rules redir_chain) pkt_noaddr = true
-  /\ fst (eval_chain_trace Hprerouting redir_chain pkt_noaddr) <> eval_chain_mut redir_chain pkt_noaddr.
+  trace_nat_drops Hprerouting (c_rules redir_chain) env_noaddr pkt_noaddr = true
+  /\ fst (eval_chain_trace Hprerouting redir_chain env_noaddr pkt_noaddr) <> eval_chain_mut redir_chain env_noaddr pkt_noaddr.
 Proof. split; [reflexivity | vm_compute; discriminate]. Qed.

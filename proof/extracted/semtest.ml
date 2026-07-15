@@ -49,12 +49,14 @@ let env_vmap name ents : Packet.env = { empty_env with Packet.e_vmap = (fun n ->
 
 (* ---- concrete packet construction ---- *)
 let dummy0 _ = []
+(* a test packet-in-context: the shared env PLUS one skb, as the (env, packet)
+   pair every evaluator now takes as two separate arguments *)
 let mk_pkt ?(env = empty_env) ?(l4proto = [6]) ?(nh = []) ?(th = []) ?(fibkey = (fun _ -> []))
-           ?(iifname = []) () : Packet.packet =
-  { Packet.pkt_env = env;
-    pkt_meta = (fun k -> match k with
+           ?(iifname = []) () : Packet.env * Packet.packet =
+  (env,
+  { Packet.pkt_meta = (fun k -> match k with
                          | Packet.MKl4proto -> l4proto | Packet.MKiifname -> iifname | _ -> []);
-    pkt_ct = dummy0; pkt_sock = dummy0;
+    pkt_sock = dummy0;
     pkt_eh = (fun _ _ _ _ _ -> []);
     pkt_lh = []; pkt_nh = nh; pkt_th = th; pkt_ih = []; pkt_tnl = [];
     pkt_fibkey = fibkey;
@@ -65,7 +67,7 @@ let mk_pkt ?(env = empty_env) ?(l4proto = [6]) ?(nh = []) ?(th = []) ?(fibkey = 
     (* well-formed, non-fragment, L4 header parsed: transport reads succeed *)
     pkt_have_l2 = true;
     pkt_have_l4 = true; pkt_fragoff = 0; pkt_flow = []; pkt_untracked = false;
-    pkt_ctdir_orig = true; pkt_ct_present = true }
+    pkt_ctdir_orig = true; pkt_ct_present = true })
 
 (* an IPv4 network header: src at offset 12, dst at offset 16 (4 bytes each) *)
 let nh ~saddr ~daddr = (Stdlib.List.init 12 (fun _ -> 0)) @ saddr @ daddr
@@ -85,11 +87,11 @@ let run_battery (fails : int ref) (title : string) (c : Syntax.chain) pkts =
   let progo = Compile.compile_chain copt in
   let pol   = c.Syntax.c_policy in
   Printf.printf "=== %s ===\n" title;
-  Stdlib.List.iter (fun (name, p) ->
-    let dsl  = Semantics.eval_chain c p in            (* what the DSL says *)
-    let dslo = Semantics.eval_chain copt p in         (* optimizer preserves it *)
-    let vm   = Semantics.run_chain prog  pol p in     (* compiled bytecode VM *)
-    let vmo  = Semantics.run_chain progo pol p in     (* optimized + compiled *)
+  Stdlib.List.iter (fun (name, (e, p)) ->
+    let dsl  = Semantics.eval_chain c e p in            (* what the DSL says *)
+    let dslo = Semantics.eval_chain copt e p in         (* optimizer preserves it *)
+    let vm   = Semantics.run_chain prog  pol e p in     (* compiled bytecode VM *)
+    let vmo  = Semantics.run_chain progo pol e p in     (* optimized + compiled *)
     let ok = dsl = vm && dsl = dslo && dsl = vmo in
     Printf.printf "  %-22s DSL=%-8s VM=%-8s opt=%-8s %s\n"
       name (string_of_verdict dsl) (string_of_verdict vm) (string_of_verdict vmo)
@@ -193,9 +195,9 @@ let () =
   let cenv   = [ ("tcp_in", tcp_in) ] in
   let cprog  = Compile.compile_env cenv and bprog = Compile.compile_chain base in
   Printf.printf "=== base chain `jump tcp_in` then policy (compile_table_correct) ===\n";
-  Stdlib.List.iter (fun (name, p) ->
-    let dsl = Semantics.eval_table fuel cenv base p in
-    let vm  = Semantics.run_table  fuel cprog bprog base.Syntax.c_policy p in
+  Stdlib.List.iter (fun (name, (e, p)) ->
+    let dsl = Semantics.eval_table fuel cenv base e p in
+    let vm  = Semantics.run_table  fuel cprog bprog base.Syntax.c_policy e p in
     let ok = dsl = vm in
     Printf.printf "  %-32s DSL=%-8s VM=%-8s %s\n"
       name (string_of_verdict dsl) (string_of_verdict vm) (if ok then "ok" else "MISMATCH");
@@ -215,9 +217,9 @@ let () =
   let cbases = Stdlib.List.map
       (fun (cs, b) -> (Compile.compile_env cs, (Compile.compile_chain b, b.Syntax.c_policy))) bases in
   Printf.printf "=== two base chains at a hook (compile_ruleset_correct, netfilter combine) ===\n";
-  Stdlib.List.iter (fun (name, p) ->
-    let dsl = Semantics.eval_ruleset fuel bases p in
-    let vm  = Semantics.run_ruleset  fuel cbases p in
+  Stdlib.List.iter (fun (name, (e, p)) ->
+    let dsl = Semantics.eval_ruleset fuel bases e p in
+    let vm  = Semantics.run_ruleset  fuel cbases e p in
     let ok = dsl = vm in
     Printf.printf "  %-32s DSL=%-8s VM=%-8s %s\n"
       name (string_of_verdict dsl) (string_of_verdict vm) (if ok then "ok" else "MISMATCH");
@@ -262,10 +264,10 @@ let () =
     match v with
     | Verdict.Accept -> { e with Packet.e_limit = (fun s -> (e.Packet.e_limit s) - 1) }
     | _ -> e in
-  let ev_dsl e p = Semantics.eval_chain lim_chain (Semantics.set_env p e) in
-  let ev_vm  e p = Semantics.run_chain lim_prog lim_chain.Syntax.c_policy (Semantics.set_env p e) in
-  let pkts = [ mk_pkt ~th:(th ~dport:[0; 22]) (); mk_pkt ~th:(th ~dport:[0; 22]) ();
-               mk_pkt ~th:(th ~dport:[0; 22]) () ] in
+  let ev_dsl e p = Semantics.eval_chain lim_chain e p in
+  let ev_vm  e p = Semantics.run_chain lim_prog lim_chain.Syntax.c_policy e p in
+  let pkts = [ snd (mk_pkt ~th:(th ~dport:[0; 22]) ()); snd (mk_pkt ~th:(th ~dport:[0; 22]) ());
+               snd (mk_pkt ~th:(th ~dport:[0; 22]) ()) ] in
   let dsl_seq = Semantics.seq_eval ev_dsl step (env_limit 2) pkts in
   let vm_seq  = Semantics.seq_eval ev_vm  step (env_limit 2) pkts in
   Printf.printf "=== rate limiter shared across 3 packets (compile_seq_correct, 2 tokens) ===\n";
@@ -290,10 +292,10 @@ let () =
     rule_b [ Syntax.BMatch (meq Syntax.FMetaMark [1]) ] Verdict.Accept;
   ] in
   let mprog = Compile.compile_chain mut_chain in
-  Stdlib.List.iter (fun (name, p) ->
-    let dsl_mut   = Semantics.eval_chain_mut mut_chain p in
-    let vm_mut    = Semantics.run_chain_mut  mprog mut_chain.Syntax.c_policy p in
-    let dsl_nomut = Semantics.eval_chain mut_chain p in
+  Stdlib.List.iter (fun (name, (e, p)) ->
+    let dsl_mut   = Semantics.eval_chain_mut mut_chain e p in
+    let vm_mut    = Semantics.run_chain_mut  mprog mut_chain.Syntax.c_policy e p in
+    let dsl_nomut = Semantics.eval_chain mut_chain e p in
     let ok = dsl_mut = vm_mut in
     Printf.printf "  %-22s mut: DSL=%-7s VM=%-7s | verdict-only DSL=%-7s %s\n"
       name (string_of_verdict dsl_mut) (string_of_verdict vm_mut) (string_of_verdict dsl_nomut)
@@ -319,10 +321,10 @@ let () =
     rule_b [ Syntax.BMatch (Syntax.MConcatSet ([Syntax.FIp4Saddr], false, "learn")) ] Verdict.Accept;
   ] in
   let dprog = Compile.compile_chain dyn_chain in
-  Stdlib.List.iter (fun (name, p) ->
-    let dsl_mut   = Semantics.eval_chain_mut dyn_chain p in
-    let vm_mut    = Semantics.run_chain_mut  dprog dyn_chain.Syntax.c_policy p in
-    let dsl_nomut = Semantics.eval_chain dyn_chain p in
+  Stdlib.List.iter (fun (name, (e, p)) ->
+    let dsl_mut   = Semantics.eval_chain_mut dyn_chain e p in
+    let vm_mut    = Semantics.run_chain_mut  dprog dyn_chain.Syntax.c_policy e p in
+    let dsl_nomut = Semantics.eval_chain dyn_chain e p in
     let ok = dsl_mut = vm_mut in
     Printf.printf "  %-26s mut: DSL=%-7s VM=%-7s | verdict-only DSL=%-7s %s\n"
       name (string_of_verdict dsl_mut) (string_of_verdict vm_mut) (string_of_verdict dsl_nomut)
@@ -342,10 +344,10 @@ let () =
     rule_b [ Syntax.BMatch (meq Syntax.FMetaMark [0; 22]) ] Verdict.Accept;
   ] in
   let mdprog = Compile.compile_chain mapdyn_chain in
-  Stdlib.List.iter (fun (name, p) ->
-    let dsl_mut   = Semantics.eval_chain_mut mapdyn_chain p in
-    let vm_mut    = Semantics.run_chain_mut  mdprog mapdyn_chain.Syntax.c_policy p in
-    let dsl_nomut = Semantics.eval_chain mapdyn_chain p in
+  Stdlib.List.iter (fun (name, (e, p)) ->
+    let dsl_mut   = Semantics.eval_chain_mut mapdyn_chain e p in
+    let vm_mut    = Semantics.run_chain_mut  mdprog mapdyn_chain.Syntax.c_policy e p in
+    let dsl_nomut = Semantics.eval_chain mapdyn_chain e p in
     let ok = dsl_mut = vm_mut in
     Printf.printf "  %-26s mut: DSL=%-7s VM=%-7s | verdict-only DSL=%-7s %s\n"
       name (string_of_verdict dsl_mut) (string_of_verdict vm_mut) (string_of_verdict dsl_nomut)
@@ -367,12 +369,12 @@ let () =
   ] in
   let sprog = Compile.compile_chain seen_chain in
   let spol  = seen_chain.Syntax.c_policy in
-  let one   = mk_pkt ~nh:(nh ~saddr:[10;0;0;1] ~daddr:[8;8;8;8]) () in
+  let one   = snd (mk_pkt ~nh:(nh ~saddr:[10;0;0;1] ~daddr:[8;8;8;8]) ()) in
   let pkts  = [ one; one ] in    (* two packets from the same source *)
   let dsl_seq = Semantics.seq_eval_env
-    (fun e p -> Semantics.eval_chain_mut_env seen_chain (Semantics.set_env p e)) empty_env pkts in
+    (fun e p -> Semantics.eval_chain_mut_env seen_chain e p) empty_env pkts in
   let vm_seq  = Semantics.seq_eval_env
-    (fun e p -> Semantics.run_chain_mut_env sprog spol (Semantics.set_env p e)) empty_env pkts in
+    (fun e p -> Semantics.run_chain_mut_env sprog spol e p) empty_env pkts in
   let pp s = "[" ^ Stdlib.String.concat "; " (Stdlib.List.map string_of_verdict s) ^ "]" in
   let ok = dsl_seq = vm_seq in
   Printf.printf "  same source x2          DSL=%-18s VM=%-18s %s\n"
@@ -405,9 +407,9 @@ let () =
     rule [ Syntax.MRange (ipproto, false, [6], [7]) ] Verdict.Accept;
   ] in
   Stdlib.List.iter (fun (_name, proto) ->
-    let p = mk_pkt ~l4proto:[proto] () in
-    let a = Semantics.eval_chain two_rule p in
-    let b = Semantics.eval_chain merged  p in
+    let (e, p) = mk_pkt ~l4proto:[proto] () in
+    let a = Semantics.eval_chain two_rule e p in
+    let b = Semantics.eval_chain merged  e p in
     let ok = a = b in
     Printf.printf "  proto=%-3d  two-rule=%-7s merged=%-7s %s\n"
       proto (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
@@ -438,9 +440,9 @@ let () =
   Printf.printf "  rules: %d -> %d (%s)\n" len_before len_after
     (if len_after < len_before then "shrunk: duplicate removed" else "NOT shrunk");
   if not (len_after < len_before) then incr fails;
-  Stdlib.List.iter (fun (name, p) ->
-    let a = Semantics.eval_chain dup_chain p in
-    let b = Semantics.eval_chain dup_opt  p in
+  Stdlib.List.iter (fun (name, (e, p)) ->
+    let a = Semantics.eval_chain dup_chain e p in
+    let b = Semantics.eval_chain dup_opt  e p in
     let ok = a = b in
     Printf.printf "  %-22s orig=%-7s opt2=%-7s %s\n"
       name (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
@@ -510,10 +512,10 @@ let () =
   let c_in  = chain Verdict.Drop rs_in in
   let c_out = chain Verdict.Drop rs_out in
   Stdlib.List.iter (fun (name, dport) ->
-    let p_in  = mk_pkt ~th:(th ~dport) () in
-    let p_out = mk_pkt ~env:env_out ~th:(th ~dport) () in
-    let a = Semantics.eval_chain c_in  p_in in
-    let b = Semantics.eval_chain c_out p_out in
+    let (e_in, p_in)  = mk_pkt ~th:(th ~dport) () in
+    let (e_o, p_o) = mk_pkt ~env:env_out ~th:(th ~dport) () in
+    let a = Semantics.eval_chain c_in  e_in p_in in
+    let b = Semantics.eval_chain c_out e_o p_o in
     let ok = a = b in
     Printf.printf "  %-26s three-rule=%-7s set-merged=%-7s %s\n"
       name (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
@@ -568,10 +570,10 @@ let () =
   let ck_in  = chain Verdict.Drop rsk_in in
   let ck_out = chain Verdict.Drop rsk_out in
   Stdlib.List.iter (fun (name, sa, da, pr) ->
-    let p_in  = mk_pkt ~nh:(nh3 ~saddr:sa ~daddr:da ~proto:pr) () in
-    let p_out = mk_pkt ~env:envk ~nh:(nh3 ~saddr:sa ~daddr:da ~proto:pr) () in
-    let a = Semantics.eval_chain ck_in  p_in in
-    let b = Semantics.eval_chain ck_out p_out in
+    let (e_in, p_in)  = mk_pkt ~nh:(nh3 ~saddr:sa ~daddr:da ~proto:pr) () in
+    let (e_o, p_o) = mk_pkt ~env:envk ~nh:(nh3 ~saddr:sa ~daddr:da ~proto:pr) () in
+    let a = Semantics.eval_chain ck_in  e_in p_in in
+    let b = Semantics.eval_chain ck_out e_o p_o in
     let ok = a = b in
     Printf.printf "  %-32s two-rule=%-7s concat-merged=%-7s %s\n"
       name (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
@@ -640,10 +642,10 @@ let () =
   let vc_in  = chain Verdict.Drop vrs_in in
   let vc_out = chain Verdict.Drop vrs_out in
   Stdlib.List.iter (fun (name, dport) ->
-    let p_in  = mk_pkt ~th:(th ~dport) () in
-    let p_out = mk_pkt ~env:venv_out ~th:(th ~dport) () in
-    let a = Semantics.eval_chain vc_in  p_in in
-    let b = Semantics.eval_chain vc_out p_out in
+    let (e_in, p_in)  = mk_pkt ~th:(th ~dport) () in
+    let (e_o, p_o) = mk_pkt ~env:venv_out ~th:(th ~dport) () in
+    let a = Semantics.eval_chain vc_in  e_in p_in in
+    let b = Semantics.eval_chain vc_out e_o p_o in
     let ok = a = b in
     Printf.printf "  %-28s two-rule=%-7s vmap-merged=%-7s %s\n"
       name (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
@@ -710,10 +712,10 @@ let () =
   let cc_in  = chain Verdict.Drop crs_in in
   let cc_out = chain Verdict.Drop crs_out in
   Stdlib.List.iter (fun (name, saddr, dport) ->
-    let p_in  = mk_pkt ~nh:(nh ~saddr ~daddr:[8;8;8;8]) ~th:(th ~dport) () in
-    let p_out = mk_pkt ~env:cenv_out ~nh:(nh ~saddr ~daddr:[8;8;8;8]) ~th:(th ~dport) () in
-    let a = Semantics.eval_chain cc_in  p_in in
-    let b = Semantics.eval_chain cc_out p_out in
+    let (e_in, p_in)  = mk_pkt ~nh:(nh ~saddr ~daddr:[8;8;8;8]) ~th:(th ~dport) () in
+    let (e_o, p_o) = mk_pkt ~env:cenv_out ~nh:(nh ~saddr ~daddr:[8;8;8;8]) ~th:(th ~dport) () in
+    let a = Semantics.eval_chain cc_in  e_in p_in in
+    let b = Semantics.eval_chain cc_out e_o p_o in
     let ok = a = b in
     Printf.printf "  %-40s two-rule=%-7s concat-merged=%-7s %s\n"
       name (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
@@ -781,10 +783,11 @@ let () =
   let orig1 = omap_rule mv1 mark1 and orig2 = omap_rule mv2 mark2 in
   let hexm m = "0x" ^ Stdlib.String.concat "" (Stdlib.List.map (Printf.sprintf "%02x") m) in
   Stdlib.List.iter (fun (name, saddr) ->
-    let p = mk_pkt ~env:menv ~nh:(nh ~saddr ~daddr:[8;8;8;8]) () in
+    let (e, p) = mk_pkt ~env:menv ~nh:(nh ~saddr ~daddr:[8;8;8;8]) () in
     (* the merged rule's mark write vs the two originals composed *)
-    let p_merged = Semantics.dsl_step merged p in
-    let p_orig   = Semantics.dsl_step orig2 (Semantics.dsl_step orig1 p) in
+    let (_, p_merged) = Semantics.dsl_step merged e p in
+    let p_orig   = (let (e1, p1) = Semantics.dsl_step orig1 e p in
+                    snd (Semantics.dsl_step orig2 e1 p1)) in
     let mark_merged = p_merged.Packet.pkt_meta Packet.MKmark in
     let mark_orig   = p_orig.Packet.pkt_meta Packet.MKmark in
     let ok = mark_merged = mark_orig in

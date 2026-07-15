@@ -35,9 +35,9 @@ Definition env0 : env :=
 
 (* A packet carrying a given env.  pkt_numgen (the RANDOM oracle) is irrelevant for
    `numgen inc`; the inc value comes from [e_numgen] in the env. *)
-Definition mkpkt (e : env) (flow : data) : packet :=
-  {| pkt_env := e; pkt_meta := fun _ => [];
-     pkt_ct := fun _ => []; pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
+Definition mkpkt (flow : data) : packet :=
+  {| pkt_meta := fun _ => [];
+     pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := []; pkt_th := []; pkt_ih := [];
      pkt_tnl := []; pkt_fibkey := fun _ => [];
      pkt_numgen := fun _ => [9;9;9;9];   (* random oracle; NOT read by `numgen inc` *)
@@ -52,22 +52,22 @@ Definition mkpkt (e : env) (flow : data) : packet :=
 Definition prog_ng : rule_prog := [ INumgen ng2 1 ; ICounter 0 0 ].
 
 (* The `numgen inc` value the model hands a packet (= the load the VM reads). *)
-Definition ng_of (p : packet) : data := do_load (LNumgen ng2) p.
+Definition ng_of (e : env) (p : packet) : data := do_load (LNumgen ng2) e p.
 
 (* Packet 1 of the traversal, against the fresh (counter = 0) env. *)
-Definition p1 : packet := mkpkt env0 [1;1].
+Definition p1 : packet := mkpkt [1;1].
 
 (* The env AFTER packet 1 has fired the numgen rule: its counter has ADVANCED. *)
-Definition env_after_p1 : env := snd (run_program_mut_env [prog_ng] p1).
+Definition env_after_p1 : env := snd (run_program_mut_env [prog_ng] env0 p1).
 
 (* Packet 2 of the traversal, carrying the env packet 1 left (the threaded shared
    state) — exactly how [run_program_mut_env]/[seq_eval_env] sequence packets. *)
-Definition p2 : packet := mkpkt env_after_p1 [2;2].
+Definition p2 : packet := mkpkt [2;2].
 
 (* ---- The kernel-correct round-robin facts. ---- *)
 
 (* Packet 1 (the first evaluation) reads numgen = 0 + offset = 0. *)
-Theorem ng_p1 : ng_of p1 = [0;0;0;0].
+Theorem ng_p1 : ng_of env0 p1 = [0;0;0;0].
 Proof. vm_compute. reflexivity. Qed.
 
 (* Running the numgen rule ADVANCED the shared counter from 0 to 1. *)
@@ -76,24 +76,24 @@ Proof. vm_compute. reflexivity. Qed.
 
 (* Packet 2 (the next evaluation, same traversal) reads the SUCCESSOR: 1 mod 2 = 1
    — the round-robin step, which requires the shared cross-packet counter. *)
-Theorem ng_p2 : ng_of p2 = [0;0;0;1].
+Theorem ng_p2 : ng_of env_after_p1 p2 = [0;0;0;1].
 Proof. vm_compute. reflexivity. Qed.
 
 (* Headline: two CONSECUTIVE `numgen inc mod 2` evaluations DIFFER — the kernel's
    round-robin guarantee (nft_ng_inc_gen).  Axiom-free; a per-packet numgen oracle
    would instead let both evaluations read the same value. *)
-Theorem consecutive_numgen_inc_differ : ng_of p1 <> ng_of p2.
+Theorem consecutive_numgen_inc_differ : ng_of env0 p1 <> ng_of env_after_p1 p2.
 Proof. rewrite ng_p1, ng_p2. discriminate. Qed.
 
 (* Stronger: packet 2's value is exactly (packet 1's + 1) mod 2 — the kernel's
    nft_ng_inc_gen step.  (Here: 0 -> 1.) *)
 Theorem numgen_is_round_robin :
-  ng_of p2 = numgen_inc_value ng2 (S (e_numgen env0 ng2)).
+  ng_of env_after_p1 p2 = numgen_inc_value ng2 (S (e_numgen env0 ng2)).
 Proof. vm_compute. reflexivity. Qed.
 
 (* And the cross-packet soundness: a THIRD packet wraps back to 0 (mod 2), so the
    sequence is genuinely 0,1,0,… — a real round-robin load balancer. *)
-Definition env_after_p2 : env := snd (run_program_mut_env [prog_ng] p2).
-Definition p3 : packet := mkpkt env_after_p2 [3;3].
-Theorem ng_p3_wraps : ng_of p3 = [0;0;0;0].
+Definition env_after_p2 : env := snd (run_program_mut_env [prog_ng] env_after_p1 p2).
+Definition p3 : packet := mkpkt [3;3].
+Theorem ng_p3_wraps : ng_of env_after_p2 p3 = [0;0;0;0].
 Proof. vm_compute. reflexivity. Qed.

@@ -14,9 +14,9 @@
     skb.
 
     ── Model ──────────────────────────────────────────────────────────────────────
-    [do_load (LCt CKstate) p] reads [e_ct (pkt_env p) (pkt_flow p) CKstate] (the
-    SHARED, flow-keyed conntrack table), with the per-traversal [pkt_untracked]
-    override.  Every read-only ct key is likewise a function of the flow table.
+    [do_load (LCt CKstate) e p] reads [e_ct e (pkt_flow p) CKstate] (the
+    SHARED, flow-keyed conntrack table, passed explicitly), with the
+    per-traversal [pkt_untracked] override.  Every read-only ct key is likewise a function of the flow table.
     Consequences proven below:
       - the value depends ONLY on the flow's table entry, not a free per-packet field
         ([ct_state_flow_keyed]);
@@ -48,15 +48,14 @@ Definition m_estab : matchcond := MMasked FCtState true st_estab [0;0;0;0] [0;0;
     other per-packet difference.  This is what "flow-keyed, not a per-packet oracle"
     means: no free per-packet field lets a value enter the read. *)
 Theorem ct_state_flow_keyed :
-  forall p q : packet,
-    e_ct (pkt_env p) = e_ct (pkt_env q) ->
+  forall (e : env) (p q : packet),
     pkt_flow p = pkt_flow q ->
     pkt_untracked p = pkt_untracked q ->
     pkt_ct_present p = pkt_ct_present q ->
-    do_load (LCt CKstate) p = do_load (LCt CKstate) q.
+    do_load (LCt CKstate) e p = do_load (LCt CKstate) e q.
 Proof.
-  intros p q Hct Hflow Hunt Hpres. unfold do_load. cbn.
-  rewrite Hunt, Hpres, Hflow, Hct. reflexivity.
+  intros e p q Hflow Hunt Hpres. unfold do_load. cbn.
+  rewrite Hunt, Hpres, Hflow. reflexivity.
 Qed.
 
 (* The same holds for every other read-only ct key (expiration/counters/zone/...)
@@ -65,16 +64,15 @@ Qed.
    below).  So two packets that additionally agree on [pkt_ctdir_orig] read the same
    value for EVERY key, direction included. *)
 Theorem ct_key_flow_keyed :
-  forall (k : ct_key) (p q : packet),
-    e_ct (pkt_env p) = e_ct (pkt_env q) ->
+  forall (k : ct_key) (e : env) (p q : packet),
     pkt_flow p = pkt_flow q ->
     pkt_untracked p = pkt_untracked q ->
     pkt_ct_present p = pkt_ct_present q ->
     pkt_ctdir_orig p = pkt_ctdir_orig q ->
-    do_load (LCt k) p = do_load (LCt k) q.
+    do_load (LCt k) e p = do_load (LCt k) e q.
 Proof.
-  intros k p q Hct Hflow Hunt Hpres Hdir. unfold do_load. cbn.
-  destruct k; rewrite ?Hunt, ?Hpres, ?Hdir, ?Hflow, ?Hct; reflexivity.
+  intros k e p q Hflow Hunt Hpres Hdir. unfold do_load. cbn.
+  destruct k; rewrite ?Hunt, ?Hpres, ?Hdir, ?Hflow; reflexivity.
 Qed.
 
 (** ── ct DIRECTION is the SAME value as the NAT manip direction (kernel CTINFO2DIR).
@@ -92,19 +90,19 @@ Definition ip_ct_dir_reply    : data := [1].
 
 (* The selector reads ORIGINAL iff the packet is the NAT forward (original) direction. *)
 Theorem ct_direction_matches_nat_dir :
-  forall p,
-    pkt_ctdir_orig p = true <-> do_load (LCt CKdirection) p = ip_ct_dir_original.
+  forall e p,
+    pkt_ctdir_orig p = true <-> do_load (LCt CKdirection) e p = ip_ct_dir_original.
 Proof.
-  intro p. unfold do_load, ip_ct_dir_original. cbn.
+  intros e p. unfold do_load, ip_ct_dir_original. cbn.
   destruct (pkt_ctdir_orig p); split; intro H; congruence.
 Qed.
 
 (* Dually for the reply direction. *)
 Theorem ct_direction_matches_nat_dir_reply :
-  forall p,
-    pkt_ctdir_orig p = false <-> do_load (LCt CKdirection) p = ip_ct_dir_reply.
+  forall e p,
+    pkt_ctdir_orig p = false <-> do_load (LCt CKdirection) e p = ip_ct_dir_reply.
 Proof.
-  intro p. unfold do_load, ip_ct_dir_reply. cbn.
+  intros e p. unfold do_load, ip_ct_dir_reply. cbn.
   destruct (pkt_ctdir_orig p); split; intro H; congruence.
 Qed.
 
@@ -114,28 +112,27 @@ Qed.
    unobservable, because the selector ignores [e_ct] and reads [1] (reply) whenever
    the NAT layer treats the packet as reply.  The two are ONE source of truth. *)
 Theorem ctdir_selector_agrees_with_nat :
-  forall p,
-    (pkt_ctdir_orig p = false -> do_load (LCt CKdirection) p <> ip_ct_dir_original)
-    /\ (pkt_ctdir_orig p = true  -> do_load (LCt CKdirection) p <> ip_ct_dir_reply).
+  forall e p,
+    (pkt_ctdir_orig p = false -> do_load (LCt CKdirection) e p <> ip_ct_dir_original)
+    /\ (pkt_ctdir_orig p = true  -> do_load (LCt CKdirection) e p <> ip_ct_dir_reply).
 Proof.
-  intro p. unfold do_load, ip_ct_dir_original, ip_ct_dir_reply. cbn.
+  intros e p. unfold do_load, ip_ct_dir_original, ip_ct_dir_reply. cbn.
   split; intro H; rewrite H; discriminate.
 Qed.
 
 (** ── 2. Two TRACKED packets of the SAME flow read CONSISTENT ct state. *)
 Theorem same_flow_same_state :
-  forall p q : packet,
-    e_ct (pkt_env p) = e_ct (pkt_env q) ->
+  forall (e : env) (p q : packet),
     pkt_flow p = pkt_flow q ->
     pkt_untracked p = false ->
     pkt_untracked q = false ->
     pkt_ct_present p = true ->
     pkt_ct_present q = true ->
-    do_load (LCt CKstate) p = do_load (LCt CKstate) q.
+    do_load (LCt CKstate) e p = do_load (LCt CKstate) e q.
 Proof.
-  intros p q Hct Hflow Hp Hq Hpp Hqp.
+  intros e p q Hflow Hp Hq Hpp Hqp.
   apply ct_state_flow_keyed;
-    [exact Hct | exact Hflow | rewrite Hp, Hq; reflexivity | rewrite Hpp, Hqp; reflexivity].
+    [exact Hflow | rewrite Hp, Hq; reflexivity | rewrite Hpp, Hqp; reflexivity].
 Qed.
 
 (** ── 3. Well-formedness: a flow whose conntrack entry is NEW.
@@ -144,27 +141,27 @@ Qed.
     flow.  This is the invariant the kernel maintains for the FIRST packet of a flow
     (no prior packet -> entry just created -> NF_CT_STATE_BIT(IP_CT_NEW): only the
     new bit set).  It is EXPRESSIBLE precisely because the state lives in the flow table. *)
-Definition flow_is_new (p : packet) : Prop :=
+Definition flow_is_new (e : env) (p : packet) : Prop :=
   pkt_untracked p = false /\ pkt_ct_present p = true
-  /\ e_ct (pkt_env p) (pkt_flow p) CKstate = st_new.
+  /\ e_ct e (pkt_flow p) CKstate = st_new.
 
 (* Under [flow_is_new], reading `ct state` (= [field_value FCtState]) yields NEW. *)
 Lemma flow_is_new_reads_new :
-  forall p, flow_is_new p -> field_value FCtState p = st_new.
+  forall e p, flow_is_new e p -> field_value FCtState e p = st_new.
 Proof.
-  intros p [Hunt [Hpres Hentry]]. unfold field_value, field_load, do_load. cbn.
+  intros e p [Hunt [Hpres Hentry]]. unfold field_value, field_load, do_load. cbn.
   rewrite Hunt, Hpres. exact Hentry.
 Qed.
 
 (* THE KEY SOUNDNESS FACT: a NEW-flow packet does NOT match `ct state established`.
    The established bit (2) is clear in NEW (8), so (8 & 2) = 0.  This is provable
-   only because ct state is flow-keyed: with a free per-packet [pkt_ct CKstate] a
-   fabricated packet could report anything, including established. *)
+   only because ct state is flow-keyed ([e_ct] at [pkt_flow]): a free per-packet
+   ct-state value could report anything, including established. *)
 Theorem new_flow_not_established :
-  forall p, flow_is_new p -> eval_matchcond m_estab p = false.
+  forall e p, flow_is_new e p -> eval_matchcond m_estab e p = false.
 Proof.
-  intros p Hnew. unfold m_estab, eval_matchcond, eval_matchcond_body, match_loadable.
-  rewrite (flow_is_new_reads_new p Hnew).
+  intros e p Hnew. unfold m_estab, eval_matchcond, eval_matchcond_body, match_loadable.
+  rewrite (flow_is_new_reads_new e p Hnew).
   vm_compute. reflexivity.
 Qed.
 
@@ -181,28 +178,39 @@ Definition stateful_chain : chain :=
   {| c_policy := Drop; c_rules := [ estab_accept_rule ] |}.
 
 Theorem unsolicited_new_packet_dropped :
-  forall p, flow_is_new p -> eval_chain_mut stateful_chain p = Drop.
+  forall e p, flow_is_new e p -> eval_chain_mut stateful_chain e p = Drop.
 Proof.
-  intros p Hnew. unfold eval_chain_mut, stateful_chain. cbn [c_rules].
-  (* the single rule's match fails on a NEW flow, so policy Drop stands. *)
-  unfold estab_accept_rule.
-  cbn [c_policy].
-  (* reduce eval_rules_mut over the one rule *)
-  cbn - [eval_matchcond].
-  rewrite (new_flow_not_established p Hnew). reflexivity.
+  intros e p Hnew.
+  pose proof (new_flow_not_established e p Hnew) as Hf.
+  unfold eval_chain_mut, stateful_chain. cbn [c_rules c_policy eval_rules_mut].
+  assert (Happ : rule_applies estab_accept_rule e p = false).
+  { unfold rule_applies, estab_accept_rule; cbn [r_body rule_applies_walk].
+    rewrite Hf. reflexivity. }
+  assert (Hov : fst (dsl_rule_step estab_accept_rule e p) = None).
+  { rewrite dsl_rule_step_fst, Happ. now rewrite Bool.andb_false_r. }
+  destruct (dsl_rule_step estab_accept_rule e p) as [ov [e' p']].
+  cbn [fst] in Hov. subst ov. reflexivity.
 Qed.
 
 (* Conversely, an ESTABLISHED-flow packet (a flow a prior packet established) IS
    accepted — the rule is not vacuous. *)
-Definition flow_is_established (p : packet) : Prop :=
+Definition flow_is_established (e : env) (p : packet) : Prop :=
   pkt_untracked p = false /\ pkt_ct_present p = true
-  /\ e_ct (pkt_env p) (pkt_flow p) CKstate = st_estab.
+  /\ e_ct e (pkt_flow p) CKstate = st_estab.
 
 Theorem established_flow_accepted :
-  forall p, flow_is_established p -> eval_chain_mut stateful_chain p = Accept.
+  forall e p, flow_is_established e p -> eval_chain_mut stateful_chain e p = Accept.
 Proof.
-  intros p [Hunt [Hpres Hentry]]. unfold eval_chain_mut, stateful_chain. cbn [c_rules].
-  unfold estab_accept_rule. cbn [c_policy]. cbn - [eval_matchcond].
-  unfold m_estab, eval_matchcond, field_value.
-  unfold do_load. cbn. rewrite Hunt, Hpres, Hentry. vm_compute. reflexivity.
+  intros e p [Hunt [Hpres Hentry]].
+  assert (Hm : eval_matchcond m_estab e p = true).
+  { unfold m_estab, eval_matchcond, eval_matchcond_body, match_loadable, field_value, do_load.
+    cbn. rewrite Hunt, Hpres, Hentry. vm_compute. reflexivity. }
+  unfold eval_chain_mut, stateful_chain. cbn [c_rules c_policy eval_rules_mut].
+  assert (Hov : fst (dsl_rule_step estab_accept_rule e p) = Some Accept).
+  { rewrite dsl_rule_step_fst.
+    replace (rule_loadable estab_accept_rule e p) with true by reflexivity.
+    unfold rule_applies, estab_accept_rule; cbn [r_body rule_applies_walk].
+    rewrite Hm. reflexivity. }
+  destruct (dsl_rule_step estab_accept_rule e p) as [ov [e' p']].
+  cbn [fst] in Hov. subst ov. reflexivity.
 Qed.

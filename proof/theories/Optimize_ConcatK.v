@@ -120,67 +120,67 @@ Definition pack_row (row : list data) : data * data := (packN row, packN row).
 (** On a row whose fields all LOAD and length-match, the byte-equality conjunction
     [all_data_eqb] over the field values equals the [forallb] of the per-field
     [MCmp] tests. *)
-Lemma all_data_eqb_mcmp : forall fields row q,
-  Forall2 (fun f a => field_loadable f q = true /\ length (field_value f q) = length a) fields row ->
-  all_data_eqb (map (fun f => field_value f q) fields) row
-  = forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) q) (combine fields row).
+Lemma all_data_eqb_mcmp : forall fields row e q,
+  Forall2 (fun f a => field_loadable f q = true /\ length (field_value f e q) = length a) fields row ->
+  all_data_eqb (map (fun f => field_value f e q) fields) row
+  = forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) e q) (combine fields row).
 Proof.
-  intros fields row q Hf2. induction Hf2 as [| f a fl rl HR Htl IH]; [reflexivity|].
+  intros fields row e q Hf2. induction Hf2 as [| f a fl rl HR Htl IH]; [reflexivity|].
   destruct HR as [Hld Hlen].
   cbn [map all_data_eqb combine forallb fst snd].
-  rewrite (eval_mcmp_point f a q Hld Hlen), IH. reflexivity.
+  rewrite (eval_mcmp_point f a e q Hld Hlen), IH. reflexivity.
 Qed.
 
 (** If some field does not load, every row's per-field conjunction is [false]. *)
-Lemma forallb_mcmp_unload : forall fields row q,
+Lemma forallb_mcmp_unload : forall fields row e q,
   fields_loadable fields q = false ->
   length fields = length row ->
-  forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) q) (combine fields row) = false.
+  forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) e q) (combine fields row) = false.
 Proof.
-  induction fields as [| f fields IH]; intros row q Hfl Hlen.
+  induction fields as [| f fields IH]; intros row e q Hfl Hlen.
   - cbn in Hfl. discriminate.
   - destruct row as [| a row]; [cbn in Hlen; discriminate|].
     cbn [combine forallb fst snd].
     unfold fields_loadable in Hfl. cbn [forallb] in Hfl.
     apply Bool.andb_false_iff in Hfl as [Hf | Hfs].
-    + rewrite (eval_mcmp_point_unload f a q Hf). reflexivity.
-    + rewrite (IH row q Hfs ltac:(cbn in Hlen; lia)). apply Bool.andb_false_r.
+    + rewrite (eval_mcmp_point_unload f a e q Hf). reflexivity.
+    + rewrite (IH row e q Hfs ltac:(cbn in Hlen; lia)). apply Bool.andb_false_r.
 Qed.
 
 (** From fixed-width fields that all LOAD, the per-field loadable+length facts.
     The loadability premise is introduced AFTER the induction, so it specialises to
     each tail (avoiding the dependent-hypothesis pitfall). *)
-Lemma cert_loadable_facts : forall (fields : list field) (row : list data) q,
+Lemma cert_loadable_facts : forall (fields : list field) (row : list data) e q,
   Forall2 (fun f a => field_fixed_len f = Some (length a)) fields row ->
   (forall f, In f fields -> field_loadable f q = true) ->
-  Forall2 (fun f a => field_loadable f q = true /\ length (field_value f q) = length a) fields row.
+  Forall2 (fun f a => field_loadable f q = true /\ length (field_value f e q) = length a) fields row.
 Proof.
-  intros fields row q Hwf. induction Hwf as [| f a fs rs Hfx Hrest IH]; intro Hfl'; [constructor|].
+  intros fields row e q Hwf. induction Hwf as [| f a fs rs Hfx Hrest IH]; intro Hfl'; [constructor|].
   constructor.
   - split; [apply Hfl'; left; reflexivity
-           | apply (field_fixed_len_loaded f (length a) q Hfx), Hfl'; left; reflexivity].
+           | apply (field_fixed_len_loaded f (length a) e q Hfx), Hfl'; left; reflexivity].
   - apply IH. intros f' Hf'. apply Hfl'; right; exact Hf'.
 Qed.
 
-Lemma forall2_pair_to_lenmap : forall (fields : list field) (row : list data) q,
-  Forall2 (fun f a => field_loadable f q = true /\ length (field_value f q) = length a) fields row ->
-  Forall2 (fun v a => length v = length a) (map (fun f => field_value f q) fields) row.
+Lemma forall2_pair_to_lenmap : forall (fields : list field) (row : list data) e q,
+  Forall2 (fun f a => field_loadable f q = true /\ length (field_value f e q) = length a) fields row ->
+  Forall2 (fun v a => length v = length a) (map (fun f => field_value f e q) fields) row.
 Proof.
-  intros fields row q H.
+  intros fields row e q H.
   induction H as [| f a fs rs [_ Hlen] Hrest IH]; cbn [map]; constructor;
     [exact Hlen | exact IH].
 Qed.
 
-Lemma concat_fields_certificate_N : forall fields rows name q,
+Lemma concat_fields_certificate_N : forall fields rows name e q,
   fields <> [] ->
-  e_set (pkt_env q) name = map pack_row rows ->
+  e_set e name = map pack_row rows ->
   (forall row, In row rows ->
      Forall2 (fun f a => field_fixed_len f = Some (length a)) fields row) ->
-  eval_matchcond (MConcatSet fields false name) q
-  = existsb (fun row => forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) q)
+  eval_matchcond (MConcatSet fields false name) e q
+  = existsb (fun row => forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) e q)
                                 (combine fields row)) rows.
 Proof.
-  intros fields rows name q Hne Hset Hwf.
+  intros fields rows name e q Hne Hset Hwf.
   unfold eval_matchcond at 1, eval_matchcond_body at 1, match_loadable.
   cbn [andb]. rewrite Bool.xorb_false_l.
   assert (Hfl' : fields_loadable fields q = true ->
@@ -191,9 +191,9 @@ Proof.
   - (* all fields load: membership = existsb of the byte-equality conjunctions *)
     rewrite Hset. unfold concat_set_mem. rewrite existsb_map_local.
     apply existsb_ext. intros row Hin. unfold pack_row.
-    pose proof (cert_loadable_facts fields row q (Hwf row Hin) (Hfl' eq_refl)) as Hfacts.
-    rewrite (concat_in_iv_pointsN (map (fun f => field_value f q) fields) row
-               (forall2_pair_to_lenmap fields row q Hfacts)
+    pose proof (cert_loadable_facts fields row e q (Hwf row Hin) (Hfl' eq_refl)) as Hfacts.
+    rewrite (concat_in_iv_pointsN (map (fun f => field_value f e q) fields) row
+               (forall2_pair_to_lenmap fields row e q Hfacts)
                ltac:(intro Hc; apply map_eq_nil in Hc; contradiction)).
     apply all_data_eqb_mcmp; exact Hfacts.
   - (* some field does not load: both sides false *)
@@ -261,12 +261,12 @@ Proof.
   rewrite IH, Bool.andb_assoc. reflexivity.
 Qed.
 
-Lemma kmatches_applies_walk : forall fields row body p,
-  rule_applies_walk (kmatches fields row ++ body) p
-  = forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) p) (combine fields row)
-    && rule_applies_walk body p.
+Lemma kmatches_applies_walk : forall fields row body e p,
+  rule_applies_walk (kmatches fields row ++ body) e p
+  = forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) e p) (combine fields row)
+    && rule_applies_walk body e p.
 Proof.
-  intros fields row body p. unfold kmatches.
+  intros fields row body e p. unfold kmatches.
   induction (combine fields row) as [| fa l IH]; [reflexivity|].
   cbn [map app forallb rule_applies_walk].
   rewrite IH, Bool.andb_assoc. reflexivity.
@@ -287,88 +287,88 @@ Qed.
 
 (** orig_ruleK's loadability / outcome are VALUE-INDEPENDENT (head matches only
     contribute field loadability + are transparent to outcome). *)
-Lemma orig_ruleK_loadable : forall fields row body r1 p,
+Lemma orig_ruleK_loadable : forall fields row body r1 e p,
   length fields = length row ->
-  rule_loadable (orig_ruleK fields row body r1) p
+  rule_loadable (orig_ruleK fields row body r1) e p
   = fields_loadable fields p &&
     (body_loadable_walk body p &&
-     (if body_synproxy_stops body p then true else end_loadable r1 (body_thread body p))).
+     (if body_synproxy_stops body p then true else end_loadable r1 e (body_thread body p))).
 Proof.
-  intros fields row body r1 p Hlen. unfold rule_loadable, orig_ruleK. cbn [r_body].
+  intros fields row body r1 e p Hlen. unfold rule_loadable, orig_ruleK. cbn [r_body].
   rewrite kmatches_loadable_walk, kmatches_synproxy, kmatches_thread.
   rewrite (forallb_field_loadable_combine fields row p Hlen).
   (* end_loadable of the record = end_loadable r1 (it copies the end fields) *)
-  assert (Hend : forall q, end_loadable (orig_ruleK fields row body r1) q = end_loadable r1 q)
+  assert (Hend : forall q, end_loadable (orig_ruleK fields row body r1) e q = end_loadable r1 e q)
     by reflexivity.
   rewrite <- Bool.andb_assoc.
   destruct (body_synproxy_stops body p); reflexivity.
 Qed.
 
-Lemma merged_ruleK_loadable : forall fields name body r1 p,
-  rule_loadable (merged_ruleK fields name body r1) p
+Lemma merged_ruleK_loadable : forall fields name body r1 e p,
+  rule_loadable (merged_ruleK fields name body r1) e p
   = fields_loadable fields p &&
     (body_loadable_walk body p &&
-     (if body_synproxy_stops body p then true else end_loadable r1 (body_thread body p))).
+     (if body_synproxy_stops body p then true else end_loadable r1 e (body_thread body p))).
 Proof.
-  intros fields name body r1 p. unfold merged_ruleK. rewrite rule_loadable_mk_head.
+  intros fields name body r1 e p. unfold merged_ruleK. rewrite rule_loadable_mk_head.
   cbn [match_loadable]. reflexivity.
 Qed.
 
-Lemma orig_ruleK_outcome : forall fields row body r1 p,
-  outcome (orig_ruleK fields row body r1) p
+Lemma orig_ruleK_outcome : forall fields row body r1 e p,
+  outcome (orig_ruleK fields row body r1) e p
   = (if body_synproxy_stops body p then Some Drop
-     else outcome_core r1 (body_thread body p)).
+     else outcome_core r1 e (body_thread body p)).
 Proof.
-  intros fields row body r1 p. unfold outcome, orig_ruleK. cbn [r_body].
+  intros fields row body r1 e p. unfold outcome, orig_ruleK. cbn [r_body].
   rewrite kmatches_synproxy, kmatches_thread.
-  assert (Hoc : outcome_core (orig_ruleK fields row body r1) (body_thread body p)
-                = outcome_core r1 (body_thread body p)) by reflexivity.
+  assert (Hoc : outcome_core (orig_ruleK fields row body r1) e (body_thread body p)
+                = outcome_core r1 e (body_thread body p)) by reflexivity.
   unfold orig_ruleK in Hoc. cbn [r_body] in Hoc.
   destruct (body_synproxy_stops body p); [reflexivity|]. exact Hoc.
 Qed.
 
-Lemma merged_ruleK_outcome : forall fields name body r1 p,
-  outcome (merged_ruleK fields name body r1) p
+Lemma merged_ruleK_outcome : forall fields name body r1 e p,
+  outcome (merged_ruleK fields name body r1) e p
   = (if body_synproxy_stops body p then Some Drop
-     else outcome_core r1 (body_thread body p)).
+     else outcome_core r1 e (body_thread body p)).
 Proof. intros. unfold merged_ruleK. apply outcome_mk_head. Qed.
 
-Lemma orig_ruleK_applies : forall fields row body r1 p,
-  rule_applies (orig_ruleK fields row body r1) p
-  = forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) p) (combine fields row)
-    && rule_applies_walk body p.
+Lemma orig_ruleK_applies : forall fields row body r1 e p,
+  rule_applies (orig_ruleK fields row body r1) e p
+  = forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) e p) (combine fields row)
+    && rule_applies_walk body e p.
 Proof.
-  intros fields row body r1 p. unfold rule_applies, orig_ruleK. cbn [r_body].
+  intros fields row body r1 e p. unfold rule_applies, orig_ruleK. cbn [r_body].
   apply kmatches_applies_walk.
 Qed.
 
 (** *** The K-field concat merge, verdict-preserving on every packet. *)
-Theorem eval_rules_concat_mergeK : forall fields rows name body r1 rest p,
+Theorem eval_rules_concat_mergeK : forall fields rows name body r1 rest e p,
   fields <> [] -> rows <> [] ->
-  e_set (pkt_env p) name = map pack_row rows ->
+  e_set e name = map pack_row rows ->
   (forall row, In row rows ->
      Forall2 (fun f a => field_fixed_len f = Some (length a)) fields row) ->
-  eval_rules (merged_ruleK fields name body r1 :: rest) p
-  = eval_rules (map (fun row => orig_ruleK fields row body r1) rows ++ rest) p.
+  eval_rules (merged_ruleK fields name body r1 :: rest) e p
+  = eval_rules (map (fun row => orig_ruleK fields row body r1) rows ++ rest) e p.
 Proof.
-  intros fields rows name body r1 rest p Hfne Hrne Hset Hwf.
+  intros fields rows name body r1 rest e p Hfne Hrne Hset Hwf.
   (* every row has length = length fields (from the Forall2) *)
   assert (Hlenrow : forall row, In row rows -> length fields = length row)
     by (intros row Hin; apply (Forall2_length (Hwf row Hin))).
   set (LL := fields_loadable fields p &&
              (body_loadable_walk body p &&
               (if body_synproxy_stops body p then true
-               else end_loadable r1 (body_thread body p)))).
+               else end_loadable r1 e (body_thread body p)))).
   set (O := if body_synproxy_stops body p then Some Drop
-            else outcome_core r1 (body_thread body p)).
+            else outcome_core r1 e (body_thread body p)).
   apply (eval_rules_run_collapse
            (map (fun row => orig_ruleK fields row body r1) rows) LL O
-           (merged_ruleK fields name body r1) rest p).
+           (merged_ruleK fields name body r1) rest e p).
   - (* run nonempty *)
     intro Hc. apply map_eq_nil in Hc. contradiction.
   - (* all rows: rule_loadable = LL *)
     intros r Hin. apply in_map_iff in Hin as [row [Heq Hin]]. subst r.
-    unfold LL. apply (orig_ruleK_loadable fields row body r1 p (Hlenrow row Hin)).
+    unfold LL. apply (orig_ruleK_loadable fields row body r1 e p (Hlenrow row Hin)).
   - (* all rows: outcome = O *)
     intros r Hin. apply in_map_iff in Hin as [row [Heq Hin]]. subst r.
     unfold O. apply orig_ruleK_outcome.
@@ -379,17 +379,17 @@ Proof.
   - (* merged applies = existsb (orig applies) *)
     unfold merged_ruleK. rewrite rule_applies_mk_head.
     (* eval_matchcond (MConcatSet ..) = existsb (per-row K-conjunction)  [certificate] *)
-    rewrite (concat_fields_certificate_N fields rows name p Hfne Hset Hwf).
+    rewrite (concat_fields_certificate_N fields rows name e p Hfne Hset Hwf).
     (* existsb (orig applies) = existsb ((K-conj) && walk) = (existsb K-conj) && walk *)
-    rewrite (existsb_map_local _ _ (fun r => rule_applies r p)
+    rewrite (existsb_map_local _ _ (fun r => rule_applies r e p)
                                (fun row => orig_ruleK fields row body r1) rows).
     symmetry.
     rewrite (existsb_ext _
-               (fun row => rule_applies (orig_ruleK fields row body r1) p)
-               (fun row => forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) p)
-                                   (combine fields row) && rule_applies_walk body p)
+               (fun row => rule_applies (orig_ruleK fields row body r1) e p)
+               (fun row => forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) e p)
+                                   (combine fields row) && rule_applies_walk body e p)
                rows
-               (fun row _ => orig_ruleK_applies fields row body r1 p)).
+               (fun row _ => orig_ruleK_applies fields row body r1 e p)).
     apply existsb_andb_const.
 Qed.
 

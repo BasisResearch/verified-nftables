@@ -125,9 +125,9 @@ Fixpoint dce (rs : list rule) : list rule :=
   | r :: rest => if shadows r then [r] else r :: dce rest
   end.
 
-Lemma eval_rules_dce : forall rs p, eval_rules (dce rs) p = eval_rules rs p.
+Lemma eval_rules_dce : forall rs e p, eval_rules (dce rs) e p = eval_rules rs e p.
 Proof.
-  induction rs as [| r rs IH]; intros p.
+  induction rs as [| r rs IH]; intros e p.
   - reflexivity.
   - cbn [dce]. destruct (shadows r) eqn:Hs.
     + (* r shadows the rest: matches all, terminal verdict, no vmap/nat/tproxy *)
@@ -151,8 +151,8 @@ Proof.
       destruct (r_verdict r) eqn:Ev; cbn in Hv |- *;
         try discriminate Hv; reflexivity.
     + (* keep r, recurse *)
-      cbn [eval_rules]. destruct (rule_loadable r p && rule_applies r p).
-      * destruct (outcome r p) as [v |].
+      cbn [eval_rules]. destruct (rule_loadable r e p && rule_applies r e p).
+      * destruct (outcome r e p) as [v |].
         -- destruct (terminal v); [reflexivity | apply IH].
         -- apply IH.
       * apply IH.
@@ -277,24 +277,24 @@ Proof.
   apply body_has_notrack_map_BStmt_stmts; exact Hnt.
 Qed.
 
-Lemma rule_applies_dedup : forall r p,
-  rule_applies (dedup_rule r) p = rule_applies r p.
+Lemma rule_applies_dedup : forall r e p,
+  rule_applies (dedup_rule r) e p = rule_applies r e p.
 Proof.
-  intros r p. unfold rule_applies, dedup_rule.
+  intros r e p. unfold rule_applies, dedup_rule.
   destruct (body_has_synproxy (r_body r)) eqn:Hsp; [reflexivity|].
   destruct (body_has_notrack (r_body r)) eqn:Hnt; [reflexivity|].
   cbn [orb r_body].
-  rewrite (rule_applies_walk_no_synproxy _ p (dedup_body_no_synproxy_stops _ p Hsp)
+  rewrite (rule_applies_walk_no_synproxy _ e p (dedup_body_no_synproxy_stops _ p Hsp)
              (dedup_body_no_notrack _ Hnt)).
-  rewrite (rule_applies_walk_no_synproxy (r_body r) p
+  rewrite (rule_applies_walk_no_synproxy (r_body r) e p
              (body_has_synproxy_false_stops _ p Hsp) Hnt).
   rewrite body_matches_app, body_matches_map_BMatch, body_matches_map_BStmt.
   rewrite app_nil_r. apply forallb_nodup.
 Qed.
 
-Lemma outcome_dedup : forall r p, outcome (dedup_rule r) p = outcome r p.
+Lemma outcome_dedup : forall r e p, outcome (dedup_rule r) e p = outcome r e p.
 Proof.
-  intros r p. unfold outcome, dedup_rule.
+  intros r e p. unfold outcome, dedup_rule.
   destruct (body_has_synproxy (r_body r)) eqn:Hsp; [reflexivity|].
   destruct (body_has_notrack (r_body r)) eqn:Hnt; [reflexivity|].
   cbn [orb r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after].
@@ -325,9 +325,9 @@ Proof.
   - destruct (stmt_loadable s p), bM, bS; reflexivity.
 Qed.
 
-Lemma end_loadable_dedup : forall r p, end_loadable (dedup_rule r) p = end_loadable r p.
+Lemma end_loadable_dedup : forall r e p, end_loadable (dedup_rule r) e p = end_loadable r e p.
 Proof.
-  intros r p. unfold dedup_rule.
+  intros r e p. unfold dedup_rule.
   destruct (body_has_synproxy (r_body r)); [reflexivity|].
   destruct (body_has_notrack (r_body r)); [reflexivity|]. cbn [orb].
   unfold end_loadable, tail_loadable, terminal_loadable, vmap_loadable,
@@ -344,9 +344,9 @@ Proof.
   apply dedup_body_no_notrack; exact Hnt.
 Qed.
 
-Lemma rule_loadable_dedup : forall r p, rule_loadable (dedup_rule r) p = rule_loadable r p.
+Lemma rule_loadable_dedup : forall r e p, rule_loadable (dedup_rule r) e p = rule_loadable r e p.
 Proof.
-  intros r p. destruct (body_has_synproxy (r_body r)) eqn:Hsp.
+  intros r e p. destruct (body_has_synproxy (r_body r)) eqn:Hsp.
   - (* dedup_rule = r *) unfold dedup_rule; rewrite Hsp; reflexivity.
   - destruct (body_has_notrack (r_body r)) eqn:Hnt.
     + (* dedup_rule = r *) unfold dedup_rule; rewrite Hsp, Hnt; reflexivity.
@@ -373,14 +373,14 @@ Proof.
     symmetry. apply body_loadable_split.
 Qed.
 
-Lemma eval_rules_map_dedup : forall rs p,
-  eval_rules (map dedup_rule rs) p = eval_rules rs p.
+Lemma eval_rules_map_dedup : forall rs e p,
+  eval_rules (map dedup_rule rs) e p = eval_rules rs e p.
 Proof.
-  induction rs as [| r rs IH]; intros p.
+  induction rs as [| r rs IH]; intros e p.
   - reflexivity.
   - cbn [map eval_rules]. rewrite rule_applies_dedup, outcome_dedup, rule_loadable_dedup.
-    destruct (rule_loadable r p && rule_applies r p).
-    + destruct (outcome r p) as [v |].
+    destruct (rule_loadable r e p && rule_applies r e p).
+    + destruct (outcome r e p) as [v |].
       * destruct (terminal v); [reflexivity | apply IH].
       * apply IH.
     + apply IH.
@@ -397,8 +397,8 @@ Qed.
     bytecode-shrinking normalisation is foregone. *)
 Definition simplify_match (m : matchcond) : matchcond := m.
 
-Lemma simplify_match_correct : forall m p,
-  eval_matchcond (simplify_match m) p = eval_matchcond m p.
+Lemma simplify_match_correct : forall m e p,
+  eval_matchcond (simplify_match m) e p = eval_matchcond m e p.
 Proof. reflexivity. Qed.
 
 Definition simplify_item (it : body_item) : body_item :=
@@ -428,37 +428,37 @@ Proof. intros [m | s]; reflexivity. Qed.
 Lemma map_simplify_item_id : forall b, map simplify_item b = b.
 Proof. induction b as [| it b IH]; [reflexivity|]. cbn [map]. rewrite simplify_item_id, IH. reflexivity. Qed.
 
-Lemma rule_applies_simplify : forall r p,
-  rule_applies (simplify_rule r) p = rule_applies r p.
+Lemma rule_applies_simplify : forall r e p,
+  rule_applies (simplify_rule r) e p = rule_applies r e p.
 Proof.
-  intros r p. unfold rule_applies, simplify_rule. cbn [r_body].
+  intros r e p. unfold rule_applies, simplify_rule. cbn [r_body].
   rewrite map_simplify_item_id. reflexivity.
 Qed.
 
-Lemma rule_loadable_simplify : forall r p,
-  rule_loadable (simplify_rule r) p = rule_loadable r p.
+Lemma rule_loadable_simplify : forall r e p,
+  rule_loadable (simplify_rule r) e p = rule_loadable r e p.
 Proof.
-  intros r p. unfold rule_loadable, simplify_rule. cbn [r_body].
+  intros r e p. unfold rule_loadable, simplify_rule. cbn [r_body].
   rewrite map_simplify_item_id.
   replace (end_loadable {| r_body := r_body r; r_verdict := r_verdict r;
                            r_vmap := r_vmap r; r_nat := r_nat r; r_tproxy := r_tproxy r;
-                           r_fwd := r_fwd r; r_queue := r_queue r; r_after := r_after r |} p)
-    with (end_loadable r p)
+                           r_fwd := r_fwd r; r_queue := r_queue r; r_after := r_after r |} e p)
+    with (end_loadable r e p)
     by (unfold end_loadable, tail_loadable, terminal_loadable, vmap_loadable,
         terminal_outcome; reflexivity).
   reflexivity.
 Qed.
 
-Lemma eval_rules_map_simplify : forall rs p,
-  eval_rules (map simplify_rule rs) p = eval_rules rs p.
+Lemma eval_rules_map_simplify : forall rs e p,
+  eval_rules (map simplify_rule rs) e p = eval_rules rs e p.
 Proof.
-  induction rs as [| r rs IH]; intros p; [reflexivity |].
+  induction rs as [| r rs IH]; intros e p; [reflexivity |].
   cbn [map eval_rules]. rewrite rule_applies_simplify, rule_loadable_simplify.
-  replace (outcome (simplify_rule r) p) with (outcome r p)
+  replace (outcome (simplify_rule r) e p) with (outcome r e p)
     by (unfold outcome, simplify_rule; cbn [r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after];
         rewrite map_simplify_item_id; reflexivity).
-  destruct (rule_loadable r p && rule_applies r p).
-  - destruct (outcome r p) as [v |].
+  destruct (rule_loadable r e p && rule_applies r e p).
+  - destruct (outcome r e p) as [v |].
     + destruct (terminal v); [reflexivity | apply IH].
     + apply IH.
   - apply IH.
@@ -485,10 +485,10 @@ Definition is_noop (r : rule) : bool :=
 Definition prune_noops (rs : list rule) : list rule :=
   filter (fun r => negb (is_noop r)) rs.
 
-Lemma eval_rules_prune_noops : forall rs p,
-  eval_rules (prune_noops rs) p = eval_rules rs p.
+Lemma eval_rules_prune_noops : forall rs e p,
+  eval_rules (prune_noops rs) e p = eval_rules rs e p.
 Proof.
-  induction rs as [| r rs IH]; intros p; [reflexivity |].
+  induction rs as [| r rs IH]; intros e p; [reflexivity |].
   unfold prune_noops in *. cbn [filter]. destruct (is_noop r) eqn:Hn; cbn [negb].
   - (* r is a no-op: it falls through, so dropping it preserves the result *)
     rewrite IH. symmetry.
@@ -513,8 +513,8 @@ Proof.
     destruct (r_queue r); [discriminate |].
     destruct (r_verdict r); cbn in Hv |- *; try discriminate Hv;
       rewrite ?Bool.andb_false_r, ?Bool.andb_true_r; reflexivity.
-  - cbn [eval_rules]. destruct (rule_loadable r p && rule_applies r p).
-    + destruct (outcome r p) as [v |].
+  - cbn [eval_rules]. destruct (rule_loadable r e p && rule_applies r e p).
+    + destruct (outcome r e p) as [v |].
       * destruct (terminal v); [reflexivity | apply IH].
       * apply IH.
     + apply IH.
@@ -532,10 +532,10 @@ Definition optimize_chain (c : chain) : chain :=
     end-to-end theorem subsumes this one.  [optimize_chain] itself survives as
     the pipeline's base stage, and this theorem is reused there as that stage's
     correctness lemma. *)
-Theorem optimize_chain_correct : forall c p,
-  eval_chain (optimize_chain c) p = eval_chain c p.
+Theorem optimize_chain_correct : forall c e p,
+  eval_chain (optimize_chain c) e p = eval_chain c e p.
 Proof.
-  intros c p. unfold eval_chain, optimize_chain. cbn [c_rules c_policy].
+  intros c e p. unfold eval_chain, optimize_chain. cbn [c_rules c_policy].
   rewrite eval_rules_dce, eval_rules_prune_noops.
   rewrite <- (map_map dedup_rule simplify_rule).
   rewrite eval_rules_map_simplify, eval_rules_map_dedup. reflexivity.

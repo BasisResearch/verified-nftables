@@ -412,11 +412,11 @@ Qed.
 
 (** *** The membership certificate: a single-field [MConcatSet] over an interval set
     is EXACTLY the [existsb] disjunction of the corresponding [MRange] matches. *)
-Lemma eval_mrange_iv : forall f lo hi q,
-  eval_matchcond (MRange f false lo hi) q
-  = andb (field_loadable f q) (data_in_iv (field_value f q) (lo, hi)).
+Lemma eval_mrange_iv : forall f lo hi e q,
+  eval_matchcond (MRange f false lo hi) e q
+  = andb (field_loadable f q) (data_in_iv (field_value f e q) (lo, hi)).
 Proof.
-  intros f lo hi q.
+  intros f lo hi e q.
   unfold eval_matchcond, eval_matchcond_body, match_loadable.
   unfold eval_range, data_in_iv. cbn [fst snd]. reflexivity.
 Qed.
@@ -428,12 +428,12 @@ Proof.
   reflexivity.
 Qed.
 
-Lemma concat_set_ivs_existsb : forall f ivs name q,
-  e_set (pkt_env q) name = ivs ->
-  eval_matchcond (MConcatSet [f] false name) q
-  = existsb (fun iv => eval_matchcond (MRange f false (fst iv) (snd iv)) q) ivs.
+Lemma concat_set_ivs_existsb : forall f ivs name e q,
+  e_set e name = ivs ->
+  eval_matchcond (MConcatSet [f] false name) e q
+  = existsb (fun iv => eval_matchcond (MRange f false (fst iv) (snd iv)) e q) ivs.
 Proof.
-  intros f ivs name q Hset.
+  intros f ivs name e q Hset.
   unfold eval_matchcond at 1, eval_matchcond_body at 1.
   cbn [match_loadable fields_loadable forallb]. rewrite Bool.andb_true_r.
   destruct (field_loadable f q) eqn:Hld; cbn [andb].

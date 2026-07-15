@@ -10,8 +10,8 @@
     In the model the writable+persistent conntrack keys ([ct_writable]: mark/label)
     live in the SHARED, flow-keyed env table [e_ct]: [set_ct] writes
     [e_ct (pkt_flow p) CKmark] and [do_load (LCt CKmark)] reads it back, so
-    [eval_chain_mut_env]/[set_env] (which thread [pkt_env]) carry the mark to the
-    next packet of the flow.
+    [eval_chain_mut_env] (which RETURNS the env the traversal leaves) carries the
+    mark to the next packet of the flow.
 
     Regression gate: [ctmark_set_persists_in_env], [packet2_sees_packet1_ctmark_set],
     and [ctmark_set_no_entry_is_noop] lock in flow-keyed persistence; a model
@@ -45,12 +45,12 @@ Definition ctmark_chain : chain :=
    SHARED conntrack table at packet 1's flow — the write leaves a cross-packet
    trace, as nft_ct_set_eval's WRITE_ONCE(ct->mark, value) does. *)
 Theorem ctmark_set_persists_in_env :
-  forall p1 : packet,
+  forall (e : env) (p1 : packet),
     pkt_ct_present p1 = true ->
-    let e1 := snd (eval_chain_mut_env ctmark_chain p1) in
+    let e1 := snd (eval_chain_mut_env ctmark_chain e p1) in
     e_ct e1 (pkt_flow p1) CKmark = [1].
 Proof.
-  intros p1 Hpres. cbn. unfold set_ct. rewrite Hpres. cbn.
+  intros e p1 Hpres. cbn. unfold set_ct. rewrite Hpres. cbn.
   rewrite data_eqb_refl. reflexivity.
 Qed.
 
@@ -59,33 +59,32 @@ Qed.
    set — REGARDLESS of packet 2's own per-packet ct oracle.  This is exactly the
    kernel's nf_ct_get(skb) selecting the shared entry by tuple and reading ct->mark. *)
 Theorem packet2_sees_packet1_ctmark_set :
-  forall (p1 p2 : packet),
+  forall (e : env) (p1 p2 : packet),
     pkt_ct_present p1 = true ->
     pkt_flow p2 = pkt_flow p1 ->
-    let e1 := snd (eval_chain_mut_env ctmark_chain p1) in
-    field_value FCtMark (set_env p2 e1) = [1;0;0;0].
+    let e1 := snd (eval_chain_mut_env ctmark_chain e p1) in
+    field_value FCtMark e1 p2 = [1;0;0;0].
 Proof.
-  intros p1 p2 Hpres Hflow. cbn - [eval_chain_mut_env].
+  intros e p1 p2 Hpres Hflow. cbn - [eval_chain_mut_env].
   unfold field_value, do_load, ct_load. cbn. unfold set_ct. rewrite Hpres. cbn.
   rewrite Hflow. rewrite data_eqb_refl. reflexivity.
 Qed.
 
-(* And the mark packet 1 set OVERRIDES packet 2's own (arbitrary) oracle: even if
-   packet 2's per-packet ct mark were 0x9, a same-flow packet 2 reads 0x1 (the flow
-   mark), not 0x9 — the cross-packet conntrack-mark firewall the per-packet oracle
-   could not express. *)
+(* The mark a same-flow packet 2 reads is DETERMINED by the flow table alone:
+   nothing per-packet about p2 (beyond its flow id) can change the read.  The
+   conntrack mark is a function of the FLOW, so packet 2 reads 0x1 — never some
+   other per-packet value such as 0x9. *)
 Theorem flow_mark_overrides_packet2_oracle :
-  forall (p1 p2 : packet),
+  forall (e : env) (p1 p2 : packet),
     pkt_ct_present p1 = true ->
     pkt_flow p2 = pkt_flow p1 ->
-    pkt_ct p2 CKmark = [9] ->
-    let e1 := snd (eval_chain_mut_env ctmark_chain p1) in
-    field_value FCtMark (set_env p2 e1) = [1;0;0;0] /\
-    field_value FCtMark (set_env p2 e1) <> [9].
+    let e1 := snd (eval_chain_mut_env ctmark_chain e p1) in
+    field_value FCtMark e1 p2 = [1;0;0;0] /\
+    field_value FCtMark e1 p2 <> [9].
 Proof.
-  intros p1 p2 Hpres Hflow _. split.
-  - apply (packet2_sees_packet1_ctmark_set p1 p2 Hpres Hflow).
-  - rewrite (packet2_sees_packet1_ctmark_set p1 p2 Hpres Hflow). discriminate.
+  intros e p1 p2 Hpres Hflow. split.
+  - apply (packet2_sees_packet1_ctmark_set e p1 p2 Hpres Hflow).
+  - rewrite (packet2_sees_packet1_ctmark_set e p1 p2 Hpres Hflow). discriminate.
 Qed.
 
 (* A DIFFERENT flow does NOT see packet 1's mark: a packet 2 on another flow reads
@@ -93,13 +92,13 @@ Qed.
    persistence is correctly flow-SCOPED, not global.  This rules out the dual
    over-approximation (every packet inheriting every mark). *)
 Theorem other_flow_unaffected :
-  forall (p1 p2 : packet),
+  forall (e : env) (p1 p2 : packet),
     pkt_ct_present p1 = true ->
     pkt_flow p2 <> pkt_flow p1 ->
-    let e1 := snd (eval_chain_mut_env ctmark_chain p1) in
-    field_value FCtMark (set_env p2 e1) = ct_load CKmark (e_ct (pkt_env p1) (pkt_flow p2) CKmark).
+    let e1 := snd (eval_chain_mut_env ctmark_chain e p1) in
+    field_value FCtMark e1 p2 = ct_load CKmark (e_ct e (pkt_flow p2) CKmark).
 Proof.
-  intros p1 p2 Hpres Hflow. cbn - [eval_chain_mut_env].
+  intros e p1 p2 Hpres Hflow. cbn - [eval_chain_mut_env].
   unfold field_value, do_load. cbn. unfold set_ct. rewrite Hpres. cbn.
   destruct (data_eqb (pkt_flow p1) (pkt_flow p2)) eqn:Heq.
   - apply data_eqb_true_iff in Heq. symmetry in Heq. contradiction.
@@ -115,12 +114,12 @@ Qed.
 
 (* (a) running the chain on an ENTRYLESS packet leaves e_ct at its prior value. *)
 Theorem ctmark_set_no_entry_is_noop :
-  forall p1 : packet,
+  forall (e : env) (p1 : packet),
     pkt_ct_present p1 = false ->
-    let e1 := snd (eval_chain_mut_env ctmark_chain p1) in
-    e_ct e1 (pkt_flow p1) CKmark = e_ct (pkt_env p1) (pkt_flow p1) CKmark.
+    let e1 := snd (eval_chain_mut_env ctmark_chain e p1) in
+    e_ct e1 (pkt_flow p1) CKmark = e_ct e (pkt_flow p1) CKmark.
 Proof.
-  intros p1 Hpres. cbn. unfold set_ct. rewrite Hpres. cbn. reflexivity.
+  intros e p1 Hpres. cbn. unfold set_ct. rewrite Hpres. cbn. reflexivity.
 Qed.
 
 (* (b) therefore a later same-flow ENTRY-PRESENT packet 2, threaded through the env
@@ -129,13 +128,13 @@ Qed.
    flow is [], so the read is [] (not [1]); the verdict-level upshot is that a later
    `ct mark 0x1 accept` does NOT spuriously match. *)
 Theorem no_entry_set_invisible_to_packet2 :
-  forall (p1 p2 : packet),
+  forall (e : env) (p1 p2 : packet),
     pkt_ct_present p1 = false ->
     pkt_flow p2 = pkt_flow p1 ->
-    let e1 := snd (eval_chain_mut_env ctmark_chain p1) in
-    field_value FCtMark (set_env p2 e1) = ct_load CKmark (e_ct (pkt_env p1) (pkt_flow p1) CKmark).
+    let e1 := snd (eval_chain_mut_env ctmark_chain e p1) in
+    field_value FCtMark e1 p2 = ct_load CKmark (e_ct e (pkt_flow p1) CKmark).
 Proof.
-  intros p1 p2 Hpres Hflow. cbn - [eval_chain_mut_env].
+  intros e p1 p2 Hpres Hflow. cbn - [eval_chain_mut_env].
   unfold field_value, do_load. cbn. unfold set_ct. rewrite Hpres. cbn.
   rewrite Hflow. reflexivity.
 Qed.

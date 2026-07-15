@@ -124,31 +124,31 @@ Qed.
     verdict-preserving whenever [r1] and [r2] have the SAME realised outcome and
     every firing of [r1] is also a firing of [r2] (so nothing that [r1] would have
     decided is lost — [r2], reached at [r1]'s old slot, decides it identically). *)
-Lemma eval_rules_absorb_pair : forall r1 r2 rest p,
-  outcome r1 p = outcome r2 p ->
-  (rule_loadable r1 p && rule_applies r1 p = true ->
-   rule_loadable r2 p && rule_applies r2 p = true) ->
-  eval_rules (r2 :: rest) p = eval_rules (r1 :: r2 :: rest) p.
+Lemma eval_rules_absorb_pair : forall r1 r2 rest e p,
+  outcome r1 e p = outcome r2 e p ->
+  (rule_loadable r1 e p && rule_applies r1 e p = true ->
+   rule_loadable r2 e p && rule_applies r2 e p = true) ->
+  eval_rules (r2 :: rest) e p = eval_rules (r1 :: r2 :: rest) e p.
 Proof.
-  intros r1 r2 rest p Ho Hfire.
+  intros r1 r2 rest e p Ho Hfire.
   transitivity
-    (if rule_loadable r1 p && rule_applies r1 p
-     then match outcome r1 p with
-          | Some v => if terminal v then Some v else eval_rules (r2 :: rest) p
-          | None => eval_rules (r2 :: rest) p end
-     else eval_rules (r2 :: rest) p).
+    (if rule_loadable r1 e p && rule_applies r1 e p
+     then match outcome r1 e p with
+          | Some v => if terminal v then Some v else eval_rules (r2 :: rest) e p
+          | None => eval_rules (r2 :: rest) e p end
+     else eval_rules (r2 :: rest) e p).
   2:{ reflexivity. }
-  destruct (rule_loadable r1 p && rule_applies r1 p) eqn:E1.
+  destruct (rule_loadable r1 e p && rule_applies r1 e p) eqn:E1.
   - specialize (Hfire eq_refl).
-    destruct (outcome r1 p) as [v |] eqn:Eo.
+    destruct (outcome r1 e p) as [v |] eqn:Eo.
     + destruct (terminal v) eqn:Et; [| reflexivity].
-      assert (Ho2 : outcome r2 p = Some v) by (symmetry; exact Ho).
-      change (eval_rules (r2 :: rest) p) with
-        (if rule_loadable r2 p && rule_applies r2 p
-         then match outcome r2 p with
-              | Some w => if terminal w then Some w else eval_rules rest p
-              | None => eval_rules rest p end
-         else eval_rules rest p).
+      assert (Ho2 : outcome r2 e p = Some v) by (symmetry; exact Ho).
+      change (eval_rules (r2 :: rest) e p) with
+        (if rule_loadable r2 e p && rule_applies r2 e p
+         then match outcome r2 e p with
+              | Some w => if terminal w then Some w else eval_rules rest e p
+              | None => eval_rules rest e p end
+         else eval_rules rest e p).
       rewrite Hfire, Ho2, Et. reflexivity.
     + reflexivity.
   - reflexivity.
@@ -157,13 +157,13 @@ Qed.
 (** *** Head-level obligation discharge for two [mk_head] shells over a COMMON base
     rule: when [m1] loadable/matching implies [m2] loadable/matching, dropping the
     [m1] shell before the [m2] shell preserves every verdict. *)
-Lemma eval_rules_absorb_mk : forall m1 m2 body rbase rest p,
+Lemma eval_rules_absorb_mk : forall m1 m2 body rbase rest e p,
   (match_loadable m1 p = true -> match_loadable m2 p = true) ->
-  (eval_matchcond m1 p = true -> eval_matchcond m2 p = true) ->
-  eval_rules (mk_head m2 body rbase :: rest) p
-    = eval_rules (mk_head m1 body rbase :: mk_head m2 body rbase :: rest) p.
+  (eval_matchcond m1 e p = true -> eval_matchcond m2 e p = true) ->
+  eval_rules (mk_head m2 body rbase :: rest) e p
+    = eval_rules (mk_head m1 body rbase :: mk_head m2 body rbase :: rest) e p.
 Proof.
-  intros m1 m2 body rbase rest p Pload Peval.
+  intros m1 m2 body rbase rest e p Pload Peval.
   apply eval_rules_absorb_pair.
   - rewrite !outcome_mk_head. reflexivity.
   - intro Hf.
@@ -205,11 +205,11 @@ Lemma read_payload_slice : forall b off len p,
 Proof. intros b off len p. destruct b; reflexivity. Qed.
 
 (** *** The absorption-pair correctness: an eligible pair may drop its FIRST rule. *)
-Lemma eval_rules_absorb_correct : forall r1 r2 tup rest p,
+Lemma eval_rules_absorb_correct : forall r1 r2 tup rest e p,
   absorb_pair r1 r2 = Some tup ->
-  eval_rules (r2 :: rest) p = eval_rules (r1 :: r2 :: rest) p.
+  eval_rules (r2 :: rest) e p = eval_rules (r1 :: r2 :: rest) e p.
 Proof.
-  intros r1 r2 [[[[[[b off] w1] w2] v1] v2] body] rest p H.
+  intros r1 r2 [[[[[[b off] w1] w2] v1] v2] body] rest e p H.
   destruct (absorb_pair_facts r1 r2 b off w1 w2 v1 v2 body H)
     as [Hr1 [Hr2 [Hle [Hlv1 [Hlv2 Hfn]]]]].
   (* rewrite both rules to their common-base [mk_head] shells *)
@@ -268,28 +268,28 @@ Proof.
 Qed.
 
 (** Cons congruence for [eval_rules] under a tail that is verdict-equal. *)
-Lemma eval_rules_cons_cong : forall r tl tl' p,
-  eval_rules tl p = eval_rules tl' p ->
-  eval_rules (r :: tl) p = eval_rules (r :: tl') p.
+Lemma eval_rules_cons_cong : forall r tl tl' e p,
+  eval_rules tl e p = eval_rules tl' e p ->
+  eval_rules (r :: tl) e p = eval_rules (r :: tl') e p.
 Proof.
-  intros r tl tl' p Htl. cbn [eval_rules].
-  destruct (rule_loadable r p && rule_applies r p).
-  - destruct (outcome r p) as [v |]; [destruct (terminal v) |];
+  intros r tl tl' e p Htl. cbn [eval_rules].
+  destruct (rule_loadable r e p && rule_applies r e p).
+  - destruct (outcome r e p) as [v |]; [destruct (terminal v) |];
       rewrite ?Htl; reflexivity.
   - exact Htl.
 Qed.
 
 (** *** Verdict-preservation of the whole pass. *)
-Lemma optimize_rules_absorb_eval : forall fuel rs p,
-  eval_rules (optimize_rules_absorb fuel rs) p = eval_rules rs p.
+Lemma optimize_rules_absorb_eval : forall fuel rs e p,
+  eval_rules (optimize_rules_absorb fuel rs) e p = eval_rules rs e p.
 Proof.
-  induction fuel as [| fuel IH]; intros rs p.
+  induction fuel as [| fuel IH]; intros rs e p.
   - reflexivity.
   - destruct rs as [| r1 [| r2 rest]].
     + reflexivity.
     + reflexivity.
     + cbn [optimize_rules_absorb]. destruct (absorb_pair r1 r2) eqn:Eap.
-      * rewrite IH. apply (eval_rules_absorb_correct r1 r2 _ rest p Eap).
+      * rewrite IH. apply (eval_rules_absorb_correct r1 r2 _ rest e p Eap).
       * apply eval_rules_cons_cong. apply IH.
 Qed.
 
@@ -306,10 +306,10 @@ Lemma optimize_chain_absorb_eq : forall n d c,
   optimize_chain_absorb n d c = (n, d, absorb_chain c).
 Proof. reflexivity. Qed.
 
-Lemma absorb_chain_eval : forall c p,
-  eval_chain (absorb_chain c) p = eval_chain c p.
+Lemma absorb_chain_eval : forall c e p,
+  eval_chain (absorb_chain c) e p = eval_chain c e p.
 Proof.
-  intros c p. unfold eval_chain, absorb_chain. cbn [c_rules c_policy].
+  intros c e p. unfold eval_chain, absorb_chain. cbn [c_rules c_policy].
   rewrite optimize_rules_absorb_eval. reflexivity.
 Qed.
 

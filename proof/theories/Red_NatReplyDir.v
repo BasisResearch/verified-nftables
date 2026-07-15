@@ -50,10 +50,10 @@ Definition dnat_rule : rule :=
      r_fwd := None; r_queue := None; r_after := [] |}.
 Definition dnat_chain : chain := {| c_policy := Drop; c_rules := [ dnat_rule ] |}.
 
-Definition out_daddr (p : packet) : data :=
-  slice (pkt_nh (chain_out Hprerouting dnat_chain p)) 16 4.
-Definition out_saddr (p : packet) : data :=
-  slice (pkt_nh (chain_out Hprerouting dnat_chain p)) 12 4.
+Definition out_daddr (e : env) (p : packet) : data :=
+  slice (pkt_nh (chain_out Hprerouting dnat_chain e p)) 16 4.
+Definition out_saddr (e : env) (p : packet) : data :=
+  slice (pkt_nh (chain_out Hprerouting dnat_chain e p)) 12 4.
 
 Definition env0 : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
@@ -67,8 +67,8 @@ Definition env0 : env :=
    carry the SAME flow id [7;7] (per Packet.v's contract) — direction is carried
    SEPARATELY by [pkt_ctdir_orig], exactly as the kernel keys by tuple but applies
    the manip by CTINFO2DIR. *)
-Definition mkpkt (e : env) (saddr daddr : data) (dir : bool) : packet :=
-  {| pkt_env := e; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
+Definition mkpkt (saddr daddr : data) (dir : bool) : packet :=
+  {| pkt_meta := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := [];
      pkt_nh := [69;0;0;20; 0;0;0;0; 64;6; 0;0] ++ saddr ++ daddr;
@@ -80,14 +80,14 @@ Definition mkpkt (e : env) (saddr daddr : data) (dir : bool) : packet :=
      pkt_flow := [7;7]; pkt_untracked := false; pkt_ctdir_orig := dir; pkt_ct_present := true |}.
 
 (* FORWARD (ORIGINAL) packet: client 1.1.1.1 -> router 9.9.9.9, direction = original. *)
-Definition fwd : packet := mkpkt env0 [1;1;1;1] [9;9;9;9] true.
+Definition fwd : packet := mkpkt [1;1;1;1] [9;9;9;9] true.
 
 (* The shared env AFTER the forward packet has been dnat'd: it carries the
    established mapping at flow [7;7]. *)
-Definition env_after_fwd : env := pkt_env (chain_out Hprerouting dnat_chain fwd).
+Definition env_after_fwd : env := chain_out_env Hprerouting dnat_chain env0 fwd.
 
 (* Forward packet: dnat rewrites the DESTINATION 9.9.9.9 -> 8.8.8.8 (correct). *)
-Lemma fwd_daddr : out_daddr fwd = [8;8;8;8].
+Lemma fwd_daddr : out_daddr env0 fwd = [8;8;8;8].
 Proof. vm_compute. reflexivity. Qed.
 
 (* Mapping stored at the flow after the forward packet: the ORIGINAL destination
@@ -99,7 +99,7 @@ Proof. vm_compute. reflexivity. Qed.
    reply ([pkt_ctdir_orig := false]), carrying the env established by the forward
    packet.  In the kernel this packet's SOURCE 8.8.8.8 is un-DNAT'd back to the
    router 9.9.9.9, and its DESTINATION (1.1.1.1) left UNTOUCHED. *)
-Definition reply : packet := mkpkt env_after_fwd [8;8;8;8] [1;1;1;1] false.
+Definition reply : packet := mkpkt [8;8;8;8] [1;1;1;1] false.
 
 (* Same flow (direction-normalised), per Packet.v's contract. *)
 Lemma reply_same_flow : pkt_flow reply = pkt_flow fwd.
@@ -109,27 +109,27 @@ Proof. reflexivity. Qed.
 
    (A) The reply's SOURCE 8.8.8.8 is un-DNAT'd back to the router 9.9.9.9 — the
        inverse manip the kernel applies for the reply direction. *)
-Lemma reply_saddr_undone : out_saddr reply = [9;9;9;9].
+Lemma reply_saddr_undone : out_saddr env_after_fwd reply = [9;9;9;9].
 Proof. vm_compute. reflexivity. Qed.
 
 (* (B) The reply's DESTINATION (the client 1.1.1.1) is LEFT UNTOUCHED — a dnat
        never rewrites the reply's destination. *)
-Lemma reply_daddr_untouched : out_daddr reply = [1;1;1;1].
+Lemma reply_daddr_untouched : out_daddr env_after_fwd reply = [1;1;1;1].
 Proof. vm_compute. reflexivity. Qed.
 
 (* Headline: the model's reply-direction NAT MATCHES the kernel exactly.
    Kernel on the reply: saddr 8.8.8.8 -> 9.9.9.9, daddr 1.1.1.1 untouched.
    Model  on the reply: saddr 8.8.8.8 -> 9.9.9.9, daddr 1.1.1.1 untouched. *)
 Theorem reply_nat_is_correct :
-  out_saddr reply = [9;9;9;9]            (* un-DNAT'd back to the original address *)
-  /\ out_daddr reply = [1;1;1;1].        (* destination left alone *)
+  out_saddr env_after_fwd reply = [9;9;9;9]            (* un-DNAT'd back to the original address *)
+  /\ out_daddr env_after_fwd reply = [1;1;1;1].        (* destination left alone *)
 Proof. split; [exact reply_saddr_undone | exact reply_daddr_untouched]. Qed.
 
 (* The reply is NOT translated backwards: its source is not left at the dnat
    target, and its destination is NOT re-rewritten to the dnat target. *)
 Theorem reply_nat_not_backwards :
-  out_saddr reply <> [8;8;8;8]           (* source not left at the NAT target *)
-  /\ out_daddr reply <> [8;8;8;8].       (* destination not re-NAT'd forward *)
+  out_saddr env_after_fwd reply <> [8;8;8;8]           (* source not left at the NAT target *)
+  /\ out_daddr env_after_fwd reply <> [8;8;8;8].       (* destination not re-NAT'd forward *)
 Proof.
   split; [ rewrite reply_saddr_undone | rewrite reply_daddr_untouched ]; discriminate.
 Qed.
@@ -137,9 +137,10 @@ Qed.
 (* Soundness corner: a reply-direction packet of a flow with NO established mapping
    ([e_nat = None]) is NOT translated at all (the kernel establishes the tuple only
    on the original-direction packet; an un-confirmed reply has no tuple to invert). *)
-Definition reply_no_mapping : packet := mkpkt env0 [8;8;8;8] [1;1;1;1] false.
+Definition reply_no_mapping : packet := mkpkt [8;8;8;8] [1;1;1;1] false.
 Theorem reply_unestablished_not_natted :
-  out_saddr reply_no_mapping = [8;8;8;8] /\ out_daddr reply_no_mapping = [1;1;1;1].
+  out_saddr env0 reply_no_mapping = [8;8;8;8]
+  /\ out_daddr env0 reply_no_mapping = [1;1;1;1].
 Proof. split; vm_compute; reflexivity. Qed.
 
 (** ── PORT-NAT REPLY ────────────────────────────────────────────────────────────
@@ -170,8 +171,8 @@ Definition dnat_port_chain : chain := {| c_policy := Drop; c_rules := [ dnat_por
 
 (* Build a TCP-bearing packet: a transport header with a real sport/dport
    ([sport ++ dport ++ payload]).  pkt_have_l4 is irrelevant to the port splice. *)
-Definition mkpkt_p (e : env) (saddr daddr sport dport : data) (dir : bool) : packet :=
-  {| pkt_env := e; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
+Definition mkpkt_p (saddr daddr sport dport : data) (dir : bool) : packet :=
+  {| pkt_meta := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := [];
      pkt_nh := [69;0;0;20; 0;0;0;0; 64;6; 0;0] ++ saddr ++ daddr;
@@ -183,20 +184,21 @@ Definition mkpkt_p (e : env) (saddr daddr sport dport : data) (dir : bool) : pac
      pkt_inner := fun _ _ _ _ => []; pkt_have_l2 := true; pkt_have_l4 := false; pkt_fragoff := 0;
      pkt_flow := [7;7]; pkt_untracked := false; pkt_ctdir_orig := dir; pkt_ct_present := true |}.
 
-Definition out_sport (p : packet) : data :=
-  slice (pkt_th (snd (eval_chain_trace Hprerouting dnat_port_chain p))) 0 2.
-Definition out_dport (p : packet) : data :=
-  slice (pkt_th (snd (eval_chain_trace Hprerouting dnat_port_chain p))) 2 2.
+Definition out_sport (e : env) (p : packet) : data :=
+  slice (pkt_th (snd (snd (eval_chain_trace Hprerouting dnat_port_chain e p)))) 0 2.
+Definition out_dport (e : env) (p : packet) : data :=
+  slice (pkt_th (snd (snd (eval_chain_trace Hprerouting dnat_port_chain e p)))) 2 2.
 
 (* FORWARD packet: client (sport 4444) -> router:80 ([0;80]).  dnat to 8.8.8.8:8080
    rewrites the DESTINATION port 80 -> 8080 ([31;144]). *)
-Definition fwd_p : packet := mkpkt_p env0 [1;1;1;1] [9;9;9;9] [17;92] [0;80] true.
-Lemma fwd_dport_rewritten : out_dport fwd_p = [31;144].   (* 8080 big-endian *)
+Definition fwd_p : packet := mkpkt_p [1;1;1;1] [9;9;9;9] [17;92] [0;80] true.
+Lemma fwd_dport_rewritten : out_dport env0 fwd_p = [31;144].   (* 8080 big-endian *)
 Proof. vm_compute. reflexivity. Qed.
 
 (* The env after the forward packet records the ORIGINAL dest port ([0;80]) as the
    4th tuple component, alongside the new port 8080. *)
-Definition env_after_fwd_p : env := pkt_env (snd (eval_chain_trace Hprerouting dnat_port_chain fwd_p)).
+Definition env_after_fwd_p : env :=
+  fst (snd (eval_chain_trace Hprerouting dnat_port_chain env0 fwd_p)).
 Lemma mapping_port_stored :
   e_nat env_after_fwd_p [7;7]
     = Some (Some [9;9;9;9], Some [8;8;8;8], Some 8080, Some [0;80]).
@@ -206,19 +208,19 @@ Proof. vm_compute. reflexivity. Qed.
    is the dnat target 8080 ([31;144]).  The kernel un-rewrites it back to the
    original 80.  Carries the env established by the forward packet. *)
 Definition reply_p : packet :=
-  mkpkt_p env_after_fwd_p [8;8;8;8] [1;1;1;1] [31;144] [17;92] false.
+  mkpkt_p [8;8;8;8] [1;1;1;1] [31;144] [17;92] false.
 
 (* The reply's SOURCE port is un-DNAT'd from 8080 back to the original 80
    ([0;80]) — the inverse port manip. *)
-Theorem reply_sport_undone : out_sport reply_p = [0;80].
+Theorem reply_sport_undone : out_sport env_after_fwd_p reply_p = [0;80].
 Proof. vm_compute. reflexivity. Qed.
 
 (* Dually: the reply's source port is NOT stuck at the dnat target 8080 (a
    direction-blind model would leave it there byte-for-byte). *)
-Theorem reply_sport_not_target : out_sport reply_p <> [31;144].
+Theorem reply_sport_not_target : out_sport env_after_fwd_p reply_p <> [31;144].
 Proof. rewrite reply_sport_undone. discriminate. Qed.
 
 (* A dnat never rewrites the reply's DESTINATION port: it is left untouched
    ([17;92], the client's port). *)
-Theorem reply_dport_untouched : out_dport reply_p = [17;92].
+Theorem reply_dport_untouched : out_dport env_after_fwd_p reply_p = [17;92].
 Proof. vm_compute. reflexivity. Qed.

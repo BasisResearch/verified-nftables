@@ -5,12 +5,12 @@
     [Ruleset_Verified.v]) repeat two shapes:
 
       (a) "chain C, run on packet p, gives verdict V" — i.e.
-          [eval_table fuel cs C p = V], either for a fully CONCRETE p (closed by
+          [eval_table fuel cs C e p = V], either for a fully CONCRETE p (closed by
           [vm_compute]) or for a SYMBOLIC p constrained by field hypotheses
           (closed by the shared [Eval_Fw.eval_fw_core] rewrite/cbn engine after
           unfolding the chain definitions); and
       (b) "field F of p equals the typed value V" — i.e.
-          [field_value F p = encode V], the hypotheses those theorems take.
+          [field_value F e p = encode V], the hypotheses those theorems take.
 
     This file gives those shapes NAMES (the predicates [accepts]/[drops]/[yields]
     /[field_is]/[match_fires]/[match_blocks]), readable NOTATIONS, and TACTICS
@@ -43,25 +43,25 @@ Open Scope string_scope.
     The predicates therefore carry an [nft_] prefix; the notations render them
     keyword-free. *)
 Definition nft_yields (fuel : nat) (cs : list (string * chain)) (c : chain)
-                      (p : packet) (v : verdict) : Prop :=
-  eval_table fuel cs c p = v.
+                      (e : env) (p : packet) (v : verdict) : Prop :=
+  eval_table fuel cs c e p = v.
 
 Definition nft_accepts (fuel : nat) (cs : list (string * chain)) (c : chain)
-                       (p : packet) : Prop := nft_yields fuel cs c p Accept.
+                       (e : env) (p : packet) : Prop := nft_yields fuel cs c e p Accept.
 Definition nft_drops (fuel : nat) (cs : list (string * chain)) (c : chain)
-                     (p : packet) : Prop := nft_yields fuel cs c p Drop.
+                     (e : env) (p : packet) : Prop := nft_yields fuel cs c e p Drop.
 
 (** "field [f] of packet [p] holds the register bytes of typed value [v]" —
     routes the literal through the central [Nftval.encode] (validity-checked
     datatypes) instead of a bare byte list. *)
-Definition nft_field_is (f : field) (p : packet) (v : nftval) : Prop :=
-  field_value f p = encode v.
+Definition nft_field_is (f : field) (e : env) (p : packet) (v : nftval) : Prop :=
+  field_value f e p = encode v.
 
 (** A single match condition fires / does not fire on [p]. *)
-Definition nft_match_fires  (m : matchcond) (p : packet) : Prop :=
-  eval_matchcond_body m p = true.
-Definition nft_match_blocks (m : matchcond) (p : packet) : Prop :=
-  eval_matchcond_body m p = false.
+Definition nft_match_fires  (m : matchcond) (e : env) (p : packet) : Prop :=
+  eval_matchcond_body m e p = true.
+Definition nft_match_blocks (m : matchcond) (e : env) (p : packet) : Prop :=
+  eval_matchcond_body m e p = false.
 
 (* ------------------------------------------------------------------ *)
 (** ** Soundness anchors: each predicate is its underlying statement.
@@ -69,28 +69,28 @@ Definition nft_match_blocks (m : matchcond) (p : packet) : Prop :=
     These are the witnesses the reviewer checks — every predicate unfolds to the
     real [eval_table] / [field_value] / [eval_matchcond_body] proposition, so the
     readable layer cannot smuggle in a weaker claim. *)
-Lemma nft_yields_spec : forall fuel cs c p v,
-  nft_yields fuel cs c p v <-> eval_table fuel cs c p = v.
+Lemma nft_yields_spec : forall fuel cs c e p v,
+  nft_yields fuel cs c e p v <-> eval_table fuel cs c e p = v.
 Proof. intros. unfold nft_yields. reflexivity. Qed.
 
-Lemma nft_accepts_spec : forall fuel cs c p,
-  nft_accepts fuel cs c p <-> eval_table fuel cs c p = Accept.
+Lemma nft_accepts_spec : forall fuel cs c e p,
+  nft_accepts fuel cs c e p <-> eval_table fuel cs c e p = Accept.
 Proof. intros. unfold nft_accepts, nft_yields. reflexivity. Qed.
 
-Lemma nft_drops_spec : forall fuel cs c p,
-  nft_drops fuel cs c p <-> eval_table fuel cs c p = Drop.
+Lemma nft_drops_spec : forall fuel cs c e p,
+  nft_drops fuel cs c e p <-> eval_table fuel cs c e p = Drop.
 Proof. intros. unfold nft_drops, nft_yields. reflexivity. Qed.
 
-Lemma nft_field_is_spec : forall f p v,
-  nft_field_is f p v <-> field_value f p = encode v.
+Lemma nft_field_is_spec : forall f e p v,
+  nft_field_is f e p v <-> field_value f e p = encode v.
 Proof. intros. unfold nft_field_is. reflexivity. Qed.
 
-Lemma nft_match_fires_spec : forall m p,
-  nft_match_fires m p <-> eval_matchcond_body m p = true.
+Lemma nft_match_fires_spec : forall m e p,
+  nft_match_fires m e p <-> eval_matchcond_body m e p = true.
 Proof. intros. unfold nft_match_fires. reflexivity. Qed.
 
-Lemma nft_match_blocks_spec : forall m p,
-  nft_match_blocks m p <-> eval_matchcond_body m p = false.
+Lemma nft_match_blocks_spec : forall m e p,
+  nft_match_blocks m e p <-> eval_matchcond_body m e p = false.
 Proof. intros. unfold nft_match_blocks. reflexivity. Qed.
 
 (* ================================================================== *)
@@ -103,16 +103,19 @@ Delimit Scope nft_scope with nft.
     [fuel]".  [cs]/[fuel] are usually module-level definitions
     ([vmfilter_chains]/[vm_fuel], [firewall_chains]/[fw_fuel]), so this reads e.g.
     [vmfilter_output drops p in vmfilter_chains fuel vm_fuel]. *)
-Notation "c 'accepts' p 'under' cs 'budget' fuel" :=
-  (nft_accepts fuel cs c p) (at level 70, p at next level) : nft_scope.
-Notation "c 'denies' p 'under' cs 'budget' fuel" :=
-  (nft_drops fuel cs c p) (at level 70, p at next level) : nft_scope.
-Notation "c 'gives' v 'on' p 'under' cs 'budget' fuel" :=
-  (nft_yields fuel cs c p v) (at level 70, p at next level) : nft_scope.
+Notation "c 'accepts' p 'in' e 'under' cs 'budget' fuel" :=
+  (nft_accepts fuel cs c e p) (at level 70, p at next level, e at next level) : nft_scope.
+Notation "c 'denies' p 'in' e 'under' cs 'budget' fuel" :=
+  (nft_drops fuel cs c e p) (at level 70, p at next level, e at next level) : nft_scope.
+Notation "c 'gives' v 'on' p 'in' e 'under' cs 'budget' fuel" :=
+  (nft_yields fuel cs c e p v) (at level 70, p at next level, e at next level) : nft_scope.
 
-(** "field [f] of [p] is [v]" — the typed field-value hypothesis. *)
-Notation "'fieldof' f p '===' v" :=
-  (nft_field_is f p v) (at level 70, f at level 0, p at level 0, v at next level) : nft_scope.
+(** "field [f] of [p] (under shared env [e]) is [v]" — the typed field-value
+    hypothesis.  The env matters only for env-reading fields (ct/rt/fib/numgen);
+    a payload/meta field reads the same bytes under every [e]. *)
+Notation "'fieldof' f e p '===' v" :=
+  (nft_field_is f e p v)
+    (at level 70, f at level 0, e at level 0, p at level 0, v at next level) : nft_scope.
 
 Open Scope nft_scope.
 
@@ -122,30 +125,30 @@ Open Scope nft_scope.
       rule-by-rule).  [eval_rules_j] is [Global Opaque] (Eval_Fw.v); these step it. *)
 
 (** A rule that LOADS, APPLIES, and yields a terminal [Drop] decides the chain. *)
-Lemma rule_fires_drop : forall f cs r rest p,
-  rule_loadable r p = true -> rule_applies r p = true -> outcome r p = Some Drop ->
-  eval_rules_j (S f) cs (r :: rest) p = Some Drop.
+Lemma rule_fires_drop : forall f cs r rest e p,
+  rule_loadable r e p = true -> rule_applies r e p = true -> outcome r e p = Some Drop ->
+  eval_rules_j (S f) cs (r :: rest) e p = Some Drop.
 Proof.
-  intros f cs r rest p Hld Hap Hout.
+  intros f cs r rest e p Hld Hap Hout.
   rewrite erj_cons, Hld, Hap, Hout. reflexivity.
 Qed.
 
 (** Likewise for a terminal [Accept]. *)
-Lemma rule_fires_accept : forall f cs r rest p,
-  rule_loadable r p = true -> rule_applies r p = true -> outcome r p = Some Accept ->
-  eval_rules_j (S f) cs (r :: rest) p = Some Accept.
+Lemma rule_fires_accept : forall f cs r rest e p,
+  rule_loadable r e p = true -> rule_applies r e p = true -> outcome r e p = Some Accept ->
+  eval_rules_j (S f) cs (r :: rest) e p = Some Accept.
 Proof.
-  intros f cs r rest p Hld Hap Hout.
+  intros f cs r rest e p Hld Hap Hout.
   rewrite erj_cons, Hld, Hap, Hout. reflexivity.
 Qed.
 
 (** A rule whose match does NOT apply is skipped (the chain continues at [rest]),
     regardless of loadability. *)
-Lemma rule_skips : forall f cs r rest p,
-  rule_applies r p = false ->
-  eval_rules_j (S f) cs (r :: rest) p = eval_rules_j f cs rest p.
+Lemma rule_skips : forall f cs r rest e p,
+  rule_applies r e p = false ->
+  eval_rules_j (S f) cs (r :: rest) e p = eval_rules_j f cs rest e p.
 Proof.
-  intros f cs r rest p Hap.
+  intros f cs r rest e p Hap.
   rewrite erj_cons, Hap, Bool.andb_false_r. reflexivity.
 Qed.
 
@@ -173,7 +176,7 @@ Ltac nft_decide :=
   try (vm_compute; discriminate).
 
 (** [nft_eval Hpe]: discharge a SYMBOLIC configuration goal — packet constrained
-    only by [pkt_env p = <env>] ([Hpe]) and [field_value]/[read_payload_ok]
+    only by [e = <env>] ([Hpe]) and [field_value]/[read_payload_ok]
     hypotheses.  Unfolds the predicate, [autounfold]s the registered chains, then
     runs the shared [Eval_Fw.eval_fw_core] rewrite/cbn engine. *)
 Ltac nft_eval Hpe :=
@@ -215,39 +218,39 @@ Ltac nft_field := nft_unfold; vm_compute; reflexivity.
 
 (** An [MEq] match fires iff the prefix equation holds ([MEq] is a prefix
     compare: [Semantics.eval_matchcond_body]). *)
-Lemma nft_match_MEq_iff : forall f v p,
-  nft_match_fires (MEq f v) p
-  <-> firstn (List.length v) (field_value f p) = v.
+Lemma nft_match_MEq_iff : forall f v e p,
+  nft_match_fires (MEq f v) e p
+  <-> firstn (List.length v) (field_value f e p) = v.
 Proof.
-  intros f v p. unfold nft_match_fires. cbn [eval_matchcond_body].
+  intros f v e p. unfold nft_match_fires. cbn [eval_matchcond_body].
   apply data_eqb_true_iff.
 Qed.
 
 (** A shorter payload read at the same offset is a [firstn] of a longer one
     (both are [firstn]s of the same [skipn]). *)
-Lemma nft_payload_prefix : forall b off k w p, k <= w ->
-  field_value (FPayload b off k) p = firstn k (field_value (FPayload b off w) p).
+Lemma nft_payload_prefix : forall b off k w e p, k <= w ->
+  field_value (FPayload b off k) e p = firstn k (field_value (FPayload b off w) e p).
 Proof.
-  intros b off k w p Hkw. unfold field_value. cbn [field_load do_load].
+  intros b off k w e p Hkw. unfold field_value. cbn [field_load do_load].
   destruct b; unfold read_payload, slice;
     rewrite firstn_firstn, Nat.min_l by lia; reflexivity.
 Qed.
 
 (** Address instances: [FIp4Saddr]/[FIp4Daddr] are the 4-byte payload reads at
     network offsets 12/16, so their k-byte prefix fields are [firstn k] of them. *)
-Lemma nft_saddr_prefix : forall k p, k <= 4 ->
-  field_value (FPayload PNetwork 12 k) p = firstn k (field_value FIp4Saddr p).
+Lemma nft_saddr_prefix : forall k e p, k <= 4 ->
+  field_value (FPayload PNetwork 12 k) e p = firstn k (field_value FIp4Saddr e p).
 Proof.
-  intros k p Hk.
-  change (field_value FIp4Saddr p) with (field_value (FPayload PNetwork 12 4) p).
+  intros k e p Hk.
+  change (field_value FIp4Saddr e p) with (field_value (FPayload PNetwork 12 4) e p).
   now apply nft_payload_prefix.
 Qed.
 
-Lemma nft_daddr_prefix : forall k p, k <= 4 ->
-  field_value (FPayload PNetwork 16 k) p = firstn k (field_value FIp4Daddr p).
+Lemma nft_daddr_prefix : forall k e p, k <= 4 ->
+  field_value (FPayload PNetwork 16 k) e p = firstn k (field_value FIp4Daddr e p).
 Proof.
-  intros k p Hk.
-  change (field_value FIp4Daddr p) with (field_value (FPayload PNetwork 16 4) p).
+  intros k e p Hk.
+  change (field_value FIp4Daddr e p) with (field_value (FPayload PNetwork 16 4) e p).
   now apply nft_payload_prefix.
 Qed.
 
@@ -281,31 +284,31 @@ Qed.
 
 (** A one-rule chain with Accept policy drops [p] IFF its rule fires (given the
     rule loads on [p] and its outcome is a terminal [Drop]). *)
-Lemma nft_single_rule_drop_iff : forall fuel cs r p,
-  rule_loadable r p = true ->
-  outcome r p = Some Drop ->
-  (nft_drops (S fuel) cs {| c_policy := Accept; c_rules := [r] |} p
-   <-> rule_applies r p = true).
+Lemma nft_single_rule_drop_iff : forall fuel cs r e p,
+  rule_loadable r e p = true ->
+  outcome r e p = Some Drop ->
+  (nft_drops (S fuel) cs {| c_policy := Accept; c_rules := [r] |} e p
+   <-> rule_applies r e p = true).
 Proof.
-  intros fuel cs r p Hld Hout.
+  intros fuel cs r e p Hld Hout.
   unfold nft_drops, nft_yields, eval_table. cbn [c_rules c_policy].
   rewrite erj_cons, Hld, Hout. cbn [andb].
-  destruct (rule_applies r p).
+  destruct (rule_applies r e p).
   - split; reflexivity.
   - rewrite erj_empty. split; discriminate.
 Qed.
 
 (** …and accepts [p] IFF its rule does NOT fire. *)
-Lemma nft_single_rule_accept_iff : forall fuel cs r p,
-  rule_loadable r p = true ->
-  outcome r p = Some Drop ->
-  (nft_accepts (S fuel) cs {| c_policy := Accept; c_rules := [r] |} p
-   <-> rule_applies r p = false).
+Lemma nft_single_rule_accept_iff : forall fuel cs r e p,
+  rule_loadable r e p = true ->
+  outcome r e p = Some Drop ->
+  (nft_accepts (S fuel) cs {| c_policy := Accept; c_rules := [r] |} e p
+   <-> rule_applies r e p = false).
 Proof.
-  intros fuel cs r p Hld Hout.
+  intros fuel cs r e p Hld Hout.
   unfold nft_accepts, nft_yields, eval_table. cbn [c_rules c_policy].
   rewrite erj_cons, Hld, Hout. cbn [andb].
-  destruct (rule_applies r p).
+  destruct (rule_applies r e p).
   - split; discriminate.
   - rewrite erj_empty. split; reflexivity.
 Qed.
@@ -314,17 +317,17 @@ Qed.
     "payload-prefix match => Drop" (exactly what `ip saddr a.b.c.0/24 drop`
     parses to) drops [p] IFF the prefix equation holds — and accepts [p] IFF it
     does not.  The only packet hypothesis is that the read is in bounds. *)
-Lemma nft_prefix_chain_drop_iff : forall fuel cs b off len v p,
+Lemma nft_prefix_chain_drop_iff : forall fuel cs b off len v e p,
   read_payload_ok b off len p = true ->
   (nft_drops (S fuel) cs
      {| c_policy := Accept;
         c_rules := [{| r_body := [BMatch (MEq (FPayload b off len) v)];
                        r_verdict := Drop; r_vmap := None; r_nat := None;
                        r_tproxy := None; r_fwd := None; r_queue := None;
-                       r_after := [] |}] |} p
-   <-> firstn (List.length v) (field_value (FPayload b off len) p) = v).
+                       r_after := [] |}] |} e p
+   <-> firstn (List.length v) (field_value (FPayload b off len) e p) = v).
 Proof.
-  intros fuel cs b off len v p Hok.
+  intros fuel cs b off len v e p Hok.
   eapply iff_trans.
   { apply nft_single_rule_drop_iff.
     - unfold rule_loadable. cbn. now rewrite Hok.
@@ -336,17 +339,17 @@ Proof.
   apply data_eqb_true_iff.
 Qed.
 
-Lemma nft_prefix_chain_accept_iff : forall fuel cs b off len v p,
+Lemma nft_prefix_chain_accept_iff : forall fuel cs b off len v e p,
   read_payload_ok b off len p = true ->
   (nft_accepts (S fuel) cs
      {| c_policy := Accept;
         c_rules := [{| r_body := [BMatch (MEq (FPayload b off len) v)];
                        r_verdict := Drop; r_vmap := None; r_nat := None;
                        r_tproxy := None; r_fwd := None; r_queue := None;
-                       r_after := [] |}] |} p
-   <-> firstn (List.length v) (field_value (FPayload b off len) p) <> v).
+                       r_after := [] |}] |} e p
+   <-> firstn (List.length v) (field_value (FPayload b off len) e p) <> v).
 Proof.
-  intros fuel cs b off len v p Hok.
+  intros fuel cs b off len v e p Hok.
   eapply iff_trans.
   { apply nft_single_rule_accept_iff.
     - unfold rule_loadable. cbn. now rewrite Hok.

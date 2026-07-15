@@ -23,13 +23,13 @@ Open Scope string_scope.
 (** ** The readable layer is DEFINITIONALLY the raw statement. *)
 
 Example demo_c_accepts_def :
-  (global_inbound accepts pkt_lan_dns under global_chains budget in_fuel)
-  = (eval_table in_fuel global_chains global_inbound pkt_lan_dns = Accept).
+  (global_inbound accepts pkt_lan_dns in env_lan under global_chains budget in_fuel)
+  = (eval_table in_fuel global_chains global_inbound env_lan pkt_lan_dns = Accept).
 Proof. reflexivity. Qed.
 
 Example demo_c_denies_def :
-  (global_inbound denies pkt_lan_smtp under global_chains budget in_fuel)
-  = (eval_table in_fuel global_chains global_inbound pkt_lan_smtp = Drop).
+  (global_inbound denies pkt_lan_smtp in env_lan under global_chains budget in_fuel)
+  = (eval_table in_fuel global_chains global_inbound env_lan pkt_lan_smtp = Drop).
 Proof. reflexivity. Qed.
 
 (* ------------------------------------------------------------------ *)
@@ -37,13 +37,13 @@ Proof. reflexivity. Qed.
 
 (** dns over udp (a listed service) is accepted. *)
 Theorem demo_dns_accepted :
-  global_inbound accepts pkt_lan_dns under global_chains budget in_fuel.
+  global_inbound accepts pkt_lan_dns in env_lan under global_chains budget in_fuel.
 Proof. nft_decide. Qed.
 Print Assumptions demo_dns_accepted.
 
 (** smtp (unlisted, not icmp) is dropped — the LAN-exposure security crux. *)
 Theorem demo_smtp_denied :
-  global_inbound denies pkt_lan_smtp under global_chains budget in_fuel.
+  global_inbound denies pkt_lan_smtp in env_lan under global_chains budget in_fuel.
 Proof. nft_decide. Qed.
 Print Assumptions demo_smtp_denied.
 
@@ -54,11 +54,11 @@ Print Assumptions demo_smtp_denied.
     close it. *)
 
 Theorem demo_smtp_not_accepted :
-  ~ (global_inbound accepts pkt_lan_smtp under global_chains budget in_fuel).
+  ~ (global_inbound accepts pkt_lan_smtp in env_lan under global_chains budget in_fuel).
 Proof. intro H. nft_unfold. vm_compute in H. discriminate. Qed.
 
 (** [nft_decide] does NOT close the false goal: the wrapped attempt fails
     (leaving the goal open is a *non*-completion, so [now nft_decide] errors and
     [Fail] succeeds).  This is the anti-vacuity witness the review demands. *)
-Goal global_inbound accepts pkt_lan_smtp under global_chains budget in_fuel.
+Goal global_inbound accepts pkt_lan_smtp in env_lan under global_chains budget in_fuel.
 Proof. Fail now nft_decide. Abort.

@@ -39,14 +39,13 @@ let verdict_str = function
 (* ---------- concrete packet construction (mirrors semtest.ml) ---------- *)
 
 let dummy0 _ = []
-(* Conntrack keys are now read from the SHARED, flow-keyed table [e_ct] at the
-   packet's flow (kernel nf_ct_get(skb) selects the entry by tuple), NOT a free
-   per-packet [pkt_ct] field.  So a test that wants `ct state X` on this packet must
-   record X in the env's [e_ct] at this packet's [flow]; [mk_pkt] does that by
-   wrapping the env's [e_ct] with an override at [flow].  ([pkt_ct] is retained on
-   the record only as dead state for backward source-compat; nothing reads it.) *)
+(* Conntrack keys are read from the SHARED, flow-keyed table [e_ct] at the
+   packet's flow (kernel nf_ct_get(skb) selects the entry by tuple).  So a test
+   that wants `ct state X` on this packet must record X in the env's [e_ct] at
+   this packet's [flow]; [mk_pkt] does that by wrapping the env's [e_ct] with an
+   override at [flow]. *)
 let mk_pkt ~env ?ct ?(protocol = []) ?(l4proto = []) ?(nfproto = [])
-           ?(iifname = []) ?(th = []) ?(flow = []) () : Packet.packet =
+           ?(iifname = []) ?(th = []) ?(flow = []) () : Packet.env * Packet.packet =
   (* Only override the env's flow-keyed [e_ct] when a per-packet ct map was
      explicitly supplied (the legacy `~ct:(ct_state ...)` idiom); otherwise leave
      the caller's env [e_ct] intact (some tests seed [e_ct] directly). *)
@@ -56,13 +55,12 @@ let mk_pkt ~env ?ct ?(protocol = []) ?(l4proto = []) ?(nfproto = [])
     | Some ct ->
         { env with Packet.e_ct =
             (fun fl k -> if fl = flow then ct k else env.Packet.e_ct fl k) } in
-  let ct = match ct with None -> dummy0 | Some ct -> ct in
-  { Packet.pkt_env = env;
-    pkt_meta = (fun k -> match k with
+  (env,
+  { Packet.pkt_meta = (fun k -> match k with
       | Packet.MKprotocol -> protocol | Packet.MKl4proto -> l4proto
       | Packet.MKnfproto -> nfproto
       | Packet.MKiifname -> iifname | _ -> []);
-    pkt_ct = ct; pkt_sock = dummy0;
+    pkt_sock = dummy0;
     pkt_eh = (fun _ _ _ _ _ -> []);
     pkt_lh = []; pkt_nh = []; pkt_th = th; pkt_ih = []; pkt_tnl = [];
     pkt_fibkey = (fun _ -> []);
@@ -74,7 +72,25 @@ let mk_pkt ~env ?ct ?(protocol = []) ?(l4proto = []) ?(nfproto = [])
        payload loads succeed; transport-reading tests pad [th] to its read width *)
     pkt_have_l2 = true;
     pkt_have_l4 = true; pkt_fragoff = 0; pkt_flow = flow; pkt_untracked = false;
-    pkt_ctdir_orig = true; pkt_ct_present = true }
+    pkt_ctdir_orig = true; pkt_ct_present = true })
+
+(* A test packet-in-context is an (env, packet) PAIR: the shared mutable world
+   plus one skb.  Every evaluator takes them as SEPARATE arguments
+   (eval : ... -> env -> packet -> ...); these helpers apply one to a pair. *)
+let ev_mc m (e, p) = Semantics.eval_matchcond m e p
+let ev_chain c (e, p) = Semantics.eval_chain c e p
+let ev_chain_mut c (e, p) = Semantics.eval_chain_mut c e p
+let ev_chain_mut_env c (e, p) = Semantics.eval_chain_mut_env c e p
+let ev_chain_trace h c (e, p) = Semantics.eval_chain_trace h c e p
+let ev_table fuel cs c (e, p) = Semantics.eval_table fuel cs c e p
+let run_chain_vm prog pol (e, p) = Semantics.run_chain prog pol e p
+let rule_applies_on r (e, p) = Semantics.rule_applies r e p
+let apply_nat_on h r (e, p) = Semantics.apply_nat h r e p
+let dsl_writes_on r (e, p) = Semantics.dsl_writes r e p
+let fv f (e, p) = Syntax.field_value f e p
+let dload l (e, p) = Syntax.do_load l e p
+(* update the PACKET half of a pair (record-update on the skb) *)
+let wire f (e, p) = (e, f p)
 
 (* wire constants, matching Example_Ruleset.v *)
 let cts_invalid = [0;0;0;1] and cts_established = [0;0;0;2]
@@ -110,7 +126,7 @@ let check_ruleset_nft () =
   let inbound = Nft_lower.find_chain parsed ~table:"firewall" ~chain:"inbound" in
   let forward = Nft_lower.find_chain parsed ~table:"firewall" ~chain:"forward" in
   let fuel = 8 in
-  let run c p = Semantics.eval_table fuel chains c p in
+  let run c ep = ev_table fuel chains c ep in
   let want name c p expected =
     let got = run c p in
     Printf.printf "    %-26s -> %-8s (want %s)\n" name (verdict_str got) (verdict_str expected);
@@ -149,9 +165,9 @@ let check_ruleset_nft () =
       c_rules = [ { Syntax.r_body = [ Syntax.BMatch (Syntax.MNeq (Syntax.FThDport, [0;22])) ];
                     r_verdict = Verdict.Drop; r_vmap = None; r_nat = None;
                     r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } ] } in
-  let bad_pkt = { (mk_pkt ~env ()) with Packet.pkt_have_l4 = false; pkt_th = [] } in
+  let bad_pkt = wire (fun p -> { p with Packet.pkt_have_l4 = false; pkt_th = [] }) (mk_pkt ~env ()) in
   want "nft_break: no-L4 tcp dport!=22 -> accept" dropneq_chain bad_pkt Verdict.Accept;
-  let frag_pkt = { (mk_pkt ~env ()) with Packet.pkt_fragoff = 8; pkt_th = [9;9;9;9] } in
+  let frag_pkt = wire (fun p -> { p with Packet.pkt_fragoff = 8; pkt_th = [9;9;9;9] }) (mk_pkt ~env ()) in
   want "nft_break: fragment tcp dport!=22 -> accept" dropneq_chain frag_pkt Verdict.Accept;
   Printf.printf "\n"
 
@@ -284,12 +300,14 @@ let check_live_nft () =
    It is an IPv4 ethertype frame (meta protocol == ETH_P_IP 0x0800), matching the
    `meta protocol == 0x0800` dependency nft prepends before an `ip <field>` match
    in a bridge/netdev L2 chain (see nft_lower ensure_dep1 / arp+ip L2 guards). *)
-let mk_bridge ~env ~obrname ~oifname ~daddr : Packet.packet =
-  { (mk_pkt ~env ()) with
-    Packet.pkt_meta = (fun k -> match k with
-      | Packet.MKbri_oifname -> obrname | Packet.MKoifname -> oifname
-      | Packet.MKprotocol -> [0x08; 0x00] | _ -> []);
-    pkt_nh = (Stdlib.List.init 16 (fun _ -> 0)) @ daddr }
+let mk_bridge ~env ~obrname ~oifname ~daddr : Packet.env * Packet.packet =
+  wire (fun p ->
+    { p with
+      Packet.pkt_meta = (fun k -> match k with
+        | Packet.MKbri_oifname -> obrname | Packet.MKoifname -> oifname
+        | Packet.MKprotocol -> [0x08; 0x00] | _ -> []);
+      pkt_nh = (Stdlib.List.init 16 (fun _ -> 0)) @ daddr })
+    (mk_pkt ~env ())
 
 let check_optiplex_antispoof () =
   Printf.printf "=== (D) optiplex.nft anti-spoofing vs Optiplex_Antispoof.v ===\n";
@@ -298,7 +316,7 @@ let check_optiplex_antispoof () =
   let chains = Nft_lower.chains_of parsed ~table:"vmfilter" in
   let output = Nft_lower.find_chain parsed ~table:"vmfilter" ~chain:"output" in
   let run ~obrname ~oifname ~daddr =
-    Semantics.eval_table 4 chains output
+    ev_table 4 chains output
       (mk_bridge ~env ~obrname:(ifname16 obrname) ~oifname:(ifname16 oifname)
          ~daddr) in
   let ip x = [192;168;51;x] in
@@ -342,19 +360,21 @@ let ifaddrs_of (v : int list) : Packet.ifaddr list =
 (* a streaming packet (dport 48010): iifname=home, fib daddr type=local (via a
    route returning type=2), tcp.  Not the 3389 RDP port — so it flows PAST
    prerouting rule 1 and is marked by rule 2. *)
-let mk_pkt_dport ~env ~dport : Packet.packet =
+let mk_pkt_dport ~env ~dport : Packet.env * Packet.packet =
   let env_fib =
     { env with Packet.e_routes =
         [ (([0], [255]),
            (fun (r : Packet.fib_result) ->
               match r with Packet.FRtype -> [2;0;0;0] | _ -> [])) ] } in
-  { (mk_pkt ~env:env_fib ()) with
-    Packet.pkt_meta = (fun k -> match k with
-      | Packet.MKiifname -> ifname16 "home" | Packet.MKl4proto -> [6] | _ -> []);
-    pkt_fibkey = (fun _ -> [0]);
-    pkt_th = [0;0] @ dport }
+  wire (fun p ->
+    { p with
+      Packet.pkt_meta = (fun k -> match k with
+        | Packet.MKiifname -> ifname16 "home" | Packet.MKl4proto -> [6] | _ -> []);
+      pkt_fibkey = (fun _ -> [0]);
+      pkt_th = [0;0] @ dport })
+    (mk_pkt ~env:env_fib ())
 
-let mark_of p = Syntax.field_value Syntax.FMetaMark p
+let mark_of ep = fv Syntax.FMetaMark ep
 
 let check_optiplex_mark () =
   Printf.printf "=== (E) optiplex.nft firewall mark vs Optiplex_Mark.v ===\n";
@@ -366,39 +386,41 @@ let check_optiplex_mark () =
   let p_in = mk_pkt_dport ~env ~dport:[187;138] in   (* dport 48010 *)
   Printf.printf "    packet in:  mark=%s\n" (let m = mark_of p_in in if m=[] then "(unset)" else show m);
   (* traverse the WHOLE prerouting chain; observe the verdict AND the packet out *)
-  let (v_pre, p_out) = Semantics.eval_chain_trace Semantics.Hprerouting prerouting p_in in
+  let (v_pre, p_out) = ev_chain_trace Semantics.Hprerouting prerouting p_in in
   Printf.printf "    prerouting: verdict=%s, packet out mark=%s\n"
     (verdict_str v_pre) (show (mark_of p_out));
   check "prerouting accepts" (v_pre = Verdict.Accept);
   check "prerouting marks the packet 0x99" (data_eq (mark_of p_out) mark99);
   (* carry that packet to postrouting; the mark drives masquerade (accept) *)
-  let v_post = Semantics.eval_chain_mut postrouting p_out in
+  let v_post = ev_chain_mut postrouting p_out in
   Printf.printf "    postrouting (on marked packet): verdict=%s\n" (verdict_str v_post);
   check "postrouting accepts the marked packet" (v_post = Verdict.Accept);
   (* and the masquerade rule specifically fires on the marked packet *)
   let post1 = Stdlib.List.nth postrouting.Syntax.c_rules 0 in
-  check "masquerade rule fires on mark" (Semantics.rule_applies post1 p_out = true);
+  check "masquerade rule fires on mark" (rule_applies_on post1 p_out = true);
   (* masquerade SOURCE-NAT: the packet leaving postrouting has its ip saddr
      rewritten to the address of the interface it exits (e_ifaddr oifname). *)
   let eth0 = ifname16 "eth0" and eth0_ip = [203;0;113;5] in   (* TEST-NET-3; 16-byte iface register *)
   let env_if = { env with Packet.e_ifaddrs = (fun n -> ifaddrs_of (if n = eth0 then eth0_ip else [])) } in
   let p_masq =                                             (* marked, exits eth0 *)
-    { (mk_pkt ~env:env_if ()) with
-      Packet.pkt_meta = (fun k -> match k with
-        | Packet.MKmark -> mark99 | Packet.MKoifname -> eth0 | _ -> []);
-      pkt_nh = Stdlib.List.init 20 (fun _ -> 0) } in       (* saddr starts 0.0.0.0 *)
-  let saddr_in  = Syntax.field_value Syntax.FIp4Saddr p_masq in
-  let (_, p_masq_out) = Semantics.eval_chain_trace Semantics.Hpostrouting postrouting p_masq in
-  let saddr_out = Syntax.field_value Syntax.FIp4Saddr p_masq_out in
+    wire (fun p ->
+      { p with
+        Packet.pkt_meta = (fun k -> match k with
+          | Packet.MKmark -> mark99 | Packet.MKoifname -> eth0 | _ -> []);
+        pkt_nh = Stdlib.List.init 20 (fun _ -> 0) })
+      (mk_pkt ~env:env_if ()) in                           (* saddr starts 0.0.0.0 *)
+  let saddr_in  = fv Syntax.FIp4Saddr p_masq in
+  let (_, p_masq_out) = ev_chain_trace Semantics.Hpostrouting postrouting p_masq in
+  let saddr_out = fv Syntax.FIp4Saddr p_masq_out in
   Printf.printf "    masquerade: ip saddr  %s -> %s  (eth0's IP)\n"
     (show saddr_in) (show saddr_out);
   check "masquerade rewrites saddr to exit-iface IP" (data_eq saddr_out eth0_ip);
   (* contrast: an RDP/3389 packet is marked at rule 1; an unmarked packet at
      postrouting does NOT masquerade *)
-  let (_, p_rdp_out) = Semantics.eval_chain_trace Semantics.Hprerouting prerouting (mk_pkt_dport ~env ~dport:[13;61]) in
+  let (_, p_rdp_out) = ev_chain_trace Semantics.Hprerouting prerouting (mk_pkt_dport ~env ~dport:[13;61]) in
   check "RDP/3389 also marked 0x99" (data_eq (mark_of p_rdp_out) mark99);
   check "unmarked packet not masqueraded"
-    (Semantics.rule_applies post1 (mk_pkt ~env ()) = false);
+    (rule_applies_on post1 (mk_pkt ~env ()) = false);
   Printf.printf "\n"
 
 (* (F) dnat DESTINATION-NAT: a parsed `dnat to <ip>` rewrites the packet's IPv4
@@ -421,22 +443,22 @@ let check_dnat_rewrite () =
   check "dnat lowers to a nat_spec (not a bare Accept)" (r0.Syntax.r_nat <> None);
   (* a packet whose destination starts 192.168.0.9 (nh bytes 16..19) *)
   let nh = [0x45;0;0;0; 0;0;0;0; 64;6;0;0; 1;2;3;4; 192;168;0;9] in
-  let p_in = { (mk_pkt ~env ()) with Packet.pkt_nh = nh } in
-  let daddr_in = Syntax.field_value Syntax.FIp4Daddr p_in in
-  let (v, p_out) = Semantics.eval_chain_trace Semantics.Hprerouting prerouting p_in in
-  let daddr_out = Syntax.field_value Syntax.FIp4Daddr p_out in
+  let p_in = wire (fun p -> { p with Packet.pkt_nh = nh }) (mk_pkt ~env ()) in
+  let daddr_in = fv Syntax.FIp4Daddr p_in in
+  let (v, p_out) = ev_chain_trace Semantics.Hprerouting prerouting p_in in
+  let daddr_out = fv Syntax.FIp4Daddr p_out in
   Printf.printf "    dnat: ip daddr  %s -> %s  (target 10.0.0.1)\n"
     (show daddr_in) (show daddr_out);
   check "dnat is a terminal accept" (v = Verdict.Accept);
   check "dnat rewrites ip daddr to the target" (data_eq daddr_out [10;0;0;1]);
   check "dnat does NOT touch ip saddr"
-    (data_eq (Syntax.field_value Syntax.FIp4Saddr p_out) [1;2;3;4]);
+    (data_eq (fv Syntax.FIp4Saddr p_out) [1;2;3;4]);
   (* The IPv4 HEADER CHECKSUM (network bytes 10..11) is NOT left stale: the kernel
      runs csum_replace4(&iph->check, old_daddr, new_daddr) in the same step as the
      address rewrite (nf_nat_proto.c:329-333).  The model now updates it
      incrementally (RFC 1624) via set_nh_addr_ip4/csum_update_field. *)
-  let ipck_in  = Packet.slice p_in.Packet.pkt_nh  10 2 in
-  let ipck_out = Packet.slice p_out.Packet.pkt_nh 10 2 in
+  let ipck_in  = Packet.slice (snd p_in).Packet.pkt_nh  10 2 in
+  let ipck_out = Packet.slice (snd p_out).Packet.pkt_nh 10 2 in
   let ipck_exp = Bytes.csum_update_field ipck_in [192;168;0;9] [10;0;0;1] in
   Printf.printf "    dnat: ip checksum  %s -> %s  (csum_replace4; expected %s)\n"
     (show ipck_in) (show ipck_out) (show ipck_exp);
@@ -464,16 +486,16 @@ let check_dnat_rewrite () =
     (ns.Syntax.nat_extra = Syntax.NXimm (None, Some ([0x1f; 0x90]), None));
   (* a packet with dport=80 in the transport header (bytes 2..3 = [0;80]) *)
   let th = [0;0; 0;80; 0;0;0;0] in
-  let p_in2 = { (mk_pkt ~env:env_p ()) with Packet.pkt_nh = nh; pkt_th = th } in
-  let dport_in = Packet.read_payload Packet.PTransport 2 2 p_in2 in
-  let (_, p_out2) = Semantics.eval_chain_trace Semantics.Hprerouting pre_p p_in2 in
-  let dport_out = Packet.read_payload Packet.PTransport 2 2 p_out2 in
+  let p_in2 = wire (fun p -> { p with Packet.pkt_nh = nh; pkt_th = th }) (mk_pkt ~env:env_p ()) in
+  let dport_in = Packet.read_payload Packet.PTransport 2 2 (snd p_in2) in
+  let (_, p_out2) = ev_chain_trace Semantics.Hprerouting pre_p p_in2 in
+  let dport_out = Packet.read_payload Packet.PTransport 2 2 (snd p_out2) in
   Printf.printf "    dnat:port: th dport  %s -> %s  (target :8080 = 0x1f90)\n"
     (show dport_in) (show dport_out);
   check "dnat to A:PORT rewrites th dport to the big-endian port (8080=0x1f90)"
     (data_eq dport_out [0x1f; 0x90]);
   check "dnat to A:PORT also rewrites ip daddr to the address operand"
-    (data_eq (Syntax.field_value Syntax.FIp4Daddr p_out2) [10;0;0;1]);
+    (data_eq (fv Syntax.FIp4Daddr p_out2) [10;0;0;1]);
   (* (F'') PORT-ONLY `dnat to :PORT`: the kernel sets only the proto register
      (NFTNL_EXPR_NAT_REG_PROTO_MIN), NOT the addr register, so nft_nat_eval
      rewrites ONLY the L4 destination port and leaves the L3 destination ADDRESS
@@ -501,17 +523,17 @@ let check_dnat_rewrite () =
   check "dnat to :PORT has NO address operand (nat_has_addr = false)"
     (Semantics.nat_has_addr nso = false);
   let th_po = [0;0; 0;25; 0;0;0;0] in
-  let p_in3 = { (mk_pkt ~env:env_po ()) with Packet.pkt_nh = nh; pkt_th = th_po } in
-  let daddr_in3 = Syntax.field_value Syntax.FIp4Daddr p_in3 in
-  let (_, p_out3) = Semantics.eval_chain_trace Semantics.Hprerouting pre_po p_in3 in
-  let daddr_out3 = Syntax.field_value Syntax.FIp4Daddr p_out3 in
-  let dport_out3 = Packet.read_payload Packet.PTransport 2 2 p_out3 in
+  let p_in3 = wire (fun p -> { p with Packet.pkt_nh = nh; pkt_th = th_po }) (mk_pkt ~env:env_po ()) in
+  let daddr_in3 = fv Syntax.FIp4Daddr p_in3 in
+  let (_, p_out3) = ev_chain_trace Semantics.Hprerouting pre_po p_in3 in
+  let daddr_out3 = fv Syntax.FIp4Daddr p_out3 in
+  let dport_out3 = Packet.read_payload Packet.PTransport 2 2 (snd p_out3) in
   Printf.printf "    dnat :80: ip daddr  %s -> %s (preserved); th dport -> %s (= 0x0050)\n"
     (show daddr_in3) (show daddr_out3) (show dport_out3);
   check "dnat to :PORT PRESERVES ip daddr (no address rewrite, no header truncation)"
     (data_eq daddr_out3 daddr_in3);
   check "dnat to :PORT preserves the network-header length (no 4-byte deletion)"
-    (Stdlib.List.length p_out3.Packet.pkt_nh = Stdlib.List.length nh);
+    (Stdlib.List.length (snd p_out3).Packet.pkt_nh = Stdlib.List.length nh);
   check "dnat to :PORT rewrites th dport to the big-endian port (80=0x0050)"
     (data_eq dport_out3 [0x00; 0x50]);
   (* (F''') FLOW-STATEFUL NAT: the mapping is established ONCE on the first packet of
@@ -539,24 +561,24 @@ let check_dnat_rewrite () =
   (* a 20-byte IPv4 header with the given source address @12..15 (dst @16..19) *)
   let mk_nh saddr = [0x45;0;0;20; 0;0;0;0; 64;6;0;0] @ saddr @ [9;9;9;9] in
   (* packet 1 of the flow: saddr 1.1.1.1 — establishes + stores the mapping *)
-  let f1 = { (mk_pkt ~env ~flow:flow0 ()) with Packet.pkt_nh = mk_nh [1;1;1;1];
-             pkt_have_l4 = false } in
+  let f1 = wire (fun p -> { p with Packet.pkt_nh = mk_nh [1;1;1;1];
+             pkt_have_l4 = false }) (mk_pkt ~env ~flow:flow0 ()) in
   let (_, f1_out) =
-    Semantics.eval_chain_trace Semantics.Hprerouting dnat_saddr_chain f1 in
-  let d1 = Syntax.field_value Syntax.FIp4Daddr f1_out in
+    ev_chain_trace Semantics.Hprerouting dnat_saddr_chain f1 in
+  let d1 = fv Syntax.FIp4Daddr f1_out in
   check "dnat to ip saddr: packet 1 dnat's dst to its own saddr (1.1.1.1)"
     (data_eq d1 [1;1;1;1]);
   check "the NAT mapping is STORED in the flow-keyed e_nat after packet 1"
-    ((f1_out.Packet.pkt_env).Packet.e_nat flow0
+    ((fst f1_out).Packet.e_nat flow0
        = Some (((Some [9;9;9;9], Some [1;1;1;1]), None), None));
   (* packet 2 of the SAME flow: DIFFERENT saddr 2.2.2.2, threaded through the env
      packet 1 left — it must reuse packet 1's STORED destination (1.1.1.1), NOT its
      own saddr.  This is the property that was UNSOUND (provably divergent) before. *)
-  let f2 = { (mk_pkt ~env:(f1_out.Packet.pkt_env) ~flow:flow0 ())
-             with Packet.pkt_nh = mk_nh [2;2;2;2]; pkt_have_l4 = false } in
+  let f2 = wire (fun p -> { p with Packet.pkt_nh = mk_nh [2;2;2;2]; pkt_have_l4 = false })
+             (mk_pkt ~env:(fst f1_out) ~flow:flow0 ()) in
   let (_, f2_out) =
-    Semantics.eval_chain_trace Semantics.Hprerouting dnat_saddr_chain f2 in
-  let d2 = Syntax.field_value Syntax.FIp4Daddr f2_out in
+    ev_chain_trace Semantics.Hprerouting dnat_saddr_chain f2 in
+  let d2 = fv Syntax.FIp4Daddr f2_out in
   Printf.printf "    dnat-to-saddr flow: pkt1 dst=%s  pkt2 dst=%s (same stored mapping)\n"
     (show d1) (show d2);
   check "packet 2 of the SAME flow reuses packet 1's STORED dnat dst (1.1.1.1, kernel-correct)"
@@ -564,12 +586,12 @@ let check_dnat_rewrite () =
   check "packet 2 does NOT dnat to its OWN saddr (2.2.2.2) — operand not re-evaluated"
     (not (data_eq d2 [2;2;2;2]));
   (* a packet on a DIFFERENT flow establishes its OWN mapping (flow-scoped) *)
-  let g = { (mk_pkt ~env:(f1_out.Packet.pkt_env) ~flow:[8;8] ())
-            with Packet.pkt_nh = mk_nh [2;2;2;2]; pkt_have_l4 = false } in
+  let g = wire (fun p -> { p with Packet.pkt_nh = mk_nh [2;2;2;2]; pkt_have_l4 = false })
+            (mk_pkt ~env:(fst f1_out) ~flow:[8;8] ()) in
   let (_, g_out) =
-    Semantics.eval_chain_trace Semantics.Hprerouting dnat_saddr_chain g in
+    ev_chain_trace Semantics.Hprerouting dnat_saddr_chain g in
   check "a DIFFERENT flow establishes its own mapping (dnat dst = its own saddr 2.2.2.2)"
-    (data_eq (Syntax.field_value Syntax.FIp4Daddr g_out) [2;2;2;2]);
+    (data_eq (fv Syntax.FIp4Daddr g_out) [2;2;2;2]);
   (* REPLY-DIRECTION un-NAT: a fixed `dnat to 8.8.8.8` establishes the
      mapping on the original-direction packet (client 1.1.1.1 -> router 9.9.9.9 =>
      dst 8.8.8.8).  The REPLY packet of the SAME flow (server 8.8.8.8 -> client
@@ -588,26 +610,26 @@ let check_dnat_rewrite () =
   let dnat88_chain : Syntax.chain =
     { Syntax.c_policy = Verdict.Drop; c_rules = [dnat88_rule] } in
   let rflow = [3;3] in
-  let fwd_in = { (mk_pkt ~env ~flow:rflow ())
-                 with Packet.pkt_nh = mk_nh [1;1;1;1]; pkt_have_l4 = false } in
+  let fwd_in = wire (fun p -> { p with Packet.pkt_nh = mk_nh [1;1;1;1]; pkt_have_l4 = false })
+                 (mk_pkt ~env ~flow:rflow ()) in
   let (_, fwd_out) =
-    Semantics.eval_chain_trace Semantics.Hprerouting dnat88_chain fwd_in in
+    ev_chain_trace Semantics.Hprerouting dnat88_chain fwd_in in
   check "reply-dir: forward packet dnat's dst 9.9.9.9 -> 8.8.8.8"
-    (data_eq (Syntax.field_value Syntax.FIp4Daddr fwd_out) [8;8;8;8]);
+    (data_eq (fv Syntax.FIp4Daddr fwd_out) [8;8;8;8]);
   (* reply packet, threaded through the env the forward packet established *)
-  let rep_in = { (mk_pkt ~env:(fwd_out.Packet.pkt_env) ~flow:rflow ())
-                 with Packet.pkt_nh = mk_nh [8;8;8;8];
-                 pkt_have_l4 = false; pkt_ctdir_orig = false } in
+  let rep_in = wire (fun p -> { p with Packet.pkt_nh = mk_nh [8;8;8;8];
+                 pkt_have_l4 = false; pkt_ctdir_orig = false })
+                 (mk_pkt ~env:(fst fwd_out) ~flow:rflow ()) in
   (* mk_nh appends [9;9;9;9] as the dst; the reply's dst should be the client. Build
      the reply with dst = client 1.1.1.1 explicitly. *)
-  let rep_in = { rep_in with Packet.pkt_nh =
-                 [0x45;0;0;20; 0;0;0;0; 64;6;0;0] @ [8;8;8;8] @ [1;1;1;1] } in
+  let rep_in = wire (fun p -> { p with Packet.pkt_nh =
+                 [0x45;0;0;20; 0;0;0;0; 64;6;0;0] @ [8;8;8;8] @ [1;1;1;1] }) rep_in in
   let (_, rep_out) =
-    Semantics.eval_chain_trace Semantics.Hprerouting dnat88_chain rep_in in
+    ev_chain_trace Semantics.Hprerouting dnat88_chain rep_in in
   check "reply-dir: reply SOURCE un-DNAT'd 8.8.8.8 -> 9.9.9.9 (inverse manip)"
-    (data_eq (Syntax.field_value Syntax.FIp4Saddr rep_out) [9;9;9;9]);
+    (data_eq (fv Syntax.FIp4Saddr rep_out) [9;9;9;9]);
   check "reply-dir: reply DESTINATION left untouched (1.1.1.1)"
-    (data_eq (Syntax.field_value Syntax.FIp4Daddr rep_out) [1;1;1;1]);
+    (data_eq (fv Syntax.FIp4Daddr rep_out) [1;1;1;1]);
   (* REPLY-DIRECTION PORT un-NAT: `dnat to 8.8.8.8:8080` rewrites the
      forward packet's DESTINATION port 80 -> 8080; the kernel's nf_nat_manip_pkt(REPLY)
      un-rewrites the reply's SOURCE port from 8080 back to the original 80
@@ -627,26 +649,26 @@ let check_dnat_rewrite () =
   let pflow = [5;5] in
   (* th = sport ++ dport ++ payload; forward sport 4444 ([17;92]), dport 80 ([0;80]) *)
   let mk_th sport dport = sport @ dport @ [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0] in
-  let pf_in = { (mk_pkt ~env ~flow:pflow ())
-                with Packet.pkt_nh = [0x45;0;0;20; 0;0;0;0; 64;6;0;0] @ [1;1;1;1] @ [9;9;9;9];
-                pkt_th = mk_th [17;92] [0;80]; pkt_have_l4 = false } in
+  let pf_in = wire (fun p -> { p with Packet.pkt_nh = [0x45;0;0;20; 0;0;0;0; 64;6;0;0] @ [1;1;1;1] @ [9;9;9;9];
+                pkt_th = mk_th [17;92] [0;80]; pkt_have_l4 = false })
+                (mk_pkt ~env ~flow:pflow ()) in
   let (_, pf_out) =
-    Semantics.eval_chain_trace Semantics.Hprerouting dnat_port_chain pf_in in
+    ev_chain_trace Semantics.Hprerouting dnat_port_chain pf_in in
   check "reply-dir port: forward packet dnat's DEST port 80 -> 8080"
-    (data_eq (Packet.slice pf_out.Packet.pkt_th 2 2) [31;144]);
+    (data_eq (Packet.slice (snd pf_out).Packet.pkt_th 2 2) [31;144]);
   (* reply: server 8.8.8.8:8080 -> client; sport = 8080 ([31;144]) *)
-  let pr_in = { (mk_pkt ~env:(pf_out.Packet.pkt_env) ~flow:pflow ())
-                with Packet.pkt_nh = [0x45;0;0;20; 0;0;0;0; 64;6;0;0] @ [8;8;8;8] @ [1;1;1;1];
+  let pr_in = wire (fun p -> { p with Packet.pkt_nh = [0x45;0;0;20; 0;0;0;0; 64;6;0;0] @ [8;8;8;8] @ [1;1;1;1];
                 pkt_th = mk_th [31;144] [17;92]; pkt_have_l4 = false;
-                pkt_ctdir_orig = false } in
+                pkt_ctdir_orig = false })
+                (mk_pkt ~env:(fst pf_out) ~flow:pflow ()) in
   let (_, pr_out) =
-    Semantics.eval_chain_trace Semantics.Hprerouting dnat_port_chain pr_in in
+    ev_chain_trace Semantics.Hprerouting dnat_port_chain pr_in in
   check "reply-dir port: reply SOURCE port un-DNAT'd 8080 -> 80 (inverse manip)"
-    (data_eq (Packet.slice pr_out.Packet.pkt_th 0 2) [0;80]);
+    (data_eq (Packet.slice (snd pr_out).Packet.pkt_th 0 2) [0;80]);
   check "reply-dir port: reply SOURCE port no longer stuck at dnat target 8080"
-    (not (data_eq (Packet.slice pr_out.Packet.pkt_th 0 2) [31;144]));
+    (not (data_eq (Packet.slice (snd pr_out).Packet.pkt_th 0 2) [31;144]));
   check "reply-dir port: reply DEST port left untouched (client port 4444)"
-    (data_eq (Packet.slice pr_out.Packet.pkt_th 2 2) [17;92]);
+    (data_eq (Packet.slice (snd pr_out).Packet.pkt_th 2 2) [17;92]);
   (* ct DIRECTION selector == NAT manip direction: in the kernel both
      the `ct direction` selector (nft_ct.c:86) and the NAT forward/reply decision
      (nf_nat_core.c:872) are CTINFO2DIR(ctinfo) of the SAME skb, so they are EQUAL.
@@ -655,9 +677,9 @@ let check_dnat_rewrite () =
      packet reads REPLY [1] — never decoupled.  Before the fix `ct direction` was a
      free e_ct oracle byte that could disagree with the NAT layer. *)
   check "ct direction: forward (NAT original-dir) packet reads ORIGINAL [0]"
-    (data_eq (Syntax.do_load (Syntax.LCt Packet.CKdirection) fwd_in) [0]);
+    (data_eq (dload (Syntax.LCt Packet.CKdirection) fwd_in) [0]);
   check "ct direction: reply (NAT reply-dir, un-NAT'd) packet reads REPLY [1]"
-    (data_eq (Syntax.do_load (Syntax.LCt Packet.CKdirection) rep_in) [1]);
+    (data_eq (dload (Syntax.LCt Packet.CKdirection) rep_in) [1]);
   Printf.printf "\n"
 
 (* (G) FAMILY-AWARE NAT: an ip6 dnat/snat rewrites the 128-bit IPv6 address slot
@@ -685,33 +707,33 @@ let check_ip6_nat () =
     (Nft_parse.parse_string
        "table ip6 nat {\n  chain c { type nat hook prerouting priority 0; }\n}\n")
       .Nft_lower.p_env in
-  let p_in = { (mk_pkt ~env ()) with Packet.pkt_nh = nh } in
+  let p_in = wire (fun p -> { p with Packet.pkt_nh = nh }) (mk_pkt ~env ()) in
   (* ip6 dnat: the IPv6 destination (bytes 24..39) becomes the target *)
-  let p_d = Semantics.apply_nat Semantics.Hprerouting (mk_rule (mk_spec Syntax.nat_dnat_kind)) p_in in
-  let d6 = Syntax.field_value Syntax.FIp6Daddr p_d in
+  let p_d = apply_nat_on Semantics.Hprerouting (mk_rule (mk_spec Syntax.nat_dnat_kind)) p_in in
+  let d6 = fv Syntax.FIp6Daddr p_d in
   Printf.printf "    ip6 dnat: ip6 daddr -> %s\n" (show d6);
   check "ip6 dnat sets the 16-byte IPv6 destination to the target"
     (data_eq d6 tgt6);
   check "ip6 dnat preserves the network-header length (no shift/corruption)"
-    (Stdlib.List.length p_d.Packet.pkt_nh = Stdlib.List.length nh);
+    (Stdlib.List.length (snd p_d).Packet.pkt_nh = Stdlib.List.length nh);
   check "ip6 dnat does NOT touch the IPv6 source"
-    (data_eq (Syntax.field_value Syntax.FIp6Saddr p_d)
-             (Syntax.field_value Syntax.FIp6Saddr p_in));
+    (data_eq (fv Syntax.FIp6Saddr p_d)
+             (fv Syntax.FIp6Saddr p_in));
   (* ip6 snat: the IPv6 source (bytes 8..23) becomes the target *)
-  let p_s = Semantics.apply_nat Semantics.Hprerouting (mk_rule (mk_spec Syntax.nat_snat_kind)) p_in in
+  let p_s = apply_nat_on Semantics.Hprerouting (mk_rule (mk_spec Syntax.nat_snat_kind)) p_in in
   check "ip6 snat sets the 16-byte IPv6 source to the target"
-    (data_eq (Syntax.field_value Syntax.FIp6Saddr p_s) tgt6);
+    (data_eq (fv Syntax.FIp6Saddr p_s) tgt6);
   check "ip6 snat preserves the network-header length"
-    (Stdlib.List.length p_s.Packet.pkt_nh = Stdlib.List.length nh);
+    (Stdlib.List.length (snd p_s).Packet.pkt_nh = Stdlib.List.length nh);
   (* sanity: an ip dnat still rewrites the IPv4 slot (regression for the v4 path) *)
   let v4spec =
     { Syntax.nat_addr_imm = Some [10;0;0;1]; nat_field = None; nat_map = None;
       nat_src = None; nat_kind = Syntax.nat_dnat_kind; nat_family = Syntax.nat_fam_ip4;
       nat_extra = Syntax.NXnone;
       nat_flags = 0 } in
-  let p4 = Semantics.apply_nat Semantics.Hprerouting (mk_rule v4spec) p_in in
+  let p4 = apply_nat_on Semantics.Hprerouting (mk_rule v4spec) p_in in
   check "ip (v4) dnat still rewrites the IPv4 destination slot"
-    (data_eq (Syntax.field_value Syntax.FIp4Daddr p4) [10;0;0;1]);
+    (data_eq (fv Syntax.FIp4Daddr p4) [10;0;0;1]);
   (* --- ip6 masquerade is FAMILY-AWARE end-to-end (the kernel dispatches by
      family: nft_masq.c NFPROTO_IPV6 -> nf_nat_masquerade_ipv6, which rewrites the
      whole 16-byte IPv6 source via ipv6_dev_get_saddr).  `ip6 masquerade` is valid
@@ -739,16 +761,16 @@ let check_ip6_nat () =
   let env6 = parsed6.Nft_lower.p_env in
   let env6 = { env6 with Packet.e_ifaddrs = (fun _ -> ifaddrs_of [9;9;9;9]);
                          e_ifaddrs6 = (fun _ -> ifaddrs_of if6) } in
-  let p6 = { (mk_pkt ~env:env6 ()) with Packet.pkt_nh = nh } in
-  let src6_in = Syntax.field_value Syntax.FIp6Saddr p6 in
-  let (_, p6_out) = Semantics.eval_chain_trace Semantics.Hpostrouting post6 p6 in
-  let src6_out = Syntax.field_value Syntax.FIp6Saddr p6_out in
+  let p6 = wire (fun p -> { p with Packet.pkt_nh = nh }) (mk_pkt ~env:env6 ()) in
+  let src6_in = fv Syntax.FIp6Saddr p6 in
+  let (_, p6_out) = ev_chain_trace Semantics.Hpostrouting post6 p6 in
+  let src6_out = fv Syntax.FIp6Saddr p6_out in
   Printf.printf "    ip6 masquerade: ip6 saddr  %s -> %s  (exit iface's IPv6)\n"
     (show src6_in) (show src6_out);
   check "ip6 masquerade rewrites the FULL 16-byte IPv6 source to e_ifaddr6"
     (data_eq src6_out if6);
   check "ip6 masquerade preserves the network-header length (no shift/corruption)"
-    (Stdlib.List.length p6_out.Packet.pkt_nh = Stdlib.List.length nh);
+    (Stdlib.List.length (snd p6_out).Packet.pkt_nh = Stdlib.List.length nh);
   check "ip6 masquerade does NOT use the 4-byte IPv4 e_ifaddr"
     (not (data_eq src6_out [9;9;9;9]));
   Printf.printf "\n";
@@ -783,35 +805,35 @@ let check_ip6_nat () =
   let env_inet = { env_inet with Packet.e_ifaddrs = (fun _ -> ifaddrs_of [9;9;9;9]);
                                  e_ifaddrs6 = (fun _ -> ifaddrs_of inet_if6) } in
   (* (a) IPv6 packet (nfproto = NFPROTO_IPV6 = 10): full 16-byte IPv6 rewrite. *)
-  let p_inet6 = { (mk_pkt ~env:env_inet ~nfproto:[10] ()) with Packet.pkt_nh = nh } in
-  let s6_in  = Syntax.field_value Syntax.FIp6Saddr p_inet6 in
-  let (_, p_inet6_out) = Semantics.eval_chain_trace Semantics.Hpostrouting post_inet p_inet6 in
-  let s6_out = Syntax.field_value Syntax.FIp6Saddr p_inet6_out in
+  let p_inet6 = wire (fun p -> { p with Packet.pkt_nh = nh }) (mk_pkt ~env:env_inet ~nfproto:[10] ()) in
+  let s6_in  = fv Syntax.FIp6Saddr p_inet6 in
+  let (_, p_inet6_out) = ev_chain_trace Semantics.Hpostrouting post_inet p_inet6 in
+  let s6_out = fv Syntax.FIp6Saddr p_inet6_out in
   Printf.printf "    inet masquerade, IPv6 pkt: ip6 saddr %s -> %s\n" (show s6_in) (show s6_out);
   check "inet masquerade on an IPv6 packet rewrites the FULL 16-byte IPv6 source to e_ifaddr6"
     (data_eq s6_out inet_if6);
   check "inet masquerade on an IPv6 packet does NOT splice the 4-byte IPv4 addr"
     (not (data_eq (Stdlib.List.filteri (fun i _ -> i >= 10 && i < 16) s6_out) [9;9;9;9]));
   check "inet masquerade preserves the IPv6 network-header length"
-    (Stdlib.List.length p_inet6_out.Packet.pkt_nh = Stdlib.List.length nh);
+    (Stdlib.List.length (snd p_inet6_out).Packet.pkt_nh = Stdlib.List.length nh);
   (* (b) IPv4 packet (nfproto = NFPROTO_IPV4 = 2) through the SAME rule: 4-byte slot. *)
   let nh4 = [0x45;0;0;0; 0;0;0;0; 64;6;0;0; 1;2;3;4; 192;168;0;9] in
-  let p_inet4 = { (mk_pkt ~env:env_inet ~nfproto:[2] ()) with Packet.pkt_nh = nh4 } in
-  let (_, p_inet4_out) = Semantics.eval_chain_trace Semantics.Hpostrouting post_inet p_inet4 in
-  let s4_out = Syntax.field_value Syntax.FIp4Daddr p_inet4_out in
+  let p_inet4 = wire (fun p -> { p with Packet.pkt_nh = nh4 }) (mk_pkt ~env:env_inet ~nfproto:[2] ()) in
+  let (_, p_inet4_out) = ev_chain_trace Semantics.Hpostrouting post_inet p_inet4 in
+  let s4_out = fv Syntax.FIp4Daddr p_inet4_out in
   ignore s4_out;
   check "inet masquerade on an IPv4 packet rewrites the 4-byte IPv4 source to e_ifaddr"
-    (data_eq (Syntax.field_value Syntax.FIp4Saddr p_inet4_out) [9;9;9;9]);
+    (data_eq (fv Syntax.FIp4Saddr p_inet4_out) [9;9;9;9]);
   (* (c) interface with an IPv6 address but NO IPv4 address: an IPv6 packet must be
      MASQUERADED (kernel uses the IPv6 address), NOT dropped. *)
   let env_noip4 = { env_inet with Packet.e_ifaddrs = (fun _ -> []);
                                   e_ifaddrs6 = (fun _ -> ifaddrs_of inet_if6) } in
-  let p_noip4 = { (mk_pkt ~env:env_noip4 ~nfproto:[10] ()) with Packet.pkt_nh = nh } in
-  let (v_noip4, p_noip4_out) = Semantics.eval_chain_trace Semantics.Hpostrouting post_inet p_noip4 in
+  let p_noip4 = wire (fun p -> { p with Packet.pkt_nh = nh }) (mk_pkt ~env:env_noip4 ~nfproto:[10] ()) in
+  let (v_noip4, p_noip4_out) = ev_chain_trace Semantics.Hpostrouting post_inet p_noip4 in
   check "inet masquerade: no-IPv4-addr iface does NOT drop an IPv6 packet (kernel masqs via IPv6)"
     (v_noip4 <> Verdict.Drop);
   check "inet masquerade: that IPv6 packet IS masqueraded to the IPv6 addr"
-    (data_eq (Syntax.field_value Syntax.FIp6Saddr p_noip4_out) inet_if6);
+    (data_eq (fv Syntax.FIp6Saddr p_noip4_out) inet_if6);
   Printf.printf "\n"
 
 (* (G') HOOK-DEPENDENT redirect.  `redirect` is a destination-NAT whose target
@@ -841,27 +863,28 @@ let check_redir_hook () =
       with Packet.e_ifaddrs = (fun n -> ifaddrs_of (if n = eth0 then eth0_ip else [])) } in
   let nh = [0x45;0;0;0; 0;0;0;0; 64;6;0;0; 1;2;3;4; 192;168;0;9] in
   let p_in =
-    { (mk_pkt ~env ()) with
-      Packet.pkt_meta = (fun k -> match k with Packet.MKiifname -> eth0 | _ -> []);
-      pkt_nh = nh } in
+    wire (fun p ->
+      { p with
+        Packet.pkt_meta = (fun k -> match k with Packet.MKiifname -> eth0 | _ -> []);
+        pkt_nh = nh }) (mk_pkt ~env ()) in
   (* OUTPUT hook: destination forced to the loopback 127.0.0.1 (NOT eth0's IP) *)
-  let p_out = Semantics.apply_nat Semantics.Houtput (mk_rule (mk_spec Syntax.nat_fam_ip4)) p_in in
-  let d_out = Syntax.field_value Syntax.FIp4Daddr p_out in
+  let p_out = apply_nat_on Semantics.Houtput (mk_rule (mk_spec Syntax.nat_fam_ip4)) p_in in
+  let d_out = fv Syntax.FIp4Daddr p_out in
   Printf.printf "    redirect@output:     ip daddr -> %s  (want 127.0.0.1)\n" (show d_out);
   check "output-hook redirect forces daddr to 127.0.0.1" (data_eq d_out [127;0;0;1]);
   check "output-hook redirect does NOT use the iif address" (not (data_eq d_out eth0_ip));
   (* PRE_ROUTING hook: destination becomes the inbound interface's address *)
-  let p_pre = Semantics.apply_nat Semantics.Hprerouting (mk_rule (mk_spec Syntax.nat_fam_ip4)) p_in in
-  let d_pre = Syntax.field_value Syntax.FIp4Daddr p_pre in
+  let p_pre = apply_nat_on Semantics.Hprerouting (mk_rule (mk_spec Syntax.nat_fam_ip4)) p_in in
+  let d_pre = fv Syntax.FIp4Daddr p_pre in
   Printf.printf "    redirect@prerouting: ip daddr -> %s  (want eth0's IP)\n" (show d_pre);
   check "prerouting-hook redirect uses the iif address" (data_eq d_pre eth0_ip);
   check "redirect diverges by hook (output<>prerouting)" (not (data_eq d_out d_pre));
   (* IPv6 output-hook redirect -> ::1 *)
   let nh6 = Stdlib.List.init 40 (fun i -> i) in
-  let p6_in = { (mk_pkt ~env ()) with Packet.pkt_nh = nh6;
-      Packet.pkt_meta = (fun k -> match k with Packet.MKiifname -> eth0 | _ -> []) } in
-  let p6_out = Semantics.apply_nat Semantics.Houtput (mk_rule (mk_spec Syntax.nat_fam_ip6)) p6_in in
-  let d6 = Syntax.field_value Syntax.FIp6Daddr p6_out in
+  let p6_in = wire (fun p -> { p with Packet.pkt_nh = nh6;
+      Packet.pkt_meta = (fun k -> match k with Packet.MKiifname -> eth0 | _ -> []) }) (mk_pkt ~env ()) in
+  let p6_out = apply_nat_on Semantics.Houtput (mk_rule (mk_spec Syntax.nat_fam_ip6)) p6_in in
+  let d6 = fv Syntax.FIp6Daddr p6_out in
   check "ip6 output-hook redirect forces daddr to ::1"
     (data_eq d6 [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1]);
   (* NAT-core NF_DROP when the interface has no usable address.  The kernel DROPS:
@@ -869,25 +892,25 @@ let check_redir_hook () =
      (nf_nat_redirect.c:71-74); nf_nat_masquerade_ipv4 `if (!newsrc) return NF_DROP;`
      (nf_nat_masquerade.c:54-58).  e_ifaddr = [] is exactly that condition. *)
   let env_noaddr = { env with Packet.e_ifaddrs = (fun _ -> []); e_ifaddrs6 = (fun _ -> []) } in
-  let p_noaddr = { (mk_pkt ~env:env_noaddr ()) with
+  let p_noaddr = wire (fun p -> { p with
                    Packet.pkt_meta = (fun k -> match k with Packet.MKiifname -> eth0 | _ -> []);
-                   pkt_nh = nh } in
+                   pkt_nh = nh }) (mk_pkt ~env:env_noaddr ()) in
   let redir_chain : Syntax.chain =
     { Syntax.c_policy = Verdict.Drop;
       c_rules = [ { (mk_rule (mk_spec Syntax.nat_fam_ip4)) with Syntax.r_verdict = Verdict.Accept } ] } in
-  let (vr_pre, pr_pre) = Semantics.eval_chain_trace Semantics.Hprerouting redir_chain p_noaddr in
+  let (vr_pre, pr_pre) = ev_chain_trace Semantics.Hprerouting redir_chain p_noaddr in
   check "prerouting redirect with NO inbound address DROPS (kernel NF_DROP)"
     (vr_pre = Verdict.Drop);
   check "the dropped redirect packet is left UNREWRITTEN (no empty-address splice)"
-    (data_eq (Syntax.field_value Syntax.FIp4Daddr pr_pre)
-             (Syntax.field_value Syntax.FIp4Daddr p_noaddr));
+    (data_eq (fv Syntax.FIp4Daddr pr_pre)
+             (fv Syntax.FIp4Daddr p_noaddr));
   (* but the verified CONTROL-PLANE (mut) verdict is unaffected: the drop is a
      data-plane-only refinement, so eval_chain_mut still Accepts. *)
   check "control-plane eval_chain_mut still ACCEPTS the redirect (data-plane-only drop)"
-    (Semantics.eval_chain_mut redir_chain p_noaddr = Verdict.Accept);
+    (ev_chain_mut redir_chain p_noaddr = Verdict.Accept);
   (* output-hook redirect targets loopback, so it NEVER drops even with no address *)
   check "output-hook redirect with no address still ACCEPTS (loopback target)"
-    (fst (Semantics.eval_chain_trace Semantics.Houtput redir_chain p_noaddr) = Verdict.Accept);
+    (fst (ev_chain_trace Semantics.Houtput redir_chain p_noaddr) = Verdict.Accept);
   (* masquerade likewise drops at postrouting when the exit interface has no address *)
   let masq_spec =
     { Syntax.nat_addr_imm = None; nat_field = None; nat_map = None; nat_src = None;
@@ -897,13 +920,13 @@ let check_redir_hook () =
     { Syntax.c_policy = Verdict.Drop;
       c_rules = [ { (mk_rule masq_spec) with Syntax.r_verdict = Verdict.Accept } ] } in
   check "postrouting masquerade with NO exit address DROPS (kernel NF_DROP)"
-    (fst (Semantics.eval_chain_trace Semantics.Hpostrouting masq_chain p_noaddr) = Verdict.Drop);
+    (fst (ev_chain_trace Semantics.Hpostrouting masq_chain p_noaddr) = Verdict.Drop);
   (* with the address restored, both accept again *)
   let env_addr = { env with Packet.e_ifaddrs = (fun _ -> ifaddrs_of [203;0;113;5]) } in
-  let p_addr = { p_noaddr with Packet.pkt_env = env_addr } in
+  let p_addr = (env_addr, snd p_noaddr) in
   check "redirect/masquerade ACCEPT once the interface has an address"
-    (fst (Semantics.eval_chain_trace Semantics.Hprerouting redir_chain p_addr) = Verdict.Accept
-     && fst (Semantics.eval_chain_trace Semantics.Hpostrouting masq_chain p_addr) = Verdict.Accept);
+    (fst (ev_chain_trace Semantics.Hprerouting redir_chain p_addr) = Verdict.Accept
+     && fst (ev_chain_trace Semantics.Hpostrouting masq_chain p_addr) = Verdict.Accept);
   Printf.printf "\n"
 
 (* (H) iif/oif NUMERIC INTERFACE-INDEX lowering.  iif/oif read the numeric
@@ -939,15 +962,16 @@ let check_iif_index () =
     (body 2 = [Syntax.BMatch (Syntax.MEq (Syntax.FMetaOif, [1;0;0;0]))]);
   (* the lowered matchcond matches a packet that genuinely arrived on lo *)
   let mk_iif idx =
-    { (mk_pkt ~env ()) with
-      Packet.pkt_meta = (fun k -> match k with Packet.MKiif -> idx | _ -> []) } in
+    wire (fun p ->
+      { p with Packet.pkt_meta = (fun k -> match k with Packet.MKiif -> idx | _ -> []) })
+      (mk_pkt ~env ()) in
   let m_lo = Syntax.MEq (Syntax.FMetaIif, [1;0;0;0]) in
   check "iif lo matches a packet whose numeric iif = 1 (real nft matches)"
-    (Semantics.eval_matchcond m_lo (mk_iif [1;0;0;0]) = true);
+    (ev_mc m_lo (mk_iif [1;0;0;0]) = true);
   check "iif lo does NOT match a packet on a different iface (index 2)"
-    (Semantics.eval_matchcond m_lo (mk_iif [2;0;0;0]) = false);
+    (ev_mc m_lo (mk_iif [2;0;0;0]) = false);
   check "iif lo does NOT match the impossible ASCII-meta packet"
-    (Semantics.eval_matchcond m_lo (mk_iif (ascii "lo")) = false);
+    (ev_mc m_lo (mk_iif (ascii "lo")) = false);
   (* iif/oif are BYTEORDER_HOST_ENDIAN (src/meta.c NFT_META_IIF/OIF templates,
      `4 * 8, BYTEORDER_HOST_ENDIAN`), exactly like ct/meta mark.  So an ORDERED or
      RANGE match on them is an ordered comparison and nft inserts the mandatory
@@ -994,11 +1018,11 @@ let check_iif_index () =
      transform the field becomes [0;0;0;3] BE -> 2<=3<=5 -> match. *)
   let mc_iif_r = body_r 0 in
   check "iif=3 matches range 2-5 (numeric, post-hton; old model REJECTED it)"
-    (Semantics.eval_matchcond mc_iif_r (mk_iif [3;0;0;0]) = true);
+    (ev_mc mc_iif_r (mk_iif [3;0;0;0]) = true);
   check "iif=1 does NOT match range 2-5 (below low bound)"
-    (Semantics.eval_matchcond mc_iif_r (mk_iif [1;0;0;0]) = false);
+    (ev_mc mc_iif_r (mk_iif [1;0;0;0]) = false);
   check "iif=256 does NOT match range 2-5 (would spuriously match if LE-lex on byte 0)"
-    (Semantics.eval_matchcond mc_iif_r (mk_iif [0;1;0;0]) = false);
+    (ev_mc mc_iif_r (mk_iif [0;1;0;0]) = false);
   Printf.printf "\n"
 
 (* (I) SINGLE POSITIVE `ct state X` BITMASK lowering.  ct_state has
@@ -1052,15 +1076,15 @@ let check_ct_state () =
   let m_estab = Syntax.MMasked (Syntax.FCtState, true, [0;0;0;2], [0;0;0;0], [0;0;0;0]) in
   let mk_ct st = mk_pkt ~env ~ct:(ct_state st) () in
   check "ct state established matches state = established|untracked = 66 (real nft accepts)"
-    (Semantics.eval_matchcond m_estab (mk_ct [0;0;0;66]) = true);
+    (ev_mc m_estab (mk_ct [0;0;0;66]) = true);
   check "ct state established matches a pure established state = 2"
-    (Semantics.eval_matchcond m_estab (mk_ct [0;0;0;2]) = true);
+    (ev_mc m_estab (mk_ct [0;0;0;2]) = true);
   check "ct state established does NOT match a state without the established bit (state = 8)"
-    (Semantics.eval_matchcond m_estab (mk_ct [0;0;0;8]) = false);
+    (ev_mc m_estab (mk_ct [0;0;0;8]) = false);
   (* the OLD (buggy) MEq lowering rejects the established|untracked packet *)
   let m_old = Syntax.MEq (Syntax.FCtState, [0;0;0;2]) in
   check "the OLD MEq lowering wrongly rejected state = 66 (regression guard)"
-    (Semantics.eval_matchcond m_old (mk_ct [0;0;0;66]) = false);
+    (ev_mc m_old (mk_ct [0;0;0;66]) = false);
   (* COMMA-LIST `ct state new,established,related,untracked` is NOT a set: nft's
      expr_evaluate_list (evaluate.c:1854-1888) OR-folds the four bitmask members
      into one constant new|established|related|untracked = 8|2|4|64 = 0x4e and
@@ -1074,10 +1098,10 @@ let check_ct_state () =
     (body 4 = [Syntax.BMatch m_comma]);
   (* the comma OR-mask ACCEPTS state = 0x06 (established|related): 0x06 & 0x4e != 0 *)
   check "comma list matches state = established|related = 0x06 (real nft accepts)"
-    (Semantics.eval_matchcond m_comma (mk_ct [0;0;0;6]) = true);
+    (ev_mc m_comma (mk_ct [0;0;0;6]) = true);
   (* it still rejects a state with none of the listed bits (e.g. invalid = 1) *)
   check "comma list does NOT match state = invalid = 1 (no listed bit set)"
-    (Semantics.eval_matchcond m_comma (mk_ct [0;0;0;1]) = false);
+    (ev_mc m_comma (mk_ct [0;0;0;1]) = false);
   (* the OLD set-membership lowering (before the fix the comma form collapsed to
      SEset -> MConcatSet) wrongly REJECTED state = 0x06: the model's set_mem
      requires an EXACT element, and 0x06 is not one of {8,2,4,64}.  This is the
@@ -1100,17 +1124,17 @@ let check_ct_state () =
     mk_pkt ~env:env_st ~flow () in
   let new_flow = mk_flow_state [0;0;0;8] [42] in
   check "NEW-flow packet does NOT match `ct state established` (no flow history)"
-    (Semantics.eval_matchcond m_estab new_flow = false);
+    (ev_mc m_estab new_flow = false);
   (* an ESTABLISHED flow (one a prior packet established) DOES match — not vacuous *)
   let estab_flow = mk_flow_state [0;0;0;2] [42] in
   check "ESTABLISHED-flow packet matches `ct state established`"
-    (Semantics.eval_matchcond m_estab estab_flow = true);
+    (ev_mc m_estab estab_flow = true);
   (* two packets of the SAME flow read CONSISTENT ct state (flow-keyed, not per-pkt) *)
   let same_flow_a = mk_flow_state [0;0;0;2] [99] in
-  let same_flow_b = mk_pkt ~env:same_flow_a.Packet.pkt_env ~flow:[99] () in
+  let same_flow_b = mk_pkt ~env:(fst same_flow_a) ~flow:[99] () in
   check "two packets of the same flow read consistent `ct state`"
-    (Syntax.do_load (Syntax.LCt Packet.CKstate) same_flow_a
-       = Syntax.do_load (Syntax.LCt Packet.CKstate) same_flow_b);
+    (dload (Syntax.LCt Packet.CKstate) same_flow_a
+       = dload (Syntax.LCt Packet.CKstate) same_flow_b);
   Printf.printf "\n"
 
 (* (I') `ct mark set V` PERSISTS across packets of a flow (cross-packet conntrack).
@@ -1139,22 +1163,22 @@ let check_ct_mark_crosspkt () =
   let flow_a = [10;0;0;1] and flow_b = [10;0;0;2] in
   (* packet 1 of flow A runs the chain; capture the env it leaves *)
   let p1 = mk_pkt ~env ~flow:flow_a () in
-  let (v1, e1) = Semantics.eval_chain_mut_env c p1 in
+  let (v1, e1) = ev_chain_mut_env c p1 in
   check "packet 1 of the flow is accepted (ct mark set; accept)" (v1 = Verdict.Accept);
   check "ct mark set 0x99 is recorded in the shared flow table e_ct"
     (data_eq (e1.Packet.e_ct flow_a Packet.CKmark) mark99);
   (* packet 2 of the SAME flow, with its OWN per-packet ct oracle = 0x07, threaded
      through e1: it reads back the flow mark 0x99 the kernel stored, NOT its oracle *)
   let oracle7 k = (match k with Packet.CKmark -> [7;0;0;0] | _ -> []) in
-  let p2_same = Semantics.set_env (mk_pkt ~env ~ct:oracle7 ~flow:flow_a ()) e1 in
+  let p2_same = (e1, snd (mk_pkt ~env ~ct:oracle7 ~flow:flow_a ())) in
   check "packet 2 of the SAME flow reads back the persisted ct mark 0x99 (kernel-correct)"
-    (data_eq (Syntax.field_value Syntax.FCtMark p2_same) mark99);
+    (data_eq (fv Syntax.FCtMark p2_same) mark99);
   check "the persisted flow mark overrides packet 2's own ct oracle (0x07)"
-    (not (data_eq (Syntax.field_value Syntax.FCtMark p2_same) [7;0;0;0]));
+    (not (data_eq (fv Syntax.FCtMark p2_same) [7;0;0;0]));
   (* a packet on a DIFFERENT flow does NOT inherit the mark (flow-scoped, not global) *)
-  let p2_other = Semantics.set_env (mk_pkt ~env ~ct:oracle7 ~flow:flow_b ()) e1 in
+  let p2_other = (e1, snd (mk_pkt ~env ~ct:oracle7 ~flow:flow_b ())) in
   check "a packet on a DIFFERENT flow does NOT see the mark (flow-scoped persistence)"
-    (not (data_eq (Syntax.field_value Syntax.FCtMark p2_other) mark99));
+    (not (data_eq (fv Syntax.FCtMark p2_other) mark99));
   Printf.printf "\n"
 
 (* (I''') `ct mark set` is a NO-OP on a packet with NO conntrack entry.  Kernel
@@ -1181,28 +1205,27 @@ let check_ct_set_noop () =
   let flow_a = [10;0;0;1] in
   (* packet 1 of flow A has NO conntrack entry (pkt_ct_present = false): the kernel
      no-op case.  Running the chain must NOT write the shared flow table. *)
-  let p1 = { (mk_pkt ~env ~flow:flow_a ()) with Packet.pkt_ct_present = false } in
-  let (v1, e1) = Semantics.eval_chain_mut_env c p1 in
+  let p1 = wire (fun p -> { p with Packet.pkt_ct_present = false }) (mk_pkt ~env ~flow:flow_a ()) in
+  let (v1, e1) = ev_chain_mut_env c p1 in
   check "entryless packet 1 is still accepted by the chain (ct mark set; accept)"
     (v1 = Verdict.Accept);
   check "ct mark set 0x99 on an ENTRYLESS packet leaves e_ct UNCHANGED (kernel no-op)"
     (data_eq (e1.Packet.e_ct flow_a Packet.CKmark)
-             (p1.Packet.pkt_env.Packet.e_ct flow_a Packet.CKmark));
+             ((fst p1).Packet.e_ct flow_a Packet.CKmark));
   check "the bogus mark 0x99 was NOT recorded in the shared flow table"
     (not (data_eq (e1.Packet.e_ct flow_a Packet.CKmark) mark99));
   (* a later same-flow ENTRY-PRESENT packet 2, threaded through e1, reads ITS OWN
      entry's mark (env default [], here oracle 0x07 is shadowed by the flow table) —
      NOT the bogus 0x99 that the no-op write would have left. *)
   let oracle7 k = (match k with Packet.CKmark -> [7;0;0;0] | _ -> []) in
-  let p2 = Semantics.set_env
-             { (mk_pkt ~env ~ct:oracle7 ~flow:flow_a ()) with Packet.pkt_ct_present = true }
-             e1 in
+  let p2 = (e1, { (snd (mk_pkt ~env ~ct:oracle7 ~flow:flow_a ()))
+                  with Packet.pkt_ct_present = true }) in
   check "later same-flow entry packet does NOT read back the bogus 0x99 (kernel-correct)"
-    (not (data_eq (Syntax.field_value Syntax.FCtMark p2) mark99));
+    (not (data_eq (fv Syntax.FCtMark p2) mark99));
   (* CONTROL: with an ENTRY-PRESENT packet 1, the write DOES land (the persistence
      path is real, not disabled wholesale). *)
-  let p1e = { (mk_pkt ~env ~flow:flow_a ()) with Packet.pkt_ct_present = true } in
-  let (_, e1e) = Semantics.eval_chain_mut_env c p1e in
+  let p1e = wire (fun p -> { p with Packet.pkt_ct_present = true }) (mk_pkt ~env ~flow:flow_a ()) in
+  let (_, e1e) = ev_chain_mut_env c p1e in
   check "CONTROL: ct mark set on an ENTRY-PRESENT packet DOES record 0x99"
     (data_eq (e1e.Packet.e_ct flow_a Packet.CKmark) mark99);
   Printf.printf "\n"
@@ -1276,17 +1299,17 @@ let check_interval_vmap () =
      previously got wrong: it fell through to the accept policy). *)
   let pkt dport = mk_pkt ~env ~l4proto:l4_tcp ~th:(th_dport dport) () in
   check "dport 80 (inside 0-100) -> DROP (interval lookup; was wrongly accepted)"
-    (Semantics.eval_chain c (pkt 80) = Verdict.Drop);
+    (ev_chain c (pkt 80) = Verdict.Drop);
   check "dport 0 (lower bound) -> DROP"
-    (Semantics.eval_chain c (pkt 0) = Verdict.Drop);
+    (ev_chain c (pkt 0) = Verdict.Drop);
   check "dport 100 (upper bound) -> DROP"
-    (Semantics.eval_chain c (pkt 100) = Verdict.Drop);
+    (ev_chain c (pkt 100) = Verdict.Drop);
   (* (4) the point key 101 still matches exactly -> Accept. *)
   check "dport 101 (exact point key) -> ACCEPT"
-    (Semantics.eval_chain c (pkt 101) = Verdict.Accept);
+    (ev_chain c (pkt 101) = Verdict.Accept);
   (* (5) a key OUTSIDE every interval misses -> falls through to accept policy. *)
   check "dport 200 (outside all keys) -> falls through to accept policy"
-    (Semantics.eval_chain c (pkt 200) = Verdict.Accept);
+    (ev_chain c (pkt 200) = Verdict.Accept);
   Printf.printf "\n"
 
 (* (I'') `notrack` forces ct state to UNTRACKED for the rest of the traversal, so a
@@ -1325,40 +1348,40 @@ let check_notrack () =
      `if (ct || ctinfo == IP_CT_UNTRACKED) return;` guard).  The notrack in rule 1
      latches it untracked before rule 2's `ct state untracked` match. *)
   let oracle_new k = (match k with Packet.CKstate -> [0;0;0;8] | _ -> []) in
-  let p = { (mk_pkt ~env ~ct:oracle_new ~flow:[7;7] ()) with
-            Packet.pkt_ct_present = false } in
+  let p = wire (fun q -> { q with Packet.pkt_ct_present = false })
+            (mk_pkt ~env ~ct:oracle_new ~flow:[7;7] ()) in
   (* the notrack write threads into rule 2: the threaded packet reads UNTRACKED *)
-  let p1 = Semantics.dsl_writes notrack_only p in
-  check "notrack sets pkt_untracked := true" (p1.Packet.pkt_untracked);
+  let p1 = dsl_writes_on notrack_only p in
+  check "notrack sets pkt_untracked := true" ((snd p1).Packet.pkt_untracked);
   check "after notrack, ct state read returns NF_CT_STATE_UNTRACKED_BIT (64)"
-    (data_eq (Syntax.do_load (Syntax.LCt Packet.CKstate) p1) untracked);
+    (data_eq (dload (Syntax.LCt Packet.CKstate) p1) untracked);
   check "the `ct state untracked` match SUCCEEDS on the threaded packet"
-    (Semantics.eval_matchcond m_untracked p1);
+    (ev_mc m_untracked p1);
   (* the threading evaluator ACCEPTS the no-entry packet (kernel-correct);
      without the rule-walk fix it DROPPED it (notrack skipped, stale oracle read) *)
   check "notrack ; ct state untracked accept ACCEPTS a no-entry packet (kernel-correct)"
-    (Semantics.eval_chain_mut chain p = Verdict.Accept);
+    (ev_chain_mut chain p = Verdict.Accept);
   (* and the same chain DROPS the packet if rule 1 is removed (no notrack => no-entry
      state INVALID = 1, (1 & 64) = 0 => no match => Drop policy): acceptance is DUE TO
      notrack *)
   let chain_no_notrack : Syntax.chain =
     { Syntax.c_policy = Verdict.Drop; c_rules = [ ctstate_rule ] } in
   check "without the preceding notrack the same packet is DROPPED (effect is real)"
-    (Semantics.eval_chain_mut chain_no_notrack p = Verdict.Drop);
+    (ev_chain_mut chain_no_notrack p = Verdict.Drop);
   (* KERNEL GUARD: on a packet that ALREADY has a conntrack ENTRY, notrack is a NO-OP.
      With an ESTABLISHED entry the threaded `ct state` reads the live state [0;0;0;2],
      the `ct state untracked` match FAILS, and the chain DROPS. *)
   let env_est = { env with Packet.e_ct =
                     (fun _ k -> match k with Packet.CKstate -> [0;0;0;2] | _ -> []) } in
-  let p_entry = { (mk_pkt ~env:env_est ~flow:[9;9] ()) with
-                  Packet.pkt_ct_present = true } in
-  let p_entry1 = Semantics.dsl_writes notrack_only p_entry in
+  let p_entry = wire (fun q -> { q with Packet.pkt_ct_present = true })
+                  (mk_pkt ~env:env_est ~flow:[9;9] ()) in
+  let p_entry1 = dsl_writes_on notrack_only p_entry in
   check "notrack is a NO-OP on an entry-present packet (pkt_untracked stays false)"
-    (not p_entry1.Packet.pkt_untracked);
+    (not (snd p_entry1).Packet.pkt_untracked);
   check "after a no-op notrack, ct state read returns the live ESTABLISHED state (2)"
-    (data_eq (Syntax.do_load (Syntax.LCt Packet.CKstate) p_entry1) [0;0;0;2]);
+    (data_eq (dload (Syntax.LCt Packet.CKstate) p_entry1) [0;0;0;2]);
   check "notrack ; ct state untracked DROPS an entry-present packet (kernel no-op)"
-    (Semantics.eval_chain_mut chain p_entry = Verdict.Drop);
+    (ev_chain_mut chain p_entry = Verdict.Drop);
   Printf.printf "\n"
 
 (* exthdr / TCP-option VALUE load not-present guard.  Kernel nft_exthdr_tcp_eval
@@ -1386,22 +1409,22 @@ let check_exthdr_present () =
      the matching bytes anyway (the impossible-in-kernel state the model used to
      admit).  The guard must REFUSE to load the value, so the chain ACCEPTS. *)
   let eh_absent _ _ _ _ pr = if pr then [0] else maxseg_val in
-  let p_absent = { (mk_pkt ~env ()) with Packet.pkt_eh = eh_absent } in
+  let p_absent = wire (fun p -> { p with Packet.pkt_eh = eh_absent }) (mk_pkt ~env ()) in
   check "VALUE load of an ABSENT tcp option is NOT loadable"
-    (not (Syntax.field_loadable f_maxseg p_absent));
+    (not (Syntax.field_loadable f_maxseg (snd p_absent)));
   check "EXISTENCE load (present=true) IS loadable even when absent"
-    (Syntax.field_loadable (Syntax.FExthdr (Packet.EPtcpopt, 2, 0, 0, true)) p_absent);
+    (Syntax.field_loadable (Syntax.FExthdr (Packet.EPtcpopt, 2, 0, 0, true)) (snd p_absent));
   check "absent maxseg -> NFT_BREAK -> chain ACCEPTS (eval_chain, kernel-correct)"
-    (Semantics.eval_chain chain p_absent = Verdict.Accept);
+    (ev_chain chain p_absent = Verdict.Accept);
   check "absent maxseg -> chain ACCEPTS (eval_chain_mut, kernel-correct)"
-    (Semantics.eval_chain_mut chain p_absent = Verdict.Accept);
+    (ev_chain_mut chain p_absent = Verdict.Accept);
   (* PRESENT: existence oracle returns [1]; the value matches -> DROP. *)
   let eh_present _ _ _ _ pr = if pr then [1] else maxseg_val in
-  let p_present = { (mk_pkt ~env ()) with Packet.pkt_eh = eh_present } in
+  let p_present = wire (fun p -> { p with Packet.pkt_eh = eh_present }) (mk_pkt ~env ()) in
   check "PRESENT maxseg with matching value -> chain DROPS (eval_chain)"
-    (Semantics.eval_chain chain p_present = Verdict.Drop);
+    (ev_chain chain p_present = Verdict.Drop);
   check "PRESENT maxseg with matching value -> chain DROPS (eval_chain_mut)"
-    (Semantics.eval_chain_mut chain p_present = Verdict.Drop);
+    (ev_chain_mut chain p_present = Verdict.Drop);
   Printf.printf "\n"
 
 (* (I''') INTRA-RULE notrack->ct-state: `ct notrack ct state untracked accept` in ONE
@@ -1434,31 +1457,31 @@ let check_notrack_intra () =
               e_connlimit = (fun _ -> []); e_ct = (fun _ _ -> []); e_nat = (fun _ -> None); e_numgen = (fun _ -> 0) } in
   let oracle_new k = (match k with Packet.CKstate -> [0;0;0;8] | _ -> []) in
   (* NO-ENTRY packet (pkt_ct_present = false): the case where notrack has effect. *)
-  let p = { (mk_pkt ~env ~ct:oracle_new ~flow:[7;7] ()) with
-            Packet.pkt_ct_present = false } in
+  let p = wire (fun q -> { q with Packet.pkt_ct_present = false })
+            (mk_pkt ~env ~ct:oracle_new ~flow:[7;7] ()) in
   (* the rule's own statement->match ordering: the match now SUCCEEDS *)
   check "intra-rule: the rule APPLIES (notrack latch seen by its own later match)"
-    (Semantics.rule_applies intra_rule p);
+    (rule_applies_on intra_rule p);
   check "intra-rule: eval_chain ACCEPTS a no-entry packet (kernel-correct)"
-    (Semantics.eval_chain chain p = Verdict.Accept);
+    (ev_chain chain p = Verdict.Accept);
   check "intra-rule: eval_chain_mut ACCEPTS too"
-    (Semantics.eval_chain_mut chain p = Verdict.Accept);
+    (ev_chain_mut chain p = Verdict.Accept);
   (* the verified compiler agrees: the compiled bytecode runs to the same verdict *)
   check "intra-rule: the COMPILED chain ACCEPTS (compile_chain_correct instance)"
-    (Semantics.run_chain (Compile.compile_chain chain) chain.Syntax.c_policy p
+    (run_chain_vm (Compile.compile_chain chain) chain.Syntax.c_policy p
        = Verdict.Accept);
   (* KERNEL GUARD: on an entry-present packet (ESTABLISHED), the intra-rule notrack is
      a NO-OP, the same-rule `ct state untracked` match FAILS, and the chain DROPS. *)
   let env_est = { env with Packet.e_ct =
                     (fun _ k -> match k with Packet.CKstate -> [0;0;0;2] | _ -> []) } in
-  let p_entry = { (mk_pkt ~env:env_est ~flow:[9;9] ()) with
-                  Packet.pkt_ct_present = true } in
+  let p_entry = wire (fun q -> { q with Packet.pkt_ct_present = true })
+                  (mk_pkt ~env:env_est ~flow:[9;9] ()) in
   check "intra-rule: the rule does NOT apply on an entry-present packet (notrack no-op)"
-    (not (Semantics.rule_applies intra_rule p_entry));
+    (not (rule_applies_on intra_rule p_entry));
   check "intra-rule: eval_chain DROPS an entry-present packet (kernel no-op)"
-    (Semantics.eval_chain chain p_entry = Verdict.Drop);
+    (ev_chain chain p_entry = Verdict.Drop);
   check "intra-rule: the COMPILED chain DROPS the entry-present packet too"
-    (Semantics.run_chain (Compile.compile_chain chain) chain.Syntax.c_policy p_entry
+    (run_chain_vm (Compile.compile_chain chain) chain.Syntax.c_policy p_entry
        = Verdict.Drop);
   Printf.printf "\n"
 
@@ -1514,20 +1537,20 @@ let check_tcp_flags () =
   let mk_fl fl = mk_pkt ~env ~l4proto:l4_tcp ~th:(th_flags fl) () in
   let m_syn = Syntax.MMasked (Syntax.FTcpFlags, true, [2], [0], [0]) in
   check "tcp flags syn matches a SYN|ACK packet (flags=0x12) — real nft accepts"
-    (Semantics.eval_matchcond m_syn (mk_fl 18) = true);
+    (ev_mc m_syn (mk_fl 18) = true);
   check "tcp flags syn matches a pure SYN packet (flags=0x02)"
-    (Semantics.eval_matchcond m_syn (mk_fl 2) = true);
+    (ev_mc m_syn (mk_fl 2) = true);
   check "tcp flags syn does NOT match ACK-only (flags=0x10)"
-    (Semantics.eval_matchcond m_syn (mk_fl 16) = false);
+    (ev_mc m_syn (mk_fl 16) = false);
   (* the OLD (only buildable) MEq encoding wrongly rejected SYN|ACK *)
   let m_old = Syntax.MEq (Syntax.FTcpFlags, [2]) in
   check "the OLD MEq encoding wrongly rejected SYN|ACK (regression guard)"
-    (Semantics.eval_matchcond m_old (mk_fl 18) = false);
+    (ev_mc m_old (mk_fl 18) = false);
   (* explicit `== syn` is genuine equality: rejects SYN|ACK, accepts pure SYN *)
   let m_eq = Syntax.MEq (Syntax.FTcpFlags, [2]) in
   check "tcp flags == syn (explicit) rejects SYN|ACK, accepts pure SYN"
-    (Semantics.eval_matchcond m_eq (mk_fl 18) = false
-     && Semantics.eval_matchcond m_eq (mk_fl 2) = true);
+    (ev_mc m_eq (mk_fl 18) = false
+     && ev_mc m_eq (mk_fl 2) = true);
   Printf.printf "\n"
 
 (* ---------- (L) meta nfproto is the NFPROTO L3 family, not L4 proto ----------
@@ -1618,9 +1641,11 @@ let check_inet_nfproto_dep () =
      ADDRESS; in an IPv6 header it's part of the (longer) source address. *)
   let nh_v4 = [0;0;0;0; 0;0;0;0; 0;0;0;0; 10;1;2;3] in
   let mk_with_nfproto nfp nh =
-    { (mk_pkt ~env ()) with
-      Packet.pkt_nh = nh;
-      pkt_meta = (fun k -> match k with Packet.MKnfproto -> nfp | _ -> []) } in
+    wire (fun p ->
+      { p with
+        Packet.pkt_nh = nh;
+        pkt_meta = (fun k -> match k with Packet.MKnfproto -> nfp | _ -> []) })
+      (mk_pkt ~env ()) in
   let p_v4 = mk_with_nfproto [2]  nh_v4 in   (* genuine IPv4 packet *)
   let p_v6 = mk_with_nfproto [10] nh_v4 in   (* IPv6 packet, same byte pattern *)
   let guarded : Syntax.chain =
@@ -1637,11 +1662,11 @@ let check_inet_nfproto_dep () =
                     r_verdict = Verdict.Accept; r_vmap = None; r_nat = None;
                     r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } ] } in
   check "guarded inet rule ACCEPTS the genuine IPv4 packet (nft accepts)"
-    (Semantics.eval_chain guarded p_v4 = Verdict.Accept);
+    (ev_chain guarded p_v4 = Verdict.Accept);
   check "guarded inet rule DROPS the IPv6 packet (nft falls through to drop)"
-    (Semantics.eval_chain guarded p_v6 = Verdict.Drop);
+    (ev_chain guarded p_v6 = Verdict.Drop);
   check "the OLD unguarded rule WRONGLY accepted the IPv6 packet (regression guard)"
-    (Semantics.eval_chain unguarded p_v6 = Verdict.Accept);
+    (ev_chain unguarded p_v6 = Verdict.Accept);
   Printf.printf "\n"
 
 (* ---------- (L'') implicit `meta nfproto` guard before inet icmp/icmpv6 -------
@@ -1702,10 +1727,12 @@ let check_inet_icmp_nfproto_dep () =
   (* an IPv6 packet whose kernel-computed l4proto is 1 (next-header 1) and whose
      transport byte 0 is 8: the model's UNGUARDED body wrongly matched it. *)
   let mk_with nfp l4p th =
-    { (mk_pkt ~env ()) with
-      Packet.pkt_th = th;
-      pkt_meta = (fun k -> match k with
-        | Packet.MKnfproto -> nfp | Packet.MKl4proto -> l4p | _ -> []) } in
+    wire (fun p ->
+      { p with
+        Packet.pkt_th = th;
+        pkt_meta = (fun k -> match k with
+          | Packet.MKnfproto -> nfp | Packet.MKl4proto -> l4p | _ -> []) })
+      (mk_pkt ~env ()) in
   let p_v4 = mk_with [2]  [1] [8] in   (* genuine IPv4 icmp echo-request *)
   let p_v6 = mk_with [10] [1] [8] in   (* IPv6 packet, l4proto 1 + th byte 8 *)
   let guarded : Syntax.chain =
@@ -1724,11 +1751,11 @@ let check_inet_icmp_nfproto_dep () =
                     r_verdict = Verdict.Accept; r_vmap = None; r_nat = None;
                     r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } ] } in
   check "guarded inet icmp rule ACCEPTS the genuine IPv4 packet (nft accepts)"
-    (Semantics.eval_chain guarded p_v4 = Verdict.Accept);
+    (ev_chain guarded p_v4 = Verdict.Accept);
   check "guarded inet icmp rule DROPS the IPv6 packet (nft falls through to drop)"
-    (Semantics.eval_chain guarded p_v6 = Verdict.Drop);
+    (ev_chain guarded p_v6 = Verdict.Drop);
   check "the OLD unguarded icmp rule WRONGLY accepted the IPv6 packet (regression)"
-    (Semantics.eval_chain unguarded p_v6 = Verdict.Accept);
+    (ev_chain unguarded p_v6 = Verdict.Accept);
   Printf.printf "\n"
 
 (* ---------- (K) synproxy is verdict-bearing, not a no-op ----------
@@ -1752,23 +1779,23 @@ let check_synproxy () =
       r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } in
   let chain : Syntax.chain = { Syntax.c_policy = Verdict.Accept; c_rules = [ rule ] } in
   let mk_tcp fl = mk_pkt ~env ~l4proto:l4_tcp ~th:(th_flags fl) () in
-  let non_tcp = { (mk_pkt ~env ()) with Packet.pkt_th = []; pkt_have_l4 = false } in
+  let non_tcp = wire (fun p -> { p with Packet.pkt_th = []; pkt_have_l4 = false }) (mk_pkt ~env ()) in
   check "synproxy STOPS a TCP SYN packet (NF_STOLEN -> Drop)"
-    (Semantics.eval_chain chain (mk_tcp 2) = Verdict.Drop);
+    (ev_chain chain (mk_tcp 2) = Verdict.Drop);
   check "synproxy STOPS a TCP ACK packet (NF_STOLEN/NF_DROP -> Drop)"
-    (Semantics.eval_chain chain (mk_tcp 16) = Verdict.Drop);
+    (ev_chain chain (mk_tcp 16) = Verdict.Drop);
   check "synproxy CONTINUEs a bare-RST TCP packet (falls through to policy accept)"
-    (Semantics.eval_chain chain (mk_tcp 4) = Verdict.Accept);
+    (ev_chain chain (mk_tcp 4) = Verdict.Accept);
   check "synproxy does NOT apply to a non-TCP packet (NFT_BREAK -> policy accept)"
-    (Semantics.eval_chain chain non_tcp = Verdict.Accept);
+    (ev_chain chain non_tcp = Verdict.Accept);
   (* the red agent's no-op claim is refuted: not constant across packets *)
   check "synproxy is NOT a verdict no-op (SYN vs RST differ)"
-    (Semantics.eval_chain chain (mk_tcp 2) <> Semantics.eval_chain chain (mk_tcp 4));
+    (ev_chain chain (mk_tcp 2) <> ev_chain chain (mk_tcp 4));
   (* the compiled bytecode agrees (compile_chain_correct) *)
   let pol = chain.Syntax.c_policy in
   let prog = Compile.compile_chain chain in
   check "compiled bytecode STOPS the SYN packet too"
-    (Semantics.run_chain prog pol (mk_tcp 2) = Verdict.Drop);
+    (run_chain_vm prog pol (mk_tcp 2) = Verdict.Drop);
   Printf.printf "\n"
 
 (* (L) CONCATENATED interval/range set: per-field (cross-product) membership.
@@ -1819,19 +1846,19 @@ let check_concat_iv () =
     (elems = [ ([10;0;0;0] @ port 10 @ [0;0], [10;255;255;255] @ port 23 @ [0;0]) ]);
   (* a packet inside daddr's range but OUTSIDE dport's range: kernel rejects *)
   let mk_pkt2 ~daddr ~dport =
-    { (mk_pkt ~env ~l4proto:l4_tcp ~th:(th_dport dport) ()) with
-      Packet.pkt_nh = (L.init 16 (fun _ -> 0)) @ daddr } in
+    wire (fun p -> { p with Packet.pkt_nh = (L.init 16 (fun _ -> 0)) @ daddr })
+      (mk_pkt ~env ~l4proto:l4_tcp ~th:(th_dport dport) ()) in
   let p_bad  = mk_pkt2 ~daddr:[10;0;0;5] ~dport:100 in   (* dport 100 not in [10,23] *)
   let p_good = mk_pkt2 ~daddr:[10;0;0;5] ~dport:20  in   (* both fields in range *)
   let p_dout = mk_pkt2 ~daddr:[11;0;0;5] ~dport:20  in   (* daddr out of range *)
   let m = match the_concat with
     | Some (Syntax.BMatch mc) -> mc | _ -> failwith "no concat match" in
   check "REJECTS daddr in-range but dport OUT of range (kernel drops; old flat model wrongly accepted)"
-    (Semantics.eval_matchcond m p_bad = false);
+    (ev_mc m p_bad = false);
   check "ACCEPTS only when BOTH fields are in their own range"
-    (Semantics.eval_matchcond m p_good = true);
+    (ev_mc m p_good = true);
   check "REJECTS daddr out of range (even with dport in range)"
-    (Semantics.eval_matchcond m p_dout = false);
+    (ev_mc m p_dout = false);
   (* the OLD flat-lexicographic set_mem wrongly accepted p_bad: demonstrate the
      divergence directly on the stored element. *)
   check "flat set_mem over the concatenation WOULD accept the bad packet (the bug)"
@@ -1841,8 +1868,8 @@ let check_concat_iv () =
   (* the compiled bytecode agrees with the spec (compile_chain_correct) *)
   let prog = Compile.compile_chain c in
   check "compiled bytecode REJECTS the bad packet too (run_chain = policy, rule skipped)"
-    (Semantics.run_chain prog c.Syntax.c_policy p_bad = Verdict.Accept
-     && Semantics.eval_chain c p_bad = Verdict.Accept);
+    (run_chain_vm prog c.Syntax.c_policy p_bad = Verdict.Accept
+     && ev_chain c p_bad = Verdict.Accept);
   (* SUB-4-BYTE NON-LAST field register padding (worklist #4 core fix): a 2-byte
      [tcp sport] in the FIRST position must occupy a full 4-byte register slot, so
      the kernel's element of `{ 80 . 443 }` is [00 50 00 00][01 bb 00 00], NOT the
@@ -1876,11 +1903,11 @@ let check_concat_iv () =
   let mk_p2 ~sport ~dport =
     mk_pkt ~env:env2 ~l4proto:l4_tcp ~th:(port sport @ port dport) () in
   check "matches the exact (80,443) pair the kernel matches against the padded element"
-    (Semantics.eval_matchcond m2 (mk_p2 ~sport:80 ~dport:443) = true);
+    (ev_mc m2 (mk_p2 ~sport:80 ~dport:443) = true);
   check "rejects (80, 444): dport differs"
-    (Semantics.eval_matchcond m2 (mk_p2 ~sport:80 ~dport:444) = false);
+    (ev_mc m2 (mk_p2 ~sport:80 ~dport:444) = false);
   check "rejects (81, 443): non-last sport differs (would be missed if sport's slot were mis-split)"
-    (Semantics.eval_matchcond m2 (mk_p2 ~sport:81 ~dport:443) = false);
+    (ev_mc m2 (mk_p2 ~sport:81 ~dport:443) = false);
   Printf.printf "\n"
 
 (* (M) NON-WILDCARD interface-name match is an EXACT 16-byte zero-padded compare,
@@ -1926,24 +1953,25 @@ let check_ifname_exact () =
   (* end-to-end: a packet on the DISTINCT interface "dummy0extra" (16-byte reg) is
      REJECTED by the exact rule but the wildcard would match its prefix. *)
   let mk_iifn nm =
-    { (mk_pkt ~env ()) with
-      Packet.pkt_meta = (fun k -> match k with Packet.MKiifname -> nm | _ -> []) } in
+    wire (fun p ->
+      { p with Packet.pkt_meta = (fun k -> match k with Packet.MKiifname -> nm | _ -> []) })
+      (mk_pkt ~env ()) in
   let reg_d0e = [0x64;0x75;0x6d;0x6d;0x79;0x30;0x65;0x78;0x74;0x72;0x61; 0;0;0;0;0] in
   let m_exact = Syntax.MEq (Syntax.FMetaIifname, dummy0_16) in
   let m_wild  = Syntax.MEq (Syntax.FMetaIifname, ascii "dummy") in
   check "exact `iifname dummy0` MATCHES the interface it names"
-    (Semantics.eval_matchcond m_exact (mk_iifn dummy0_16) = true);
+    (ev_mc m_exact (mk_iifn dummy0_16) = true);
   check "exact `iifname dummy0` REJECTS the distinct iface dummy0extra (the fix; kernel drops)"
-    (Semantics.eval_matchcond m_exact (mk_iifn reg_d0e) = false);
+    (ev_mc m_exact (mk_iifn reg_d0e) = false);
   check "the OLD unpadded literal WOULD wrongly accept dummy0extra (the bug)"
-    (Semantics.eval_matchcond (Syntax.MEq (Syntax.FMetaIifname, ascii "dummy0"))
+    (ev_mc (Syntax.MEq (Syntax.FMetaIifname, ascii "dummy0"))
        (mk_iifn reg_d0e) = true);
   check "the `*` wildcard correctly remains a prefix match (matches dummy0extra)"
-    (Semantics.eval_matchcond m_wild (mk_iifn reg_d0e) = true);
+    (ev_mc m_wild (mk_iifn reg_d0e) = true);
   (* compiled bytecode agrees with the spec on the distinct interface *)
   let prog = Compile.compile_chain c in
   check "compiled bytecode also rejects dummy0extra at the exact rule (= policy accept, both rules skip)"
-    (Semantics.run_chain prog c.Syntax.c_policy (mk_iifn [0x7a;0x7a;0x7a; 0;0;0;0;0; 0;0;0;0; 0;0;0;0]) = Verdict.Accept);
+    (run_chain_vm prog c.Syntax.c_policy (mk_iifn [0x7a;0x7a;0x7a; 0;0;0;0;0; 0;0;0;0; 0;0;0;0]) = Verdict.Accept);
   Printf.printf "\n"
 
 (* ---------- (L) limiter `over` / invert flag flips the verdict ----------
@@ -1988,17 +2016,17 @@ let check_limit_over () =
   (* UNDER the rate: the plain `limit` MATCHES (continue/accept), the `over`
      limiter does NOT (it only fires on the flood) — opposite verdicts. *)
   check "under the rate: plain `limit` matches but `limit over` does NOT (flip)"
-    (Semantics.eval_matchcond m_under (mk_pkt ~env:env_under ()) = true
-     && Semantics.eval_matchcond m_over (mk_pkt ~env:env_under ()) = false);
+    (ev_mc m_under (mk_pkt ~env:env_under ()) = true
+     && ev_mc m_over (mk_pkt ~env:env_under ()) = false);
   (* EXCEEDING the rate: the plain `limit` stops (no match) while the `over`
      limiter MATCHES — the standard anti-flood `limit rate over X drop` idiom. *)
   check "exceeding the rate: plain `limit` misses but `limit over` matches (flip)"
-    (Semantics.eval_matchcond m_under (mk_pkt ~env:env_over ()) = false
-     && Semantics.eval_matchcond m_over (mk_pkt ~env:env_over ()) = true);
+    (ev_mc m_under (mk_pkt ~env:env_over ()) = false
+     && ev_mc m_over (mk_pkt ~env:env_over ()) = true);
   (* The flag is genuinely read: for the SAME oracle, over and non-over disagree. *)
   check "over and non-over give opposite verdicts for the same oracle (flag honoured)"
-    (Semantics.eval_matchcond m_over (mk_pkt ~env:env_under ())
-       <> Semantics.eval_matchcond m_under (mk_pkt ~env:env_under ()));
+    (ev_mc m_over (mk_pkt ~env:env_under ())
+       <> ev_mc m_under (mk_pkt ~env:env_under ()));
   (* CROSS-PACKET CONSUMPTION (the blue fix): a `limit` is a SHARED, CONSUMING token
      bucket, not a stateless per-packet oracle.  Build a one-rule chain
      `limit rate 1/second accept`, policy DROP, against an env whose bucket holds
@@ -2013,9 +2041,9 @@ let check_limit_over () =
   let chain_lim = { Syntax.c_policy = Verdict.Drop; c_rules = [rule_accept] } in
   let env_one = { env with Packet.e_limit = (fun _ -> 1) } in
   let p1 = mk_pkt ~env:env_one ~flow:[1;1] () in
-  let (v1, e_after) = Semantics.eval_chain_mut_env chain_lim p1 in
+  let (v1, e_after) = ev_chain_mut_env chain_lim p1 in
   let p2 = mk_pkt ~env:e_after ~flow:[1;1] () in
-  let (v2, _) = Semantics.eval_chain_mut_env chain_lim p2 in
+  let (v2, _) = ev_chain_mut_env chain_lim p2 in
   check "consuming bucket: packet 1 ACCEPTED (one token available)"
     (v1 = Verdict.Accept);
   check "consuming bucket: token CONSUMED (env left by packet 1 has 0 tokens)"
@@ -2049,8 +2077,8 @@ let check_limit_over () =
   let env_tok = { env with Packet.e_limit = (fun _ -> 1) } in
   let pk = mk_pkt ~env:env_tok () in
   check "rate is LIVE: at a 1-token bucket, 1/second PASSES but 1/hour FAILS"
-    (Semantics.eval_matchcond (Syntax.MLimit s_fast) pk = true
-     && Semantics.eval_matchcond (Syntax.MLimit s_slow) pk = false);
+    (ev_mc (Syntax.MLimit s_fast) pk = true
+     && ev_mc (Syntax.MLimit s_slow) pk = false);
   Printf.printf "\n"
 
 (* (M) fib route-type symbol -> RTN_ constant.  The Menhir frontend's
@@ -2103,13 +2131,13 @@ let check_fib_type () =
       [ (([0], [255]),
          (fun (r : Packet.fib_result) ->
             match r with Packet.FRtype -> t | _ -> [])) ] } in
-    { (mk_pkt ~env:env' ()) with Packet.pkt_fibkey = (fun _ -> [0]) } in
+    wire (fun p -> { p with Packet.pkt_fibkey = (fun _ -> [0]) }) (mk_pkt ~env:env' ()) in
   check "route type 4 (anycast) matches the anycast rule, not blackhole"
-    (Semantics.eval_matchcond m_any (mk_rtype [4;0;0;0]) = true
-     && Semantics.eval_matchcond m_bh (mk_rtype [4;0;0;0]) = false);
+    (ev_mc m_any (mk_rtype [4;0;0;0]) = true
+     && ev_mc m_bh (mk_rtype [4;0;0;0]) = false);
   check "route type 6 (blackhole) matches the blackhole rule, not anycast"
-    (Semantics.eval_matchcond m_bh (mk_rtype [6;0;0;0]) = true
-     && Semantics.eval_matchcond m_any (mk_rtype [6;0;0;0]) = false);
+    (ev_mc m_bh (mk_rtype [6;0;0;0]) = true
+     && ev_mc m_any (mk_rtype [6;0;0;0]) = false);
   (* host-endian regression: the kernel-faithful RTN_LOCAL register [2;0;0;0]
      MATCHES `fib daddr type local`, and the byte-reversed big-endian word
      [0;0;0;2] (a value the LE kernel can never produce) does NOT. *)
@@ -2129,11 +2157,11 @@ let check_fib_type () =
       [ (([0], [255]),
          (fun (r : Packet.fib_result) ->
             match r with Packet.FRtype -> t | _ -> [])) ] } in
-    { (mk_pkt ~env:env' ()) with Packet.pkt_fibkey = (fun _ -> [0]) } in
+    wire (fun p -> { p with Packet.pkt_fibkey = (fun _ -> [0]) }) (mk_pkt ~env:env' ()) in
   check "host-endian RTN_LOCAL [2;0;0;0] MATCHES `fib daddr type local`"
-    (Semantics.eval_matchcond m_local (mk_rtype_l [2;0;0;0]) = true);
+    (ev_mc m_local (mk_rtype_l [2;0;0;0]) = true);
   check "byte-reversed [0;0;0;2] (kernel-impossible on LE) does NOT match"
-    (Semantics.eval_matchcond m_local (mk_rtype_l [0;0;0;2]) = false);
+    (ev_mc m_local (mk_rtype_l [0;0;0;2]) = false);
   Printf.printf "\n"
 
 (* (O) HOST-ENDIAN MARK RANGE: `meta mark` / `ct mark` are BYTEORDER_HOST_ENDIAN
@@ -2176,17 +2204,17 @@ let check_mark_range () =
   (* (2) behavioural: a mark=16 packet (host-endian LE [16;0;0;0]) is IN [5,255].
      Old bare-MRange path compared LE bytes big-endian -> NO match (wrong).  With
      the hton transform the field becomes [0;0;0;16] BE -> 5<=16<=255 -> match. *)
-  let mk_mark le = { (mk_pkt ~env ()) with
-    Packet.pkt_meta = (fun k -> match k with Packet.MKmark -> le | _ -> []) } in
+  let mk_mark le = wire (fun p -> { p with
+    Packet.pkt_meta = (fun k -> match k with Packet.MKmark -> le | _ -> []) }) (mk_pkt ~env ()) in
   let mark16 = [16;0;0;0] in          (* 0x10 host-endian *)
   let mark256 = [0;1;0;0] in          (* 0x100 host-endian: out of [5,255] numerically *)
   let mark1 = [1;0;0;0] in            (* 0x01 host-endian: below 5 *)
   check "mark=0x10 matches range 0x5-0xff (numeric, post-hton)"
-    (Semantics.eval_matchcond mc (mk_mark mark16) = true);
+    (ev_mc mc (mk_mark mark16) = true);
   check "mark=0x100 does NOT match 0x5-0xff (would spuriously match if LE-lex)"
-    (Semantics.eval_matchcond mc (mk_mark mark256) = false);
+    (ev_mc mc (mk_mark mark256) = false);
   check "mark=0x1 does NOT match 0x5-0xff (below low bound)"
-    (Semantics.eval_matchcond mc (mk_mark mark1) = false);
+    (ev_mc mc (mk_mark mark1) = false);
   (* (3) eq is unaffected: `meta mark 0x99` stays MEq over the host-endian (LE)
      constant [153;0;0;0] (NO byteorder; memcmp eq is order-independent). *)
   let src_eq =
@@ -2257,11 +2285,11 @@ let check_mark_set () =
          match k with Packet.CKmark when fl = [] -> le | _ -> []) } in
     mk_pkt ~env:env_m () in
   check "ct mark 0x150 matches { 0x100-0x200 } (numeric, post-hton; old model REJECTED it)"
-    (Semantics.eval_matchcond mc_iv (mk_ctmark [80;1;0;0]) = true);
+    (ev_mc mc_iv (mk_ctmark [80;1;0;0]) = true);
   check "ct mark 0x80 does NOT match { 0x100-0x200 } (below low bound)"
-    (Semantics.eval_matchcond mc_iv (mk_ctmark [128;0;0;0]) = false);
+    (ev_mc mc_iv (mk_ctmark [128;0;0;0]) = false);
   check "ct mark 0x300 does NOT match { 0x100-0x200 } (above high bound)"
-    (Semantics.eval_matchcond mc_iv (mk_ctmark [0;3;0;0]) = false);
+    (ev_mc mc_iv (mk_ctmark [0;3;0;0]) = false);
   (* directly exhibit the OLD bug on the BE-stored element: the LE-compared bound
      would have rejected 0x150 (matching the infidelity's coqtop proof). *)
   check "the BUG: LE-stored bounds compared big-endian reject 0x150 (old behaviour)"
@@ -2328,10 +2356,10 @@ let check_jump_aware () =
   let goto_base : Syntax.chain =
     { Syntax.c_policy = Verdict.Accept; c_rules = [ mk_rule (Verdict.Goto "deny") ] } in
   let p = mk_pkt ~env () in
-  let vj = Semantics.eval_table 10 chains jump_base p in
-  let vg = Semantics.eval_table 10 chains goto_base p in
+  let vj = ev_table 10 chains jump_base p in
+  let vg = ev_table 10 chains goto_base p in
   (* the OLD jump-ignoring eval_chain returns the base policy Accept; flag that too *)
-  let veval_chain = Semantics.eval_chain jump_base p in
+  let veval_chain = ev_chain jump_base p in
   Printf.printf "    jump deny -> %s (want drop);  goto deny -> %s (want drop)\n"
     (verdict_str vj) (verdict_str vg);
   Printf.printf "    (env-free eval_chain ignores the jump -> %s)\n" (verdict_str veval_chain);
@@ -2368,9 +2396,9 @@ let check_connlimit_conn () =
   (* TWO packets of the SAME connection (same flow id). *)
   let flowA = [10;0;0;1] in
   let p1 = mk_pkt ~env:base_env ~flow:flowA () in
-  let (v1, e_after1) = Semantics.eval_chain_mut_env chain p1 in
+  let (v1, e_after1) = ev_chain_mut_env chain p1 in
   let p2 = mk_pkt ~env:e_after1 ~flow:flowA () in
-  let (v2, e_after2) = Semantics.eval_chain_mut_env chain p2 in
+  let (v2, e_after2) = ev_chain_mut_env chain p2 in
   check "connlimit 1: packet 1 of a connection ACCEPTED (count 1 <= 1)"
     (v1 = Verdict.Accept);
   check "connlimit 1: packet 2 of the SAME connection ALSO ACCEPTED (dedup, count still 1)"
@@ -2382,7 +2410,7 @@ let check_connlimit_conn () =
   (* a SECOND, DISTINCT connection: count becomes 2 > 1 -> BREAK -> policy DROP. *)
   let flowB = [10;0;0;2] in
   let p3 = mk_pkt ~env:e_after2 ~flow:flowB () in
-  let (v3, _) = Semantics.eval_chain_mut_env chain p3 in
+  let (v3, _) = ev_chain_mut_env chain p3 in
   check "connlimit 1: a 2nd DISTINCT connection makes count 2 > 1 -> DROPPED"
     (v3 = Verdict.Drop);
   check "connlimit 1: PERMITS up to N+1=2 distinct connections, blocks the 2nd's overflow"
@@ -2412,24 +2440,24 @@ let check_ct_no_entry () =
   let chain = { Syntax.c_policy = Verdict.Drop; c_rules = [rule] } in
   (* TRACKED packet (entry present): rule matches -> ACCEPT *)
   let p_tracked = mk_pkt ~env:base_env ~flow:[1;1] () in
-  let v_tracked = Semantics.eval_chain_mut chain p_tracked in
+  let v_tracked = ev_chain_mut chain p_tracked in
   (* NO-ENTRY packet (untracked / INVALID): the same env, but pkt_ct_present = false *)
-  let p_noentry = { p_tracked with Packet.pkt_ct_present = false } in
-  let v_noentry = Semantics.eval_chain_mut chain p_noentry in
+  let p_noentry = wire (fun p -> { p with Packet.pkt_ct_present = false }) p_tracked in
+  let v_noentry = ev_chain_mut chain p_noentry in
   check "ct mark 0x10: a TRACKED packet (entry present) MATCHES -> ACCEPT"
     (v_tracked = Verdict.Accept);
   check "ct mark 0x10: a NO-ENTRY packet BREAKs the rule -> policy DROP"
     (v_noentry = Verdict.Drop);
   check "ct mark load_ok = false on a no-entry packet (kernel NFT_BREAK)"
-    (not (Syntax.load_ok (Syntax.LCt Packet.CKmark) p_noentry));
+    (not (Syntax.load_ok (Syntax.LCt Packet.CKmark) (snd p_noentry)));
   check "ct state load_ok = true on a no-entry packet (the lone always-readable key)"
-    (Syntax.load_ok (Syntax.LCt Packet.CKstate) p_noentry);
+    (Syntax.load_ok (Syntax.LCt Packet.CKstate) (snd p_noentry));
   check "ct state reads NF_CT_STATE_INVALID_BIT (0x01) on a no-entry packet"
-    (data_eq (Syntax.do_load (Syntax.LCt Packet.CKstate) p_noentry) [0;0;0;1]);
+    (data_eq (dload (Syntax.LCt Packet.CKstate) p_noentry) [0;0;0;1]);
   (* and `ct state invalid` (immediate [0;0;0;1], same as the parser's `invalid`
      keyword) MATCHES the no-entry packet, mirroring the kernel always-matching it *)
   check "ct state invalid matches a no-entry packet (register 0x01 == immediate 0x01)"
-    (Semantics.eval_matchcond
+    (ev_mc
        (Syntax.MEq (Syntax.FCtState, [0;0;0;1])) p_noentry);
   Printf.printf "\n"
 

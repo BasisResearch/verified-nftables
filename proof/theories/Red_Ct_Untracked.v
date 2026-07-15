@@ -48,7 +48,7 @@ Definition e_noentry : env :=
      e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
 
 Definition pkt_noentry : packet :=
-  {| pkt_env := e_noentry; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
+  {| pkt_meta := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := []; pkt_th := []; pkt_ih := []; pkt_tnl := [];
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
@@ -95,7 +95,7 @@ Proof. reflexivity. Qed.
     userspace's ct_state_tbl (src/ct.c: SYMBOL("invalid", NF_CT_STATE_INVALID_BIT))
     and the project parser (nft_lower.ml: "invalid",[0;0;0;1]). *)
 Theorem ct_state_reads_invalid_when_no_entry :
-  do_load (LCt CKstate) pkt_noentry = [0;0;0;1].
+  do_load (LCt CKstate) e_noentry pkt_noentry = [0;0;0;1].
 Proof. reflexivity. Qed.
 
 (** REGRESSION: a no-entry / non-untracked packet provably MATCHES
@@ -104,7 +104,7 @@ Proof. reflexivity. Qed.
     1<<5 = [0;0;0;32], a bit the kernel never assigns) would make this rule
     unmatchable and is refuted by this theorem. *)
 Theorem ctstate_invalid_matches_no_entry :
-  eval_matchcond (MEq FCtState [0;0;0;1]) pkt_noentry = true.
+  eval_matchcond (MEq FCtState [0;0;0;1]) e_noentry pkt_noentry = true.
 Proof. reflexivity. Qed.
 
 (** ── 3. The no-entry BREAK, at the match level.
@@ -116,20 +116,20 @@ Proof. reflexivity. Qed.
 Definition m_ctmark : matchcond := MEq FCtMark [0;0;0;16].
 
 Theorem ctmark_does_not_match_no_entry :
-  eval_matchcond m_ctmark pkt_noentry = false.
+  eval_matchcond m_ctmark e_noentry pkt_noentry = false.
 Proof. reflexivity. Qed.
 
 Definition m_ctdir_orig : matchcond := MEq FCtDirection [0].
 
 Theorem ctdir_does_not_match_no_entry :
-  eval_matchcond m_ctdir_orig pkt_noentry = false.
+  eval_matchcond m_ctdir_orig e_noentry pkt_noentry = false.
 Proof. reflexivity. Qed.
 
 (** The exact same `ct mark 0x10` packet, but WITH a conntrack entry
     ([pkt_ct_present = true]), DOES match — the rule is not vacuous; only the no-entry
     case breaks. *)
 Definition pkt_withentry : packet :=
-  {| pkt_env := e_noentry; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
+  {| pkt_meta := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := []; pkt_th := []; pkt_ih := []; pkt_tnl := [];
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
@@ -140,7 +140,7 @@ Definition pkt_withentry : packet :=
      pkt_ct_present := true |}.
 
 Theorem ctmark_matches_with_entry :
-  eval_matchcond m_ctmark pkt_withentry = true.
+  eval_matchcond m_ctmark e_noentry pkt_withentry = true.
 Proof. reflexivity. Qed.
 
 (** ── 4. DSL/VM lock-step: the compiled `ct mark` load BREAKs the rule on the VM
@@ -148,11 +148,11 @@ Proof. reflexivity. Qed.
     packet (both fall through). *)
 Theorem vm_ctmark_load_breaks_no_entry :
   forall dst rest rf,
-    run_rule rf (ICtLoad CKmark dst :: rest) pkt_noentry = None.
+    run_rule rf (ICtLoad CKmark dst :: rest) e_noentry pkt_noentry = None.
 Proof. reflexivity. Qed.
 
 Theorem vm_ctstate_load_proceeds_no_entry :
   forall dst rest rf,
-    run_rule rf (ICtLoad CKstate dst :: rest) pkt_noentry
-    = run_rule (set_reg rf dst [0;0;0;1]) rest pkt_noentry.
+    run_rule rf (ICtLoad CKstate dst :: rest) e_noentry pkt_noentry
+    = run_rule (set_reg rf dst [0;0;0;1]) rest e_noentry pkt_noentry.
 Proof. reflexivity. Qed.

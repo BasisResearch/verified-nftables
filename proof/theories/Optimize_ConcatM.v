@@ -180,36 +180,36 @@ Qed.
 
 (** ** Loadability / outcome / applies of the guarded shells. *)
 
-Lemma orig_rule2g_loadable_indep : forall f1 f2 gm a b a' b' body r1 p,
-  rule_loadable (orig_rule2g f1 f2 gm a b body r1) p
-  = rule_loadable (orig_rule2g f1 f2 gm a' b' body r1) p.
+Lemma orig_rule2g_loadable_indep : forall f1 f2 gm a b a' b' body r1 e p,
+  rule_loadable (orig_rule2g f1 f2 gm a b body r1) e p
+  = rule_loadable (orig_rule2g f1 f2 gm a' b' body r1) e p.
 Proof.
   intros. unfold orig_rule2g. rewrite !rule_loadable_mk_head.
   rewrite !synproxy_stops_bmatch, !body_thread_bmatch.
   cbn [body_loadable_walk body_item_loadable match_loadable]. reflexivity.
 Qed.
 
-Lemma orig_rule2g_outcome_indep : forall f1 f2 gm a b a' b' body r1 p,
-  outcome (orig_rule2g f1 f2 gm a b body r1) p
-  = outcome (orig_rule2g f1 f2 gm a' b' body r1) p.
+Lemma orig_rule2g_outcome_indep : forall f1 f2 gm a b a' b' body r1 e p,
+  outcome (orig_rule2g f1 f2 gm a b body r1) e p
+  = outcome (orig_rule2g f1 f2 gm a' b' body r1) e p.
 Proof.
   intros. unfold orig_rule2g. rewrite !outcome_mk_head.
   rewrite !synproxy_stops_bmatch, !body_thread_bmatch. reflexivity.
 Qed.
 
-Lemma orig_rule2g_applies : forall f1 f2 gm a b body r1 p,
-  rule_applies (orig_rule2g f1 f2 gm a b body r1) p
-  = andb (andb (andb (eval_matchcond (MCmp f1 CEq a) p) (eval_matchcond gm p))
-               (eval_matchcond (MCmp f2 CEq b) p))
-         (rule_applies_walk body p).
+Lemma orig_rule2g_applies : forall f1 f2 gm a b body r1 e p,
+  rule_applies (orig_rule2g f1 f2 gm a b body r1) e p
+  = andb (andb (andb (eval_matchcond (MCmp f1 CEq a) e p) (eval_matchcond gm e p))
+               (eval_matchcond (MCmp f2 CEq b) e p))
+         (rule_applies_walk body e p).
 Proof.
   intros. unfold orig_rule2g. rewrite rule_applies_mk_head.
   cbn [rule_applies_walk]. rewrite !Bool.andb_assoc. reflexivity.
 Qed.
 
-Lemma merged_rule2g_loadable_eq_orig : forall f1 f2 gm name a b body r1 p,
-  rule_loadable (merged_rule2g f1 f2 gm name body r1) p
-  = rule_loadable (orig_rule2g f1 f2 gm a b body r1) p.
+Lemma merged_rule2g_loadable_eq_orig : forall f1 f2 gm name a b body r1 e p,
+  rule_loadable (merged_rule2g f1 f2 gm name body r1) e p
+  = rule_loadable (orig_rule2g f1 f2 gm a b body r1) e p.
 Proof.
   intros. unfold merged_rule2g, orig_rule2g. rewrite !rule_loadable_mk_head.
   rewrite !synproxy_stops_bmatch, !body_thread_bmatch.
@@ -217,19 +217,19 @@ Proof.
   rewrite Bool.andb_true_r. btauto.
 Qed.
 
-Lemma merged_rule2g_outcome_eq_orig : forall f1 f2 gm name a b body r1 p,
-  outcome (merged_rule2g f1 f2 gm name body r1) p
-  = outcome (orig_rule2g f1 f2 gm a b body r1) p.
+Lemma merged_rule2g_outcome_eq_orig : forall f1 f2 gm name a b body r1 e p,
+  outcome (merged_rule2g f1 f2 gm name body r1) e p
+  = outcome (orig_rule2g f1 f2 gm a b body r1) e p.
 Proof.
   intros. unfold merged_rule2g, orig_rule2g. rewrite !outcome_mk_head.
   rewrite !synproxy_stops_bmatch, !body_thread_bmatch. reflexivity.
 Qed.
 
-Lemma merged_rule2g_applies : forall f1 f2 gm name body r1 p,
-  rule_applies (merged_rule2g f1 f2 gm name body r1) p
-  = andb (eval_matchcond gm p)
-         (andb (eval_matchcond (MConcatSet [f1; f2] false name) p)
-               (rule_applies_walk body p)).
+Lemma merged_rule2g_applies : forall f1 f2 gm name body r1 e p,
+  rule_applies (merged_rule2g f1 f2 gm name body r1) e p
+  = andb (eval_matchcond gm e p)
+         (andb (eval_matchcond (MConcatSet [f1; f2] false name) e p)
+               (rule_applies_walk body e p)).
 Proof.
   intros. unfold merged_rule2g. rewrite rule_applies_mk_head.
   cbn [rule_applies_walk]. reflexivity.

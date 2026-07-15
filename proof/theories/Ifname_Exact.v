@@ -33,9 +33,9 @@ Definition e0 : env :=
      e_ct := fun _ _ => []; e_nat := fun _ => None; e_numgen := fun _ => 0 |}.
 
 Definition pkt_ifn (nm : data) : packet :=
-  {| pkt_env := e0;
+  {|
      pkt_meta := fun k => match k with MKiifname => nm | _ => [] end;
-     pkt_ct := fun _ => []; pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
+     pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := []; pkt_th := []; pkt_ih := []; pkt_tnl := [];
      pkt_fibkey := fun _ => []; pkt_numgen := fun _ => []; pkt_osf := [];
      pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
@@ -59,13 +59,13 @@ Definition reg_dummy0e : data :=
 
 (** The exact 16-byte match accepts the interface it names. *)
 Theorem exact_matches_dummy0 :
-  eval_matchcond m_exact (pkt_ifn reg_dummy0) = true.
+  eval_matchcond m_exact e0 (pkt_ifn reg_dummy0) = true.
 Proof. vm_compute. reflexivity. Qed.
 
 (** The exact 16-byte match REJECTS a same-prefix but distinct interface — the
     soundness the zero pad provides (an unpadded literal accepts it). *)
 Theorem exact_rejects_prefix_iface :
-  eval_matchcond m_exact (pkt_ifn reg_dummy0e) = false.
+  eval_matchcond m_exact e0 (pkt_ifn reg_dummy0e) = false.
 Proof. vm_compute. reflexivity. Qed.
 
 (** The refuted UNPADDED encoding wrongly accepts the distinct interface: a
@@ -73,19 +73,19 @@ Proof. vm_compute. reflexivity. Qed.
     document the unsound bug class the pad rules out. *)
 Definition m_buggy := MEq FMetaIifname [100;117;109;109;121;48].
 Theorem old_unpadded_wrongly_accepts_prefix :
-  eval_matchcond m_buggy (pkt_ifn reg_dummy0e) = true.
+  eval_matchcond m_buggy e0 (pkt_ifn reg_dummy0e) = true.
 Proof. vm_compute. reflexivity. Qed.
 
 (** The two encodings observably differ: on the distinct interface, the padded
     exact match and the unpadded match disagree. *)
 Theorem fix_changes_behaviour :
-  eval_matchcond m_exact (pkt_ifn reg_dummy0e)
-    <> eval_matchcond m_buggy (pkt_ifn reg_dummy0e).
+  eval_matchcond m_exact e0 (pkt_ifn reg_dummy0e)
+    <> eval_matchcond m_buggy e0 (pkt_ifn reg_dummy0e).
 Proof. vm_compute. discriminate. Qed.
 
 (** A trailing-'*' wildcard correctly remains a PREFIX match: `iifname "dummy*"`
     matches any interface whose name starts with "dummy" (kernel short cmp). *)
 Theorem wildcard_is_prefix :
-  eval_matchcond m_wild (pkt_ifn reg_dummy0e) = true
-  /\ eval_matchcond m_wild (pkt_ifn reg_dummy0) = true.
+  eval_matchcond m_wild e0 (pkt_ifn reg_dummy0e) = true
+  /\ eval_matchcond m_wild e0 (pkt_ifn reg_dummy0) = true.
 Proof. split; vm_compute; reflexivity. Qed.

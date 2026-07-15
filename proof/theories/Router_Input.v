@@ -118,11 +118,12 @@ Opaque field_value assoc_verdict eval_matchcond_body field_loadable.
     the caller falls through to inbound's policy DROP). *)
 (* The three matches of the inbound_world rule, exactly as the kernel evaluates
    them (firstn-truncated equality compares against the rule's literals). *)
-Definition m_saddr  (p : packet) : bool := eval_matchcond_body (MEq FIp4Saddr [81;209;165;42]) p.
-Definition m_tcp    (p : packet) : bool := eval_matchcond_body (MEq FMetaL4proto [6]) p.
-Definition m_dport22(p : packet) : bool := eval_matchcond_body (MEq FThDport [0;22]) p.
+Definition m_saddr (e : env) (p : packet) : bool := eval_matchcond_body (MEq FIp4Saddr [81;209;165;42]) e p.
+Definition m_tcp (e : env) (p : packet) : bool := eval_matchcond_body (MEq FMetaL4proto [6]) e p.
+Definition m_dport22 (e : env) (p : packet) : bool := eval_matchcond_body (MEq FThDport [0;22]) e p.
 
-Definition world_ssh (p : packet) : bool := m_saddr p && m_tcp p && m_dport22 p.
+Definition world_ssh (e : env) (p : packet) : bool :=
+  m_saddr e p && m_tcp e p && m_dport22 e p.
 
 (* The single rule of [global_inbound_world] (the parser's literal): accept iff
    saddr=81.209.165.42 AND l4proto=tcp AND dport=22. *)
@@ -137,16 +138,16 @@ Lemma c_rules_world : c_rules global_inbound_world = [r1_world].
 Proof. reflexivity. Qed.
 
 (* The world rule's loads (its three field reads).  When they all succeed,
-   [rule_loadable r1_world p = true] and each [eval_matchcond] collapses to its
+   [rule_loadable r1_world e p = true] and each [eval_matchcond] collapses to its
    (opaque) body. *)
 Definition world_loads (p : packet) : bool :=
   field_loadable FIp4Saddr p && field_loadable FMetaL4proto p
   && field_loadable FThDport p.
 
-Lemma world_rule_loadable : forall p,
-  world_loads p = true -> rule_loadable r1_world p = true.
+Lemma world_rule_loadable : forall e p,
+  world_loads p = true -> rule_loadable r1_world e p = true.
 Proof.
-  intros p H. unfold world_loads in H.
+  intros e p H. unfold world_loads in H.
   apply Bool.andb_true_iff in H as [H12 H3].
   apply Bool.andb_true_iff in H12 as [H1 H2].
   unfold rule_loadable, r1_world.
@@ -156,13 +157,13 @@ Qed.
 
 (* When the rule's loads succeed, [global_inbound_world] (as a jump target) yields
    [Some Accept] exactly on the ssh-from-the-allowed-host flow, else [None]. *)
-Lemma inbound_world_eval : forall n p,
+Lemma inbound_world_eval : forall n e p,
   world_loads p = true ->
-  eval_rules_j (S n) global_chains (c_rules global_inbound_world) p =
-    (if world_ssh p then Some Accept else None).
+  eval_rules_j (S n) global_chains (c_rules global_inbound_world) e p =
+    (if world_ssh e p then Some Accept else None).
 Proof.
-  intros n p Hwl.
-  pose proof (world_rule_loadable p Hwl) as Hld.
+  intros n e p Hwl.
+  pose proof (world_rule_loadable e p Hwl) as Hld.
   unfold world_loads in Hwl.
   apply Bool.andb_true_iff in Hwl as [H12 H3].
   apply Bool.andb_true_iff in H12 as [H1 H2].
@@ -174,25 +175,25 @@ Proof.
   rewrite H1, H2, H3. cbn [andb].
   unfold world_ssh, m_saddr, m_tcp, m_dport22.
   cbn -[eval_rules_j eval_matchcond_body].
-  destruct (eval_matchcond_body (MEq FIp4Saddr [81;209;165;42]) p) eqn:Hs;
+  destruct (eval_matchcond_body (MEq FIp4Saddr [81;209;165;42]) e p) eqn:Hs;
     cbn -[eval_rules_j eval_matchcond_body];
     [ | rewrite ?erj_empty; reflexivity ].
-  destruct (eval_matchcond_body (MEq FMetaL4proto [6]) p) eqn:Hl;
+  destruct (eval_matchcond_body (MEq FMetaL4proto [6]) e p) eqn:Hl;
     cbn -[eval_rules_j eval_matchcond_body];
     [ | rewrite ?erj_empty; reflexivity ].
-  destruct (eval_matchcond_body (MEq FThDport [0;22]) p) eqn:Hd;
+  destruct (eval_matchcond_body (MEq FThDport [0;22]) e p) eqn:Hd;
     cbn -[eval_rules_j eval_matchcond_body];
     rewrite ?erj_empty; reflexivity.
 Qed.
 
 (** ** The gen_env verdict-map contents (the parser emitted them in [decls]). *)
-Lemma e_vmap_map1 : forall p, pkt_env p = gen_env ->
-  e_vmap (pkt_env p) "__map1" = map1.
-Proof. intros p H. rewrite H. reflexivity. Qed.
+Lemma e_vmap_map1 : forall e, e = gen_env ->
+  e_vmap e "__map1" = map1.
+Proof. intros e H. rewrite H. reflexivity. Qed.
 
-Lemma e_vmap_map2 : forall p, pkt_env p = gen_env ->
-  e_vmap (pkt_env p) "__map2" = map2.
-Proof. intros p H. rewrite H. reflexivity. Qed.
+Lemma e_vmap_map2 : forall e, e = gen_env ->
+  e_vmap e "__map2" = map2.
+Proof. intros e H. rewrite H. reflexivity. Qed.
 
 (** ** The two empty-body vmap rules of [global_inbound], named.  Both have an
        empty body, so [rule_loadable] is just the vmap-key load (a meta/ct field
@@ -215,37 +216,37 @@ Proof. reflexivity. Qed.
 
 (* Loadability of the two vmap rules: an empty body and a single meta/ct vmap-key
    load.  [field_loadable] of the ct-state / iifname registers. *)
-Lemma r_ct_loadable : forall p,
-  field_loadable FCtState p = true -> rule_loadable r_ct p = true.
+Lemma r_ct_loadable : forall e p,
+  field_loadable FCtState p = true -> rule_loadable r_ct e p = true.
 Proof.
-  intros p H. unfold rule_loadable, r_ct. cbn. rewrite H. cbn [andb].
-  destruct (assoc_verdict (field_value FCtState p) (e_vmap (pkt_env p) "__map1")); reflexivity.
+  intros e p H. unfold rule_loadable, r_ct. cbn. rewrite H. cbn [andb].
+  destruct (assoc_verdict (field_value FCtState e p) (e_vmap e "__map1")); reflexivity.
 Qed.
 
-Lemma r_iif_loadable : forall p,
-  field_loadable FMetaIifname p = true -> rule_loadable r_iif p = true.
+Lemma r_iif_loadable : forall e p,
+  field_loadable FMetaIifname p = true -> rule_loadable r_iif e p = true.
 Proof.
-  intros p H. unfold rule_loadable, r_iif. cbn. rewrite H. cbn [andb].
-  destruct (assoc_verdict (field_value FMetaIifname p) (e_vmap (pkt_env p) "__map2")); reflexivity.
+  intros e p H. unfold rule_loadable, r_iif. cbn. rewrite H. cbn [andb].
+  destruct (assoc_verdict (field_value FMetaIifname e p) (e_vmap e "__map2")); reflexivity.
 Qed.
 
 (* Both vmap rules always "apply" (empty body) and their outcome is exactly the
    verdict-map lookup (a MISS yields [None] = fall through, since the static
    verdict is [Continue] with no post-outcome statements). *)
-Lemma r_ct_applies  : forall p, rule_applies r_ct p = true.
+Lemma r_ct_applies  : forall e p, rule_applies r_ct e p = true.
 Proof. reflexivity. Qed.
-Lemma r_iif_applies : forall p, rule_applies r_iif p = true.
+Lemma r_iif_applies : forall e p, rule_applies r_iif e p = true.
 Proof. reflexivity. Qed.
 
-Lemma r_ct_outcome : forall p,
-  outcome r_ct p =
-    match assoc_verdict (field_value FCtState p) (e_vmap (pkt_env p) "__map1") with
+Lemma r_ct_outcome : forall e p,
+  outcome r_ct e p =
+    match assoc_verdict (field_value FCtState e p) (e_vmap e "__map1") with
     | Some v => Some v | None => None end.
 Proof. reflexivity. Qed.
 
-Lemma r_iif_outcome : forall p,
-  outcome r_iif p =
-    match assoc_verdict (field_value FMetaIifname p) (e_vmap (pkt_env p) "__map2") with
+Lemma r_iif_outcome : forall e p,
+  outcome r_iif e p =
+    match assoc_verdict (field_value FMetaIifname e p) (e_vmap e "__map2") with
     | Some v => Some v | None => None end.
 Proof. reflexivity. Qed.
 
@@ -257,66 +258,66 @@ Proof. reflexivity. Qed.
                                a MISS (and the inbound_world jump's [None]) falls
                                through to the chain policy DROP.
 
-    Hypotheses: [pkt_env p = gen_env] pins the two vmaps to [map1]/[map2]; the ct
+    Hypotheses: [e = gen_env] pins the two vmaps to [map1]/[map2]; the ct
     and iif registers are loadable; and the world rule's three field reads are
     loadable (needed only on the ppp0 branch, but assumed throughout for a single
     clean statement — every concrete witness discharges it).  The eth1 branch is
     left as the (opaque) sub-evaluation of [inbound_private] — characterised
     separately. *)
-Definition iif_key (p : packet) : data := field_value FMetaIifname p.
-Definition ct_key  (p : packet) : data := field_value FCtState p.
+Definition iif_key (e : env) (p : packet) : data := field_value FMetaIifname e p.
+Definition ct_key  (e : env) (p : packet) : data := field_value FCtState e p.
 
 Lemma lookup_world : chain_lookup global_chains "inbound_world" = Some global_inbound_world.
 Proof. reflexivity. Qed.
 Lemma lookup_private : chain_lookup global_chains "inbound_private" = Some global_inbound_private.
 Proof. reflexivity. Qed.
 
-Lemma inbound_eval_unfold : forall p,
-  pkt_env p = gen_env ->
+Lemma inbound_eval_unfold : forall e p,
+  e = gen_env ->
   field_loadable FCtState p = true ->
   field_loadable FMetaIifname p = true ->
   world_loads p = true ->
-  eval_table in_fuel global_chains global_inbound p =
-    (if data_eqb cts_established (ct_key p) then Accept
-     else if data_eqb cts_related (ct_key p) then Accept
-     else if data_eqb cts_invalid (ct_key p) then Drop
+  eval_table in_fuel global_chains global_inbound e p =
+    (if data_eqb cts_established (ct_key e p) then Accept
+     else if data_eqb cts_related (ct_key e p) then Accept
+     else if data_eqb cts_invalid (ct_key e p) then Drop
      else (* ct vmap MISS -> iif vmap *)
-       if data_eqb if_lo (iif_key p) then Accept
-       else if data_eqb if_ppp0 (iif_key p) then (if world_ssh p then Accept else Drop)
-       else if data_eqb if_eth1 (iif_key p)
-            then match eval_rules_j 6 global_chains (c_rules global_inbound_private) p with
+       if data_eqb if_lo (iif_key e p) then Accept
+       else if data_eqb if_ppp0 (iif_key e p) then (if world_ssh e p then Accept else Drop)
+       else if data_eqb if_eth1 (iif_key e p)
+            then match eval_rules_j 6 global_chains (c_rules global_inbound_private) e p with
                  | Some v => v | None => Drop end
             else Drop).
 Proof.
-  intros p Hpe Hct Hiif Hwl.
+  intros e p Hpe Hct Hiif Hwl.
   unfold eval_table, in_fuel. rewrite c_rules_inbound.
   (* rule 1: ct vmap *)
   rewrite erj_cons.
-  rewrite (r_ct_loadable p Hct), r_ct_applies. cbn [andb].
+  rewrite (r_ct_loadable e p Hct), r_ct_applies. cbn [andb].
   rewrite r_ct_outcome.
-  rewrite (e_vmap_map1 p Hpe). rewrite assoc_map1_eq.
+  rewrite (e_vmap_map1 e Hpe). rewrite assoc_map1_eq.
   unfold ct_key.
-  destruct (data_eqb cts_established (field_value FCtState p)) eqn:He; [ reflexivity | ].
-  destruct (data_eqb cts_related (field_value FCtState p)) eqn:Hr; [ reflexivity | ].
-  destruct (data_eqb cts_invalid (field_value FCtState p)) eqn:Hi; [ reflexivity | ].
+  destruct (data_eqb cts_established (field_value FCtState e p)) eqn:He; [ reflexivity | ].
+  destruct (data_eqb cts_related (field_value FCtState e p)) eqn:Hr; [ reflexivity | ].
+  destruct (data_eqb cts_invalid (field_value FCtState e p)) eqn:Hi; [ reflexivity | ].
   (* ct vmap MISS: fall through to rule 2 (iif vmap) *)
   rewrite erj_cons.
-  rewrite (r_iif_loadable p Hiif), r_iif_applies. cbn [andb].
+  rewrite (r_iif_loadable e p Hiif), r_iif_applies. cbn [andb].
   rewrite r_iif_outcome.
-  rewrite (e_vmap_map2 p Hpe). rewrite assoc_map2_eq.
+  rewrite (e_vmap_map2 e Hpe). rewrite assoc_map2_eq.
   unfold iif_key.
-  destruct (data_eqb if_lo (field_value FMetaIifname p)) eqn:Hlo; [ reflexivity | ].
-  destruct (data_eqb if_ppp0 (field_value FMetaIifname p)) eqn:Hppp0.
+  destruct (data_eqb if_lo (field_value FMetaIifname e p)) eqn:Hlo; [ reflexivity | ].
+  destruct (data_eqb if_ppp0 (field_value FMetaIifname e p)) eqn:Hppp0.
   { (* ppp0 -> JUMP inbound_world *)
     rewrite lookup_world.
-    replace (eval_rules_j 6 global_chains (c_rules global_inbound_world) p)
-      with (if world_ssh p then Some Accept else None)
-      by (symmetry; apply (inbound_world_eval 5 p Hwl)).
-    destruct (world_ssh p); rewrite ?erj_empty; reflexivity. }
-  destruct (data_eqb if_eth1 (field_value FMetaIifname p)) eqn:Heth1.
+    replace (eval_rules_j 6 global_chains (c_rules global_inbound_world) e p)
+      with (if world_ssh e p then Some Accept else None)
+      by (symmetry; apply (inbound_world_eval 5 e p Hwl)).
+    destruct (world_ssh e p); rewrite ?erj_empty; reflexivity. }
+  destruct (data_eqb if_eth1 (field_value FMetaIifname e p)) eqn:Heth1.
   { (* eth1 -> JUMP inbound_private (sub-eval left opaque) *)
     rewrite lookup_private.
-    destruct (eval_rules_j 6 global_chains (c_rules global_inbound_private) p) eqn:Hpriv;
+    destruct (eval_rules_j 6 global_chains (c_rules global_inbound_private) e p) eqn:Hpriv;
       [ reflexivity | rewrite ?erj_empty; reflexivity ]. }
   (* iif vmap MISS: policy DROP *)
   rewrite ?erj_empty. reflexivity.
@@ -342,18 +343,18 @@ Lemma new_neq_inv   : data_eqb cts_invalid     cts_new = false. Proof. reflexivi
     DROPPED: it jumps to [inbound_world], misses the single accept rule, falls back
     to [inbound], and is dropped by the chain's policy DROP.  No other world packet
     can reach the box. *)
-Theorem world_ingress_locked_down : forall p,
-  pkt_env p = gen_env ->
+Theorem world_ingress_locked_down : forall e p,
+  e = gen_env ->
   field_loadable FCtState p = true ->
   field_loadable FMetaIifname p = true ->
   world_loads p = true ->
-  field_value FCtState p = cts_new ->
-  field_value FMetaIifname p = if_ppp0 ->
-  world_ssh p = false ->
-  eval_table in_fuel global_chains global_inbound p = Drop.
+  field_value FCtState e p = cts_new ->
+  field_value FMetaIifname e p = if_ppp0 ->
+  world_ssh e p = false ->
+  eval_table in_fuel global_chains global_inbound e p = Drop.
 Proof.
-  intros p Hpe Hct Hiif Hwl Hcts Hppp0 Hssh.
-  rewrite (inbound_eval_unfold p Hpe Hct Hiif Hwl).
+  intros e p Hpe Hct Hiif Hwl Hcts Hppp0 Hssh.
+  rewrite (inbound_eval_unfold e p Hpe Hct Hiif Hwl).
   unfold ct_key, iif_key. rewrite Hcts, Hppp0.
   rewrite new_neq_estab, new_neq_rel, new_neq_inv, lo_neq_ppp0.
   rewrite data_eqb_refl, Hssh. reflexivity.
@@ -361,18 +362,18 @@ Qed.
 
 (* The same crux, decomposed by which guard fails (the exact disjunction the
    parser's three-match rule rejects). *)
-Theorem world_ingress_locked_down_disj : forall p,
-  pkt_env p = gen_env ->
+Theorem world_ingress_locked_down_disj : forall e p,
+  e = gen_env ->
   field_loadable FCtState p = true ->
   field_loadable FMetaIifname p = true ->
   world_loads p = true ->
-  field_value FCtState p = cts_new ->
-  field_value FMetaIifname p = if_ppp0 ->
-  ( m_saddr p = false \/ m_tcp p = false \/ m_dport22 p = false ) ->
-  eval_table in_fuel global_chains global_inbound p = Drop.
+  field_value FCtState e p = cts_new ->
+  field_value FMetaIifname e p = if_ppp0 ->
+  ( m_saddr e p = false \/ m_tcp e p = false \/ m_dport22 e p = false ) ->
+  eval_table in_fuel global_chains global_inbound e p = Drop.
 Proof.
-  intros p Hpe Hct Hiif Hwl Hcts Hppp0 Hdisj.
-  apply (world_ingress_locked_down p Hpe Hct Hiif Hwl Hcts Hppp0).
+  intros e p Hpe Hct Hiif Hwl Hcts Hppp0 Hdisj.
+  apply (world_ingress_locked_down e p Hpe Hct Hiif Hwl Hcts Hppp0).
   unfold world_ssh.
   destruct Hdisj as [H | [H | H]]; rewrite H; cbn [andb];
     rewrite ?Bool.andb_false_r; reflexivity.
@@ -380,18 +381,18 @@ Qed.
 
 (** The single allowed world flow IS accepted (the lockdown is NOT vacuous): a new
     packet on ppp0 that IS ssh (tcp/22) from 81.209.165.42 is ACCEPTed. *)
-Theorem inbound_world_ssh_accept : forall p,
-  pkt_env p = gen_env ->
+Theorem inbound_world_ssh_accept : forall e p,
+  e = gen_env ->
   field_loadable FCtState p = true ->
   field_loadable FMetaIifname p = true ->
   world_loads p = true ->
-  field_value FCtState p = cts_new ->
-  field_value FMetaIifname p = if_ppp0 ->
-  world_ssh p = true ->
-  eval_table in_fuel global_chains global_inbound p = Accept.
+  field_value FCtState e p = cts_new ->
+  field_value FMetaIifname e p = if_ppp0 ->
+  world_ssh e p = true ->
+  eval_table in_fuel global_chains global_inbound e p = Accept.
 Proof.
-  intros p Hpe Hct Hiif Hwl Hcts Hppp0 Hssh.
-  rewrite (inbound_eval_unfold p Hpe Hct Hiif Hwl).
+  intros e p Hpe Hct Hiif Hwl Hcts Hppp0 Hssh.
+  rewrite (inbound_eval_unfold e p Hpe Hct Hiif Hwl).
   unfold ct_key, iif_key. rewrite Hcts, Hppp0.
   rewrite new_neq_estab, new_neq_rel, new_neq_inv, lo_neq_ppp0.
   rewrite data_eqb_refl, Hssh. reflexivity.
@@ -399,80 +400,80 @@ Qed.
 
 (** Loopback is ALWAYS accepted at input (the __map2 `lo -> accept` entry), for any
     ct-state that misses the ct vmap (a new connection). *)
-Theorem inbound_loopback_accept : forall p,
-  pkt_env p = gen_env ->
+Theorem inbound_loopback_accept : forall e p,
+  e = gen_env ->
   field_loadable FCtState p = true ->
   field_loadable FMetaIifname p = true ->
   world_loads p = true ->
-  field_value FCtState p = cts_new ->
-  field_value FMetaIifname p = if_lo ->
-  eval_table in_fuel global_chains global_inbound p = Accept.
+  field_value FCtState e p = cts_new ->
+  field_value FMetaIifname e p = if_lo ->
+  eval_table in_fuel global_chains global_inbound e p = Accept.
 Proof.
-  intros p Hpe Hct Hiif Hwl Hcts Hlo.
-  rewrite (inbound_eval_unfold p Hpe Hct Hiif Hwl).
+  intros e p Hpe Hct Hiif Hwl Hcts Hlo.
+  rewrite (inbound_eval_unfold e p Hpe Hct Hiif Hwl).
   unfold ct_key, iif_key. rewrite Hcts, Hlo.
   rewrite new_neq_estab, new_neq_rel, new_neq_inv, data_eqb_refl. reflexivity.
 Qed.
 
 (** An UNKNOWN ingress interface (not lo/ppp0/eth1) with a new connection is
     DROPPED (the iif vmap misses, policy DROP). *)
-Theorem inbound_unknown_drop : forall p,
-  pkt_env p = gen_env ->
+Theorem inbound_unknown_drop : forall e p,
+  e = gen_env ->
   field_loadable FCtState p = true ->
   field_loadable FMetaIifname p = true ->
   world_loads p = true ->
-  field_value FCtState p = cts_new ->
-  data_eqb if_lo   (field_value FMetaIifname p) = false ->
-  data_eqb if_ppp0 (field_value FMetaIifname p) = false ->
-  data_eqb if_eth1 (field_value FMetaIifname p) = false ->
-  eval_table in_fuel global_chains global_inbound p = Drop.
+  field_value FCtState e p = cts_new ->
+  data_eqb if_lo   (field_value FMetaIifname e p) = false ->
+  data_eqb if_ppp0 (field_value FMetaIifname e p) = false ->
+  data_eqb if_eth1 (field_value FMetaIifname e p) = false ->
+  eval_table in_fuel global_chains global_inbound e p = Drop.
 Proof.
-  intros p Hpe Hct Hiif Hwl Hcts Hlo Hppp0 Heth1.
-  rewrite (inbound_eval_unfold p Hpe Hct Hiif Hwl).
+  intros e p Hpe Hct Hiif Hwl Hcts Hlo Hppp0 Heth1.
+  rewrite (inbound_eval_unfold e p Hpe Hct Hiif Hwl).
   unfold ct_key, iif_key. rewrite Hcts.
   rewrite new_neq_estab, new_neq_rel, new_neq_inv, Hlo, Hppp0, Heth1. reflexivity.
 Qed.
 
 (** ct-state INVALID is DROPPED at input — the __map1 `invalid -> drop` entry fires
     regardless of the ingress interface (it precedes the iifname vmap). *)
-Theorem inbound_invalid_dropped : forall p,
-  pkt_env p = gen_env ->
+Theorem inbound_invalid_dropped : forall e p,
+  e = gen_env ->
   field_loadable FCtState p = true ->
   field_loadable FMetaIifname p = true ->
   world_loads p = true ->
-  field_value FCtState p = cts_invalid ->
-  eval_table in_fuel global_chains global_inbound p = Drop.
+  field_value FCtState e p = cts_invalid ->
+  eval_table in_fuel global_chains global_inbound e p = Drop.
 Proof.
-  intros p Hpe Hct Hiif Hwl Hcts.
-  rewrite (inbound_eval_unfold p Hpe Hct Hiif Hwl).
+  intros e p Hpe Hct Hiif Hwl Hcts.
+  rewrite (inbound_eval_unfold e p Hpe Hct Hiif Hwl).
   unfold ct_key. rewrite Hcts. reflexivity.
 Qed.
 
 (** Established / related connections are ACCEPTED at input (the __map1
     `established/related -> accept` entries). *)
-Theorem inbound_established_accept : forall p,
-  pkt_env p = gen_env ->
+Theorem inbound_established_accept : forall e p,
+  e = gen_env ->
   field_loadable FCtState p = true ->
   field_loadable FMetaIifname p = true ->
   world_loads p = true ->
-  field_value FCtState p = cts_established ->
-  eval_table in_fuel global_chains global_inbound p = Accept.
+  field_value FCtState e p = cts_established ->
+  eval_table in_fuel global_chains global_inbound e p = Accept.
 Proof.
-  intros p Hpe Hct Hiif Hwl Hcts.
-  rewrite (inbound_eval_unfold p Hpe Hct Hiif Hwl).
+  intros e p Hpe Hct Hiif Hwl Hcts.
+  rewrite (inbound_eval_unfold e p Hpe Hct Hiif Hwl).
   unfold ct_key. rewrite Hcts. reflexivity.
 Qed.
 
-Theorem inbound_related_accept : forall p,
-  pkt_env p = gen_env ->
+Theorem inbound_related_accept : forall e p,
+  e = gen_env ->
   field_loadable FCtState p = true ->
   field_loadable FMetaIifname p = true ->
   world_loads p = true ->
-  field_value FCtState p = cts_related ->
-  eval_table in_fuel global_chains global_inbound p = Accept.
+  field_value FCtState e p = cts_related ->
+  eval_table in_fuel global_chains global_inbound e p = Accept.
 Proof.
-  intros p Hpe Hct Hiif Hwl Hcts.
-  rewrite (inbound_eval_unfold p Hpe Hct Hiif Hwl).
+  intros e p Hpe Hct Hiif Hwl Hcts.
+  rewrite (inbound_eval_unfold e p Hpe Hct Hiif Hwl).
   unfold ct_key. rewrite Hcts. reflexivity.
 Qed.
 
@@ -498,10 +499,10 @@ Definition th22 : data := [0;0; 0;22; 0;0;0;0; 0;0;0;0; 80;0;0;0; 0;0;0;0]%list.
 
 (* An input packet on ppp0 (the world), NEW ct-state, ssh dport 22, from source [s]. *)
 Definition mk_in (s : data) : packet :=
-  {| pkt_env := env_in;
+  {|
      pkt_meta := fun k => if meta_eqb k MKiifname then if_ppp0
                           else if meta_eqb k MKl4proto then l4_tcp else [];
-     pkt_ct := fun _ => []; pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
+     pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := []; pkt_nh := ip4_with s; pkt_th := th22; pkt_ih := [];
      pkt_tnl := []; pkt_fibkey := fun _ => []; pkt_numgen := fun _ => [];
      pkt_osf := []; pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
@@ -516,12 +517,12 @@ Definition pkt_world_bad : packet := mk_in [1;2;3;4]%list.
 
 (* The allowed ssh-from-81.209.165.42 packet is ACCEPTED by the parser's chain. *)
 Theorem pkt_world_ssh_accepted :
-  eval_table in_fuel global_chains global_inbound pkt_world_ssh = Accept.
+  eval_table in_fuel global_chains global_inbound env_in pkt_world_ssh = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The wrong-source ssh packet is DROPPED by the parser's chain (the saddr guard). *)
 Theorem pkt_world_bad_dropped :
-  eval_table in_fuel global_chains global_inbound pkt_world_bad = Drop.
+  eval_table in_fuel global_chains global_inbound env_in pkt_world_bad = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 (* [bug_inbound_world] = inbound_world with the `ip saddr 81.209.165.42` guard
@@ -546,14 +547,14 @@ Definition bug_chains : list (string * chain) :=
 (* Under the bug, the SAME wrong-source ssh packet is ACCEPTED -- the ssh-to-the-
    world hole. *)
 Theorem bug_world_bad_accepted :
-  eval_table in_fuel bug_chains global_inbound pkt_world_bad = Accept.
+  eval_table in_fuel bug_chains global_inbound env_in pkt_world_bad = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* Hence the input lockdown DISCRIMINATES the bug: on the same wrong-source ssh
    packet the parser's chain DROPs while the de-guarded chain ACCEPTs. *)
 Theorem input_property_discriminates_bug :
-  eval_table in_fuel global_chains global_inbound pkt_world_bad
-  <> eval_table in_fuel bug_chains global_inbound pkt_world_bad.
+  eval_table in_fuel global_chains global_inbound env_in pkt_world_bad
+  <> eval_table in_fuel bug_chains global_inbound env_in pkt_world_bad.
 Proof. rewrite pkt_world_bad_dropped, bug_world_bad_accepted. discriminate. Qed.
 
 (* The lockdown hypotheses are SATISFIABLE: the allowed ssh witness meets every
@@ -563,17 +564,17 @@ Lemma pkt_world_ssh_loads :
   field_loadable FCtState pkt_world_ssh = true
   /\ field_loadable FMetaIifname pkt_world_ssh = true
   /\ world_loads pkt_world_ssh = true
-  /\ field_value FCtState pkt_world_ssh = cts_new
-  /\ field_value FMetaIifname pkt_world_ssh = if_ppp0
-  /\ world_ssh pkt_world_ssh = true.
+  /\ field_value FCtState env_in pkt_world_ssh = cts_new
+  /\ field_value FMetaIifname env_in pkt_world_ssh = if_ppp0
+  /\ world_ssh env_in pkt_world_ssh = true.
 Proof. repeat split; vm_compute; reflexivity. Qed.
 
 Lemma pkt_world_bad_facts :
   field_loadable FCtState pkt_world_bad = true
   /\ field_loadable FMetaIifname pkt_world_bad = true
   /\ world_loads pkt_world_bad = true
-  /\ field_value FCtState pkt_world_bad = cts_new
-  /\ field_value FMetaIifname pkt_world_bad = if_ppp0
-  /\ world_ssh pkt_world_bad = false.
+  /\ field_value FCtState env_in pkt_world_bad = cts_new
+  /\ field_value FMetaIifname env_in pkt_world_bad = if_ppp0
+  /\ world_ssh env_in pkt_world_bad = false.
 Proof. repeat split; vm_compute; reflexivity. Qed.
 

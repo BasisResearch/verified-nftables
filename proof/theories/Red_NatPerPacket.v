@@ -59,8 +59,8 @@ Definition dnat_rule : rule :=
      r_fwd := None; r_queue := None; r_after := [] |}.
 Definition dnat_chain : chain := {| c_policy := Drop; c_rules := [ dnat_rule ] |}.
 
-Definition out_daddr (p : packet) : data :=
-  slice (pkt_nh (chain_out Hprerouting dnat_chain p)) 16 4.
+Definition out_daddr (e : env) (p : packet) : data :=
+  slice (pkt_nh (chain_out Hprerouting dnat_chain e p)) 16 4.
 
 (* A shared, empty env (so e_ct defaults to [], e_nat defaults to None — no NAT
    state established for any flow yet). *)
@@ -73,8 +73,8 @@ Definition env0 : env :=
 (* Two packets of the SAME flow (pkt_flow := [7;7]) but DIFFERENT source addresses
    (saddr @12..15): packet 1 = 1.1.1.1, packet 2 = 2.2.2.2.  A 20-byte IPv4 header;
    no L4 (pkt_have_l4 := false) so no checksum fixup confuses the daddr slot. *)
-Definition mkpkt (e : env) (saddr : data) : packet :=
-  {| pkt_env := e; pkt_meta := fun _ => []; pkt_ct := fun _ => [];
+Definition mkpkt (saddr : data) : packet :=
+  {| pkt_meta := fun _ => [];
      pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
      pkt_lh := [];
      pkt_nh := [69;0;0;20; 0;0;0;0; 64;6; 0;0] ++ saddr ++ [9;9;9;9];
@@ -86,16 +86,17 @@ Definition mkpkt (e : env) (saddr : data) : packet :=
      pkt_flow := [7;7]; pkt_untracked := false; pkt_ctdir_orig := true; pkt_ct_present := true |}.
 
 (* Packet 1 of the flow, evaluated against the fresh (no-mapping) env. *)
-Definition p1 : packet := mkpkt env0 [1;1;1;1].
+Definition p1 : packet := mkpkt [1;1;1;1].
 
 (* The shared env AFTER packet 1 has been NAT'd: it now carries the established
    mapping at flow [7;7] (the dnat-to-saddr tuple computed from p1's saddr). *)
-Definition env_after_p1 : env := pkt_env (chain_out Hprerouting dnat_chain p1).
+Definition env_after_p1 : env :=
+  chain_out_env Hprerouting dnat_chain env0 p1.
 
 (* Packet 2 of the SAME flow, but with a DIFFERENT source address (2.2.2.2), and —
    crucially — carrying the env produced by packet 1 (i.e. evaluated in the same
-   flow context, exactly as [seq_eval_env]/[set_env] thread the shared state). *)
-Definition p2 : packet := mkpkt env_after_p1 [2;2;2;2].
+   flow context, exactly as [seq_eval_env] threads the shared state). *)
+Definition p2 : packet := mkpkt [2;2;2;2].
 
 (* Same flow. *)
 Lemma same_flow : pkt_flow p2 = pkt_flow p1.
@@ -103,7 +104,7 @@ Proof. reflexivity. Qed.
 
 (* Packet 1 (first of the flow): the model dnat's destination to its OWN saddr
    (1.1.1.1) and STORES that mapping. *)
-Lemma out_daddr_p1 : out_daddr p1 = [1;1;1;1].
+Lemma out_daddr_p1 : out_daddr env0 p1 = [1;1;1;1].
 Proof. vm_compute. reflexivity. Qed.
 
 (* The mapping really was stored at flow [7;7] after packet 1. *)
@@ -115,13 +116,13 @@ Proof. vm_compute. reflexivity. Qed.
    (1.1.1.1), NOT its own saddr (2.2.2.2).  The model reuses the tuple established
    on packet 1 — exactly what the kernel does (confirmed ct -> rewrite from stored
    tuple). *)
-Lemma out_daddr_p2 : out_daddr p2 = [1;1;1;1].
+Lemma out_daddr_p2 : out_daddr env_after_p1 p2 = [1;1;1;1].
 Proof. vm_compute. reflexivity. Qed.
 
 (* The headline property: two same-flow packets, despite different source
    addresses, receive the SAME dnat destination — the one established on packet 1. *)
 Theorem same_flow_shares_stored_nat_mapping :
-  pkt_flow p2 = pkt_flow p1 /\ out_daddr p1 = out_daddr p2.
+  pkt_flow p2 = pkt_flow p1 /\ out_daddr env0 p1 = out_daddr env_after_p1 p2.
 Proof.
   split; [exact same_flow|].
   rewrite out_daddr_p1, out_daddr_p2. reflexivity.
@@ -130,8 +131,8 @@ Qed.
 (* And explicitly: packet 2's destination is packet 1's saddr (the stored mapping),
    NOT packet 2's own saddr — the model follows the stored tuple. *)
 Theorem packet2_uses_packet1_mapping :
-  out_daddr p2 = [1;1;1;1]            (* = packet 1's saddr, the stored mapping *)
-  /\ out_daddr p2 <> [2;2;2;2].       (* NOT packet 2's own saddr *)
+  out_daddr env_after_p1 p2 = [1;1;1;1]  (* = packet 1's saddr, the stored mapping *)
+  /\ out_daddr env_after_p1 p2 <> [2;2;2;2].       (* NOT packet 2's own saddr *)
 Proof.
   rewrite out_daddr_p2. split; [reflexivity | discriminate].
 Qed.
