@@ -4,7 +4,7 @@
 
    (A) Parse ../../rulesets/ruleset.nft and run the *extracted* DSL semantics
        (Semantics.eval_table) on concrete packets, asserting the verdicts match
-       the eight properties proved by hand in ../theories/Example_Ruleset.v.  This
+       the eight properties proved by hand in ../theories/Examples/Example_Ruleset.v.  This
        is an oracle INDEPENDENT of nft: it shows the parser builds an AST that
        *means* what the machine-checked proofs say the ruleset means.
 
@@ -288,7 +288,7 @@ let check_live_nft () =
 
 (* ---------- (D) optiplex.nft anti-spoofing (extracted eval_table) ----------
    Cross-checks the EXTRACTED parser against the Coq theorems in
-   theories/Optiplex_Antispoof.v: parse ../../rulesets/optiplex.nft, run the extracted
+   theories/Examples/Optiplex_Antispoof.v: parse ../../rulesets/optiplex.nft, run the extracted
    eval_table on the same spoof / legitimate packets, and assert the verdicts
    the proofs establish (vikunja/gentoo spoofs -> Drop; the bound pair -> Accept).
    The proofs are about nft2coq's emitted AST; this confirms the OCaml runtime
@@ -1131,7 +1131,7 @@ let check_ct_state () =
    (nft_ct_get_eval: READ_ONCE(ct->mark)).  The model now stores writable ct keys
    (mark/label) in the flow-keyed env table e_ct (keyed by pkt_flow), threaded across
    packets by eval_chain_mut_env/set_env — so packet 2 of the flow observes packet 1's
-   `ct mark set`, and a DIFFERENT flow does not.  Mirrors Red_CtMark_Crosspkt.v. *)
+   `ct mark set`, and a DIFFERENT flow does not.  Mirrors CtMark_CrossPacket.v. *)
 let check_ct_mark_crosspkt () =
   Printf.printf "=== (I') ct mark set persists across packets of a flow ===\n";
   let src =
@@ -1310,7 +1310,7 @@ let check_interval_vmap () =
    exists (pkt_ct_present = true) and otherwise sets pkt_untracked, so do_load
    (LCt CKstate) returns [0;0;0;64] only on a no-entry packet.  Thus
    `notrack ; ct state untracked accept` ACCEPTS a NO-ENTRY packet and DROPS an
-   entry-present (e.g. ESTABLISHED) one.  Mirrors Red_Notrack.v. *)
+   entry-present (e.g. ESTABLISHED) one.  Mirrors Notrack_CrossRule.v. *)
 let check_notrack () =
   Printf.printf "=== (I'') notrack forces ct state untracked (later ct state read sees it) ===\n";
   let untracked = [0;0;0;64] in   (* NF_CT_STATE_UNTRACKED_BIT *)

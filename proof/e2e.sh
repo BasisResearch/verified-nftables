@@ -214,7 +214,7 @@ fi
 # NFT_BREAKing); the kernel would run a BARE map with break-on-miss (netns witness
 # below), so the guarded form, the bare form and the two originals all filter/
 # rewrite every packet identically — the divergence is INTENTIONAL/NECESSARY, NOT
-# an nft bug.  Pinned axiom-free in Optimize_Mapn.mapn_bare_diverges_offkey.
+# an nft bug.  Pinned axiom-free in Optimize_DataMap.mapn_bare_diverges_offkey.
 echo ">> B6. nftc optimize folds meta-mark rules into a guarded data map (sound superset; nft -o does NOT)"
 MARKRULES='table ip t {
   chain c {

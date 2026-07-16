@@ -1,9 +1,9 @@
-# Rocq build artifacts
-theories/*.vo
-theories/*.vok
-theories/*.vos
-theories/*.glob
-theories/.*.aux
+# Rocq build artifacts (theories/ and its role subdirectories)
+theories/**/*.vo
+theories/**/*.vok
+theories/**/*.vos
+theories/**/*.glob
+theories/**/.*.aux
 CoqMakefile
 CoqMakefile.conf
 # coq_makefile / `rocq makefile` default output name (used by the rocq MCP

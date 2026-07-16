@@ -21,7 +21,7 @@
 
 let meq f v   : Syntax.matchcond = Syntax.MEq (f, v)
 (* `field == value` lowered as an ordered comparison (what the value->set merge
-   recognises as a mergeable head, via [Optimize_Merge.head_value]). *)
+   recognises as a mergeable head, via [Optimize_ValueSet.head_value]). *)
 let mcmpeq f v : Syntax.matchcond = Syntax.MCmp (f, Bytecode.CEq, v)
 let mrange f lo hi : Syntax.matchcond = Syntax.MRange (f, false, lo, hi)
 let rule ms v : Syntax.rule =

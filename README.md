@@ -12,14 +12,14 @@ interprets the bytecode, is trusted and unverified.
 
 Other than building and running the `nftc_cli.exe` command line tool,
 you can also use Rocq to formally prove properties about your ruleset (see
-[proof/theories/Optiplex_Antispoof.v](proof/theories/Optiplex_Antispoof.v), which
+[proof/theories/Examples/Optiplex_Antispoof.v](proof/theories/Examples/Optiplex_Antispoof.v), which
 reasons about the ruleset [optiplex.nft](rulesets/optiplex.nft)).
 A step-by-step tutorial for this analysis workflow — write a `.nft` file,
 parse it into Coq terms with `make gen`, then prove it blocks *exactly* one
 IP range (an iff, for all packets) — is in
 [proof/CONFIG_PROOFS.md](proof/CONFIG_PROOFS.md), with the worked example
 [rulesets/tutorial.nft](rulesets/tutorial.nft) /
-[proof/theories/Tutorial_Proofs.v](proof/theories/Tutorial_Proofs.v).
+[proof/theories/Examples/Tutorial_Proofs.v](proof/theories/Examples/Tutorial_Proofs.v).
 
 The core compiler is tested against the stock `nft` utility, but the
 untrusted OCaml code isn't fully exercised. Therefore, you should
@@ -131,7 +131,7 @@ kernel state and requires `--commit`, otherwise it dry-runs). Flags: `--table T`
 | `make nl-send` | push verified-compiled rules to the kernel in a fresh net namespace, read back with `nft list ruleset` |
 | `make difftest` | byte-identical forward check of a hand-written ruleset vs the local `nft` |
 | `make lib` / `make example` | build the reusable `nftc` library / build+run its standalone consumer demo |
-| `make gen` | regenerate the parser-output Coq terms (`theories/*_Gen.v`) from the `.nft` sources |
+| `make gen` | regenerate the parser-output Coq terms (`theories/Generated/*_Gen.v`) from the `.nft` sources |
 
 Sample rulesets to try the CLI on live in `rulesets/`: `rulesets/ruleset.nft`,
 `rulesets/router.nft`, `rulesets/optiplex.nft`, `rulesets/tutorial.nft`.
