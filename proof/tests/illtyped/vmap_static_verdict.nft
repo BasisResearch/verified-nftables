@@ -1,0 +1,8 @@
+# lowering lerr: a verdict map beside a static verdict is a shape nft never
+# emits (unreachable-on-hit / outcome-on-miss) -> Lower.LEvmapStatic.
+table ip t {
+  chain c {
+    type filter hook input priority 0; policy accept;
+    ct state vmap { established : accept } drop
+  }
+}

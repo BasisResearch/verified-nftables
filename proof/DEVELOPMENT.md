@@ -425,7 +425,7 @@ read to trust a theorem":
 | `theories/Examples/Example_Ruleset.v` | worked example: `../rulesets/ruleset.nft` hand-translated to the AST + 9 axiom-free packet-property proofs (the user-facing use case; the baseline a parser should reproduce — see TODO 9) |
 | `theories/Compiler/Extract.v` | extraction to `extracted/*.ml` |
 | `extracted/glue.ml` | *untrusted* glue: builds chains, renders nft-format bytecode (forward test) |
-| `extracted/lexer.mll` `parser.mly` `nft_ast.ml` `nft_lower.ml` `nft_parse.ml` | *untrusted* **`.nft` text → `Syntax` AST frontend** (TODO 9): ocamllex+Menhir surface parser → lowering (define/symbol resolution, implicit-l4proto deps, CIDR/range/concat, anonymous-set/vmap → `env`, `include` expansion) → `Nft_parse.parse_file` |
+| `extracted/lexer.mll` `parser.mly` `nft_ast.ml` `nft_inject.ml` `nft_parse.ml` | *untrusted* **`.nft` text → surface AST frontend** (TODO 9): ocamllex+Menhir surface parser → **pure structural** `Nft_ast → Ast.*` constructor injection (`nft_inject.ml`) + the single `ifindex` oracle (`nametoindex "lo" → 1`) + the 2^40 extraction-seam guard, then handed VERBATIM to the extracted Coq `Lower.lower_ruleset`. All lowering (define/symbol resolution, implicit-l4proto deps, CIDR/range/concat, anonymous-set/vmap → `env`, `include` expansion) is now the VERIFIED Coq `Lower.lower_ruleset`, **not** OCaml. `Nft_parse.parse_file` orchestrates parse → inject → lower |
 | `extracted/nft_emit.ml` `nft2coq.ml` | *untrusted* **AST → Coq emitter**: serialise the parsed chains + `set_decls`/`env` as Coq `Definition`s (`make gen`), so proofs reason about the parser's real output |
 | `theories/Generated/Optiplex_Gen.v` `Ruleset_Gen.v` `Router_Gen.v` `Tutorial_Gen.v` | **generated** by `nft2coq` from the matching `../rulesets/*.nft` (`make gen`, all four incl. router; `make gen-check` fails the gates if any is stale). `Tutorial_Gen.v` backs the [`CONFIG_PROOFS.md`](CONFIG_PROOFS.md) tutorial |
 | `theories/Examples/Optiplex_Antispoof.v` | **anti-spoofing** proofs about the parsed `optiplex.nft` bridge `output` chain (+ legit-traffic-allowed); all axiom-free |
@@ -650,7 +650,7 @@ a max over set-name *lengths* — all structurally bounded.  The one
 user-controlled family is a `limit`'s `ls_rate`/`ls_burst`, which the
 semantics multiplies by `lim_window <= 604800` (`lim_cost`/`lim_max`): the
 untrusted frontend therefore REJECTS scaled rates/bursts above 2^40
-(`limit_value`, `parser.mly`; re-checked in `Nft_lower.limit_spec`), keeping
+(`limit_value`, `parser.mly`; re-checked in `Lower.limit_spec`), keeping
 every extracted product below `604800 * 2^41 < 2^62`, and rejects integer
 literals beyond OCaml's `max_int` as a clean lexer error.  `make parse-test`
 pins the rejection (`limit rate 9000000000000 mbytes/second` used to wrap
@@ -663,8 +663,9 @@ intervals, the host-endian interval `byteorder hton` bounds, declared-set type
 atoms, concatenated tuples with 4-byte register-slot padding (and the FLAT
 unpadded vmap-key asymmetry), and the content-dedup `__setN`/`__mapN` interning —
 is the VERIFIED Rocq lowering (`theories/Surface/Lower.v`; the OCaml frontend no
-longer composes a single set byte, and `extracted/nft_lower.ml` no longer
-contains `interval_of_value`/`bytes_of_typeatom`/`pad_to_slot`/`prefix_mask`/…).
+longer composes a single set byte, and `extracted/nft_lower.ml` — which used to
+hold `interval_of_value`/`bytes_of_typeatom`/`pad_to_slot`/`prefix_mask`/… — has
+been DELETED, its value→byte logic entirely absorbed into `Lower.lower_ruleset`).
 The one residue is the *rendering* of the fresh-name suffix: `Lower.nat_dec`
 extracts to OCaml `Stdlib.string_of_int` (its Rocq body is a faithful decimal
 renderer used only by `vm_compute` witnesses), the same seam class as
@@ -675,6 +676,27 @@ numeric membership), `concat_key_erasure` (slot padding is faithfully invertible
 — the historical padding bug), and `cidr_interval_agrees_prefix_expand` (the set
 CIDR expansion and `Elab.prefix_expand`'s masked compare decide membership
 identically — one Rocq expansion, no parallel OCaml CIDR).
+
+**The ifindex oracle (allowed residue (a): host-dependent lookup).** Interface
+selectors that name a device by string (`iif "lo"`, `oif …`) need that host's
+*current* ifindex — a value that lives in the running kernel, not in the config
+text, so it cannot be a pure function. The one such site is the `ifindex_oracle`
+in `extracted/nft_inject.ml`: `nametoindex : string → int option`, threaded into
+`Lower.lower_ruleset` as its first parameter. It resolves the loopback name
+(`"lo" → 1`) and **declines every other name** (`None`), whereupon the VERIFIED
+Coq lowering FAILS LOUD (an `lerr`), never guessing an index. This is the single
+host-dependent lookup in the whole frontend (`grep -cw nametoindex nft_inject.ml`
+= 1); the oracle-free typecheck path uses the same `"lo" → 1` fallback inside
+`Lower.resolve_value` so `make parse-test` stays hermetic.
+
+**Structural injection (allowed residue (b): pure `Nft_ast → Ast.*`).** The only
+other untrusted OCaml translation is `nft_inject.ml`'s structural mapping of the
+Menhir surface tree (`nft_ast.ml`) onto the extracted surface-AST constructors
+(`Ast.*`): character/string/int injection and constructor shuffling only. It
+DECODES nothing — no symbol tables, no width/byteorder decisions, no
+interval/CIDR/mask arithmetic (the M-C banned-name grep over the frontend is 0).
+Everything semantic downstream of it is the verified `Lower.lower_ruleset`. This
+is the pure-structural-translation residue class the M-C ledger permits.
 
 **Eyeball-trusted, never-differentially-tested semantics.** The corpus checks
 *structure*, not the data-plane *meaning* of register operations. The byte-level
@@ -1313,34 +1335,40 @@ VST proofs that the C interpreter meets it (CompCert/clightgen). This is the
 parser's OUTPUT, not a hand copy.** The pipeline:
 
   `.nft` text → `lexer.mll` (ocamllex) + `parser.mly` (Menhir) → surface tree
-  (`nft_ast.ml`) → **`nft_lower.ml`** → trusted `Syntax` AST + `Packet.env`.
+  (`nft_ast.ml`) → **`nft_inject.ml`** (pure structural `Nft_ast → Ast.*`
+  injection + `ifindex` oracle) → extracted **`Lower.lower_ruleset`** (VERIFIED)
+  → trusted `Syntax` AST (`table` + `set_decls`) + `Packet.env`.
 
-`nft_lower` does nft's frontend NAME RESOLUTION, untrusted: expands `define`s
-(`$v`), resolves symbolic constants (services like `https`, `ethertype`/
-`l4proto`/`ct state`/`icmp` names) to the TYPED value of the selector's
-datatype (`typed_atom : kind -> value -> Nftval.nftval`), inserts the implicit
-`meta l4proto` dependency (emitted as the `BDep`-tagged conjunct), and turns
-named-set/map *declarations* (and inline anonymous `{…}` sets / `vmap {…}`
+**As of M4, all name resolution / value→byte lowering is VERIFIED Coq.**
+`Lower.lower_ruleset : (string → option nat) → sruleset → lres lowered_ruleset`
+does nft's frontend NAME RESOLUTION *in Rocq*: it expands `define`s (`$v`),
+resolves symbolic constants (services like `https`, `ethertype`/`l4proto`/
+`ct state`/`icmp` names) to the TYPED value of the selector's datatype via the
+verified coercion lattice, inserts the implicit `meta l4proto` dependency
+(emitted as the `BDep`-tagged conjunct with family-aware dedup+discharge), and
+turns named-set/map *declarations* (and inline anonymous `{…}` sets / `vmap {…}`
 maps, incl. **concatenated** keys like `ip daddr . oifname`) into named `env`
-entries — anonymous sets DEDUPLICATED by contents.  The typed value -> register
-bytes step is verified **exactly this far** (state the boundary precisely,
-because the residue matters): (i) the per-ATOM byte encoding is everywhere the
-VERIFIED `Nftval.encode` (`enc_atom` is literally `encode ∘ typed_atom`), and
-(ii) for the four `Elab.tmatch` shapes — typed **eq / neq / CIDR-prefix /
-ifname-wildcard** matches — the whole match is produced by the VERIFIED
-`Elab.elab_m` (the CIDR byte-alignment split lives in the verified
-`Elab.prefix_expand`), with `Elab.elab_matchcond_correct` proving the
-elaborated term evaluates exactly as the typed source.  Everything that
-COMPOSES atoms beyond those four shapes is still **unverified OCaml** in
-`nft_lower.ml`: set/map ELEMENT intervals (incl. the OCaml CIDR
-net/broadcast expansion in `interval_of_value`, distinct from the verified
-`prefix_expand`), range endpoints (incl. `enc_atom_be`'s host-endian byte
-reversal), vmap keys, NAT/tproxy/redirect target addresses and ports,
-mangle/`vsrc` immediates, and bitwise masks.  Those raw byte lists land in
-`*_Gen.v` and are checked only by the untrusted differential gates
-(corpus/validate/parse-test/e2e), not by a theorem — see the boundary notes on
-`IR/Syntax.v`/`IR/Elab.v` and the trust paragraph in `CONFIG_PROOFS.md`.
-`Nft_parse.parse_file` adds `include` expansion (relative to the file dir).
+entries — anonymous sets DEDUPLICATED by contents. The typed value → register
+bytes step is now VERIFIED end-to-end: the per-ATOM byte encoding is everywhere
+the round-trip-proved `Nftval.encode`; set/map ELEMENT intervals (incl. CIDR
+net/broadcast expansion), range endpoints (incl. the host-endian `byteorder
+hton` reversal), vmap keys, NAT/tproxy/redirect target addresses and ports,
+mangle/`vsrc` immediates, and bitwise masks are all composed by
+`Lower.lower_ruleset`, with real erasure obligations (`set_interval_erasure`,
+`concat_key_erasure`, `cidr_interval_agrees_prefix_expand`, the BE
+byte-lex-vs-numeric range order, `hton` re-encode). Every construct out of
+reach FAILS LOUD as an explicit `lerr` constructor — never a silent OCaml byte
+fallback. The four `Elab.tmatch` shapes (typed **eq / neq / CIDR-prefix /
+ifname-wildcard**) still route through the VERIFIED `Elab.elab_m` /
+`Elab.prefix_expand` (`Elab.elab_matchcond_correct`).
+
+**The residue in `nft_inject.ml` is not value→byte logic** — it is (a) the
+single host-dependent `ifindex` oracle (`nametoindex "lo" → 1`; see the ledger
+entry below), (b) pure structural `Nft_ast → Ast.*` constructor injection
+(character/string/int shuffling, no decoding), and (c) the 2^40 extraction-seam
+guard. The `.nft`-derived `*_Gen.v` bytes are additionally re-checked by the
+differential gates (corpus/validate/parse-test/e2e). `Nft_parse.parse_file` adds
+`include` expansion (relative to the file dir).
 
 **The proof bridge (`nft_emit.ml` + `nft2coq`).** `make gen` runs the parser on a
 `.nft` file and EMITS its AST as Coq terms — `theories/Generated/Optiplex_Gen.v`,

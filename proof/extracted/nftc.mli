@@ -82,10 +82,10 @@ val render_instr : Bytecode.instr -> string
     AST hold of the compiled bytecode via [compile_table_correct]. *)
 
 (** A parsed ruleset: the tables' chains and the environment their lookups read. *)
-type parsed = Nft_lower.parsed
+type parsed = Nft_inject.parsed
 
 (** Parse a ruleset from a string. @raise Nft_parse.Parse_error on a lex/parse
-    error; @raise Nft_lower.Unsupported on a construct outside the supported
+    error; @raise Nft_inject.Lower_error on a construct outside the supported
     subset (never a silent mis-parse). *)
 val parse_string : string -> parsed
 

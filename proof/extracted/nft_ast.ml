@@ -2,7 +2,7 @@
 
    An untrusted, faithful mirror of the `.nft` text — close to what the user
    wrote, before nft's lowering (define expansion, implicit-dependency insertion,
-   anonymous-set allocation, symbolic-constant resolution).  Nft_lower turns it
+   anonymous-set allocation, symbolic-constant resolution).  Nft_inject turns it
    into the *trusted* Syntax AST (`Syntax.chain` + `Packet.env`) the proofs are
    stated about; keeping the two apart isolates all the divergence-prone
    "act like nft's frontend" logic in one untrusted place (see TODO 9 in
@@ -13,10 +13,10 @@
    statement vocabulary — WITHOUT inlining or pre-substituting anything: defines
    stay symbolic (`Vvar`), named sets stay references (`SEref`), set contents stay
    in their declarations.  All of that resolution happens, explicitly, in
-   Nft_lower. *)
+   Nft_inject. *)
 
 (* A literal/expression value as written.  Resolution of its *bytes* is deferred
-   to Nft_lower because it depends on the selector it appears under (a port is 2
+   to Nft_inject because it depends on the selector it appears under (a port is 2
    bytes, an ifname is ASCII, `established` is a 4-byte conntrack-state word). *)
 type value =
   | Vnum    of int                 (* decimal or 0x-hex integer literal *)

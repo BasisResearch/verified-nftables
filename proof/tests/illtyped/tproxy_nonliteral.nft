@@ -1,0 +1,8 @@
+# stmt-level lerr: a tproxy target that is not an IPv4 literal.  Parses as a
+# symbol; the verified lowering refuses (Lower.LEtproxyTarget).
+table ip t {
+  chain c {
+    type filter hook prerouting priority -150; policy accept;
+    tproxy ip to somehost
+  }
+}
