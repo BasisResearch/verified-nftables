@@ -24,6 +24,30 @@
   let byte_scale = function
     | "bytes" -> 1 | "kbytes" -> 1024 | "mbytes" -> 1024 * 1024
     | _ -> 1
+
+  (* ExtrOcamlNatInt seam guard.  The verified core's [nat]s extract to
+     OCaml's 63-bit int with WRAPPING arithmetic the Rocq proofs know nothing
+     about (see the classification comment in theories/Compiler/Extract.v).
+     A limit's ls_rate/ls_burst are the only parser-controlled nats the
+     semantics multiplies by more than a small constant
+     (Semantics.lim_cost/lim_max: * lim_window <= 604800), so they are bounded
+     HERE, in the untrusted frontend: the SCALED rate/burst must stay <= 2^40,
+     which keeps every extracted product below 604800 * 2^41 < 2^62.  The
+     check divides instead of multiplying so the guard itself cannot wrap.
+     Before this guard, `limit rate 9000000000000 mbytes/second` silently
+     wrapped into wrong bytecode; now it is a loud Unsupported, like every
+     other out-of-model construct.  (Re-checked in Nft_lower.limit_spec for
+     limit specs built by any other path.) *)
+  let max_limit_value = 1 lsl 40
+  let limit_value what n u =
+    let s = byte_scale u in
+    if n < 0 || n > max_limit_value / s then
+      raise (Nft_lower.Unsupported
+        (Printf.sprintf
+           "%s %d%s: scaled value exceeds the extracted-int-safe bound 2^40 \
+            (see theories/Compiler/Extract.v)"
+           what n (if u = "" then "" else " " ^ u)))
+    else n * s
 %}
 
 /* structural keywords */
@@ -473,12 +497,12 @@ limit_over:
   | /* empty */ { false }
   | OVER        { true }
 limit_rate:
-  | INT SLASH IDENT        { ($1, $3, false) }              (* N/second      *)
-  | INT IDENT SLASH IDENT  { ($1 * byte_scale $2, $4, true) } (* N kbytes/second *)
+  | INT SLASH IDENT        { (limit_value "limit rate" $1 "", $3, false) }   (* N/second *)
+  | INT IDENT SLASH IDENT  { (limit_value "limit rate" $1 $2, $4, true) }    (* N kbytes/second *)
 limit_burst:
   | /* empty */       { None }
-  | IDENT INT         { Some $2 }               (* `burst N`            *)
-  | IDENT INT IDENT   { Some ($2 * byte_scale $3) }  (* `burst N kbytes` / `burst N packets` *)
+  | IDENT INT         { Some (limit_value "limit burst" $2 "") }        (* `burst N` *)
+  | IDENT INT IDENT   { Some (limit_value "limit burst" $2 $3) }  (* `burst N kbytes` / `burst N packets` *)
 
 nat_to:
   | /* empty */          { (None, None) }

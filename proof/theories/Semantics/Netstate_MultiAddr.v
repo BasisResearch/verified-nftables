@@ -158,8 +158,10 @@ Proof.
   exists pre, ia, post. repeat split; auto.
 Qed.
 
-(** Axiom-freedom guard (build-time; mirrors Fib_Local.v): prints "Closed under
-    the global context". *)
+(** Axiom-freedom print (INFORMATIONAL: it goes to the build log but cannot
+    fail the build).  The build-FAILING check is `make axioms`, which gates
+    both masquerade headline theorems of this file
+    ([masq_saddr_is_selected_primary] and [masq_drop_iff_no_eligible_addr]). *)
 Print Assumptions masq_saddr_is_selected_primary.
 
 (** THE NF_DROP THEOREM: the masquerade NAT-core drop fires EXACTLY when the egress
@@ -176,6 +178,8 @@ Proof.
   destruct (inet_select_addr (masq_ifaddrs fam e p) scope_universe);
     split; intro H; congruence.
 Qed.
+(** Informational print (the build-failing check is `make axioms`). *)
+Print Assumptions masq_drop_iff_no_eligible_addr.
 
 (** Tie to the actual trace gate [nat_iface_addr_absent] for a masquerade spec:
     it is precisely the "no eligible address" condition above. *)

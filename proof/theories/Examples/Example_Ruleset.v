@@ -210,10 +210,11 @@ Theorem established_accepted : forall e p,
   field_value FCtState e p = cts_established ->
   eval_table fw_fuel fw_chains inbound e p = Accept.
 Proof. intros e p Hpe Hct. eval_fw Hpe. Qed.
-(** Axiom-freedom guard (build-time; mirrors Fib_Local.v): prints "Closed under
-    the global context".  This is the hand-written baseline [established_accepted]
-    (eval_table over fw_chains/inbound); see Ruleset_Verified.v for the twin over
-    the parser-emitted firewall_chains. *)
+(** Axiom-freedom print (INFORMATIONAL: it goes to the build log but cannot
+    fail the build; the build-FAILING check is `make axioms`, which gates
+    [established_accepted]).  This is the hand-written baseline
+    [established_accepted] (eval_table over fw_chains/inbound); see
+    Ruleset_Verified.v for the twin over the parser-emitted firewall_chains. *)
 Print Assumptions established_accepted.
 
 (* Invalid-state packets are dropped, regardless of anything else — the vmap

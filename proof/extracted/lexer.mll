@@ -142,8 +142,16 @@ rule token = parse
   | mac as s                    { MAC (Stdlib.List.map (fun g -> int_of_string ("0x" ^ g))
                                         (Stdlib.String.split_on_char ':' s)) }
   | (ip6full | ip6comp) as s    { IPV6 (ipv6_bytes s) }
-  | "0x" hex+ as s              { INT (int_of_string s) }
-  | digit+ as s                 { INT (int_of_string s) }
+  (* An integer literal beyond OCaml's native int (2^62-1) cannot be
+     represented by the extracted [nat] realisation (ExtrOcamlNatInt, see
+     theories/Compiler/Extract.v): reject it as a clean lexical error rather
+     than letting int_of_string's Failure escape as a crash. *)
+  | "0x" hex+ as s              { match int_of_string_opt s with
+                                  | Some n -> INT n
+                                  | None -> raise (Lex_error ("integer literal out of range: " ^ s)) }
+  | digit+ as s                 { match int_of_string_opt s with
+                                  | Some n -> INT n
+                                  | None -> raise (Lex_error ("integer literal out of range: " ^ s)) }
   | '"' ([^ '"']* as s) '"'     { STRING s }
   | ident as s                  { ident_or_kw s }
   | eof              { EOF }

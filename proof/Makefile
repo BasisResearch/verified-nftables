@@ -11,7 +11,7 @@
 ROCQBIN ?=
 COQMAKE  = CoqMakefile
 
-.PHONY: all proofs glue lib example semtest difftest corpus byteorder-gate validate parse-test gen clean cli e2e nl-send parser-corpus axioms
+.PHONY: all proofs glue lib example semtest difftest corpus byteorder-gate validate parse-test gen gen-check gates clean cli e2e nl-send parser-corpus axioms
 
 all: proofs glue
 
@@ -40,11 +40,32 @@ parse-test: proofs
 # Regenerate the parser's output as Coq terms (theories/Generated/*_Gen.v) from the .nft
 # sources, so the proofs (Optiplex_Antispoof, Ruleset_Verified) are about the
 # actual parser output.  Checked in for reproducibility; rerun after a parser
-# change.  nft2coq IS the frontend; the emitted .v is checked by the Rocq kernel.
+# change — `make gen-check` (below, part of `make gates`) FAILS the build if a
+# checked-in Gen file drifts from fresh nft2coq output.  nft2coq IS the
+# frontend; the emitted .v is checked by the Rocq kernel.
 gen: lib
 	cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/optiplex.nft > ../theories/Generated/Optiplex_Gen.v
 	cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/ruleset.nft  > ../theories/Generated/Ruleset_Gen.v
 	cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/tutorial.nft > ../theories/Generated/Tutorial_Gen.v
+	cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/router.nft   > ../theories/Generated/Router_Gen.v
+
+# Drift gate for the proof bridge: the checked-in theories/Generated/*_Gen.v
+# MUST be byte-identical to a fresh `nft2coq` run over the .nft sources.
+# Without this, a stale Gen file (or a parser change not followed by `make
+# gen`) yields valid proofs about a ruleset that is NOT the one deployed —
+# the theorems would be true of yesterday's parse.  Covers ALL FOUR rulesets
+# (router.nft included).  Fails on any diff.
+gen-check: lib
+	@set -e; tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	for pair in optiplex:Optiplex_Gen ruleset:Ruleset_Gen tutorial:Tutorial_Gen router:Router_Gen; do \
+	  f=$${pair%%:*}; g=$${pair##*:}; \
+	  (cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/$$f.nft) > "$$tmp/$$g.v"; \
+	  if ! cmp -s "$$tmp/$$g.v" theories/Generated/$$g.v; then \
+	    echo "gen-check FAIL: theories/Generated/$$g.v differs from fresh nft2coq output of rulesets/$$f.nft (stale Gen file or unregenerated parser change; run 'make gen')"; \
+	    diff -u theories/Generated/$$g.v "$$tmp/$$g.v" | head -40; exit 1; \
+	  fi; \
+	  echo "gen-check ok: theories/Generated/$$g.v == nft2coq(rulesets/$$f.nft)"; \
+	done
 
 # Build/check every .v listed in _CoqProject; Extract.v writes extracted/*.ml.
 proofs: $(COQMAKE)
@@ -100,18 +121,51 @@ parser-corpus: cli
 validate: glue
 	./extracted/_build/default/corpus_test.exe validate
 
-# Axiom-freedom gate: Print Assumptions over the THEOREMS.md HEADLINE set plus
-# the Correct.v strata (needs the .vo files — run after `make proofs`).  Prints
-# one verdict line per theorem and fails unless EVERY one is "Closed under the
+# Axiom-freedom gate: Print Assumptions over EVERY theorem the README claims
+# axiom-free (needs the .vo files — run after `make proofs`).  Prints one
+# verdict line per theorem and fails unless EVERY one is "Closed under the
 # global context" (i.e. no axiom, no Admitted, anywhere in its proof).
+# The in-file `Print Assumptions` lines scattered through theories/*.v are
+# INFORMATIONAL (they print to the `make proofs` log but cannot fail a build);
+# THIS target is the enforcement point.
+#
+# The list = the THEOREMS.md HEADLINE set + the Correct.v strata + the
+# README §"Headline guarantees are axiom-free" claim surface:
+#   anti-spoofing        Optiplex_Antispoof (general + 3 concrete corollaries)
+#   established-accept   Example_Ruleset.established_accepted
+#   NAT-masquerade +
+#   multi-address        Netstate_MultiAddr (selection + drop-iff)
+#   fib host-local       Fib_Local (all 17 heads)
+#   ct-state             Ct_State (all 5 theorems)
+# Any NEW README-claimed result must be added here in the same commit.
 AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   compile_chain_mut_env_correct compile_seq_mut_correct compile_table_correct \
   compile_ruleset_correct compile_hook_correct compile_seq_correct \
   optimize_table_uncond_correct optimize_table_uncond_compile_correct \
-  elab_matchcond_correct Semantics.run_rule_outcome_eq
+  elab_matchcond_correct Semantics.run_rule_outcome_eq \
+  Optiplex_Antispoof.antispoof_general \
+  Optiplex_Antispoof.vikunja_cannot_spoof_budget \
+  Optiplex_Antispoof.gentoo_cannot_spoof_hass \
+  Optiplex_Antispoof.budget_legitimate_allowed \
+  Example_Ruleset.established_accepted \
+  Netstate_MultiAddr.masq_saddr_is_selected_primary \
+  Netstate_MultiAddr.masq_drop_iff_no_eligible_addr \
+  Fib_Local.fib_key_is_daddr Fib_Local.fib_key_is_saddr \
+  Fib_Local.fib_daddr_load_is_real Fib_Local.fib_addr_type_no_dev \
+  Fib_Local.fib_local_hostwide_crossiface \
+  Fib_Local.fib_local_iif_scoped_downgrade Fib_Local.fib_local_iif_scoped_match \
+  Fib_Local.fib_daddr_type_local_iff Fib_Local.lpm_fib_compiled_is_addr_type \
+  Fib_Local.fib_daddr_type_base_is_kernel \
+  Fib_Local.fib_daddr_local_iif_independent \
+  Fib_Local.fib_fires_local Fib_Local.fib_no_fire_remote \
+  Fib_Local.fib_iif_scoped_not_local Fib_Local.fib_base_fires \
+  Fib_Local.fib_base_no_fire Fib_Local.fib_base_is_kernel_demo \
+  Ct_State.estab_matches_pure Ct_State.estab_matches_established_plus_other \
+  Ct_State.estab_misses_without_bit Ct_State.refuted_meq_rejects \
+  Ct_State.refuted_alternative_diverges
 
 axioms:
-	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Elab.\n'; \
+	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Elab Optiplex_Antispoof Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State.\n'; \
 	  for t in $(AXIOM_GATE_THEOREMS); do printf 'Print Assumptions %s.\n' "$$t"; done; } \
 	| coqtop -R . Nft 2>/dev/null \
 	| grep -E 'Closed under the global context|Axioms' \
@@ -120,6 +174,19 @@ axioms:
 	      echo "$$t: $$line"; \
 	      case "$$line" in *"Closed under the global context"*) ;; *) fail=1 ;; esac; \
 	    done; exit $$fail; }
+
+# THE aggregate gate: every README-advertised guarantee behind one command.
+# Sequential (not parallel prerequisites) so a failure is attributable to one
+# stage.  This is the enforcement point of the "every change keeps all gates
+# green" norm — see DEVELOPMENT.md § "Enforcement model" (there is no CI).
+gates:
+	$(MAKE) proofs
+	$(MAKE) axioms
+	$(MAKE) corpus
+	$(MAKE) validate
+	$(MAKE) parse-test
+	$(MAKE) gen-check
+	@echo "ALL GATES GREEN: proofs axioms corpus validate parse-test gen-check"
 
 clean:
 	-[ -f $(COQMAKE) ] && $(MAKE) -f $(COQMAKE) clean || true

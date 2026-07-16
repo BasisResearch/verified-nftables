@@ -52,7 +52,13 @@ Print Assumptions main_compile_seq_correct.
 
     For a single chain [c] whose rules are well-formed ([mut_wf] — a
     non-degeneracy condition on the SOURCE AST that every real ruleset
-    satisfies, not a feature scope; decidable without running the compiler):
+    satisfies, not a feature scope; decidable without running the compiler).
+    That decidability is DISCHARGED at the tool boundary, not assumed:
+    [Semantics.mut_wf] is extracted (Extract.v), `make parse-test` asserts
+    [forallb mut_wf] over every chain of the four shipped rulesets (build
+    failure on violation), and the `nftc` CLI warns — naming this axis — when
+    a parsed chain violates it (see the contract comment on
+    [Semantics.mut_wf]).  With that hypothesis:
     running a packet sequence with the compiled bytecode, threading the
     environment each traversal LEAVES (meta/ct writes, dynset-learned set/map
     elements) into the next packet, reproduces the DSL sequence verdict-for-

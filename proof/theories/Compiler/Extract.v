@@ -8,6 +8,32 @@
 
 From Stdlib Require Import Extraction.
 From Stdlib Require Import ExtrOcamlBasic.
+(* ExtrOcamlNatInt realises Rocq's unbounded [nat] as OCaml's 63-bit native
+   int, whose arithmetic WRAPS — a semantics the proofs know nothing about.
+   This is sound only while no extracted [nat] computation can reach 2^62.
+   Classification of the [nat]s that flow through the extracted term:
+
+   - STRUCTURALLY BOUNDED (no guard needed): individual bytes are [mod 256]
+     by construction ([data] is [list nat] of bytes); addresses/hashes travel
+     as [N] or byte lists, not [nat]; register/slot indices, field widths and
+     offsets are small compiler constants; [seed_start] (the optimizer's
+     fresh-name seed) is a MAX over the input chain's set-name LENGTHS
+     (Optimize_Table.v), so it is bounded by the longest name in the file.
+
+   - USER-CONTROLLED (guarded in the untrusted frontend): [ls_rate]/[ls_burst]
+     of a `limit` spec come from `limit rate N <unit>/<time>` literals, scaled
+     by up to 2^20 (`mbytes`), and the semantics multiplies them by
+     [lim_window] <= 604800 ([lim_cost]/[lim_max], Semantics.v) — so a raw
+     rate near 2^43 already overflows the extracted product.  The frontend
+     REJECTS scaled rates/bursts above 2^40 (`scaled_or_reject`, parser.mly;
+     re-checked in nft_lower.ml limit_spec), keeping the largest extracted
+     product below 604800 * 2^41 < 2^62.  Oversized integer LITERALS
+     (> OCaml max_int) are a clean lexer error, not an int_of_string crash.
+     `quota` has no parser surface today; if one is added, its byte count is
+     the same class and needs the same guard.
+
+   The TCB paragraph in DEVELOPMENT.md ("Trust story") carries this argument;
+   `make parse-test` pins the oversized-rate rejection. *)
 From Stdlib Require Import ExtrOcamlNatInt.
 From Stdlib Require Import ExtrOcamlNativeString.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile Optimize Nftval Elab.
@@ -57,5 +83,6 @@ Separate Extraction
   run_ruleset
   seq_eval
   env_with_sets
+  mut_wf
   Nftval.encode
   Elab.elab_m.

@@ -83,3 +83,13 @@ Theorem refuted_alternative_diverges :
   eval_matchcond m_estab (e0_st [0;0;0;66]) (pkt_ctstate [0;0;0;66])
     <> eval_matchcond m_estab_refuted (e0_st [0;0;0;66]) (pkt_ctstate [0;0;0;66]).
 Proof. vm_compute. discriminate. Qed.
+
+(** Axiom-freedom prints (INFORMATIONAL: they go to the build log but cannot
+    fail the build).  The build-FAILING check is `make axioms`, whose
+    AXIOM_GATE_THEOREMS list carries all five theorems of this file — the
+    README's "ct-state" axiom-free claim is gated there. *)
+Print Assumptions estab_matches_pure.
+Print Assumptions estab_matches_established_plus_other.
+Print Assumptions estab_misses_without_bit.
+Print Assumptions refuted_meq_rejects.
+Print Assumptions refuted_alternative_diverges.

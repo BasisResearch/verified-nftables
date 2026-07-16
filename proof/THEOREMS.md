@@ -10,9 +10,11 @@ axiom-free — without reading 3000 lines of `Correct.v`.
   shared world — restated over the bundled pair `Packet.pstate`
   (`ps_env`/`ps_wire`), each an `exact`/`apply` of its post-split successor.
 - Axiom gate: `make axioms` re-checks every HEADLINE theorem below (plus the
-  supporting strata, `Elab.elab_matchcond_correct`, and the representation
-  ratchet `Semantics.run_rule_outcome_eq`) from the compiled `.vo` files and
-  fails on anything but `Closed under the global context`.
+  supporting strata, `Elab.elab_matchcond_correct`, the representation
+  ratchet `Semantics.run_rule_outcome_eq`, **and every result the README
+  claims axiom-free** — anti-spoofing, established-accept, NAT-masquerade,
+  multi-address, fib host-local, ct-state; see §4) from the compiled `.vo`
+  files and fails on anything but `Closed under the global context`.
 - Classes used below:
   - **HEADLINE** — the single top theorem of a verified axis; what the project claims.
   - **STAGE** — a per-pass/per-stage theorem composed into a headline.
@@ -137,23 +139,51 @@ Every mutation/trace evaluator consumes a single per-rule STEP function —
 (loadability-guarded verdict, `(env, packet)` left: writes + numgen advance +
 limiter consumption).  The DSL/VM agreement obligation is the one equation
 `vm_rule_step_compile_rule : mut_wf r = true -> vm_rule_step (compile_rule r) e p
-= dsl_rule_step r e p` (`Correct.v`).  `mut_wf` itself is stated entirely on the
-source AST: its numgen conjunct is the syntactic `rule_numgen_free`
-(`Semantics.v`), which equals the bytecode-side `numgen_free_prog (compile_rule
-r)` by `Correct.numgen_free_compile_rule` (the old-shape hypothesis is restored
-verbatim by `Correct.mut_wf_prog_eq`).
+= dsl_rule_step r e p` (`Correct.v`).  `mut_wf` itself lives in the Semantics
+stratum (`Semantics.mut_wf`; `Correct.v` re-exports it as an abbreviation) and
+is stated entirely on the source AST: its numgen conjunct is the syntactic
+`rule_numgen_free` (`Semantics.v`), which equals the bytecode-side
+`numgen_free_prog (compile_rule r)` by `Correct.numgen_free_compile_rule` (the
+old-shape hypothesis is restored verbatim by `Correct.mut_wf_prog_eq`).
+Because it is source-side, the hypothesis is **discharged at the tool
+boundary**: `Semantics.mut_wf` is extracted, `make parse-test` asserts
+`forallb mut_wf` over every chain of the four shipped rulesets (build failure
+on violation), and the `nftc` CLI warns — naming this axis — on any parsed
+chain that violates it.
 
 ## 4. Axiom-freedom gates
 
-- `make axioms` — `Print Assumptions` over the HEADLINE set + the `Correct.v`
-  strata + the optimizer DSL form (10 theorems); fails on anything but
-  `Closed under the global context`.  The `pre_split_*` ratchet corollaries in
-  `Main.v` are guarded by in-file `Print Assumptions` on every `make proofs`.
-- In-file build-time guards (`Print Assumptions` runs on every `make proofs`):
-  end of `Correct.v` (all 8 compiler strata), end of `Optimize_Uncond.v` (both
-  optimizer entry points), all of `theories/Compiler/Main.v` (the four entry-point
-  aliases), plus per-file guards in demo/side files (`Fib_Local.v`,
-  `Optimize_Table.v`, …).
+- **`make axioms` is the build-FAILING gate** (`AXIOM_GATE_THEOREMS`,
+  proof/Makefile): `Print Assumptions` over 41 theorems, failing on anything
+  but `Closed under the global context`.  The list is
+  - the HEADLINE set (§1) + the `Correct.v` strata + the optimizer DSL form +
+    `Elab.elab_matchcond_correct` + the representation ratchet
+    `Semantics.run_rule_outcome_eq` (12 theorems), and
+  - **every result the README claims axiom-free** (README § "Headline
+    guarantees are axiom-free", 29 theorems): anti-spoofing
+    (`Optiplex_Antispoof.antispoof_general` + its 3 concrete corollaries),
+    established-accept (`Example_Ruleset.established_accepted`),
+    NAT-masquerade / multi-address primary selection
+    (`Netstate_MultiAddr.masq_saddr_is_selected_primary`,
+    `masq_drop_iff_no_eligible_addr`), fib host-local (all 17 `Fib_Local`
+    heads), and ct-state (all 5 `Ct_State` theorems).
+
+  The rule: **any result the README (or this file) presents as a claim is in
+  `AXIOM_GATE_THEOREMS`, in the same commit that adds the claim.**
+  Classification note: several of these live in `Examples/`/`Regression/` and
+  are DEMO-class *within their axis derivation maps* (executable pins), but
+  as README claim surface they are gated exactly like HEADLINEs — the gate
+  follows the claim, not the file's directory.
+- The in-file `Print Assumptions` lines (end of `Correct.v`,
+  `Optimize_Uncond.v`, all of `Main.v`, `Fib_Local.v`, `Ct_State.v`,
+  `Optiplex_Antispoof.v`, `Netstate_MultiAddr.v`, `Example_Ruleset.v`, …) are
+  **informational**: they print a verdict into the `make proofs` build log
+  for eyeball checks, but a `Print Assumptions` cannot fail a build and no CI
+  greps that log.  The mechanical stop against an `Admitted` or a
+  section-variable leak entering a claimed result is `make axioms` (run by
+  the `make gates` aggregate).  The `pre_split_*` ratchet corollaries in
+  `Main.v` carry in-file prints and are each an `exact`/`apply` of a gated
+  theorem, so their assumption sets coincide with gated ones.
 - One-liner (the historical gate):
   `cd theories && printf 'From Nft Require Import Correct Optimize.\nPrint Assumptions compile_chain_correct.\n' | coqtop -R . Nft`
   → `Closed under the global context`.

@@ -462,7 +462,10 @@ Proof.
 Qed.
 
 (* ================================================================= *)
-(** ** Axiom-freedom audit. *)
+(** ** Axiom-freedom prints (INFORMATIONAL: they go to the `make proofs` build
+    log but cannot fail the build).  The build-FAILING check is `make axioms`,
+    whose AXIOM_GATE_THEOREMS list carries all 17 heads below — anything but
+    "Closed under the global context" fails that target. *)
 
 Print Assumptions fib_key_is_daddr.
 Print Assumptions fib_key_is_saddr.
