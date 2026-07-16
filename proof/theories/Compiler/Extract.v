@@ -66,6 +66,14 @@ Set Extraction Output Directory "extracted".
 Extract Constant Optimize_ValueSet.string_of_nat =>
   "(fun n -> Stdlib.String.make n 'I')".
 
+(* [Lower.nat_dec] mints the DECIMAL suffix of the interned `__setN`/`__mapN`
+   names (byte-identical to the historical OCaml `Printf.sprintf "%s%d"`).  Its
+   Coq body is a faithful decimal renderer used only by vm_compute witnesses;
+   the extracted binary uses the native [string_of_int] — the SAME string value,
+   same seam class as [string_of_nat] above (only injectivity/decimalness is
+   relied on, and the golden corpus/gen-check re-check every produced name). *)
+Extract Constant Lower.nat_dec => "Stdlib.string_of_int".
+
 (* [String.length] is the one Stdlib.Strings.String CONSTANT in the extracted
    closure (Optimize_Uncond's fresh-name seed measures set-name lengths).
    Left alone, extraction emits a String.ml for it whose presence inside the
@@ -120,6 +128,18 @@ Separate Extraction
   Lower.dep_guard
   Lower.discharge
   Lower.lerr_message
+  Lower.ls0
+  Lower.fresh_map
+  Lower.add_set
+  Lower.add_vmap
+  Lower.add_map
+  Lower.lower_anon_set
+  Lower.lower_set_ref
+  Lower.lower_concat_set
+  Lower.vmap_entries_single
+  Lower.vmap_entries_concat
+  Lower.decl_set_elems
+  Lower.decl_vmap_ents
   TypedEval.eval_txm
   Selector.dep_ip4
   Selector.dep_ip6

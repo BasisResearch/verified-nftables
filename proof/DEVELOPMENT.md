@@ -657,6 +657,25 @@ pins the rejection (`limit rate 9000000000000 mbytes/second` used to wrap
 silently into wrong bytecode).  So "is there a gate?" — yes: the guard is
 untrusted-frontend code, and the parse-test pins are the gate.
 
+**The interned-name seam (`Lower.nat_dec` → `string_of_int`).** From M3, ALL
+set / map / vmap element byte composition — point / range / CIDR (net+broadcast)
+intervals, the host-endian interval `byteorder hton` bounds, declared-set type
+atoms, concatenated tuples with 4-byte register-slot padding (and the FLAT
+unpadded vmap-key asymmetry), and the content-dedup `__setN`/`__mapN` interning —
+is the VERIFIED Rocq lowering (`theories/Surface/Lower.v`; the OCaml frontend no
+longer composes a single set byte, and `extracted/nft_lower.ml` no longer
+contains `interval_of_value`/`bytes_of_typeatom`/`pad_to_slot`/`prefix_mask`/…).
+The one residue is the *rendering* of the fresh-name suffix: `Lower.nat_dec`
+extracts to OCaml `Stdlib.string_of_int` (its Rocq body is a faithful decimal
+renderer used only by `vm_compute` witnesses), the same seam class as
+`string_of_nat` above — only decimalness/injectivity is relied on, and the golden
+corpus / `gen-check` re-check every produced `__setN`/`__mapN` name end-to-end.
+The set membership decisions are proved: `set_interval_erasure` (byte interval =
+numeric membership), `concat_key_erasure` (slot padding is faithfully invertible
+— the historical padding bug), and `cidr_interval_agrees_prefix_expand` (the set
+CIDR expansion and `Elab.prefix_expand`'s masked compare decide membership
+identically — one Rocq expansion, no parallel OCaml CIDR).
+
 **Eyeball-trusted, never-differentially-tested semantics.** The corpus checks
 *structure*, not the data-plane *meaning* of register operations. The byte-level
 functions `data_bitops`, `data_le`, `data_mem`, `data_shift`, `data_byteorder`,

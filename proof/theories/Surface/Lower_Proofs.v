@@ -1135,6 +1135,502 @@ Example erasure_flag_exercised :
      = true.
 Proof. vm_compute. split; reflexivity. Qed.
 
+(* ================================================================== *)
+(** ** M3: composite-immediate erasure — set / concat / CIDR.
+
+    The set/map/vmap byte composition ([Lower.value_interval]/[cidr_interval]/
+    [pad_slot]/[concat_padded]) agrees with the byte-level membership the VM
+    runs, discharging genuine obligations:
+
+      - [set_interval_erasure]: byte-level interval [set_mem] over ENCODED
+        bounds equals the INDEPENDENT numeric membership over DECODED values —
+        the byte-lexicographic-vs-numeric obligation ([data_le_num], M2);
+      - [concat_key_erasure]: the slot-padded concatenation is FAITHFUL — the
+        VM's split-and-truncate recovers each field's own bound, so
+        concatenated-key membership is exactly the per-field cross product
+        (the historical padding bug, proved by [split_by_recover] injectivity);
+      - [cidr_interval_agrees_prefix_expand]: the CIDR net/broadcast interval
+        and [Elab.prefix_expand]'s masked compare decide membership
+        IDENTICALLY (one Coq expansion, the two-implementations tension gone). *)
+
+(** *** Set-interval erasure (numeric = byte membership). *)
+
+Theorem set_interval_erasure : forall (w : nat) (fv : data) (ivs : list (data * data)),
+  List.length fv = w -> bytes_wfb fv = true ->
+  Forall (fun iv => List.length (fst iv) = w /\ List.length (snd iv) = w
+                    /\ bytes_wfb (fst iv) = true /\ bytes_wfb (snd iv) = true) ivs ->
+  set_mem fv ivs = set_mem_N (data_to_N fv) ivs.
+Proof.
+  intros w fv ivs Hfv Hwf Hall.
+  unfold set_mem, set_mem_N.
+  induction ivs as [|[lo hi] ivs IH]; [reflexivity|].
+  rewrite Forall_cons_iff in Hall. destruct Hall as [Hhd Htl].
+  cbn [fst snd] in Hhd. destruct Hhd as (Hlo & Hhi & Hwlo & Hwhi).
+  cbn [existsb]. rewrite IH by exact Htl. f_equal.
+  unfold data_in_iv, iv_mem_N. cbn [fst snd].
+  rewrite (data_le_num lo fv) by (try congruence; assumption).
+  rewrite (data_le_num fv hi) by (try congruence; assumption).
+  reflexivity.
+Qed.
+
+(** *** Concat-key erasure (slot padding is faithful). *)
+
+Lemma reg_slot_ge : forall n, (n <= reg_slot n)%nat.
+Proof.
+  intro n. unfold reg_slot.
+  pose proof (Nat.div_mod (n + 3) 4 ltac:(lia)) as Hd.
+  pose proof (Nat.mod_upper_bound (n + 3) 4 ltac:(lia)) as Hm. lia.
+Qed.
+
+Lemma pad_slot_length : forall d, List.length (pad_slot d) = reg_slot (List.length d).
+Proof.
+  intro d. unfold pad_slot. rewrite length_app, repeat_length.
+  pose proof (reg_slot_ge (List.length d)). lia.
+Qed.
+
+Lemma pad_slot_firstn : forall d n, n = List.length d -> firstn n (pad_slot d) = d.
+Proof.
+  intros d n ->. unfold pad_slot.
+  rewrite firstn_app, firstn_all, Nat.sub_diag. cbn [firstn]. apply app_nil_r.
+Qed.
+
+(** One split-by step at a cons-cons width list (avoids over-unfolding the
+    tail [split_by] into a [match] on the opaque remaining widths). *)
+Lemma split_by_cons2 : forall (w0 w1 : nat) (ws : list nat) (d : data),
+  split_by (w0 :: w1 :: ws) d = firstn w0 d :: split_by (w1 :: ws) (skipn w0 d).
+Proof. reflexivity. Qed.
+
+(** Splitting a concatenation by its chunks' own lengths recovers the chunks:
+    the concatenated key is injective in its per-field pieces. *)
+Lemma split_by_recover : forall (chunks : list data),
+  chunks <> [] ->
+  split_by (map (@List.length byte) chunks) (List.concat chunks) = chunks.
+Proof.
+  induction chunks as [|c cs IH]; [congruence|]. intros _.
+  destruct cs as [|c2 cs'].
+  - cbn [map List.concat split_by]. rewrite app_nil_r. reflexivity.
+  - change (map (@List.length byte) (c :: c2 :: cs'))
+      with (List.length c :: List.length c2 :: map (@List.length byte) cs').
+    change (List.concat (c :: c2 :: cs'))
+      with (c ++ List.concat (c2 :: cs'))%list.
+    rewrite split_by_cons2.
+    rewrite firstn_app, firstn_all, Nat.sub_diag, firstn_O, app_nil_r.
+    rewrite skipn_app, skipn_all, Nat.sub_diag, skipn_O, app_nil_l.
+    change (List.length c2 :: map (@List.length byte) cs')
+      with (map (@List.length byte) (c2 :: cs')).
+    rewrite IH by discriminate. reflexivity.
+Qed.
+
+(** The per-field test after split-and-truncate discards the padding exactly. *)
+Lemma concat_split_forallb : forall vals los his,
+  Forall2 (fun v lo => List.length lo = List.length v) vals los ->
+  Forall2 (fun v hi => List.length hi = List.length v) vals his ->
+  forallb (fun t => let '(val, (lo, hi)) := t in
+             field_in_iv val (firstn (List.length val) lo, firstn (List.length val) hi))
+          (combine vals (combine (map pad_slot los) (map pad_slot his)))
+  = forallb (fun t => let '(val, (lo, hi)) := t in field_in_iv val (lo, hi))
+          (combine vals (combine los his)).
+Proof.
+  intros vals los his Hlos. revert his.
+  induction Hlos as [|v lo vals los Hvlo Hlos IH]; intros his Hhis.
+  - reflexivity.
+  - inversion Hhis as [|v' hi vals' his' Hvhi Hhis']; subst.
+    cbn [map combine forallb].
+    rewrite (pad_slot_firstn lo (List.length v)) by (symmetry; exact Hvlo).
+    rewrite (pad_slot_firstn hi (List.length v)) by (symmetry; exact Hvhi).
+    rewrite IH by exact Hhis'. reflexivity.
+Qed.
+
+(** The per-field register-slot widths equal the padded chunks' lengths. *)
+Lemma slot_widths_eq : forall vals los,
+  Forall2 (fun v lo => List.length lo = List.length v) vals los ->
+  map (fun v : data => reg_slot (List.length v)) vals
+  = map (@List.length byte) (map pad_slot los).
+Proof.
+  intros vals los H. rewrite map_map.
+  induction H as [|v lo vals los Hvlo H IH]; [reflexivity|].
+  cbn [map]. rewrite pad_slot_length, Hvlo. f_equal. exact IH.
+Qed.
+
+(** Splitting the slot-padded concatenation by the PER-FIELD slot widths
+    recovers each field's padded chunk. *)
+Lemma split_by_slots : forall vals los,
+  Forall2 (fun v lo => List.length lo = List.length v) vals los -> los <> [] ->
+  split_by (map (fun v : data => reg_slot (List.length v)) vals)
+           (List.concat (map pad_slot los))
+  = map pad_slot los.
+Proof.
+  intros vals los H Hne.
+  rewrite (slot_widths_eq _ _ H). apply split_by_recover.
+  destruct los; [congruence | cbn [map]; discriminate].
+Qed.
+
+(** The cons-cons unfolding of [concat_in_iv] (its non-single-field branch),
+    stated as a rewrite so [cbn] does not also fire [map]/[split_by]. *)
+Lemma concat_in_iv_cons2 : forall a b rest lo hi,
+  concat_in_iv (a :: b :: rest) (lo, hi)
+  = forallb (fun t => let '(val, (l, h)) := t in
+       field_in_iv val (firstn (List.length val) l, firstn (List.length val) h))
+     (combine (a :: b :: rest)
+        (combine (split_by (map (fun v : data => reg_slot (List.length v))
+                                (a :: b :: rest)) lo)
+                 (split_by (map (fun v : data => reg_slot (List.length v))
+                                (a :: b :: rest)) hi))).
+Proof. reflexivity. Qed.
+
+Theorem concat_key_erasure : forall (vals los his : list data),
+  (2 <= List.length vals)%nat ->
+  Forall2 (fun v lo => List.length lo = List.length v) vals los ->
+  Forall2 (fun v hi => List.length hi = List.length v) vals his ->
+  concat_in_iv vals (List.concat (map pad_slot los), List.concat (map pad_slot his))
+  = forallb (fun t => let '(val, (lo, hi)) := t in field_in_iv val (lo, hi))
+            (combine vals (combine los his)).
+Proof.
+  intros vals los his Hlen Hlos Hhis.
+  destruct vals as [|a [|b rest]]; cbn [List.length] in Hlen; try lia.
+  assert (Hlos_ne : los <> [])
+    by (destruct los; [inversion Hlos | discriminate]).
+  assert (Hhis_ne : his <> [])
+    by (destruct his; [inversion Hhis | discriminate]).
+  rewrite concat_in_iv_cons2.
+  rewrite (split_by_slots _ _ Hlos Hlos_ne), (split_by_slots _ _ Hhis Hhis_ne).
+  apply concat_split_forallb; assumption.
+Qed.
+
+(** *** CIDR interval vs masked-prefix compare agreement. *)
+
+Lemma prefix_mask_length : forall w plen, List.length (Elab.prefix_mask w plen) = w.
+Proof. intros w plen. unfold Elab.prefix_mask. rewrite length_map, length_seq. reflexivity. Qed.
+
+Lemma prefix_mask_cons : forall w plen,
+  Elab.prefix_mask (S w) plen = Elab.mask_byte plen :: Elab.prefix_mask w (plen - 8).
+Proof.
+  intros w plen. unfold Elab.prefix_mask. cbn [seq map]. f_equal.
+  - f_equal. lia.
+  - rewrite <- seq_shift, map_map. apply map_ext_in. intros i _. f_equal. lia.
+Qed.
+
+Lemma prefix_mask_wfb : forall w plen, bytes_wfb (Elab.prefix_mask w plen) = true.
+Proof.
+  intros w plen. apply bytes_wfb_Forall, Forall_forall.
+  intros x Hx. unfold Elab.prefix_mask in Hx. apply in_map_iff in Hx as (i & <- & _).
+  unfold Elab.mask_byte. assert (Nat.pow 2 (8 - Nat.min (plen - 8*i) 8) <= 256)%nat.
+  { transitivity (Nat.pow 2 8); [apply Nat.pow_le_mono_r; lia | cbn; lia]. }
+  assert (1 <= Nat.pow 2 (8 - Nat.min (plen - 8*i) 8))%nat
+    by (change 1%nat with (Nat.pow 2 0); apply Nat.pow_le_mono_r; lia). lia.
+Qed.
+
+Lemma data_and_length : forall a m, List.length m = List.length a ->
+  List.length (Elab.data_and a m) = List.length a.
+Proof.
+  intros a m H. unfold Elab.data_and. apply data_bitops_length_eq;
+    [exact H | rewrite repeat_length; reflexivity].
+Qed.
+
+Lemma data_and_wfb : forall a m, List.length m = List.length a ->
+  bytes_wfb a = true -> bytes_wfb m = true -> bytes_wfb (Elab.data_and a m) = true.
+Proof.
+  intros a m Hl Ha Hm. unfold Elab.data_and. apply data_bitops_wfb;
+    [exact Hl | rewrite repeat_length; reflexivity | exact Ha | exact Hm
+     | apply repeat_wfb; lia].
+Qed.
+
+Lemma data_to_N_data_and : forall a m, List.length m = List.length a ->
+  bytes_wfb a = true -> bytes_wfb m = true ->
+  data_to_N (Elab.data_and a m) = N.land (data_to_N a) (data_to_N m).
+Proof.
+  intros a m Hl Ha Hm. unfold Elab.data_and.
+  rewrite data_to_N_bitops;
+    [ | exact Hl | rewrite repeat_length; reflexivity | exact Ha | exact Hm
+      | apply repeat_wfb; lia].
+  rewrite data_to_N_repeat0, N.lxor_0_r. reflexivity.
+Qed.
+
+Lemma data_to_N_data_or : forall a b, List.length b = List.length a ->
+  bytes_wfb a = true -> bytes_wfb b = true ->
+  data_to_N (data_or a b) = N.lor (data_to_N a) (data_to_N b).
+Proof.
+  intros a b Hl Ha Hb. unfold data_or.
+  rewrite data_to_N_bitops;
+    [ | rewrite data_not_length; exact Hl | exact Hl | exact Ha
+      | apply data_not_wfb; exact Hb | exact Hb ].
+  rewrite data_to_N_data_not by exact Hb.
+  set (K := (8 * N.of_nat (List.length a))%N).
+  assert (Hbb : (256 ^ N.of_nat (List.length b))%N = (2 ^ K)%N)
+    by (unfold K; rewrite Hl, pow256_pow2; reflexivity).
+  rewrite Hbb.
+  assert (HaB : (data_to_N a < 2 ^ K)%N)
+    by (unfold K; rewrite <- pow256_pow2; apply data_to_N_bound; exact Ha).
+  assert (HbB : (data_to_N b < 2 ^ K)%N)
+    by (unfold K; rewrite <- pow256_pow2, <- Hl; apply data_to_N_bound; exact Hb).
+  apply land_not_xor_is_or; assumption.
+Qed.
+
+(** The numeric value of a prefix mask: the top [plen] bits set of a [w]-byte
+    big-endian word — i.e. [2^(8w) - 2^(8w-plen)]. *)
+Lemma prefix_mask_val : forall w plen, (plen <= 8 * w)%nat ->
+  data_to_N (Elab.prefix_mask w plen)
+  = (2 ^ (8 * N.of_nat w) - 2 ^ (8 * N.of_nat w - N.of_nat plen))%N.
+Proof.
+  induction w as [|w IH]; intros plen Hle.
+  - assert (plen = 0)%nat by lia. subst. reflexivity.
+  - rewrite prefix_mask_cons, data_to_N_cons, prefix_mask_length.
+    rewrite (IH (plen - 8) ltac:(lia)).
+    rewrite Nat2N.inj_succ.
+    replace (8 * N.succ (N.of_nat w))%N with (8 * N.of_nat w + 8)%N by lia.
+    rewrite pow256_pow2.
+    set (E := (8 * N.of_nat w)%N).
+    assert (Hpow8 : (2 ^ (E + 8) = 2 ^ E * 256)%N)
+      by (rewrite N.pow_add_r; reflexivity).
+    destruct (Nat.ltb plen 8) eqn:Hlt.
+    + apply Nat.ltb_lt in Hlt.
+      assert (Hmb : N.of_nat (Elab.mask_byte plen)
+                    = (256 - 2 ^ (8 - N.of_nat plen))%N).
+      { unfold Elab.mask_byte.
+        rewrite Nat.min_l by lia.
+        rewrite Nat2N.inj_sub, Nat2N.inj_pow, Nat2N.inj_sub. reflexivity. }
+      rewrite Hmb.
+      replace (plen - 8)%nat with 0%nat by lia. cbn [N.of_nat].
+      rewrite N.sub_0_r, N.sub_diag.
+      replace (E + 8 - N.of_nat plen)%N with (E + (8 - N.of_nat plen))%N by lia.
+      rewrite Hpow8, N.pow_add_r.
+      assert (H8 : (2 ^ (8 - N.of_nat plen) <= 256)%N).
+      { replace 256%N with (2 ^ 8)%N by reflexivity. apply N.pow_le_mono_r; lia. }
+      nia.
+    + apply Nat.ltb_ge in Hlt.
+      assert (Hmb : N.of_nat (Elab.mask_byte plen) = 255%N).
+      { unfold Elab.mask_byte. rewrite Nat.min_r by lia.
+        replace (8 - 8)%nat with 0%nat by lia. reflexivity. }
+      rewrite Hmb.
+      replace (E - N.of_nat (plen - 8))%N with (E + 8 - N.of_nat plen)%N
+        by (rewrite Nat2N.inj_sub; unfold E; lia).
+      rewrite Hpow8.
+      assert (Hle2 : (2 ^ (E + 8 - N.of_nat plen) <= 2 ^ E)%N).
+      { apply N.pow_le_mono_r; lia. }
+      set (X := (2 ^ (E + 8 - N.of_nat plen))%N) in *.
+      set (Y := (2 ^ E)%N) in *. lia.
+Qed.
+
+(** A prefix mask ANDs a [w]-byte value down to its top [plen] bits (the low
+    [8w-plen] bits cleared): [land x mask = (x >> k) << k], [k = 8w-plen]. *)
+Lemma land_prefix_mask : forall w plen x, (plen <= 8 * w)%nat ->
+  (x < 2 ^ (8 * N.of_nat w))%N ->
+  N.land x (data_to_N (Elab.prefix_mask w plen))
+  = N.shiftl (N.shiftr x (N.of_nat (8 * w - plen))) (N.of_nat (8 * w - plen)).
+Proof.
+  intros w plen x Hle Hx.
+  rewrite prefix_mask_val by exact Hle.
+  set (K := N.of_nat (8 * w - plen)).
+  assert (HK : K = (8 * N.of_nat w - N.of_nat plen)%N)
+    by (unfold K; rewrite Nat2N.inj_sub; lia).
+  assert (HP : (N.of_nat plen + K = 8 * N.of_nat w)%N) by (rewrite HK; lia).
+  assert (Hmask : (2 ^ (8 * N.of_nat w) - 2 ^ (8 * N.of_nat w - N.of_nat plen))%N
+                  = N.shiftl (N.ones (N.of_nat plen)) K).
+  { rewrite N.shiftl_mul_pow2, N.ones_equiv, <- N.sub_1_r.
+    rewrite N.mul_sub_distr_r, N.mul_1_l, <- N.pow_add_r, HP, <- HK. reflexivity. }
+  rewrite Hmask, land_shiftl_mask.
+  rewrite N.land_ones.
+  rewrite N.shiftr_div_pow2.
+  assert (Hlt : (x / 2 ^ K < 2 ^ N.of_nat plen)%N).
+  { apply N.div_lt_upper_bound; [apply N.pow_nonzero; lia|].
+    rewrite <- N.pow_add_r.
+    replace (K + N.of_nat plen)%N with (8 * N.of_nat w)%N by lia. exact Hx. }
+  rewrite N.mod_small by exact Hlt. reflexivity.
+Qed.
+
+(** The bytewise complement of a prefix mask is the low [8w-plen] bits set:
+    [~mask = 2^(8w-plen) - 1] (the broadcast host part). *)
+Lemma data_not_prefix_mask : forall w plen, (plen <= 8 * w)%nat ->
+  data_to_N (Typed.data_not (Elab.prefix_mask w plen))
+  = (2 ^ N.of_nat (8 * w - plen) - 1)%N.
+Proof.
+  intros w plen Hle.
+  rewrite data_to_N_data_not by apply prefix_mask_wfb.
+  rewrite prefix_mask_length, pow256_pow2.
+  rewrite prefix_mask_val by exact Hle.
+  set (K := N.of_nat (8 * w - plen)).
+  assert (HKn : K = (8 * N.of_nat w - N.of_nat plen)%N)
+    by (unfold K; rewrite Nat2N.inj_sub; lia).
+  set (M := (2 ^ (8 * N.of_nat w) - 2 ^ (8 * N.of_nat w - N.of_nat plen))%N).
+  assert (Hdisj : N.land M (2 ^ K - 1) = 0%N).
+  { unfold M. rewrite <- HKn.
+    apply N.bits_inj_iff. intro i. rewrite N.land_spec, N.bits_0.
+    destruct (N.lt_ge_cases i K) as [Hi|Hi].
+    - replace (2 ^ (8 * N.of_nat w) - 2 ^ K)%N
+        with (N.shiftl (2 ^ (8 * N.of_nat w - K) - 1) K).
+      2:{ rewrite N.shiftl_mul_pow2, N.mul_sub_distr_r, N.mul_1_l, <- N.pow_add_r.
+          replace (8 * N.of_nat w - K + K)%N with (8 * N.of_nat w)%N
+            by (rewrite HKn; lia). reflexivity. }
+      rewrite N.shiftl_spec_low by lia. reflexivity.
+    - rewrite N.sub_1_r, <- N.ones_equiv, N.ones_spec_high by lia. apply andb_false_r. }
+  assert (Hsum : (2 ^ (8 * N.of_nat w) - 1)%N = N.lxor M (2 ^ K - 1)).
+  { rewrite <- (N.add_nocarry_lxor _ _ Hdisj). unfold M. rewrite <- HKn.
+    assert (0 < 2 ^ K)%N by (apply N.neq_0_lt_0, N.pow_nonzero; lia).
+    assert (2 ^ K <= 2 ^ (8 * N.of_nat w))%N
+      by (apply N.pow_le_mono_r; [lia | rewrite HKn; lia]). lia. }
+  fold M. rewrite Hsum, <- N.lxor_assoc, N.lxor_nilpotent, N.lxor_0_l. reflexivity.
+Qed.
+
+Theorem cidr_interval_agrees_prefix_expand : forall (v : nftval) (plen : nat) (fv : data),
+  (plen <= 8 * List.length (Nftval.encode v))%nat ->
+  List.length fv = List.length (Nftval.encode v) ->
+  bytes_wfb (Nftval.encode v) = true ->
+  bytes_wfb fv = true ->
+  data_in_iv fv (cidr_interval v plen)
+  = data_eqb (Elab.data_and fv (Elab.prefix_mask (List.length (Nftval.encode v)) plen))
+             (fst (cidr_interval v plen)).
+Proof.
+  intros v plen fv Hle Hlen Hev Hfv.
+  set (ev := Nftval.encode v) in *.
+  set (w := List.length ev) in *.
+  set (mask := Elab.prefix_mask w plen) in *.
+  set (net := Elab.data_and ev mask) in *.
+  set (K := N.of_nat (8 * w - plen)) in *.
+  (* length / wf bookkeeping *)
+  assert (Hml : List.length mask = w) by (unfold mask; apply prefix_mask_length).
+  assert (Hmw : bytes_wfb mask = true) by (unfold mask; apply prefix_mask_wfb).
+  assert (Hnl : List.length net = w)
+    by (unfold net; rewrite data_and_length; [reflexivity | rewrite Hml; reflexivity]).
+  assert (Hnw : bytes_wfb net = true)
+    by (unfold net; apply data_and_wfb; [rewrite Hml; reflexivity | exact Hev | exact Hmw]).
+  assert (Hnotl : List.length (Typed.data_not mask) = w)
+    by (rewrite data_not_length; exact Hml).
+  assert (Hnotw : bytes_wfb (Typed.data_not mask) = true)
+    by (apply data_not_wfb; exact Hmw).
+  assert (Hbl : List.length (data_or net (Typed.data_not mask)) = w).
+  { unfold data_or. rewrite data_bitops_length_eq.
+    - exact Hnl.
+    - rewrite !data_not_length. congruence.
+    - rewrite data_not_length. congruence. }
+  assert (Hbw : bytes_wfb (data_or net (Typed.data_not mask)) = true).
+  { unfold data_or. apply data_bitops_wfb.
+    - rewrite !data_not_length. congruence.
+    - rewrite data_not_length. congruence.
+    - exact Hnw.
+    - apply data_not_wfb; exact Hnotw.
+    - exact Hnotw. }
+  (* numeric values *)
+  set (Wn := N.of_nat w).
+  assert (Hxbound : (data_to_N fv < 2 ^ (8 * Wn))%N)
+    by (unfold Wn; rewrite <- pow256_pow2, <- Hlen; apply data_to_N_bound; exact Hfv).
+  assert (Hebound : (data_to_N ev < 2 ^ (8 * Wn))%N)
+    by (unfold Wn; rewrite <- pow256_pow2; apply data_to_N_bound; exact Hev).
+  assert (Hnetv : data_to_N net = N.shiftl (N.shiftr (data_to_N ev) K) K).
+  { unfold net. rewrite data_to_N_data_and by
+      (try (rewrite Hml; reflexivity); assumption).
+    unfold K. apply land_prefix_mask; assumption. }
+  (* LHS: data_in_iv fv (net, bcast) via numeric order *)
+  unfold data_in_iv, cidr_interval. fold ev w mask net.
+  cbn [fst snd].
+  rewrite (data_le_num net fv) by (try congruence; assumption).
+  rewrite (data_le_num fv (data_or net (Typed.data_not mask)))
+    by (try congruence; assumption).
+  (* RHS: data_and fv mask =? net, numerically *)
+  rewrite (data_eqb_num (Elab.data_and fv mask) net)
+    by (try (rewrite data_and_length; [congruence | rewrite Hml; congruence]);
+        try (apply data_and_wfb; [rewrite Hml; congruence | exact Hfv | exact Hmw]);
+        exact Hnw).
+  rewrite (data_to_N_data_and fv mask) by
+    (try (rewrite Hml; congruence); assumption).
+  (* bcast numeric value *)
+  assert (Hbv : data_to_N (data_or net (Typed.data_not mask))
+                = (N.shiftl (N.shiftr (data_to_N ev) K) K + (2 ^ K - 1))%N).
+  { rewrite data_to_N_data_or by (try (rewrite Hnotl; congruence); assumption).
+    rewrite Hnetv.
+    assert (Hnotv : data_to_N (Typed.data_not mask) = (2 ^ K - 1)%N).
+    { replace K with (N.of_nat (8 * w - plen)) by reflexivity.
+      unfold mask. apply data_not_prefix_mask; exact Hle. }
+    rewrite Hnotv.
+    rewrite (shiftl_add_disjoint (N.shiftr (data_to_N ev) K) (2 ^ K - 1) K).
+    2:{ assert (0 < 2 ^ K)%N by (apply N.neq_0_lt_0, N.pow_nonzero; lia). lia. }
+    reflexivity. }
+  rewrite Hbv, Hnetv.
+  (* now purely numeric: A := ev>>K, B := fv>>K, everything as A*2^K, B*2^K *)
+  replace (data_to_N mask) with (data_to_N (Elab.prefix_mask w plen)) by reflexivity.
+  rewrite land_prefix_mask by assumption. fold K.
+  set (A := N.shiftr (data_to_N ev) K).
+  set (B := N.shiftr (data_to_N fv) K).
+  rewrite !N.shiftl_mul_pow2.
+  set (P := (2 ^ K)%N).
+  assert (HPpos : (0 < P)%N) by (unfold P; apply N.neq_0_lt_0, N.pow_nonzero; lia).
+  (* fv = B*P + r, r < P *)
+  assert (Hfvdec : (data_to_N fv = B * P + data_to_N fv mod P)%N).
+  { unfold B, P. rewrite N.shiftr_div_pow2. rewrite N.mul_comm.
+    apply N.div_mod. lia. }
+  assert (Hr : (data_to_N fv mod P < P)%N) by (apply N.mod_lt; lia).
+  set (r := (data_to_N fv mod P)%N) in Hfvdec, Hr.
+  assert (Hmul : forall a b, (a <= b)%N -> (a * P <= b * P)%N)
+    by (intros a b Hab; apply N.mul_le_mono_r; exact Hab).
+  (* the interval iff = A =? B, both bounds *)
+  assert (Hlo : (A * P <=? data_to_N fv)%N = (A <=? B)%N).
+  { destruct (A <=? B)%N eqn:E.
+    - apply N.leb_le in E. apply N.leb_le. specialize (Hmul _ _ E).
+      rewrite Hfvdec. lia.
+    - apply N.leb_gt in E. apply N.leb_gt.
+      specialize (Hmul (B + 1)%N A ltac:(lia)).
+      rewrite N.mul_add_distr_r, N.mul_1_l in Hmul. rewrite Hfvdec. lia. }
+  assert (Hhi : (data_to_N fv <=? A * P + (P - 1))%N = (B <=? A)%N).
+  { destruct (B <=? A)%N eqn:E.
+    - apply N.leb_le in E. apply N.leb_le. specialize (Hmul _ _ E).
+      rewrite Hfvdec. lia.
+    - apply N.leb_gt in E. apply N.leb_gt.
+      specialize (Hmul (A + 1)%N B ltac:(lia)).
+      rewrite N.mul_add_distr_r, N.mul_1_l in Hmul. rewrite Hfvdec. lia. }
+  rewrite Hlo, Hhi.
+  destruct (N.eqb (B * P) (A * P)) eqn:Emul.
+  - apply N.eqb_eq in Emul.
+    rewrite N.mul_cancel_r in Emul by lia.
+    rewrite Emul, N.leb_refl. reflexivity.
+  - apply N.eqb_neq in Emul.
+    destruct (A <=? B)%N eqn:E1, (B <=? A)%N eqn:E2; cbn; try reflexivity.
+    apply N.leb_le in E1, E2. exfalso. apply Emul.
+    assert (A = B) by lia. congruence.
+Qed.
+
+(* ================================================================== *)
+(** ** M3 non-vacuity: each theorem's hypotheses hold for concrete data and
+    both sides compute the SAME (non-constant) verdict by vm_compute. *)
+
+(** A port set `{ 22, 80-88 }`: 84 is IN (both sides true), 200 is OUT. *)
+Example set_interval_exercised :
+  let ivs := [([0;22],[0;22]); ([0;80],[0;88])] in
+  (set_mem [0;84] ivs = set_mem_N (data_to_N [0;84]) ivs)
+  /\ set_mem [0;84] ivs = true
+  /\ (set_mem [0;200] ivs = set_mem_N (data_to_N [0;200]) ivs)
+  /\ set_mem [0;200] ivs = false.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** A concat set `1.2.3.4 . 70-90` (ip4 . port): the padded 8-byte key
+    membership = the per-field cross product; 1.2.3.4 . 80 is IN. *)
+Example concat_key_exercised :
+  let vals := [[1;2;3;4]; [0;80]] in
+  let los := [[1;2;3;4]; [0;70]] in
+  let his := [[1;2;3;4]; [0;90]] in
+  (concat_in_iv vals (List.concat (map pad_slot los), List.concat (map pad_slot his))
+   = forallb (fun t => let '(val, (lo, hi)) := t in field_in_iv val (lo, hi))
+             (combine vals (combine los his)))
+  /\ concat_in_iv vals (List.concat (map pad_slot los), List.concat (map pad_slot his))
+     = true
+  (* a DIFFERENT-slot value (port 100) is OUT — the padding did not smear
+     across the ip4 slot *)
+  /\ concat_in_iv [[1;2;3;4]; [0;100]]
+       (List.concat (map pad_slot los), List.concat (map pad_slot his)) = false.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** `192.168.0.0/16`: 192.168.5.7 matches the masked prefix AND lies in the
+    net..broadcast interval (both true); 10.0.0.0 matches neither (both false). *)
+Example cidr_agree_exercised :
+  let v := VIpv4 [192;168;0;0] in let plen := 16%nat in
+  (data_in_iv [192;168;5;7] (cidr_interval v plen)
+   = data_eqb (Elab.data_and [192;168;5;7] (Elab.prefix_mask 4 plen))
+              (fst (cidr_interval v plen)))
+  /\ data_in_iv [192;168;5;7] (cidr_interval v plen) = true
+  /\ (data_in_iv [10;0;0;0] (cidr_interval v plen)
+      = data_eqb (Elab.data_and [10;0;0;0] (Elab.prefix_mask 4 plen))
+                 (fst (cidr_interval v plen)))
+  /\ data_in_iv [10;0;0;0] (cidr_interval v plen) = false.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
 (** Axiom-freedom guards (informational; the enforcement point is
     `make axioms`). *)
 Print Assumptions range_erasure_be.
@@ -1144,3 +1640,6 @@ Print Assumptions bitfield_erasure.
 Print Assumptions bitwise_erasure.
 Print Assumptions flag_erasure.
 Print Assumptions txmatch_erasure.
+Print Assumptions set_interval_erasure.
+Print Assumptions concat_key_erasure.
+Print Assumptions cidr_interval_agrees_prefix_expand.

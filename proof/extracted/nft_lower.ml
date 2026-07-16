@@ -296,12 +296,6 @@ let typed_atom (k : kind) (v : Nft_ast.value) : Nftval.nftval =
 let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
   Nftval.encode (typed_atom k v)
 
-(* the byte width a kind compares at (for building a prefix mask) *)
-let width_of_kind = function
-  | KIp4 -> 4 | KIp6 -> 16 | KPort | KEthertype | KArpop -> 2
-  | KCtstate | KCtstatus | KMark | KIfindex | KFibType -> 4 | KNum w -> w | KNumLe w -> w
-  | KCtdir -> 1 | _ -> 1
-
 (* A kind stored HOST-ENDIAN (little-endian on x86) in the register, like the
    kernel holds `meta mark` / `ct mark` (BYTEORDER_HOST_ENDIAN).  For these,
    an ORDERED or RANGE comparison is only numerically meaningful after nft's
@@ -309,46 +303,12 @@ let width_of_kind = function
    [TByteorder true w w] transform.  Equality/neq need no conversion (memcmp is
    order-independent), so only the range/ordered path consults this. *)
 let host_endian_kind = function KMark | KIfindex | KFibType -> true | _ -> false
+(* the host-endian range/interval BOUNDS (network-order re-encoding after nft's
+   mandatory `byteorder hton`) are now the verified Coq [Typed.encode_be]. *)
 
-(* Encode a value NETWORK-ORDER (big-endian).  Used for the bounds of a RANGE
-   match on a host-endian field: nft stores the range immediates network-order
-   (golden `range eq reg 1 0x00000032 0x00000045`) and converts the loaded
-   host-endian field to network order with `hton` before the range test, so the
-   comparison is numeric.  [enc_atom] (host-endian for [KMark]) is right for the
-   eq/membership immediates but wrong for these post-hton range bounds. *)
-let enc_atom_be (k : kind) (v : Nft_ast.value) : Bytes.data =
-  match k, v with
-  | KMark, Nft_ast.Vnum n -> bytes_of_int (width_of_kind k) n
-  (* iif/oif (interface INDEX) are BYTEORDER_HOST_ENDIAN like mark (src/meta.c
-     NFT_META_IIF/OIF templates), so an ordered/range match on them also goes
-     through the hton path; the bounds must be network-order, not the LE form
-     [enc_atom] uses for the eq/membership immediates. *)
-  | KIfindex, Nft_ast.Vnum n -> bytes_of_int 4 n
-  | KIfindex, (Nft_ast.Vsym s | Nft_ast.Vstr s) -> bytes_of_int 4 (nametoindex s)
-  (* fib type is BYTEORDER_HOST_ENDIAN too (src/fib.c:50); an ordered/range match
-     on it goes through the same hton path, so its bounds are network-order. *)
-  | KFibType, Nft_ast.Vnum n -> bytes_of_int 4 n
-  | KFibType, Nft_ast.Vsym _ ->
-      (match enc_atom k v with b -> Stdlib.List.rev b)
-  | _ -> enc_atom k v
-
-(* ---------- concatenated-set register-slot padding ----------
-
-   A concatenated set (NFT_SET_CONCAT) lays each field in its OWN 32-bit register
-   slot: each field's contribution to the element key is its byte length ROUNDED
-   UP to a multiple of NFT_REG32_SIZE = 4 (include/netlink.h netlink_padded_len /
-   netlink_register_space; src/evaluate.c:5192; src/netlink_linearize.c:120-128).
-   Within a slot the field's bytes sit at the FRONT, followed by zero padding in
-   the trailing bytes (golden corpus: a 2-byte dport=80 displays as 0050 in its
-   4-byte slot).  So when we emit a per-field lo/hi bound for a concatenated
-   element, each field must be zero-padded on the trailing side to its 4-byte
-   slot, matching what nft stores and what [concat_in_iv] (Bytes.v) now expects.
-   This mirrors the bytecode/codec layer, which already uses one register slot
-   per field (codec.ml:167). *)
-let reg_slot (n : int) : int = 4 * ((n + 3) / 4)
-let pad_to_slot (b : Bytes.data) : Bytes.data =
-  let n = L.length b in
-  b @ (L.init (reg_slot n - n) (fun _ -> 0))
+(* NFT_SET_CONCAT register-slot padding and all set/interval byte composition
+   now live in the VERIFIED Coq lowering (Surface/Lower.v); this file composes
+   no set byte (M3). *)
 
 (* ---------- selector resolution: keypath -> (field, kind) ----------
 
@@ -391,202 +351,8 @@ let tcpopt_field (name : string) (field : string) : int * int * kind =
   | "tsecr"  -> (6, 4, KNum 4)
   | _ -> raise (Unsupported ("tcp option " ^ name ^ " " ^ field))
 
-let key_field (kp : Nft_ast.keypath) : Syntax.field * kind =
-  match kp with
-  | ["tcp"; "dport"] | ["udp"; "dport"] | ["th"; "dport"] ->
-      (Syntax.FThDport, KPort)
-  | ["tcp"; "sport"] | ["udp"; "sport"] | ["th"; "sport"] ->
-      (Syntax.FThSport, KPort)
-  | ["tcp"; "flags"] -> (Syntax.FTcpFlags, KTcpflag)
-  (* `ip`/`ip6` are NETWORK-header (PNetwork) selectors: nft guards them with an
-     implicit `meta nfproto == 2` (IPv4) / `== 10` (IPv6) in any multi-L3 family,
-     so reading the IPv4 header on an IPv6 packet (or vice versa) can't match.
-     the verified [Lower.dep_guard] turns [DepNfproto] into a real match only
-     for inet/bridge/netdev. *)
-  | ["ip"; "saddr"]    -> (Syntax.FIp4Saddr, KIp4)
-  | ["ip"; "daddr"]    -> (Syntax.FIp4Daddr, KIp4)
-  | ["ip"; "protocol"] -> (Syntax.FIp4Protocol, KL4proto)
-  | ["ip6"; "saddr"]   -> (Syntax.FIp6Saddr, KIp6)
-  | ["ip6"; "daddr"]   -> (Syntax.FIp6Daddr, KIp6)
-  | ["icmp"; "type"]   -> (Syntax.FIcmpType, KIcmp)
-  | ["icmpv6"; "type"] -> (Syntax.FIcmpType, KIcmpv6)
-  | ["ether"; "type"]  -> (Syntax.FEtherType, KEthertype)
-  | ["ether"; "saddr"] -> (Syntax.FEtherSaddr, KNum 6)
-  | ["ether"; "daddr"] -> (Syntax.FEtherDaddr, KNum 6)
-  | ["meta"; "l4proto"]  -> (Syntax.FMetaL4proto, KL4proto)
-  | ["meta"; "nfproto"]  -> (Syntax.FMetaNfproto, KNfproto)
-  | ["meta"; "protocol"] -> (Syntax.FMetaProtocol, KEthertype)
-  | ["meta"; "mark"]     -> (Syntax.FMetaMark, KMark)
-  | ["meta"; "iifname"]  -> (Syntax.FMetaIifname, KIfname)
-  | ["meta"; "oifname"]  -> (Syntax.FMetaOifname, KIfname)
-  | ["meta"; "iif"]      -> (Syntax.FMetaIif, KIfindex)
-  | ["meta"; "oif"]      -> (Syntax.FMetaOif, KIfindex)
-  | ["meta"; "obrname"]  -> (Syntax.FMetaGen Packet.MKbri_oifname, KIfname)
-  | ["meta"; "ibrname"]  -> (Syntax.FMetaGen Packet.MKbri_iifname, KIfname)
-  | ["meta"; "pkttype"]  -> (Syntax.FMetaPkttype, KPkttype)
-  | ["mark"]             -> (Syntax.FMetaMark, KMark)
-  | ["pkttype"]          -> (Syntax.FMetaPkttype, KPkttype)
-  | ["iifname"]          -> (Syntax.FMetaIifname, KIfname)
-  | ["oifname"]          -> (Syntax.FMetaOifname, KIfname)
-  | ["iif"]              -> (Syntax.FMetaIif, KIfindex)
-  | ["oif"]              -> (Syntax.FMetaOif, KIfindex)
-  | ["fib"; sel; "type"]    -> (Syntax.FFib (sel, Packet.FRtype), KFibType)
-  | ["fib"; sel; "oifname"] -> (Syntax.FFib (sel, Packet.FRoifname), KIfname)
-  | ["fib"; sel; "oif"]     -> (Syntax.FFib (sel, Packet.FRoif), KNum 4)
-  | ["ct"; "state"]      -> (Syntax.FCtState, KCtstate)
-  | ["ct"; "status"]     -> (Syntax.FCtStatus, KCtstatus)
-  | ["ct"; "mark"]       -> (Syntax.FCtMark, KMark)
-  (* ---- additional IPv4 header fields (network-order payload loads) ---- *)
-  | ["ip"; "ttl"]        -> (Syntax.FIp4Ttl,    KNum 1)
-  | ["ip"; "length"]     -> (Syntax.FIp4Totlen, KNum 2)
-  | ["ip"; "id"]         -> (Syntax.FIp4Id,     KNum 2)
-  | ["ip"; "frag-off"]   -> (Syntax.FIp4FragOff,KNum 2)
-  | ["ip"; "checksum"]   -> (Syntax.FIp4Csum,   KNum 2)
-  (* ---- additional IPv6 header fields ---- *)
-  | ["ip6"; "length"]    -> (Syntax.FPayload (Packet.PNetwork, 4, 2), KNum 2)
-  | ["ip6"; "hoplimit"]  -> (Syntax.FPayload (Packet.PNetwork, 7, 1), KNum 1)
-  | ["ip6"; "nexthdr"]   -> (Syntax.FPayload (Packet.PNetwork, 6, 1), KL4proto)
-  (* ---- additional TCP header fields (network-order payload loads) ---- *)
-  | ["tcp"; "sequence"]  -> (Syntax.FTcpSeq, KNum 4)
-  | ["tcp"; "ackseq"]    -> (Syntax.FTcpAck, KNum 4)
-  | ["tcp"; "window"]    -> (Syntax.FPayload (Packet.PTransport, 14, 2), KNum 2)
-  | ["tcp"; "checksum"]  -> (Syntax.FPayload (Packet.PTransport, 16, 2), KNum 2)
-  | ["tcp"; "urgptr"]    -> (Syntax.FPayload (Packet.PTransport, 18, 2), KNum 2)
-  (* ---- UDP header fields ---- *)
-  | ["udp"; "length"]    -> (Syntax.FUdpLen,  KNum 2)
-  | ["udp"; "checksum"]  -> (Syntax.FUdpCsum, KNum 2)
-  (* ---- ICMP / ICMPv6 header fields ---- *)
-  | ["icmp"; "code"]     -> (Syntax.FIcmpCode, KIcmpcode)
-  (* ---- IGMP (IPPROTO_IGMP 2), transport header: type@0 mrt@1 checksum@2
-     (golden ip/igmp.t.payload). ---- *)
-  | ["igmp"; "type"]     -> (Syntax.FPayload (Packet.PTransport, 0, 1), KIgmp)
-  | ["igmp"; "mrt"]      -> (Syntax.FPayload (Packet.PTransport, 1, 1), KNum 1)
-  | ["igmp"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2)
-  | ["icmp"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2)
-  | ["icmp"; "id"]       -> (Syntax.FPayload (Packet.PTransport, 4, 2), KNum 2)
-  | ["icmp"; "seq"] | ["icmp"; "sequence"]
-                         -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2)
-  | ["icmp"; "gateway"]  -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4)
-  | ["icmp"; "mtu"]      -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2)
-  | ["icmpv6"; "code"]     -> (Syntax.FIcmpCode, KIcmp6code)
-  | ["icmpv6"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2)
-  | ["icmpv6"; "id"]       -> (Syntax.FPayload (Packet.PTransport, 4, 2), KNum 2)
-  | ["icmpv6"; "seq"] | ["icmpv6"; "sequence"]
-                           -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2)
-  | ["icmpv6"; "mtu"]      -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4)
-  (* ---- host-endian meta register fields (u32/u16 host order) ---- *)
-  | ["meta"; "length"] | ["meta"; "len"] -> (Syntax.FMetaLen,   KNumLe 4)
-  | ["meta"; "cpu"]    -> (Syntax.FMetaCpu,   KNumLe 4)
-  | ["meta"; "skuid"]  -> (Syntax.FMetaSkuid, KNumLe 4)
-  | ["meta"; "skgid"]  -> (Syntax.FMetaSkgid, KNumLe 4)
-  | ["meta"; "iifgroup"] -> (Syntax.FMetaGen Packet.MKiifgroup, KNumLe 4)
-  | ["meta"; "oifgroup"] -> (Syntax.FMetaGen Packet.MKoifgroup, KNumLe 4)
-  | ["meta"; "cgroup"]   -> (Syntax.FMetaGen Packet.MKcgroup,   KNumLe 4)
-  | ["meta"; "iiftype"]  -> (Syntax.FMetaIiftype, KNumLe 2)
-  | ["meta"; "oiftype"]  -> (Syntax.FMetaOiftype, KNumLe 2)
-  (* ---- host-endian conntrack register fields ---- *)
-  | ["ct"; "direction"]  -> (Syntax.FCtDirection, KCtdir)
-  | ["ct"; "id"]         -> (Syntax.FCtId,        KNumLe 4)
-  | ["ct"; "expiration"] -> (Syntax.FCtExpiration,KNumLe 4)
-  | ["ct"; "zone"]       -> (Syntax.FCtGen Packet.CKzone, KNumLe 2)
-  (* ---- direction-qualified conntrack tuple (FCtDir key strings match nft's
-     `ct load <key>` render: src_ip/dst_ip/src_ip6/dst_ip6/proto_src/proto_dst/
-     zone/protocol) ---- *)
-  | ["ctdir"; d; "zone"]         -> (Syntax.FCtDir ("zone", d),      KNumLe 2)
-  | ["ctdir"; d; "protocol"]     -> (Syntax.FCtDir ("protocol", d),  KL4proto)
-  | ["ctdir"; d; "proto-src"]    -> (Syntax.FCtDir ("proto_src", d), KPort)
-  | ["ctdir"; d; "proto-dst"]    -> (Syntax.FCtDir ("proto_dst", d), KPort)
-  | ["ctdir"; d; "ip"; "saddr"]  -> (Syntax.FCtDir ("src_ip", d),    KIp4)
-  | ["ctdir"; d; "ip"; "daddr"]  -> (Syntax.FCtDir ("dst_ip", d),    KIp4)
-  | ["ctdir"; d; "ip6"; "saddr"] -> (Syntax.FCtDir ("src_ip6", d),   KIp6)
-  | ["ctdir"; d; "ip6"; "daddr"] -> (Syntax.FCtDir ("dst_ip6", d),   KIp6)
-  (* ---- ARP header (NFT_PAYLOAD_NETWORK_HEADER; arp is a single-L3 family so
-     nft emits NO nfproto dependency).  Offsets from arp.c / golden arp.t.payload:
-     htype@0 ptype@2 hlen@4 plen@5 operation@6, sender/target hw+proto addrs. ---- *)
-  | ["arp"; "htype"]     -> (Syntax.FPayload (Packet.PNetwork, 0, 2), KNum 2)
-  | ["arp"; "ptype"]     -> (Syntax.FPayload (Packet.PNetwork, 2, 2), KEthertype)
-  | ["arp"; "hlen"]      -> (Syntax.FPayload (Packet.PNetwork, 4, 1), KNum 1)
-  | ["arp"; "plen"]      -> (Syntax.FPayload (Packet.PNetwork, 5, 1), KNum 1)
-  | ["arp"; "operation"] -> (Syntax.FPayload (Packet.PNetwork, 6, 2), KArpop)
-  | ["arp"; "saddr"; "ether"] -> (Syntax.FPayload (Packet.PNetwork, 8, 6),  KNum 6)
-  | ["arp"; "saddr"; "ip"]    -> (Syntax.FPayload (Packet.PNetwork, 14, 4), KIp4)
-  | ["arp"; "daddr"; "ether"] -> (Syntax.FPayload (Packet.PNetwork, 18, 6), KNum 6)
-  | ["arp"; "daddr"; "ip"]    -> (Syntax.FPayload (Packet.PNetwork, 24, 4), KIp4)
-  (* ---- AH (IPPROTO_AH 51), transport header.  nexthdr@0 hdrlength@1 reserved@2
-     spi@4 sequence@8 (golden inet/ah.t.payload). ---- *)
-  | ["ah"; "nexthdr"]    -> (Syntax.FPayload (Packet.PTransport, 0, 1), KL4proto)
-  | ["ah"; "hdrlength"]  -> (Syntax.FPayload (Packet.PTransport, 1, 1), KNum 1)
-  | ["ah"; "reserved"]   -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2)
-  | ["ah"; "spi"]        -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4)
-  | ["ah"; "sequence"]   -> (Syntax.FPayload (Packet.PTransport, 8, 4), KNum 4)
-  (* ---- ESP (IPPROTO_ESP 50), transport header: spi@0 sequence@4. ---- *)
-  | ["esp"; "spi"]       -> (Syntax.FPayload (Packet.PTransport, 0, 4), KNum 4)
-  | ["esp"; "sequence"]  -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4)
-  (* ---- COMP (IPPROTO_COMP 108), transport header: nexthdr@0 flags@1 cpi@2. ---- *)
-  | ["comp"; "nexthdr"]  -> (Syntax.FPayload (Packet.PTransport, 0, 1), KL4proto)
-  | ["comp"; "flags"]    -> (Syntax.FPayload (Packet.PTransport, 1, 1), KNum 1)
-  | ["comp"; "cpi"]      -> (Syntax.FPayload (Packet.PTransport, 2, 2), KNum 2)
-  (* ---- SCTP (IPPROTO_SCTP 132), transport header: sport@0 dport@2 vtag@4
-     checksum@8 (golden inet/sctp.t.payload). ---- *)
-  | ["sctp"; "sport"]    -> (Syntax.FPayload (Packet.PTransport, 0, 2), KPort)
-  | ["sctp"; "dport"]    -> (Syntax.FPayload (Packet.PTransport, 2, 2), KPort)
-  | ["sctp"; "vtag"]     -> (Syntax.FPayload (Packet.PTransport, 4, 4), KNum 4)
-  | ["sctp"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 8, 4), KNum 4)
-  (* ---- DCCP (IPPROTO_DCCP 33), transport header: sport@0 dport@2. ---- *)
-  | ["dccp"; "sport"]    -> (Syntax.FPayload (Packet.PTransport, 0, 2), KPort)
-  | ["dccp"; "dport"]    -> (Syntax.FPayload (Packet.PTransport, 2, 2), KPort)
-  (* ---- UDP-Lite (IPPROTO_UDPLITE 136), transport header: sport@0 dport@2
-     cscov@4 checksum@6 (golden inet/udplite.t.payload). ---- *)
-  | ["udplite"; "sport"]    -> (Syntax.FPayload (Packet.PTransport, 0, 2), KPort)
-  | ["udplite"; "dport"]    -> (Syntax.FPayload (Packet.PTransport, 2, 2), KPort)
-  | ["udplite"; "cscov"] | ["udplite"; "csumcov"]
-                            -> (Syntax.FPayload (Packet.PTransport, 4, 2), KNum 2)
-  | ["udplite"; "checksum"] -> (Syntax.FPayload (Packet.PTransport, 6, 2), KNum 2)
-  (* ---- IPv6 extension-header selectors (NFT_EXTHDR `exthdr load ipv6`).
-     The htype is the exthdr's IPPROTO (hbh=0, rt/srh=43, frag=44, dst=60,
-     mh=135); off/len are the field's position WITHIN that header.  nft guards
-     each with the IPv6 nfproto dependency (golden ip6/{hbh,rt,frag,dst,mh}.t.
-     payload: ip6 family emits none, inet/netdev emit `meta nfproto == 0x0a`),
-     so the dep spec is [DepNfproto 10] exactly like the ip6 network-header
-     selectors.
-     Byte-aligned fields only; the sub-byte bitfields (frag frag-off/reserved2/
-     more-fragments, which nft follows with a `bitwise` mask) are left out. ---- *)
-  | ["hbh"; "nexthdr"]    -> (Syntax.FExthdr (Packet.EPipv6, 0,   0, 1, false), KL4proto)
-  | ["hbh"; "hdrlength"]  -> (Syntax.FExthdr (Packet.EPipv6, 0,   1, 1, false), KNum 1)
-  | ["rt"; "nexthdr"]     -> (Syntax.FExthdr (Packet.EPipv6, 43,  0, 1, false), KL4proto)
-  | ["rt"; "hdrlength"]   -> (Syntax.FExthdr (Packet.EPipv6, 43,  1, 1, false), KNum 1)
-  | ["rt"; "type"]        -> (Syntax.FExthdr (Packet.EPipv6, 43,  2, 1, false), KNum 1)
-  | ["rt"; "seg-left"]    -> (Syntax.FExthdr (Packet.EPipv6, 43,  3, 1, false), KNum 1)
-  | ["srh"; "last-entry"] -> (Syntax.FExthdr (Packet.EPipv6, 43,  4, 1, false), KNum 1)
-  | ["srh"; "flags"]      -> (Syntax.FExthdr (Packet.EPipv6, 43,  5, 1, false), KNum 1)
-  | ["srh"; "tag"]        -> (Syntax.FExthdr (Packet.EPipv6, 43,  6, 2, false), KNum 2)
-  | ["frag"; "nexthdr"]   -> (Syntax.FExthdr (Packet.EPipv6, 44,  0, 1, false), KL4proto)
-  | ["frag"; "reserved"]  -> (Syntax.FExthdr (Packet.EPipv6, 44,  1, 1, false), KNum 1)
-  | ["frag"; "id"]        -> (Syntax.FExthdr (Packet.EPipv6, 44,  4, 4, false), KNum 4)
-  | ["dst"; "nexthdr"]    -> (Syntax.FExthdr (Packet.EPipv6, 60,  0, 1, false), KL4proto)
-  | ["dst"; "hdrlength"]  -> (Syntax.FExthdr (Packet.EPipv6, 60,  1, 1, false), KNum 1)
-  | ["mh"; "nexthdr"]     -> (Syntax.FExthdr (Packet.EPipv6, 135, 0, 1, false), KL4proto)
-  | ["mh"; "hdrlength"]   -> (Syntax.FExthdr (Packet.EPipv6, 135, 1, 1, false), KNum 1)
-  | ["mh"; "type"]        -> (Syntax.FExthdr (Packet.EPipv6, 135, 2, 1, false), KMhtype)
-  | ["mh"; "reserved"]    -> (Syntax.FExthdr (Packet.EPipv6, 135, 3, 1, false), KNum 1)
-  | ["mh"; "checksum"]    -> (Syntax.FExthdr (Packet.EPipv6, 135, 4, 2, false), KNum 2)
-  (* ---- TCP options: `tcp option <name> <field>` (byte-aligned fields). ---- *)
-  | ["tcpopt"; name; field] ->
-      let optnum = tcpopt_num name in
-      let (off, len, k) = tcpopt_field name field in
-      (Syntax.FExthdr (Packet.EPtcpopt, optnum, off, len, false), k)
-  | _ -> raise (Unsupported ("selector: " ^ S.concat " " kp))
-
-(* ---------- prefix mask ---------- *)
-
-let prefix_mask (width : int) (len : int) : Bytes.data =
-  L.init width (fun i ->
-    let bit_lo = 8 * i and bit_hi = 8 * (i + 1) in
-    let m = ref 0 in
-    for b = bit_lo to bit_hi - 1 do
-      if b < len then m := !m lor (0x80 lsr (b - bit_lo))
-    done; !m)
-let band a b = L.map2 (land) a b
+(* CIDR mask/net/broadcast arithmetic now lives in the VERIFIED Coq lowering
+   (Surface/Lower.v [cidr_interval], unified with Elab.prefix_expand). *)
 
 (* ---------- typed-emission side tables ----------
    The lowering constructs every typed-representable match THROUGH the verified
@@ -642,12 +408,14 @@ let coq_mc (tx : Typed.txmatch) : Syntax.matchcond =
 
 type state = {
   defines : (string, Nft_ast.value) Hashtbl.t;
-  mutable sets  : (string * (Bytes.data * Bytes.data) list) list;
-  mutable vmaps : (string * ((Bytes.data * Bytes.data) * Verdict.verdict) list) list;
-  mutable maps  : (string * (Bytes.data * Bytes.data) list) list;
-  mutable counter : int;
+  (* the byte-relevant lowering state — the shared fresh-name counter and the
+     named set / verdict-map / value-map contents — IS the extracted Coq
+     [Lower.lstate].  The OCaml driver only THREADS it and reads back the
+     declarations; it composes no set byte and mints no name of its own. *)
+  mutable ls : Lower.lstate;
 }
-let fresh st pfx = let n = st.counter in st.counter <- n + 1; Printf.sprintf "%s%d" pfx n
+(* mint a fresh anonymous verdict-map name through the shared Coq counter *)
+let fresh_map st = let (name, ls') = Lower.fresh_map st.ls in st.ls <- ls'; name
 
 (* expand `$name` to its define (recursively), leave other values as-is *)
 let rec resolve_var st (v : Nft_ast.value) : Nft_ast.value =
@@ -672,141 +440,14 @@ let lower_verdict : Nft_ast.verdict -> Verdict.verdict = function
   | Nft_ast.SVqueue (lo, hi, byp, fan) -> Verdict.Queue (lo, hi, byp, fan)
   | Nft_ast.SVreject _ -> Verdict.Reject (0, 0)
 
-(* ---------- element encoding (single field & declared concat type) ---------- *)
-
-(* encode a value into one interval [lo,hi] for a single-field set *)
-let interval_of_value st (k : kind) (v : Nft_ast.value) : Bytes.data * Bytes.data =
-  match resolve_var st v with
-  | Nft_ast.Vrange (a, b) -> (enc_atom k a, enc_atom k b)
-  | Nft_ast.Vprefix ((Nft_ast.Vip4 b | Nft_ast.Vip6 b), len) ->
-      let w = width_of_kind k in let mask = prefix_mask w len in
-      let net = band b mask in
-      let bcast = L.map2 (fun n m -> n lor (m lxor 0xff)) net mask in
-      (net, bcast)
-  | v' -> let b = enc_atom k v' in (b, b)
-
-(* Like [interval_of_value] but encode the bounds NETWORK-ORDER (big-endian),
-   used for an INTERVAL set over a HOST-ENDIAN field (e.g. `ct mark { 0x100-0x200 }`).
-   Such a set is an ORDERED comparison: the kernel compares register bytes with
-   memcmp (byte-lexicographic), so nft userspace ALWAYS inserts a
-   `byteorder reg = hton(reg,4,4)` before the `lookup` and stores the interval
-   immediates network-order — exactly the same conversion it emits for a DIRECT
-   `ct mark 0x32-0x45` range (golden any/ct.t.payload: interval mark set forces
-   the hton, an exact-element set does not).  We mirror that: the loaded
-   host-endian field gets a [TByteorder true w w] transform (see the SEset branch
-   in [lower_match]) and the stored bounds are big-endian via [enc_atom_be].
-   EXACT (degenerate point) elements are still encoded as a degenerate [b,b]
-   interval, but in big-endian so they remain consistent with the hton'd field
-   under [set_mem] (equality via [data_le] antisymmetry is order-independent). *)
-let interval_of_value_be st (k : kind) (v : Nft_ast.value) : Bytes.data * Bytes.data =
-  match resolve_var st v with
-  | Nft_ast.Vrange (a, b) -> (enc_atom_be k a, enc_atom_be k b)
-  | Nft_ast.Vprefix ((Nft_ast.Vip4 b | Nft_ast.Vip6 b), len) ->
-      let w = width_of_kind k in let mask = prefix_mask w len in
-      let net = band b mask in
-      let bcast = L.map2 (fun n m -> n lor (m lxor 0xff)) net mask in
-      (net, bcast)
-  | v' -> let b = enc_atom_be k v' in (b, b)
-
-(* Does a single-field set contain at least one INTERVAL (range or prefix)
-   element?  An interval set is an ORDERED comparison and so forces nft's
-   `byteorder hton` on a host-endian field; an exact-only set (all point
-   elements) is an unordered memcmp-equality lookup and emits NO hton.  We only
-   take the byteorder path when BOTH the field is host-endian AND the set has an
-   interval element (matching the golden corpus: exact mark sets emit no hton). *)
-let set_has_interval st (elems : Nft_ast.value list) : bool =
-  L.exists
-    (fun v -> match resolve_var st v with
-       | Nft_ast.Vrange _ | Nft_ast.Vprefix _ -> true
-       | _ -> false)
-    elems
-
-(* byte width / encoder for a declared set TYPE atom (e.g. `ipv4_addr . ifname`) *)
-let bytes_of_typeatom st (atom : string) (v : Nft_ast.value) : Bytes.data =
-  let v = resolve_var st v in
-  match atom with
-  | "ipv4_addr"    -> enc_atom KIp4 v
-  | "ipv6_addr"    -> enc_atom KIp6 v
-  | "ifname"       -> enc_atom KIfname v
-  | "iface_index"  -> enc_atom KIfindex v
-  | "inet_service" -> enc_atom KPort v
-  | "inet_proto"   -> enc_atom KL4proto v
-  | "ether_addr"   -> enc_atom (KNum 6) v
-  | "mark"         -> enc_atom KMark v
-  | _ -> raise (Unsupported ("set element type: " ^ atom))
-
-(* encode one declared-set element (possibly a concatenation) to an interval *)
-let interval_of_decl_elem st (types : string list) (v : Nft_ast.value)
-    : Bytes.data * Bytes.data =
-  match types, resolve_var st v with
-  | [t], v' ->
-      (* single-typed: allow range / prefix on ipv4 *)
-      (match v' with
-       | Nft_ast.Vrange (a, b) -> (bytes_of_typeatom st t a, bytes_of_typeatom st t b)
-       | Nft_ast.Vprefix _ when t = "ipv4_addr" -> interval_of_value st KIp4 v'
-       | Nft_ast.Vprefix _ when t = "ipv6_addr" -> interval_of_value st KIp6 v'
-       | _ -> let b = bytes_of_typeatom st t v' in (b, b))
-  | _, Nft_ast.Vconcat vs when L.length vs = L.length types ->
-      (* CONCATENATED element (NFT_SET_CONCAT): the kernel ranges EACH field
-         independently, so an element is the per-field cross-product of intervals.
-         We emit lo = concat of per-field lows, hi = concat of per-field highs;
-         a per-field range/CIDR therefore becomes faithfully expressible (it used
-         to be refused / silently flattened).  See [concat_set_mem] in Bytes.v. *)
-      let iv_of_typeatom t v =
-        match resolve_var st v with
-        | Nft_ast.Vrange (a, b) -> (bytes_of_typeatom st t a, bytes_of_typeatom st t b)
-        | Nft_ast.Vprefix (Nft_ast.Vip4 _, _) when t = "ipv4_addr" ->
-            interval_of_value st KIp4 v
-        | Nft_ast.Vprefix (Nft_ast.Vip6 _, _) when t = "ipv6_addr" ->
-            interval_of_value st KIp6 v
-        | Nft_ast.Vprefix _ ->
-            raise (Unsupported "CIDR/prefix in concatenated set element for non-ipv4 field")
-        | v' -> let b = bytes_of_typeatom st t v' in (b, b) in
-      let ivs = L.map2 iv_of_typeatom types vs in
-      (* per-field register-slot padding (NFT_SET_CONCAT): each field occupies a
-         whole 4-byte slot, field bytes at the front + trailing zero padding. *)
-      (L.concat (L.map (fun (lo,_) -> pad_to_slot lo) ivs),
-       L.concat (L.map (fun (_,hi) -> pad_to_slot hi) ivs))
-  | _ -> raise (Unsupported "set element arity does not match declared type")
-
-(* ---------- match lowering ---------- *)
-
-(* Intern an encoded anonymous-set element list, DEDUPLICATED: two inline
-   `{...}` sets with the same encoded elements share ONE "__setN" binding (set
-   identity by contents), instead of exploding into per-occurrence copies. *)
-let intern_elems st (elems : (Bytes.data * Bytes.data) list) : string =
-  match L.find_opt (fun (_, e) -> e = elems) st.sets with
-  | Some (name, _) -> name
-  | None ->
-      let name = fresh st "__set" in
-      st.sets <- (name, elems) :: st.sets;
-      name
-
-(* build the anonymous-set env entry for an inline `{...}` set over a single
-   field kind, returning its (deduplicated) name *)
-let intern_anon_set st (k : kind) (elems : Nft_ast.value list) : string =
-  intern_elems st (L.map (interval_of_value st k) elems)
-
-(* As [intern_anon_set] but encode the elements NETWORK-ORDER (big-endian): used
-   for an INTERVAL set over a host-endian field, whose lookup is preceded by a
-   `byteorder hton` (see the SEset branch in [lower_match]). *)
-let intern_anon_set_be st (k : kind) (elems : Nft_ast.value list) : string =
-  intern_elems st (L.map (interval_of_value_be st k) elems)
-
-(* build the anonymous-set env entry for a CONCATENATED inline set, where each
-   element is a Vconcat matched against [kinds] *)
-let intern_anon_concat st (kinds : kind list) (elems : Nft_ast.value list) : string =
-  (* per-field cross-product element (NFT_SET_CONCAT): lo = concat of per-field
-     lows, hi = concat of per-field highs.  A per-field range/CIDR is now
-     faithfully expressible (was previously refused). *)
-  let enc1 v = match resolve_var st v with
-    | Nft_ast.Vconcat vs when L.length vs = L.length kinds ->
-        let ivs = L.map2 (fun k v -> interval_of_value st k v) kinds vs in
-        (* per-field register-slot padding (NFT_SET_CONCAT); see [pad_to_slot]. *)
-        (L.concat (L.map (fun (lo,_) -> pad_to_slot lo) ivs),
-         L.concat (L.map (fun (_,hi) -> pad_to_slot hi) ivs))
-    | _ -> raise (Unsupported "concatenated set element arity mismatch") in
-  intern_elems st (L.map enc1 elems)
+(* ---------- set / map / vmap element encoding: ALL VERIFIED (Coq) ----------
+   Every single-field / declared-type / concatenated set element interval, the
+   host-endian interval byteorder path, the CIDR net/broadcast expansion, the
+   4-byte register-slot padding of concatenated set keys (and the FLAT unpadded
+   vmap-key asymmetry), and the content-dedup `__setN` interning are the
+   extracted Coq [Lower.*] functions (Surface/Lower.v).  This file no longer
+   composes a single set byte; it injects the surface values, calls the verified
+   lowering, threads [st.ls], and reads back the declarations. *)
 
 (* ---------- injection into the Coq surface AST ----------
    The values handed to the VERIFIED lowering are the define-expanded surface
@@ -834,28 +475,25 @@ let coq_scalar st (kp : Nft_ast.keypath) (r : Nft_ast.rhs)
     lres_get (Lower.lower_match { Ast.sm_keys = [kp]; sm_rhs = inj_rhs st r }) in
   (deps, coq_mc tx)
 
-(* An inline `{...}` set (or a `$var` expanding to one) over a single field:
-   the remaining UNTYPED set path (its typed migration is the M3 milestone).
-   An INTERVAL set over a host-endian field takes nft's mandatory
-   hton-before-lookup form ([MSetT] with a [TByteorder true w w] transform and
-   big-endian bounds — golden any/ct.t.payload: an interval mark set forces
-   the hton, an exact-element set does not).  A tcp-flags brace set is refused:
-   it is a genuine lookup (inet/tcp.t.payload:66) that the surface AST cannot
-   distinguish from the OR-mask comma form here, and we never guess. *)
+(* the VERIFIED (field, datatype) of a selector, from the extracted table *)
+let sel_info (kp : Nft_ast.keypath) : Syntax.field * Datatype.dtype =
+  match Selector.selector kp with
+  | Some ((f, dt), _) -> (f, dt)
+  | None -> raise (Unsupported ("selector: " ^ S.concat " " kp))
+
+(* An inline `{...}` set (or a `$var` expanding to one) over a single field: the
+   verified Coq [Lower.lower_anon_set] builds every element interval and interns
+   the set, choosing the host-endian hton path (a byteorder-transformed lookup
+   with big-endian bounds) exactly when the field is host-endian AND the set has
+   an interval element, and refusing a tcp-flags brace set (brace-vs-OR
+   ambiguity).  This file composes no set byte. *)
 let anon_set_match st (kp : Nft_ast.keypath) (neg : bool)
     (elems : Nft_ast.value list) : Selector.depspec list * Syntax.matchcond =
-  let (f, k) = key_field kp in
-  if k = KTcpflag then
-    raise (Unsupported
-      "tcp flags set/list form is ambiguous (brace-set vs OR-mask); \
-       use a single `tcp flags X` / `tcp flags ! X` / `tcp flags == X`");
-  if host_endian_kind k && set_has_interval st elems then
-    let w = width_of_kind k in
-    (sel_deps kp,
-     Syntax.MSetT (f, [Syntax.TByteorder (true, w, w)], neg,
-                   intern_anon_set_be st k elems))
-  else
-    (sel_deps kp, Syntax.MConcatSet ([f], neg, intern_anon_set st k elems))
+  let (f, dt) = sel_info kp in
+  let (ls', mc) =
+    lres_get (Lower.lower_anon_set st.ls f dt neg (L.map (inj_value st) elems)) in
+  st.ls <- ls';
+  (sel_deps kp, mc)
 
 (* lower a single match clause into body items.  EVERY scalar shape (typed
    atoms, ranges incl. the hton ranges, ct-state/status and tcp-flags bitmask
@@ -873,10 +511,10 @@ let lower_match st (m : Nft_ast.smatch)
   | [kp] ->
       (match m.Nft_ast.m_rhs.Nft_ast.payload with
        | Nft_ast.SEref name ->
-           (* `@name` reference: a real lookup against a named set (untyped
-              set path, M3) *)
-           let (f, _) = key_field kp in
-           (sel_deps kp, Syntax.MConcatSet ([f], neg, name))
+           (* `@name` reference: a real lookup against a named set (the
+              matchcond is built by the verified [Lower.lower_set_ref]) *)
+           let (f, _) = sel_info kp in
+           (sel_deps kp, Lower.lower_set_ref [f] neg name)
        | Nft_ast.SEset elems -> anon_set_match st kp neg elems
        | Nft_ast.SEvalue v
          when (match resolve_var st v with
@@ -889,20 +527,28 @@ let lower_match st (m : Nft_ast.smatch)
            (* EVERY scalar shape: the verified Coq lowering *)
            coq_scalar st kp m.Nft_ast.m_rhs)
   | kps ->
-      (* concatenation: ip daddr . oifname [!=] @set / {set} (untyped set
-         path, M3); the dep SPECS come from the verified selector table *)
-      let pairs = L.map key_field kps in
-      let fields = L.map fst pairs in
-      let kinds  = L.map snd pairs in
+      (* concatenation: ip daddr . oifname [!=] @set / {set}; the per-field
+         intervals, 4-byte register-slot padding, interning, and the matchcond
+         are the verified Coq [Lower.lower_concat_set]/[Lower.lower_set_ref] *)
+      let infos = L.map sel_info kps in
+      let fields = L.map fst infos in
+      let dts    = L.map snd infos in
       let dep = L.concat (L.map sel_deps kps) in
-      let name = match m.Nft_ast.m_rhs.Nft_ast.payload with
-        | Nft_ast.SEref nm -> nm
-        | Nft_ast.SEset elems -> intern_anon_concat st kinds elems
-        | Nft_ast.SEvalue (Nft_ast.Vconcat _ as v) -> intern_anon_concat st kinds [v]
-        | Nft_ast.SElist _ -> raise (Unsupported
-            "bare comma list is not valid for a concatenated selector; use `{ ... }`")
-        | Nft_ast.SEvalue _ -> raise (Unsupported "concatenated match needs a set/ref rhs")
-      in (dep, Syntax.MConcatSet (fields, neg, name))
+      (match m.Nft_ast.m_rhs.Nft_ast.payload with
+       | Nft_ast.SEref nm -> (dep, Lower.lower_set_ref fields neg nm)
+       | Nft_ast.SEset elems ->
+           let (ls', mc) =
+             lres_get (Lower.lower_concat_set st.ls fields dts neg
+                         (L.map (inj_value st) elems)) in
+           st.ls <- ls'; (dep, mc)
+       | Nft_ast.SEvalue (Nft_ast.Vconcat _ as v) ->
+           let (ls', mc) =
+             lres_get (Lower.lower_concat_set st.ls fields dts neg
+                         [inj_value st v]) in
+           st.ls <- ls'; (dep, mc)
+       | Nft_ast.SElist _ -> raise (Unsupported
+           "bare comma list is not valid for a concatenated selector; use `{ ... }`")
+       | Nft_ast.SEvalue _ -> raise (Unsupported "concatenated match needs a set/ref rhs"))
 
 (* meta/ct key from a name (reuses the codec name tables) *)
 let meta_key n = match Codec.meta_of_name n with
@@ -1209,43 +855,27 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
         push (Syntax.BMatch (coq_mc tx))
     | Nft_ast.CVmap (kps, entries) ->
         if !vmap <> None then raise (Unsupported "more than one verdict map in a rule");
-        let pairs = L.map key_field kps in
-        let fields = L.map fst pairs in
-        let kinds  = L.map snd pairs in
+        let infos = L.map sel_info kps in
+        let fields = L.map fst infos in
+        let dts    = L.map snd infos in
         ensure_dep (L.concat (L.map sel_deps kps));
-        let name = fresh st "__map" in
-        let ents = (match kinds with
-          | [k] ->
-              (* single-field vmap key: a range/prefix becomes a closed interval
-                 [lo,hi] (a point key is the degenerate [b,b]); the kernel rbtree
-                 set is NFT_SET_INTERVAL | NFT_SET_MAP. *)
-              L.map (fun (v, sv) ->
-                (interval_of_value st k v, lower_verdict sv)) entries
-          | _ ->
-              (* CONCATENATED-key vmap (`ip protocol . th dport vmap {tcp.22:...}`):
-                 the lookup key the model builds is the FLAT byte concatenation of
-                 the per-field values [List.concat (map field_value vm_fields)] —
-                 raw field bytes, NOT register-slot padded (assoc_verdict tests the
-                 flat key with data_in_iv).  So each element's stored [lo,hi] bound
-                 is the FLAT concatenation of the per-field encodings, matching the
-                 model's key byte-for-byte. *)
-              L.map (fun (v, sv) ->
-                let per_field = match resolve_var st v with
-                  | Nft_ast.Vconcat vs when L.length vs = L.length kinds ->
-                      L.map2 (fun k v -> interval_of_value st k v) kinds vs
-                  | _ -> raise (Unsupported
-                           "concatenated vmap element arity does not match the key") in
-                let lo = L.concat (L.map fst per_field) in
-                let hi = L.concat (L.map snd per_field) in
-                ((lo, hi), lower_verdict sv)) entries) in
-        st.vmaps <- (name, ents) :: st.vmaps;
+        let name = fresh_map st in
+        (* the per-key intervals (single-field closed interval, or the FLAT
+           unpadded per-field concatenation for a concatenated key — the model's
+           assoc_verdict key) are the verified Coq [Lower.vmap_entries_*] *)
+        let coq_entries =
+          L.map (fun (v, sv) -> (inj_value st v, lower_verdict sv)) entries in
+        let ents = lres_get (match dts with
+          | [dt] -> Lower.vmap_entries_single dt coq_entries
+          | _    -> Lower.vmap_entries_concat dts coq_entries) in
+        st.ls <- Lower.add_vmap st.ls name ents;
         (match fields with
          | [f] -> vmap := Some { Syntax.vm_fields = []; vm_keyf = Some (f, []); vm_name = name }
          | _   -> vmap := Some { Syntax.vm_fields = fields; vm_keyf = None; vm_name = name })
     | Nft_ast.CVmapRef (kps, name) ->
         (* `<key>[.<key>...] vmap @name`: entries come from the named map in the env *)
         if !vmap <> None then raise (Unsupported "more than one verdict map in a rule");
-        let fields = L.map (fun kp -> fst (key_field kp)) kps in
+        let fields = L.map (fun kp -> fst (sel_info kp)) kps in
         ensure_dep (L.concat (L.map sel_deps kps));
         (match fields with
          | [f] -> vmap := Some { Syntax.vm_fields = []; vm_keyf = Some (f, []); vm_name = name }
@@ -1289,26 +919,28 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
 (* ---------- declarations ---------- *)
 
 let lower_setdecl st (sd : Nft_ast.setdecl) : unit =
+  let types = sd.Nft_ast.sd_type in
   if sd.Nft_ast.sd_is_map then begin
     (* a verdict map if its elements carry verdict data; an empty declaration is
        registered as an empty value map (its contents arrive at runtime) *)
     let is_vmap = L.exists (fun (_, d) -> match d with
       | Some _ -> true | None -> false) sd.Nft_ast.sd_elements in
     if is_vmap then
-      let ents = L.map (fun (key, d) ->
-        (* keep the FULL [lo,hi] interval key so range/prefix vmap keys do an
-           interval lookup (NFT_SET_INTERVAL | NFT_SET_MAP), not exact-only. *)
-        (interval_of_decl_elem st sd.Nft_ast.sd_type key,
+      (* the FULL [lo,hi] interval key (verified Coq [Lower.decl_vmap_ents]) so
+         range/prefix vmap keys do an interval lookup, not exact-only *)
+      let coq_entries = L.map (fun (key, d) ->
+        (inj_value st key,
          match d with Some v -> lower_verdict v | None -> Verdict.Continue))
         sd.Nft_ast.sd_elements in
-      st.vmaps <- (sd.Nft_ast.sd_name, ents) :: st.vmaps
+      let ents = lres_get (Lower.decl_vmap_ents types coq_entries) in
+      st.ls <- Lower.add_vmap st.ls sd.Nft_ast.sd_name ents
     else if sd.Nft_ast.sd_elements = [] then
-      st.maps <- (sd.Nft_ast.sd_name, []) :: st.maps
+      st.ls <- Lower.add_map st.ls sd.Nft_ast.sd_name []
     else raise (Unsupported "value maps (non-verdict map data) not yet lowered")
   end else begin
-    let elems = L.map (fun (v, _) -> interval_of_decl_elem st sd.Nft_ast.sd_type v)
-                  sd.Nft_ast.sd_elements in
-    st.sets <- (sd.Nft_ast.sd_name, elems) :: st.sets
+    let elems = lres_get (Lower.decl_set_elems types
+                            (L.map (fun (v, _) -> inj_value st v) sd.Nft_ast.sd_elements)) in
+    st.ls <- Lower.add_set st.ls sd.Nft_ast.sd_name elems
   end
 
 (* the (hook, priority) registration of a base chain, if it has a `type _ hook _
@@ -1345,7 +977,8 @@ type parsed = {
 }
 
 let build_env st : Packet.env =
-  let sets = st.sets and vmaps = st.vmaps and maps = st.maps in
+  let sets = st.ls.Lower.ls_sets and vmaps = st.ls.Lower.ls_vmaps
+  and maps = st.ls.Lower.ls_maps in
   { Packet.e_set  = (fun n -> match L.assoc_opt n sets  with Some e -> e | None -> []);
     e_vmap        = (fun n -> match L.assoc_opt n vmaps with Some e -> e | None -> []);
     e_map         = (fun n -> match L.assoc_opt n maps  with Some e -> e | None -> []);
@@ -1355,8 +988,7 @@ let build_env st : Packet.env =
 
 let lower (f : Nft_ast.sfile) : parsed =
   typed_tbl := []; dep_mcs := [];
-  let st = { defines = Hashtbl.create 16; sets = []; vmaps = []; maps = [];
-             counter = 0 } in
+  let st = { defines = Hashtbl.create 16; ls = Lower.ls0 } in
   (* pass 1: collect defines *)
   L.iter (function Nft_ast.TopDefine (n, v) -> Hashtbl.replace st.defines n v | _ -> ()) f;
   (* pass 2: declarations (sets/maps) must exist before chains reference them *)
@@ -1382,7 +1014,8 @@ let lower (f : Nft_ast.sfile) : parsed =
   { p_tables = L.map fst tables_with_hooks;
     p_hooks  = L.map snd tables_with_hooks;
     p_env = build_env st;
-    p_sets = L.rev st.sets; p_vmaps = L.rev st.vmaps; p_maps = L.rev st.maps }
+    p_sets = L.rev st.ls.Lower.ls_sets; p_vmaps = L.rev st.ls.Lower.ls_vmaps;
+    p_maps = L.rev st.ls.Lower.ls_maps }
 
 (* ---------- lookups ---------- *)
 
