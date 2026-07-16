@@ -14,8 +14,12 @@ theories/Surface/Datatype.v
 theories/Surface/Symbols.v
 theories/Surface/Selector.v
 theories/Surface/Typecheck.v
+theories/Surface/Typed.v
+theories/Surface/Lower.v
 
 theories/Semantics/Semantics.v
+theories/Semantics/TypedEval.v
+theories/Surface/Lower_Proofs.v
 theories/Semantics/Fib_Local.v
 theories/Semantics/Netstate_MultiAddr.v
 
