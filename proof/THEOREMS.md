@@ -10,8 +10,9 @@ axiom-free — without reading 3000 lines of `Correct.v`.
   shared world — restated over the bundled pair `Packet.pstate`
   (`ps_env`/`ps_wire`), each an `exact`/`apply` of its post-split successor.
 - Axiom gate: `make axioms` re-checks every HEADLINE theorem below (plus the
-  supporting strata) from the compiled `.vo` files and fails on anything but
-  `Closed under the global context`.
+  supporting strata, `Elab.elab_matchcond_correct`, and the representation
+  ratchet `Semantics.run_rule_outcome_eq`) from the compiled `.vo` files and
+  fails on anything but `Closed under the global context`.
 - Classes used below:
   - **HEADLINE** — the single top theorem of a verified axis; what the project claims.
   - **STAGE** — a per-pass/per-stage theorem composed into a headline.
@@ -29,6 +30,7 @@ axiom-free — without reading 3000 lines of `Correct.v`.
 | compiler, sequence form | `compile_seq_correct` | `Correct.v` | the same, lifted over a packet sequence under an **arbitrary step** `verdict -> env -> env` — a per-packet **congruence corollary** of `compile_hook_correct`, *not* a proof about ruleset-generated state (that is the next axis) |
 | mutation / cross-packet learning | `compile_seq_mut_correct` | `Correct.v` | compiled single-chain traversal threading the env each packet LEAVES (meta/ct writes, dynset learning) = DSL sequence, under `mut_wf` well-formedness |
 | optimizer pipeline | `optimize_table_uncond_compile_correct` | `Optimize_Uncond.v` | the shipped 18-stage `nft -o` pipeline + compilation preserves every packet's verdict against the synthesised declarations, for **any input chain** (no `rules_clean`, no freshness precondition) |
+| typed source elaboration | `elab_matchcond_correct` | `Elab.v` | the typed source-match layer (`Elab.tmatch`: typed immediates, CIDR-with-plen, ifname wildcards) elaborates onto the byte IR **evaluation-exactly**, for every match/env/packet — generated sources (`*_Gen.v`) carry typed terms whose meaning is the byte IR's by this theorem |
 
 Scope notes (each also sits on the theorem in the source):
 
@@ -148,3 +150,16 @@ verbatim by `Correct.mut_wf_prog_eq`).
 - One-liner (the historical gate):
   `cd theories && printf 'From Nft Require Import Correct Optimize.\nPrint Assumptions compile_chain_correct.\n' | coqtop -R . Nft`
   → `Closed under the global context`.
+
+## 6. Representation ratchets (M4)
+
+Representation changes ship with an in-kernel equivalence to the shape they
+replaced:
+
+| change | ratchet |
+|---|---|
+| rule outcome: 1 verdict + 5 optional slots -> `Syntax.outcome` sum | `Semantics.run_rule_outcome_eq`: for every well-formed product (`Syntax.prod_wf`), `outcome (rule_of_prod rp) = outcome_prod rp` on all env/packets (`outcome_prod` is the pre-sum evaluation, verbatim, over the historical record `Syntax.rule_prod`) |
+| typed source matches (`Elab.tmatch`) over the byte IR | `Elab.elab_matchcond_correct` (evaluation-exact elaboration); byte-faithfulness of the typed encodings: `Nftval.encode_*` vm_compute witnesses + `Elab.prefix_aligned_24`/`prefix_unaligned_20`/`elab_port_22`/`elab_wildcard` |
+| `MMasked` polarity bool -> `cmpop` | the eval clause is `eval_cmp op` (the VM's own comparator); `MFlagsSet` names the positive implicit-bitmask idiom (`(field & X) <> 0`, `CNe`) |
+| `nat_kind`/`nat_family`/dynset-op strings -> `Bytecode.nat_op`/`nat_af`/`dynset_op` | rendering strings exist only at the codec/netlink boundary (extracted/codec.ml, nl_send.ml); `make corpus` (2532/2532) pins the rendered bytes unchanged |
+| `BDep` dependency tag | a *definitional alias* of `BMatch` (`Syntax.BDep`): evaluation, loadability, compilation are those of the match it wraps, definitionally |

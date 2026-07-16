@@ -34,8 +34,8 @@ Definition mac1 : data := [0;17;34;51;68;85].    (* 00:11:22:33:44:55 *)
 Definition mac2 : data := [0;17;34;51;68;102].   (* 00:11:22:33:44:66 *)
 
 Definition accL2 : rule :=
-  {| r_body := []; r_verdict := Accept; r_vmap := None; r_nat := None;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := OVerdict Accept; r_after := [] |}.
 
 Definition setl2_input : list rule :=
   [ orig_ruleGs FEtherSaddr giift mac1 [] accL2

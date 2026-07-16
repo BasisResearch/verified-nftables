@@ -35,9 +35,8 @@ Definition redir_spec : nat_spec :=
      nat_extra := NXnone;
      nat_flags := 0 |}.
 Definition redir_rule : rule :=
-  {| r_body := []; r_verdict := Accept; r_vmap := None;
-     r_nat := Some redir_spec; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := ONat redir_spec; r_after := [] |}.
 Definition redir_chain : chain := {| c_policy := Drop; c_rules := [ redir_rule ] |}.
 
 (* ---- masquerade; accept at POSTROUTING ---- *)
@@ -47,9 +46,8 @@ Definition masq_spec : nat_spec :=
      nat_extra := NXnone;
      nat_flags := 0 |}.
 Definition masq_rule : rule :=
-  {| r_body := []; r_verdict := Accept; r_vmap := None;
-     r_nat := Some masq_spec; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := ONat masq_spec; r_after := [] |}.
 Definition masq_chain : chain := {| c_policy := Drop; c_rules := [ masq_rule ] |}.
 
 (* env where NO interface has an IPv4 address: e_ifaddr _ = [].  This is exactly the

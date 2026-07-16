@@ -97,7 +97,11 @@ Inductive nfttype : Type :=
 | TEtherAddr                (* ether_addr: 6 verbatim register bytes             *)
 | TVerdict                  (* a verdict-map key value (small big-endian int)    *)
 | TCtState                  (* ct_state bitmask: 4 bytes big-endian              *)
-| TFibType.                 (* fib route-type: 4 bytes HOST-endian (little)      *)
+| TFibType                  (* fib route-type: 4 bytes HOST-endian (little)      *)
+| THostInt     (w : nat).   (* host-endian (little) integer of [w] bytes: the
+                               BYTEORDER_HOST_ENDIAN register fields (meta mark /
+                               iif / ct mark / ct zone / meta len, nft_lower's
+                               KMark / KIfindex / KNumLe) *)
 
 Inductive nftval : Type :=
 | VInteger (w : nat) (n : N)   (* integer of [w] bytes (big-endian)              *)
@@ -108,7 +112,8 @@ Inductive nftval : Type :=
 | VEther   (b : data)          (* 6 verbatim bytes                                *)
 | VVerdict (n : N)             (* verdict-map key (big-endian, [w] bytes)         *)
 | VCtState (n : N)             (* ct_state bitmask, 4 bytes big-endian            *)
-| VFibType (n : N).            (* fib route-type, 4 bytes little-endian           *)
+| VFibType (n : N)             (* fib route-type, 4 bytes little-endian           *)
+| VHostInt (w : nat) (n : N).  (* host-endian integer of [w] bytes (little)       *)
 
 (** The verdict-map key width is a fixed 4-byte register slot (the kernel stores
     a verdict-map key as a 32-bit value). *)
@@ -126,6 +131,7 @@ Definition type_of (v : nftval) : nfttype :=
   | VVerdict _   => TVerdict
   | VCtState _   => TCtState
   | VFibType _   => TFibType
+  | VHostInt w _ => THostInt w
   end.
 
 (* ------------------------------------------------------------------ *)
@@ -145,6 +151,7 @@ Definition encode (v : nftval) : data :=
   | VVerdict n   => N_to_data verdict_width n
   | VCtState n   => N_to_data 4 n
   | VFibType n   => rev (N_to_data 4 n)
+  | VHostInt w n => rev (N_to_data w n)
   end.
 
 (** The canonical register width of a type (= [width_of_kind] in nft_lower.ml). *)
@@ -159,6 +166,7 @@ Definition width_of (ty : nfttype) : nat :=
   | TVerdict     => verdict_width
   | TCtState     => 4
   | TFibType     => 4
+  | THostInt w   => w
   end.
 
 (* ------------------------------------------------------------------ *)
@@ -179,6 +187,8 @@ Definition decode (ty : nfttype) (d : data) : option nftval :=
   | TCtState     => if Nat.eqb (List.length d) 4  then Some (VCtState (data_to_N d)) else None
   | TFibType     => if Nat.eqb (List.length d) 4
                     then Some (VFibType (data_to_N (rev d))) else None
+  | THostInt w   => if Nat.eqb (List.length d) w
+                    then Some (VHostInt w (data_to_N (rev d))) else None
   end.
 
 (* ------------------------------------------------------------------ *)
@@ -194,6 +204,7 @@ Definition wf (v : nftval) : Prop :=
   | VVerdict n   => (n < 256 ^ N.of_nat verdict_width)%N
   | VCtState n   => (n < 256 ^ N.of_nat 4)%N
   | VFibType n   => (n < 256 ^ N.of_nat 4)%N
+  | VHostInt w n => (n < 256 ^ N.of_nat w)%N
   | VIpv4 b      => List.length b = 4
   | VIpv6 b      => List.length b = 16
   | VIfname s    => List.length s = 16
@@ -205,10 +216,10 @@ Definition wf (v : nftval) : Prop :=
 Lemma encode_length : forall v,
   wf v -> List.length (encode v) = width_of (type_of v).
 Proof.
-  intros [w n|b|b|s|n|b|n|n|n] H; cbn [encode width_of type_of] in *;
+  intros [w n|b|b|s|n|b|n|n|n|w n] H; cbn [encode width_of type_of] in *;
     try (apply N_to_data_length);
-    try assumption.
-  rewrite length_rev. apply N_to_data_length.
+    try assumption;
+    rewrite length_rev; apply N_to_data_length.
 Qed.
 
 (* ------------------------------------------------------------------ *)
@@ -219,7 +230,7 @@ Theorem decode_encode : forall x,
   wf x -> decode (type_of x) (encode x) = Some x.
 Proof.
   intros x Hwf.
-  destruct x as [w n|b|b|s|n|b|n|n|n];
+  destruct x as [w n|b|b|s|n|b|n|n|n|w n];
     cbn [type_of encode decode width_of verdict_width wf] in *.
   - (* VInteger *) rewrite N_to_data_length, Nat.eqb_refl.
     rewrite data_to_N_N_to_data by exact Hwf. reflexivity.
@@ -234,6 +245,8 @@ Proof.
   - (* VCtState *) rewrite N_to_data_length. cbn [Nat.eqb].
     rewrite data_to_N_N_to_data by exact Hwf. reflexivity.
   - (* VFibType *) rewrite length_rev, N_to_data_length. cbn [Nat.eqb].
+    rewrite rev_involutive, data_to_N_N_to_data by exact Hwf. reflexivity.
+  - (* VHostInt *) rewrite length_rev, N_to_data_length, Nat.eqb_refl.
     rewrite rev_involutive, data_to_N_N_to_data by exact Hwf. reflexivity.
 Qed.
 
@@ -266,6 +279,11 @@ Proof.
   - (* TCtState *) rewrite <- Hlen. apply N_to_data_data_to_N; exact Hwf.
   - (* TFibType: encode (VFibType (data_to_N (rev d)))
                   = rev (N_to_data 4 (data_to_N (rev d))) = d *)
+    rewrite <- Hlen, <- (length_rev d).
+    rewrite N_to_data_data_to_N.
+    + apply rev_involutive.
+    + unfold data_wf in *. apply Forall_rev. exact Hwf.
+  - (* THostInt: same little-endian round-trip *)
     rewrite <- Hlen, <- (length_rev d).
     rewrite N_to_data_data_to_N.
     + apply rev_involutive.

@@ -27,6 +27,57 @@ Inductive cmpop : Type :=
 | CLe
 | CGe.
 
+(** The NAT statement kind ([nft_nat]'s manip selector plus the two
+    interface-address forms): source NAT to an operand ([NKsnat]), destination
+    NAT to an operand ([NKdnat]), source NAT to the exit interface's address
+    ([NKmasq], masquerade), destination NAT to the inbound interface's address
+    ([NKredir], redirect).  The netlink/corpus rendering ("snat"/"dnat"/
+    "masq"/"redir") is produced only at the rendering boundary
+    (extracted/codec.ml, glue.ml). *)
+Inductive nat_op : Type := NKsnat | NKdnat | NKmasq | NKredir.
+
+Definition natop_eqb (a b : nat_op) : bool :=
+  match a, b with
+  | NKsnat, NKsnat | NKdnat, NKdnat | NKmasq, NKmasq | NKredir, NKredir => true
+  | _, _ => false
+  end.
+
+Lemma natop_eqb_eq : forall a b, natop_eqb a b = true <-> a = b.
+Proof. intros [] []; cbn; split; intro H; congruence. Qed.
+
+(** The NAT L3 address family: [NFip4] the 32-bit IPv4 slot, [NFip6] the
+    128-bit IPv6 slot (the kernel chooses by family — nat_addrlen,
+    netlink_linearize.c:1237), and [NFinet] the RUNTIME-DISPATCHED sentinel: an
+    `inet` table has ONE NAT rule that serves BOTH families and the kernel
+    dispatches on the PACKET's L3 family at runtime (nft_masq_inet_eval:
+    `switch (nft_pf(pkt))`), so no static family is correct and the data-plane
+    NAT resolves [NFinet] per-packet ([Semantics.nat_addrfamily_pkt]). *)
+Inductive nat_af : Type := NFip4 | NFip6 | NFinet.
+
+Definition nataf_eqb (a b : nat_af) : bool :=
+  match a, b with
+  | NFip4, NFip4 | NFip6, NFip6 | NFinet, NFinet => true
+  | _, _ => false
+  end.
+
+Lemma nataf_eqb_eq : forall a b, nataf_eqb a b = true <-> a = b.
+Proof. intros [] []; cbn; split; intro H; congruence. Qed.
+
+(** The dynamic-set mutation of a `dynset` statement: [SOadd]/[SOupdate] insert
+    the key (update also refreshes its timeout — indistinguishable in this
+    timeout-free model), [SOdelete] removes it.  Rendered "add"/"update"/
+    "delete" only at the rendering boundary (extracted/codec.ml). *)
+Inductive dynset_op : Type := SOadd | SOupdate | SOdelete.
+
+Definition dynsetop_eqb (a b : dynset_op) : bool :=
+  match a, b with
+  | SOadd, SOadd | SOupdate, SOupdate | SOdelete, SOdelete => true
+  | _, _ => false
+  end.
+
+Lemma dynsetop_eqb_eq : forall a b, dynsetop_eqb a b = true <-> a = b.
+Proof. intros [] []; cbn; split; intro H; congruence. Qed.
+
 Definition reg := nat.   (* register index; reg 0 is the verdict register *)
 
 Inductive instr : Type :=
@@ -46,7 +97,7 @@ Inductive instr : Type :=
 | IObjref      (otype : nat) (oname : string)
 | ISynproxy    (mss wscale : nat)
 | ILast        (info : string)
-| IDynset      (op name : string) (keyregs : list reg) (datareg : option reg) (fdata : bool)
+| IDynset      (op : dynset_op) (name : string) (keyregs : list reg) (datareg : option reg) (fdata : bool)
                             (* [keyregs] hold the (concatenated) set/map key; [datareg]
                                is the map data register (None = a pure SET dynset).
                                [fdata] distinguishes a data register fed by a packet
@@ -102,7 +153,7 @@ Inductive instr : Type :=
                                              the same netlink `lookup` as [ILookupVal];
                                              the two differ only in the modelled
                                              miss behaviour at their use site. *)
-| INat         (kind family : string) (amin amax pmin pmax : option reg)
+| INat         (kind : nat_op) (family : nat_af) (amin amax pmin pmax : option reg)
                (flags : nat)   (* terminal NAT / masquerade / redirect *)
 | ILimit       (spec : limit_spec)       (* rate limit (can break the rule) *)
 | ICounter     (pkts bytes : nat)        (* verdict-neutral statements *)

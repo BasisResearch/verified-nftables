@@ -71,7 +71,10 @@ Proof.
   { apply (nft_prefix_chain_drop_iff 15 tutorial_chains _ _ _ _ _ _ Hok3). }
   (* the prefix field is the first 3 bytes of the saddr, which Hs names *)
   rewrite (nft_saddr_prefix 3) by lia.
-  unfold nft_field_is in Hs. rewrite Hs. cbn.
+  (* [vm_compute], not [cbn]: the goal mixes a closed prefix (elaborated from
+     [MPrefix], reducible to [192;168;100]) with [encode (ip4 a b c d)] over
+     VARIABLE bytes; cbn diverges on that mix, vm_compute is instant. *)
+  unfold nft_field_is in Hs. rewrite Hs. vm_compute.
   (* [a; b; c] = [192; 168; 100]  <->  a = 192 /\ b = 168 /\ c = 100 *)
   apply bytes3_eq_iff.
 Qed.
@@ -92,7 +95,8 @@ Proof.
   eapply iff_trans.
   { apply (nft_prefix_chain_accept_iff 15 tutorial_chains _ _ _ _ _ _ Hok3). }
   rewrite (nft_saddr_prefix 3) by lia.
-  unfold nft_field_is in Hs. rewrite Hs. cbn.
+  (* vm_compute for the same reason as in [tutorial_blocks_exactly] above *)
+  unfold nft_field_is in Hs. rewrite Hs. vm_compute.
   split; intros Hn Hc; apply Hn; [now apply bytes3_eq_iff | now apply bytes3_eq_iff].
 Qed.
 Print Assumptions tutorial_accepts_rest.

@@ -111,7 +111,7 @@ Proof.
     apply Bool.andb_true_iff in Hc as [Hc Htproxy].
     apply Bool.andb_true_iff in Hc as [Hc Hnat].
     apply Bool.andb_true_iff in Hc as [_ Hvmap].
-    cbn [r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after].
+    cbn [r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after r_outcome].
     rewrite Hstmts. cbn [map app].
     rewrite app_nil_r.
     apply Bool.andb_true_iff. split.
@@ -135,7 +135,7 @@ Lemma simplify_rule_clean : forall r,
   rule_clean r = true -> rule_clean (simplify_rule r) = true.
 Proof.
   intros r Hc. unfold simplify_rule, rule_clean in Hc |- *.
-  cbn [r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after].
+  cbn [r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after r_outcome].
   rewrite map_simplify_item_id. exact Hc.
 Qed.
 

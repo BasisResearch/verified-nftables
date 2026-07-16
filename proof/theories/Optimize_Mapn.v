@@ -62,15 +62,13 @@ Local Open Scope nat_scope.
 (** An ORIGINAL rule: `<field> = v  meta <k> set M` (verdict-neutral). *)
 Definition orig_map_rule (f : field) (v M : data) (k : meta_key) : rule :=
   {| r_body := [BMatch (MCmp f CEq v); BStmt (SMetaSet k (VImm M))];
-     r_verdict := Continue; r_vmap := None; r_nat := None; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := ONone; r_after := [] |}.
 
 (** The MERGED rule: `<field> @setname  meta <k> set <field> map @mapname`. *)
 Definition mk_map_rule (f : field) (setname mapname : string) (k : meta_key) : rule :=
   {| r_body := [BMatch (MConcatSet [f] false setname);
                 BStmt (SMetaSet k (VMap [f] [] mapname))];
-     r_verdict := Continue; r_vmap := None; r_nat := None; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := ONone; r_after := [] |}.
 
 (** The single-field anonymous SET / data MAP contents the merge synthesises. *)
 Definition map2_set (v1 v2 : data) : list (data * data) := [(v1, v1); (v2, v2)].
@@ -314,8 +312,7 @@ Qed.
     `meta mark set`, and what the kernel runs with NFT_BREAK-on-miss. *)
 Definition mk_map_rule_bare (f : field) (mapname : string) (k : meta_key) : rule :=
   {| r_body := [BStmt (SMetaSet k (VMap [f] [] mapname))];
-     r_verdict := Continue; r_vmap := None; r_nat := None; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := ONone; r_after := [] |}.
 
 Lemma map_lookup_data_offkey : forall x v1 v2 M1 M2,
   data_eqb x v1 = false -> data_eqb x v2 = false ->
@@ -434,10 +431,9 @@ Definition orig_map_data (r : rule) : option (field * data * data * meta_key) :=
     and a ~42 MB blow-up; see [Optimize_Merge.rule_end_eqb].  Matching the record
     structurally binds [f]/[v]/[M]/[k] without ever comparing a [string].) *)
 Definition is_orig_map (r : rule) : option (field * data * data * meta_key) :=
-  match orig_map_data r, r_verdict r, r_vmap r, r_nat r,
-        r_tproxy r, r_fwd r, r_queue r, r_after r with
-  | Some (f, v, M, k), Continue, None, None, None, None, None, [] => Some (f, v, M, k)
-  | _, _, _, _, _, _, _, _ => None
+  match orig_map_data r, r_outcome r, r_after r with
+  | Some (f, v, M, k), ONone, [] => Some (f, v, M, k)
+  | _, _, _ => None
   end.
 
 (** [orig_map_data] is a SINGLE match on [r_body]; its shape inverts cleanly. *)
@@ -445,7 +441,7 @@ Lemma orig_map_data_shape : forall r f v M k,
   orig_map_data r = Some (f, v, M, k) ->
   r_body r = [BMatch (MCmp f CEq v); BStmt (SMetaSet k (VImm M))].
 Proof.
-  intros [body verd vmap nt tp fwd q aft] f v M k H.
+  intros [body outc aft] f v M k H.
   unfold orig_map_data in H. cbn in H. cbn [r_body].
   repeat (match goal with
           | [ H : (match ?y with _ => _ end) = Some _ |- _ ] => destruct y
@@ -458,12 +454,7 @@ Lemma is_orig_map_shape : forall r f v M k,
 Proof.
   intros r f v M k H. unfold is_orig_map in H.
   destruct (orig_map_data r) as [[[[f0 v0] M0] k0]|] eqn:Hd; [|discriminate H].
-  destruct (r_verdict r) eqn:Hverd; try discriminate H.
-  destruct (r_vmap r) eqn:Hvm; try discriminate H.
-  destruct (r_nat r) eqn:Hnt; try discriminate H.
-  destruct (r_tproxy r) eqn:Htp; try discriminate H.
-  destruct (r_fwd r) eqn:Hfwd; try discriminate H.
-  destruct (r_queue r) eqn:Hq; try discriminate H.
+  destruct (r_outcome r) eqn:Ho; try discriminate H.
   destruct (r_after r) eqn:Haft; try discriminate H.
   injection H as -> -> -> ->.
   pose proof (orig_map_data_shape r f v M k Hd) as Hbody.

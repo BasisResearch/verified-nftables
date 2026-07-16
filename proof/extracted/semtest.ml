@@ -21,13 +21,14 @@ let mcmp f op v : Syntax.matchcond = Syntax.MCmp (f, op, v)
 let mset f : Syntax.matchcond = Syntax.MConcatSet ([f], false, "set")
 let rule ms v : Syntax.rule =
   { Syntax.r_body = Stdlib.List.map (fun m -> Syntax.BMatch m) ms;
-    r_verdict = v; r_vmap = None; r_nat = None; r_tproxy = None; r_fwd = None;
-    r_queue = None; r_after = [] }
+    r_outcome = (match v with Verdict.Continue -> Syntax.ONone | _ -> Syntax.OVerdict v);
+    r_after = [] }
 let chain pol rs : Syntax.chain = { Syntax.c_policy = pol; c_rules = rs }
 (* a rule with an explicit body (matches AND statements interleaved) *)
 let rule_b body v : Syntax.rule =
-  { Syntax.r_body = body; r_verdict = v; r_vmap = None; r_nat = None;
-    r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] }
+  { Syntax.r_body = body;
+    r_outcome = (match v with Verdict.Continue -> Syntax.ONone | _ -> Syntax.OVerdict v);
+    r_after = [] }
 
 (* ---- the runtime environment (named set/map state the lookups read) ---- *)
 let empty_env : Packet.env =
@@ -105,15 +106,18 @@ let run_battery (fails : int ref) (title : string) (c : Syntax.chain) pkts =
    the user observed they should.  [nat] adds a terminal that applies on a map
    miss (the vmap-then-terminal feature). *)
 let vmap_rule ?(nat = None) f : Syntax.rule =
+  let vm = { Syntax.vm_fields = [f]; vm_keyf = Some (f, []);
+             vm_name = "portmap" } in
   { Syntax.r_body = [ Syntax.BMatch (meq Syntax.FMetaL4proto [6]) ];
-    r_verdict = Verdict.Continue;
-    r_vmap = Some { Syntax.vm_fields = [f]; vm_keyf = Some (f, []);
-                    vm_name = "portmap" };
-    r_nat = nat; r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] }
+    r_outcome = (match nat with
+                 | Some ns -> Syntax.OVmapNat (vm, ns)
+                 | None -> Syntax.OVmap vm);
+    r_after = [] }
 
 let redirect : Syntax.nat_spec option =
   Some { Syntax.nat_addr_imm = None; nat_field = None; nat_map = None; nat_src = None;
-         nat_kind = "redir"; nat_family = ""; nat_extra = Syntax.NXnone; nat_flags = 0 }
+         nat_kind = Bytecode.NKredir; nat_family = Bytecode.NFip4;
+         nat_extra = Syntax.NXnone; nat_flags = 0 }
 
 let () =
   let fails = ref 0 in
@@ -317,7 +321,7 @@ let () =
      (mut accept != no-mut drop). *)
   Printf.printf "=== add @learn {ip saddr}; ip saddr @learn accept (dynset set feedback) ===\n";
   let dyn_chain = chain Verdict.Drop [
-    rule_b [ Syntax.BStmt (Syntax.SDynset ("add", "learn", [Syntax.FIp4Saddr], [])) ] Verdict.Continue;
+    rule_b [ Syntax.BStmt (Syntax.SDynset (Bytecode.SOadd, "learn", [Syntax.FIp4Saddr], [])) ] Verdict.Continue;
     rule_b [ Syntax.BMatch (Syntax.MConcatSet ([Syntax.FIp4Saddr], false, "learn")) ] Verdict.Accept;
   ] in
   let dprog = Compile.compile_chain dyn_chain in
@@ -339,7 +343,7 @@ let () =
      the mark accepts.  Combines map-dynset learning with meta mutation. *)
   Printf.printf "=== add @m {ip saddr : tcp dport}; meta mark set ip saddr map @m; meta mark 22 accept ===\n";
   let mapdyn_chain = chain Verdict.Drop [
-    rule_b [ Syntax.BStmt (Syntax.SDynset ("add", "m", [Syntax.FIp4Saddr], [Syntax.FThDport])) ] Verdict.Continue;
+    rule_b [ Syntax.BStmt (Syntax.SDynset (Bytecode.SOadd, "m", [Syntax.FIp4Saddr], [Syntax.FThDport])) ] Verdict.Continue;
     rule_b [ Syntax.BStmt (Syntax.SMetaSet (Packet.MKmark, Syntax.VMap ([Syntax.FIp4Saddr], [], "m"))) ] Verdict.Continue;
     rule_b [ Syntax.BMatch (meq Syntax.FMetaMark [0; 22]) ] Verdict.Accept;
   ] in
@@ -365,7 +369,7 @@ let () =
   Printf.printf "=== ip saddr @seen accept; add @seen {ip saddr}  (across a 2-packet sequence) ===\n";
   let seen_chain = chain Verdict.Drop [
     rule_b [ Syntax.BMatch (Syntax.MConcatSet ([Syntax.FIp4Saddr], false, "seen")) ] Verdict.Accept;
-    rule_b [ Syntax.BStmt (Syntax.SDynset ("add", "seen", [Syntax.FIp4Saddr], [])) ] Verdict.Continue;
+    rule_b [ Syntax.BStmt (Syntax.SDynset (Bytecode.SOadd, "seen", [Syntax.FIp4Saddr], [])) ] Verdict.Continue;
   ] in
   let sprog = Compile.compile_chain seen_chain in
   let spol  = seen_chain.Syntax.c_policy in

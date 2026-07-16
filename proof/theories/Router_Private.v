@@ -53,15 +53,13 @@ Definition r_icmp : rule :=
   {| r_body := [BMatch (MEq FMetaL4proto [1]);
                 BMatch (MEq FIcmpType [8]);
                 BMatch (MLimit icmp_spec)];
-     r_verdict := Accept; r_vmap := None;
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := OVerdict Accept; r_after := [] |}.
 
 (** The concat-key vmap rule (rule 2 of inbound_private), named. *)
 Definition r_svc : rule :=
-  {| r_body := []; r_verdict := Continue;
-     r_vmap := Some {| vm_fields := [FIp4Protocol; FThDport]; vm_keyf := None;
-                       vm_name := "__map0" |};
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := OVmap {| vm_fields := [FIp4Protocol; FThDport]; vm_keyf := None;
+                       vm_name := "__map0" |}; r_after := [] |}.
 
 Lemma c_rules_private : c_rules global_inbound_private = [r_icmp; r_svc].
 Proof. reflexivity. Qed.
@@ -460,15 +458,14 @@ Theorem pkt_lan_smtp_dropped :
 Proof. vm_compute. reflexivity. Qed.
 
 (* [bug_inbound_private] = inbound_private with rule 2's concat-vmap WIDENED to an
-   unconditional static accept ([r_body := []; r_verdict := Accept]) — modelling
+   unconditional static accept ([r_body := []; r_outcome := OVerdict Accept]) — modelling
    [__map0] opened to a catch-all (the proto.port guard dropped).  This is the
    catastrophic LAN-OPEN bug: every LAN packet to the box is now accepted. *)
 Definition bug_inbound_private : chain :=
   {| c_policy := Continue;
      c_rules := [r_icmp;
-                 {| r_body := []; r_verdict := Accept; r_vmap := None;
-                    r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None;
-                    r_after := [] |}] |}.
+                 {| r_body := [];
+     r_outcome := OVerdict Accept; r_after := [] |}] |}.
 
 (* The chain env with ONLY inbound_private swapped (global_inbound itself unchanged,
    so every prior Router_Input theorem still holds verbatim). *)

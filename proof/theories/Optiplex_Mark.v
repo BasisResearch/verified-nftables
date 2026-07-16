@@ -23,7 +23,7 @@
     [eval_chain_trace_verdict]); [chain_out] is the packet it leaves. *)
 
 From Stdlib Require Import List String Ascii NArith Lia.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics Optiplex_Gen Nftval.
+From Nft Require Import Bytes Verdict Packet Bytecode Syntax Semantics Optiplex_Gen Nftval.
 Import ListNotations.
 
 (** ** Wire constants (literal bytes, so [cbn] fully reduces the matches). *)
@@ -45,8 +45,8 @@ Lemma if_home_typed   : if_home   = encode (ifname "home"%string). Proof. reflex
 
 (** The rules of interest, taken straight from the generated chains. *)
 Definition dflt : rule :=
-  {| r_body := []; r_verdict := Continue; r_vmap := None; r_nat := None;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := ONone; r_after := [] |}.
 Definition pre1  : rule := List.nth 0 (c_rules filter_prerouting)  dflt.  (* RDP/3389 *)
 Definition pre2  : rule := List.nth 1 (c_rules filter_prerouting)  dflt.  (* streaming ports *)
 Definition post1 : rule := List.nth 0 (c_rules filter_postrouting) dflt.  (* masquerade *)
@@ -189,7 +189,7 @@ Proof.
   intros fam p v k. unfold set_daddr.
   destruct (daddr_slot fam) as [off len].
   rewrite set_l4_csum_addr_meta.
-  destruct (String.eqb fam nat_fam_ip6); reflexivity.
+  destruct (nataf_eqb fam nat_fam_ip6); reflexivity.
 Qed.
 
 (* applying pre2's dnat to a FIRST-flow, original-direction packet rewrites the
@@ -200,7 +200,7 @@ Lemma pre2_apply_dnat : forall h e p,
   apply_nat h pre2 e p
     = (store_nat_mapping e p
          (Some (slice (pkt_nh p) 16 4), Some windows_ip, None, None),
-       set_daddr "ip" p windows_ip).
+       set_daddr nat_fam_ip4 p windows_ip).
 Proof.
   intros h e p Horig Hnone. unfold apply_nat, pre2, filter_prerouting.
   cbn -[set_daddr field_value e_nat store_nat_mapping
@@ -338,16 +338,16 @@ Qed.
 (* The masquerade is in an `inet` table, so its [nat_family] is "inet" and the L3
    family is resolved PER PACKET ([nat_addrfamily_pkt] = [pkt_l3_family p], the
    kernel's runtime dispatch for inet tables).  For the IPv4 streaming flow
-   [pkt_l3_family p = "ip"], so the masquerade rewrites the IPv4 source slot. *)
+   [pkt_l3_family p = nat_fam_ip4], so the masquerade rewrites the IPv4 source slot. *)
 Lemma post1_apply_masq : forall h e p,
-  pkt_l3_family p = "ip"%string ->
+  pkt_l3_family p = nat_fam_ip4 ->
   pkt_ctdir_orig p = true ->
   e_nat e (pkt_flow p) = None ->
   apply_nat h post1 e p
     = (store_nat_mapping e p
          (Some (slice (pkt_nh p) 12 4),
           Some (e_ifaddr e (field_value FMetaOifname e p)), None, None),
-       set_saddr "ip" p (e_ifaddr e (field_value FMetaOifname e p))).
+       set_saddr nat_fam_ip4 p (e_ifaddr e (field_value FMetaOifname e p))).
 Proof.
   intros h e p Hfam Horig Hnone. unfold apply_nat, post1, filter_postrouting.
   cbn -[set_saddr e_ifaddr field_value e_nat store_nat_mapping
@@ -369,7 +369,7 @@ Qed.
    (nf_nat_masquerade.c:54-58).  Since post1's body is a no-op on a mark99 packet,
    [nat_drops] reads the exit-interface address straight off [p]. *)
 Lemma post1_nat_no_drop : forall e p ifaddr,
-  pkt_l3_family p = "ip"%string ->
+  pkt_l3_family p = nat_fam_ip4 ->
   pkt_ctdir_orig p = true ->
   e_nat e (pkt_flow p) = None ->
   e_ifaddr e (field_value FMetaOifname e p) = ifaddr ->
@@ -388,7 +388,7 @@ Proof.
 Qed.
 
 Theorem masquerade_output : forall e p ifaddr,
-  pkt_l3_family p = "ip"%string ->
+  pkt_l3_family p = nat_fam_ip4 ->
   field_value FMetaMark e p = mark99 ->
   pkt_ctdir_orig p = true ->
   e_nat e (pkt_flow p) = None ->
@@ -397,7 +397,7 @@ Theorem masquerade_output : forall e p ifaddr,
   eval_chain_trace Hpostrouting filter_postrouting e p
     = (Accept, (store_nat_mapping e p
                   (Some (slice (pkt_nh p) 12 4), Some ifaddr, None, None),
-                set_saddr "ip" p ifaddr)).
+                set_saddr nat_fam_ip4 p ifaddr)).
 Proof.
   intros e p ifaddr Hfam Hmark Horig Hnone Hifa Hne.
   unfold eval_chain_trace. rewrite postrouting_rules_eq. cbn [eval_rules_trace dsl_rule_step].
@@ -414,7 +414,7 @@ Qed.
    [store_nat_mapping] env write preserves [pkt_nh], so the read-back is unchanged. *)
 Lemma saddr_after_set : forall e p v,
   16 <= List.length (pkt_nh p) -> List.length v = 4 ->
-  field_value FIp4Saddr e (set_saddr "ip" p v) = v.
+  field_value FIp4Saddr e (set_saddr nat_fam_ip4 p v) = v.
 Proof.
   intros e p v Hlen Hv.
   unfold field_value; cbn [field_load do_load]; unfold read_payload.
@@ -422,7 +422,7 @@ Proof.
 Qed.
 
 Theorem masquerade_source_is_exit_iface : forall e p ifaddr,
-  pkt_l3_family p = "ip"%string ->
+  pkt_l3_family p = nat_fam_ip4 ->
   field_value FMetaMark e p = mark99 ->
   pkt_ctdir_orig p = true ->
   e_nat e (pkt_flow p) = None ->

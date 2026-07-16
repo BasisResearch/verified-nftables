@@ -35,7 +35,8 @@ let range ?(neg = false) (f : field) (lo : Bytes.data) (hi : Bytes.data) : match
 let cmp (f : field) (op : Bytecode.cmpop) (v : Bytes.data) : matchcond = Syntax.MCmp (f, op, v)
 (* masked match `(field & mask) ^ xor {==,!=} v`, e.g. an address prefix *)
 let masked ?(neg = false) (f : field) (mask : Bytes.data) (xor : Bytes.data)
-    (v : Bytes.data) : matchcond = Syntax.MMasked (f, neg, mask, xor, v)
+    (v : Bytes.data) : matchcond =
+  Syntax.MMasked (f, (if neg then Bytecode.CNe else Bytecode.CEq), mask, xor, v)
 
 (* ---- verdict-neutral statement builders ---- *)
 let counter : Syntax.stmt = Syntax.SCounter (0, 0)
@@ -46,8 +47,10 @@ let rule ?(stmts = []) (matches : matchcond list) (verdict : verdict) : rule =
   { Syntax.r_body =
       Stdlib.List.map (fun m -> Syntax.BMatch m) matches
       @ Stdlib.List.map (fun s -> Syntax.BStmt s) stmts;
-    r_verdict = verdict; r_vmap = None; r_nat = None; r_tproxy = None; r_fwd = None;
-    r_queue = None; r_after = [] }
+    r_outcome = (match verdict with
+                 | Verdict.Continue -> Syntax.ONone
+                 | _ -> Syntax.OVerdict verdict);
+    r_after = [] }
 
 let chain (policy : verdict) (rules : rule list) : chain =
   { Syntax.c_policy = policy; c_rules = rules }

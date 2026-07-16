@@ -45,11 +45,10 @@ Definition m_iif_lo : matchcond := MEq FMetaIif [1;0;0;0].
 Example parser_lowers_iif_lo_to_index :
   exists v after,
     nth 1 (c_rules filter_input)
-      {| r_body := []; r_verdict := Drop; r_vmap := None; r_nat := None;
-         r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}
-    = {| r_body := [BMatch m_iif_lo]; r_verdict := v; r_vmap := None;
-         r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None;
-         r_after := after |}.
+      {| r_body := [];
+     r_outcome := OVerdict Drop; r_after := [] |}
+    = {| r_body := [BMatch m_iif_lo];
+     r_outcome := OVerdict v; r_after := after |}.
 Proof. eexists; eexists; reflexivity. Qed.
 
 (* A packet that genuinely arrived on lo (numeric iif index 1) MATCHES `iif lo`.

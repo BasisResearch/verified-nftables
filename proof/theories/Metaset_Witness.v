@@ -20,8 +20,8 @@ Definition m3 : data := [0;0;0;3].
 
 (* a bare terminal-Drop shell shared by the three rules *)
 Definition drp : rule :=
-  {| r_body := []; r_verdict := Drop; r_vmap := None; r_nat := None;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := OVerdict Drop; r_after := [] |}.
 
 Definition metaset_input : list rule :=
   [ mk_head (MCmp FMetaMark CEq m1) [] drp

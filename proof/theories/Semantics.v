@@ -249,12 +249,17 @@ Definition connlimit_under (e : env) (p : packet) (spec : connlimit_spec) : bool
 (** The unguarded comparison body of a match (the original semantics). *)
 Definition eval_matchcond_body (m : matchcond) (e : env) (p : packet) : bool :=
   match m with
-  | MEq  f v => data_eqb (List.firstn (List.length v) (field_value f e p)) v
-  | MNeq f v => negb (data_eqb (List.firstn (List.length v) (field_value f e p)) v)
+  (* [MEq]/[MNeq] are the kernel cmp operator itself ([eval_cmp CEq]/[CNe],
+     nft_cmp_eval's memcmp over the cmp value's length): exact equality for a
+     full-width immediate, the kernel's short-value prefix compare otherwise.
+     The SURFACE distinction (typed equality vs CIDR vs wildcard) lives in the
+     typed layer (Elab.tmatch), whose elaboration picks the shape. *)
+  | MEq  f v => eval_cmp CEq (field_value f e p) v
+  | MNeq f v => eval_cmp CNe (field_value f e p) v
   | MRange f neg lo hi =>
       eval_range (if neg then CNe else CEq) (field_value f e p) lo hi
-  | MMasked f neg mask xor v =>
-      eval_cmp (if neg then CNe else CEq) (data_bitops (field_value f e p) mask xor) v
+  | MMasked f op mask xor v =>
+      eval_cmp op (data_bitops (field_value f e p) mask xor) v
   | MCmp f op v => eval_cmp op (field_value f e p) v
   | MConcatSet fields neg name =>
       (* membership of the concatenated key in the *named* set, whose contents are
@@ -1114,6 +1119,78 @@ Definition outcome (r : rule) (e : env) (p : packet) : option verdict :=
   if body_synproxy_stops (r_body r) p then Some Drop
   else outcome_core r e (body_thread (r_body r) p).
 
+(** ** Ratchet: the outcome sum evaluates exactly as the old product encoding.
+
+    [terminal_outcome_prod]/[outcome_core_prod]/[outcome_prod] are verbatim the
+    pre-sum evaluation over the historical [rule_prod] record (one filler
+    verdict + five optional slots).  [run_rule_outcome_eq] proves that
+    translating a well-formed product ([Syntax.prod_wf]: at most one populated
+    slot, filler [Continue] under a vmap) through [rule_of_prod] preserves the
+    rule outcome on every env/packet — the representation change is
+    evaluation-invisible. *)
+Definition terminal_outcome_prod (rp : rule_prod) (p : packet) : option verdict :=
+  match rp_nat rp with
+  | Some _ => Some Accept
+  | None =>
+  match rp_tproxy rp with
+  | Some _ => Some Accept
+  | None =>
+  match rp_fwd rp with
+  | Some _ => Some Accept
+  | None =>
+  match rp_queue rp with
+  | Some _ => Some Accept
+  | None => match rp_verdict rp with
+            | Continue => stmts_after_outcome (rp_after rp) p
+            | v => Some v
+            end
+  end
+  end
+  end
+  end.
+
+Definition outcome_core_prod (rp : rule_prod) (e : env) (p : packet) : option verdict :=
+  match rp_vmap rp with
+  | Some vm =>
+      let key := match vm_keyf vm with
+                 | Some (f, ts) => apply_transforms ts (field_value f e p)
+                 | None => List.concat (map (fun f => field_value f e p) (vm_fields vm))
+                 end in
+      match assoc_verdict key (e_vmap e (vm_name vm)) with
+      | Some v => Some v
+      | None   => terminal_outcome_prod rp p
+      end
+  | None => terminal_outcome_prod rp p
+  end.
+
+Definition outcome_prod (rp : rule_prod) (e : env) (p : packet) : option verdict :=
+  if body_synproxy_stops (rp_body rp) p then Some Drop
+  else outcome_core_prod rp e (body_thread (rp_body rp) p).
+
+Theorem run_rule_outcome_eq : forall rp e p,
+  prod_wf rp = true ->
+  outcome (rule_of_prod rp) e p = outcome_prod rp e p.
+Proof.
+  intros rp e p Hwf.
+  unfold outcome, outcome_prod, rule_of_prod, prod_wf in *; cbn [r_body].
+  destruct (body_synproxy_stops (rp_body rp) p); [reflexivity|].
+  unfold outcome_core, outcome_core_prod, terminal_outcome, terminal_outcome_prod,
+         r_vmap, r_nat, r_tproxy, r_fwd, r_queue, r_verdict, r_after, r_outcome,
+         outcome_of_prod in *; cbn.
+  destruct (rp_vmap rp) as [vm|]; destruct (rp_nat rp) as [ns|];
+    destruct (rp_tproxy rp) as [tp|]; destruct (rp_fwd rp) as [fw|];
+    destruct (rp_queue rp) as [q|]; try discriminate Hwf; cbn.
+  - (* vmap + NAT: the miss fires the terminal NAT (OVmapNat) *)
+    reflexivity.
+  - (* vmap only: filler verdict is Continue *)
+    destruct (rp_verdict rp); try discriminate Hwf; reflexivity.
+  - reflexivity.
+  - reflexivity.
+  - reflexivity.
+  - reflexivity.
+  - destruct (rp_verdict rp); reflexivity.
+Qed.
+
 (** ** Whole-rule loadability (NFT_BREAK reachability).
 
     A payload load that BREAKs (NFT_BREAK) anywhere the rule actually EVALUATES
@@ -1672,10 +1749,10 @@ Qed.
     [FIp4Daddr] read; "ip6" = IPv6: src @8 len 16 / dst @24 len 16, where
     [FIp6Saddr] / [FIp6Daddr] read).  The kernel chooses 32 vs 128 bits by family
     ([nat_addrlen], netlink_linearize.c:1237). *)
-Definition saddr_slot (family : String.string) : nat * nat :=
-  if String.eqb family nat_fam_ip6 then (8, 16) else (12, 4).
-Definition daddr_slot (family : String.string) : nat * nat :=
-  if String.eqb family nat_fam_ip6 then (24, 16) else (16, 4).
+Definition saddr_slot (family : nat_af) : nat * nat :=
+  if nataf_eqb family nat_fam_ip6 then (8, 16) else (12, 4).
+Definition daddr_slot (family : nat_af) : nat * nat :=
+  if nataf_eqb family nat_fam_ip6 then (24, 16) else (16, 4).
 
 (** The IPv4 header checksum field lives at network-header bytes 10..11.  After a
     NAT address rewrite the kernel does NOT leave it stale: [nf_nat_ipv4_manip_pkt]
@@ -1739,15 +1816,15 @@ Qed.
 
 (** Source-NAT a packet: rewrite its source address (the [saddr_slot] for the
     NAT [family]) to [v].  This is the data-plane effect a `snat`/`masquerade`
-    performs; [set_saddr "ip" p (e_ifaddr e oifname)] realises
+    performs; [set_saddr nat_fam_ip4 p (e_ifaddr e oifname)] realises
     `masquerade` = "use the IP of the interface the packet exits".  For IPv4 the
     IP header checksum is incrementally updated ([set_nh_addr_ip4], mirroring
     [csum_replace4]); IPv6 has no L3 checksum so it is a bare slot splice. *)
-Definition set_saddr (family : String.string) (p : packet) (v : data) : packet :=
+Definition set_saddr (family : nat_af) (p : packet) (v : data) : packet :=
   let '(off, len) := saddr_slot family in
   let old := slice (pkt_nh p) off len in
   let p1 :=
-    if String.eqb family nat_fam_ip6 then set_nh_field p off len v
+    if nataf_eqb family nat_fam_ip6 then set_nh_field p off len v
     else set_nh_addr_ip4 p off len v in
   set_l4_csum_addr p1 old v.
 
@@ -1756,11 +1833,11 @@ Definition set_saddr (family : String.string) (p : packet) (v : data) : packet :
     `dnat`/`redirect` performs — the kernel `nft_nat` applies [NF_NAT_MANIP_DST]
     from [NFTNL_EXPR_NAT_REG_ADDR_MIN] (netlink_linearize.c:1304), and
     [nf_nat_ipv4_manip_pkt] also runs [csum_replace4] on the IPv4 header checksum. *)
-Definition set_daddr (family : String.string) (p : packet) (v : data) : packet :=
+Definition set_daddr (family : nat_af) (p : packet) (v : data) : packet :=
   let '(off, len) := daddr_slot family in
   let old := slice (pkt_nh p) off len in
   let p1 :=
-    if String.eqb family nat_fam_ip6 then set_nh_field p off len v
+    if nataf_eqb family nat_fam_ip6 then set_nh_field p off len v
     else set_nh_addr_ip4 p off len v in
   set_l4_csum_addr p1 old v.
 
@@ -1820,7 +1897,7 @@ Proof.
   intros fam p v poff plen Hle. unfold set_saddr.
   destruct (saddr_slot fam) as [off len].
   rewrite slice_set_l4_csum_addr_port by lia.
-  destruct (String.eqb fam nat_fam_ip6); reflexivity.
+  destruct (nataf_eqb fam nat_fam_ip6); reflexivity.
 Qed.
 Lemma set_daddr_th_port : forall fam p v poff plen,
   poff + plen <= 6 ->
@@ -1829,7 +1906,7 @@ Proof.
   intros fam p v poff plen Hle. unfold set_daddr.
   destruct (daddr_slot fam) as [off len].
   rewrite slice_set_l4_csum_addr_port by lia.
-  destruct (String.eqb fam nat_fam_ip6); reflexivity.
+  destruct (nataf_eqb fam nat_fam_ip6); reflexivity.
 Qed.
 
 (** [set_saddr]/[set_daddr] preserve the LENGTH of the transport header (the
@@ -1839,14 +1916,14 @@ Lemma set_saddr_th_len : forall fam p v,
 Proof.
   intros fam p v. unfold set_saddr. destruct (saddr_slot fam) as [off len].
   rewrite set_l4_csum_addr_th_len.
-  destruct (String.eqb fam nat_fam_ip6); reflexivity.
+  destruct (nataf_eqb fam nat_fam_ip6); reflexivity.
 Qed.
 Lemma set_daddr_th_len : forall fam p v,
   List.length (pkt_th (set_daddr fam p v)) = List.length (pkt_th p).
 Proof.
   intros fam p v. unfold set_daddr. destruct (daddr_slot fam) as [off len].
   rewrite set_l4_csum_addr_th_len.
-  destruct (String.eqb fam nat_fam_ip6); reflexivity.
+  destruct (nataf_eqb fam nat_fam_ip6); reflexivity.
 Qed.
 
 (** Reading the network-header bytes [off..off+len) back after an IPv4 address
@@ -1881,22 +1958,22 @@ Qed.
 Lemma set_saddr_nh : forall fam p v,
   pkt_nh (set_saddr fam p v)
     = (let '(off, len) := saddr_slot fam in
-       if String.eqb fam nat_fam_ip6 then pkt_nh (set_nh_field p off len v)
+       if nataf_eqb fam nat_fam_ip6 then pkt_nh (set_nh_field p off len v)
        else pkt_nh (set_nh_addr_ip4 p off len v)).
 Proof.
   intros fam p v. unfold set_saddr. destruct (saddr_slot fam) as [off len].
   rewrite set_l4_csum_addr_nh.
-  destruct (String.eqb fam nat_fam_ip6); reflexivity.
+  destruct (nataf_eqb fam nat_fam_ip6); reflexivity.
 Qed.
 Lemma set_daddr_nh : forall fam p v,
   pkt_nh (set_daddr fam p v)
     = (let '(off, len) := daddr_slot fam in
-       if String.eqb fam nat_fam_ip6 then pkt_nh (set_nh_field p off len v)
+       if nataf_eqb fam nat_fam_ip6 then pkt_nh (set_nh_field p off len v)
        else pkt_nh (set_nh_addr_ip4 p off len v)).
 Proof.
   intros fam p v. unfold set_daddr. destruct (daddr_slot fam) as [off len].
   rewrite set_l4_csum_addr_nh.
-  destruct (String.eqb fam nat_fam_ip6); reflexivity.
+  destruct (nataf_eqb fam nat_fam_ip6); reflexivity.
 Qed.
 
 (** IPv4 source/destination address read-back through the FULL NAT rewrite
@@ -1907,7 +1984,7 @@ Lemma slice_set_saddr_ip4_same : forall p v,
   slice (pkt_nh (set_saddr nat_fam_ip4 p v)) 12 4 = v.
 Proof.
   intros p v Hlen Hv. rewrite set_saddr_nh. change (saddr_slot nat_fam_ip4) with (12, 4).
-  change (String.eqb nat_fam_ip4 nat_fam_ip6) with false; cbv iota.
+  change (nataf_eqb nat_fam_ip4 nat_fam_ip6) with false; cbv iota.
   apply slice_set_nh_addr_ip4_same; lia.
 Qed.
 Lemma slice_set_daddr_ip4_same : forall p v,
@@ -1915,7 +1992,7 @@ Lemma slice_set_daddr_ip4_same : forall p v,
   slice (pkt_nh (set_daddr nat_fam_ip4 p v)) 16 4 = v.
 Proof.
   intros p v Hlen Hv. rewrite set_daddr_nh. change (daddr_slot nat_fam_ip4) with (16, 4).
-  change (String.eqb nat_fam_ip4 nat_fam_ip6) with false; cbv iota.
+  change (nataf_eqb nat_fam_ip4 nat_fam_ip6) with false; cbv iota.
   apply slice_set_nh_addr_ip4_same; lia.
 Qed.
 
@@ -1929,11 +2006,11 @@ Qed.
     on [key] now succeeds — exact element, cf. the set/interval model), `delete`
     drops the exact [key,key] elements.  Every other component of the env (maps,
     routes, limiters) and of the packet is unchanged. *)
-Definition env_set_upd (e : env) (op name : String.string) (key : data) : env :=
+Definition env_set_upd (e : env) (op : dynset_op) (name : String.string) (key : data) : env :=
   with_e_set e
     (fun n =>
        if String.eqb n name
-       then if String.eqb op op_delete
+       then if dynsetop_eqb op op_delete
             then filter (fun lh => negb (andb (data_eqb (fst lh) key) (data_eqb (snd lh) key)))
                         (e_set e n)
             else (key, key) :: e_set e n
@@ -1945,11 +2022,11 @@ Definition env_set_upd (e : env) (op name : String.string) (key : data) : env :=
     `@m`-keyed lookup (map value / verdict map) sees it.  add/update prepend the
     entry (so [map_lookup_data] finds the freshest first), delete drops entries
     with that key. *)
-Definition env_map_upd (e : env) (op name : String.string) (key dat : data) : env :=
+Definition env_map_upd (e : env) (op : dynset_op) (name : String.string) (key dat : data) : env :=
   with_e_map e
     (fun n =>
        if String.eqb n name
-       then if String.eqb op op_delete
+       then if dynsetop_eqb op op_delete
             then filter (fun kv => negb (data_eqb (fst kv) key)) (e_map e n)
             else (key, dat) :: e_map e n
        else e_map e n).
@@ -2373,16 +2450,16 @@ Definition nat_addr (ns : nat_spec) (e : env) (p : packet) : data :=
     is honoured.  Only the address rewrite is modelled; the protocol-PORT range
     ([nat_extra]) is a separate obligation.  An unrecognised kind
     leaves the packet unchanged. *)
-Definition nat_addrfamily (ns : nat_spec) : String.string :=
-  if String.eqb (nat_family ns) nat_fam_ip6 then nat_fam_ip6
-  else if String.eqb (nat_family ns) nat_fam_inet then nat_fam_inet
+Definition nat_addrfamily (ns : nat_spec) : nat_af :=
+  if nataf_eqb (nat_family ns) nat_fam_ip6 then nat_fam_ip6
+  else if nataf_eqb (nat_family ns) nat_fam_inet then nat_fam_inet
   else nat_fam_ip4.
 
 (** The PACKET's L3 protocol family — exactly the bit [nft_pf(pkt)] encodes — read
     from the [meta nfproto] byte: NFPROTO_IPV6 = 10 -> "ip6", everything else (incl.
     NFPROTO_IPV4 = 2) -> "ip".  This is what the kernel's [nft_masq_inet_eval]
     `switch (nft_pf(pkt))` dispatches on. *)
-Definition pkt_l3_family (p : packet) : String.string :=
+Definition pkt_l3_family (p : packet) : nat_af :=
   if N.eqb (data_to_N (pkt_meta p MKnfproto)) 10 then nat_fam_ip6 else nat_fam_ip4.
 
 (** The L3 NAT address family to USE for [p]: for a STATIC family ("ip"/"ip6", e.g.
@@ -2393,8 +2470,8 @@ Definition pkt_l3_family (p : packet) : String.string :=
     packet through an inet-table masquerade gets the 16-byte IPv6 geometry + IPv6
     interface address, an IPv4 packet the 4-byte IPv4 geometry — instead of a single
     statically-pinned family that corrupts the other protocol. *)
-Definition nat_addrfamily_pkt (ns : nat_spec) (p : packet) : String.string :=
-  if String.eqb (nat_addrfamily ns) nat_fam_inet then pkt_l3_family p
+Definition nat_addrfamily_pkt (ns : nat_spec) (p : packet) : nat_af :=
+  if nataf_eqb (nat_addrfamily ns) nat_fam_inet then pkt_l3_family p
   else nat_addrfamily ns.
 
 (** The netfilter hook a base chain is attached to.  This is the SAME [hook_id]
@@ -2415,8 +2492,8 @@ Definition hook_eqb (a b : hook_id) : bool :=
     [nf_nat_redirect_ipv6]): IPv4 = INADDR_LOOPBACK = 127.0.0.1, IPv6 = ::1. *)
 Definition loopback_ip4 : data := [127; 0; 0; 1].
 Definition loopback_ip6 : data := [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1].
-Definition loopback_addr (family : String.string) : data :=
-  if String.eqb family nat_fam_ip6 then loopback_ip6 else loopback_ip4.
+Definition loopback_addr (family : nat_af) : data :=
+  if nataf_eqb family nat_fam_ip6 then loopback_ip6 else loopback_ip4.
 
 (** The destination a `redirect` rewrites to, which is HOOK-DEPENDENT exactly as
     the kernel core [nf_nat_redirect_ipv4]/[nf_nat_redirect_ipv6] (branch on
@@ -2424,7 +2501,7 @@ Definition loopback_addr (family : String.string) : data :=
     loopback address (127.0.0.1 / ::1); otherwise (PRE_ROUTING) the new
     destination is the inbound interface's primary address.  [nft_redir_validate]
     permits only these two hooks. *)
-Definition redir_daddr (h : hook_id) (fam : String.string) (e : env) (p : packet) : data :=
+Definition redir_daddr (h : hook_id) (fam : nat_af) (e : env) (p : packet) : data :=
   match h with
   | Houtput => loopback_addr fam
   | _ => e_ifaddr e (field_value FMetaIifname e p)
@@ -2437,8 +2514,8 @@ Definition redir_daddr (h : hook_id) (fam : String.string) (e : env) (p : packet
     [e_ifaddr]; an IPv6 masquerade writes the 16-byte [e_ifaddr6] (the kernel
     computes it via ipv6_dev_get_saddr — a DIFFERENT, 128-bit value, not the IPv4
     address).  Keyed by the exit-interface name ([FMetaOifname]). *)
-Definition masq_saddr (fam : String.string) (e : env) (p : packet) : data :=
-  if String.eqb fam nat_fam_ip6
+Definition masq_saddr (fam : nat_af) (e : env) (p : packet) : data :=
+  if nataf_eqb fam nat_fam_ip6
   then e_ifaddr6 e (field_value FMetaOifname e p)
   else e_ifaddr  e (field_value FMetaOifname e p).
 
@@ -2500,7 +2577,7 @@ Definition nat_has_addr (ns : nat_spec) : bool :=
     ([NF_NAT_MANIP_DST]: dnat/redirect).  This is fixed by the rule's [nat_kind],
     independent of the flow. *)
 Definition nat_is_src (ns : nat_spec) : bool :=
-  String.eqb (nat_kind ns) nat_masq_kind || String.eqb (nat_kind ns) nat_snat_kind.
+  natop_eqb (nat_kind ns) nat_masq_kind || natop_eqb (nat_kind ns) nat_snat_kind.
 
 (** The L3 ADDRESS the operand evaluates to, i.e. the value the kernel loads into
     [NAT_REG_ADDR_MIN] on the unconfirmed packet to build the new tuple — or [None]
@@ -2512,12 +2589,12 @@ Definition nat_is_src (ns : nat_spec) : bool :=
     the flow's first packet. *)
 Definition nat_operand_addr (h : hook_id) (ns : nat_spec) (e : env) (p : packet)
   : option data :=
-  if String.eqb (nat_kind ns) nat_masq_kind
+  if natop_eqb (nat_kind ns) nat_masq_kind
   then Some (masq_saddr (nat_addrfamily_pkt ns p) e p)
-  else if String.eqb (nat_kind ns) nat_redir_kind
+  else if natop_eqb (nat_kind ns) nat_redir_kind
   then Some (redir_daddr h (nat_addrfamily_pkt ns p) e p)
-  else if String.eqb (nat_kind ns) nat_snat_kind
-       || String.eqb (nat_kind ns) nat_dnat_kind
+  else if natop_eqb (nat_kind ns) nat_snat_kind
+       || natop_eqb (nat_kind ns) nat_dnat_kind
   then if nat_has_addr ns then Some (nat_addr ns e p) else None
   else None.
 
@@ -2703,9 +2780,9 @@ Definition apply_nat (h : hook_id) (r : rule) (e : env) (p : packet) : env * pac
     this path (their operand is an explicit value/map/field, not an interface
     address), so [nat_drops] is false for them. *)
 Definition nat_iface_addr_absent (h : hook_id) (ns : nat_spec) (e : env) (p : packet) : bool :=
-  if String.eqb (nat_kind ns) nat_masq_kind
+  if natop_eqb (nat_kind ns) nat_masq_kind
   then match masq_saddr (nat_addrfamily_pkt ns p) e p with [] => true | _ => false end
-  else if String.eqb (nat_kind ns) nat_redir_kind
+  else if natop_eqb (nat_kind ns) nat_redir_kind
   then match h with
        | Houtput => false   (* loopback: never empty, never drops *)
        | _ => match redir_daddr h (nat_addrfamily_pkt ns p) e p with [] => true | _ => false end

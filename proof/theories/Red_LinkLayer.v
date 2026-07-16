@@ -54,8 +54,7 @@ Definition src_mac : data := [0xaa;0xbb;0xcc;0xdd;0xee;0xff].
 
 Definition ether_saddr_drop : rule :=
   {| r_body := [ BMatch (MEq FEtherSaddr src_mac) ];
-     r_verdict := Drop; r_vmap := None; r_nat := None; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := OVerdict Drop; r_after := [] |}.
 
 (* The output base chain, policy accept (the common default). *)
 Definition output_chain : chain :=

@@ -45,9 +45,8 @@ Definition dnat_fixed : nat_spec :=
      nat_extra := NXnone;
      nat_flags := 0 |}.
 Definition dnat_rule : rule :=
-  {| r_body := []; r_verdict := Accept; r_vmap := None;
-     r_nat := Some dnat_fixed; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := ONat dnat_fixed; r_after := [] |}.
 Definition dnat_chain : chain := {| c_policy := Drop; c_rules := [ dnat_rule ] |}.
 
 Definition out_daddr (e : env) (p : packet) : data :=
@@ -164,9 +163,8 @@ Definition dnat_port : nat_spec :=
      nat_extra := NXimm None (Some (N_to_data 2 (N.of_nat 8080))) None;
      nat_flags := 0 |}.
 Definition dnat_port_rule : rule :=
-  {| r_body := []; r_verdict := Accept; r_vmap := None;
-     r_nat := Some dnat_port; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := ONat dnat_port; r_after := [] |}.
 Definition dnat_port_chain : chain := {| c_policy := Drop; c_rules := [ dnat_port_rule ] |}.
 
 (* Build a TCP-bearing packet: a transport header with a real sport/dport

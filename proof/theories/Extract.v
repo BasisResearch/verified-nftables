@@ -10,7 +10,7 @@ From Stdlib Require Import Extraction.
 From Stdlib Require Import ExtrOcamlBasic.
 From Stdlib Require Import ExtrOcamlNatInt.
 From Stdlib Require Import ExtrOcamlNativeString.
-From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile Optimize.
+From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile Optimize Nftval Elab.
 From Nft Require Import Optimize_Merge Optimize_Vmap Optimize_Concat Optimize_Table Optimize_Uncond.
 
 Extraction Language OCaml.
@@ -56,4 +56,6 @@ Separate Extraction
   eval_ruleset
   run_ruleset
   seq_eval
-  env_with_sets.
+  env_with_sets
+  Nftval.encode
+  Elab.elab_m.

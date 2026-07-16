@@ -5,7 +5,7 @@
    the installed bytecode). *)
 
 From Stdlib Require Import List String ZArith.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics.
+From Nft Require Import Bytes Verdict Packet Bytecode Syntax Semantics Nftval Elab.
 Import ListNotations.
 Open Scope string_scope.
 
@@ -27,9 +27,8 @@ Definition gen_env : env := env_with_sets base_env decls.
 
 Definition tutorial_input : chain :=
   {| c_policy := Accept;
-   c_rules := [{| r_body := [(BMatch (MEq (FPayload PNetwork 12 3) [192; 168; 100]))];
-     r_verdict := Drop; r_vmap := None;
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
+   c_rules := [{| r_body := [(BMatch (elab_m (MPrefix FIp4Saddr CEq (ip4 192 168 100 0) 24)))];
+     r_outcome := OVerdict Drop; r_after := [] |}] |}.
 
 Definition tutorial_chains : list (string * chain) :=
   [("input", tutorial_input)].

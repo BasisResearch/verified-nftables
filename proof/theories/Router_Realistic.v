@@ -98,8 +98,7 @@ Proof.
   rewrite Eval_Fw.erj_cons.
   change {| r_body := [BMatch (MEq FMetaIifname
               [101;116;104;49;0;0;0;0;0;0;0;0;0;0;0;0])];
-            r_verdict := Accept; r_vmap := None; r_nat := None;
-            r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}
+     r_outcome := OVerdict Accept; r_after := [] |}
     with r2_fwd.
   rewrite r2_loadable, r2_applies, r2_outcome. cbn [andb].
   destruct (iif_eth1 e p) eqn:Heq;

@@ -335,8 +335,8 @@ Qed.
     specific /24, leaving ONLY the covering /16 rule — exactly the kernel's committed
     normalisation of `nft -o`'s `{ 10.0.0.0/24, 10.0.0.0/16 }` to `{ 10.0.0.0/16 }`. *)
 Definition drp_witness : rule :=
-  {| r_body := []; r_verdict := Drop; r_vmap := None; r_nat := None;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := OVerdict Drop; r_after := [] |}.
 
 Definition absorb_05_r24 : rule :=
   mk_head (MCmp (FPayload PNetwork 12 3) CEq [10; 0; 0]) [] drp_witness.

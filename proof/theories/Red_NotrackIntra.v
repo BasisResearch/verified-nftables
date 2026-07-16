@@ -27,19 +27,18 @@
     unprovable. *)
 
 From Stdlib Require Import List String NArith.
-From Nft Require Import Bytes Packet Verdict Syntax Semantics.
+From Nft Require Import Bytes Packet Verdict Bytecode Syntax Semantics.
 Import ListNotations.
 
 Definition untracked_bytes : data := [0;0;0;64].
 
 Definition m_untracked : matchcond :=
-  MMasked FCtState true untracked_bytes [0;0;0;0] [0;0;0;0].
+  MMasked FCtState CNe untracked_bytes [0;0;0;0] [0;0;0;0].
 
 (* ONE rule: notrack THEN ct state untracked accept (statement before match). *)
 Definition intra_rule : rule :=
   {| r_body := [ BStmt SNotrack ; BMatch m_untracked ];
-     r_verdict := Accept; r_vmap := None; r_nat := None; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := OVerdict Accept; r_after := [] |}.
 
 Definition intra_chain : chain :=
   {| c_policy := Drop; c_rules := [ intra_rule ] |}.

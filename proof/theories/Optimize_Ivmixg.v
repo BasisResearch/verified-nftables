@@ -166,8 +166,8 @@ Proof.
                        (BMatch (melem_mc f1 u1) :: rest1) r1 r2) Eeqb) as Eshell.
   split; [exact Hr1 |].
   rewrite Hr2c. unfold orig_ruleGm, mk_head in Eshell |- *.
-  injection Eshell as Ev Evm En Et Ef Eq Ea.
-  rewrite Ev, Evm, En, Et, Ef, Eq, Ea. reflexivity.
+  injection Eshell as Eo Ea.
+  rewrite Eo, Ea. reflexivity.
 Qed.
 
 Lemma mix_mergeGm_pair_with_head : forall r1 r2 gm f e1 body gm' f' e1' e2 body',
@@ -189,8 +189,8 @@ Proof.
   pose proof (proj1 (rule_end_eqb_mk_head gm (BMatch (melem_mc f e1) :: body) r1 r2) Eeqb) as Eshell.
   repeat split.
   rewrite Hr2c. unfold orig_ruleGm, mk_head in Eshell |- *.
-  injection Eshell as Ev Evm En Et Efw Eq Ea.
-  rewrite Ev, Evm, En, Et, Efw, Eq, Ea. reflexivity.
+  injection Eshell as Eo Ea.
+  rewrite Eo, Ea. reflexivity.
 Qed.
 
 (** ** The per-element bridge: an element's ORIGINAL head match equals the [MRange]

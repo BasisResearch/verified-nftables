@@ -11,16 +11,16 @@
     provable — is refuted on a concrete packet ([dnat_is_not_noop]). *)
 From Stdlib Require Import List String NArith Lia.
 Import ListNotations.
-From Nft Require Import Bytes Packet Verdict Syntax Semantics.
+From Nft Require Import Bytes Packet Verdict Bytecode Syntax Semantics.
 
 (* A `dnat to 10.0.0.1` rule: target address in register 1, family ip. *)
 Definition dnat_spec : nat_spec :=
   {| nat_addr_imm := Some [10;0;0;1]; nat_field := None; nat_map := None; nat_src := None;
-     nat_kind := "dnat"; nat_family := "ip";
+     nat_kind := NKdnat; nat_family := NFip4;
      nat_extra := NXnone; nat_flags := 0 |}.
 Definition dnat_rule : rule :=
-  {| r_body := []; r_verdict := Continue; r_vmap := None; r_nat := Some dnat_spec;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := ONat dnat_spec; r_after := [] |}.
 Definition dnat_chain : chain := {| c_policy := Accept; c_rules := [dnat_rule] |}.
 
 (* dnat is hook-invariant; evaluate the trace at the prerouting hook. *)
@@ -45,7 +45,7 @@ Lemma dnat_apply : forall h e p,
   apply_nat h dnat_rule e p
     = (store_nat_mapping e p
          (Some (slice (pkt_nh p) 16 4), Some [10;0;0;1], None, None),
-       set_daddr "ip" p [10;0;0;1]).
+       set_daddr nat_fam_ip4 p [10;0;0;1]).
 Proof.
   intros h e p Horig Hnone. unfold apply_nat, dnat_rule, dnat_spec.
   cbn -[set_daddr store_nat_mapping e_nat pkt_flow slice pkt_nh
@@ -67,7 +67,7 @@ Lemma dnat_no_drop : forall h e q, nat_drops h dnat_rule e q = false.
 Proof.
   intros h e q. unfold nat_drops, dnat_rule.
   destruct (e_nat e (pkt_flow q)); [reflexivity|].
-  unfold nat_iface_addr_absent, dnat_spec; cbn [nat_kind r_nat].
+  unfold nat_iface_addr_absent, dnat_spec; cbn [nat_kind r_nat r_outcome].
   destruct (pkt_ctdir_orig q); reflexivity.
 Qed.
 
@@ -80,7 +80,7 @@ Theorem dnat_output : forall h e p,
   eval_chain_trace h dnat_chain e p
     = (Accept, (store_nat_mapping e p
                   (Some (slice (pkt_nh p) 16 4), Some [10;0;0;1], None, None),
-                set_daddr "ip" p [10;0;0;1])).
+                set_daddr nat_fam_ip4 p [10;0;0;1])).
 Proof.
   intros h e p Horig Hnone.
   assert (Hw : dsl_writes dnat_rule e p = (e, p)) by reflexivity.
@@ -95,7 +95,7 @@ Qed.
    (for a well-formed IPv4 header). *)
 Lemma daddr_after_set : forall e p v,
   20 <= List.length (pkt_nh p) -> List.length v = 4 ->
-  field_value FIp4Daddr e (set_daddr "ip" p v) = v.
+  field_value FIp4Daddr e (set_daddr nat_fam_ip4 p v) = v.
 Proof.
   intros e p v Hlen Hv.
   unfold field_value; cbn [field_load do_load]; unfold read_payload.
@@ -136,13 +136,13 @@ Qed.
     interface's primary address.  The model's [apply_nat] threads the hook and
     mirrors this exactly (always using the iif address would be kernel-incorrect
     for the output hook). *)
-Definition redir_spec (fam : string) : nat_spec :=
+Definition redir_spec (fam : nat_af) : nat_spec :=
   {| nat_addr_imm := None; nat_field := None; nat_map := None; nat_src := None;
-     nat_kind := "redir"; nat_family := fam;
+     nat_kind := NKredir; nat_family := fam;
      nat_extra := NXnone; nat_flags := 0 |}.
-Definition redir_rule (fam : string) : rule :=
-  {| r_body := []; r_verdict := Continue; r_vmap := None; r_nat := Some (redir_spec fam);
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+Definition redir_rule (fam : nat_af) : rule :=
+  {| r_body := [];
+     r_outcome := ONat (redir_spec fam); r_after := [] |}.
 
 (* At the OUTPUT hook, redirect rewrites the destination to the LOOPBACK constant
    (127.0.0.1 for ip, ::1 for ip6), INDEPENDENT of the inbound-interface address.
@@ -151,10 +151,10 @@ Definition redir_rule (fam : string) : rule :=
 Theorem redir_output_ip4_loopback : forall e p,
   pkt_ctdir_orig p = true ->
   e_nat e (pkt_flow p) = None ->
-  apply_nat Houtput (redir_rule "ip") e p
+  apply_nat Houtput (redir_rule nat_fam_ip4) e p
     = (store_nat_mapping e p
          (Some (slice (pkt_nh p) 16 4), Some [127;0;0;1], None, None),
-       set_daddr "ip" p [127;0;0;1]).
+       set_daddr nat_fam_ip4 p [127;0;0;1]).
 Proof.
   intros e p Horig Hnone. unfold apply_nat, redir_rule, redir_spec.
   cbn -[set_daddr store_nat_mapping e_nat pkt_flow slice pkt_nh redir_daddr].
@@ -167,11 +167,11 @@ Qed.
 Theorem redir_output_ip6_loopback : forall e p,
   pkt_ctdir_orig p = true ->
   e_nat e (pkt_flow p) = None ->
-  apply_nat Houtput (redir_rule "ip6") e p
+  apply_nat Houtput (redir_rule nat_fam_ip6) e p
     = (store_nat_mapping e p
          (Some (slice (pkt_nh p) 24 16),
           Some [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1], None, None),
-       set_daddr "ip6" p [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1]).
+       set_daddr nat_fam_ip6 p [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1]).
 Proof.
   intros e p Horig Hnone. unfold apply_nat, redir_rule, redir_spec.
   cbn -[set_daddr store_nat_mapping e_nat pkt_flow slice pkt_nh redir_daddr].
@@ -185,11 +185,11 @@ Qed.
 Theorem redir_prerouting_iifaddr : forall e p,
   pkt_ctdir_orig p = true ->
   e_nat e (pkt_flow p) = None ->
-  apply_nat Hprerouting (redir_rule "ip") e p
+  apply_nat Hprerouting (redir_rule nat_fam_ip4) e p
     = (store_nat_mapping e p
          (Some (slice (pkt_nh p) 16 4),
           Some (e_ifaddr e (field_value FMetaIifname e p)), None, None),
-       set_daddr "ip" p (e_ifaddr e (field_value FMetaIifname e p))).
+       set_daddr nat_fam_ip4 p (e_ifaddr e (field_value FMetaIifname e p))).
 Proof.
   intros e p Horig Hnone. unfold apply_nat, redir_rule, redir_spec.
   cbn -[set_daddr store_nat_mapping e_nat pkt_flow e_ifaddr field_value redir_daddr
@@ -212,13 +212,13 @@ Theorem redir_output_differs_from_prerouting : forall e p,
   20 <= List.length (pkt_nh p) ->
   List.length (e_ifaddr e (field_value FMetaIifname e p)) = 4 ->
   e_ifaddr e (field_value FMetaIifname e p) <> [127;0;0;1] ->
-  apply_nat Houtput (redir_rule "ip") e p <> apply_nat Hprerouting (redir_rule "ip") e p.
+  apply_nat Houtput (redir_rule nat_fam_ip4) e p <> apply_nat Hprerouting (redir_rule nat_fam_ip4) e p.
 Proof.
   intros e p Horig Hnone Hnh Hlen Hne Heq.
   apply Hne.
   assert (Hread :
-    field_value FIp4Daddr e (snd (apply_nat Houtput (redir_rule "ip") e p))
-    = field_value FIp4Daddr e (snd (apply_nat Hprerouting (redir_rule "ip") e p)))
+    field_value FIp4Daddr e (snd (apply_nat Houtput (redir_rule nat_fam_ip4) e p))
+    = field_value FIp4Daddr e (snd (apply_nat Hprerouting (redir_rule nat_fam_ip4) e p)))
     by (rewrite Heq; reflexivity).
   rewrite (redir_output_ip4_loopback e p Horig Hnone),
           (redir_prerouting_iifaddr e p Horig Hnone) in Hread.
@@ -241,11 +241,11 @@ Qed.
 (* `dnat to 10.0.0.1:8080`: same address operand, plus port 8080 in nat_port_num. *)
 Definition dnat_port_spec : nat_spec :=
   {| nat_addr_imm := Some [10;0;0;1]; nat_field := None; nat_map := None; nat_src := None;
-     nat_kind := "dnat"; nat_family := "ip";
+     nat_kind := NKdnat; nat_family := NFip4;
      nat_extra := NXimm None (Some (N_to_data 2 (N.of_nat 8080))) None; nat_flags := 0 |}.
 Definition dnat_port_rule : rule :=
-  {| r_body := []; r_verdict := Continue; r_vmap := None; r_nat := Some dnat_port_spec;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := ONat dnat_port_spec; r_after := [] |}.
 Definition dnat_port_chain : chain := {| c_policy := Accept; c_rules := [dnat_port_rule] |}.
 
 (* 8080 = 0x1f90 -> big-endian [0x1f; 0x90] = [31; 144]. *)
@@ -262,7 +262,7 @@ Lemma dnat_port_apply : forall h e p,
     = (store_nat_mapping e p
          (Some (slice (pkt_nh p) 16 4), Some [10;0;0;1], Some 8080,
           Some (slice (pkt_th p) 2 2)),
-       set_dport (set_daddr "ip" p [10;0;0;1]) [31; 144]).
+       set_dport (set_daddr nat_fam_ip4 p [10;0;0;1]) [31; 144]).
 Proof.
   intros h e p Horig Hnone. unfold apply_nat, dnat_port_rule, dnat_port_spec.
   cbn -[set_dport set_daddr store_nat_mapping e_nat pkt_flow slice pkt_nh].
@@ -275,7 +275,7 @@ Lemma dnat_port_no_drop : forall h e q, nat_drops h dnat_port_rule e q = false.
 Proof.
   intros h e q. unfold nat_drops, dnat_port_rule.
   destruct (e_nat e (pkt_flow q)); [reflexivity|].
-  unfold nat_iface_addr_absent, dnat_port_spec; cbn [nat_kind r_nat].
+  unfold nat_iface_addr_absent, dnat_port_spec; cbn [nat_kind r_nat r_outcome].
   destruct (pkt_ctdir_orig q); reflexivity.
 Qed.
 
@@ -287,7 +287,7 @@ Theorem dnat_port_output : forall h e p,
     = (Accept, (store_nat_mapping e p
                   (Some (slice (pkt_nh p) 16 4), Some [10;0;0;1], Some 8080,
                    Some (slice (pkt_th p) 2 2)),
-                set_dport (set_daddr "ip" p [10;0;0;1]) [31; 144])).
+                set_dport (set_daddr nat_fam_ip4 p [10;0;0;1]) [31; 144])).
 Proof.
   intros h e p Horig Hnone.
   assert (Hw : dsl_writes dnat_port_rule e p = (e, p)) by reflexivity.
@@ -356,11 +356,11 @@ Qed.
     for the address change. *)
 Definition snat_port_spec : nat_spec :=
   {| nat_addr_imm := Some [192;168;0;1]; nat_field := None; nat_map := None; nat_src := None;
-     nat_kind := "snat"; nat_family := "ip";
+     nat_kind := NKsnat; nat_family := NFip4;
      nat_extra := NXimm None (Some (N_to_data 2 (N.of_nat 4000))) None; nat_flags := 0 |}.
 Definition snat_port_rule : rule :=
-  {| r_body := []; r_verdict := Continue; r_vmap := None; r_nat := Some snat_port_spec;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := ONat snat_port_spec; r_after := [] |}.
 
 (* snat to A:PORT writes the SOURCE port (offset 0), leaving the dest port alone,
    and stores the (addr, port) mapping for the flow. *)
@@ -371,7 +371,7 @@ Theorem snat_port_writes_sport : forall h e p,
     = (store_nat_mapping e p
          (Some (slice (pkt_nh p) 12 4), Some [192;168;0;1], Some 4000,
           Some (slice (pkt_th p) 0 2)),
-       set_sport (set_saddr "ip" p [192;168;0;1]) (nat_port_bytes 4000)).
+       set_sport (set_saddr nat_fam_ip4 p [192;168;0;1]) (nat_port_bytes 4000)).
 Proof.
   intros h e p Horig Hnone. unfold apply_nat, snat_port_rule, snat_port_spec.
   cbn -[set_sport set_saddr store_nat_mapping e_nat pkt_flow slice pkt_nh].
@@ -409,17 +409,16 @@ Qed.
     the address and the header length) — and applies only [apply_nat_port].
 
     Before the address guard was added, [apply_nat] always did
-    [set_daddr "ip" p (nat_addr ns e p)] = [set_daddr "ip" p []], which SPLICED AN
+    [set_daddr nat_fam_ip4 p (nat_addr ns e p)] = [set_daddr nat_fam_ip4 p []], which SPLICED AN
     EMPTY list into the 4-byte daddr slot: it deleted 4 bytes of the IP header and
     shifted the rest left, corrupting/destroying the destination address. *)
 Definition dnat_portonly_spec : nat_spec :=
   {| nat_addr_imm := None; nat_field := None; nat_map := None; nat_src := None;
-     nat_kind := "dnat"; nat_family := "ip";
+     nat_kind := NKdnat; nat_family := NFip4;
      nat_extra := NXimm None (Some (N_to_data 2 (N.of_nat 80))) None; nat_flags := 0 |}.
 Definition dnat_portonly_rule : rule :=
-  {| r_body := []; r_verdict := Continue; r_vmap := None;
-     r_nat := Some dnat_portonly_spec;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := ONat dnat_portonly_spec; r_after := [] |}.
 
 (* The port-only spec carries NO address operand (kernel: no addr register). *)
 Lemma dnat_portonly_no_addr : nat_has_addr dnat_portonly_spec = false.
@@ -427,7 +426,7 @@ Proof. reflexivity. Qed.
 
 (* So [apply_nat] is a PURE L4 rewrite (plus the env store): it touches only the
    dest port, NOT the network header.  Contrast the old (buggy)
-   [set_dport (set_daddr "ip" p [])].  The stored mapping carries NO address
+   [set_dport (set_daddr nat_fam_ip4 p [])].  The stored mapping carries NO address
    ([fst = None]) — only the port. *)
 Theorem dnat_portonly_apply : forall h e p,
   pkt_ctdir_orig p = true ->

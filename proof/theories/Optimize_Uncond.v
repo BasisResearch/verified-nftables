@@ -491,7 +491,7 @@ Proof.
                      sd_maps := (mapname n, dmap2 v1 v2 T1 T2) :: sd_maps d |} rest)
         as t eqn:E.
       destruct t as [[m'' dd''] rr'']. inversion H; subst n' d' rs'. clear H. constructor.
-      * intros j Hj Hin. cbn [mk_dnat_rule rule_vmap_name r_vmap] in Hin. contradiction.
+      * intros j Hj Hin. cbn [mk_dnat_rule rule_vmap_name r_vmap r_outcome] in Hin. contradiction.
       * apply (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)).
         eapply Forall_impl; [intros r Hr; apply (rule_vmap_fresh_mono n (S n) r); [lia|exact Hr]
                             |exact Hrf_rest].
@@ -546,7 +546,7 @@ Proof.
       pose proof (optimize_rules_dnat_mono rest (S n) _ _ _ _ (eq_sym E)) as Hmono.
       constructor.
       * intros j Hj Hin.
-        cbn [mk_dnat_rule rule_nat_map_name r_nat dnat_map_spec nat_map] in Hin.
+        cbn [mk_dnat_rule rule_nat_map_name r_nat dnat_map_spec nat_map r_outcome] in Hin.
         destruct Hin as [Heq | []]. apply mapname_inj in Heq. lia.
       * apply (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)).
         eapply Forall_impl; [intros r Hr; apply (rule_nat_map_fresh_mono n (S n) r); [lia|exact Hr]
@@ -735,7 +735,7 @@ Proof.
                      sd_maps := (mapname n, dmap2 v1 v2 T1 T2) :: sd_maps d |} rest)
         as t eqn:E.
       destruct t as [[m'' dd''] rr'']. inversion H; subst n' d' rs'. clear H. constructor.
-      * intros j Hj Hin. cbn [mk_snat_rule rule_vmap_name r_vmap] in Hin. contradiction.
+      * intros j Hj Hin. cbn [mk_snat_rule rule_vmap_name r_vmap r_outcome] in Hin. contradiction.
       * apply (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)).
         eapply Forall_impl; [intros r Hr; apply (rule_vmap_fresh_mono n (S n) r); [lia|exact Hr]
                             |exact Hrf_rest].
@@ -790,7 +790,7 @@ Proof.
       pose proof (optimize_rules_snat_mono rest (S n) _ _ _ _ (eq_sym E)) as Hmono.
       constructor.
       * intros j Hj Hin.
-        cbn [mk_snat_rule rule_nat_map_name r_nat snat_map_spec nat_map] in Hin.
+        cbn [mk_snat_rule rule_nat_map_name r_nat snat_map_spec nat_map r_outcome] in Hin.
         destruct Hin as [Heq | []]. apply mapname_inj in Heq. lia.
       * apply (IH rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym E)).
         eapply Forall_impl; [intros r Hr; apply (rule_nat_map_fresh_mono n (S n) r); [lia|exact Hr]
@@ -973,7 +973,7 @@ Proof.
 Qed.
 
 (** *** dscp (masked-payload value->set consolidation, Optimize_Dscp).  Structurally
-    identical to [setsN], but the run's heads are masked equalities [MMasked f false
+    identical to [setsN], but the run's heads are masked equalities [MMasked f CEq
     mask xor v] and the merged head is a masked-lookup [MSetT f [TBitAnd mask xor]
     false __setN] over the N point values; [mmasked_set_existsb] is the membership
     certificate (with the [data_bitops] width discharged from the fixed-width side
@@ -1027,7 +1027,7 @@ Proof.
            set (dn := {| sd_sets := (setname n, elems) :: sd_sets d;
                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) in *.
            assert (Hrun_eq : r1 :: r2 :: rest
-                   = map (fun w => mk_head (MMasked f false mask xor w) body r1) vals ++ rest').
+                   = map (fun w => mk_head (MMasked f CEq mask xor w) body r1) vals ++ rest').
            { subst vals. cbn [map app]. f_equal.
              - apply (head_dscp_canon r1 f mask xor v1 body Ehd).
              - exact Hsplit. }
@@ -1064,7 +1064,7 @@ Proof.
            assert (Hallw : forall w, In w vals -> field_fixed_len f = Some (Datatypes.length w)).
            { subst vals. intros w [Hw | Hw]; [ subst w; exact Hfx1 | apply (Hwidth w Hw) ]. }
            assert (Hcert : eval_matchcond (MSetT f [TBitAnd mask xor] false (setname n)) ed p
-                   = existsb (fun w => eval_matchcond (MMasked f false mask xor w) ed p) vals).
+                   = existsb (fun w => eval_matchcond (MMasked f CEq mask xor w) ed p) vals).
            { apply (mmasked_set_existsb f mask xor vals (setname n) ed p).
              - subst elems. exact Hlook.
              - intros w Hw Hld.
@@ -1080,10 +1080,10 @@ Proof.
                + lia. }
            transitivity (eval_rules
              (map (fun m => mk_head m body r1)
-                  (map (fun w => MMasked f false mask xor w) vals)
+                  (map (fun w => MMasked f CEq mask xor w) vals)
               ++ rr'') ed p).
            { apply (eval_rules_run_merge_abs
-                      (map (fun w => MMasked f false mask xor w) vals)
+                      (map (fun w => MMasked f CEq mask xor w) vals)
                       (fun q => field_loadable f q) body r1
                       (MSetT f [TBitAnd mask xor] false (setname n)) rr'' ed p).
              - subst vals. discriminate.
@@ -1102,7 +1102,7 @@ Proof.
                                        m'' dd'' rr'' nm X (eq_sym Erec) Hf).
              - rewrite Forall_forall in Hrf_rest'. apply Hrf_rest'; exact Hr. }
            rewrite (eval_rules_app_cong
-                      (map (fun w => mk_head (MMasked f false mask xor w) body r1) vals)
+                      (map (fun w => mk_head (MMasked f CEq mask xor w) body r1) vals)
                       rr'' rest' ed p Htail').
            rewrite <- Hrun_eq.
            assert (Hvm_dd : sd_vmaps dd'' = sd_vmaps d).
@@ -2705,7 +2705,7 @@ Qed.
 
 (** *** dscpv.  The masked-payload value+VERDICT->vmap merge (Optimize_Dscpv),
     a verbatim mirror of the vmapNg proof above EXCEPT the recogniser is [head_dscp]
-    (the masked [MMasked f false mask xor v] head), the run collapse is
+    (the masked [MMasked f CEq mask xor v] head), the run collapse is
     [eval_rules_dscpv_mergeN] (the transform-keyed vmap), and the merged rule is
     [mk_vmap_rule_t f [TBitAnd mask xor] name body].  Read-freshness is in the same
     [vmapname] namespace, so the SAME [rule_vmap_fresh] / [decls_agree_rule_vmapseam]
@@ -2974,15 +2974,15 @@ Qed.
 
 Lemma rule_vmap_name_mk_head : forall m body r1,
   rule_vmap_name (mk_head m body r1) = rule_vmap_name r1.
-Proof. intros. unfold rule_vmap_name, mk_head; cbn [r_vmap]. reflexivity. Qed.
+Proof. intros. unfold rule_vmap_name, mk_head; cbn [r_vmap r_outcome]. reflexivity. Qed.
 
 Lemma rule_nat_map_name_mk_head : forall m body r1,
   rule_nat_map_name (mk_head m body r1) = rule_nat_map_name r1.
-Proof. intros. unfold rule_nat_map_name, mk_head; cbn [r_nat]. reflexivity. Qed.
+Proof. intros. unfold rule_nat_map_name, mk_head; cbn [r_nat r_outcome]. reflexivity. Qed.
 
 (** *** dscp output-freshness (its own [setname] namespace + [vmap] pass-through). *)
 Lemma body_set_names_cons_mmasked : forall f mask xor v body,
-  body_set_names (BMatch (MMasked f false mask xor v) :: body) = body_set_names body.
+  body_set_names (BMatch (MMasked f CEq mask xor v) :: body) = body_set_names body.
 Proof. reflexivity. Qed.
 
 Lemma body_set_names_mk_head_MSetT : forall f ts name body r1,

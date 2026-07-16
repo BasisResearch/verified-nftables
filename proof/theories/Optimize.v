@@ -181,13 +181,7 @@ Definition dedup_rule (r : rule) : rule :=
   if body_has_synproxy (r_body r) || body_has_notrack (r_body r) then r else
   {| r_body := map BMatch (nodup matchcond_eq_dec (body_matches (r_body r)))
                ++ map BStmt (body_stmts (r_body r));
-     r_verdict := r_verdict r;
-     r_vmap    := r_vmap r;
-     r_nat     := r_nat r;
-     r_tproxy  := r_tproxy r;
-     r_fwd     := r_fwd r;
-     r_queue   := r_queue r;
-     r_after   := r_after r |}.
+     r_outcome := r_outcome r; r_after := r_after r |}.
 
 (** With no synproxy in the body, [body_synproxy_stops] is [false] and
     [rule_applies_walk] collapses to [forallb eval_matchcond (body_matches …)]. *)
@@ -297,7 +291,7 @@ Proof.
   intros r e p. unfold outcome, dedup_rule.
   destruct (body_has_synproxy (r_body r)) eqn:Hsp; [reflexivity|].
   destruct (body_has_notrack (r_body r)) eqn:Hnt; [reflexivity|].
-  cbn [orb r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after].
+  cbn [orb r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after r_outcome].
   rewrite (body_has_synproxy_false_stops (r_body r) p Hsp).
   rewrite (dedup_body_no_synproxy_stops _ p Hsp).
   unfold body_thread. rewrite Hnt, (dedup_body_no_notrack _ Hnt). reflexivity.
@@ -406,13 +400,7 @@ Definition simplify_item (it : body_item) : body_item :=
 
 Definition simplify_rule (r : rule) : rule :=
   {| r_body := map simplify_item (r_body r);
-     r_verdict := r_verdict r;
-     r_vmap    := r_vmap r;
-     r_nat     := r_nat r;
-     r_tproxy  := r_tproxy r;
-     r_fwd     := r_fwd r;
-     r_queue   := r_queue r;
-     r_after   := r_after r |}.
+     r_outcome := r_outcome r; r_after := r_after r |}.
 
 Lemma body_matches_simplify : forall b,
   body_matches (map simplify_item b) = map simplify_match (body_matches b).
@@ -440,9 +428,8 @@ Lemma rule_loadable_simplify : forall r e p,
 Proof.
   intros r e p. unfold rule_loadable, simplify_rule. cbn [r_body].
   rewrite map_simplify_item_id.
-  replace (end_loadable {| r_body := r_body r; r_verdict := r_verdict r;
-                           r_vmap := r_vmap r; r_nat := r_nat r; r_tproxy := r_tproxy r;
-                           r_fwd := r_fwd r; r_queue := r_queue r; r_after := r_after r |} e p)
+  replace (end_loadable {| r_body := r_body r;
+     r_outcome := r_outcome r; r_after := r_after r |} e p)
     with (end_loadable r e p)
     by (unfold end_loadable, tail_loadable, terminal_loadable, vmap_loadable,
         terminal_outcome; reflexivity).
@@ -455,7 +442,7 @@ Proof.
   induction rs as [| r rs IH]; intros e p; [reflexivity |].
   cbn [map eval_rules]. rewrite rule_applies_simplify, rule_loadable_simplify.
   replace (outcome (simplify_rule r) e p) with (outcome r e p)
-    by (unfold outcome, simplify_rule; cbn [r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after];
+    by (unfold outcome, simplify_rule; cbn [r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after r_outcome];
         rewrite map_simplify_item_id; reflexivity).
   destruct (rule_loadable r e p && rule_applies r e p).
   - destruct (outcome r e p) as [v |].

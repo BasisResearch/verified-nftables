@@ -24,8 +24,8 @@ Definition gm : matchcond := MCmp FMetaL4proto CEq [6].
 
 (* a bare terminal-Accept shell (the end-fields the two rules share) *)
 Definition acc : rule :=
-  {| r_body := []; r_verdict := Accept; r_vmap := None; r_nat := None;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := OVerdict Accept; r_after := [] |}.
 
 Definition concatm_input : list rule :=
   [ orig_rule2g FIp4Saddr FThDport gm A1 P1 [] acc

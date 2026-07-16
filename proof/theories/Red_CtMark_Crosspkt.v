@@ -34,9 +34,7 @@ Import ListNotations.
 (* A chain with a single rule: `ct mark set 0x1; accept`. *)
 Definition ctmark_set_rule : rule :=
   {| r_body := [ BStmt (SCtSet CKmark (VImm [1])) ];
-     r_verdict := Accept;
-     r_vmap := None; r_nat := None; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := OVerdict Accept; r_after := [] |}.
 
 Definition ctmark_chain : chain :=
   {| c_policy := Drop; c_rules := [ ctmark_set_rule ] |}.

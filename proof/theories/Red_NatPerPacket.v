@@ -54,9 +54,8 @@ Definition dnat_to_saddr : nat_spec :=
      nat_extra := NXnone;
      nat_flags := 0 |}.
 Definition dnat_rule : rule :=
-  {| r_body := []; r_verdict := Accept; r_vmap := None;
-     r_nat := Some dnat_to_saddr; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := ONat dnat_to_saddr; r_after := [] |}.
 Definition dnat_chain : chain := {| c_policy := Drop; c_rules := [ dnat_rule ] |}.
 
 Definition out_daddr (e : env) (p : packet) : data :=

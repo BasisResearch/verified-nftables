@@ -30,7 +30,7 @@
     with no prior packet ever establishing the flow) makes them unprovable. *)
 
 From Stdlib Require Import List Bool.
-From Nft Require Import Bytes Packet Verdict Syntax Semantics.
+From Nft Require Import Bytes Packet Verdict Bytecode Syntax Semantics.
 Import ListNotations.
 
 (* NF_CT_STATE bitmask values the parser lowers `ct state X` to (cf. Ct_State.v):
@@ -39,7 +39,7 @@ Definition st_new   : data := [0;0;0;8].
 Definition st_estab : data := [0;0;0;2].
 
 (* The single-positive bitmask matchcond for `ct state established`. *)
-Definition m_estab : matchcond := MMasked FCtState true st_estab [0;0;0;0] [0;0;0;0].
+Definition m_estab : matchcond := MMasked FCtState CNe st_estab [0;0;0;0] [0;0;0;0].
 
 (** ── 1. ct state is a FUNCTION OF THE FLOW TABLE, not a free per-packet field.
 
@@ -171,8 +171,7 @@ Qed.
     not even stateable when ct state was a free oracle. *)
 Definition estab_accept_rule : rule :=
   {| r_body := [ BMatch m_estab ];
-     r_verdict := Accept; r_vmap := None; r_nat := None; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := OVerdict Accept; r_after := [] |}.
 
 Definition stateful_chain : chain :=
   {| c_policy := Drop; c_rules := [ estab_accept_rule ] |}.

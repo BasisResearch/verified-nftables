@@ -177,8 +177,8 @@ Proof.
   pose proof (proj1 (rule_end_eqb_mk_head (MRangeT f ts false lo1 hi1) body r1 r2) Eeqb) as Eshell.
   repeat split.
   rewrite Hr2c. unfold mk_head in Eshell |- *.
-  injection Eshell as Ev Evm En Et Efw Eq Ea.
-  rewrite Ev, Evm, En, Et, Efw, Eq, Ea. reflexivity.
+  injection Eshell as Eo Ea.
+  rewrite Eo, Ea. reflexivity.
 Qed.
 
 (** *** Collect the MAXIMAL run of following rules that each transformed-range-merge
@@ -496,8 +496,8 @@ Qed.
     [FCtMark] with the host-order byteorder transform; bounds are the network-order
     (big-endian) 4-byte immediates the frontend emits. *)
 Definition acc_witness_t : rule :=
-  {| r_body := []; r_verdict := Accept; r_vmap := None; r_nat := None;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := OVerdict Accept; r_after := [] |}.
 
 Definition ctmark_ts : list transform := [TByteorder true 4 4].
 

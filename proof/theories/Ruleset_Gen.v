@@ -5,13 +5,13 @@
    the installed bytecode). *)
 
 From Stdlib Require Import List String ZArith.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics.
+From Nft Require Import Bytes Verdict Packet Bytecode Syntax Semantics Nftval Elab.
 Import ListNotations.
 Open Scope string_scope.
 
 Definition decls : set_decls :=
-  {| sd_sets := [("__set0", [([135], [135]); ([134], [134]); ([136], [136])]);
-   ("__set3", [([0; 22], [0; 22]); ([0; 80], [0; 80]); ([1; 187], [1; 187])])];
+  {| sd_sets := [("__set0", [(SEl [135]); (SEl [134]); (SEl [136])]);
+   ("__set3", [(SEl [0; 22]); (SEl [0; 80]); (SEl [1; 187])])];
    sd_vmaps := [("__map1", [([0; 0; 0; 2], [0; 0; 0; 2], Accept); ([0; 0; 0; 4], [0; 0; 0; 4], Accept); ([0; 0; 0; 1], [0; 0; 0; 1], Drop)]);
    ("__map2", [([8; 0], [8; 0], (Jump "inbound_ipv4")); ([134; 221], [134; 221], (Jump "inbound_ipv6"))])];
    sd_maps := [] |}.
@@ -33,30 +33,25 @@ Definition firewall_inbound_ipv4 : chain :=
 
 Definition firewall_inbound_ipv6 : chain :=
   {| c_policy := Continue;
-   c_rules := [{| r_body := [(BMatch (MEq FMetaNfproto [10]));
-             (BMatch (MEq FMetaL4proto [58]));
+   c_rules := [{| r_body := [(BDep (elab_m (TMEq FMetaNfproto (VInteger 1 10))));
+             (BDep (elab_m (TMEq FMetaL4proto (VInteger 1 58))));
              (BMatch (MConcatSet [FIcmpType] false "__set0"))];
-     r_verdict := Accept; r_vmap := None;
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
+     r_outcome := OVerdict Accept; r_after := [] |}] |}.
 
 Definition firewall_inbound : chain :=
   {| c_policy := Drop;
    c_rules := [{| r_body := [];
-     r_verdict := Continue; r_vmap := (Some {| vm_fields := []; vm_keyf := (Some (FCtState, [])); vm_name := "__map1" |});
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
+     r_outcome := OVmap {| vm_fields := []; vm_keyf := (Some (FCtState, [])); vm_name := "__map1" |}; r_after := [] |};
 
-   {| r_body := [(BMatch (MEq FMetaIifname [108; 111; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0]))];
-     r_verdict := Accept; r_vmap := None;
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
+   {| r_body := [(BMatch (elab_m (TMEq FMetaIifname (ifname "lo"))))];
+     r_outcome := OVerdict Accept; r_after := [] |};
 
    {| r_body := [];
-     r_verdict := Continue; r_vmap := (Some {| vm_fields := []; vm_keyf := (Some (FMetaProtocol, [])); vm_name := "__map2" |});
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
+     r_outcome := OVmap {| vm_fields := []; vm_keyf := (Some (FMetaProtocol, [])); vm_name := "__map2" |}; r_after := [] |};
 
-   {| r_body := [(BMatch (MEq FMetaL4proto [6]));
+   {| r_body := [(BDep (elab_m (TMEq FMetaL4proto (VInteger 1 6))));
              (BMatch (MConcatSet [FThDport] false "__set3"))];
-     r_verdict := Accept; r_vmap := None;
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
+     r_outcome := OVerdict Accept; r_after := [] |}] |}.
 
 Definition firewall_forward : chain :=
   {| c_policy := Drop;
