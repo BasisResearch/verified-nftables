@@ -47,9 +47,27 @@ Scope notes (each also sits on the theorem in the source):
   all environments/packets. Multi-chain/hook preservation is the separate
   `compile_ruleset_correct`/`compile_hook_correct` family — **not composed
   with the optimizer**.
+- The optimizer headline is **verdict-only**: quantified over `eval_chain`,
+  the write-blind/NAT-blind/jump-free evaluator — even though stages rewrite
+  write-effectful statements (`datamap` folds `meta mark set`, `dnat`/`snat`
+  fold NAT terminals) whose effects later hooks observe. The per-stage effect
+  certificates (`Optimize_DataMap.eval_rules_mut_map_merge`,
+  `Optimize_Dnat.apply_nat_dnat_eq`, snat forms) are **per-merge-shape lemmas,
+  not composed through `optimize_table`** — no theorem lifts the pipeline to
+  `eval_chain_mut`/`eval_rules_trace`. The full statement of the gap and the
+  not-lifted rationale sit on `optimize_table_uncond_compile_correct`
+  (Optimize_Uncond.v, "Scope note 2").
 - The compiler axis (jump strand) threads **no writes**; the mutation axis
   follows **no jumps**. **Mutation × jump/goto is not jointly verified** (see
   the evaluator matrix, §3).
+
+Known-gaps note: three **confirmed model-vs-kernel divergences** (limiter
+sweep past a failing match; `OVmapNat` vmap-hit trace NAT + spurious `e_nat`
+store; intra-rule set-then-read) hold **inside** the theorems above — DSL and
+VM agree on them, so no compile theorem is weakened, but the *model* is not
+kernel-exact there. Ledger with kernel citations, repros, and `vm_compute`
+lock-in pins: `DEVELOPMENT.md` § "Known model infidelities" +
+`theories/Regression/Known_Infidelities.v`.
 
 ## 2. Classification of every `Theorem`/`Corollary` in `Correct.v` and `Optimize*.v`
 
@@ -116,7 +134,7 @@ theorem`.
 | `eval_rules` (+`eval_chain`) | no — *no bridging theorem* | no — *no bridging theorem* | no — bridge `eval_rules_jumpfree_eq_j` (= `eval_rules_j` on jump-free rules) | no — *no bridging theorem* | no — bridge `eval_chain_eq_table_jumpfree` (jump-free chains) |
 | `eval_rules_mut` (+`eval_chain_mut`) | **yes** (`dsl_rule_step`) | no — bridge `eval_rules_mut_env_fst` / `eval_chain_mut_env_fst` (`eval_rules_mut` = `fst` of `eval_rules_mut_env`) | no — *no bridging theorem* | no — bridge `eval_rules_trace_verdict` (trace verdict = mut verdict unless `trace_nat_drops`) | no — *no bridging theorem* |
 | `eval_rules_mut_env` (+`eval_chain_mut_env`) | **yes** | **yes** | no — *no bridging theorem* | no — *no bridging theorem* | no — *no bridging theorem* |
-| `eval_rules_trace` (+`eval_chain_trace`) | **yes** | **yes** (returns `env * packet`; `chain_out`) | no — *no bridging theorem* | **yes** (`apply_nat`, `trace_nat_drops`) | no — *no bridging theorem* (chains composed manually via `chain_out`) |
+| `eval_rules_trace` (+`eval_chain_trace`) | **yes** | **yes** (returns `env * packet`; `chain_out`) | no — *no bridging theorem* | **yes** (`apply_nat`, `trace_nat_drops`; known infidelity: fires on an `OVmapNat` vmap **hit** too — see the ledger) | no — *no bridging theorem* (chains composed manually via `chain_out`) |
 | `eval_rules_j` / `eval_table` | no — *no bridging theorem* | no — *no bridging theorem* | **yes** (fuel-bounded) | no — *no bridging theorem* | **user chains** (jump targets) |
 | `eval_ruleset` | no — *no bridging theorem* | no — *no bridging theorem* | **yes** (via `eval_table`) | no — *no bridging theorem* | **base chains** across tables |
 | `eval_hook` | no — *no bridging theorem* | no — *no bridging theorem* | **yes** | no — *no bridging theorem* | **hook dispatch** (priority-ordered) |
@@ -128,6 +146,16 @@ writes and follows jumps, and no theorem relates the mutation strand
 (`eval_rules_mut*`, `eval_rules_trace`, `seq_eval_env`) to the jump strand
 (`eval_rules_j`/`eval_table`/`eval_ruleset`/`eval_hook`/`seq_eval`). A
 `meta mark set` inside a jump target is out of scope of every theorem above.
+Note the mutation theorems themselves carry **no jump-freedom hypothesis** —
+they are unconditional DSL=VM agreement facts that DO instantiate on a
+jump-bearing chain, where both sides treat the realised `Jump`/`Goto` as a
+(kernel-wrong) fall-through; the faithful domain is delimited by prose + the
+pin `Correct.mut_strand_jump_pin`, not in-theorem. Why a `chain_jumpfree`
+hypothesis was deliberately NOT added (it would shrink the agreement facts'
+domain without making any chain faithful; no jump-aware *mutating* evaluator
+exists to bridge to; `chain_jumpfree` is defined at the fixed entry state and
+would need a step-threaded redefinition): the rationale block on the mutation
+strata in `Correct.v` (before the fidelity bridge).
 
 The bytecode VM mirrors the DSL rows one-for-one (`run_rule(s)`,
 `run_program(_mut,_mut_env)`, `run_rules_j`/`run_table`, `run_ruleset`); each
@@ -136,8 +164,14 @@ the `fst` bridge is `run_program_mut_env_fst` / `run_chain_mut_env_fst`.
 
 Every mutation/trace evaluator consumes a single per-rule STEP function —
 `dsl_rule_step` (DSL) / `vm_rule_step` (VM), each returning the pair
-(loadability-guarded verdict, `(env, packet)` left: writes + numgen advance +
-limiter consumption).  The DSL/VM agreement obligation is the one equation
+(loadability-guarded verdict, `(env, packet)` left: writes + limiter
+consumption; the `numgen inc` counter advance is **VM-side only** —
+`vm_rule_step` composes `numgen_sweep_prog`, `dsl_rule_step` deliberately has
+no numgen sweep, and `mut_wf`'s `rule_numgen_free` conjunct makes the VM sweep
+the identity on the theorems' whole domain, so numgen-inc rules — which no
+parser can produce — are outside every mutation theorem and the round-robin
+behaviour `Regression/Numgen_RoundRobin.v` pins is not compiler-preserved;
+rationale on `Semantics.dsl_step`).  The DSL/VM agreement obligation is the one equation
 `vm_rule_step_compile_rule : mut_wf r = true -> vm_rule_step (compile_rule r) e p
 = dsl_rule_step r e p` (`Correct.v`).  `mut_wf` itself lives in the Semantics
 stratum (`Semantics.mut_wf`; `Correct.v` re-exports it as an abbreviation) and

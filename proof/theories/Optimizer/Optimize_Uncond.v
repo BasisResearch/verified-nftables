@@ -5266,10 +5266,35 @@ Qed.
 (** HEADLINE (optimizer axis; see proof/THEOREMS.md and theories/Compiler/Main.v) —
     END-TO-END to the BYTECODE: compile the optimised chain, run the VM against
     the synthesised declarations — EXACTLY the original chain's DSL verdict.
-    Scope: PER CHAIN — quantified over a single chain and ALL environments and
-    packets; multi-chain/hook preservation is the separate
+
+    Scope note 1: PER CHAIN — quantified over a single chain and ALL environments
+    and packets; multi-chain/hook preservation is the separate
     [compile_ruleset_correct]/[compile_hook_correct] family (Correct.v), not
-    composed with the optimizer. *)
+    composed with the optimizer.
+
+    Scope note 2: VERDICTS ONLY — this theorem (and every [_correct_uncond]
+    stage composed into it) is quantified over [eval_chain], the write-blind,
+    NAT-blind, jump-free evaluator.  Pipeline stages DO rewrite write-effectful
+    statements — [datamap] folds `meta mark set` runs, [dnat]/[snat] fold NAT
+    terminals — and mark/NAT effects are exactly what LATER hooks observe
+    (Examples/Optiplex_Mark.v's masquerade is gated on the mark).  The per-stage
+    EFFECT certificates that exist —
+    [Optimize_DataMap.eval_rules_mut_map_merge] (mut-level verdict+state for
+    the datamap merge shape), [Optimize_Dnat.apply_nat_dnat_eq] /
+    [Optimize_Snat.apply_nat_snat_eq] (the folded NAT's data-plane effect
+    equals the originals') — are PER-MERGE-SHAPE lemmas, NOT composed through
+    [optimize_table]: no theorem lifts the 18-stage pipeline to
+    [eval_chain_mut]/[eval_rules_trace].  So, formally, a stage could preserve
+    every [eval_chain] verdict while altering a mark write that flips a later
+    hook's decision — the effect certificates are evidence the shipped merges
+    do not, but the COMPOSED guarantee is verdict-only.  Why not lifted: a
+    mut/trace-level pipeline theorem needs mut-level seam lemmas for all 18
+    stages PLUS write-safety proofs for the rule-DELETING passes (base-pass
+    dce/absorb: deleting a shadowed rule preserves verdicts but not its
+    writes/limiter depletion), i.e. a second full composition stack for the
+    one write-mutating stage family; future work if the optimizer is ever run
+    on mutation-relied-upon chains.  Until then: optimizing a chain whose
+    LATER-observed writes matter is outside this theorem's certified scope. *)
 Theorem optimize_table_uncond_compile_correct : forall c base p n' d' c',
   optimize_table_uncond c = (n', d', c') ->
   run_chain (compile_chain c') (c_policy c') (env_with_sets base d') p

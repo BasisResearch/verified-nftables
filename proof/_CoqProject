@@ -71,6 +71,7 @@ theories/Regression/Iif_Index.v
 theories/Regression/Dnat_Rewrite.v
 theories/Regression/Ip6_Nat.v
 theories/Regression/Synproxy.v
+theories/Regression/Known_Infidelities.v
 
 theories/Generated/Ruleset_Gen.v
 theories/Generated/Tutorial_Gen.v

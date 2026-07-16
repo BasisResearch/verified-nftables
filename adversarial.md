@@ -204,3 +204,22 @@ make -f CoqMakefile theories/<File>.vo
 The model is now faithful enough that an adversarial prover, given the linux-6.18.33 kernel
 source, concedes. Re-running the workflow from this state is the way to keep it honest as the
 semantics grows.
+
+**Residual infidelities found after convergence (scope of "red satisfied").** The verdict
+above means the red agent could substantiate no *further* divergence in that run — not that
+none exist. A later design-legibility review (2026-07) confirmed three divergences that the
+audit's methods did not surface (all three are shared by the DSL and the VM, so no gate and
+no compile theorem ever diverged — the vacuous-by-shared-abstraction failure mode the audit's
+criterion catches only when one side moves):
+
+1. the whole-body **limiter sweep** consumes `limit`/`quota`/`connlimit` tokens even past a
+   failing earlier match (kernel: `NFT_BREAK` fires first, no consumption);
+2. an **`OVmapNat` vmap HIT** still runs the trailing NAT in the trace evaluator — packet
+   rewrite *and* a spurious flow-keyed `e_nat` store (kernel: a hit ends the rule);
+3. **intra-rule set-then-read** (`meta mark set 0x1 meta mark 0x1 accept` as one rule)
+   drops in the model where the kernel accepts (the verdict pass reads the entry packet).
+
+Each is documented with kernel citation + repro in `proof/DEVELOPMENT.md`
+§ "Known model infidelities (open, confirmed)" and locked in by `vm_compute` pins in
+`proof/theories/Regression/Known_Infidelities.v` (a fidelity fix must consciously flip the
+pin). Fixing them is this workflow's job: re-run it with `focus` set to one of the three.

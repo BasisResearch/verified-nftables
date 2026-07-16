@@ -1,5 +1,14 @@
 (** Intra-rule statement threading: single-rule `ct notrack ct state untracked
-    accept` — a statement's write is visible to the SAME rule's later matches.
+    accept` — the `notrack` latch is visible to the SAME rule's later matches.
+
+    SCOPE: this intra-rule threading covers ONLY `notrack` (and the synproxy
+    stop) — the two statements [rule_applies_walk] (Semantics.v) threads.  It
+    does NOT generalise to meta/ct SET writes: an intra-rule set-then-read
+    (`meta mark set 0x1 meta mark 0x1 accept` as ONE rule) is NOT seen by the
+    same rule's verdict pass — a KNOWN, open model-vs-kernel infidelity
+    (DEVELOPMENT.md § "Known model infidelities", pinned in
+    Known_Infidelities.v [setread_dropped]).  Cross-RULE set-then-read is
+    faithful ([eval_rules_mut]; Notrack_CrossRule.v is the notrack analogue).
 
     Kernel: a rule's expressions run LEFT TO RIGHT against the running packet
     (nf_tables_core.c nft_rule_dp_for_each_expr).  `ct notrack` (nft_notrack_eval,
