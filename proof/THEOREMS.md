@@ -3,7 +3,7 @@
 What exactly is proved, by which theorem, under which evaluator, and is it
 axiom-free — without reading 3000 lines of `Correct.v`.
 
-- Machine-checked entry-point restatements: [`theories/Main.v`](theories/Main.v)
+- Machine-checked entry-point restatements: [`theories/Compiler/Main.v`](theories/Compiler/Main.v)
   (each followed by `Print Assumptions`).  Main.v also carries the
   **pre-split ratchet corollaries** (`pre_split_*`): every pre-state-split
   headline statement — which quantified over ONE packet record bundling the
@@ -21,6 +21,13 @@ axiom-free — without reading 3000 lines of `Correct.v`.
   - **SUPERSEDED** — kept for history; subsumed by a successor named in its marker.
   - **DEMO** — an executable regression pin / witness (`Example` in the source);
     not part of the claim surface.
+- Where things live: `theories/` is split by trust role — `Core/` (bytes,
+  verdict, packet, bytecode), `IR/` (rule IR + typed view + elaboration),
+  `Semantics/`, `Compiler/` (compiler, strata, `Main.v`, extraction),
+  `Optimizer/` (+ `Optimizer/Witness/` fires-witnesses), `Regression/`
+  (invariant-named kernel-behaviour gates), `Examples/` (worked
+  per-configuration proofs), `Generated/` (`nft2coq` output).  See
+  `DEVELOPMENT.md` § "What exists" for the full table.
 
 ## 1. The entry points — exactly one top theorem per verified axis
 
@@ -63,30 +70,30 @@ Scope notes (each also sits on the theorem in the source):
 | `compile_hook_correct` | **HEADLINE** (compiler axis) | = `compile_ruleset_correct` after pure hook selection/ordering |
 | `compile_seq_correct` | **HEADLINE** (congruence corollary — see scope note §1) | = `compile_hook_correct` + `seq_eval_ext` |
 
-### `Optimize.v` / `Optimize_Merge.v` (base pass and history)
+### `Optimize.v` / `Optimize_ValueSet.v` (base pass and history)
 
 | declaration | class | note |
 |---|---|---|
 | `Optimize.optimize_chain_correct` | SUPERSEDED (as a standalone headline) | successor `optimize_table_uncond_correct`; `optimize_chain` survives as the pipeline's base stage and this theorem as that stage's lemma |
-| `Optimize_Merge.eval_rules_value_merge` | SUPPORTING | 2-adjacent-rule merge certificate behind the `setsN` recogniser lineage |
-| `Optimize_Merge.eval_rules_range_value_merge` | SUPERSEDED, **known-unfaithful** | models `6,7 => 6-7` as a RANGE where `nft -o` emits the SET `{6,7}`; used by no shipped pass (marker on the theorem) |
-| `Optimize_Merge.optimize_chain2_correct` | SUPERSEDED | `optimize_chain2` is not composed into the shipped pipeline |
+| `Optimize_ValueSet.eval_rules_value_merge` | SUPPORTING | 2-adjacent-rule merge certificate behind the `valueset` recogniser lineage |
+| `Optimize_ValueSet.eval_rules_range_value_merge` | SUPERSEDED, **known-unfaithful** | models `6,7 => 6-7` as a RANGE where `nft -o` emits the SET `{6,7}`; used by no shipped pass (marker on the theorem) |
+| `Optimize_ValueSet.optimize_chain2_correct` | SUPERSEDED | `optimize_chain2` is not composed into the shipped pipeline |
 
 ### Per-pass certificates and stages (`Optimize_*.v`)
 
 | declaration | class | note |
 |---|---|---|
-| `Optimize_Vmap.eval_rules_vmap_merge2` | SUPPORTING | certificate consumed by the `vmapN` stage lineage |
+| `Optimize_Vmap.eval_rules_vmap_merge2` | SUPPORTING | certificate consumed by the `vmap` stage lineage |
 | `Optimize_Concat.eval_rules_concat_merge2` | SUPPORTING | certificate for the two-selector concat merge |
-| `Optimize_ConcatK.eval_rules_concat_mergeK` | SUPPORTING | K-row concat certificate |
-| `Optimize_Mapn.eval_rules_mut_map_merge` / `eval_rules_map_merge` | SUPPORTING | mark-map merge certificates (`mapn` stage; a labelled sound superset of `nft -o`, see Optimize_Table.v fidelity contract) |
-| `Optimize_Mapn.mapn_bare_diverges_offkey` | DEMO | pins why the head guard cannot be dropped |
-| `Optimize_Mapn.optimize_rules_mapn_eval` | STAGE | composed into `optimize_table` |
+| `Optimize_ConcatMulti.eval_rules_concat_mergeK` | SUPPORTING | K-row concat certificate |
+| `Optimize_DataMap.eval_rules_mut_map_merge` / `eval_rules_map_merge` | SUPPORTING | mark-map merge certificates (`datamap` stage; a labelled sound superset of `nft -o`, see Optimize_Table.v fidelity contract) |
+| `Optimize_DataMap.mapn_bare_diverges_offkey` | DEMO | pins why the head guard cannot be dropped |
+| `Optimize_DataMap.optimize_rules_datamap_eval` | STAGE | composed into `optimize_table` |
 | `Optimize_Dnat.eval_rules_dnat_merge`, `apply_nat_dnat_eq`, `apply_nat_dnat_merge1` (Cor.) | SUPPORTING | bare-NAT-map merge: verdict + data-plane NAT-effect preservation |
 | `Optimize_Snat.eval_rules_snat_merge`, `apply_nat_snat_eq`, `apply_nat_snat_merge1` (Cor.) | SUPPORTING | symmetric snat forms |
 | `Optimize_Normalize.normalize_chain_eval` | STAGE | verdict-preserving head normalisation run first by `optimize_table_uncond` |
-| `Optimize_Table.optimize_chain_clean` | SUPPORTING | seam lemma: the base pass preserves `rules_clean` |
-| `Optimize_Uncond.optimize_rules_{dnat,snat}_eval`, `optimize_rules_{setsN,dscp,ivsett,ivset,ivsetg,ivmixg,concatN,concatM,setg,concatK,vmapN,vmapNg,dscpv}_correct_uncond` (15) | STAGE | each tagged `STAGE — composed into [optimize_table_correct_uncond_gen]` in the source |
+| `Optimize_Table.optimize_preserves_rules_clean` | SUPPORTING | seam lemma: the base pass preserves `rules_clean` |
+| `Optimize_Uncond.optimize_rules_{dnat,snat}_eval`, `optimize_rules_{valueset,dscp,intervalsethostorder,intervalset,intervalsetguarded,mixedpointrangeguarded,concat,concatguarded,setguarded,concatmulti,vmap,vmapguarded,dscpvmap}_correct_uncond` (15) | STAGE | each tagged `STAGE — composed into [optimize_table_correct_uncond_gen]` in the source |
 | `Optimize_Uncond.optimize_table_correct_uncond_gen` | SUPPORTING | the general `(n, d)`-threaded whole-pipeline form |
 | `Optimize_Uncond.optimize_table_uncond_correct` | SUPPORTING | DSL-level form of the optimizer headline |
 | `Optimize_Uncond.optimize_table_uncond_compile_correct` | **HEADLINE** (optimizer axis) | = `optimize_table_uncond_correct` + `compile_chain_sets_correct` |
@@ -144,7 +151,7 @@ verbatim by `Correct.mut_wf_prog_eq`).
   `Main.v` are guarded by in-file `Print Assumptions` on every `make proofs`.
 - In-file build-time guards (`Print Assumptions` runs on every `make proofs`):
   end of `Correct.v` (all 8 compiler strata), end of `Optimize_Uncond.v` (both
-  optimizer entry points), all of `theories/Main.v` (the four entry-point
+  optimizer entry points), all of `theories/Compiler/Main.v` (the four entry-point
   aliases), plus per-file guards in demo/side files (`Fib_Local.v`,
   `Optimize_Table.v`, …).
 - One-liner (the historical gate):

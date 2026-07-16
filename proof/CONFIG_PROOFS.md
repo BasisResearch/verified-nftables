@@ -2,7 +2,7 @@
 
 This guide shows how to take a concrete `.nft` file and prove a security property
 about the **parser's own output** for it, using the readable
-predicate/notation/tactic layer in [`theories/Nft_Tactics.v`](theories/Nft_Tactics.v).
+predicate/notation/tactic layer in [`theories/Examples/Nft_Tactics.v`](theories/Examples/Nft_Tactics.v).
 
 The point of that layer is to turn the recurring boilerplate — the
 `unfold … ; cbn -[…] ; rewrite … ; vm_compute` rituals and raw byte literals — into
@@ -13,9 +13,9 @@ examples prove exactly this), so nothing you state through it is weaker than the
 raw statement.
 
 Worked end-to-end examples live in
-[`theories/Nft_Demo_Symbolic.v`](theories/Nft_Demo_Symbolic.v) (packets
+[`theories/Examples/Nft_Demo_Symbolic.v`](theories/Examples/Nft_Demo_Symbolic.v) (packets
 constrained by hypotheses) and
-[`theories/Nft_Demo_Concrete.v`](theories/Nft_Demo_Concrete.v) (fully concrete
+[`theories/Examples/Nft_Demo_Concrete.v`](theories/Examples/Nft_Demo_Concrete.v) (fully concrete
 packets, plus a demonstration that the tactics **cannot** prove a false property).
 
 ---
@@ -30,16 +30,16 @@ about **the parser's output**, not a hand copy:
 
 ```sh
 cd proof
-make gen        # regenerates theories/Optiplex_Gen.v and theories/Ruleset_Gen.v
+make gen        # regenerates theories/Generated/Optiplex_Gen.v and theories/Generated/Ruleset_Gen.v
 ```
 
 To onboard a new file, add a line to the `gen` target in the `Makefile`:
 
 ```make
-cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/myrules.nft > ../theories/Myrules_Gen.v
+cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/myrules.nft > ../theories/Generated/Myrules_Gen.v
 ```
 
-then `make gen`, add `theories/Myrules_Gen.v` to `_CoqProject`, and you have
+then `make gen`, add `theories/Generated/Myrules_Gen.v` to `_CoqProject`, and you have
 `my_chain`, `my_chains` (the `(name, chain)` association list) and `gen_env` (the
 set/map environment) as Coq definitions.
 
@@ -69,7 +69,7 @@ The layer gives you (all in `nft_scope`, opened by importing `Nft_Tactics`):
 | `C gives v on p under cs budget f`                   | `eval_table f cs C p = v`                     |
 | `fieldof F p === v`                                  | `field_value F p = encode v`                  |
 
-`v` in `fieldof … === v` is a **typed** [`Nftval`](theories/Nftval.v) value —
+`v` in `fieldof … === v` is a **typed** [`Nftval`](theories/IR/Nftval.v) value —
 `ip4 192 168 51 20`, `ifname "eth0"`, `port 25`, `ct_established`, … — so the
 hypothesis routes through the validity-checked datatype constructors instead of a
 bare byte list. (`encode (ip4 …)` `vm_compute`s to exactly the bytes the kernel
@@ -123,8 +123,8 @@ the four source-address bytes: *the chain drops a packet **iff** its source is i
 the range*. So no in-range packet escapes **and** no out-of-range packet is
 caught. The finished artifacts are checked in
 ([`rulesets/tutorial.nft`](../rulesets/tutorial.nft),
-[`theories/Tutorial_Gen.v`](theories/Tutorial_Gen.v),
-[`theories/Tutorial_Proofs.v`](theories/Tutorial_Proofs.v)) — this section
+[`theories/Generated/Tutorial_Gen.v`](theories/Generated/Tutorial_Gen.v),
+[`theories/Examples/Tutorial_Proofs.v`](theories/Examples/Tutorial_Proofs.v)) — this section
 retraces how they were made.
 
 ### 1. Write the ruleset
@@ -148,10 +148,10 @@ Sanity-check it against the real tool: `nft -c -f rulesets/tutorial.nft`.
 Add the generation line to the `gen` target in `proof/Makefile`:
 
 ```make
-cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/tutorial.nft > ../theories/Tutorial_Gen.v
+cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/tutorial.nft > ../theories/Generated/Tutorial_Gen.v
 ```
 
-then run `make gen`. The parser emits `theories/Tutorial_Gen.v`; its interesting
+then run `make gen`. The parser emits `theories/Generated/Tutorial_Gen.v`; its interesting
 part is the chain, *as the parser understood it*:
 
 ```coq
@@ -168,12 +168,12 @@ only needs its first 3 bytes, so the parser lowers `ip saddr 192.168.100.0/24` t
 network header + 12` + `cmp` that `nft --debug=netlink` shows for this rule. And
 the chain records `policy Accept`, so the *only* way to `Drop` is that rule.
 
-Finally add `theories/Tutorial_Gen.v` and (in step 3) `theories/Tutorial_Proofs.v`
+Finally add `theories/Generated/Tutorial_Gen.v` and (in step 3) `theories/Examples/Tutorial_Proofs.v`
 to `_CoqProject`.
 
 ### 3. State the exactness theorem
 
-`theories/Tutorial_Proofs.v`, using only the readable layer:
+`theories/Examples/Tutorial_Proofs.v`, using only the readable layer:
 
 ```coq
 Theorem tutorial_blocks_exactly : forall (p : packet) (a b c d : nat),
@@ -214,7 +214,7 @@ Proof.
 Qed.
 ```
 
-The pieces (all in [`Nft_Tactics.v`](theories/Nft_Tactics.v), all proved sound
+The pieces (all in [`Nft_Tactics.v`](theories/Examples/Nft_Tactics.v), all proved sound
 against the semantics, none requiring you to unfold the evaluator):
 
 | lemma | what it says |

@@ -17,17 +17,17 @@ see [`adversarial.md`](adversarial.md).
   each machine-checked & composed into `optimize_table` — see `Optimize_Table.v`
   for the exact order). The families now folded (each verdict-preserving,
   kernel-datapath-checked):
-  - **value → SET**: network addresses (`setsN`); transport ports & `ether saddr`
+  - **value → SET**: network addresses (`valueset`); transport ports & `ether saddr`
     L2 (`setg`); fixed-width meta scalars — `mark`/`skuid`/`skgid`/`l4proto`/
     `nfproto`/`pkttype`/`cpu`/`protocol` — plus `iifname`/`oifname` strings and
-    scalar `ct mark` (`Optimize_Merge`).
+    scalar `ct mark` (`Optimize_ValueSet`).
   - **value+verdict → VMAP**: network address + transport + `ether saddr` L2
-    (`vmapNg`), network (`vmapN`), `ip dscp` (`dscpv`).
-  - **interval RANGE → set**: network (`ivset`), host-order `ct mark` (`ivsett`),
-    guarded transport/inet (`ivsetg`), mixed point+range (`ivmixg`).
-  - **concat**: K-field (`concatK`), 2-field (`concatN`), transport-guarded
-    (`concatM`, e.g. `ip saddr . tcp dport`).
-  - **maps**: `dnat`/`snat` bare-map, meta-mark map (`mapn`, sound superset).
+    (`vmapguarded`), network (`vmap`), `ip dscp` (`dscpvmap`).
+  - **interval RANGE → set**: network (`intervalset`), host-order `ct mark` (`intervalsethostorder`),
+    guarded transport/inet (`intervalsetguarded`), mixed point+range (`mixedpointrangeguarded`).
+  - **concat**: K-field (`concatmulti`), 2-field (`concat`), transport-guarded
+    (`concatguarded`, e.g. `ip saddr . tcp dport`).
+  - **maps**: `dnat`/`snat` bare-map, meta-mark map (`datamap`, sound superset).
   - **`ct state` bitmask-UNION** (`ctmask` — the *sound* `state & 0x0a != 0`,
     NOT nft's exact-set; see the nft bitmask defect below), **`ip dscp` masked
     set** (`dscp`), same-verdict **prefix absorption** `/24 ⊂ /16 → /16` (`absorb`).
@@ -53,7 +53,7 @@ see [`adversarial.md`](adversarial.md).
      set (dropping the bitwise). A packet with extra bits set (e.g. `tcp flags`
      `0x12` = SYN+ACK) matches the bit-test but misses the exact set → the fold
      silently changes the verdict. We instead fold the *sound* same-verdict
-     mask-union (`state & (a|b) != 0`, one masked compare; `Optimize_Ctmask`).
+     mask-union (`state & (a|b) != 0`, one masked compare; `Optimize_CtMask`).
 
 ## Remaining work
 
@@ -66,13 +66,13 @@ What remains open:
 
 - **G1 — differing-verdict multi-field concat → concat VMAP** (soundly closeable,
   no new semantics; the honest deferral from the 2026-07-02 G1–G4 round). The
-  *same-verdict* concat→SET case already folds (`concatK/N/M`); the open case is
+  *same-verdict* concat→SET case already folds (`concatmulti/N/M`); the open case is
   `ip saddr X tcp dport Y accept; … Z drop` → `saddr . tcp dport vmap { X.Y :
   accept, … : drop }`. No stage today produces a *concat-keyed vmap* (every vmap
   stage has a single-field key; every concat stage yields a single-verdict set).
-  Spec: a new `Optimize_ConcatVmap.v` = `Optimize_ConcatM` (multi-field concat-key
+  Spec: a new `Optimize_ConcatVmap.v` = `Optimize_ConcatGuarded` (multi-field concat-key
   recogniser) × `Optimize_Vmap` (`assoc_verdict` first-match order), composed
-  between `concatM` and `setg`. A substantial new proof, not a template tweak.
+  between `concatguarded` and `setg`. A substantial new proof, not a template tweak.
 
 - **Shapes 14/15 — strictly-interior overlapping-verdict concat → vmap** (needs a
   semantics extension). `nft -o`'s fold *is* verdict-correct here: a concatenated

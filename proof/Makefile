@@ -37,14 +37,14 @@ semtest: proofs
 parse-test: proofs
 	cd extracted && dune exec ./parse_test.exe
 
-# Regenerate the parser's output as Coq terms (theories/*_Gen.v) from the .nft
+# Regenerate the parser's output as Coq terms (theories/Generated/*_Gen.v) from the .nft
 # sources, so the proofs (Optiplex_Antispoof, Ruleset_Verified) are about the
 # actual parser output.  Checked in for reproducibility; rerun after a parser
 # change.  nft2coq IS the frontend; the emitted .v is checked by the Rocq kernel.
 gen: lib
-	cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/optiplex.nft > ../theories/Optiplex_Gen.v
-	cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/ruleset.nft  > ../theories/Ruleset_Gen.v
-	cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/tutorial.nft > ../theories/Tutorial_Gen.v
+	cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/optiplex.nft > ../theories/Generated/Optiplex_Gen.v
+	cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/ruleset.nft  > ../theories/Generated/Ruleset_Gen.v
+	cd extracted && dune exec ./nft2coq.exe -- ../../rulesets/tutorial.nft > ../theories/Generated/Tutorial_Gen.v
 
 # Build/check every .v listed in _CoqProject; Extract.v writes extracted/*.ml.
 proofs: $(COQMAKE)
@@ -124,5 +124,5 @@ axioms:
 clean:
 	-[ -f $(COQMAKE) ] && $(MAKE) -f $(COQMAKE) clean || true
 	rm -f $(COQMAKE) $(COQMAKE).conf
-	rm -f theories/*.vo theories/*.vok theories/*.vos theories/*.glob theories/.*.aux
+	find theories \( -name '*.vo' -o -name '*.vok' -o -name '*.vos' -o -name '*.glob' -o -name '.*.aux' \) -delete
 	cd extracted && dune clean 2>/dev/null || true

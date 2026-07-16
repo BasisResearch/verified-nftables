@@ -90,7 +90,7 @@ past userspace and are adjudicated by the **kernel** set backend (`pipapo`).
 | 03 | overlap_prefix_diffverdict | `/24`⊂`/16`, differing verdicts | **nft BUG** — nft **userspace** (`intervals.c`) rejects `conflicting intervals` before netlink (single-field overlaps are unrepresentable, either order); transaction aborts, `exit 1`, **0 rules applied**; we decline |
 | 04 | overlap_concat_diffverdict | overlapping concat, wider-first (dead-rule) | **nft BUG** — reaches the **kernel** and `pipapo` rejects `Could not process rule: File exists` (inserting the narrower element *after* the wider one that engulfs it = a dead rule); transaction aborts; we decline |
 | 05 | overlap_prefix_sameverdict | `/24`⊂`/16`, same verdict → covering `/16` | **MATCH** — *landed this run* (same-verdict prefix ABSORPTION, `Optimize_Absorb`): we drop the subsumed `/24`, keeping the covering `/16` — verdict-identical to the kernel's committed `{ 10.0.0.0/16 }` |
-| 06 | disjoint_prefix | adjacent `/24`s, same verdict → merged `/23` | **MATCH** — the bare value→set pass (`Optimize_Merge`/`setsN`) folds the two same-field `/24` compares to `ip saddr { 10.0.0.0/24, 10.0.1.0/24 }`; kernel-equivalent interval coverage to nft's `{ 10.0.0.0/23 }` (both load, same verdict) |
+| 06 | disjoint_prefix | adjacent `/24`s, same verdict → merged `/23` | **MATCH** — the bare value→set pass (`Optimize_ValueSet`/`valueset`) folds the two same-field `/24` compares to `ip saddr { 10.0.0.0/24, 10.0.1.0/24 }`; kernel-equivalent interval coverage to nft's `{ 10.0.0.0/23 }` (both load, same verdict) |
 | 07 | dnat_overlap | overlapping dnat → daddr map | **nft BUG** — nft **userspace** rejects `conflicting intervals` (single-field overlap); we decline |
 | 08 | snat_map | saddr → snat value map | **MATCH** |
 | 09 | meta_mark_map | `saddr → meta mark set` pairs → map | **EXCEED** — sound superset; `nft -o` declines, we fold |
@@ -100,11 +100,11 @@ past userspace and are adjudicated by the **kernel** set backend (`pipapo`).
 | 13 | partial_range_diffverdict | overlapping ranges, differing verdicts | **nft BUG** — nft **userspace** rejects `conflicting intervals` (single-field overlap); we decline |
 | 14 | concat_partial | `saddr . tcp dport` concat, port `22` **strictly inside** `1-100`, diff verdict, narrower-first | **GAP (modeling)** — nft's fold is **verdict-CORRECT**: a strictly-interior overlap in an *ordered* concat (`pipapo`) set resolves to the lowest rule index = rule order, so `22→drop, 50→accept` exactly matches first-match (data-plane-verified). We decline only because our set/vmap semantics models lookup as unordered/disjoint-key |
 | 15 | silent_daddr | `daddr . tcp dport` concat, same strictly-interior overlap as 14 | **GAP (modeling)** — as 14 (daddr variant; data-plane-verified verdict-correct) |
-| 16 | tcp_dport_set | bare `tcp dport` values, same verdict → set | **MATCH** — *landed this run* (bare-transport-port-set, `Optimize_Setg`) |
+| 16 | tcp_dport_set | bare `tcp dport` values, same verdict → set | **MATCH** — *landed this run* (bare-transport-port-set, `Optimize_SetGuarded`) |
 | 17 | udp_dport_set | bare `udp dport` values, same verdict → set | **MATCH** — *landed this run* (bare-transport-port-set) |
-| 18 | tcp_dport_vmap | bare `tcp dport` distinct values, differing verdicts → vmap | **MATCH** — *landed (`Optimize_Vmapg`, guarded value+verdict→vmap)*: the l4proto-guarded run folds to `tcp dport vmap { 22:drop, 80:accept, 443:drop }`, byte-identical to `nft -o`; kernel-loaded + data-plane-equivalent to the 3 originals |
-| 19 | meta_mark_set | bare `meta mark` values, same verdict → set | **MATCH** — *landed this run* (metafield-fixedwidth-set, `Optimize_Merge`) |
-| 20 | ctstate_mask_union | bitmask `ct state new; established`, same verdict | **MATCH (sound variant) / nft BUG** — we fold to the sound union `state & 0xa != 0` (`Optimize_Ctmask`); nft's exact-set `{new, established}` is the **bitmask defect** — unsound on multi-bit states (see the §20 note below) |
+| 18 | tcp_dport_vmap | bare `tcp dport` distinct values, differing verdicts → vmap | **MATCH** — *landed (`Optimize_VmapGuarded`, guarded value+verdict→vmap)*: the l4proto-guarded run folds to `tcp dport vmap { 22:drop, 80:accept, 443:drop }`, byte-identical to `nft -o`; kernel-loaded + data-plane-equivalent to the 3 originals |
+| 19 | meta_mark_set | bare `meta mark` values, same verdict → set | **MATCH** — *landed this run* (metafield-fixedwidth-set, `Optimize_ValueSet`) |
+| 20 | ctstate_mask_union | bitmask `ct state new; established`, same verdict | **MATCH (sound variant) / nft BUG** — we fold to the sound union `state & 0xa != 0` (`Optimize_CtMask`); nft's exact-set `{new, established}` is the **bitmask defect** — unsound on multi-bit states (see the §20 note below) |
 | — | MINIMAL_…_failclosed_bug | canonical duplicate of 03 (filename is historical) | **nft BUG** — minimal repro of the single-field-overlap defect |
 
 ## Is "absolutely no gap" achieved?
@@ -115,7 +115,7 @@ past userspace and are adjudicated by the **kernel** set backend (`pipapo`).
   no new semantics). The *same-verdict* concat→set case already folds; the open
   case is `ip saddr X tcp dport Y accept; … drop` → `saddr . tcp dport vmap { … }`.
   No stage today produces a *concat-keyed vmap*. Spec: a new `Optimize_ConcatVmap.v`
-  (= `Optimize_ConcatM` × `Optimize_Vmap`). A substantial new proof, deferred by
+  (= `Optimize_ConcatGuarded` × `Optimize_Vmap`). A substantial new proof, deferred by
   the 2026-07-02 G-round rather than half-landed.
 - **Shapes 14/15 — strictly-interior overlapping-verdict concat → vmap** (needs a
   semantics extension). `nft -o`'s fold *is* verdict-correct (the concat `pipapo`
@@ -148,7 +148,7 @@ Both are verified, axiom-free, and composed into the shipped
   as the FIRST stage of `optimize_table` (`optimize_table_uncond_correct` /
   `_compile_correct` still print "Closed under the global context").
 - **06 — adjacent same-verdict `/24`s** now fold via the pre-existing bare
-  value→set pass (`Optimize_Merge`/`setsN`): the two same-field 3-byte compares
+  value→set pass (`Optimize_ValueSet`/`valueset`): the two same-field 3-byte compares
   become `ip saddr { 10.0.0.0/24, 10.0.1.0/24 }`, kernel-equivalent interval
   coverage to nft's `{ 10.0.0.0/23 }` (both load, same verdict). No new pass
   needed — the earlier "GAP" classification was stale.
@@ -156,7 +156,7 @@ Both are verified, axiom-free, and composed into the shipped
 ### Newly closed (this run)
 
 - **18 — transport-guarded value+verdict→vmap** (bare `tcp dport vmap { 22:drop,
-  80:accept, 443:drop }`). `Optimize_Vmapg`: the guarded run
+  80:accept, 443:drop }`). `Optimize_VmapGuarded`: the guarded run
   `[ MCmp l4proto 6 ; MCmp tcp_dport v_i ] w_i` (differing terminal verdicts) folds
   to ONE `mk_vmap_rule` whose body keeps the l4proto guard and whose vmap key is
   `tcp dport`, over the N point entries `{ v_i : w_i }` — exactly `nft -o`'s
@@ -165,9 +165,9 @@ Both are verified, axiom-free, and composed into the shipped
   `Optimize_Vmap.eval_rules_vmap_mergeN` (on body `BMatch gm :: body`), composed
   with a per-rule SWAP equivalence `orig_ruleGv_eq_swap` that commutes the two
   leading pure matches. Verified, axiom-free, composed as the penultimate stage of
-  `optimize_table` (before `vmapN`); `optimize_table_uncond_correct` /
+  `optimize_table` (before `vmap`); `optimize_table_uncond_correct` /
   `_compile_correct` / `compile_chain_correct` still print "Closed under the global
-  context". Fires non-vacuously (`Optimize_Vmapg_Witness.vmapg_fires`, `cbv`);
+  context". Fires non-vacuously (`Optimize_VmapGuarded_Witness.vmapg_fires`, `cbv`);
   kernel-loaded and data-plane-equivalent to the 3 originals (netns loopback probe:
   `22:DROP 80:ACCEPT 443:DROP 1234:ACCEPT` identical for both forms).
 
@@ -219,13 +219,13 @@ optimizer soundly declines every one.
   compilation, `(state & 0xa) != 0`) instead — verdict-equivalent to the originals
   and kernel-equivalent (real `ct state` is single-bit, so union and exact-set
   coincide in-kernel; netns packet-probe confirms fall-through 0 = 0).
-  Pass: `theories/Optimize_Ctmask.v`.
+  Pass: `theories/Optimizer/Optimize_CtMask.v`.
 
 ## Provenance / trust
 
 The three headline theorems are `Closed under the global context` (axiom-free):
 `compile_chain_correct` (`theories/Correct.v`) and
 `optimize_table_uncond_correct` / `optimize_table_uncond_compile_correct`
-(`theories/Optimize_Uncond.v`, the shipped entry that composes every pass above).
+(`theories/Optimizer/Optimize_Uncond.v`, the shipped entry that composes every pass above).
 Gates green: corpus 2532/2532 (0 mismatches), validate 28/28, semtest, parse-test,
 e2e.

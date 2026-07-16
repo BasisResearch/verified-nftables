@@ -388,7 +388,7 @@ let () =
    | [ a; b ] when a <> b -> ()   (* first dropped, second accepted: cross-packet learning *)
    | _ -> Printf.printf "    (warning: no cross-packet difference observed)\n");
   Printf.printf "\n";
-  (* (6) nft -o CONSOLIDATION passes (Optimize_Merge).  Two batteries:
+  (* (6) nft -o CONSOLIDATION passes (Optimize_ValueSet).  Two batteries:
        (6a) the contiguous-RANGE value-merge CERTIFICATE
             (eval_rules_range_value_merge): two adjacent point matches over a
             CONTIGUOUS pair `ip protocol 6` + `ip protocol 7` are verdict-equivalent
@@ -421,7 +421,7 @@ let () =
     [ "5", 5; "6", 6; "7", 7; "8", 8 ];
   Printf.printf "\n";
   Printf.printf "=== (6b) nft -o dedup: adjacent duplicate rule removed (dedup_adj) ===\n";
-  (* [dedup_adj]/[optimize_chain2] (verified in Optimize_Merge.v, axiom-free) are
+  (* [dedup_adj]/[optimize_chain2] (verified in Optimize_ValueSet.v, axiom-free) are
      kept OUT of the extracted library: their [rule_eq_dec] (a bottom-up
      [decide equality] hierarchy) extracts to a multi-megabyte OCaml term.  We
      re-create the SAME pass here with OCaml's structural equality on the extracted
@@ -458,7 +458,7 @@ let () =
   (* (6c) THE HEADLINE nft -o pass — value -> anonymous SET, now run as the ACTUAL
      extracted VERIFIED term (Optimize_Uncond.optimize_table_uncond, composing base
      dedup/DCE then the N-WAY value->anonymous-SET consolidation
-     optimize_chain_setsN).  Previously this was a hand-OCaml mirror because the
+     optimize_chain_valueset).  Previously this was a hand-OCaml mirror because the
      verified term's rule_eq_dec extracted to a multi-MB OCaml value; that bloat is
      now eliminated (compact boolean rule_end_eqb), so the verified term extracts to
      a few KB and runs directly below.
@@ -472,11 +472,11 @@ let () =
   Printf.printf "=== (6c) nft -o value->SET: tcp dport {22,80,443} (anonymous set, the headline pass) ===\n";
   (* This now runs the ACTUAL extracted VERIFIED term — the composed optimizer
      [Optimize_Uncond.optimize_table_uncond] (base dedup/DCE then the N-WAY
-     value->anonymous-SET consolidation [optimize_chain_setsN]).  Its whole-pipeline
+     value->anonymous-SET consolidation [optimize_chain_valueset]).  Its whole-pipeline
      correctness is the axiom-free [optimize_table_uncond_correct]; the per-pass
-     [optimize_chain_setsN_correct] proves verdict-preservation with the synthesised
+     [optimize_chain_valueset_correct] proves verdict-preservation with the synthesised
      N-element set in scope.  No hand-OCaml mirror: the [rule_eq_dec] extraction
-     bloat was eliminated by the compact boolean [rule_end_eqb] (see Optimize_Merge.v),
+     bloat was eliminated by the compact boolean [rule_end_eqb] (see Optimize_ValueSet.v),
      so the verified term extracts to a few KB and runs here directly. *)
   let rs_in = [
     rule [ mcmp Syntax.FThDport Bytecode.CEq [0; 22] ] Verdict.Accept;
@@ -531,7 +531,7 @@ let () =
       "tcp dport 8080(not in)", [31; 144] ];
   Printf.printf "\n";
   (* (6c-N) THE N-DIMENSIONAL CONCAT pass — N(>=3)-field value tuples -> ONE concat
-     SET (Optimize_ConcatK.v `optimize_chain_concatK`, composed into the verified
+     SET (Optimize_ConcatMulti.v `optimize_chain_concatmulti`, composed into the verified
      `optimize_table_uncond`).  nft -o folds adjacent rules that differ in THREE OR
      MORE selector values into one rule keyed on a concatenation set.  Run here as
      the ACTUAL extracted verified term.
@@ -588,11 +588,11 @@ let () =
       "9.9.9.9 . 1.0.0.2 . 6  (saddr miss)", [9;9;9;9], [10;0;0;2], 6 ];
   Printf.printf "\n";
   (* (6d) THE VMAP nft -o pass — value+verdict -> VERDICT MAP (Optimize_Vmap.v
-     `optimize_rules_vmap` / `optimize_chain_vmap_correct`, axiom-free).  The
+     `optimize_rules_vmap2` / `optimize_chain_vmap2_correct`, axiom-free).  The
      verified pass mints a fresh `__vmapN`, emits its (v1,v1,w1)/(v2,v2,w2)
      declaration, and rewrites the adjacent pair (same field, DIFFERING verdicts)
      into ONE rule whose terminal is a vmap keyed on `f` against `__vmapN`.  We
-     re-create the SAME rewrite in OCaml (as in 6c); `optimize_rules_vmap_correct`
+     re-create the SAME rewrite in OCaml (as in 6c); `optimize_rules_vmap2_correct`
      guarantees it is verdict-preserving WITH the synthesised vmap in scope.
 
        INPUT  (nft -o oracle: `tcp dport 22 accept` + `tcp dport 80 drop`):
@@ -603,11 +603,11 @@ let () =
      with the two-rule original on every packet (dport 22 -> accept, 80 -> drop,
      miss -> policy). *)
   Printf.printf "=== (6d) nft -o value+verdict->VMAP: tcp dport vmap { 22:accept, 80:drop } ===\n";
-  (* Runs the ACTUAL extracted VERIFIED term [Optimize_Vmap.optimize_chain_vmapN]
+  (* Runs the ACTUAL extracted VERIFIED term [Optimize_Vmap.optimize_chain_vmap]
      (the N-WAY value+verdict->VERDICT-MAP consolidation), whose correctness is the
-     axiom-free [optimize_chain_vmapN_correct].  No hand-OCaml mirror — the verified
+     axiom-free [optimize_chain_vmap_correct].  No hand-OCaml mirror — the verified
      term now extracts compactly (the [rule_eq_dec] bloat was replaced by the boolean
-     [rule_end_eqb], see Optimize_Vmap.v / Optimize_Merge.v). *)
+     [rule_end_eqb], see Optimize_Vmap.v / Optimize_ValueSet.v). *)
   let vrs_in = [
     rule [ mcmp Syntax.FThDport Bytecode.CEq [0; 22] ] Verdict.Accept;
     rule [ mcmp Syntax.FThDport Bytecode.CEq [0; 80] ] Verdict.Drop;
@@ -616,7 +616,7 @@ let () =
   let vempty_decls : Semantics.set_decls =
     { Semantics.sd_sets = []; sd_vmaps = []; sd_maps = [] } in
   let ((_vn, vdecls_out), vc_out_v) =
-    Optimize_Vmap.optimize_chain_vmapN 0 vempty_decls (chain Verdict.Drop vrs_in) in
+    Optimize_Vmap.optimize_chain_vmap 0 vempty_decls (chain Verdict.Drop vrs_in) in
   let vmaps_out = vdecls_out.Semantics.sd_vmaps in
   let vrs_out = vc_out_v.Syntax.c_rules in
   let vlen_in = Stdlib.List.length vrs_in and vlen_out = Stdlib.List.length vrs_out in
@@ -660,12 +660,12 @@ let () =
       "tcp dport 1   -> policy", [0; 1] ];
   Printf.printf "\n";
   (* (6e) THE CONCAT nft -o pass — two selectors -> CONCATENATION SET
-     (Optimize_Concat.v `optimize_rules_concat` / `optimize_chain_concat_correct`,
+     (Optimize_Concat.v `optimize_rules_concat2` / `optimize_chain_concat2_correct`,
      axiom-free).  The verified pass mints a fresh `__setN`, emits its packed
      two-field point tuples (each field in its 4-byte register slot, last field
      taking the remainder), and rewrites the adjacent pair (differing in BOTH
      selectors, same verdict) into ONE `MConcatSet [f1;f2] false __setN` rule.  We
-     re-create the SAME rewrite in OCaml (as in 6c/6d); `optimize_rules_concat_correct`
+     re-create the SAME rewrite in OCaml (as in 6c/6d); `optimize_rules_concat2_correct`
      guarantees it is verdict-preserving WITH the synthesised concat set in scope.
 
        INPUT  (nft -o oracle, ran via `unshare -rn nft -o -f`):
@@ -678,9 +678,9 @@ let () =
      `eval_chain` of the rewritten rule UNDER the synthesised set agrees with the
      two-rule original on the matching tuples and on a miss (-> policy). *)
   Printf.printf "=== (6e) nft -o concat->SET: ip saddr . tcp dport { 1.1.1.1 . 22, 2.2.2.2 . 80 } accept ===\n";
-  (* Runs the ACTUAL extracted VERIFIED term [Optimize_Concat.optimize_chain_concatN]
+  (* Runs the ACTUAL extracted VERIFIED term [Optimize_Concat.optimize_chain_concat]
      (the N-WAY two-selector->CONCATENATION-SET consolidation), whose correctness is
-     the axiom-free [optimize_chain_concatN_correct].  No hand-OCaml mirror — the
+     the axiom-free [optimize_chain_concat_correct].  No hand-OCaml mirror — the
      verified term now extracts compactly. *)
   let crule a b w : Syntax.rule =
     rule [ mcmp Syntax.FIp4Saddr Bytecode.CEq a;
@@ -691,7 +691,7 @@ let () =
   let cempty_decls : Semantics.set_decls =
     { Semantics.sd_sets = []; sd_vmaps = []; sd_maps = [] } in
   let ((_cn, cdecls_out), cc_out_v) =
-    Optimize_Concat.optimize_chain_concatN 0 cempty_decls (chain Verdict.Drop crs_in) in
+    Optimize_Concat.optimize_chain_concat 0 cempty_decls (chain Verdict.Drop crs_in) in
   let csets_out = cdecls_out.Semantics.sd_sets in
   let crs_out = cc_out_v.Syntax.c_rules in
   let clen_in = Stdlib.List.length crs_in and clen_out = Stdlib.List.length crs_out in
@@ -744,7 +744,7 @@ let () =
      a BARE map with no head set guard.  We emit the head-set-GUARDED form, which is
      valid, equivalent nftables and is required for soundness in our model (whose
      statement value-map semantics load the map default on a miss rather than
-     NFT_BREAK; see the Optimize_Mapn.v header).  What this witnesses is a SOUND
+     NFT_BREAK; see the Optimize_DataMap.v header).  What this witnesses is a SOUND
      state-preserving data-map consolidation, not nft -o byte-fidelity.
 
      Unlike 6c-6e (which consolidate the VERDICT, checked against verdict-only
@@ -752,9 +752,9 @@ let () =
      MAP.  The merge is verdict-neutral, so it is invisible to [eval_chain]; the real
      content is the META STATE.  We therefore run the extracted STATE-threading
      semantics [Semantics.dsl_step] and read the resulting [MKmark] — the witness of
-     [Optimize_Mapn.dsl_step_map_merge] / the [optimize_table_uncond_correct] chain.
+     [Optimize_DataMap.dsl_step_map_merge] / the [optimize_table_uncond_correct] chain.
 
-     Runs the ACTUAL extracted VERIFIED term [Optimize_Mapn.optimize_chain_mapn]; this
+     Runs the ACTUAL extracted VERIFIED term [Optimize_DataMap.optimize_chain_datamap]; this
      pass is the FIRST to synthesise an [sd_maps] entry alongside the head [sd_sets]. *)
   Printf.printf "=== (6f) data-map consolidation: ip saddr { .. } meta mark set ip saddr map { .. } ===\n";
   let omap_rule v m : Syntax.rule =
@@ -767,7 +767,7 @@ let () =
   let mempty_decls : Semantics.set_decls =
     { Semantics.sd_sets = []; sd_vmaps = []; sd_maps = [] } in
   let ((_mn, mdecls_out), mc_out_v) =
-    Optimize_Mapn.optimize_chain_mapn 0 mempty_decls (chain Verdict.Drop mrs_in) in
+    Optimize_DataMap.optimize_chain_datamap 0 mempty_decls (chain Verdict.Drop mrs_in) in
   let mrs_out = mc_out_v.Syntax.c_rules in
   let mlen_in = Stdlib.List.length mrs_in and mlen_out = Stdlib.List.length mrs_out in
   Printf.printf "  rules: %d -> %d (%s)\n" mlen_in mlen_out
