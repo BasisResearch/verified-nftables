@@ -1,0 +1,10 @@
+# ILL-TYPED: a width-overflow literal.  inet_proto is 8 bits; real nft rejects
+# `ip protocol 300` ("Value 300 exceeds valid range 0-255").  The old OCaml
+# typed_atom silently masked it (land 0xff -> 44); the Coq checker refuses
+# (Surface.Datatype.lit_fits is bit-precise).
+table ip t {
+  chain c {
+    type filter hook input priority 0; policy accept;
+    ip protocol 300 accept
+  }
+}

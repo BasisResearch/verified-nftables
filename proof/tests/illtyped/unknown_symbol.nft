@@ -1,0 +1,9 @@
+# ILL-TYPED: an unknown symbolic constant.  "frobnicate" is in no service
+# table and is not an integer, so the basetype-integer fallback fails too
+# (nft: "unqualified symbol frobnicate").
+table ip t {
+  chain c {
+    type filter hook input priority 0; policy accept;
+    tcp dport frobnicate accept
+  }
+}

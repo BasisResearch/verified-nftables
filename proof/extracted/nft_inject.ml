@@ -1,0 +1,149 @@
+(* Nft_inject: Nft_ast (the Menhir parser's surface tree) -> Ast (the extracted
+   Coq surface tree, theories/Surface/Ast.v), PURE STRUCTURAL INJECTION.
+
+   This is the ONLY translation site between the OCaml frontend and the
+   verified typed layer, and it is deliberately trivial: constructor ->
+   constructor, string -> string (ExtrOcamlNativeString), int -> nat
+   (ExtrOcamlNatInt).  NO byte encoding, NO symbol resolution, NO width or
+   byteorder decision happens here — those are Coq definitions
+   (Surface.Datatype / Surface.Symbols / Surface.Typecheck).
+
+   The two guards are the EXTRACTION SEAM (not typing):
+     - negative literals never become a [nat] (the extracted nat is a native
+       int whose arithmetic the proofs know nothing about below 0);
+     - literals >= 2^40 are rejected, the same bound the `limit` guard
+       enforces (see theories/Compiler/Extract.v's ExtrOcamlNatInt note), so
+       no extracted nat computation can approach the 63-bit wrap.
+   A negative base-chain priority (`priority -100`) crosses in SIGN-MAGNITUDE
+   form (Ast.ITypeHook's prio_neg flag), so no negative number meets nat. *)
+
+module L = Stdlib.List
+
+exception Inject_error of string
+
+(* the ExtrOcamlNatInt seam bound (= the parser's limit_value bound) *)
+let max_nat = 1 lsl 40
+
+let nat (n : int) : int =
+  if n < 0 then raise (Inject_error "negative literal at the nat seam");
+  if n >= max_nat then
+    raise (Inject_error "literal exceeds the extracted-int-safe bound 2^40 \
+                         (see theories/Compiler/Extract.v)");
+  n
+
+let byte_list (b : int list) : int list = L.map nat b
+
+let rec value : Nft_ast.value -> Ast.svalue = function
+  | Nft_ast.Vnum n -> Ast.SVNum (nat n)
+  | Nft_ast.Vsym s -> Ast.SVSym s
+  | Nft_ast.Vstr s -> Ast.SVStr s
+  | Nft_ast.Vip4 b -> Ast.SVIp4 (byte_list b)
+  | Nft_ast.Vip6 b -> Ast.SVIp6 (byte_list b)
+  | Nft_ast.Vmac b -> Ast.SVMac (byte_list b)
+  | Nft_ast.Vvar s -> Ast.SVVar s
+  | Nft_ast.Vprefix (v, l) -> Ast.SVPrefix (value v, nat l)
+  | Nft_ast.Vrange (a, b) -> Ast.SVRange (value a, value b)
+  | Nft_ast.Vconcat vs -> Ast.SVConcat (L.map value vs)
+  | Nft_ast.Vset vs -> Ast.SVSet (L.map value vs)
+
+let verdict : Nft_ast.verdict -> Ast.sverdict = function
+  | Nft_ast.SVaccept -> Ast.SVaccept
+  | Nft_ast.SVdrop -> Ast.SVdrop
+  | Nft_ast.SVcontinue -> Ast.SVcontinue
+  | Nft_ast.SVreturn -> Ast.SVreturn
+  | Nft_ast.SVjump c -> Ast.SVjump c
+  | Nft_ast.SVgoto c -> Ast.SVgoto c
+  | Nft_ast.SVqueue (lo, hi, byp, fan) -> Ast.SVqueue (nat lo, nat hi, byp, fan)
+  | Nft_ast.SVreject opts -> Ast.SVreject opts
+
+let setexpr : Nft_ast.setexpr -> Ast.ssetexpr = function
+  | Nft_ast.SEvalue v -> Ast.SSEvalue (value v)
+  | Nft_ast.SEset vs -> Ast.SSEset (L.map value vs)
+  | Nft_ast.SElist vs -> Ast.SSElist (L.map value vs)
+  | Nft_ast.SEref n -> Ast.SSEref n
+
+let relop : Nft_ast.relop -> Ast.srelop = function
+  | Nft_ast.Op_implicit -> Ast.SOpImplicit
+  | Nft_ast.Op_eq -> Ast.SOpEq
+  | Nft_ast.Op_ne -> Ast.SOpNe
+  | Nft_ast.Op_bang -> Ast.SOpBang
+
+let rhs (r : Nft_ast.rhs) : Ast.srhs =
+  { Ast.sr_op = relop r.Nft_ast.op;
+    sr_neg = r.Nft_ast.neg;
+    sr_payload = setexpr r.Nft_ast.payload }
+
+let smatch (m : Nft_ast.smatch) : Ast.smatch =
+  { Ast.sm_keys = m.Nft_ast.m_keys; sm_rhs = rhs m.Nft_ast.m_rhs }
+
+let opt_nat : int option -> int option = function
+  | None -> None
+  | Some n -> Some (nat n)
+
+let stmt : Nft_ast.sstmt -> Ast.sstmt = function
+  | Nft_ast.StComment c -> Ast.StComment c
+  | Nft_ast.StCounter -> Ast.StCounter
+  | Nft_ast.StLog opts -> Ast.StLog opts
+  | Nft_ast.StLimit (rate, unit_, over, burst, bytes) ->
+      Ast.StLimit (nat rate, unit_, over, nat burst, bytes)
+  | Nft_ast.StMasquerade fs -> Ast.StMasquerade fs
+  | Nft_ast.StSnat (a, p, fs) ->
+      Ast.StSnat (Option.map value a, opt_nat p, fs)
+  | Nft_ast.StDnat (a, p, fs) ->
+      Ast.StDnat (Option.map value a, opt_nat p, fs)
+  | Nft_ast.StRedirect (p, fs) -> Ast.StRedirect (opt_nat p, fs)
+  | Nft_ast.StTproxy (fam, a, p) ->
+      Ast.StTproxy (fam, Option.map value a, opt_nat p)
+  | Nft_ast.StMetaSet (k, v) -> Ast.StMetaSet (k, value v)
+  | Nft_ast.StCtSet (k, v) -> Ast.StCtSet (k, value v)
+  | Nft_ast.StNotrack -> Ast.StNotrack
+
+let clause : Nft_ast.clause -> Ast.sclause = function
+  | Nft_ast.CMatch m -> Ast.CMatch (smatch m)
+  | Nft_ast.CVmap (keys, entries) ->
+      Ast.CVmap (keys, L.map (fun (v, sv) -> (value v, verdict sv)) entries)
+  | Nft_ast.CVmapRef (keys, name) -> Ast.CVmapRef (keys, name)
+  | Nft_ast.CVerdict v -> Ast.CVerdict (verdict v)
+  | Nft_ast.CStmt s -> Ast.CStmt (stmt s)
+  | Nft_ast.CBitmatch (kp, op, mask, r) ->
+      Ast.CBitmatch (kp, op, value mask, rhs r)
+
+let setdecl (sd : Nft_ast.setdecl) : Ast.ssetdecl =
+  { Ast.sd_name = sd.Nft_ast.sd_name;
+    sd_is_map = sd.Nft_ast.sd_is_map;
+    sd_type = sd.Nft_ast.sd_type;
+    sd_flags = sd.Nft_ast.sd_flags;
+    sd_elements =
+      L.map (fun (v, d) -> (value v, Option.map verdict d))
+        sd.Nft_ast.sd_elements }
+
+let chain_item : Nft_ast.chain_item -> Ast.schain_item = function
+  | Nft_ast.ITypeHook { ct_type; hook; priority } ->
+      (* sign-magnitude across the nat seam: -100 -> (true, 100) *)
+      if priority < 0 then Ast.ITypeHook (ct_type, hook, true, nat (- priority))
+      else Ast.ITypeHook (ct_type, hook, false, nat priority)
+  | Nft_ast.IPolicy v -> Ast.IPolicy (verdict v)
+  | Nft_ast.IRule r -> Ast.IRule (L.map clause r)
+
+let chain (sc : Nft_ast.schain) : Ast.schain =
+  { Ast.sc_name = sc.Nft_ast.sc_name;
+    sc_items = L.map chain_item sc.Nft_ast.sc_items }
+
+let table_item : Nft_ast.table_item -> Ast.stable_item = function
+  | Nft_ast.TChain c -> Ast.TChain (chain c)
+  | Nft_ast.TSet sd -> Ast.TSet (setdecl sd)
+  | Nft_ast.TObj n -> Ast.TObj n
+
+let table (t : Nft_ast.stable) : Ast.stable =
+  { Ast.st_family = t.Nft_ast.st_family;
+    st_name = t.Nft_ast.st_name;
+    st_items = L.map table_item t.Nft_ast.st_items }
+
+let toplevel : Nft_ast.toplevel -> Ast.stoplevel = function
+  | Nft_ast.TopDefine (n, v) -> Ast.TopDefine (n, value v)
+  | Nft_ast.TopTable t -> Ast.TopTable (table t)
+  | Nft_ast.TopInclude p -> Ast.TopInclude p
+  | Nft_ast.TopNop -> Ast.TopNop
+
+(* a whole (include-expanded) surface file *)
+let file (f : Nft_ast.sfile) : Ast.sruleset = L.map toplevel f

@@ -1,0 +1,11 @@
+# ILL-TYPED: bitwise arithmetic over an interface NAME.
+# ifname's basetype chain ends at string (nftables src/meta.c ifname_type
+# .basetype = &string_type), so there is no integer to mask: real nft rejects
+# this ("Binary operation (&) is undefined for ifname type").
+# Typecheck must reject: Surface.Datatype.int_basetype DTifname = None.
+table ip t {
+  chain c {
+    type filter hook input priority 0; policy accept;
+    iifname and 0xff == 0x1 accept
+  }
+}

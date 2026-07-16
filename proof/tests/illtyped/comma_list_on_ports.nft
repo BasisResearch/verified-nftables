@@ -1,0 +1,10 @@
+# ILL-TYPED: a bare comma list over a NON-bitmask selector.  evaluate.c's
+# expr_evaluate_list (line ~1871) requires every member of an unbraced list
+# to have a TYPE_BITMASK basetype (ct state / tcp flags); inet_service does
+# not qualify -- ports need the braced set form { 22, 80 }.
+table ip t {
+  chain c {
+    type filter hook input priority 0; policy accept;
+    tcp dport 22,80 accept
+  }
+}

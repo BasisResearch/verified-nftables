@@ -3,10 +3,20 @@
 ; reusable library. (wrapped false) keeps the extracted module names global so
 ; the glue can reference them unqualified. -w -a silences warnings in the
 ; machine-generated extraction output.
+;
+; String is EXCLUDED: re-running the extraction (Extract.vo) emits a String.ml
+; holding Coq's String.length (Optimize_Uncond's fresh-name seed measures set
+; names).  Inside a (wrapped false) library that module SHADOWS Stdlib.String,
+; breaking every `String.get`/`String.sub` in ExtrOcamlNativeString's inline
+; string-match realizer (Nftval.sbytes, Symbols.parse_dec) and in hand-written
+; glue.  Excluded, `String` resolves to Stdlib.String everywhere; the one
+; extracted use (`open String` + `length` in Optimize_Uncond.ml) then means
+; Stdlib.String.length — the same int on the same native string as Coq's
+; String.length under the ExtrOcamlNativeString+NatInt seams.
 (library
  (name nftc)
  (modules (:standard \ glue corpus_test example semtest parse_test nft2coq
-                       nftc_cli nl_send))
+                       nftc_cli nl_send String))
  (wrapped false)
  (flags (:standard -w -a)))
 
