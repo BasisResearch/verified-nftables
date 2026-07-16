@@ -144,7 +144,8 @@ mostly closed — see the per-item markers and TODO 3)* — a statement that doe
   compiler theorem still proves because BOTH the DSL semantics and the VM no-op
   the set — a textbook vacuous-theorem case.
 
-  *Status: FIXED (2026-06) for the common fragment.* A mutated packet is threaded
+  *Status: FIXED (2026-06) for the common fragment — **cross-rule**. The
+  **intra-rule** instance of the same idiom is still OPEN (see below).* A mutated packet is threaded
   across rules: the VM effect `run_rule_writes` (mirrors `run_rule`'s register
   threading but, on an `IMetaSet/ICtSet` reached after the matches pass, returns
   `set_meta/set_ct p k (rf src)`; cmp/range/lookup/limit break → unchanged `p`)
@@ -161,8 +162,16 @@ mostly closed — see the per-item markers and TODO 3)* — a statement that doe
   (`mut_wf`, a well-formedness — NOT a feature scope): matches, meta/ct sets,
   set-dynsets, AND every other statement (mangle, NAT, dup, counter, log, map-dynset,
   exthdr, objref, …, threaded as state-neutral via the `straight`-line-prefix lemma). The
-  cited `meta mark set 0x1 ; meta mark 0x1 accept` bug now ACCEPTS on both sides, and
-  semtest witnesses a rule *mixing* `counter`/`log` with the meta-set. Built on the
+  cited **cross-rule** `meta mark set 0x1 ; meta mark 0x1 accept` bug (TWO rules) now
+  ACCEPTS on both sides, and
+  semtest witnesses a rule *mixing* `counter`/`log` with the meta-set.
+  ⛔ STILL OPEN — the **intra-rule** form (`meta mark set 0x1 meta mark 0x1
+  accept` as ONE rule) remains unfaithful-by-shared-abstraction: the verdict
+  pass evaluates loads against the packet the rule *entered* with, so the model
+  drops (both sides) where the kernel accepts — a confirmed divergence, entry 3
+  of **"Known model infidelities"** below (pinned in
+  `Regression/Known_Infidelities.v`; only `notrack`/synproxy are threaded
+  intra-rule). Built on the
   operand value-correctness `eval_vsrc vs p = (regfile after compile_vsrc vs) 1`,
   proved for every operand kind (immediate, field(+transforms), value map (any key
   transform), `VMapT`, jhash, jhash-map, OR-fold). The only `mut_wf` exclusions are a
@@ -253,7 +262,9 @@ The gap-closing program was tracked as C→A→B→D. Status as of 2026-06:
   no-usable-address — observed across hooks by the whole-chain trace evaluator
   (`eval_chain_trace`). **STILL OPEN:** payload-mangle (`SMangle`) and IMMEDIATE-data
   dynsets are threaded only as state-*neutral* (their own writes are not yet visible
-  to later rules).
+  to later rules); and three *confirmed divergences inside the modelled features*
+  (limiter sweep past a failing match, `OVmapNat` vmap-hit trace NAT, intra-rule
+  set-then-read) are ledgered in **"Known model infidelities"** below.
 - ✅ **(4) Explicit tables** (D-ish): FIB done (`lpm_fib`); the **conntrack table is
   now flow-keyed** (`e_ct`, keyed by `pkt_flow`) by the 2026-06 audit — `ct
   mark`/`state`/`direction`/`connlimit` accumulate across a flow's packets. (See TODO 1
@@ -269,7 +280,99 @@ mutation threading**, **`meter`** state, the **netlink emitter shim** (TODO 6), 
 **VST data-plane layer** (TODO 8) — plus the standing framing caveat that this is internal
 consistency against a self-authored semantics, with kernel fidelity now resting on the
 2026-06 adversarial audit (`../adversarial.md`) and `make validate` (28/28) rather than the
-corpus round-trip.
+corpus round-trip. Additionally, three **confirmed model-vs-kernel divergences inside
+modelled features** are known and deliberately left open — the ledger below.
+
+## Known model infidelities (open, confirmed)
+
+Unlike the ⛔ items above (features not yet modelled), these are behaviours the
+model **does** exhibit that are **confirmed wrong against linux-6.18.33** — found
+by re-interrogating the semantics after the 2026-06 audit converged (so
+`../adversarial.md`'s "red satisfied" is scoped by this list). They are
+documented and **pinned** rather than fixed here because each repair is a
+*semantics change* (it moves verdicts/effects), which belongs to the
+adversarial-semantics-audit track with its own red-verification loop — not to a
+documentation/legibility milestone. Every entry is locked in by a `vm_compute`
+theorem in [`theories/Regression/Known_Infidelities.v`](theories/Regression/Known_Infidelities.v)
+that pins the **model's divergent behaviour**: a future fidelity fix MUST flip
+that pin (it becomes unprovable) and update this ledger, so the divergence can
+be neither forgotten nor silently half-fixed. The DSL and the VM **agree** on
+all three (the compiler theorems are honest); the divergence is model-vs-kernel.
+
+**1. The limiter sweep depletes buckets the kernel never evaluates.**
+- *Kernel*: a rule's expressions run left-to-right; a failing match sets
+  `NFT_BREAK` and ends the rule (nf_tables_core.c `nft_do_chain`'s
+  per-expression verdict check), so in `ip saddr 1.2.3.4 limit rate 1/second
+  accept` a non-matching packet never reaches `nft_limit_eval` — **no token is
+  consumed**.
+- *Model*: `dsl_step` applies `limit_sweep_body` (and `vm_rule_step` applies
+  `limit_sweep_prog`) **unconditionally over the whole rule body**
+  (`Semantics.v`, the sweep definitions + `dsl_step`), draining every
+  `limit`/`quota`/`connlimit` the rule *contains* — even past a failing earlier
+  match or a breaking load.
+- *Repro*: a `meta mark 0x1 limit rate 1/second accept` chain on a
+  non-matching packet leaves `e_limit = 0` (kernel: 1); verdict sequences over
+  `seq_eval_env` then diverge observably from the kernel.
+- *Pin*: `Known_Infidelities.gate_limit_drained` / `vm_gate_limit_drained`.
+- *Why open*: the faithful shape folds the consumption into the break-aware
+  `body_writes`/`run_rule_writes` walk — a rework of the mutation step function
+  on both sides (semantics change; audit track).
+
+**2. A vmap HIT on an `OVmapNat` rule still runs the trailing NAT in the trace
+evaluator (including a spurious flow-state write).**
+- *Kernel*: `… vmap {…} dnat/redirect …` — a vmap hit writes a non-CONTINUE
+  verdict register and the rule's remaining expressions never evaluate
+  (nf_tables_core.c per-expression verdict check); the trailing NAT runs only
+  on a map **miss**. The repo's own verdict/loadability semantics agree
+  (`Semantics.end_loadable`: "vmap HIT: terminal/r_after unreachable").
+- *Model*: `eval_rules_trace` (`Semantics.v`) dispatches `nat_drops`/`apply_nat`
+  on `r_nat r`, which projects the NAT out of `OVmapNat` **regardless of which
+  outcome arm produced the terminal verdict** — so on a vmap HIT it still
+  rewrites the packet **and stores a flow-keyed `e_nat` mapping**
+  (`store_nat_mapping`) that later same-flow packets then reuse.
+- *Repro*: a `meta mark vmap { 0x1 : accept } dnat to 10.0.0.1` rule on a
+  mark-0x1 packet: trace verdict Accept (correct) but daddr rewritten to
+  10.0.0.1 and `e_nat` populated (kernel: packet untouched, no NAT tuple).
+- *Pin*: `Known_Infidelities.vmaphit_daddr_rewritten` /
+  `vmaphit_stores_nat_mapping`.
+- *Why open*: `dsl_rule_step` returns only the verdict, not which outcome arm
+  produced it; the fix threads outcome provenance (or re-tests the hit) through
+  the trace evaluator — a semantics change (audit track). Plain `ONat` rules
+  (the corpus/ruleset-common shape) are unaffected.
+
+**3. Intra-rule set-then-read: the verdict pass does not see the same rule's
+earlier write.**
+- *Kernel*: the ONE rule `meta mark set 0x1 meta mark 0x1 accept` **accepts** —
+  expressions run left-to-right against the running packet
+  (nf_tables_core.c `nft_rule_dp_for_each_expr`; `nft_meta_set_eval` then
+  `nft_cmp_eval` on the updated mark).
+- *Model*: the per-rule semantics is deliberately TWO folds
+  (`Semantics.dsl_rule_step`'s header): the verdict pass
+  (`rule_applies`/`outcome`/`run_rule`) evaluates every load against the packet
+  the rule **entered** with (`SMetaSet`/`IMetaSet` walked as no-ops), while the
+  write pass (`body_writes`/`run_rule_writes`) does perform the write. So the
+  rule fails to match and the chain falls to policy — on both sides. Only
+  `notrack`/synproxy are threaded intra-rule (`rule_applies_walk`) — audit
+  findings with a real-ruleset idiom behind them. The **cross-rule** form
+  (two rules) IS faithful (§B above; `compile_chain_mut_correct`).
+- *Repro*: the one-rule chain above with policy drop: model drops the packet
+  the kernel accepts, while the write pass demonstrably writes the mark.
+- *Pin*: `Known_Infidelities.setread_dropped` / `setread_write_happens` /
+  `vm_setread_dropped` (and `setread_mut_wf`: the rule is *inside* `mut_wf`,
+  i.e. this is a fidelity gap of the shared abstraction, not a domain
+  exclusion).
+- *Why open*: threading writes into the verdict pass collapses the two folds
+  into one — a rework of the whole verdict stratum and its compile proofs
+  (semantics change; audit track). Why the audit's vacuity criterion missed
+  it: §B's original bug (and its fix + semtest witness) was the **cross-rule**
+  instance; the intra-rule instance shares the abstraction on both sides, so
+  no gate diverged. It was found by asking the two-fold design question
+  directly.
+
+Cross-references: `THEOREMS.md` §1 scope notes and §3 (evaluator matrix);
+`../adversarial.md` "Outcome" (scoping note). The in-source ⚠ KNOWN INFIDELITY
+markers sit on `limit_sweep_prog`, `vm_rule_step`'s two-fold header, and
+`eval_rules_trace` in `Semantics.v`, and on `OVmapNat` in `IR/Syntax.v`.
 
 ## What exists
 
@@ -432,7 +535,12 @@ zero mismatches. Beyond the table: ranges, prefixes, sets, ct/exthdr (incl. the
 statements (counter/notrack/log), reject/queue verdicts, stateful
 `limit`/`quota`/`connlimit` (rendered here; their *semantics* are now live consuming
 token buckets, not oracles — 2026-06 audit), all meta keys, rt/socket/osf oracle loads
-and `numgen` (whose `inc` form is now a persistent counter in `env`), **verified
+and `numgen` (whose `inc` form is now a persistent counter in `env` — advanced by the
+**VM-side** mutation evaluators only: the DSL step has no numgen sweep, and `mut_wf`'s
+`rule_numgen_free` conjunct excludes numgen-inc rules from every mutation-strand
+compiler theorem, so the round-robin behaviour `Regression/Numgen_RoundRobin.v` pins is
+**not compiler-preserved**; rationale on `Semantics.dsl_step`, cross-referenced in
+`THEOREMS.md` §3), **verified
 multi-register concatenation** (a real register-allocation proof: distinct
 registers via `NoDup`, non-clobbering loads, concat lookup), **sets/ranges over
 transformed values** (`MSetT`/`MRangeT`), and **verified verdict maps** (`vmap`:
@@ -518,9 +626,11 @@ because the inner packet is a distinct packet, not a function of the outer
 headers. The `fib` selector/result tokenization (free-form, so the round-trip
 can't self-check it) is confirmed against live `nft` by `make validate`.
 Ordered comparisons (`cmp lt/gt/lte/gte`) use `data_le`, a total order on the
-equal-width operands nft emits. Map-valued sets (`meta/ct set … map`) verify
-verdict-neutrality; the looked-up value, like every set/mangle value, is checked
-by the differential corpus, not Rocq.
+equal-width operands nft emits. Meta/ct `set` operand VALUES (immediate, field,
+value-map, jhash, OR-fold) are now Rocq-proved equal on both sides (the
+`eval_vsrc` value-correctness underlying `compile_chain_mut_correct`); the
+*mangle* (`SMangle` payload-write) value remains checked by the differential
+corpus only — its write is not yet threaded (TODO 3).
 
 ## Assessment (the instructions' checklist, with numbers)
 

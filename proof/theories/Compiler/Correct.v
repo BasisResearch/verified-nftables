@@ -2947,11 +2947,25 @@ Qed.
     jhash/map/or, which no real ruleset emits), the rule's post-outcome
     statements contain no meta/ct set (`r_after` is verdict-neutral —
     counter/log/objref — in every real ruleset; a meta-set after a verdict map is
-    the one residual mutation case), and no field position is an incremental
+    the one mutation SHAPE this conjunct excludes from the theorems' domain), and
+    no field position is an incremental
     `numgen` ([rule_numgen_free] — so the VM's [numgen_sweep_prog] is the
     identity, by [numgen_free_compile_rule]; every real ruleset satisfies this,
     numgen having no parser/DSL surface).  ALL ordinary statements
     (mangle/NAT/dup/counter/dynset/exthdr/…) are in scope.
+
+    Two scope facts a reader should not conflate with these conjuncts:
+    - the [rule_numgen_free] conjunct is what lets the DSL step function carry
+      NO numgen sweep at all — the deliberate asymmetry with [vm_rule_step]'s
+      [numgen_sweep_prog], with the full rationale (and its cost: the
+      round-robin advance of Regression/Numgen_RoundRobin.v is VM-side only
+      and never compiler-preserved) on [Semantics.dsl_step];
+    - divergences from the KERNEL that hold *inside* this domain — the
+      intra-rule set-then-read and the unconditional limiter sweep, where DSL
+      and VM agree with each other but not with nftables — are not excluded
+      here (no hypothesis could: both sides share them); they are ledgered in
+      DEVELOPMENT.md § "Known model infidelities" and pinned in
+      Regression/Known_Infidelities.v.
 
     [numgen_free_compile_rule] makes this definition pointwise EQUAL to its
     bytecode-side variant with [numgen_free_prog (compile_rule r)] as the third
@@ -3072,6 +3086,46 @@ Proof.
   intros c e packets Hall. apply seq_eval_env_ext. intros e' p.
   apply compile_chain_mut_env_correct. exact Hall.
 Qed.
+
+(** ** Why the mutation strata (2-4) carry [mut_wf] but NO jump-freedom
+    hypothesis — the faithful domain stated as prose, not in-theorem.
+
+    Both mutation evaluators treat a realised [Jump]/[Goto] verdict as a
+    non-terminal fall-through ([terminal (Jump _) = false]), so
+    [compile_chain_mut_correct]/[compile_seq_mut_correct] DO instantiate on a
+    jump-bearing chain — where that shared fall-through semantics is
+    kernel-wrong (the kernel runs the target chain).  The pure strand delimits
+    its faithful domain in-theorem ([eval_chain_eq_table_jumpfree], the
+    fidelity bridge below); the mutation strand deliberately does not, for
+    three reasons:
+
+    (1) The mut theorems are UNCONDITIONAL (beyond [mut_wf]) DSL=VM agreement
+        facts: the equation is true on jump-bearing chains too, and the
+        agreement is exactly what the optimizer/extraction consumers need
+        everywhere.  A [chain_jumpfree] hypothesis would shrink the theorems'
+        domain without making a single additional chain kernel-faithful —
+        fidelity is delimited by a BRIDGE to a faithful evaluator, not by
+        hypotheses on an agreement fact.
+
+    (2) The pure strand's [chain_jumpfree] is a hypothesis on that separate
+        bridge (to the jump-aware [eval_table]); the mutation analogue cannot
+        even be STATED, because no jump-aware MUTATING evaluator exists to
+        bridge to ("mutation × jump/goto is not jointly verified" — the
+        evaluator matrix, THEOREMS.md §3).  The missing object is the
+        evaluator, not a side condition.
+
+    (3) [chain_jumpfree] is evaluated at the FIXED entry env/packet
+        ([rules_jumpfree rs e p] tests [outcome r e p]); under the mutation
+        semantics later rules see a dsl_rule_step-mutated env/packet, so a
+        faithful-domain predicate for the mut strand would first need a
+        threaded redefinition — new machinery for a hypothesis that, per (1),
+        buys nothing.
+
+    The faithful domain of the mutation strand is therefore: jump-free chains
+    (as realised on the run), same as [eval_chain]'s.  [mut_strand_jump_pin]
+    below is the executable witness that a jump-bearing, [mut_wf]-satisfying
+    chain is INSIDE the theorems but OUTSIDE the faithful domain — parallel to
+    [rg_base_not_jumpfree] on the pure strand. *)
 
 (** ** Stratum 5: multi-chain semantic preservation (jump / goto / return +
     user chains).
@@ -3212,6 +3266,18 @@ Proof. intros e p. rewrite compile_table_correct. apply faithful_table_jump_drop
     cannot) certify the unfaithful [eval_chain] result on it. *)
 Example rg_base_not_jumpfree : forall e p, chain_jumpfree rg_base e p = false.
 Proof. reflexivity. Qed.
+
+(** (D) the MUTATION-strand analogue of (C) — the pin referenced by the
+    "why no jump-freedom hypothesis" note on the mutation strata above.  The
+    same jump-bearing chain SATISFIES [mut_wf] (so every mutation theorem
+    instantiates on it), yet [eval_chain_mut] treats the realised [Jump] as a
+    fall-through and returns the base policy [Accept] — while the kernel (and
+    the faithful [eval_table], (A) above) DROPS.  Locked in so the mut strand's
+    jump-as-fall-through can never silently be read as certified-faithful:
+    fidelity for jump-bearing chains lives ONLY in the jump strand. *)
+Example mut_strand_jump_pin : forall e p,
+  forallb mut_wf (c_rules rg_base) = true /\ eval_chain_mut rg_base e p = Accept.
+Proof. intros e p. split; reflexivity. Qed.
 Local Close Scope string_scope.
 
 (** ** Stratum 6 (HEADLINE, compiler axis): multi-table / multi-hook dispatch.

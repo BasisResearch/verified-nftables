@@ -213,7 +213,10 @@ Qed.
     does NOT merge `meta mark set` rules at all, so [datamap] is a LABELLED SOUND
     SUPERSET with no `nft -o` counterpart — NOT part of the byte-fidelity claim, and
     NOT an nft bug (nft is merely conservative; the merge is verdict/state-preserving
-    per [Optimize_DataMap.eval_rules_mut_map_merge]).  [datamap] emits the HEAD-GUARDED
+    PER-MERGE-SHAPE per [Optimize_DataMap.eval_rules_mut_map_merge] — a lemma about
+    the two-rule shape, NOT composed through [optimize_table]: the pipeline-level
+    theorem is verdict-only over [eval_chain]; see the scope note on
+    [Optimize_Uncond.optimize_table_uncond_compile_correct]).  [datamap] emits the HEAD-GUARDED
     form (a synthesised key set in front of the map) because our model loads a
     default on a statement value-map miss rather than NFT_BREAKing; the guard makes
     the lookup always hit, recovering exact equivalence.  Why the guard cannot just

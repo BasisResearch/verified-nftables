@@ -366,14 +366,20 @@ Definition env_numgen_upd (e : env) (spec : numgen_spec) : env :=
     (fun s => if numgen_eqb spec s then S (e_numgen e s) else e_numgen e s).
 
 (** Update the SHARED rate-limiter token bucket [e_limit] for instance [spec] on
-    packet [p], EXACTLY as the kernel nft_limit_eval does (elapsed refill +0):
+    packet [p].  The UPDATE FORMULA is exactly the kernel nft_limit_eval's
+    (elapsed refill +0):
       cap   = min(stored, lim_max spec)         (the burst-derived bucket cap)
       delta = cap - lim_cost p spec
       delta >= 0 -> store delta (PASS, consume the cost)
       delta <  0 -> store cap   (EXHAUSTED, the level after capping is kept)
     Every other instance's bucket — and every other env component — is preserved.
     The new level is therefore a genuine function of [ls_rate]/[ls_unit]/[ls_burst]
-    (and the packet length in byte mode), not a fixed decrement-by-one. *)
+    (and the packet length in byte mode), not a fixed decrement-by-one.
+    WHEN this update is invoked, however, is NOT kernel-exact: the mutation
+    evaluators apply it via a whole-body sweep ([limit_sweep_body]/
+    [limit_sweep_prog]) that also fires for limiters the kernel never evaluates
+    (a KNOWN INFIDELITY — see the sweep's header below and
+    DEVELOPMENT.md § "Known model infidelities"). *)
 Definition lim_newtokens (e : env) (p : packet) (spec : limit_spec) : nat :=
   let cap := lim_avail e p spec in
   if Nat.leb (lim_cost p spec) cap then cap - lim_cost p spec else cap.
@@ -420,10 +426,13 @@ Definition env_connlimit_upd (e : env) (p : packet) (spec : connlimit_spec) : en
 Definition set_numgen (e : env) (spec : numgen_spec) : env :=
   if ng_random spec then e else env_numgen_upd e spec.
 
-(** UPDATE a `limit` token bucket on EVERY evaluation of the limiter on packet [p],
-    exactly as the kernel nft_limit_eval (it writes `tokens` on both the pass and the
-    exhausted branch — see [env_limit_upd]/[lim_newtokens]).  Only [e_limit]
-    changes; every other env component is preserved and the packet is untouched. *)
+(** UPDATE a `limit` token bucket for one evaluation of the limiter on packet [p]
+    — the kernel nft_limit_eval writes `tokens` on both the pass and the exhausted
+    branch (see [env_limit_upd]/[lim_newtokens]).  Only [e_limit] changes; every
+    other env component is preserved and the packet is untouched.  NOTE the
+    kernel invokes this once per EVALUATION; the model's sweep (below) invokes it
+    once per OCCURRENCE in the rule, evaluated or not — the sweep's documented
+    infidelity, not this update's. *)
 Definition set_limit (e : env) (p : packet) (spec : limit_spec) : env :=
   env_limit_upd e p spec.
 
@@ -569,8 +578,8 @@ Proof.
 Qed.
 
 (** The cross-rule/cross-packet CONSUMPTION of a rule's `limit`/`quota`/`connlimit`
-    matches.  Mirroring [numgen_sweep_prog], this advances (depletes) each limiter
-    the rule's bytecode evaluates, applied by the MUTATION evaluators
+    matches.  Mirroring [numgen_sweep_prog], this depletes each limiter the rule
+    CONTAINS, applied by the MUTATION evaluators
     ([run_program_mut]/[run_program_mut_env]) to the packet a rule leaves, so the
     NEXT packet of the traversal reads the depleted bucket and can get a DIFFERENT
     verdict — which is the entire purpose of a rate limit.  Keeping the consumption
@@ -579,7 +588,20 @@ Qed.
     is a cross-rule/cross-packet effect, the same documented intra-rule scoping as
     `numgen inc`).  The fold is over the running packet, so a second limiter in the
     same rule sees the first one's consumption (the kernel runs limiters
-    left-to-right against the running token state). *)
+    left-to-right against the running token state).
+
+    ⚠ KNOWN INFIDELITY (open; DEVELOPMENT.md § "Known model infidelities",
+    pinned in Regression/Known_Infidelities.v [gate_limit_drained]): the sweep
+    is UNCONDITIONAL over the whole body, so it also depletes a limiter that
+    sits AFTER a failing match (or after a breaking load).  The kernel does
+    not: a failing match NFT_BREAKs the rule before nft_limit_eval ever runs
+    (nf_tables_core.c nft_do_chain's per-expression verdict check), so
+    `meta mark 0x1 limit rate 1/second accept` consumes NO token on a
+    non-matching packet — while this model drains the bucket on every packet.
+    Both evaluator sides share the sweep, so the compiler theorems are honest;
+    the divergence is model-vs-kernel.  The faithful shape (folding the
+    consumption into the break-aware [body_writes]/[run_rule_writes] walk) is a
+    semantics change owned by the adversarial-audit track. *)
 Definition limit_sweep_prog (is : list instr) (e : env) (p : packet) : env :=
   fold_left (fun e' i => match i with
                          | ILimit spec => set_limit e' p spec
@@ -1456,11 +1478,17 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (e : env) (p : packet) : optio
       end
   | IImmediateData dst v :: rest =>
       run_rule (set_reg rf dst v) rest e p
-  (* Set/mangle: verdict-neutral.  The written value (the operand register) is a
-     packet/meta/ct side effect outside the single-packet verdict model, so it is
-     dropped here.  The proof therefore certifies these statements preserve the
-     verdict; that the emitted bytecode writes the *right* value is covered by the
-     differential corpus, not by Rocq. *)
+  (* Set/mangle: no-ops IN THIS VERDICT PASS.  The write itself lives in the
+     separate write pass ([run_rule_writes], mirrored by [body_writes]), where
+     the written VALUE is proved correct ([Correct.run_rule_writes_compile_rule]
+     via [eval_vsrc] value-correctness) and threaded to LATER rules by the
+     mutation evaluators.  Treating them as register no-ops here matches the
+     DSL verdict pass ([rule_applies]/[outcome]) — but is NOT kernel-exact for
+     a read of the same rule's own earlier write: `meta mark set 0x1
+     meta mark 0x1 accept` as ONE rule matches in the kernel (left-to-right
+     against the running packet) and not here, on either side — the KNOWN
+     INFIDELITY documented on [vm_rule_step]'s two-fold header and pinned in
+     Regression/Known_Infidelities.v [setread_dropped]. *)
   | IPayloadWrite _ _ _ _ _ _ _ :: rest => run_rule rf rest e p
   | IMetaSet _ _ :: rest => run_rule rf rest e p
   | ICtSet _ _ :: rest => run_rule rf rest e p
@@ -2206,10 +2234,17 @@ Definition is_mut_stmt (s : stmt) : bool :=
       malformed zero-field jhash/map/or);
     - no mutating statement in [r_after] (post-outcome statements are
       verdict-neutral — counter/log/objref — in every real ruleset; a meta-set
-      after a verdict map is the one residual mutation case);
+      after a verdict map is the one mutation SHAPE excluded from the theorems'
+      domain by this conjunct);
     - [rule_numgen_free]: no field position is an incremental `numgen` (numgen
       has no parser/DSL surface), so the VM's [numgen_sweep_prog] is the
       identity on the compiled rule.
+
+    Note the distinction: these conjuncts bound the DSL=VM theorems' DOMAIN.
+    They are unrelated to the model-vs-KERNEL divergences that hold INSIDE the
+    domain (intra-rule set-then-read, the unconditional limiter sweep — see
+    DEVELOPMENT.md § "Known model infidelities"), which no [mut_wf] hypothesis
+    excludes because both sides agree on them.
 
     [Correct.numgen_free_compile_rule] makes this definition pointwise EQUAL to
     the historical bytecode-side variant (third conjunct
@@ -2274,11 +2309,35 @@ Definition dsl_writes (r : rule) (e : env) (p : packet) : env * packet :=
 
 (** The full cross-rule effect of running a rule [r] on packet [p] in mutation mode:
     its meta/ct/env writes ([dsl_writes]) AND the depletion of every `limit`/`quota`/
-    `connlimit` token bucket it evaluates ([limit_sweep_body]).  The next rule — and,
+    `connlimit` token bucket it CONTAINS ([limit_sweep_body] — unconditional over the
+    whole body, hence over-consuming past a failing match; the KNOWN INFIDELITY on
+    the sweep's header).  The next rule — and,
     through the threaded env, the next packet of the traversal — observes both, so a rate
     limit actually limits later packets.  (The limit sweep reads/writes only
     [e_limit]/[e_quota]/[e_connlimit], which [dsl_writes] never touches, so the two
-    compose order-independently for those fields.) *)
+    compose order-independently for those fields.)
+
+    Why is there NO numgen sweep here, when [vm_rule_step] composes
+    [numgen_sweep_prog]?  Deliberate asymmetry, for three reasons:
+    (1) `numgen` has no parser/DSL surface — no shipped or parseable ruleset
+        contains an incremental [FNumgen], so a DSL-side sweep would execute on
+        no real input, and a compiler-preservation theorem over
+        parser-unreachable rules would pin nothing;
+    (2) unlike a limiter (always a [BMatch] in the body), an incremental
+        [FNumgen] can occur in ANY field position — vmap key, terminal operand,
+        [r_after] statements — so a faithful DSL twin is a full-rule field
+        traversal, not a body fold like [limit_sweep_body];
+    (3) the mutation theorems instead EXCLUDE numgen-inc rules by hypothesis
+        ([mut_wf]'s [rule_numgen_free] conjunct, discharged at the tool
+        boundary), which makes [numgen_sweep_prog] the identity on their whole
+        domain ([numgen_sweep_prog_id]) — the two step functions agree exactly
+        where the theorems speak.
+    The COST, stated honestly: the round-robin counter advance exists only on
+    the VM side ([Regression/Numgen_RoundRobin.v] pins it against
+    [run_program_mut_env]), and no compiler theorem preserves it — a numgen-inc
+    rule is outside every mutation-strand theorem.  Adding the DSL twin +
+    dropping [rule_numgen_free] is the (unforced) generalisation, worthwhile
+    only if numgen ever gains a frontend surface. *)
 Definition dsl_step (r : rule) (e : env) (p : packet) : env * packet :=
   let '(e', p') := dsl_writes r e p in
   (limit_sweep_body (r_body r) e' p', p').
@@ -2298,8 +2357,12 @@ Qed.
 
     In mutation mode a rule's whole contribution to a traversal is a single STEP:
     the (loadability-guarded) verdict it produces, paired with the packet it
-    leaves — its meta/ct/env writes, its `numgen inc` counter advance, and the
-    depletion of every limiter it evaluates.  [dsl_rule_step] (DSL side) and
+    leaves — its meta/ct/env writes and the depletion of every limiter it
+    contains; on the VM side ONLY, additionally the `numgen inc` counter
+    advance ([numgen_sweep_prog] — the DSL step deliberately has no numgen
+    twin; rationale on [dsl_step] above, and [mut_wf]'s [rule_numgen_free]
+    makes the VM sweep the identity on the theorems' domain).
+    [dsl_rule_step] (DSL side) and
     [vm_rule_step] (bytecode side) package that step once; every mutation/trace
     evaluator below consumes ONLY the step functions, so the verdict/effect
     composition is written here and nowhere else.  The compiler-correctness
@@ -2316,7 +2379,21 @@ Definition dsl_rule_step (r : rule) (e : env) (p : packet)
     see intra-rule writes), while the write pass ([run_rule_writes]) threads each
     write into the loads after it (matching [body_writes]).  Pairing them here
     means their composition appears once, and the DSL/VM agreement is discharged
-    by the single equation [vm_rule_step (compile_rule r) = dsl_rule_step r]. *)
+    by the single equation [vm_rule_step (compile_rule r) = dsl_rule_step r].
+
+    ⚠ KNOWN INFIDELITY of the two-fold split (open; DEVELOPMENT.md § "Known
+    model infidelities", pinned in Regression/Known_Infidelities.v
+    [setread_dropped]): because the verdict fold is entry-packet-based, an
+    intra-rule set-then-read — the ONE kernel rule
+    `meta mark set 0x1 meta mark 0x1 accept` — does not match in the model
+    (both sides), though the kernel runs expressions left-to-right against the
+    running packet and ACCEPTS.  Only `notrack`/synproxy are threaded into the
+    verdict pass intra-rule ([rule_applies_walk]) — they were audit findings
+    with a real-ruleset idiom behind them; a meta/ct set feeding a match of the
+    SAME rule has no known real-world instance, and threading it means
+    collapsing the two folds into one (a rework of the whole verdict stratum),
+    so it stays an honest, documented divergence owned by the
+    adversarial-audit track. *)
 Definition vm_rule_step (is : rule_prog) (e : env) (p : packet)
   : option verdict * (env * packet) :=
   (run_rule empty_rf is e p,
@@ -2846,7 +2923,25 @@ Definition nat_drops (h : hook_id) (r : rule) (e : env) (p : packet) : bool :=
     chain is attached to, because the data-plane NAT effect at a terminal verdict
     ([apply_nat]) is hook-dependent (an OUTPUT-hooked `redirect` rewrites the
     destination to loopback, not the inbound-interface address), and because the NAT
-    core can DROP a packet whose interface has no usable address ([nat_drops]). *)
+    core can DROP a packet whose interface has no usable address ([nat_drops]).
+
+    ⚠ KNOWN INFIDELITY (open; DEVELOPMENT.md § "Known model infidelities",
+    pinned in Regression/Known_Infidelities.v [vmaphit_daddr_rewritten] /
+    [vmaphit_stores_nat_mapping]): the NAT dispatch below keys on [r_nat r],
+    which projects the NAT out of an [OVmapNat] rule (`… vmap {…} dnat/redirect
+    …`) REGARDLESS of whether the terminal verdict came from the vmap HIT or
+    from the NAT terminal the miss falls through to.  In the kernel a vmap hit
+    writes a non-CONTINUE verdict register and the rule's remaining expressions
+    never evaluate (nf_tables_core.c per-expression verdict check) — the repo's
+    own verdict/loadability semantics agree ([end_loadable]: "vmap HIT:
+    terminal/r_after unreachable").  So on a vmap HIT this evaluator both
+    rewrites the packet AND spuriously stores a flow-keyed [e_nat] mapping
+    ([store_nat_mapping]) that later same-flow packets then reuse.  There is no
+    guard because [dsl_rule_step] returns only the verdict, not WHICH outcome
+    arm produced it; the faithful fix (thread outcome provenance, or dispatch
+    the trace NAT on [r_outcome] + the hit/miss test) is a semantics change
+    owned by the adversarial-audit track.  Rules with [ONat] (the corpus/
+    ruleset-common shape) are unaffected — their only terminal IS the NAT. *)
 Fixpoint eval_rules_trace (h : hook_id) (rs : list rule) (e : env) (p : packet)
   : option verdict * (env * packet) :=
   match rs with
@@ -2859,7 +2954,10 @@ Fixpoint eval_rules_trace (h : hook_id) (rs : list rule) (e : env) (p : packet)
                verdict) when the interface it must take an address from has no
                usable address ([nat_drops]); the drop happens BEFORE the address is
                spliced, so the packet is left unrewritten.  Otherwise the rule's
-               verdict stands and the NAT rewrite is applied. *)
+               verdict stands and the NAT rewrite is applied.  (For an [OVmapNat]
+               rule this arm ALSO fires on a vmap HIT, where the kernel's NAT never
+               evaluates — the KNOWN INFIDELITY documented on this evaluator's
+               header.) *)
             if nat_drops h r e' p' then (Some Drop, (e', p'))
             else (Some v, apply_nat h r e' p')
           else eval_rules_trace h rest e' p'

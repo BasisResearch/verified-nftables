@@ -22,7 +22,14 @@
     [limit_actually_limits] (with their VM twins [vm_*]) lock in the
     consume-and-differ behaviour; a model regression to a stateless per-packet
     token read (both packets seeing the same count, hence the same verdict)
-    makes them unprovable. *)
+    makes them unprovable.
+
+    CAVEAT (known, open infidelity — NOT covered by this file's rules, whose
+    limiter is the FIRST body item): the sweep that threads this consumption
+    is unconditional over the whole rule body, so a limiter sitting AFTER a
+    failing match is also drained, which the kernel never does (NFT_BREAK
+    fires first).  See DEVELOPMENT.md § "Known model infidelities" and the
+    lock-in pin Known_Infidelities.v [gate_limit_drained]. *)
 
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile.
