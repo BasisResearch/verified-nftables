@@ -163,8 +163,7 @@ let check_ruleset_nft () =
   let dropneq_chain : Syntax.chain =
     { Syntax.c_policy = Verdict.Accept;
       c_rules = [ { Syntax.r_body = [ Syntax.BMatch (Syntax.MNeq (Syntax.FThDport, [0;22])) ];
-                    r_verdict = Verdict.Drop; r_vmap = None; r_nat = None;
-                    r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } ] } in
+                    r_outcome = Syntax.OVerdict Verdict.Drop; r_after = [] } ] } in
   let bad_pkt = wire (fun p -> { p with Packet.pkt_have_l4 = false; pkt_th = [] }) (mk_pkt ~env ()) in
   want "nft_break: no-L4 tcp dport!=22 -> accept" dropneq_chain bad_pkt Verdict.Accept;
   let frag_pkt = wire (fun p -> { p with Packet.pkt_fragoff = 8; pkt_th = [9;9;9;9] }) (mk_pkt ~env ()) in
@@ -190,8 +189,7 @@ let expected_input_chain : Syntax.chain =
   let meq f v = Syntax.MEq (f, v) in
   let dep = meq Syntax.FMetaL4proto [6] in
   let rule body v : Syntax.rule =
-    { Syntax.r_body = body; r_verdict = v; r_vmap = None; r_nat = None;
-      r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } in
+    { Syntax.r_body = body; r_outcome = Syntax.OVerdict v; r_after = [] } in
   { Syntax.c_policy = Verdict.Drop;
     c_rules = [
       rule [ bm dep; bm (meq Syntax.FThDport [0;22]) ] Verdict.Accept;
@@ -440,7 +438,7 @@ let check_dnat_rewrite () =
   let env = parsed.Nft_lower.p_env in
   let prerouting = Nft_lower.find_chain parsed ~table:"nat" ~chain:"prerouting" in
   let r0 = Stdlib.List.nth prerouting.Syntax.c_rules 0 in
-  check "dnat lowers to a nat_spec (not a bare Accept)" (r0.Syntax.r_nat <> None);
+  check "dnat lowers to a nat_spec (not a bare Accept)" (Syntax.r_nat r0 <> None);
   (* a packet whose destination starts 192.168.0.9 (nh bytes 16..19) *)
   let nh = [0x45;0;0;0; 0;0;0;0; 64;6;0;0; 1;2;3;4; 192;168;0;9] in
   let p_in = wire (fun p -> { p with Packet.pkt_nh = nh }) (mk_pkt ~env ()) in
@@ -481,7 +479,7 @@ let check_dnat_rewrite () =
   let env_p = parsed_p.Nft_lower.p_env in
   let pre_p = Nft_lower.find_chain parsed_p ~table:"nat" ~chain:"prerouting" in
   let rp = Stdlib.List.nth pre_p.Syntax.c_rules 0 in
-  let ns = match rp.Syntax.r_nat with Some n -> n | None -> failwith "no nat_spec" in
+  let ns = match Syntax.r_nat rp with Some n -> n | None -> failwith "no nat_spec" in
   check "dnat to A:PORT carries the port (8080=0x1f90) into nat_extra"
     (ns.Syntax.nat_extra = Syntax.NXimm (None, Some ([0x1f; 0x90]), None));
   (* a packet with dport=80 in the transport header (bytes 2..3 = [0;80]) *)
@@ -514,10 +512,10 @@ let check_dnat_rewrite () =
   let env_po = parsed_po.Nft_lower.p_env in
   let pre_po = Nft_lower.find_chain parsed_po ~table:"nat" ~chain:"prerouting" in
   let rpo = Stdlib.List.nth pre_po.Syntax.c_rules 0 in
-  let nso = match rpo.Syntax.r_nat with
+  let nso = match Syntax.r_nat rpo with
     | Some n -> n | None -> failwith "port-only dnat dropped to bare Accept" in
   check "dnat to :PORT lowers to a real nat_spec (not a bare Accept)"
-    (rpo.Syntax.r_nat <> None);
+    (Syntax.r_nat rpo <> None);
   check "dnat to :PORT carries the port (80=0x0050) into nat_extra"
     (nso.Syntax.nat_extra = Syntax.NXimm (None, Some ([0; 80]), None));
   check "dnat to :PORT has NO address operand (nat_has_addr = false)"
@@ -552,9 +550,7 @@ let check_dnat_rewrite () =
       nat_src = None; nat_kind = Syntax.nat_dnat_kind; nat_family = Syntax.nat_fam_ip4;
       nat_extra = Syntax.NXnone; nat_flags = 0 } in
   let dnat_saddr_rule : Syntax.rule =
-    { Syntax.r_body = []; r_verdict = Verdict.Accept; r_vmap = None;
-      r_nat = Some dnat_saddr_spec; r_tproxy = None; r_fwd = None;
-      r_queue = None; r_after = [] } in
+    { Syntax.r_body = []; r_outcome = Syntax.ONat dnat_saddr_spec; r_after = [] } in
   let dnat_saddr_chain : Syntax.chain =
     { Syntax.c_policy = Verdict.Drop; c_rules = [dnat_saddr_rule] } in
   let flow0 = [7;7] in
@@ -604,9 +600,7 @@ let check_dnat_rewrite () =
       nat_src = None; nat_kind = Syntax.nat_dnat_kind; nat_family = Syntax.nat_fam_ip4;
       nat_extra = Syntax.NXnone; nat_flags = 0 } in
   let dnat88_rule : Syntax.rule =
-    { Syntax.r_body = []; r_verdict = Verdict.Accept; r_vmap = None;
-      r_nat = Some dnat88_spec; r_tproxy = None; r_fwd = None;
-      r_queue = None; r_after = [] } in
+    { Syntax.r_body = []; r_outcome = Syntax.ONat dnat88_spec; r_after = [] } in
   let dnat88_chain : Syntax.chain =
     { Syntax.c_policy = Verdict.Drop; c_rules = [dnat88_rule] } in
   let rflow = [3;3] in
@@ -641,9 +635,7 @@ let check_dnat_rewrite () =
       nat_extra = Syntax.NXimm (None, Some ([31; 144]), None);
       nat_flags = 0 } in
   let dnat_port_rule : Syntax.rule =
-    { Syntax.r_body = []; r_verdict = Verdict.Accept; r_vmap = None;
-      r_nat = Some dnat_port_spec; r_tproxy = None; r_fwd = None;
-      r_queue = None; r_after = [] } in
+    { Syntax.r_body = []; r_outcome = Syntax.ONat dnat_port_spec; r_after = [] } in
   let dnat_port_chain : Syntax.chain =
     { Syntax.c_policy = Verdict.Drop; c_rules = [dnat_port_rule] } in
   let pflow = [5;5] in
@@ -698,9 +690,7 @@ let check_ip6_nat () =
       nat_extra = Syntax.NXnone;
       nat_flags = 0 } in
   let mk_rule sp =
-    { Syntax.r_body = []; r_verdict = Verdict.Continue; r_vmap = None;
-      r_nat = Some sp; r_tproxy = None; r_fwd = None; r_queue = None;
-      r_after = [] } in
+    { Syntax.r_body = []; r_outcome = Syntax.ONat sp; r_after = [] } in
   (* a 40-byte IPv6 header: src bytes 8..23, dst bytes 24..39 distinct *)
   let nh = Stdlib.List.init 40 (fun i -> i) in
   let env =
@@ -750,7 +740,7 @@ let check_ip6_nat () =
        }\n" in
   let post6 = Nft_lower.find_chain parsed6 ~table:"nat" ~chain:"post" in
   let mr = Stdlib.List.nth post6.Syntax.c_rules 0 in
-  (match mr.Syntax.r_nat with
+  (match Syntax.r_nat mr with
    | Some ns ->
        check "ip6 masquerade lowers to nat_family = \"ip6\" (was \"\", family-blind)"
          (ns.Syntax.nat_family = Syntax.nat_fam_ip6)
@@ -794,7 +784,7 @@ let check_ip6_nat () =
        }\n" in
   let post_inet = Nft_lower.find_chain parsed_inet ~table:"nat" ~chain:"post" in
   let mr_inet = Stdlib.List.nth post_inet.Syntax.c_rules 0 in
-  (match mr_inet.Syntax.r_nat with
+  (match Syntax.r_nat mr_inet with
    | Some ns ->
        check "inet masquerade lowers to nat_family = \"inet\" (runtime-dispatched, NOT pinned \"ip\")"
          (ns.Syntax.nat_family = Syntax.nat_fam_inet)
@@ -851,9 +841,7 @@ let check_redir_hook () =
       nat_extra = Syntax.NXnone;
       nat_flags = 0 } in
   let mk_rule sp =
-    { Syntax.r_body = []; r_verdict = Verdict.Continue; r_vmap = None;
-      r_nat = Some sp; r_tproxy = None; r_fwd = None; r_queue = None;
-      r_after = [] } in
+    { Syntax.r_body = []; r_outcome = Syntax.ONat sp; r_after = [] } in
   (* inbound interface eth0 has a non-loopback primary address 203.0.113.5 *)
   let eth0 = ifname16 "eth0" and eth0_ip = [203;0;113;5] in   (* 16-byte iface register *)
   let env =
@@ -897,7 +885,7 @@ let check_redir_hook () =
                    pkt_nh = nh }) (mk_pkt ~env:env_noaddr ()) in
   let redir_chain : Syntax.chain =
     { Syntax.c_policy = Verdict.Drop;
-      c_rules = [ { (mk_rule (mk_spec Syntax.nat_fam_ip4)) with Syntax.r_verdict = Verdict.Accept } ] } in
+      c_rules = [ mk_rule (mk_spec Syntax.nat_fam_ip4) ] } in
   let (vr_pre, pr_pre) = ev_chain_trace Semantics.Hprerouting redir_chain p_noaddr in
   check "prerouting redirect with NO inbound address DROPS (kernel NF_DROP)"
     (vr_pre = Verdict.Drop);
@@ -918,7 +906,7 @@ let check_redir_hook () =
       nat_extra = Syntax.NXnone; nat_flags = 0 } in
   let masq_chain : Syntax.chain =
     { Syntax.c_policy = Verdict.Drop;
-      c_rules = [ { (mk_rule masq_spec) with Syntax.r_verdict = Verdict.Accept } ] } in
+      c_rules = [ mk_rule masq_spec ] } in
   check "postrouting masquerade with NO exit address DROPS (kernel NF_DROP)"
     (fst (ev_chain_trace Semantics.Hpostrouting masq_chain p_noaddr) = Verdict.Drop);
   (* with the address restored, both accept again *)
@@ -1033,7 +1021,7 @@ let check_iif_index () =
    tests/py/any/ct.t.payload:35-40) as
      [ bitwise reg1 = (reg1 & 0x00000002) ^ 0x0 ]  [ cmp neq reg1 0x0 ]
    i.e. it matches iff (state & 2) != 0, NOT state == 2.  The parser must lower
-   it to MMasked (FCtState, neg=true, mask=X, xor=0, val=0), which the model
+   it to MMasked (FCtState, CNe, mask=X, xor=0, val=0), which the model
    evaluates as eval_cmp CNe ((state & X) ^ 0) 0 = (state & X) != 0.  The set
    form `{...}` stays an exact set lookup (MConcatSet) and the negated single
    form `ct state != X` stays a plain cmp neq (MNeq) — both already correct. *)
@@ -1057,11 +1045,11 @@ let check_ct_state () =
   (* `ct state established` => bitmask test (state & 2) != 0, NOT MEq *)
   check "ct state established lowers to MMasked bitmask test (not MEq)"
     (body 0 = [Syntax.BMatch
-       (Syntax.MMasked (Syntax.FCtState, true, [0;0;0;2], [0;0;0;0], [0;0;0;0]))]);
+       (Syntax.MMasked (Syntax.FCtState, Bytecode.CNe, [0;0;0;2], [0;0;0;0], [0;0;0;0]))]);
   (* `ct state new` => bitmask test (state & 8) != 0 *)
   check "ct state new lowers to MMasked bitmask test"
     (body 1 = [Syntax.BMatch
-       (Syntax.MMasked (Syntax.FCtState, true, [0;0;0;8], [0;0;0;0], [0;0;0;0]))]);
+       (Syntax.MMasked (Syntax.FCtState, Bytecode.CNe, [0;0;0;8], [0;0;0;0], [0;0;0;0]))]);
   (* `ct state != established` stays a plain cmp neq (MNeq) — already correct *)
   check "ct state != established stays MNeq (plain cmp neq)"
     (body 2 = [Syntax.BMatch (Syntax.MNeq (Syntax.FCtState, [0;0;0;2]))]);
@@ -1073,7 +1061,7 @@ let check_ct_state () =
   (* the established rule ACCEPTS a packet with the established bit set together
      with another bit (state = 2|64 = 66) — real nft accepts (66 & 2 = 2 != 0),
      the old MEq model rejected it (66 <> 2). *)
-  let m_estab = Syntax.MMasked (Syntax.FCtState, true, [0;0;0;2], [0;0;0;0], [0;0;0;0]) in
+  let m_estab = Syntax.MMasked (Syntax.FCtState, Bytecode.CNe, [0;0;0;2], [0;0;0;0], [0;0;0;0]) in
   let mk_ct st = mk_pkt ~env ~ct:(ct_state st) () in
   check "ct state established matches state = established|untracked = 66 (real nft accepts)"
     (ev_mc m_estab (mk_ct [0;0;0;66]) = true);
@@ -1093,7 +1081,7 @@ let check_ct_state () =
      set form above (real lookup).  Before the fix the parser collapsed both to
      SEset -> MConcatSet, so the comma form mis-lowered to a set membership that
      REJECTS a multi-bit state (e.g. 0x06 = established|related) which nft accepts. *)
-  let m_comma = Syntax.MMasked (Syntax.FCtState, true, [0;0;0;0x4e], [0;0;0;0], [0;0;0;0]) in
+  let m_comma = Syntax.MMasked (Syntax.FCtState, Bytecode.CNe, [0;0;0;0x4e], [0;0;0;0], [0;0;0;0]) in
   check "ct state new,established,related,untracked OR-folds to (state & 0x4e) != 0"
     (body 4 = [Syntax.BMatch m_comma]);
   (* the comma OR-mask ACCEPTS state = 0x06 (established|related): 0x06 & 0x4e != 0 *)
@@ -1290,7 +1278,7 @@ let check_interval_vmap () =
   let env = parsed.Nft_lower.p_env in
   (* (2) the lowered vmap carries a genuine INTERVAL entry: lo=[0;0] hi=[0;100],
      i.e. a non-degenerate [lo,hi] (not a point [k,k]). *)
-  let vm_name = match (Stdlib.List.hd c.Syntax.c_rules).Syntax.r_vmap with
+  let vm_name = match Syntax.r_vmap (Stdlib.List.hd c.Syntax.c_rules) with
     | Some vm -> vm.Syntax.vm_name | None -> failwith "no vmap lowered" in
   let ents = env.Packet.e_vmap vm_name in
   let has_iv = Stdlib.List.exists (fun ((lo, hi), _) -> lo <> hi) ents in
@@ -1328,15 +1316,11 @@ let check_notrack () =
   let untracked = [0;0;0;64] in   (* NF_CT_STATE_UNTRACKED_BIT *)
   (* `ct state untracked`: single-positive bitmask form (state & 64) != 0 *)
   let m_untracked =
-    Syntax.MMasked (Syntax.FCtState, true, untracked, [0;0;0;0], [0;0;0;0]) in
+    Syntax.MMasked (Syntax.FCtState, Bytecode.CNe, untracked, [0;0;0;0], [0;0;0;0]) in
   let notrack_only : Syntax.rule =
-    { Syntax.r_body = [ Syntax.BStmt Syntax.SNotrack ]; r_verdict = Verdict.Continue;
-      r_vmap = None; r_nat = None; r_tproxy = None; r_fwd = None; r_queue = None;
-      r_after = [] } in
+    { Syntax.r_body = [ Syntax.BStmt Syntax.SNotrack ]; r_outcome = Syntax.ONone; r_after = [] } in
   let ctstate_rule : Syntax.rule =
-    { Syntax.r_body = [ Syntax.BMatch m_untracked ]; r_verdict = Verdict.Accept;
-      r_vmap = None; r_nat = None; r_tproxy = None; r_fwd = None; r_queue = None;
-      r_after = [] } in
+    { Syntax.r_body = [ Syntax.BMatch m_untracked ]; r_outcome = Syntax.OVerdict Verdict.Accept; r_after = [] } in
   let chain : Syntax.chain =
     { Syntax.c_policy = Verdict.Drop; c_rules = [ notrack_only; ctstate_rule ] } in
   let env = { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
@@ -1396,8 +1380,7 @@ let check_exthdr_present () =
   let f_maxseg = Syntax.FExthdr (Packet.EPtcpopt, 2, 2, 2, false) in
   let maxseg_drop : Syntax.rule =
     { Syntax.r_body = [ Syntax.BMatch (Syntax.MEq (f_maxseg, maxseg_val)) ];
-      r_verdict = Verdict.Drop; r_vmap = None; r_nat = None; r_tproxy = None;
-      r_fwd = None; r_queue = None; r_after = [] } in
+      r_outcome = Syntax.OVerdict Verdict.Drop; r_after = [] } in
   let chain : Syntax.chain =
     { Syntax.c_policy = Verdict.Accept; c_rules = [ maxseg_drop ] } in
   let env = { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
@@ -1443,12 +1426,11 @@ let check_notrack_intra () =
   Printf.printf "=== (I''') intra-rule notrack ; ct state untracked accept (same rule) ===\n";
   let untracked = [0;0;0;64] in
   let m_untracked =
-    Syntax.MMasked (Syntax.FCtState, true, untracked, [0;0;0;0], [0;0;0;0]) in
+    Syntax.MMasked (Syntax.FCtState, Bytecode.CNe, untracked, [0;0;0;0], [0;0;0;0]) in
   (* ONE rule: SNotrack statement BEFORE the ct-state match. *)
   let intra_rule : Syntax.rule =
     { Syntax.r_body = [ Syntax.BStmt Syntax.SNotrack; Syntax.BMatch m_untracked ];
-      r_verdict = Verdict.Accept; r_vmap = None; r_nat = None; r_tproxy = None;
-      r_fwd = None; r_queue = None; r_after = [] } in
+      r_outcome = Syntax.OVerdict Verdict.Accept; r_after = [] } in
   let chain : Syntax.chain =
     { Syntax.c_policy = Verdict.Drop; c_rules = [ intra_rule ] } in
   let env = { Packet.e_set = (fun _ -> []); e_vmap = (fun _ -> []); e_map = (fun _ -> []);
@@ -1492,8 +1474,8 @@ let check_notrack_intra () =
      [ bitwise reg1 = (reg1 & X) ^ 0 ]  [ cmp neq reg1 0 ]
    i.e. (flags & X) != 0, NOT flags == X.  The four written operators differ
    (tests/py/inet/tcp.t:69-74):
-     implicit `tcp flags X`    -> MMasked (FTcpFlags, neg=true,  [X], [0], [0])
-     bang     `tcp flags ! X`  -> MMasked (FTcpFlags, neg=false, [X], [0], [0])
+     implicit `tcp flags X`    -> MMasked (FTcpFlags, CNe,   [X], [0], [0])
+     bang     `tcp flags ! X`  -> MMasked (FTcpFlags, CEq, [X], [0], [0])
      explicit `tcp flags == X` -> MEq  (FTcpFlags, [X])
      explicit `tcp flags != X` -> MNeq (FTcpFlags, [X])
    Before the fix `tcp flags` was Unsupported, and the only buildable encoding
@@ -1522,11 +1504,11 @@ let check_tcp_flags () =
   (* `tcp flags syn` => (flags & 0x02) != 0, MMasked neg=true — NOT MEq *)
   check "tcp flags syn lowers to MMasked bitmask test (not MEq)"
     (last_match 0 = Syntax.BMatch
-       (Syntax.MMasked (Syntax.FTcpFlags, true, [2], [0], [0])));
+       (Syntax.MMasked (Syntax.FTcpFlags, Bytecode.CNe, [2], [0], [0])));
   (* `tcp flags ! syn` => (flags & 0x02) == 0, MMasked neg=false *)
   check "tcp flags ! syn lowers to MMasked (flags & syn) == 0"
     (last_match 1 = Syntax.BMatch
-       (Syntax.MMasked (Syntax.FTcpFlags, false, [2], [0], [0])));
+       (Syntax.MMasked (Syntax.FTcpFlags, Bytecode.CEq, [2], [0], [0])));
   (* `tcp flags == syn` => exact equality, MEq *)
   check "tcp flags == syn lowers to exact MEq"
     (last_match 2 = Syntax.BMatch (Syntax.MEq (Syntax.FTcpFlags, [2])));
@@ -1535,7 +1517,7 @@ let check_tcp_flags () =
     (last_match 3 = Syntax.BMatch (Syntax.MNeq (Syntax.FTcpFlags, [128])));
   (* THE KEY behavioural case: a SYN|ACK packet (flags = 0x12 = 18). *)
   let mk_fl fl = mk_pkt ~env ~l4proto:l4_tcp ~th:(th_flags fl) () in
-  let m_syn = Syntax.MMasked (Syntax.FTcpFlags, true, [2], [0], [0]) in
+  let m_syn = Syntax.MMasked (Syntax.FTcpFlags, Bytecode.CNe, [2], [0], [0]) in
   check "tcp flags syn matches a SYN|ACK packet (flags=0x12) — real nft accepts"
     (ev_mc m_syn (mk_fl 18) = true);
   check "tcp flags syn matches a pure SYN packet (flags=0x02)"
@@ -1653,14 +1635,12 @@ let check_inet_nfproto_dep () =
       c_rules = [ { Syntax.r_body =
                       [ Syntax.BMatch (Syntax.MEq (Syntax.FMetaNfproto, [2]));
                         Syntax.BMatch (Syntax.MEq (Syntax.FIp4Saddr, [10;1;2;3])) ];
-                    r_verdict = Verdict.Accept; r_vmap = None; r_nat = None;
-                    r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } ] } in
+                    r_outcome = Syntax.OVerdict Verdict.Accept; r_after = [] } ] } in
   let unguarded : Syntax.chain =     (* the OLD, buggy lowering *)
     { Syntax.c_policy = Verdict.Drop;
       c_rules = [ { Syntax.r_body =
                       [ Syntax.BMatch (Syntax.MEq (Syntax.FIp4Saddr, [10;1;2;3])) ];
-                    r_verdict = Verdict.Accept; r_vmap = None; r_nat = None;
-                    r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } ] } in
+                    r_outcome = Syntax.OVerdict Verdict.Accept; r_after = [] } ] } in
   check "guarded inet rule ACCEPTS the genuine IPv4 packet (nft accepts)"
     (ev_chain guarded p_v4 = Verdict.Accept);
   check "guarded inet rule DROPS the IPv6 packet (nft falls through to drop)"
@@ -1741,15 +1721,13 @@ let check_inet_icmp_nfproto_dep () =
                       [ Syntax.BMatch (Syntax.MEq (Syntax.FMetaNfproto, [2]));
                         Syntax.BMatch (Syntax.MEq (Syntax.FMetaL4proto, [1]));
                         Syntax.BMatch (Syntax.MEq (Syntax.FIcmpType, [8])) ];
-                    r_verdict = Verdict.Accept; r_vmap = None; r_nat = None;
-                    r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } ] } in
+                    r_outcome = Syntax.OVerdict Verdict.Accept; r_after = [] } ] } in
   let unguarded : Syntax.chain =     (* the OLD, buggy lowering: l4proto only *)
     { Syntax.c_policy = Verdict.Drop;
       c_rules = [ { Syntax.r_body =
                       [ Syntax.BMatch (Syntax.MEq (Syntax.FMetaL4proto, [1]));
                         Syntax.BMatch (Syntax.MEq (Syntax.FIcmpType, [8])) ];
-                    r_verdict = Verdict.Accept; r_vmap = None; r_nat = None;
-                    r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } ] } in
+                    r_outcome = Syntax.OVerdict Verdict.Accept; r_after = [] } ] } in
   check "guarded inet icmp rule ACCEPTS the genuine IPv4 packet (nft accepts)"
     (ev_chain guarded p_v4 = Verdict.Accept);
   check "guarded inet icmp rule DROPS the IPv6 packet (nft falls through to drop)"
@@ -1775,8 +1753,7 @@ let check_synproxy () =
   (* the SSynproxy statement is not on the .nft frontend, so build the AST directly *)
   let rule : Syntax.rule =
     { Syntax.r_body = [ Syntax.BStmt (Syntax.SSynproxy (1460, 7)) ];
-      r_verdict = Verdict.Continue; r_vmap = None; r_nat = None;
-      r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } in
+      r_outcome = Syntax.ONone; r_after = [] } in
   let chain : Syntax.chain = { Syntax.c_policy = Verdict.Accept; c_rules = [ rule ] } in
   let mk_tcp fl = mk_pkt ~env ~l4proto:l4_tcp ~th:(th_flags fl) () in
   let non_tcp = wire (fun p -> { p with Packet.pkt_th = []; pkt_have_l4 = false }) (mk_pkt ~env ()) in
@@ -2035,9 +2012,7 @@ let check_limit_over () =
      packet 1 (one token), the bucket EMPTIES, and packet 2 of the depleted bucket
      is DROPPED (chain policy).  The OLD per-packet oracle proved BOTH accepted. *)
   let rule_accept =
-    { Syntax.r_body = [Syntax.BMatch m_under]; r_verdict = Verdict.Accept;
-      r_vmap = None; r_nat = None; r_tproxy = None; r_fwd = None;
-      r_queue = None; r_after = [] } in
+    { Syntax.r_body = [Syntax.BMatch m_under]; r_outcome = Syntax.OVerdict Verdict.Accept; r_after = [] } in
   let chain_lim = { Syntax.c_policy = Verdict.Drop; c_rules = [rule_accept] } in
   let env_one = { env with Packet.e_limit = (fun _ -> 1) } in
   let p1 = mk_pkt ~env:env_one ~flow:[1;1] () in
@@ -2346,8 +2321,7 @@ let check_jump_aware () =
        "table ip filter {\n  chain c { type filter hook input priority 0; }\n}\n")
       .Nft_lower.p_env in
   let mk_rule v : Syntax.rule =
-    { Syntax.r_body = []; r_verdict = v; r_vmap = None; r_nat = None;
-      r_tproxy = None; r_fwd = None; r_queue = None; r_after = [] } in
+    { Syntax.r_body = []; r_outcome = Syntax.OVerdict v; r_after = [] } in
   let deny : Syntax.chain =
     { Syntax.c_policy = Verdict.Accept; c_rules = [ mk_rule Verdict.Drop ] } in
   let chains = [ ("deny", deny) ] in
@@ -2384,9 +2358,7 @@ let check_connlimit_conn () =
   let m = Syntax.MConnlimit cl1 in
   (* a one-rule chain `<conn under limit> accept`, policy DROP, starting from an
      env whose connlimit set is EMPTY (no connection counted yet). *)
-  let rule = { Syntax.r_body = [Syntax.BMatch m]; r_verdict = Verdict.Accept;
-               r_vmap = None; r_nat = None; r_tproxy = None; r_fwd = None;
-               r_queue = None; r_after = [] } in
+  let rule = { Syntax.r_body = [Syntax.BMatch m]; r_outcome = Syntax.OVerdict Verdict.Accept; r_after = [] } in
   let chain = { Syntax.c_policy = Verdict.Drop; c_rules = [rule] } in
   let env0 =
     (Nft_parse.parse_string
@@ -2434,9 +2406,7 @@ let check_ct_no_entry () =
         (fun _ (k : Packet.ct_key) -> match k with Packet.CKmark -> [0;0;0;16] | _ -> []) } in
   (* `ct mark 0x10 accept`, policy DROP *)
   let m_mark = Syntax.MEq (Syntax.FCtMark, [0;0;0;16]) in
-  let rule = { Syntax.r_body = [Syntax.BMatch m_mark]; r_verdict = Verdict.Accept;
-               r_vmap = None; r_nat = None; r_tproxy = None; r_fwd = None;
-               r_queue = None; r_after = [] } in
+  let rule = { Syntax.r_body = [Syntax.BMatch m_mark]; r_outcome = Syntax.OVerdict Verdict.Accept; r_after = [] } in
   let chain = { Syntax.c_policy = Verdict.Drop; c_rules = [rule] } in
   (* TRACKED packet (entry present): rule matches -> ACCEPT *)
   let p_tracked = mk_pkt ~env:base_env ~flow:[1;1] () in

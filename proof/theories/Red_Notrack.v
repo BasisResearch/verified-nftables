@@ -39,7 +39,7 @@
     unprovable. *)
 
 From Stdlib Require Import List String NArith.
-From Nft Require Import Bytes Packet Verdict Syntax Semantics.
+From Nft Require Import Bytes Packet Verdict Bytecode Syntax Semantics.
 Import ListNotations.
 
 (* `ct state untracked`: the single-positive bitmask form the parser emits
@@ -47,20 +47,18 @@ Import ListNotations.
 Definition untracked_bytes : data := [0;0;0;64].   (* NF_CT_STATE_UNTRACKED_BIT *)
 
 Definition m_untracked : matchcond :=
-  MMasked FCtState true untracked_bytes [0;0;0;0] [0;0;0;0].
+  MMasked FCtState CNe untracked_bytes [0;0;0;0] [0;0;0;0].
 
 (* Rule 1: bare `notrack` (Continue => falls through to rule 2, threading the
    set_untracked write). *)
 Definition notrack_only : rule :=
   {| r_body := [ BStmt SNotrack ];
-     r_verdict := Continue; r_vmap := None; r_nat := None; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := ONone; r_after := [] |}.
 
 (* Rule 2: `ct state untracked accept`. *)
 Definition ctstate_rule : rule :=
   {| r_body := [ BMatch m_untracked ];
-     r_verdict := Accept; r_vmap := None; r_nat := None; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := OVerdict Accept; r_after := [] |}.
 
 (* The two-rule chain, default policy Drop. *)
 Definition notrack_chain : chain :=

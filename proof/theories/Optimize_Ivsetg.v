@@ -128,8 +128,8 @@ Proof.
                        (BMatch (MRange f1 false lo1 hi1) :: rest1) r1 r2) Eeqb) as Eshell.
   split; [exact Hr1 |].
   rewrite Hr2c. unfold orig_ruleGr, mk_head in Eshell |- *.
-  injection Eshell as Ev Evm En Et Ef Eq Ea.
-  rewrite Ev, Evm, En, Et, Ef, Eq, Ea. reflexivity.
+  injection Eshell as Eo Ea.
+  rewrite Eo, Ea. reflexivity.
 Qed.
 
 Lemma range_mergeGr_pair_with_head : forall r1 r2 gm f lo1 hi1 body gm' f' iv1 iv2 body',
@@ -151,8 +151,8 @@ Proof.
   pose proof (proj1 (rule_end_eqb_mk_head gm (BMatch (MRange f false lo1 hi1) :: body) r1 r2) Eeqb) as Eshell.
   repeat split.
   rewrite Hr2c. unfold orig_ruleGr, mk_head in Eshell |- *.
-  injection Eshell as Ev Evm En Et Efw Eq Ea.
-  rewrite Ev, Evm, En, Et, Efw, Eq, Ea. reflexivity.
+  injection Eshell as Eo Ea.
+  rewrite Eo, Ea. reflexivity.
 Qed.
 
 (** ** Loadability / outcome / applies of the guarded shells. *)

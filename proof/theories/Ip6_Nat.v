@@ -11,7 +11,7 @@
     with the network-header length preserved. *)
 From Stdlib Require Import List String NArith Lia.
 Import ListNotations.
-From Nft Require Import Bytes Packet Verdict Syntax Semantics.
+From Nft Require Import Bytes Packet Verdict Bytecode Syntax Semantics.
 Open Scope string_scope.
 
 (* A 16-byte IPv6 NAT target (all 0xAA). *)
@@ -23,9 +23,8 @@ Definition ip6_dnat_spec : nat_spec :=
      nat_extra := NXnone;
      nat_flags := 0 |}.
 Definition ip6_dnat_rule : rule :=
-  {| r_body := []; r_verdict := Continue; r_vmap := None;
-     r_nat := Some ip6_dnat_spec; r_tproxy := None; r_fwd := None;
-     r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := ONat ip6_dnat_spec; r_after := [] |}.
 
 Definition ip6_snat_spec : nat_spec :=
   {| nat_addr_imm := Some tgt6; nat_map := None; nat_field := None;
@@ -33,9 +32,8 @@ Definition ip6_snat_spec : nat_spec :=
      nat_extra := NXnone;
      nat_flags := 0 |}.
 Definition ip6_snat_rule : rule :=
-  {| r_body := []; r_verdict := Continue; r_vmap := None;
-     r_nat := Some ip6_snat_spec; r_tproxy := None; r_fwd := None;
-     r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := ONat ip6_snat_spec; r_after := [] |}.
 
 (* The IPv6 dnat NAT effect destination-rewrites the IPv6 dest slot (off 24,
    len 16) to the target operand.  NAT is FLOW-STATEFUL ([e_nat], Packet.v): on the first
@@ -44,7 +42,7 @@ Definition ip6_snat_rule : rule :=
 Lemma ip6_dnat_apply : forall h e p,
   pkt_ctdir_orig p = true ->
   e_nat e (pkt_flow p) = None ->
-  snd (apply_nat h ip6_dnat_rule e p) = set_daddr "ip6" p tgt6.
+  snd (apply_nat h ip6_dnat_rule e p) = set_daddr nat_fam_ip6 p tgt6.
 Proof.
   intros h e p Horig Hnone. unfold apply_nat, ip6_dnat_rule, ip6_dnat_spec.
   cbn -[set_daddr store_nat_mapping e_nat pkt_flow tgt6 slice pkt_nh].
@@ -56,7 +54,7 @@ Qed.
 Lemma ip6_snat_apply : forall h e p,
   pkt_ctdir_orig p = true ->
   e_nat e (pkt_flow p) = None ->
-  snd (apply_nat h ip6_snat_rule e p) = set_saddr "ip6" p tgt6.
+  snd (apply_nat h ip6_snat_rule e p) = set_saddr nat_fam_ip6 p tgt6.
 Proof.
   intros h e p Horig Hnone. unfold apply_nat, ip6_snat_rule, ip6_snat_spec.
   cbn -[set_saddr store_nat_mapping e_nat pkt_flow tgt6 slice pkt_nh].
@@ -69,13 +67,13 @@ Qed.
    16-byte target (for a well-formed IPv6 header, >= 40 bytes). *)
 Lemma ip6_daddr_after_set : forall e p v,
   40 <= List.length (pkt_nh p) -> List.length v = 16 ->
-  field_value FIp6Daddr e (set_daddr "ip6" p v) = v.
+  field_value FIp6Daddr e (set_daddr nat_fam_ip6 p v) = v.
 Proof.
   intros e p v Hlen Hv.
   unfold field_value; cbn [field_load do_load]; unfold read_payload.
   rewrite set_daddr_nh;
-    change (daddr_slot "ip6") with (24, 16);
-    change (String.eqb "ip6" nat_fam_ip6) with true; cbv iota;
+    change (daddr_slot nat_fam_ip6) with (24, 16);
+    change (nataf_eqb nat_fam_ip6 nat_fam_ip6) with true; cbv iota;
     cbn [set_nh_field with_pkt_nh pkt_nh].
     unfold slice, splice.
   assert (H24 : List.length (firstn 24 (pkt_nh p)) = 24)
@@ -89,13 +87,13 @@ Qed.
 
 Lemma ip6_saddr_after_set : forall e p v,
   40 <= List.length (pkt_nh p) -> List.length v = 16 ->
-  field_value FIp6Saddr e (set_saddr "ip6" p v) = v.
+  field_value FIp6Saddr e (set_saddr nat_fam_ip6 p v) = v.
 Proof.
   intros e p v Hlen Hv.
   unfold field_value; cbn [field_load do_load]; unfold read_payload.
   rewrite set_saddr_nh;
-    change (saddr_slot "ip6") with (8, 16);
-    change (String.eqb "ip6" nat_fam_ip6) with true; cbv iota;
+    change (saddr_slot nat_fam_ip6) with (8, 16);
+    change (nataf_eqb nat_fam_ip6 nat_fam_ip6) with true; cbv iota;
     cbn [set_nh_field with_pkt_nh pkt_nh].
     unfold slice, splice.
   assert (H8 : List.length (firstn 8 (pkt_nh p)) = 8)
@@ -111,11 +109,11 @@ Qed.
    the same length after the ip6 NAT (an IPv4-slot splice would grow it by 12). *)
 Lemma ip6_dnat_nh_len_preserved : forall p,
   40 <= List.length (pkt_nh p) ->
-  List.length (pkt_nh (set_daddr "ip6" p tgt6)) = List.length (pkt_nh p).
+  List.length (pkt_nh (set_daddr nat_fam_ip6 p tgt6)) = List.length (pkt_nh p).
 Proof.
   intros p Hlen.
-  rewrite set_daddr_nh; change (daddr_slot "ip6") with (24, 16);
-    change (String.eqb "ip6" nat_fam_ip6) with true; cbv iota;
+  rewrite set_daddr_nh; change (daddr_slot nat_fam_ip6) with (24, 16);
+    change (nataf_eqb nat_fam_ip6 nat_fam_ip6) with true; cbv iota;
     cbn [set_nh_field with_pkt_nh pkt_nh].
   unfold splice. rewrite !length_app, firstn_length_le by lia.
   rewrite length_skipn. unfold tgt6. rewrite repeat_length. lia.
@@ -167,9 +165,8 @@ Definition masq6_spec : nat_spec :=
      nat_extra := NXnone;
      nat_flags := 0 |}.
 Definition masq6_rule : rule :=
-  {| r_body := []; r_verdict := Continue; r_vmap := None;
-     r_nat := Some masq6_spec; r_tproxy := None; r_fwd := None;
-     r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := ONat masq6_spec; r_after := [] |}.
 
 (* An env whose IPv6 interface address (e_ifaddr6) is [if6] for every interface,
    and whose IPv4 e_ifaddr is a DIFFERENT 4-byte value — to prove masquerade picks

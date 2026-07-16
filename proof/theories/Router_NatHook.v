@@ -371,7 +371,7 @@ Lemma masq_drops_noaddr : forall e p,
   e_ifaddr e (field_value FMetaOifname e p) = [] ->
   nat_drops Hpostrouting masq_rule e p = true.
 Proof.
-  intros e p Horig Hnone Hempty. unfold nat_drops, masq_rule; cbn [r_nat].
+  intros e p Horig Hnone Hempty. unfold nat_drops, masq_rule; cbn [r_nat r_outcome].
   rewrite Hnone. rewrite Horig; cbn [andb].
   rewrite masq_iface_absent_iff, Hempty. reflexivity.
 Qed.
@@ -455,7 +455,7 @@ Proof.
     apply Bool.andb_true_iff in Happ as [Hpriv Hppp].
     assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.
     rewrite Ho; cbn [terminal].
-    unfold nat_drops, masq_rule; cbn [r_nat].
+    unfold nat_drops, masq_rule; cbn [r_nat r_outcome].
     rewrite Hpriv, Hppp; cbn [andb].
     destruct (e_nat e (pkt_flow p)) eqn:En; [reflexivity|].
     destruct (pkt_ctdir_orig p) eqn:Eo; cbn [andb]; [|reflexivity].

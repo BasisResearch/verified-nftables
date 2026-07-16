@@ -143,15 +143,13 @@ Definition fw_env : env :=
 
 (* a rule with only a body and a static verdict (no vmap/nat/…). *)
 Definition simple_rule (body : list body_item) (v : verdict) : rule :=
-  {| r_body := body; r_verdict := v;
-     r_vmap := None; r_nat := None; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := body;
+     r_outcome := OVerdict v; r_after := [] |}.
 
 (* a rule whose verdict comes from a vmap keyed on a single field. *)
 Definition vmap_rule (key : field) (name : string) : rule :=
-  {| r_body := []; r_verdict := Continue;
-     r_vmap := Some {| vm_fields := []; vm_keyf := Some (key, []); vm_name := name |};
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := OVmap {| vm_fields := []; vm_keyf := Some (key, []); vm_name := name |}; r_after := [] |}.
 
 (* inbound (ruleset.nft:25-46) — the input base chain, policy drop. *)
 Definition inbound : chain :=

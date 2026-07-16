@@ -35,9 +35,7 @@ Definition normalize_bi (it : body_item) : body_item :=
 
 Definition normalize_rule (r : rule) : rule :=
   {| r_body := map normalize_bi (r_body r);
-     r_verdict := r_verdict r; r_vmap := r_vmap r; r_nat := r_nat r;
-     r_tproxy := r_tproxy r; r_fwd := r_fwd r; r_queue := r_queue r;
-     r_after := r_after r |}.
+     r_outcome := r_outcome r; r_after := r_after r |}.
 
 Definition normalize_chain (c : chain) : chain :=
   {| c_policy := c_policy c; c_rules := map normalize_rule (c_rules c) |}.

@@ -123,9 +123,7 @@ Qed.
 
 Definition mk_head (m : matchcond) (rest : list body_item) (r : rule) : rule :=
   {| r_body := BMatch m :: rest;
-     r_verdict := r_verdict r; r_vmap := r_vmap r; r_nat := r_nat r;
-     r_tproxy := r_tproxy r; r_fwd := r_fwd r; r_queue := r_queue r;
-     r_after := r_after r |}.
+     r_outcome := r_outcome r; r_after := r_after r |}.
 
 (* The head [BMatch] is transparent to the synproxy-stop and notrack predicates,
    so [body_thread] and [body_synproxy_stops] of [mk_head] depend only on [rest]. *)
@@ -343,15 +341,20 @@ Defined.
 Definition body_item_eq_dec (a b : body_item) : {a = b} + {a <> b}.
 Proof. decide equality; (apply matchcond_eq_dec || apply stmt_eq_dec). Defined.
 
+(* [Syntax.outcome] qualified: the bare name resolves to [Semantics.outcome],
+   the rule-outcome evaluation function. *)
+Definition outcome_eq_dec (a b : Syntax.outcome) : {a = b} + {a <> b}.
+Proof.
+  decide equality;
+    (apply verdict_eq_dec || apply vmap_spec_eq_dec || apply nat_spec_eq_dec
+     || apply tproxy_spec_eq_dec || apply fwd_spec_eq_dec || apply queue_spec_eq_dec).
+Defined.
+
 Definition rule_eq_dec (a b : rule) : {a = b} + {a <> b}.
 Proof.
   decide equality;
-    repeat first
-      [ apply (list_eq_dec body_item_eq_dec) | apply verdict_eq_dec
-      | apply (list_eq_dec stmt_eq_dec)
-      | (apply option_eq_dec; [ .. ]) | decide equality ];
-    try (apply vmap_spec_eq_dec || apply nat_spec_eq_dec || apply tproxy_spec_eq_dec
-         || apply fwd_spec_eq_dec || apply queue_spec_eq_dec).
+    (apply (list_eq_dec body_item_eq_dec) || apply outcome_eq_dec
+     || apply (list_eq_dec stmt_eq_dec)).
 Defined.
 
 (** ** Compact boolean equality on a rule's END fields (everything except the body).
@@ -391,29 +394,21 @@ Proof.
 Qed.
 
 Definition rule_end_eqb (a b : rule) : bool :=
-  sumbool_eqb verdict_eq_dec (r_verdict a) (r_verdict b) &&
-  opt_eqb vmap_spec_eq_dec (r_vmap a) (r_vmap b) &&
-  opt_eqb nat_spec_eq_dec (r_nat a) (r_nat b) &&
-  opt_eqb tproxy_spec_eq_dec (r_tproxy a) (r_tproxy b) &&
-  opt_eqb fwd_spec_eq_dec (r_fwd a) (r_fwd b) &&
-  opt_eqb queue_spec_eq_dec (r_queue a) (r_queue b) &&
+  sumbool_eqb outcome_eq_dec (r_outcome a) (r_outcome b) &&
   sumbool_eqb (list_eq_dec stmt_eq_dec) (r_after a) (r_after b).
 
 (** [rule_end_eqb] characterises exactly equality of two [mk_head]-built shells with
     the same head/body: the bodies coincide by construction, so the records are equal
-    iff the END fields are. *)
+    iff the END fields (the outcome and the post-outcome statements) are. *)
 Lemma rule_end_eqb_mk_head : forall m rest r1 r2,
   rule_end_eqb r1 r2 = true <->
   mk_head m rest r1 = mk_head m rest r2.
 Proof.
   intros m rest r1 r2. unfold rule_end_eqb.
-  rewrite !Bool.andb_true_iff.
-  rewrite !sumbool_eqb_true_iff, !opt_eqb_true_iff.
+  rewrite Bool.andb_true_iff, !sumbool_eqb_true_iff.
   unfold mk_head. split.
-  - intros [[[[[[Hv Hvm] Hn] Ht] Hf] Hq] Ha].
-    rewrite Hv, Hvm, Hn, Ht, Hf, Hq, Ha. reflexivity.
-  - intro H. injection H as Hvm Hn Ht Hf Hq Ha Hv.
-    repeat split; assumption.
+  - intros [Ho Ha]. rewrite Ho, Ha. reflexivity.
+  - intro H. injection H as Ho Ha. auto.
 Qed.
 
 (** ** Pass: consecutive-duplicate-rule elimination.
@@ -989,8 +984,8 @@ Proof.
     rewrite Hr2.
     (* r1, r2 agree on every END field (from Eshell), so swapping r2->r1 in the
        shell with head v2' is identity. *)
-    unfold mk_head in Eshell |- *. injection Eshell as Eva Evm Ena Etp Efw Equ Eaf.
-    rewrite Eva, Evm, Ena, Etp, Efw, Equ, Eaf. reflexivity.
+    unfold mk_head in Eshell |- *. injection Eshell as Eo Eaf.
+    rewrite Eo, Eaf. reflexivity.
   - split; rewrite Hfx; f_equal; congruence.
 Qed.
 
@@ -1515,8 +1510,7 @@ Qed.
     fresh `__setN` = `{ v1, v2 }` — the `meta K { v1, v2 } accept` fold. *)
 Definition wit_meta_rule (f : field) (v : data) : rule :=
   {| r_body := [BMatch (MCmp f CEq v)];
-     r_verdict := Accept; r_vmap := None; r_nat := None;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := OVerdict Accept; r_after := [] |}.
 
 (* meta skuid 1000/1001 => set { 0xe8030000, 0xe9030000 } (u32, little-endian). *)
 Example value_merge_fires_skuid :

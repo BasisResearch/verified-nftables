@@ -322,9 +322,7 @@ Lemma nft_prefix_chain_drop_iff : forall fuel cs b off len v e p,
   (nft_drops (S fuel) cs
      {| c_policy := Accept;
         c_rules := [{| r_body := [BMatch (MEq (FPayload b off len) v)];
-                       r_verdict := Drop; r_vmap := None; r_nat := None;
-                       r_tproxy := None; r_fwd := None; r_queue := None;
-                       r_after := [] |}] |} e p
+     r_outcome := OVerdict Drop; r_after := [] |}] |} e p
    <-> firstn (List.length v) (field_value (FPayload b off len) e p) = v).
 Proof.
   intros fuel cs b off len v e p Hok.
@@ -344,9 +342,7 @@ Lemma nft_prefix_chain_accept_iff : forall fuel cs b off len v e p,
   (nft_accepts (S fuel) cs
      {| c_policy := Accept;
         c_rules := [{| r_body := [BMatch (MEq (FPayload b off len) v)];
-                       r_verdict := Drop; r_vmap := None; r_nat := None;
-                       r_tproxy := None; r_fwd := None; r_queue := None;
-                       r_after := [] |}] |} e p
+     r_outcome := OVerdict Drop; r_after := [] |}] |} e p
    <-> firstn (List.length v) (field_value (FPayload b off len) e p) <> v).
 Proof.
   intros fuel cs b off len v e p Hok.
@@ -355,7 +351,7 @@ Proof.
     - unfold rule_loadable. cbn. now rewrite Hok.
     - reflexivity. }
   unfold rule_applies. cbn [r_body rule_applies_walk].
-  unfold eval_matchcond. cbn [match_loadable eval_matchcond_body].
+  unfold eval_matchcond. cbn [match_loadable eval_matchcond_body]. unfold Bytecode.eval_cmp.
   unfold field_loadable. cbn [field_load load_ok]. rewrite Hok.
   rewrite !Bool.andb_true_l, Bool.andb_true_r.
   split.

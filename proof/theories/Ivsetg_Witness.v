@@ -28,8 +28,8 @@ Definition plo2 : data := [0;31].  Definition phi2 : data := [0;40].
 Definition polap : data := [0;25].
 
 Definition acc : rule :=
-  {| r_body := []; r_verdict := Accept; r_vmap := None; r_nat := None;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := OVerdict Accept; r_after := [] |}.
 
 Definition ivsetg_input : list rule :=
   [ orig_ruleGr FThDport gtcp plo1 phi1 [] acc

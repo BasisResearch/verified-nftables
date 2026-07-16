@@ -51,16 +51,14 @@ Local Open Scope nat_scope.
     by the single field [f] (no transforms) against the named map [nm]. *)
 Definition mk_vmap_rule (f : field) (nm : String.string) (body : list body_item) : rule :=
   {| r_body := body;
-     r_verdict := Continue;
-     r_vmap := Some {| vm_fields := [f]; vm_keyf := Some (f, []); vm_name := nm |};
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := OVmap {| vm_fields := [f]; vm_keyf := Some (f, []); vm_name := nm |}; r_after := [] |}.
 
 (** The base rule the two originals share: a pure-terminal rule (no vmap / nat /
     tproxy / fwd / queue, no [r_after]) carrying a static TERMINAL verdict [w].
     Its body is supplied by [mk_head]; [mk_vmap_base w] holds the end fields. *)
 Definition mk_vmap_base (w : verdict) : rule :=
-  {| r_body := []; r_verdict := w; r_vmap := None;
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := OVerdict w; r_after := [] |}.
 
 (** *** The vmap-lookup certificate at two point keys.
 
@@ -82,7 +80,7 @@ Lemma vmap_two_points : forall f nm v1 v2 w1 w2 body e q,
 Proof.
   intros f nm v1 v2 w1 w2 body e q Hvm H1 H2 Hld.
   specialize (H1 Hld). specialize (H2 Hld).
-  unfold outcome_core, mk_vmap_rule. cbn [r_vmap vm_keyf vm_name vm_fields].
+  unfold outcome_core, mk_vmap_rule. cbn [r_vmap vm_keyf vm_name vm_fields r_outcome].
   cbn [apply_transforms fold_left].
   rewrite Hvm. cbn [assoc_verdict].
   rewrite !data_in_iv_point_eqb.
@@ -91,7 +89,7 @@ Proof.
   rewrite (data_eqb_sym (field_value f e q) v1), (data_eqb_sym (field_value f e q) v2).
   destruct (data_eqb v1 (field_value f e q)) eqn:E1; [reflexivity|].
   destruct (data_eqb v2 (field_value f e q)) eqn:E2; [reflexivity|].
-  unfold terminal_outcome, mk_vmap_rule. cbn [r_nat r_tproxy r_fwd r_queue r_verdict r_after].
+  unfold terminal_outcome, mk_vmap_rule. cbn [r_nat r_tproxy r_fwd r_queue r_verdict r_after r_outcome].
   reflexivity.
 Qed.
 
@@ -120,9 +118,9 @@ Proof.
   cbn [match_loadable].
   (* end_loadable of mk_vmap_base = true (no vmap, terminal verdict loads) *)
   assert (Hend : forall q, end_loadable (mk_vmap_base w) e q = true).
-  { intro q. unfold end_loadable, mk_vmap_base. cbn [r_vmap].
+  { intro q. unfold end_loadable, mk_vmap_base. cbn [r_vmap r_outcome].
     unfold tail_loadable, terminal_loadable, terminal_outcome.
-    cbn [r_nat r_tproxy r_fwd r_queue r_verdict r_after].
+    cbn [r_nat r_tproxy r_fwd r_queue r_verdict r_after r_outcome].
     destruct w; cbn [terminal]; reflexivity. }
   rewrite Hend.
   destruct (body_synproxy_stops body p); reflexivity.
@@ -145,7 +143,7 @@ Proof.
   intros f v body w e p. unfold orig_rule.
   rewrite outcome_mk_head.
   destruct (body_synproxy_stops body p); [reflexivity|].
-  unfold outcome_core, body_thread, mk_vmap_base. cbn [r_vmap].
+  unfold outcome_core, body_thread, mk_vmap_base. cbn [r_vmap r_outcome].
   destruct (body_has_notrack body); reflexivity.
 Qed.
 
@@ -156,7 +154,7 @@ Lemma terminal_outcome_vmap_base : forall w q,
   terminal_outcome (mk_vmap_base w) q = Some w.
 Proof.
   intros w q Hw. unfold terminal_outcome, mk_vmap_base.
-  cbn [r_nat r_tproxy r_fwd r_queue r_verdict r_after].
+  cbn [r_nat r_tproxy r_fwd r_queue r_verdict r_after r_outcome].
   destruct w; cbn [terminal] in Hw; try discriminate; reflexivity.
 Qed.
 
@@ -189,8 +187,8 @@ Proof.
   { unfold rule_loadable, mk_vmap_rule. cbn [r_body].
     rewrite Hsp.
     unfold body_thread. cbn [r_body]. rewrite Hnt.
-    unfold end_loadable. cbn [r_vmap].
-    unfold vmap_loadable. cbn [r_vmap vm_keyf].
+    unfold end_loadable. cbn [r_vmap r_outcome].
+    unfold vmap_loadable. cbn [r_vmap vm_keyf r_outcome].
     cbn [apply_transforms fold_left vm_name].
     destruct (field_loadable f p) eqn:Hfld; cbn [andb].
     - destruct (assoc_verdict (field_value f e p) (e_vmap e nm)); reflexivity.
@@ -217,10 +215,8 @@ Proof.
                     if b1 then Some w1 else if b2 then Some w2 else None).
     { unfold outcome, mk_vmap_rule. cbn [r_body]. rewrite Hsp.
       unfold body_thread. cbn [r_body]. rewrite Hnt.
-      change ({| r_body := body; r_verdict := Continue;
-                 r_vmap := Some {| vm_fields := [f]; vm_keyf := Some (f, []); vm_name := nm |};
-                 r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None;
-                 r_after := [] |}) with (mk_vmap_rule f nm body).
+      change ({| r_body := body;
+     r_outcome := OVmap {| vm_fields := [f]; vm_keyf := Some (f, []); vm_name := nm |}; r_after := [] |}) with (mk_vmap_rule f nm body).
       rewrite (vmap_two_points f nm v1 v2 w1 w2 body e p Hvm); try assumption.
       - reflexivity.
       - intro. apply (field_fixed_len_loaded f (length v1) e p Hfx1); assumption.
@@ -563,12 +559,12 @@ Lemma outcome_core_vmapN : forall es f e q nm body,
   outcome_core (mk_vmap_rule f nm body) e q = first_match f e q es.
 Proof.
   intros es f e q nm body Hvm Hlen Hld.
-  unfold outcome_core, mk_vmap_rule. cbn [r_vmap vm_keyf vm_name vm_fields].
+  unfold outcome_core, mk_vmap_rule. cbn [r_vmap vm_keyf vm_name vm_fields r_outcome].
   cbn [apply_transforms fold_left]. rewrite Hvm.
   rewrite (assoc_verdict_points es f e q Hlen Hld).
   destruct (first_match f e q es) eqn:Efm; [reflexivity|].
   unfold terminal_outcome, mk_vmap_rule.
-  cbn [r_nat r_tproxy r_fwd r_queue r_verdict r_after terminal]. reflexivity.
+  cbn [r_nat r_tproxy r_fwd r_queue r_verdict r_after terminal r_outcome]. reflexivity.
 Qed.
 
 (** On a clean body (no synproxy stop, no notrack), [orig_rule]'s outcome is just the
@@ -604,8 +600,8 @@ Proof.
                 = body_loadable_walk body p && field_loadable f p).
   { unfold rule_loadable, mk_vmap_rule. cbn [r_body]. rewrite Hsp.
     unfold body_thread. cbn [r_body]. rewrite Hnt.
-    unfold end_loadable. cbn [r_vmap]. unfold vmap_loadable.
-    cbn [r_vmap vm_keyf apply_transforms fold_left vm_name].
+    unfold end_loadable. cbn [r_vmap r_outcome]. unfold vmap_loadable.
+    cbn [r_vmap vm_keyf apply_transforms fold_left vm_name r_outcome].
     destruct (field_loadable f p) eqn:Hfld; cbn [andb].
     - destruct (assoc_verdict (field_value f e p) (e_vmap e nm));
         rewrite ?Bool.andb_true_r; reflexivity.
@@ -619,10 +615,8 @@ Proof.
     assert (Hmout : outcome (mk_vmap_rule f nm body) e p = first_match f e p es).
     { unfold outcome, mk_vmap_rule. cbn [r_body]. rewrite Hsp.
       unfold body_thread. cbn [r_body]. rewrite Hnt.
-      change ({| r_body := body; r_verdict := Continue;
-                 r_vmap := Some {| vm_fields := [f]; vm_keyf := Some (f, []); vm_name := nm |};
-                 r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None;
-                 r_after := [] |}) with (mk_vmap_rule f nm body).
+      change ({| r_body := body;
+     r_outcome := OVmap {| vm_fields := [f]; vm_keyf := Some (f, []); vm_name := nm |}; r_after := [] |}) with (mk_vmap_rule f nm body).
       apply (outcome_core_vmapN es f e p nm body Hvm); [| exact Hfld].
       intros v w Hin Hld. apply (field_fixed_len_loaded f (length v) e p (Hfx v w Hin) Hld). }
     rewrite Hmout.

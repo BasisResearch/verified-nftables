@@ -15,13 +15,13 @@
    `tcp flags == X` is exact equality (tcp.t.payload:346-351 `cmp eq reg 1 0x02`).
 
    The four written operators differ (tests/py/inet/tcp.t:69-74):
-     implicit `tcp flags X`    -> (flags & X) != 0   MMasked neg:=true
-     bang     `tcp flags ! X`  -> (flags & X) == 0   MMasked neg:=false  (& X == 0)
+     implicit `tcp flags X`    -> (flags & X) != 0   MMasked op:=CNe
+     bang     `tcp flags ! X`  -> (flags & X) == 0   MMasked op:=CEq  (& X == 0)
      explicit `tcp flags == X` -> flags == X         MEq
      explicit `tcp flags != X` -> flags != X         MNeq               (cmp neq)
 
    The parser lowers a single positive `tcp flags X` to
-     MMasked FTcpFlags (neg:=true) [X] [0] [0]
+     MMasked FTcpFlags CNe [X] [0] [0]
    which Semantics.v evaluates as
      eval_cmp CNe (data_bitops flags [X] [0]) [0] = (flags & X) != 0,
    exactly matching the golden bytecode.
@@ -32,7 +32,7 @@
    (0x12 <> 0x02). *)
 
 From Stdlib Require Import List Bool.
-From Nft Require Import Bytes Packet Verdict Syntax Semantics.
+From Nft Require Import Bytes Packet Verdict Bytecode Syntax Semantics.
 Import ListNotations.
 
 Definition e0 : env :=
@@ -57,11 +57,11 @@ Definition pkt_tcpflags (fl : nat) : packet :=
 (* fin=0x01 syn=0x02 rst=0x04 psh=0x08 ack=0x10 urg=0x20 ecn=0x40 cwr=0x80 *)
 
 (* The matchcond the parser emits for a single positive `tcp flags syn`. *)
-Definition m_syn : matchcond := MMasked FTcpFlags true [2] [0] [0].
+Definition m_syn : matchcond := MMasked FTcpFlags CNe [2] [0] [0].
 (* The refuted exact-equality encoding, for contrast. *)
 Definition m_syn_old : matchcond := MEq FTcpFlags [2].
 (* `tcp flags ! syn` (BANG): (flags & syn) == 0. *)
-Definition m_not_syn : matchcond := MMasked FTcpFlags false [2] [0] [0].
+Definition m_not_syn : matchcond := MMasked FTcpFlags CEq [2] [0] [0].
 (* `tcp flags == syn` (explicit EQ): exact equality. *)
 Definition m_syn_eq : matchcond := MEq FTcpFlags [2].
 (* `tcp flags != cwr` (explicit NE): plain cmp neq. *)

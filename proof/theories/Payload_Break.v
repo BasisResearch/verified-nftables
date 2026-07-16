@@ -71,9 +71,7 @@ Proof. reflexivity. Qed.
 Definition dropneq_chain : chain :=
   {| c_policy := Accept;
      c_rules := [ {| r_body := [BMatch (MNeq FThDport [0; 22])];
-                     r_verdict := Drop; r_vmap := None; r_nat := None;
-                     r_tproxy := None; r_fwd := None; r_queue := None;
-                     r_after := [] |} ] |}.
+     r_outcome := OVerdict Drop; r_after := [] |} ] |}.
 
 Theorem chain_dropneq_short_accepts :
   eval_chain dropneq_chain empty_env bad_pkt = Accept.

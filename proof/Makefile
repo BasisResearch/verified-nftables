@@ -107,10 +107,11 @@ validate: glue
 AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   compile_chain_mut_env_correct compile_seq_mut_correct compile_table_correct \
   compile_ruleset_correct compile_hook_correct compile_seq_correct \
-  optimize_table_uncond_correct optimize_table_uncond_compile_correct
+  optimize_table_uncond_correct optimize_table_uncond_compile_correct \
+  elab_matchcond_correct Semantics.run_rule_outcome_eq
 
 axioms:
-	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond.\n'; \
+	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Elab.\n'; \
 	  for t in $(AXIOM_GATE_THEOREMS); do printf 'Print Assumptions %s.\n' "$$t"; done; } \
 	| coqtop -R . Nft 2>/dev/null \
 	| grep -E 'Closed under the global context|Axioms' \

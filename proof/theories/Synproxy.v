@@ -69,9 +69,8 @@ Definition rst_pkt  : packet := mk_tcp_pkt 4.   (* RST  = 0x04 (neither SYN nor 
 (** A chain whose ONLY rule is `synproxy mss 1460 wscale 7`, with policy Accept.
     (Accept, not Drop, so that a [Drop] outcome can only come FROM the synproxy.) *)
 Definition synproxy_rule : rule :=
-  {| r_body := [ BStmt (SSynproxy 1460 7) ]; r_verdict := Continue;
-     r_vmap := None; r_nat := None; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [ BStmt (SSynproxy 1460 7) ];
+     r_outcome := ONone; r_after := [] |}.
 Definition synproxy_chain : chain :=
   {| c_policy := Accept; c_rules := [ synproxy_rule ] |}.
 

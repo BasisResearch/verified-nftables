@@ -5,7 +5,7 @@
    the installed bytecode). *)
 
 From Stdlib Require Import List String ZArith.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics.
+From Nft Require Import Bytes Verdict Packet Bytecode Syntax Semantics Nftval Elab.
 Import ListNotations.
 Open Scope string_scope.
 
@@ -30,50 +30,42 @@ Definition gen_env : env := env_with_sets base_env decls.
 
 Definition global_inbound_world : chain :=
   {| c_policy := Continue;
-   c_rules := [{| r_body := [(BMatch (MEq FIp4Saddr [81; 209; 165; 42]));
-             (BMatch (MEq FMetaL4proto [6]));
-             (BMatch (MEq FThDport [0; 22]))];
-     r_verdict := Accept; r_vmap := None;
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
+   c_rules := [{| r_body := [(BMatch (elab_m (TMEq FIp4Saddr (ip4 81 209 165 42))));
+             (BDep (elab_m (TMEq FMetaL4proto (VInteger 1 6))));
+             (BMatch (elab_m (TMEq FThDport (VPort 22))))];
+     r_outcome := OVerdict Accept; r_after := [] |}] |}.
 
 Definition global_inbound_private : chain :=
   {| c_policy := Continue;
-   c_rules := [{| r_body := [(BMatch (MEq FMetaL4proto [1]));
-             (BMatch (MEq FIcmpType [8]));
+   c_rules := [{| r_body := [(BDep (elab_m (TMEq FMetaL4proto (VInteger 1 1))));
+             (BMatch (elab_m (TMEq FIcmpType (VInteger 1 8))));
              (BMatch (MLimit {| ls_rate := 5; ls_unit := 0; ls_burst := 5; ls_bytes := false; ls_flags := 0 |}))];
-     r_verdict := Accept; r_vmap := None;
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
+     r_outcome := OVerdict Accept; r_after := [] |};
 
    {| r_body := [];
-     r_verdict := Continue; r_vmap := (Some {| vm_fields := [FIp4Protocol; FThDport]; vm_keyf := None; vm_name := "__map0" |});
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
+     r_outcome := OVmap {| vm_fields := [FIp4Protocol; FThDport]; vm_keyf := None; vm_name := "__map0" |}; r_after := [] |}] |}.
 
 Definition global_inbound : chain :=
   {| c_policy := Drop;
    c_rules := [{| r_body := [];
-     r_verdict := Continue; r_vmap := (Some {| vm_fields := []; vm_keyf := (Some (FCtState, [])); vm_name := "__map1" |});
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
+     r_outcome := OVmap {| vm_fields := []; vm_keyf := (Some (FCtState, [])); vm_name := "__map1" |}; r_after := [] |};
 
    {| r_body := [];
-     r_verdict := Continue; r_vmap := (Some {| vm_fields := []; vm_keyf := (Some (FMetaIifname, [])); vm_name := "__map2" |});
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
+     r_outcome := OVmap {| vm_fields := []; vm_keyf := (Some (FMetaIifname, [])); vm_name := "__map2" |}; r_after := [] |}] |}.
 
 Definition global_forward : chain :=
   {| c_policy := Drop;
    c_rules := [{| r_body := [];
-     r_verdict := Continue; r_vmap := (Some {| vm_fields := []; vm_keyf := (Some (FCtState, [])); vm_name := "__map3" |});
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |};
+     r_outcome := OVmap {| vm_fields := []; vm_keyf := (Some (FCtState, [])); vm_name := "__map3" |}; r_after := [] |};
 
-   {| r_body := [(BMatch (MEq FMetaIifname [101; 116; 104; 49; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0]))];
-     r_verdict := Accept; r_vmap := None;
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
+   {| r_body := [(BMatch (elab_m (TMEq FMetaIifname (ifname "eth1"))))];
+     r_outcome := OVerdict Accept; r_after := [] |}] |}.
 
 Definition global_postrouting : chain :=
   {| c_policy := Accept;
-   c_rules := [{| r_body := [(BMatch (MEq (FPayload PNetwork 12 2) [192; 168]));
-             (BMatch (MEq FMetaOifname [112; 112; 112; 48; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0]))];
-     r_verdict := Accept; r_vmap := None;
-     r_nat := (Some {| nat_addr_imm := None; nat_field := None; nat_map := None; nat_src := None; nat_extra := NXnone; nat_kind := "masq"; nat_family := "ip"; nat_flags := 0 |}); r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}] |}.
+   c_rules := [{| r_body := [(BMatch (elab_m (MPrefix FIp4Saddr CEq (ip4 192 168 0 0) 16)));
+             (BMatch (elab_m (TMEq FMetaOifname (ifname "ppp0"))))];
+     r_outcome := ONat {| nat_addr_imm := None; nat_field := None; nat_map := None; nat_src := None; nat_extra := NXnone; nat_kind := NKmasq; nat_family := NFip4; nat_flags := 0 |}; r_after := [] |}] |}.
 
 Definition global_chains : list (string * chain) :=
   [("inbound_world", global_inbound_world);

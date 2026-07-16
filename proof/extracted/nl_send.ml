@@ -727,6 +727,10 @@ let encode_instr (ins : Bytecode.instr) : string * string =
        ^ attr_u32 nfta_ct_sreg src
        ^ attr_u32 nfta_ct_direction (ct_dir_num dir))
   | Bytecode.INat (kind, family, amin, amax, pmin, pmax, flags) ->
+      let kind = (match kind with Bytecode.NKsnat -> "snat" | Bytecode.NKdnat -> "dnat"
+                                | Bytecode.NKmasq -> "masq" | Bytecode.NKredir -> "redir") in
+      let family = (match family with Bytecode.NFip4 -> "ip" | Bytecode.NFip6 -> "ip6"
+                                    | Bytecode.NFinet -> "inet") in
       let regopt typ = function Some r -> attr_u32 typ r | None -> "" in
       let flagopt typ = if flags > 0 then attr_u32 typ flags else "" in
       (match kind with

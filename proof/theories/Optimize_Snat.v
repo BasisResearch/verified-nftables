@@ -52,15 +52,13 @@ Definition snat_map_spec (f : field) (mapname : string) : nat_spec :=
     [terminal_outcome] returns [Some Accept] whenever [r_nat] is set, so the merge is
     verdict-preserving independent of the stated [r_verdict]. *)
 Definition orig_snat_rule (f : field) (v T : data) : rule :=
-  {| r_body := [BMatch (MCmp f CEq v)]; r_verdict := Accept; r_vmap := None;
-     r_nat := Some (snat_imm_spec T); r_tproxy := None; r_fwd := None;
-     r_queue := None; r_after := [] |}.
+  {| r_body := [BMatch (MCmp f CEq v)];
+     r_outcome := ONat (snat_imm_spec T); r_after := [] |}.
 
 (** The MERGED rule: `snat to <field> map @mapname` — BARE, no head guard. *)
 Definition mk_snat_rule (f : field) (mapname : string) : rule :=
-  {| r_body := []; r_verdict := Continue; r_vmap := None;
-     r_nat := Some (snat_map_spec f mapname); r_tproxy := None; r_fwd := None;
-     r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := ONat (snat_map_spec f mapname); r_after := [] |}.
 
 (** [dmap2], [nat_map_key_single], [map_has_key_dmap2], [apply_nat_tuple_indep]
     and [nat_orig_addr_indep] are kind-independent — reused from [Optimize_Dnat]. *)
@@ -71,7 +69,7 @@ Lemma outcome_orig_snat : forall f v T e p, outcome (orig_snat_rule f v T) e p =
 Proof.
   intros f v T e p. unfold outcome, orig_snat_rule.
   cbn [body_synproxy_stops r_body body_matches].
-  unfold outcome_core. cbn [r_vmap r_nat]. reflexivity.
+  unfold outcome_core. cbn [r_vmap r_nat r_outcome]. reflexivity.
 Qed.
 
 Lemma outcome_mk_snat : forall f mapname e p, outcome (mk_snat_rule f mapname) e p = Some Accept.
@@ -97,7 +95,7 @@ Proof.
   intros f v T e p. unfold rule_loadable, orig_snat_rule, end_loadable, tail_loadable.
   cbn [r_body body_loadable_walk body_item_loadable body_synproxy_stops body_thread
        r_after r_vmap terminal_loadable terminal_outcome r_nat r_tproxy r_fwd r_queue
-       nat_src nat_map nat_field snat_imm_spec forallb].
+       nat_src nat_map nat_field snat_imm_spec forallb r_outcome].
   unfold match_loadable. rewrite !andb_true_r. reflexivity.
 Qed.
 
@@ -111,7 +109,7 @@ Proof.
   unfold rule_loadable, mk_snat_rule, end_loadable, tail_loadable, terminal_loadable,
     terminal_outcome, snat_map_spec.
   cbn [r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after body_loadable_walk
-       body_synproxy_stops body_thread nat_src nat_map fields_loadable forallb].
+       body_synproxy_stops body_thread nat_src nat_map fields_loadable forallb r_outcome].
   rewrite nat_map_key_single. rewrite !andb_true_r, !andb_true_l. reflexivity.
 Qed.
 
@@ -167,7 +165,7 @@ Theorem apply_nat_snat_eq : forall h f m T e p,
   apply_nat h (mk_snat_rule f m) e p = apply_nat h (orig_snat_rule f [] T) e p.
 Proof.
   intros h f m T e p Hlk.
-  unfold apply_nat, mk_snat_rule, orig_snat_rule. cbn [r_nat].
+  unfold apply_nat, mk_snat_rule, orig_snat_rule. cbn [r_nat r_outcome].
   destruct (e_nat e (pkt_flow p)) as [mm |].
   - f_equal.
   - destruct (pkt_ctdir_orig p); [| reflexivity].
@@ -190,7 +188,7 @@ Proof.
   transitivity (apply_nat h (orig_snat_rule f [] T1) e p).
   - apply apply_nat_snat_eq.
     rewrite Hmap. unfold dmap2. cbn [map_lookup_data]. rewrite Hv1. reflexivity.
-  - unfold apply_nat, orig_snat_rule. cbn [r_nat]. reflexivity.
+  - unfold apply_nat, orig_snat_rule. cbn [r_nat r_outcome]. reflexivity.
 Qed.
 
 (* ================================================================== *)
@@ -200,12 +198,12 @@ Qed.
     `<f> = v  snat to T` (an [orig_snat_rule]).  Constructor matches only — no
     monolithic [rule_eq_dec] (cf. [Optimize_Mapn.is_orig_map]). *)
 Definition orig_snat_data (r : rule) : option (field * data * data) :=
-  match r_body r, r_nat r with
-  | [BMatch (MCmp f CEq v)], Some ns =>
+  match r_body r, r_outcome r with
+  | [BMatch (MCmp f CEq v)], ONat ns =>
       match nat_src ns, nat_map ns, nat_field ns, nat_addr_imm ns, nat_extra ns with
       | None, None, None, Some T, NXnone =>
-          if String.string_dec (nat_kind ns) nat_snat_kind then
-          if String.string_dec (nat_family ns) nat_fam_ip4 then
+          if natop_eqb (nat_kind ns) nat_snat_kind then
+          if nataf_eqb (nat_family ns) nat_fam_ip4 then
           match nat_flags ns with O => Some (f, v, T) | _ => None end
           else None else None
       | _, _, _, _, _ => None
@@ -215,10 +213,10 @@ Definition orig_snat_data (r : rule) : option (field * data * data) :=
 
 Lemma orig_snat_data_shape : forall r f v T,
   orig_snat_data r = Some (f, v, T) ->
-  r_body r = [BMatch (MCmp f CEq v)] /\ r_nat r = Some (snat_imm_spec T).
+  r_body r = [BMatch (MCmp f CEq v)] /\ r_outcome r = ONat (snat_imm_spec T).
 Proof.
-  intros [body verd vmap nt tp fwd q aft] f v T H. unfold orig_snat_data in H.
-  cbn [r_body r_nat] in H.
+  intros [body outc aft] f v T H. unfold orig_snat_data in H.
+  cbn [r_body r_nat r_outcome] in H.
   destruct body as [| it tl]; try discriminate H.
   destruct it as [m|s]; [|discriminate H].
   destruct m as [ b1 b2 | b1 b2 | b1 b2 b3 b4 | b1 b2 b3 b4 b5 | f1 op v1
@@ -226,7 +224,7 @@ Proof.
                 | b1 | b1 | b1 | b1 b2 b3 ]; try discriminate H.
   destruct op; try discriminate H.
   destruct tl as [| x l]; try discriminate H.
-  destruct nt as [ns|]; [|discriminate H].
+  destruct outc as [vv| |vm|vm2 ns2|ns|tp|fw|qq]; try discriminate H.
   destruct ns as [aimm afld amap asrc aext aknd afam afl].
   cbn [nat_addr_imm nat_field nat_map nat_src nat_extra nat_kind nat_family nat_flags] in H.
   destruct asrc; try discriminate H.
@@ -234,17 +232,17 @@ Proof.
   destruct afld; try discriminate H.
   destruct aimm as [T0|]; [|discriminate H].
   destruct aext; try discriminate H.
-  destruct (String.string_dec aknd nat_snat_kind) as [Hk|]; [|discriminate H].
-  destruct (String.string_dec afam nat_fam_ip4) as [Hfam|]; [|discriminate H].
+  destruct aknd; cbn in H; try discriminate H.
+  destruct afam; cbn in H; try discriminate H.
   destruct afl; [|discriminate H].
-  injection H as -> -> ->. subst. cbn [r_body r_nat]. split; reflexivity.
+  injection H as -> -> ->. cbn [r_body r_nat r_outcome]. split; reflexivity.
 Qed.
 
 (** Recognise a rule as EXACTLY the original `snat to <imm>` shell. *)
 Definition is_orig_snat (r : rule) : option (field * data * data) :=
-  match orig_snat_data r, r_verdict r, r_vmap r, r_tproxy r, r_fwd r, r_queue r, r_after r with
-  | Some (f, v, T), Accept, None, None, None, None, [] => Some (f, v, T)
-  | _, _, _, _, _, _, _ => None
+  match orig_snat_data r, r_after r with
+  | Some (f, v, T), [] => Some (f, v, T)
+  | _, _ => None
   end.
 
 Lemma is_orig_snat_shape : forall r f v T,
@@ -252,15 +250,11 @@ Lemma is_orig_snat_shape : forall r f v T,
 Proof.
   intros r f v T H. unfold is_orig_snat in H.
   destruct (orig_snat_data r) as [[[f0 v0] T0]|] eqn:Hd; [|discriminate H].
-  destruct (r_verdict r) eqn:Hverd; try discriminate H.
-  destruct (r_vmap r) eqn:Hvm; try discriminate H.
-  destruct (r_tproxy r) eqn:Htp; try discriminate H.
-  destruct (r_fwd r) eqn:Hfwd; try discriminate H.
-  destruct (r_queue r) eqn:Hq; try discriminate H.
   destruct (r_after r) eqn:Haft; try discriminate H.
   injection H as -> -> ->.
-  pose proof (orig_snat_data_shape r f v T Hd) as [Hbody Hnat].
-  destruct r; cbn in *. subst. reflexivity.
+  pose proof (orig_snat_data_shape r f v T Hd) as [Hbody Hout].
+  destruct r as [body outc aft]; cbn in *.
+  subst. reflexivity.
 Qed.
 
 (** Two rules form an eligible BARE-map snat merge: both `snat to <imm>` shells

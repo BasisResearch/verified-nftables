@@ -331,7 +331,7 @@ Proof.
   induction ms as [| m ms IH]; intros tail res e p Hc rf.
   - cbn [flat_map app forallb]. apply Hc.
   - cbn [forallb]. unfold eval_matchcond.
-    destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0 | f op v0
+    destruct m as [f v0 | f v0 | f neg lo hi | f mop mask xor v0 | f op v0
                   | fields neg nm | f ts op v0 | f ts neg nm
                   | f ts neg lo hi | spec | qspec | clspec
                   | celems neg nm];
@@ -358,7 +358,7 @@ Proof.
         [| rewrite compile_load_break by exact Hf; reflexivity].
       rewrite compile_load_correct by exact Hf.
       cbn [run_rule]. rewrite !set_reg_same.
-      destruct (eval_cmp (if neg then CNe else CEq)
+      destruct (eval_cmp mop
                  (data_bitops (field_value f e p) mask xor) v0);
         cbn [andb]; [apply IH; exact Hc | reflexivity].
     + (* MCmp: ordered comparison *) destruct (field_loadable f p) eqn:Hf; cbn [andb];
@@ -990,7 +990,7 @@ Lemma writes_match_one : forall m X e p R,
              = if eval_matchcond m e p then R else (e, p).
 Proof.
   intros m X e p R Hc rf. unfold eval_matchcond.
-  destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0 | f op v0
+  destruct m as [f v0 | f v0 | f neg lo hi | f mop mask xor v0 | f op v0
                 | fields neg nm | f ts op v0 | f ts neg nm
                 | f ts neg lo hi | spec | qspec | clspec
                 | celems neg nm]; cbn [compile_match app match_loadable eval_matchcond_body].
@@ -1012,7 +1012,7 @@ Proof.
   - (* MMasked *) destruct (field_loadable f p) eqn:Hf; cbn [andb];
       [| rewrite compile_load_break_writes by exact Hf; reflexivity].
     rewrite compile_load_writes by exact Hf. cbn [run_rule_writes]. rewrite !set_reg_same.
-    destruct (eval_cmp (if neg then CNe else CEq) (data_bitops (field_value f e p) mask xor) v0);
+    destruct (eval_cmp mop (data_bitops (field_value f e p) mask xor) v0);
       [apply Hc | reflexivity].
   - (* MCmp *) destruct (field_loadable f p) eqn:Hf; cbn [andb];
       [| rewrite compile_load_break_writes by exact Hf; reflexivity].
@@ -2275,7 +2275,7 @@ Lemma compile_match_break : forall m rest e p,
   forall rf, run_rule rf (compile_match m ++ rest) e p = None.
 Proof.
   intros m rest e p Hl rf.
-  destruct m as [f v0 | f v0 | f neg lo hi | f neg mask xor v0 | f op v0
+  destruct m as [f v0 | f v0 | f neg lo hi | f mop mask xor v0 | f op v0
                 | fields neg nm | f ts op v0 | f ts neg nm
                 | f ts neg lo hi | spec | qspec | clspec
                 | celems neg nm]; cbn [compile_match match_loadable] in *; try discriminate Hl;
@@ -3185,11 +3185,11 @@ Qed.
 From Stdlib Require Import String.
 Local Open Scope string_scope.
 Definition rg_jump_rule : rule :=
-  {| r_body := []; r_verdict := Jump "deny"; r_vmap := None; r_nat := None;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := OVerdict (Jump "deny"); r_after := [] |}.
 Definition rg_drop_rule : rule :=
-  {| r_body := []; r_verdict := Drop; r_vmap := None; r_nat := None;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := OVerdict Drop; r_after := [] |}.
 Definition rg_base : chain := {| c_policy := Accept; c_rules := [rg_jump_rule] |}.
 Definition rg_deny : chain := {| c_policy := Accept; c_rules := [rg_drop_rule] |}.
 Definition rg_cs : list (String.string * chain) := [("deny", rg_deny)].

@@ -233,70 +233,72 @@ let sym_fibtype = [
   "throw",[9;0;0;0]; "nat",[10;0;0;0]; "xresolve",[11;0;0;0];
 ]
 
-(* encode a single (non-range, non-prefix, non-concat) value for a field kind *)
-let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
+(* ---- the TYPED value of an atom (Nftval.nftval), per field kind ----
+   The byte encoding used EVERYWHERE below is the VERIFIED [Nftval.encode] of
+   this typed value ([enc_atom] is literally [encode (typed_atom k v)]), so the
+   typed->bytes step is the proved one (Nftval round-trips + Elab agreement),
+   not an unverified byte table. *)
+let nof = BinNat.N.of_nat
+let be_int (b : Bytes.data) : int = L.fold_left (fun a x -> a * 256 + x) 0 b
+
+let typed_atom (k : kind) (v : Nft_ast.value) : Nftval.nftval =
   match k, v with
-  | KIfname, (Nft_ast.Vsym s | Nft_ast.Vstr s) -> ifname_bytes s
-  (* iif/oif: the interface INDEX, a 4-byte host-endian integer.  A numeric
-     literal is taken verbatim; a name is resolved to its index at load time. *)
-  | KIfindex, Nft_ast.Vnum n -> bytes_of_int_le 4 n
-  | KIfindex, (Nft_ast.Vsym s | Nft_ast.Vstr s) -> bytes_of_int_le 4 (nametoindex s)
-  | KIp4, Nft_ast.Vip4 b -> b
-  | KIp6, Nft_ast.Vip6 b -> b
-  | KIp6, Nft_ast.Vip4 b -> b           (* a v4-mapped literal in a v6 context *)
-  | KPort, Nft_ast.Vnum n -> bytes_of_int 2 n
-  | KPort, Nft_ast.Vsym s -> bytes_of_int 2 (L.assoc_opt s sym_service
-        |> function Some p -> p | None -> raise (Unsupported ("service " ^ s)))
-  | KL4proto, Nft_ast.Vnum n -> [n land 0xff]
-  | KL4proto, Nft_ast.Vsym s -> lookup "l4proto" sym_l4proto s
-  | KNfproto, Nft_ast.Vnum n -> [n land 0xff]
-  | KNfproto, Nft_ast.Vsym s -> lookup "nfproto" sym_nfproto s
-  | KEthertype, Nft_ast.Vnum n -> bytes_of_int 2 n
-  | KEthertype, Nft_ast.Vsym s -> lookup "ethertype" sym_ethertype s
-  | KCtstate, Nft_ast.Vsym s -> lookup "ct state" sym_ctstate s
-  | KCtstate, Nft_ast.Vnum n -> bytes_of_int 4 n
-  | KCtstatus, Nft_ast.Vsym s -> lookup "ct status" sym_ctstatus s
-  | KCtstatus, Nft_ast.Vnum n -> bytes_of_int 4 n
-  (* a single tcp-flag symbol / numeric literal -> a 1-byte mask *)
-  | KTcpflag, Nft_ast.Vsym s -> [lookup "tcp flag" sym_tcpflag s]
-  | KTcpflag, Nft_ast.Vnum n -> [n land 0xff]
-  (* `meta mark` / `ct mark` are HOST-ENDIAN (BYTEORDER_HOST_ENDIAN) 4-byte
-     integers in the kernel (nft_meta.c `*dest = skb->mark;`; src/ct.c:52 /
-     src/meta.c:106).  We store them little-endian (host order on x86) like the
-     register actually holds them, exactly as [KIfindex] already does.  For
-     equality/neq this is order-agnostic (the kernel uses memcmp); for an ORDERED
-     or RANGE match nft inserts a `byteorder hton(4,4)` before the cmp/range so
-     the comparison runs over network bytes — see [lower_match], which prepends a
-     [TByteorder true 4 4] transform and encodes the bounds network-order. *)
-  | KMark, Nft_ast.Vnum n -> bytes_of_int_le 4 n
-  | KIcmp, Nft_ast.Vnum n -> [n land 0xff]
-  | KIcmp, Nft_ast.Vsym s -> lookup "icmp type" sym_icmp s
-  | KIcmpv6, Nft_ast.Vnum n -> [n land 0xff]
-  | KIcmpv6, Nft_ast.Vsym s -> lookup "icmpv6 type" sym_icmpv6 s
-  | KPkttype, Nft_ast.Vsym s -> lookup "pkttype" sym_pkttype s
-  | KPkttype, Nft_ast.Vnum n -> [n land 0xff]
-  | KIgmp, Nft_ast.Vsym s -> lookup "igmp type" sym_igmptype s
-  | KIgmp, Nft_ast.Vnum n -> [n land 0xff]
-  | KIcmpcode, Nft_ast.Vsym s -> lookup "icmp code" sym_icmpcode s
-  | KIcmpcode, Nft_ast.Vnum n -> [n land 0xff]
-  | KIcmp6code, Nft_ast.Vsym s -> lookup "icmpv6 code" sym_icmp6code s
-  | KIcmp6code, Nft_ast.Vnum n -> [n land 0xff]
-  | KMhtype, Nft_ast.Vsym s -> lookup "mh type" sym_mhtype s
-  | KMhtype, Nft_ast.Vnum n -> [n land 0xff]
-  | KFibType, Nft_ast.Vsym s -> lookup "fib type" sym_fibtype s
-  | KFibType, Nft_ast.Vnum n -> bytes_of_int_le 4 n
-  (* a MAC literal is 6 verbatim big-endian bytes (ether saddr/daddr, arp ether). *)
-  | KNum 6, Nft_ast.Vmac b -> b
-  | KNum w, Nft_ast.Vnum n -> bytes_of_int w n
-  | KNumLe w, Nft_ast.Vnum n -> bytes_of_int_le w n
-  | KArpop, Nft_ast.Vnum n -> bytes_of_int 2 n
-  | KArpop, Nft_ast.Vsym s -> lookup "arp operation" sym_arpop s
-  | KCtdir, Nft_ast.Vnum n -> [n land 0xff]
+  | KIfname, (Nft_ast.Vsym s | Nft_ast.Vstr s) -> Nftval.VIfname (ifname_bytes s)
+  | KIfindex, Nft_ast.Vnum n -> Nftval.VHostInt (4, nof n)
+  | KIfindex, (Nft_ast.Vsym s | Nft_ast.Vstr s) -> Nftval.VHostInt (4, nof (nametoindex s))
+  | KIp4, Nft_ast.Vip4 b -> Nftval.VIpv4 b
+  | KIp6, Nft_ast.Vip6 b -> Nftval.VIpv6 b
+  | KIp6, Nft_ast.Vip4 b -> Nftval.VIpv6 b   (* a v4-mapped literal in a v6 context *)
+  | KPort, Nft_ast.Vnum n -> Nftval.VPort (nof n)
+  | KPort, Nft_ast.Vsym s ->
+      Nftval.VPort (nof (L.assoc_opt s sym_service
+        |> function Some p -> p | None -> raise (Unsupported ("service " ^ s))))
+  | KL4proto, Nft_ast.Vnum n -> Nftval.VInteger (1, nof (n land 0xff))
+  | KL4proto, Nft_ast.Vsym s -> Nftval.VInteger (1, nof (be_int (lookup "l4proto" sym_l4proto s)))
+  | KNfproto, Nft_ast.Vnum n -> Nftval.VInteger (1, nof (n land 0xff))
+  | KNfproto, Nft_ast.Vsym s -> Nftval.VInteger (1, nof (be_int (lookup "nfproto" sym_nfproto s)))
+  | KEthertype, Nft_ast.Vnum n -> Nftval.VInteger (2, nof n)
+  | KEthertype, Nft_ast.Vsym s -> Nftval.VInteger (2, nof (be_int (lookup "ethertype" sym_ethertype s)))
+  | KCtstate, Nft_ast.Vsym s -> Nftval.VCtState (nof (be_int (lookup "ct state" sym_ctstate s)))
+  | KCtstate, Nft_ast.Vnum n -> Nftval.VCtState (nof n)
+  | KCtstatus, Nft_ast.Vsym s -> Nftval.VInteger (4, nof (be_int (lookup "ct status" sym_ctstatus s)))
+  | KCtstatus, Nft_ast.Vnum n -> Nftval.VInteger (4, nof n)
+  | KTcpflag, Nft_ast.Vsym s -> Nftval.VInteger (1, nof (lookup "tcp flag" sym_tcpflag s))
+  | KTcpflag, Nft_ast.Vnum n -> Nftval.VInteger (1, nof (n land 0xff))
+  | KMark, Nft_ast.Vnum n -> Nftval.VHostInt (4, nof n)
+  | KIcmp, Nft_ast.Vnum n -> Nftval.VInteger (1, nof (n land 0xff))
+  | KIcmp, Nft_ast.Vsym s -> Nftval.VInteger (1, nof (be_int (lookup "icmp type" sym_icmp s)))
+  | KIcmpv6, Nft_ast.Vnum n -> Nftval.VInteger (1, nof (n land 0xff))
+  | KIcmpv6, Nft_ast.Vsym s -> Nftval.VInteger (1, nof (be_int (lookup "icmpv6 type" sym_icmpv6 s)))
+  | KPkttype, Nft_ast.Vsym s -> Nftval.VInteger (1, nof (be_int (lookup "pkttype" sym_pkttype s)))
+  | KPkttype, Nft_ast.Vnum n -> Nftval.VInteger (1, nof (n land 0xff))
+  | KIgmp, Nft_ast.Vsym s -> Nftval.VInteger (1, nof (be_int (lookup "igmp type" sym_igmptype s)))
+  | KIgmp, Nft_ast.Vnum n -> Nftval.VInteger (1, nof (n land 0xff))
+  | KIcmpcode, Nft_ast.Vsym s -> Nftval.VInteger (1, nof (be_int (lookup "icmp code" sym_icmpcode s)))
+  | KIcmpcode, Nft_ast.Vnum n -> Nftval.VInteger (1, nof (n land 0xff))
+  | KIcmp6code, Nft_ast.Vsym s -> Nftval.VInteger (1, nof (be_int (lookup "icmpv6 code" sym_icmp6code s)))
+  | KIcmp6code, Nft_ast.Vnum n -> Nftval.VInteger (1, nof (n land 0xff))
+  | KMhtype, Nft_ast.Vsym s -> Nftval.VInteger (1, nof (be_int (lookup "mh type" sym_mhtype s)))
+  | KMhtype, Nft_ast.Vnum n -> Nftval.VInteger (1, nof (n land 0xff))
+  | KFibType, Nft_ast.Vsym s -> Nftval.VFibType (nof (be_int (L.rev (lookup "fib type" sym_fibtype s))))
+  | KFibType, Nft_ast.Vnum n -> Nftval.VFibType (nof n)
+  | KNum 6, Nft_ast.Vmac b -> Nftval.VEther b
+  | KNum w, Nft_ast.Vnum n -> Nftval.VInteger (w, nof n)
+  | KNumLe w, Nft_ast.Vnum n -> Nftval.VHostInt (w, nof n)
+  | KArpop, Nft_ast.Vnum n -> Nftval.VInteger (2, nof n)
+  | KArpop, Nft_ast.Vsym s -> Nftval.VInteger (2, nof (be_int (lookup "arp operation" sym_arpop s)))
+  | KCtdir, Nft_ast.Vnum n -> Nftval.VInteger (1, nof (n land 0xff))
   | KCtdir, Nft_ast.Vsym s ->
-      (match s with "original" -> [0] | "reply" -> [1]
+      (match s with "original" -> Nftval.VInteger (1, nof 0)
+       | "reply" -> Nftval.VInteger (1, nof 1)
        | _ -> raise (Unsupported ("ct direction " ^ s)))
   | _, Nft_ast.Vvar n -> raise (Unsupported ("unresolved $" ^ n))
   | _ -> raise (Unsupported "value/selector type mismatch")
+
+(* encode a single (non-range, non-prefix, non-concat) value for a field kind:
+   the VERIFIED encoding of its typed value *)
+let enc_atom (k : kind) (v : Nft_ast.value) : Bytes.data =
+  Nftval.encode (typed_atom k v)
 
 (* the byte width a kind compares at (for building a prefix mask) *)
 let width_of_kind = function
@@ -701,6 +703,22 @@ let payload_prefix_field (f : Syntax.field) (nbytes : int) : Syntax.field option
   | Syntax.FCtDir _ -> Some f
   | _ -> None
 
+(* ---------- typed-emission side tables ----------
+   The lowering constructs every typed-representable match THROUGH the verified
+   elaboration ([Elab.elab_m] of an [Elab.tmatch]); these tables remember the
+   typed source of each produced byte-level matchcond (keyed by value — equal
+   byte terms print the same typed form) and which matchconds were SYNTHESIZED
+   protocol-dependency guards, so the emitter (nft_emit.ml) can print the typed
+   constructors and the [BDep] tag instead of raw byte lists. *)
+let typed_tbl : (Syntax.matchcond * Elab.tmatch) list ref = ref []
+let dep_mcs : Syntax.matchcond list ref = ref []
+let reg_typed (tm : Elab.tmatch) : Syntax.matchcond =
+  let mc = Elab.elab_m tm in
+  (if not (L.mem_assoc mc !typed_tbl) then typed_tbl := (mc, tm) :: !typed_tbl);
+  mc
+let typed_of (mc : Syntax.matchcond) : Elab.tmatch option = L.assoc_opt mc !typed_tbl
+let is_dep (mc : Syntax.matchcond) : bool = L.mem mc !dep_mcs
+
 (* ---------- mutable lowering state ---------- *)
 
 type state = {
@@ -834,25 +852,31 @@ let interval_of_decl_elem st (types : string list) (v : Nft_ast.value)
 
 (* ---------- match lowering ---------- *)
 
+(* Intern an encoded anonymous-set element list, DEDUPLICATED: two inline
+   `{...}` sets with the same encoded elements share ONE "__setN" binding (set
+   identity by contents), instead of exploding into per-occurrence copies. *)
+let intern_elems st (elems : (Bytes.data * Bytes.data) list) : string =
+  match L.find_opt (fun (_, e) -> e = elems) st.sets with
+  | Some (name, _) -> name
+  | None ->
+      let name = fresh st "__set" in
+      st.sets <- (name, elems) :: st.sets;
+      name
+
 (* build the anonymous-set env entry for an inline `{...}` set over a single
-   field kind, returning its fresh name *)
+   field kind, returning its (deduplicated) name *)
 let intern_anon_set st (k : kind) (elems : Nft_ast.value list) : string =
-  let name = fresh st "__set" in
-  st.sets <- (name, L.map (interval_of_value st k) elems) :: st.sets;
-  name
+  intern_elems st (L.map (interval_of_value st k) elems)
 
 (* As [intern_anon_set] but encode the elements NETWORK-ORDER (big-endian): used
    for an INTERVAL set over a host-endian field, whose lookup is preceded by a
    `byteorder hton` (see the SEset branch in [lower_match]). *)
 let intern_anon_set_be st (k : kind) (elems : Nft_ast.value list) : string =
-  let name = fresh st "__set" in
-  st.sets <- (name, L.map (interval_of_value_be st k) elems) :: st.sets;
-  name
+  intern_elems st (L.map (interval_of_value_be st k) elems)
 
 (* build the anonymous-set env entry for a CONCATENATED inline set, where each
    element is a Vconcat matched against [kinds] *)
 let intern_anon_concat st (kinds : kind list) (elems : Nft_ast.value list) : string =
-  let name = fresh st "__set" in
   (* per-field cross-product element (NFT_SET_CONCAT): lo = concat of per-field
      lows, hi = concat of per-field highs.  A per-field range/CIDR is now
      faithfully expressible (was previously refused). *)
@@ -863,8 +887,7 @@ let intern_anon_concat st (kinds : kind list) (elems : Nft_ast.value list) : str
         (L.concat (L.map (fun (lo,_) -> pad_to_slot lo) ivs),
          L.concat (L.map (fun (_,hi) -> pad_to_slot hi) ivs))
     | _ -> raise (Unsupported "concatenated set element arity mismatch") in
-  st.sets <- (name, L.map enc1 elems) :: st.sets;
-  name
+  intern_elems st (L.map enc1 elems)
 
 (* lower a single match clause into body items (the l4proto dep is handled by the
    caller via the returned dep) *)
@@ -933,7 +956,7 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
       let mc = (match m.Nft_ast.m_rhs.Nft_ast.payload with
         | Nft_ast.SEvalue v ->
             let cmpval = bytes_of_int len ((raw v) lsl shift) in
-            Syntax.MMasked (f, neg, mask, zeros, cmpval)
+            Syntax.MMasked (f, (if neg then Bytecode.CNe else Bytecode.CEq), mask, zeros, cmpval)
         | _ ->
             (* a set/range over a bitfield needs a bitwise-then-lookup/range that
                we do not model faithfully yet; refuse rather than mis-encode. *)
@@ -972,8 +995,8 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
                      (fun acc v -> bor acc (enc_atom k (resolve_var st v)))
                      zero elems in
                  (match op with
-                  | Nft_ast.Op_implicit -> Syntax.MMasked (f, true,  orMask, zero, zero)
-                  | Nft_ast.Op_bang     -> Syntax.MMasked (f, false, orMask, zero, zero)
+                  | Nft_ast.Op_implicit -> Syntax.MMasked (f, Bytecode.CNe,  orMask, zero, zero)
+                  | Nft_ast.Op_bang     -> Syntax.MMasked (f, Bytecode.CEq, orMask, zero, zero)
                   | Nft_ast.Op_eq       -> Syntax.MEq  (f, orMask)
                   | Nft_ast.Op_ne       -> Syntax.MNeq (f, orMask))
              | _ ->
@@ -1002,16 +1025,16 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
                bitmask test, emitted (golden inet/tcp.t.payload:331-337) as
                `bitwise reg1 = (reg1 & X) ^ 0; cmp neq reg1 0`, i.e. (flags & X)
                != 0 — NOT flags == X.  The four written operators differ:
-                 implicit `tcp flags X`   -> (flags & X) != 0   MMasked neg:=true
-                 bang     `tcp flags ! X` -> (flags & X) == 0   MMasked neg:=false
+                 implicit `tcp flags X`   -> (flags & X) != 0   MMasked CNe
+                 bang     `tcp flags ! X` -> (flags & X) == 0   MMasked CEq
                                               (tcp.t:74 `& X == 0`)
                  explicit `tcp flags == X`-> flags == X         MEq  (tcp.t:70)
                  explicit `tcp flags != X`-> flags != X         MNeq (tcp.t:69) *)
             let bits = enc_atom k (resolve_var st v) in
             let zero = [0] in
             (match op with
-             | Nft_ast.Op_implicit -> Syntax.MMasked (f, true,  bits, zero, zero)
-             | Nft_ast.Op_bang     -> Syntax.MMasked (f, false, bits, zero, zero)
+             | Nft_ast.Op_implicit -> Syntax.MMasked (f, Bytecode.CNe,  bits, zero, zero)
+             | Nft_ast.Op_bang     -> Syntax.MMasked (f, Bytecode.CEq, bits, zero, zero)
              | Nft_ast.Op_eq       -> Syntax.MEq  (f, bits)
              | Nft_ast.Op_ne       -> Syntax.MNeq (f, bits))
         | Nft_ast.SEvalue v ->
@@ -1027,17 +1050,13 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
                  Syntax.MRangeT (f, [Syntax.TByteorder (true, w, w)], neg,
                                  enc_atom_be k a, enc_atom_be k b)
              | Nft_ast.Vrange (a, b) -> Syntax.MRange (f, neg, enc_atom k a, enc_atom k b)
-             | Nft_ast.Vprefix ((Nft_ast.Vip4 bs | Nft_ast.Vip6 bs), len) ->
-                 let w = width_of_kind k in let mask = prefix_mask w len in
-                 let net = band bs mask in
-                 (match (if len > 0 && len < 8 * w && len mod 8 = 0
-                         then payload_prefix_field f (len / 8) else None) with
-                  | Some f' ->
-                      let nb = len / 8 in
-                      let bytes = L.filteri (fun i _ -> i < nb) net in
-                      if neg then Syntax.MNeq (f', bytes) else Syntax.MEq (f', bytes)
-                  | None ->
-                      Syntax.MMasked (f, neg, mask, L.init w (fun _ -> 0), net))
+             | Nft_ast.Vprefix ((Nft_ast.Vip4 _ | Nft_ast.Vip6 _) as av, len) ->
+                 (* CIDR: ONE typed shape; the byte-alignment decision (truncated
+                    load + direct cmp vs full-width mask) is the VERIFIED
+                    [Elab.prefix_expand], no longer frontend logic *)
+                 let tv = typed_atom k av in
+                 reg_typed (Elab.MPrefix
+                   (f, (if neg then Bytecode.CNe else Bytecode.CEq), tv, len))
              | Nft_ast.Vset elems
                when host_endian_kind k && set_has_interval st elems ->
                  (* a `$var` expanding to an INTERVAL set over a host-endian field:
@@ -1062,9 +1081,16 @@ let lower_match st (m : Nft_ast.smatch) : dep * Syntax.matchcond =
                  let zero = L.init w (fun _ -> 0) in
                  if neg
                  then Syntax.MNeq (f, bits)
-                 else Syntax.MMasked (f, true (* CNe vs 0 *), bits, zero, zero)
-             | v' -> if neg then Syntax.MNeq (f, enc_atom k v')
-                     else Syntax.MEq (f, enc_atom k v'))
+                 else Syntax.MMasked (f, Bytecode.CNe, bits, zero, zero)
+             | (Nft_ast.Vsym s | Nft_ast.Vstr s) when
+                   k = KIfname && not neg &&
+                   (let n = S.length s in
+                    n >= 1 && S.get s (n-1) = '*'
+                    && not (n >= 2 && S.get s (n-2) = '\\')) ->
+                 (* trailing-* wildcard: the dedicated short-prefix shape *)
+                 reg_typed (Elab.MWildcard (f, ascii (S.sub s 0 (S.length s - 1))))
+             | v' -> let tv = typed_atom k v' in
+                     reg_typed (if neg then Elab.TMNeq (f, tv) else Elab.TMEq (f, tv)))
       in (dep, mc)
   | kps ->
       (* concatenation: ip daddr . oifname [!=] @set / {set} *)
@@ -1174,7 +1200,7 @@ let limit_spec rate unit_ over burst bytes : Packet.limit_spec =
    NFPROTO_IPV6); NO static family is correct, so an inet-table NAT carries the
    runtime-dispatched sentinel "inet" (Semantics.nat_addrfamily_pkt resolves it
    per-packet to the packet's L3 family). *)
-let nat_l3_family = function "ip6" -> "ip6" | "inet" -> "inet" | _ -> "ip"
+let nat_l3_family = function "ip6" -> Bytecode.NFip6 | "inet" -> Bytecode.NFinet | _ -> Bytecode.NFip4
 
 (* a `masquerade` NAT spec: source-NAT to the exit interface's address, in the
    address family of the enclosing table ([nat_l3_family]) so an `ip6 masquerade`
@@ -1194,7 +1220,7 @@ let nat_flags_of fs = L.fold_left (fun a f -> a lor nat_flag_bit f) 0 fs
 let masq_spec ~family ~flags : Syntax.nat_spec =
   { Syntax.nat_addr_imm = None; nat_field = None; nat_map = None; nat_src = None;
     nat_extra = Syntax.NXnone;
-    nat_kind = "masq"; nat_family = nat_l3_family family; nat_flags = flags }
+    nat_kind = Bytecode.NKmasq; nat_family = nat_l3_family family; nat_flags = flags }
 
 (* an `snat to <ip>[:<port>]` / `dnat to <ip>[:<port>]` NAT spec: the target
    address goes into register 1 (= NFTNL_EXPR_NAT_REG_ADDR_MIN), which the kernel
@@ -1217,7 +1243,7 @@ let addr_nat_spec st kind ?(port=None) ~flags (v : Nft_ast.value) : Syntax.nat_s
                 | None -> (Syntax.NXnone, flags)) in
       Some { Syntax.nat_addr_imm = Some b; nat_field = None; nat_map = None;
              nat_src = None; nat_extra = ne;
-             nat_kind = kind; nat_family = "ip"; nat_flags = f }
+             nat_kind = kind; nat_family = Bytecode.NFip4; nat_flags = f }
   | _ -> None   (* unresolvable / non-literal target: stay a bare terminal Accept *)
 
 (* a PORT-ONLY `snat to :<port>` / `dnat to :<port>` NAT spec: NO address operand
@@ -1261,7 +1287,7 @@ let redir_spec ~flags (port : int option) : Syntax.nat_spec =
     | Some p -> (Syntax.NXimm (None, Some (port_bytes p), None), flags lor 0x2)
     | None -> (Syntax.NXnone, flags)) in
   { Syntax.nat_addr_imm = None; nat_field = None; nat_map = None; nat_src = None;
-    nat_extra = ne; nat_kind = "redir"; nat_family = ""; nat_flags = f }
+    nat_extra = ne; nat_kind = Bytecode.NKredir; nat_family = Bytecode.NFip4; nat_flags = f }
 
 (* In a multi-L3 family an inet chain sees both IPv4 and IPv6 packets, so nft
    guards every `ip`/`ip6` payload match with `meta nfproto == {2|10}`.  A
@@ -1322,8 +1348,13 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
   let tproxy = ref None in   (* set for `tproxy` (a transparent-proxy terminal) *)
   let push bi = body := bi :: !body in
   let push_dep fld pv =
-    if not (L.mem (fld, pv) !deps) then
-      (push (Syntax.BMatch (Syntax.MEq (fld, pv))); deps := (fld, pv) :: !deps)
+    if not (L.mem (fld, pv) !deps) then begin
+      (* a dependency guard is a small big-endian integer compare; construct it
+         through the verified elaboration and tag it as SYNTHESIZED *)
+      let mc = reg_typed (Elab.TMEq (fld, Nftval.VInteger (L.length pv, nof (be_int pv)))) in
+      dep_mcs := mc :: !dep_mcs;
+      push (Syntax.BMatch mc); deps := (fld, pv) :: !deps
+    end
   in
   let ensure_dep1 = function
     | DL4 pv -> push_dep Syntax.FMetaL4proto pv
@@ -1426,7 +1457,7 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
           | "or"  -> (comp mbytes, mbytes)
           | "xor" -> (ones, mbytes)
           | _ -> raise (Unsupported ("bitwise op " ^ op)) in
-        push (Syntax.BMatch (Syntax.MMasked (f, r.Nft_ast.neg, mask', xorb, vbytes)))
+        push (Syntax.BMatch (Syntax.MMasked (f, (if r.Nft_ast.neg then Bytecode.CNe else Bytecode.CEq), mask', xorb, vbytes)))
     | Nft_ast.CVmap (kps, entries) ->
         if !vmap <> None then raise (Unsupported "more than one verdict map in a rule");
         let triples = L.map key_field kps in
@@ -1477,18 +1508,35 @@ let lower_rule st ~family (clauses : Nft_ast.clause list) : Syntax.rule =
         if stmt_is_terminal_accept s then verdict := Verdict.Accept;
         (match s with
          | Nft_ast.StMasquerade fs -> nat := Some (masq_spec ~family ~flags:(nat_flags_of fs))
-         | Nft_ast.StSnat (Some v, port, fs) -> nat := addr_nat_spec st "snat" ~port ~flags:(nat_flags_of fs) v
-         | Nft_ast.StDnat (Some v, port, fs) -> nat := addr_nat_spec st "dnat" ~port ~flags:(nat_flags_of fs) v
-         | Nft_ast.StSnat (None, Some port, fs) -> nat := Some (portonly_nat_spec ~family "snat" ~flags:(nat_flags_of fs) port)
-         | Nft_ast.StDnat (None, Some port, fs) -> nat := Some (portonly_nat_spec ~family "dnat" ~flags:(nat_flags_of fs) port)
+         | Nft_ast.StSnat (Some v, port, fs) -> nat := addr_nat_spec st Bytecode.NKsnat ~port ~flags:(nat_flags_of fs) v
+         | Nft_ast.StDnat (Some v, port, fs) -> nat := addr_nat_spec st Bytecode.NKdnat ~port ~flags:(nat_flags_of fs) v
+         | Nft_ast.StSnat (None, Some port, fs) -> nat := Some (portonly_nat_spec ~family Bytecode.NKsnat ~flags:(nat_flags_of fs) port)
+         | Nft_ast.StDnat (None, Some port, fs) -> nat := Some (portonly_nat_spec ~family Bytecode.NKdnat ~flags:(nat_flags_of fs) port)
          | Nft_ast.StRedirect (port, fs) -> nat := Some (redir_spec ~flags:(nat_flags_of fs) port)
          | Nft_ast.StTproxy (qual, addr, port) ->
              tproxy := Some (tproxy_spec st ~family qual addr port)
          | _ -> ());
         (match lower_stmt st s with Some st' -> push (Syntax.BStmt st') | None -> ()))
     clauses;
-  { Syntax.r_body = L.rev !body; r_verdict = !verdict; r_vmap = !vmap;
-    r_nat = !nat; r_tproxy = !tproxy; r_fwd = None; r_queue = None; r_after = [] }
+  let outc = (match !vmap, !nat, !tproxy with
+    | Some _, _, Some _ | _, Some _, Some _ ->
+        raise (Unsupported "rule with more than one outcome (vmap/nat/tproxy)")
+    | Some vm, Some ns, None ->
+        (* `… vmap {…} redirect`: the map miss reaches the trailing NAT *)
+        Syntax.OVmapNat (vm, ns)
+    | Some vm, None, None ->
+        (* a vmap IS the rule's outcome: a static verdict beside it would be
+           unreachable-on-hit / outcome-on-miss, a shape nft never emits *)
+        if !verdict <> Verdict.Continue then
+          raise (Unsupported "verdict map combined with a static verdict");
+        Syntax.OVmap vm
+    | None, Some ns, None -> Syntax.ONat ns
+    | None, None, Some tp -> Syntax.OTproxy tp
+    | None, None, None ->
+        (match !verdict with
+         | Verdict.Continue -> Syntax.ONone
+         | v -> Syntax.OVerdict v)) in
+  { Syntax.r_body = L.rev !body; r_outcome = outc; r_after = [] }
 
 (* ---------- declarations ---------- *)
 
@@ -1558,6 +1606,7 @@ let build_env st : Packet.env =
     e_ct = (fun _ _ -> []); e_nat = (fun _ -> None); e_numgen = (fun _ -> 0) }
 
 let lower (f : Nft_ast.sfile) : parsed =
+  typed_tbl := []; dep_mcs := [];
   let st = { defines = Hashtbl.create 16; sets = []; vmaps = []; maps = [];
              counter = 0 } in
   (* pass 1: collect defines *)

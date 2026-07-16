@@ -960,14 +960,20 @@ parser's OUTPUT, not a hand copy.** The pipeline:
   `.nft` text → `lexer.mll` (ocamllex) + `parser.mly` (Menhir) → surface tree
   (`nft_ast.ml`) → **`nft_lower.ml`** → trusted `Syntax` AST + `Packet.env`.
 
-`nft_lower` does nft's frontend work, all untrusted: expands `define`s (`$v`),
-resolves symbolic constants (services like `https`, `ethertype`/`l4proto`/
-`ct state`/`icmp` names), encodes literals to each field's byte width / declared
-set-element type, builds CIDR-prefix masks and ranges, inserts the implicit
-`meta l4proto` dependency, and turns named-set/map *declarations* (and inline
-anonymous `{…}` sets / `vmap {…}` maps, incl. **concatenated** keys like
-`ip daddr . oifname`) into named `env` entries — never inlined into the rule.
-`Nft_parse.parse_file` adds `include` expansion (relative to the file dir).
+`nft_lower` does nft's frontend NAME RESOLUTION, untrusted: expands `define`s
+(`$v`), resolves symbolic constants (services like `https`, `ethertype`/
+`l4proto`/`ct state`/`icmp` names) to the TYPED value of the selector's
+datatype (`typed_atom : kind -> value -> Nftval.nftval`), inserts the implicit
+`meta l4proto` dependency (emitted as the `BDep`-tagged conjunct), and turns
+named-set/map *declarations* (and inline anonymous `{…}` sets / `vmap {…}`
+maps, incl. **concatenated** keys like `ip daddr . oifname`) into named `env`
+entries — anonymous sets DEDUPLICATED by contents.  The typed value -> register
+bytes step is NOT frontend code: every match immediate is produced by the
+VERIFIED `Nftval.encode` / `Elab.elab_m` (`enc_atom` is literally
+`encode ∘ typed_atom`), the CIDR byte-alignment split lives in the verified
+`Elab.prefix_expand`, and `Elab.elab_matchcond_correct` proves the elaborated
+term evaluates exactly as the typed source.  `Nft_parse.parse_file` adds
+`include` expansion (relative to the file dir).
 
 **The proof bridge (`nft_emit.ml` + `nft2coq`).** `make gen` runs the parser on a
 `.nft` file and EMITS its AST as Coq terms — `theories/Optiplex_Gen.v`,

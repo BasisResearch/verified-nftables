@@ -1,5 +1,5 @@
 (** * Optimize_Ctmask: bitmask-UNION fold for `ct state` (and any bitmask-membership
-    selector lowered to [MMasked f true mask 0 0]).
+    selector lowered to [MMasked f CNe mask 0 0]).
 
     Battery shape "ctstate-mask-union":
 
@@ -7,7 +7,7 @@
         ct state established accept    ┘  =>  ct state new,established accept
 
     The frontend lowers a single positive `ct state X` to the BITMASK test
-    [MMasked FCtState true bits 0 0] (nft_lower.ml; ct_state has .basetype =
+    [MMasked FCtState CNe bits 0 0] (nft_lower.ml; ct_state has .basetype =
     bitmask_type and the relational evaluator keeps the OP_IMPLICIT bitmask form
     for TYPE_CT_STATE — see [Ct_State.v]).  Its meaning is `(state & bits) != 0`.
     Two adjacent such rules over the SAME field, with the SAME verdict, are
@@ -16,7 +16,7 @@
         (state & m1) != 0   OR   (state & m2) != 0    <=>    (state & (m1|m2)) != 0
 
     because `x & (a|b) = (x&a) | (x&b)` and `u|v = 0 <-> u=0 /\ v=0` bytewise.  The
-    fold emits [MMasked f true (data_or m1 m2) 0 0] — which is EXACTLY the bytecode
+    fold emits [MMasked f CNe (data_or m1 m2) 0 0] — which is EXACTLY the bytecode
     nft compiles the comma-list `ct state new,established` to
     (`[ct load state][bitwise reg1 = (reg1 & 0xa) ^ 0][cmp neq reg1 0]`, mask
     0x8|0x2=0xa; confirmed against nft v1.1.6 in a netns).  So the fold is a VALID,
@@ -132,9 +132,9 @@ Qed.
 Lemma mmasked_ctmask_disjunction : forall f m1 m2 z e p,
   length m1 = length z -> length m2 = length z ->
   Forall (fun b => b = 0) z ->
-  eval_matchcond (MMasked f true (data_or m1 m2) z z) e p
-  = orb (eval_matchcond (MMasked f true m1 z z) e p)
-        (eval_matchcond (MMasked f true m2 z z) e p).
+  eval_matchcond (MMasked f CNe (data_or m1 m2) z z) e p
+  = orb (eval_matchcond (MMasked f CNe m1 z z) e p)
+        (eval_matchcond (MMasked f CNe m2 z z) e p).
 Proof.
   intros f m1 m2 z e p Hl1 Hl2 Hz.
   unfold eval_matchcond. cbn [match_loadable].
@@ -158,17 +158,17 @@ Proof.
   apply Nat.eqb_eq in Hx. constructor; [exact Hx | apply IH; exact Hrest].
 Qed.
 
-(** A bitmask-membership head [BMatch (MMasked f true mask xor v) :: rest]. *)
+(** A bitmask-membership head [BMatch (MMasked f CNe mask xor v) :: rest]. *)
 Definition head_ctmask (r : rule)
   : option (field * data * data * data * list body_item) :=
   match r_body r with
-  | BMatch (MMasked f true mask xor v) :: rest => Some (f, mask, xor, v, rest)
+  | BMatch (MMasked f CNe mask xor v) :: rest => Some (f, mask, xor, v, rest)
   | _ => None
   end.
 
 Lemma head_ctmask_rbody : forall r f mask xor v body,
   head_ctmask r = Some (f, mask, xor, v, body) ->
-  r_body r = BMatch (MMasked f true mask xor v) :: body.
+  r_body r = BMatch (MMasked f CNe mask xor v) :: body.
 Proof.
   intros r f mask xor v body H. unfold head_ctmask in H.
   destruct (r_body r) as [| [m | s] tl] eqn:Eb; try discriminate.
@@ -179,7 +179,7 @@ Qed.
 
 Lemma head_ctmask_canon : forall r f mask xor v body,
   head_ctmask r = Some (f, mask, xor, v, body) ->
-  r = mk_head (MMasked f true mask xor v) body r.
+  r = mk_head (MMasked f CNe mask xor v) body r.
 Proof.
   intros r f mask xor v body H.
   pose proof (head_ctmask_rbody r f mask xor v body H) as Hb.
@@ -187,7 +187,7 @@ Proof.
 Qed.
 
 (** Two rules form an eligible bitmask-union pair iff both heads are
-    [MMasked f true mask_i z z] over the SAME field [f], sharing the SAME all-zero
+    [MMasked f CNe mask_i z z] over the SAME field [f], sharing the SAME all-zero
     xor/compared vector [z] (which equals the masks' width), same tail, same
     end-fields.  Returns [(f, m1, m2, z, body)]. *)
 Definition ctmask_pair (r1 r2 : rule)
@@ -211,8 +211,8 @@ Definition ctmask_pair (r1 r2 : rule)
 
 Lemma ctmask_pair_facts : forall r1 r2 f m1 m2 z body,
   ctmask_pair r1 r2 = Some (f, m1, m2, z, body) ->
-  r1 = mk_head (MMasked f true m1 z z) body r1 /\
-  r2 = mk_head (MMasked f true m2 z z) body r1 /\
+  r1 = mk_head (MMasked f CNe m1 z z) body r1 /\
+  r2 = mk_head (MMasked f CNe m2 z z) body r1 /\
   length m1 = length z /\ length m2 = length z /\
   Forall (fun b => b = 0) z.
 Proof.
@@ -231,7 +231,7 @@ Proof.
   inversion H; subst f1 mm1 mm2 x1 rest1. clear H.
   pose proof (head_ctmask_canon r1 f m1 z z body H1) as Hr1.
   pose proof (head_ctmask_canon r2 f m2 z z body H2) as Hr2c.
-  pose proof (proj1 (rule_end_eqb_mk_head (MMasked f true m2 z z) body r1 r2) Eeqb)
+  pose proof (proj1 (rule_end_eqb_mk_head (MMasked f CNe m2 z z) body r1 r2) Eeqb)
     as Eshell.
   split; [exact Hr1 |].
   split; [rewrite Hr2c; symmetry; exact Eshell |].
@@ -242,7 +242,7 @@ Qed.
 (** The merged rule the pass emits. *)
 Definition ctmask_merged (f : field) (m1 m2 z : data) (body : list body_item)
   (r1 : rule) : rule :=
-  mk_head (MMasked f true (data_or m1 m2) z z) body r1.
+  mk_head (MMasked f CNe (data_or m1 m2) z z) body r1.
 
 (** *** Two-rule correctness: an eligible pair collapses to its merged rule,
     preserving every verdict.  Reuses [eval_rules_value_merge] with the bitmask
@@ -256,10 +256,10 @@ Proof.
   destruct (ctmask_pair_facts r1 r2 f m1 m2 z body H)
     as [Hr1 [Hr2 [Hl1 [Hl2 Hz]]]].
   unfold ctmask_merged.
-  transitivity (eval_rules (mk_head (MMasked f true m1 z z) body r1
-                            :: mk_head (MMasked f true m2 z z) body r1 :: rest) e p).
-  - apply (eval_rules_value_merge (MMasked f true m1 z z) (MMasked f true m2 z z)
-             (MMasked f true (data_or m1 m2) z z) body r1 rest e p).
+  transitivity (eval_rules (mk_head (MMasked f CNe m1 z z) body r1
+                            :: mk_head (MMasked f CNe m2 z z) body r1 :: rest) e p).
+  - apply (eval_rules_value_merge (MMasked f CNe m1 z z) (MMasked f CNe m2 z z)
+             (MMasked f CNe (data_or m1 m2) z z) body r1 rest e p).
     + intro q. reflexivity.
     + intro q. reflexivity.
     + intro q. apply (mmasked_ctmask_disjunction f m1 m2 z e q Hl1 Hl2 Hz).
@@ -306,7 +306,7 @@ Lemma ctmask_merged_body_set_names : forall r1 r2 f m1 m2 z body,
 Proof.
   intros r1 r2 f m1 m2 z body H.
   destruct (ctmask_pair_facts r1 r2 f m1 m2 z body H) as [Hr1 _].
-  assert (Hb : r_body r1 = BMatch (MMasked f true m1 z z) :: body).
+  assert (Hb : r_body r1 = BMatch (MMasked f CNe m1 z z) :: body).
   { rewrite Hr1. reflexivity. }
   unfold ctmask_merged, body_set_names. cbn [r_body body_matches flat_map mc_set_name].
   rewrite Hb. cbn [body_matches flat_map mc_set_name]. reflexivity.
@@ -314,11 +314,11 @@ Qed.
 
 Lemma ctmask_merged_vmap_name : forall r1 f m1 m2 z body,
   rule_vmap_name (ctmask_merged f m1 m2 z body r1) = rule_vmap_name r1.
-Proof. intros. unfold ctmask_merged, mk_head, rule_vmap_name. cbn [r_vmap]. reflexivity. Qed.
+Proof. intros. unfold ctmask_merged, mk_head, rule_vmap_name. cbn [r_vmap r_outcome]. reflexivity. Qed.
 
 Lemma ctmask_merged_nat_map_name : forall r1 f m1 m2 z body,
   rule_nat_map_name (ctmask_merged f m1 m2 z body r1) = rule_nat_map_name r1.
-Proof. intros. unfold ctmask_merged, mk_head, rule_nat_map_name. cbn [r_nat]. reflexivity. Qed.
+Proof. intros. unfold ctmask_merged, mk_head, rule_nat_map_name. cbn [r_nat r_outcome]. reflexivity. Qed.
 
 (** A generic Forall transfer: any per-rule predicate that survives the merge step
     survives the whole pass. *)
@@ -362,13 +362,13 @@ Qed.
 (** ** Non-vacuity witnesses (battery shape "ctstate-mask-union"): two adjacent
     `ct state new/established accept` bitmask rules fold to ONE union rule. *)
 Definition acc_witness : rule :=
-  {| r_body := []; r_verdict := Accept; r_vmap := None; r_nat := None;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := OVerdict Accept; r_after := [] |}.
 
 Definition ctm_new : rule :=
-  mk_head (MMasked FCtState true [0;0;0;8] [0;0;0;0] [0;0;0;0]) [] acc_witness.
+  mk_head (MMasked FCtState CNe [0;0;0;8] [0;0;0;0] [0;0;0;0]) [] acc_witness.
 Definition ctm_estab : rule :=
-  mk_head (MMasked FCtState true [0;0;0;2] [0;0;0;0] [0;0;0;0]) [] acc_witness.
+  mk_head (MMasked FCtState CNe [0;0;0;2] [0;0;0;0] [0;0;0;0]) [] acc_witness.
 
 Example ctmask_fires :
   ctmask_pair ctm_new ctm_estab
@@ -378,5 +378,5 @@ Proof. reflexivity. Qed.
 (* the fold collapses the two-rule chain to ONE union-mask rule (mask 0x8|0x2=0xa) *)
 Example ctmask_folds :
   optimize_rules_ctmask 2 [ctm_new; ctm_estab]
-  = [ mk_head (MMasked FCtState true [0;0;0;10] [0;0;0;0] [0;0;0;0]) [] acc_witness ].
+  = [ mk_head (MMasked FCtState CNe [0;0;0;10] [0;0;0;0] [0;0;0;0]) [] acc_witness ].
 Proof. reflexivity. Qed.

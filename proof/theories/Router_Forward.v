@@ -127,8 +127,7 @@ Opaque field_value assoc_verdict.
 (* Rule 2 of the forward chain: `iifname eth1 accept` (the parser's literal). *)
 Definition r2_fwd : rule :=
   {| r_body := [BMatch (MEq FMetaIifname if_eth1)];
-     r_verdict := Accept; r_vmap := None;
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := OVerdict Accept; r_after := [] |}.
 
 (* Its load always succeeds (a meta iifname read never BREAKs). *)
 Lemma r2_loadable : forall e p, rule_loadable r2_fwd e p = true.
@@ -185,8 +184,7 @@ Proof.
      then use its [loadable]/[applies]/[outcome] lemmas — no [firstn] unrolling. *)
   change {| r_body := [BMatch (MEq FMetaIifname
               [101;116;104;49;0;0;0;0;0;0;0;0;0;0;0;0])];
-            r_verdict := Accept; r_vmap := None; r_nat := None;
-            r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}
+     r_outcome := OVerdict Accept; r_after := [] |}
     with r2_fwd.
   rewrite r2_loadable, r2_applies, r2_outcome. cbn [andb].
   destruct (iif_eth1 e p) eqn:Heq;
@@ -355,15 +353,10 @@ Definition bug_forward : chain :=
   {| c_policy := Drop;
      c_rules :=
        [{| r_body := [];
-           r_verdict := Continue;
-           r_vmap := Some {| vm_fields := []; vm_keyf := Some (FCtState, []);
-                             vm_name := "__map3" |};
-           r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None;
-           r_after := [] |};
-        {| r_body := [];     (* eth1 guard removed: accepts every iif *)
-           r_verdict := Accept; r_vmap := None;
-           r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None;
-           r_after := [] |}] |}.
+     r_outcome := OVmap {| vm_fields := []; vm_keyf := Some (FCtState, []);
+                             vm_name := "__map3" |}; r_after := [] |};
+        {| r_body := [];
+     r_outcome := OVerdict Accept; r_after := [] |}] |}.
 
 (* Under the bug, the SAME unsolicited world packet is ACCEPTED — the catastrophic
    open-forwarding leak that [forward_unsolicited_dropped] / [pkt_world_dropped] rule

@@ -131,8 +131,7 @@ Definition r1_world : rule :=
   {| r_body := [BMatch (MEq FIp4Saddr [81;209;165;42]);
                 BMatch (MEq FMetaL4proto [6]);
                 BMatch (MEq FThDport [0;22])];
-     r_verdict := Accept; r_vmap := None;
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := OVerdict Accept; r_after := [] |}.
 
 Lemma c_rules_world : c_rules global_inbound_world = [r1_world].
 Proof. reflexivity. Qed.
@@ -170,7 +169,7 @@ Proof.
   rewrite c_rules_world.
   rewrite erj_cons. rewrite Hld. cbn [andb].
   unfold r1_world, rule_applies, outcome, outcome_core, terminal_outcome;
-    cbn [r_body r_vmap r_verdict rule_applies_walk].
+    cbn [r_body r_vmap r_verdict rule_applies_walk r_outcome].
   unfold eval_matchcond, match_loadable.
   rewrite H1, H2, H3. cbn [andb].
   unfold world_ssh, m_saddr, m_tcp, m_dport22.
@@ -201,15 +200,13 @@ Proof. intros e H. rewrite H. reflexivity. Qed.
 
 (* The ct-state vmap rule (rule 1 of inbound). *)
 Definition r_ct : rule :=
-  {| r_body := []; r_verdict := Continue;
-     r_vmap := Some {| vm_fields := []; vm_keyf := Some (FCtState, []); vm_name := "__map1" |};
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := OVmap {| vm_fields := []; vm_keyf := Some (FCtState, []); vm_name := "__map1" |}; r_after := [] |}.
 
 (* The iifname vmap rule (rule 2 of inbound). *)
 Definition r_iif : rule :=
-  {| r_body := []; r_verdict := Continue;
-     r_vmap := Some {| vm_fields := []; vm_keyf := Some (FMetaIifname, []); vm_name := "__map2" |};
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := OVmap {| vm_fields := []; vm_keyf := Some (FMetaIifname, []); vm_name := "__map2" |}; r_after := [] |}.
 
 Lemma c_rules_inbound : c_rules global_inbound = [r_ct; r_iif].
 Proof. reflexivity. Qed.
@@ -531,10 +528,8 @@ Proof. vm_compute. reflexivity. Qed.
 Definition bug_inbound_world : chain :=
   {| c_policy := Continue;
      c_rules := [{| r_body := [BMatch (MEq FMetaL4proto [6]);
-                               BMatch (MEq FThDport [0;22])];   (* saddr guard removed *)
-                    r_verdict := Accept; r_vmap := None;
-                    r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None;
-                    r_after := [] |}] |}.
+                               BMatch (MEq FThDport [0;22])];
+     r_outcome := OVerdict Accept; r_after := [] |}] |}.
 
 (* The chain env with the bugged inbound_world substituted for the parser's. *)
 Definition bug_chains : list (string * chain) :=

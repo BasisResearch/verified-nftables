@@ -15,7 +15,7 @@
 
         [ payload load 1b @ network header + 1 ]
         [ bitwise reg 1 = ( reg 1 & 0xfc ) ^ 0x00 ]
-        [ cmp eq reg 1 (N << 2) ]                     -- [MMasked f false [0xfc] [0] v]
+        [ cmp eq reg 1 (N << 2) ]                     -- [MMasked f CEq [0xfc] [0] v]
 
     i.e. `(field & 0xfc) == v` where `v = N << 2`.  `nft --optimize` folds a run of
     such rules that share the field/mask/xor but carry DIFFERING VERDICTS into ONE
@@ -35,7 +35,7 @@
     point entry [(v,v,w)] resolves through [assoc_verdict] by [data_in_iv X (v,v) =
     data_eqb X v] ([data_in_iv_point]), which — under the fixed-width side condition
     [field_fixed_len f = Some len = len mask = len xor = len v] ([dscpv_key_width]) —
-    coincides with the [MMasked f false mask xor v] head's [firstn]-truncated equality.
+    coincides with the [MMasked f CEq mask xor v] head's [firstn]-truncated equality.
     So the vmap's first-match scan reproduces the run's first-match order EXACTLY
     ([eval_rules_dscpv_mergeN]).  The point vmap over DISTINCT masked values is a VALID
     single-field vmap (disjoint singletons — no overlapping-interval defect), and nft
@@ -56,16 +56,14 @@ Local Open Scope nat_scope.
 Definition mk_vmap_rule_t (f : field) (ts : list transform) (nm : String.string)
     (body : list body_item) : rule :=
   {| r_body := body;
-     r_verdict := Continue;
-     r_vmap := Some {| vm_fields := [f]; vm_keyf := Some (f, ts); vm_name := nm |};
-     r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := OVmap {| vm_fields := [f]; vm_keyf := Some (f, ts); vm_name := nm |}; r_after := [] |}.
 
-(** The originals' shape: [mk_head (MMasked f false mask xor v) body (mk_vmap_base w)]
+(** The originals' shape: [mk_head (MMasked f CEq mask xor v) body (mk_vmap_base w)]
     — the same masked head as [Optimize_Dscp.head_dscp] recognises, over a
     pure-terminal verdict base ([mk_vmap_base w]). *)
 Definition orig_rule_m (f : field) (mask xor v : data) (body : list body_item)
     (w : verdict) : rule :=
-  mk_head (MMasked f false mask xor v) body (mk_vmap_base w).
+  mk_head (MMasked f CEq mask xor v) body (mk_vmap_base w).
 
 (** *** Bridges: the masked original agrees with the plain [orig_rule] on loadability
     and outcome (both differ only in the head match, whose [match_loadable] is
@@ -81,7 +79,7 @@ Qed.
 
 Lemma orig_rule_m_applies : forall f mask xor v body w e p,
   rule_applies (orig_rule_m f mask xor v body w) e p
-  = eval_matchcond (MMasked f false mask xor v) e p && rule_applies_walk body e p.
+  = eval_matchcond (MMasked f CEq mask xor v) e p && rule_applies_walk body e p.
 Proof. intros. unfold orig_rule_m. apply rule_applies_mk_head. Qed.
 
 Lemma orig_rule_m_outcome_clean : forall f mask xor v body w e p,
@@ -92,7 +90,7 @@ Lemma orig_rule_m_outcome_clean : forall f mask xor v body w e p,
 Proof.
   intros f mask xor v body w e p Hsp Hnt Hw.
   unfold orig_rule_m. rewrite outcome_mk_head, Hsp.
-  unfold outcome_core, body_thread, mk_vmap_base. cbn [r_vmap]. rewrite Hnt.
+  unfold outcome_core, body_thread, mk_vmap_base. cbn [r_vmap r_outcome]. rewrite Hnt.
   apply (terminal_outcome_vmap_base w p Hw).
 Qed.
 
@@ -101,7 +99,7 @@ Qed.
 Lemma eval_mmasked_point : forall f mask xor v e q,
   field_loadable f q = true ->
   length (data_bitops (field_value f e q) mask xor) = length v ->
-  eval_matchcond (MMasked f false mask xor v) e q
+  eval_matchcond (MMasked f CEq mask xor v) e q
   = data_eqb (data_bitops (field_value f e q) mask xor) v.
 Proof.
   intros f mask xor v e q Hld Hlen.
@@ -130,7 +128,7 @@ Fixpoint first_match_m (f : field) (mask xor : data) (e : env) (q : packet)
     (l : list (data * verdict)) : option verdict :=
   match l with
   | [] => None
-  | (v, w) :: tl => if eval_matchcond (MMasked f false mask xor v) e q then Some w
+  | (v, w) :: tl => if eval_matchcond (MMasked f CEq mask xor v) e q then Some w
                     else first_match_m f mask xor e q tl
   end.
 
@@ -161,12 +159,12 @@ Lemma outcome_core_dscpvN : forall es f mask xor e q nm body,
   = first_match_m f mask xor e q es.
 Proof.
   intros es f mask xor e q nm body Hvm Hlen Hld.
-  unfold outcome_core, mk_vmap_rule_t. cbn [r_vmap vm_keyf vm_name vm_fields].
+  unfold outcome_core, mk_vmap_rule_t. cbn [r_vmap vm_keyf vm_name vm_fields r_outcome].
   cbn [apply_transforms fold_left apply_transform]. rewrite Hvm.
   rewrite (assoc_verdict_points_m es f mask xor e q Hlen Hld).
   destruct (first_match_m f mask xor e q es) eqn:Efm; [reflexivity|].
   unfold terminal_outcome, mk_vmap_rule_t.
-  cbn [r_nat r_tproxy r_fwd r_queue r_verdict r_after terminal]. reflexivity.
+  cbn [r_nat r_tproxy r_fwd r_queue r_verdict r_after terminal r_outcome]. reflexivity.
 Qed.
 
 (** ** The N-way masked verdict-map collapse, verdict-preserving.
@@ -193,8 +191,8 @@ Proof.
                 = body_loadable_walk body p && field_loadable f p).
   { unfold rule_loadable, mk_vmap_rule_t. cbn [r_body]. rewrite Hsp.
     unfold body_thread. cbn [r_body]. rewrite Hnt.
-    unfold end_loadable. cbn [r_vmap]. unfold vmap_loadable.
-    cbn [r_vmap vm_keyf vm_name vm_fields].
+    unfold end_loadable. cbn [r_vmap r_outcome]. unfold vmap_loadable.
+    cbn [r_vmap vm_keyf vm_name vm_fields r_outcome].
     destruct (field_loadable f p) eqn:Hfld; cbn [andb].
     - destruct (assoc_verdict (apply_transforms [TBitAnd mask xor] (field_value f e p))
                               (e_vmap e nm));
@@ -210,11 +208,9 @@ Proof.
                     = first_match_m f mask xor e p es).
     { unfold outcome, mk_vmap_rule_t. cbn [r_body]. rewrite Hsp.
       unfold body_thread. cbn [r_body]. rewrite Hnt.
-      change ({| r_body := body; r_verdict := Continue;
-                 r_vmap := Some {| vm_fields := [f]; vm_keyf := Some (f, [TBitAnd mask xor]);
-                                   vm_name := nm |};
-                 r_nat := None; r_tproxy := None; r_fwd := None; r_queue := None;
-                 r_after := [] |}) with (mk_vmap_rule_t f [TBitAnd mask xor] nm body).
+      change ({| r_body := body;
+     r_outcome := OVmap {| vm_fields := [f]; vm_keyf := Some (f, [TBitAnd mask xor]);
+                                   vm_name := nm |}; r_after := [] |}) with (mk_vmap_rule_t f [TBitAnd mask xor] nm body).
       apply (outcome_core_dscpvN es f mask xor e p nm body Hvm
                (fun v w Hin Hld =>
                   dscpv_key_width f mask xor v e p (Hfx v w Hin) (Hmw v w Hin) (Hxw v w Hin) Hld)
@@ -233,7 +229,7 @@ Proof.
            rewrite orig_rule_loadable. cbn [match_loadable].
            rewrite Hfld, HbL, Hsp. cbn [andb].
            rewrite HbA. cbn [andb].
-           destruct (eval_matchcond (MMasked f false mask xor v) e p) eqn:Ev.
+           destruct (eval_matchcond (MMasked f CEq mask xor v) e p) eqn:Ev.
            ++ rewrite (Hterm v w (or_introl eq_refl)). reflexivity.
            ++ apply IH.
               ** intros v' w' Hin. apply (Hfx v' w'); right; exact Hin.
@@ -284,7 +280,7 @@ Proof.
   intros r f mask xor v rest Hhd.
   pose proof (head_dscp_canon r f mask xor v rest Hhd) as Hself.
   unfold orig_rule_m.
-  rewrite (rule_end_eqb_mk_head (MMasked f false mask xor v) rest r
+  rewrite (rule_end_eqb_mk_head (MMasked f CEq mask xor v) rest r
              (mk_vmap_base (r_verdict r))).
   unfold mk_head in Hself. rewrite <- Hself at 1. reflexivity.
 Qed.
@@ -721,7 +717,7 @@ Definition dscpv_base (w : verdict) : rule := mk_vmap_base w.
 Definition dscpv_f : field := FPayload PNetwork 1 1.
 
 Definition dscpv_r (v : data) (w : verdict) : rule :=
-  mk_head (MMasked dscpv_f false [252] [0] v) [] (mk_vmap_base w).
+  mk_head (MMasked dscpv_f CEq [252] [0] v) [] (mk_vmap_base w).
 
 Example dscpv_merge_fires :
   dscpv_run_pair (dscpv_r [40] Accept) (dscpv_r [104] Drop)

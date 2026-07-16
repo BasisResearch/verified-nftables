@@ -98,8 +98,8 @@ Proof.
   pose proof (proj1 (rule_end_eqb_mk_head (MRange f1 false lo1 hi1) rest1 r1 r2) Eeqb) as Eshell.
   split; [exact Hr1 |].
   rewrite Hr2c. unfold mk_head in Eshell |- *.
-  injection Eshell as Ev Evm En Et Ef Eq Ea.
-  rewrite Ev, Evm, En, Et, Ef, Eq, Ea. reflexivity.
+  injection Eshell as Eo Ea.
+  rewrite Eo, Ea. reflexivity.
 Qed.
 
 Lemma range_merge_pair_with_head : forall r1 r2 f lo1 hi1 body f' iv1 iv2 body',
@@ -119,8 +119,8 @@ Proof.
   pose proof (proj1 (rule_end_eqb_mk_head (MRange f false lo1 hi1) body r1 r2) Eeqb) as Eshell.
   repeat split.
   rewrite Hr2c. unfold mk_head in Eshell |- *.
-  injection Eshell as Ev Evm En Et Efw Eq Ea.
-  rewrite Ev, Evm, En, Et, Efw, Eq, Ea. reflexivity.
+  injection Eshell as Eo Ea.
+  rewrite Eo, Ea. reflexivity.
 Qed.
 
 (** *** Collect the MAXIMAL run of following rules that each range-merge with [r1]. *)

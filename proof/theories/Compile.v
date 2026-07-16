@@ -120,9 +120,9 @@ Definition compile_match (m : matchcond) : list instr :=
   | MNeq f v => [compile_load (field_load f) 1; ICmp CNe 1 v]
   | MRange f neg lo hi =>
       [compile_load (field_load f) 1; IRange (if neg then CNe else CEq) 1 lo hi]
-  | MMasked f neg mask xor v =>
+  | MMasked f op mask xor v =>
       [compile_load (field_load f) 1; IBitwise 1 1 mask xor;
-       ICmp (if neg then CNe else CEq) 1 v]
+       ICmp op 1 v]
   | MCmp f op v => [compile_load (field_load f) 1; ICmp op 1 v]
   | MConcatSet fields neg name =>
       load_fields (alloc_regs 0 fields) ++
@@ -284,7 +284,7 @@ Definition compile_vmap (r : rule) : list instr :=
 (** The numeric NFPROTO the kernel uses for an address family qualifier (the
     register-free [fwd_family]/… string is lowered here). *)
 Definition nfproto_of_family (s : String.string) : nat :=
-  if String.eqb s nat_fam_ip6 then 10 else 2.
+  if String.eqb s fam_ip6_str then 10 else 2.
 
 (** *** NAT register ALLOCATION (the compiler's job; the source [nat_spec] is
     register-free).  The primary address operand goes into register 1 (when there is
@@ -305,7 +305,7 @@ Definition nat_sec0 (n : nat_spec) : nat := if nat_addr_present n then 2 else 1.
     they carry is the PORT, loaded into register 1.  For these the operand reg is
     [proto_min], not [addr_min]. *)
 Definition nat_portonly (n : nat_spec) : bool :=
-  orb (String.eqb (nat_kind n) nat_masq_kind) (String.eqb (nat_kind n) nat_redir_kind).
+  orb (natop_eqb (nat_kind n) nat_masq_kind) (natop_eqb (nat_kind n) nat_redir_kind).
 
 Definition nat_amin_reg (n : nat_spec) : option nat :=
   if nat_portonly n then None

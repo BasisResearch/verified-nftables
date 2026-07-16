@@ -25,7 +25,7 @@
     which are now DERIVED from the selection. *)
 
 From Stdlib Require Import List String NArith Bool PeanoNat.
-From Nft Require Import Bytes Packet Verdict Syntax Semantics.
+From Nft Require Import Bytes Packet Verdict Bytecode Syntax Semantics.
 Import ListNotations.
 
 (** ** (1)/(2)  inet_select_addr is a faithful first-eligible selection *)
@@ -122,8 +122,8 @@ Qed.
 Definition egress_ifname (e : env) (p : packet) : data := field_value FMetaOifname e p.
 
 (** The address LIST masquerade selects from, by family. *)
-Definition masq_ifaddrs (fam : String.string) (e : env) (p : packet) : list ifaddr :=
-  if String.eqb fam nat_fam_ip6
+Definition masq_ifaddrs (fam : nat_af) (e : env) (p : packet) : list ifaddr :=
+  if nataf_eqb fam nat_fam_ip6
   then e_ifaddrs6 e (egress_ifname e p)
   else e_ifaddrs  e (egress_ifname e p).
 
@@ -131,7 +131,7 @@ Lemma masq_saddr_is_select : forall fam e p,
   masq_saddr fam e p = inet_select_addr (masq_ifaddrs fam e p) scope_universe.
 Proof.
   intros fam e p. unfold masq_saddr, masq_ifaddrs, egress_ifname.
-  destruct (String.eqb fam nat_fam_ip6).
+  destruct (nataf_eqb fam nat_fam_ip6).
   - reflexivity.   (* e_ifaddr6 = inet_select_addr (e_ifaddrs6 ...) scope_universe, by definition *)
   - reflexivity.
 Qed.
@@ -187,7 +187,7 @@ Theorem nat_iface_addr_absent_masq_iff : forall h ns e p,
                     ifa_eligible scope_universe ia = false) ).
 Proof.
   intros h ns e p Hk Hwf. unfold nat_iface_addr_absent.
-  rewrite Hk. unfold nat_masq_kind. rewrite String.eqb_refl.
+  rewrite Hk. unfold nat_masq_kind. cbn [natop_eqb].
   apply masq_drop_iff_no_eligible_addr; auto.
 Qed.
 

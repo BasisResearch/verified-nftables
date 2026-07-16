@@ -127,13 +127,53 @@ let limit_spec (s : Packet.limit_spec) : string =
     s.Packet.ls_rate s.Packet.ls_unit s.Packet.ls_burst (bool s.Packet.ls_bytes)
     s.Packet.ls_flags
 
+(* ---------- typed values / typed matches (the Elab layer) ---------- *)
+
+let n_int (n : BinNums.coq_N) : int = BinNat.N.to_nat n
+
+let printable (c : int) = c >= 0x20 && c < 0x7f && c <> Char.code '"' && c <> Char.code '\\'
+
+let nftval (v : Nftval.nftval) : string = match v with
+  | Nftval.VInteger (w, n) -> spf "(VInteger %d %d)" w (n_int n)
+  | Nftval.VIpv4 [a;b;c;d] -> spf "(ip4 %d %d %d %d)" a b c d
+  | Nftval.VIpv4 b -> spf "(VIpv4 %s)" (data b)
+  | Nftval.VIpv6 b -> spf "(VIpv6 %s)" (data b)
+  | Nftval.VIfname s when
+      (* a full 16-byte NUL-padded printable name prints via the smart ctor *)
+      L.length s = 16 &&
+      (let rec split acc = function
+         | 0 :: rest -> L.for_all (fun c -> c = 0) rest && acc <> []
+         | c :: rest -> printable c && split (c :: acc) rest
+         | [] -> false
+       in split [] s) ->
+      let name = S.init (L.length (L.filter (fun c -> c <> 0) s))
+                   (fun i -> Char.chr (L.nth s i)) in
+      spf "(ifname %s)" (qstring name)
+  | Nftval.VIfname s -> spf "(VIfname %s)" (data s)
+  | Nftval.VPort n -> spf "(VPort %d)" (n_int n)
+  | Nftval.VEther b -> spf "(VEther %s)" (data b)
+  | Nftval.VVerdict n -> spf "(VVerdict %d)" (n_int n)
+  | Nftval.VCtState n -> spf "(VCtState %d)" (n_int n)
+  | Nftval.VFibType n -> spf "(VFibType %d)" (n_int n)
+  | Nftval.VHostInt (w, n) -> spf "(VHostInt %d %d)" w (n_int n)
+
+let cmpop (op : Bytecode.cmpop) : string = match op with
+  | Bytecode.CEq -> "CEq" | Bytecode.CNe -> "CNe" | Bytecode.CLt -> "CLt"
+  | Bytecode.CGt -> "CGt" | Bytecode.CLe -> "CLe" | Bytecode.CGe -> "CGe"
+
 let matchcond (m : Syntax.matchcond) : string = match m with
   | Syntax.MEq (f, v) -> spf "(MEq %s %s)" (field f) (data v)
   | Syntax.MNeq (f, v) -> spf "(MNeq %s %s)" (field f) (data v)
   | Syntax.MRange (f, neg, lo, hi) ->
       spf "(MRange %s %s %s %s)" (field f) (bool neg) (data lo) (data hi)
-  | Syntax.MMasked (f, neg, mask, xor, v) ->
-      spf "(MMasked %s %s %s %s %s)" (field f) (bool neg) (data mask) (data xor) (data v)
+  (* the implicit-bitmask idiom prints as its derived form [MFlagsSet]:
+     (field & bits) <> 0 with an all-zero xor/cmp operand of the mask's width *)
+  | Syntax.MMasked (f, Bytecode.CNe, mask, xor, v)
+    when xor = Stdlib.List.init (Stdlib.List.length mask) (fun _ -> 0)
+      && v = xor ->
+      spf "(MFlagsSet %s %s)" (field f) (data mask)
+  | Syntax.MMasked (f, op, mask, xor, v) ->
+      spf "(MMasked %s %s %s %s %s)" (field f) (cmpop op) (data mask) (data xor) (data v)
   | Syntax.MConcatSet (fs, neg, name) ->
       spf "(MConcatSet %s %s %s)" (field_list fs) (bool neg) (qstring name)
   | Syntax.MSetT (f, ts, neg, name) ->
@@ -151,8 +191,24 @@ let stmt (s : Syntax.stmt) : string = match s with
   | Syntax.SCtSet (k, vs) -> spf "(SCtSet %s %s)" (ct_key k) (vsrc vs)
   | _ -> raise (Unsupported "stmt constructor not emittable (extend nft_emit.stmt)")
 
+let tmatch (tm : Elab.tmatch) : string = match tm with
+  | Elab.TMEq (f, v) -> spf "TMEq %s %s" (field f) (nftval v)
+  | Elab.TMNeq (f, v) -> spf "TMNeq %s %s" (field f) (nftval v)
+  | Elab.MPrefix (f, op, v, plen) ->
+      spf "MPrefix %s %s %s %d" (field f) (cmpop op) (nftval v) plen
+  | Elab.MWildcard (f, prefix) -> spf "MWildcard %s %s" (field f) (data prefix)
+
+(* a typed-representable match prints as its typed source under the VERIFIED
+   elaboration [elab_m]; a synthesized protocol-dependency guard is tagged
+   [BDep] (a definitional alias of [BMatch]) *)
+let match_str (m : Syntax.matchcond) : string =
+  match Nft_lower.typed_of m with
+  | Some tm -> spf "(elab_m (%s))" (tmatch tm)
+  | None -> matchcond m
+
 let body_item (b : Syntax.body_item) : string = match b with
-  | Syntax.BMatch m -> spf "(BMatch %s)" (matchcond m)
+  | Syntax.BMatch m ->
+      spf "(%s %s)" (if Nft_lower.is_dep m then "BDep" else "BMatch") (match_str m)
   | Syntax.BStmt s -> spf "(BStmt %s)" (stmt s)
 
 let vmap_spec (vm : Syntax.vmap_spec) : string =
@@ -174,6 +230,12 @@ let nat_2nd_str (e : Syntax.nat_2nd) : string =
   | Syntax.NXmap_port -> "NXmap_port"
   | Syntax.NXmap_full -> "NXmap_full"
 
+let nat_op (k : Bytecode.nat_op) : string = match k with
+  | Bytecode.NKsnat -> "NKsnat" | Bytecode.NKdnat -> "NKdnat"
+  | Bytecode.NKmasq -> "NKmasq" | Bytecode.NKredir -> "NKredir"
+let nat_af (f : Bytecode.nat_af) : string = match f with
+  | Bytecode.NFip4 -> "NFip4" | Bytecode.NFip6 -> "NFip6" | Bytecode.NFinet -> "NFinet"
+
 let nat_spec (ns : Syntax.nat_spec) : string =
   (* the lowering produces `masquerade` (no operand) and immediate-address/port
      `snat`/`dnat to <ipv4>[:<port>]` (register-free: nat_addr_imm / nat_extra).
@@ -185,16 +247,23 @@ let nat_spec (ns : Syntax.nat_spec) : string =
   spf "{| nat_addr_imm := %s; nat_field := None; nat_map := None; nat_src := None; nat_extra := %s; nat_kind := %s; nat_family := %s; nat_flags := %d |}"
     (match ns.Syntax.nat_addr_imm with Some v -> spf "(Some %s)" (data v) | None -> "None")
     (nat_2nd_str ns.Syntax.nat_extra)
-    (qstring ns.Syntax.nat_kind) (qstring ns.Syntax.nat_family) ns.Syntax.nat_flags
+    (nat_op ns.Syntax.nat_kind) (nat_af ns.Syntax.nat_family) ns.Syntax.nat_flags
+
+let outcome (o : Syntax.outcome) : string = match o with
+  | Syntax.OVerdict v ->
+      let vs = verdict v in
+      spf "OVerdict %s" (if S.contains vs ' ' && not (S.get vs 0 = '(') then "(" ^ vs ^ ")" else vs)
+  | Syntax.ONone -> "ONone"
+  | Syntax.OVmap vm -> spf "OVmap %s" (vmap_spec vm)
+  | Syntax.OVmapNat (vm, ns) -> spf "OVmapNat %s %s" (vmap_spec vm) (nat_spec ns)
+  | Syntax.ONat ns -> spf "ONat %s" (nat_spec ns)
+  | Syntax.OTproxy _ | Syntax.OFwd _ | Syntax.OQueue _ ->
+      raise (Unsupported "outcome constructor not emittable (extend nft_emit.outcome)")
 
 let rule (r : Syntax.rule) : string =
-  let vmap = match r.Syntax.r_vmap with
-    | None -> "None" | Some vm -> spf "(Some %s)" (vmap_spec vm) in
-  let nat = match r.Syntax.r_nat with
-    | None -> "None" | Some ns -> spf "(Some %s)" (nat_spec ns) in
   let body = "[" ^ S.concat ";\n             " (L.map body_item r.Syntax.r_body) ^ "]" in
-  spf "{| r_body := %s;\n     r_verdict := %s; r_vmap := %s;\n     r_nat := %s; r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}"
-    body (verdict r.Syntax.r_verdict) vmap nat
+  spf "{| r_body := %s;\n     r_outcome := %s; r_after := [] |}"
+    body (outcome r.Syntax.r_outcome)
 
 let chain (c : Syntax.chain) : string =
   let rules = "[" ^ S.concat ";\n\n   " (L.map rule c.Syntax.c_rules) ^ "]" in
@@ -202,7 +271,11 @@ let chain (c : Syntax.chain) : string =
 
 (* ---------- set/map declarations -> a set_decls record ---------- *)
 
-let iv (lo, hi) = spf "(%s, %s)" (data lo) (data hi)
+(* a set element prints as its source view: a point via [SEl], an interval via
+   [SRange] (both definitional aliases of the stored pair, Elab.v) *)
+let iv (lo, hi) =
+  if lo = hi then spf "(SEl %s)" (data lo)
+  else spf "(SRange %s %s)" (data lo) (data hi)
 (* a verdict-map entry is an interval KEY [lo,hi] paired with its verdict
    (NFT_SET_INTERVAL | NFT_SET_MAP); emit the Coq triple [(lo, hi, v)] which
    parses as [((lo,hi),v) : data * data * verdict]. *)
@@ -245,7 +318,7 @@ let emit (src_path : string) (p : Nft_lower.parsed) : string =
   pr "   are properties of the parsed ruleset (and, via compile_table_correct, of\n";
   pr "   the installed bytecode). *)\n\n";
   pr "From Stdlib Require Import List String ZArith.\n";
-  pr "From Nft Require Import Bytes Verdict Packet Syntax Semantics.\n";
+  pr "From Nft Require Import Bytes Verdict Packet Bytecode Syntax Semantics Nftval Elab.\n";
   pr "Import ListNotations.\nOpen Scope string_scope.\n\n";
   (* the declared/anonymous sets & maps *)
   pr "Definition decls : set_decls :=\n  {| sd_sets := %s;\n   sd_vmaps := %s;\n   sd_maps := %s |}.\n\n"

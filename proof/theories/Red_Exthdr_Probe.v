@@ -28,8 +28,7 @@ Definition F_maxseg : field := FExthdr EPtcpopt 2 2 2 false.
 
 Definition maxseg_drop : rule :=
   {| r_body := [ BMatch (MEq F_maxseg maxseg_val) ];
-     r_verdict := Drop; r_vmap := None; r_nat := None; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := OVerdict Drop; r_after := [] |}.
 
 Definition filter_chain : chain :=
   {| c_policy := Accept; c_rules := [ maxseg_drop ] |}.

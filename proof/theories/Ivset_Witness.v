@@ -21,8 +21,8 @@ Definition hi2 : data := [10;0;2;255].
 
 (* a bare terminal-Accept shell (the end-fields the two range rules share) *)
 Definition acc : rule :=
-  {| r_body := []; r_verdict := Accept; r_vmap := None; r_nat := None;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := OVerdict Accept; r_after := [] |}.
 
 Definition ivset_input : list rule :=
   [ mk_head (MRange FIp4Saddr false lo1 hi1) [] acc

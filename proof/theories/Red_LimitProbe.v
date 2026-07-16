@@ -54,9 +54,8 @@ Definition mkpkt (flow : data) : packet :=
 
 (* `limit rate 1/second burst 1 accept`: a one-rule chain, policy DROP. *)
 Definition rule_lim : rule :=
-  {| r_body := [BMatch (MLimit lim1)]; r_verdict := Accept;
-     r_vmap := None; r_nat := None; r_tproxy := None;
-     r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [BMatch (MLimit lim1)];
+     r_outcome := OVerdict Accept; r_after := [] |}.
 Definition chain_lim : chain := {| c_policy := Drop; c_rules := [rule_lim] |}.
 
 (* Packet 1 of the flow, against the fresh (1 token) env. *)

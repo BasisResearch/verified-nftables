@@ -334,13 +334,32 @@ let parse_line line : pinst =
   | tok::_ -> raise (Unsupported ("instr:"^tok))
   | [] -> raise (Unsupported "empty")
 
+(* rendering-boundary decoders: the corpus text carries the operator names *)
+let natop_of_string = function
+  | "snat" -> Bytecode.NKsnat | "dnat" -> Bytecode.NKdnat
+  | "masq" -> Bytecode.NKmasq | "redir" -> Bytecode.NKredir
+  | s -> raise (Unsupported ("nat kind " ^ s))
+let nataf_of_string = function
+  | "ip6" -> Bytecode.NFip6 | "inet" -> Bytecode.NFinet | _ -> Bytecode.NFip4
+let dynop_of_string = function
+  | "add" -> Bytecode.SOadd | "update" -> Bytecode.SOupdate
+  | "delete" -> Bytecode.SOdelete | s -> raise (Unsupported ("dynset op " ^ s))
+
 (* fold a block into a DSL rule: (load;test)* then verdict-neutral statements
    then a verdict. *)
 let rule_of_block (lines : string list) : Syntax.rule =
   let mk ?(vmap=None) ?(nat=None) ?(tproxy=None) ?(fwd=None) ?(queue=None) ?(after=[]) body v : Syntax.rule =
-    { Syntax.r_body = List.rev body;
-      r_verdict = v; r_vmap = vmap; r_nat = nat; r_tproxy = tproxy;
-      r_fwd = fwd; r_queue = queue; r_after = after } in
+    let outc = (match vmap, nat, tproxy, fwd, queue with
+      | Some vm, Some ns, None, None, None -> Syntax.OVmapNat (vm, ns)
+      | Some vm, None, None, None, None -> Syntax.OVmap vm
+      | None, Some ns, None, None, None -> Syntax.ONat ns
+      | None, None, Some tp, None, None -> Syntax.OTproxy tp
+      | None, None, None, Some fw, None -> Syntax.OFwd fw
+      | None, None, None, None, Some q -> Syntax.OQueue q
+      | None, None, None, None, None ->
+          (match v with Verdict.Continue -> Syntax.ONone | _ -> Syntax.OVerdict v)
+      | _ -> raise (Unsupported "rule with more than one outcome")) in
+    { Syntax.r_body = List.rev body; r_outcome = outc; r_after = after } in
   let mk_fwd ?(src=None) body imms (dev,addr,nfp) =
     (* register-free: device value expr (reg 1), optional address immediate (reg 2),
        family from nfproto; the compiler re-allocates registers 1/2 *)
@@ -403,7 +422,8 @@ let rule_of_block (lines : string list) : Syntax.rule =
   let nat_spec_of imms (kind,family,amin,amax,pmin,pmax,flags) : Syntax.nat_spec =
     { Syntax.nat_addr_imm = nat_addr_imm_of imms amin; nat_field = None;
       nat_map = None; nat_src = None; nat_extra = nat_extra_of imms (amax,pmin,pmax);
-      nat_kind = kind; nat_family = family; nat_flags = flags } in
+      nat_kind = natop_of_string kind; nat_family = nataf_of_string family;
+      nat_flags = flags } in
   let mk_nat body imms args =
     mk ~nat:(Some (nat_spec_of imms args)) body Verdict.Continue in
   let mk_nat_map body (fields,ts,name) (kind,family,_amin,amax,pmin,pmax,flags) =
@@ -414,13 +434,15 @@ let rule_of_block (lines : string list) : Syntax.rule =
     mk ~nat:(Some { Syntax.nat_addr_imm = None; nat_field = None;
                     nat_map = Some ((fields, ts), name); nat_src = None;
                     nat_extra = nat_extra_of [] (drop1 amax, drop1 pmin, drop1 pmax);
-                    nat_kind = kind; nat_family = family; nat_flags = flags })
+                    nat_kind = natop_of_string kind; nat_family = nataf_of_string family;
+                    nat_flags = flags })
        body Verdict.Continue in
   let mk_nat_field body (f,ts) (kind,family,_,amax,pmin,pmax,flags) =
     mk ~nat:(Some { Syntax.nat_addr_imm = None; nat_field = Some (f, ts);
                     nat_map = None; nat_src = None;
                     nat_extra = nat_extra_of [] (amax,pmin,pmax);
-                    nat_kind = kind; nat_family = family; nat_flags = flags })
+                    nat_kind = natop_of_string kind; nat_family = nataf_of_string family;
+                    nat_flags = flags })
        body Verdict.Continue in
   let mk_tproxy ?(portmap=None) body imms (family,areg,preg) =
     (* register-free: recover the address/port VALUES from the operand immediates.
@@ -589,7 +611,8 @@ let rule_of_block (lines : string list) : Syntax.rule =
                                                 nat_src = Some (Syntax.VHashMap
                                                   ([f], len, seed, m, o, name));
                                                 nat_extra = nat_extra_of [] (ax,pm,px);
-                                                nat_kind = k; nat_family = fa;
+                                                nat_kind = natop_of_string k;
+                                                nat_family = nataf_of_string fa;
                                                 nat_flags = fl }) body Verdict.Continue
                             | _ -> raise (Unsupported "jhashmap-not-nat"))
                          | [] -> raise (Unsupported "jhashmap-dangling"))
@@ -621,7 +644,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                                let n = List.length fields in
                                (List.filteri (fun i _ -> i < n-1) fields,
                                 List.filteri (fun i _ -> i = n-1) fields)) in
-                         go (bs body (Syntax.SDynset (op, name, keys, data))) more
+                         go (bs body (Syntax.SDynset (dynop_of_string op, name, keys, data))) more
                      | PObjrefMap (_, name) ->
                          go (bs body (Syntax.SObjrefMap (nott eacc, name))) more
                      (* dynset whose map data is immediate constants: the concat
@@ -635,7 +658,8 @@ let rule_of_block (lines : string list) : Syntax.rule =
                               | PImmData (r2, v2) -> gimm ((r2, v2) :: iacc) more3
                               | PDynset (op, name, _, Some _dreg) ->
                                   go (bs body (Syntax.SDynsetImm
-                                        (op, name, keyfs, List.map snd (List.rev iacc)))) more3
+                                        (dynop_of_string op, name, keyfs,
+                                         List.map snd (List.rev iacc)))) more3
                               | _ -> raise (Unsupported "dynset-imm-not-dynset"))
                            | [] -> raise (Unsupported "dynset-imm-dangling")
                          in gimm [(r, v)] more
@@ -786,7 +810,7 @@ let rule_of_block (lines : string list) : Syntax.rule =
                              | _ -> raise (Unsupported "map-not-set"))
                           | [] -> raise (Unsupported "map-dangling"))
                      | PDynset (op, name, 1, None) when ts = [] ->
-                         go (bs body (Syntax.SDynset (op, name, [f], []))) more
+                         go (bs body (Syntax.SDynset (dynop_of_string op, name, [f], []))) more
                      | PObjrefMap (1, name) when ts = [] ->
                          go (bs body (Syntax.SObjrefMap ([f], name))) more
                      | PQueue (sreg, bypass, fanout) ->

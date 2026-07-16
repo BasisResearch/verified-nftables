@@ -334,6 +334,8 @@ let render_instr ?(he = (fun _ -> false)) (i : Bytecode.instr) : string =
       let opt label = function Some r -> Printf.sprintf " %s %d" label r | None -> "" in
       Printf.sprintf "[ dup%s%s ]" (opt "sreg_addr" addr) (opt "sreg_dev" dev)
   | Bytecode.IDynset (op,name,krs,dreg,_) ->
+      let op = (match op with Bytecode.SOadd -> "add" | Bytecode.SOupdate -> "update"
+                            | Bytecode.SOdelete -> "delete") in
       let r = nreg (match krs with x :: _ -> x | [] -> 1) in
       let dat = (match dreg with Some d -> Printf.sprintf " sreg_data %d" (nreg d) | None -> "") in
       Printf.sprintf "[ dynset %s reg_key %d set %s%s ]" op r name dat
@@ -390,6 +392,10 @@ let render_instr ?(he = (fun _ -> false)) (i : Bytecode.instr) : string =
   | Bytecode.ICtSet (k,src) ->
       Printf.sprintf "[ ct set %s with reg %d ]" (name_of_ct k) src
   | Bytecode.INat (kind,family,amin,amax,pmin,pmax,flags) ->
+      let kind = (match kind with Bytecode.NKsnat -> "snat" | Bytecode.NKdnat -> "dnat"
+                                | Bytecode.NKmasq -> "masq" | Bytecode.NKredir -> "redir") in
+      let family = (match family with Bytecode.NFip4 -> "ip" | Bytecode.NFip6 -> "ip6"
+                                    | Bytecode.NFinet -> "inet") in
       let opt label = function Some r -> Printf.sprintf " %s reg %d" label r | None -> "" in
       let fl = if flags > 0 then Printf.sprintf " flags 0x%x" flags else "" in
       (match kind with

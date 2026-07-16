@@ -33,7 +33,7 @@
 
 From Stdlib Require Import List String NArith Lia.
 Import ListNotations.
-From Nft Require Import Bytes Packet Verdict Syntax Semantics Router_Gen.
+From Nft Require Import Bytes Packet Verdict Bytecode Syntax Semantics Router_Gen.
 
 Open Scope string_scope.
 Local Open Scope bool_scope.
@@ -49,15 +49,14 @@ Definition if_ppp0 : data := [112; 112; 112; 48; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0
 (* The masquerade NAT spec the parser emitted for `masquerade` (family ip). *)
 Definition masq_spec : nat_spec :=
   {| nat_addr_imm := None; nat_field := None; nat_map := None; nat_src := None;
-     nat_kind := "masq"; nat_family := "ip"; nat_extra := NXnone; nat_flags := 0 |}.
+     nat_kind := NKmasq; nat_family := NFip4; nat_extra := NXnone; nat_flags := 0 |}.
 
 (* The masquerade rule = the single rule of the generated postrouting chain,
    reproduced for unfolding; proved equal to the parser output below. *)
 Definition masq_rule : rule :=
   {| r_body := [(BMatch (MEq (FPayload PNetwork 12 2) [192; 168]));
                 (BMatch (MEq FMetaOifname if_ppp0))];
-     r_verdict := Accept; r_vmap := None; r_nat := Some masq_spec;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := ONat masq_spec; r_after := [] |}.
 
 (* The reproduced rule IS the parser's postrouting rule. *)
 Lemma global_postrouting_rules : global_postrouting.(c_rules) = [masq_rule].
@@ -96,7 +95,7 @@ Lemma set_saddr_flow : forall fam p v, pkt_flow (set_saddr fam p v) = pkt_flow p
 Proof.
   intros fam p v. unfold set_saddr. destruct (saddr_slot fam) as [off len].
   rewrite set_l4_csum_addr_flow.
-  destruct (String.eqb fam nat_fam_ip6); reflexivity.
+  destruct (nataf_eqb fam nat_fam_ip6); reflexivity.
 Qed.
 
 (* ============================================================ *)
@@ -132,7 +131,7 @@ Lemma masq_apply : forall h e p,
     = (store_nat_mapping e p
          (Some (slice (pkt_nh p) 12 4),
           Some (e_ifaddr e (field_value FMetaOifname e p)), None, None),
-       set_saddr "ip" p (e_ifaddr e (field_value FMetaOifname e p))).
+       set_saddr nat_fam_ip4 p (e_ifaddr e (field_value FMetaOifname e p))).
 Proof.
   intros h e p Horig Hnone. unfold apply_nat, masq_rule, masq_spec.
   cbn -[set_saddr store_nat_mapping e_nat pkt_flow e_ifaddr field_value
@@ -152,7 +151,7 @@ Lemma masq_no_drop : forall h e p,
 Proof.
   intros h e p Hwan. unfold nat_drops, masq_rule.
   destruct (e_nat e (pkt_flow p)); [reflexivity|].
-  unfold nat_iface_addr_absent, masq_spec; cbn [nat_kind r_nat].
+  unfold nat_iface_addr_absent, masq_spec; cbn [nat_kind r_nat r_outcome].
   unfold nat_addrfamily_pkt, nat_addrfamily, masq_saddr; cbn -[e_ifaddr field_value].
   destruct (pkt_ctdir_orig p); [|reflexivity].
   cbn [andb]. destruct (e_ifaddr e (field_value FMetaOifname e p)) eqn:E;
@@ -170,7 +169,7 @@ Theorem nat_masquerade_fires_output : forall e p wan,
   eval_chain_trace Hpostrouting global_postrouting e p
     = (Accept, (store_nat_mapping e p
                   (Some (slice (pkt_nh p) 12 4), Some wan, None, None),
-                set_saddr "ip" p wan)).
+                set_saddr nat_fam_ip4 p wan)).
 Proof.
   intros e p wan Hpriv Hppp Horig Hnone Hwan Hne.
   unfold eval_chain_trace. rewrite global_postrouting_rules. cbn [c_rules eval_rules_trace dsl_rule_step].
@@ -264,8 +263,7 @@ Qed.
    internal-address leak: it source-NATs traffic it must not). *)
 Definition bug_rule : rule :=
   {| r_body := [(BMatch (MEq FMetaOifname if_ppp0))];
-     r_verdict := Accept; r_vmap := None; r_nat := Some masq_spec;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+     r_outcome := ONat masq_spec; r_after := [] |}.
 Definition bug_postrouting : chain :=
   {| c_policy := Accept; c_rules := [bug_rule] |}.
 
@@ -283,7 +281,7 @@ Lemma bug_apply : forall h e p,
     = (store_nat_mapping e p
          (Some (slice (pkt_nh p) 12 4),
           Some (e_ifaddr e (field_value FMetaOifname e p)), None, None),
-       set_saddr "ip" p (e_ifaddr e (field_value FMetaOifname e p))).
+       set_saddr nat_fam_ip4 p (e_ifaddr e (field_value FMetaOifname e p))).
 Proof.
   intros h e p Horig Hnone. unfold apply_nat, bug_rule, masq_spec.
   cbn -[set_saddr store_nat_mapping e_nat pkt_flow e_ifaddr field_value
@@ -427,11 +425,11 @@ Definition daddr4 (p : packet) : data := slice (pkt_nh p) 16 4.
 
 (* On a CONFIRMED original-direction flow [apply_nat] reuses the stored tuple [m]
    verbatim: for the masq tuple shape (Some oa, Some wan, None, None) the result is
-   exactly [set_saddr "ip" p wan] — no operand re-read, no env touched. *)
+   exactly [set_saddr nat_fam_ip4 p wan] — no operand re-read, no env touched. *)
 Lemma masq_apply_confirmed_orig : forall h e p oa wan,
   pkt_ctdir_orig p = true ->
   e_nat e (pkt_flow p) = Some (Some oa, Some wan, None, None) ->
-  apply_nat h masq_rule e p = (e, set_saddr "ip" p wan).
+  apply_nat h masq_rule e p = (e, set_saddr nat_fam_ip4 p wan).
 Proof.
   intros h e p oa wan Horig Hsome. unfold apply_nat, masq_rule, masq_spec.
   cbn -[set_saddr e_nat pkt_flow apply_nat_tuple].
@@ -446,7 +444,7 @@ Lemma masq_no_drop_confirmed : forall h e p m,
   e_nat e (pkt_flow p) = Some m ->
   nat_drops h masq_rule e p = false.
 Proof.
-  intros h e p m Hsome. unfold nat_drops, masq_rule; cbn [r_nat].
+  intros h e p m Hsome. unfold nat_drops, masq_rule; cbn [r_nat r_outcome].
   rewrite Hsome. reflexivity.
 Qed.
 
@@ -457,7 +455,7 @@ Theorem nat_masq_confirmed_output : forall e p oa wan,
   oif_ppp0 e p = true ->
   pkt_ctdir_orig p = true ->
   e_nat e (pkt_flow p) = Some (Some oa, Some wan, None, None) ->
-  chain_out Hpostrouting global_postrouting e p = set_saddr "ip" p wan.
+  chain_out Hpostrouting global_postrouting e p = set_saddr nat_fam_ip4 p wan.
 Proof.
   intros e p oa wan Hpriv Hppp Horig Hsome.
   unfold chain_out, eval_chain_trace.
@@ -510,7 +508,7 @@ Definition bug_apply_recompute (h : hook_id) (r : rule) (e : env) (p : packet) :
   match r_nat r with
   | Some _ =>
       if pkt_ctdir_orig p
-      then set_saddr "ip" p (e_ifaddr e (field_value FMetaOifname e p))
+      then set_saddr nat_fam_ip4 p (e_ifaddr e (field_value FMetaOifname e p))
       else p
   | None => p
   end.
@@ -530,7 +528,7 @@ Proof.
   intros h e p oa wan Horig Hsome Hnh Hwl Hifl Hdiff.
   unfold saddr4.
   rewrite (masq_apply_confirmed_orig h e p oa wan Horig Hsome). cbn [snd].
-  unfold bug_apply_recompute, masq_rule; cbn [r_nat]. rewrite Horig.
+  unfold bug_apply_recompute, masq_rule; cbn [r_nat r_outcome]. rewrite Horig.
   change "ip"%string with nat_fam_ip4.
   rewrite (slice_set_saddr_ip4_same p wan Hnh Hwl).
   rewrite (slice_set_saddr_ip4_same p _ Hnh Hifl).
@@ -546,7 +544,7 @@ Qed.
 Lemma masq_apply_confirmed_reply : forall h e p oa wan,
   pkt_ctdir_orig p = false ->
   e_nat e (pkt_flow p) = Some (Some oa, Some wan, None, None) ->
-  apply_nat h masq_rule e p = (e, set_daddr "ip" p oa).
+  apply_nat h masq_rule e p = (e, set_daddr nat_fam_ip4 p oa).
 Proof.
   intros h e p oa wan Hrep Hsome. unfold apply_nat, masq_rule, masq_spec.
   cbn -[set_daddr e_nat pkt_flow apply_nat_tuple].
@@ -561,7 +559,7 @@ Theorem nat_masq_confirmed_reply_output : forall e p oa wan,
   oif_ppp0 e p = true ->
   pkt_ctdir_orig p = false ->
   e_nat e (pkt_flow p) = Some (Some oa, Some wan, None, None) ->
-  chain_out Hpostrouting global_postrouting e p = set_daddr "ip" p oa.
+  chain_out Hpostrouting global_postrouting e p = set_daddr nat_fam_ip4 p oa.
 Proof.
   intros e p oa wan Hpriv Hppp Hrep Hsome.
   unfold chain_out, eval_chain_trace.

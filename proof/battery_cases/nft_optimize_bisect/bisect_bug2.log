@@ -1,0 +1,33 @@
+== 07af4429 bug2 ==
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/nftables/src/.libs/nft: unrecognized option '--optimize'
+== 8f85d9f4 bug2 ==
+Merging:
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/case_bug2.nft:4:5-29:     ip saddr 10.0.0.0/24 drop
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/case_bug2.nft:5:5-31:     ip saddr 10.0.0.0/16 accept
+into:
+	ip saddr vmap { 10.0.0.0/24 : drop, 10.0.0.0/16 : accept }
+internal:0:0-0: Error: conflicting intervals specified
+
+internal:0:0-0: Error: Could not process rule: File exists
+== 19a36424 bug2 ==
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/nftables/src/.libs/nft: unrecognized option '--optimize'
+== af03f4bd bug2 ==
+Merging:
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/case_bug2.nft:4:5-29:     ip saddr 10.0.0.0/24 drop
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/case_bug2.nft:5:5-31:     ip saddr 10.0.0.0/16 accept
+into:
+	ip saddr vmap { 10.0.0.0/24 : drop, 10.0.0.0/16 : accept }
+internal:0:0-0: Error: conflicting intervals specified
+
+internal:0:0-0: Error: Could not process rule: File exists
+== 1542082e bug2 ==
+Merging:
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/case_bug2.nft:4:5-29:     ip saddr 10.0.0.0/24 drop
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/case_bug2.nft:5:5-31:     ip saddr 10.0.0.0/16 accept
+into:
+	ip saddr map { 10.0.0.0/24 : drop, 10.0.0.0/16 : accept }
+internal:0:0-0: Error: conflicting intervals specified
+
+internal:0:0-0: Error: Could not process rule: File exists
+== 8b4c95da bug2 ==
+

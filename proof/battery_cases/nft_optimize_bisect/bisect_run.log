@@ -1,0 +1,133 @@
+########## BISECT BUG1 ##########
+Bisecting: 46 revisions left to test after this (roughly 6 steps)
+[07af4429241c9832a613cb8620331ac54257d9df] parser: allow quoted string in flowtable_expr_member
+running '/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/bisect_test.sh' 'bug1'
+Bisecting: 23 revisions left to test after this (roughly 5 steps)
+[8f85d9f4469e50ade883b652ab3c112c90d477c3] src: add a helper that returns a payload dependency for a particular base
+running '/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/bisect_test.sh' 'bug1'
+Bisecting: 11 revisions left to test after this (roughly 4 steps)
+[19a36424bc2949f2ae96731ada9714f8bce950d8] src: remove '$' in symbol_expr_print
+running '/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/bisect_test.sh' 'bug1'
+Bisecting: 5 revisions left to test after this (roughly 3 steps)
+[af03f4bde32a02b7a97bae586a45a05c9bdbd5a0] cache: do not set error code twice
+running '/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/bisect_test.sh' 'bug1'
+Bisecting: 2 revisions left to test after this (roughly 2 steps)
+[1542082e259b4a9270e0726904796730a5c310d6] optimize: merge same selector with different verdict into verdict map
+running '/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/bisect_test.sh' 'bug1'
+Bisecting: 0 revisions left to test after this (roughly 1 step)
+[8b4c95dae6c19eb29fb4ad5e931b67097851f0f1] optimize: merge rules with same selectors into a concatenation
+running '/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/bisect_test.sh' 'bug1'
+Bisecting: 0 revisions left to test after this (roughly 0 steps)
+[fb298877ece2739ffb08b1967c10829969859e2c] src: add ruleset optimization infrastructure
+running '/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/bisect_test.sh' 'bug1'
+fb298877ece2739ffb08b1967c10829969859e2c is the first 'bad' commit
+commit fb298877ece2739ffb08b1967c10829969859e2c
+Author: Pablo Neira Ayuso <pablo@netfilter.org>
+Date:   Sun Jan 2 21:46:21 2022 +0100
+
+    src: add ruleset optimization infrastructure
+    
+    This patch adds a new -o/--optimize option to enable ruleset
+    optimization.
+    
+    You can combine this option with the dry run mode (--check) to review
+    the proposed ruleset updates without actually loading the ruleset, e.g.
+    
+     # nft -c -o -f ruleset.test
+     Merging:
+     ruleset.nft:16:3-37:           ip daddr 192.168.0.1 counter accept
+     ruleset.nft:17:3-37:           ip daddr 192.168.0.2 counter accept
+     ruleset.nft:18:3-37:           ip daddr 192.168.0.3 counter accept
+     into:
+            ip daddr { 192.168.0.1, 192.168.0.2, 192.168.0.3 } counter packets 0 bytes 0 accept
+    
+    This infrastructure collects the common statements that are used in
+    rules, then it builds a matrix of rules vs. statements. Then, it looks
+    for common statements in consecutive rules which allows to merge rules.
+    
+    This ruleset optimization always performs an implicit dry run to
+    validate that the original ruleset is correct. Then, on a second pass,
+    it performs the ruleset optimization and add the rules into the kernel
+    (unless --check has been specified by the user).
+    
+    From libnftables perspective, there is a new API to enable
+    this feature:
+    
+      uint32_t nft_ctx_get_optimize(struct nft_ctx *ctx);
+      void nft_ctx_set_optimize(struct nft_ctx *ctx, uint32_t flags);
+    
+    This patch adds support for the first optimization: Collapse a linear
+    list of rules matching on a single selector into a set as exposed in the
+    example above.
+    
+    Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+
+ doc/nft.txt                                        |   5 +
+ include/nftables.h                                 |   3 +
+ include/nftables/libnftables.h                     |   7 +
+ src/Makefile.am                                    |   1 +
+ src/libnftables.c                                  |  71 ++-
+ src/libnftables.map                                |   5 +
+ src/main.c                                         |   9 +-
+ src/optimize.c                                     | 478 +++++++++++++++++++++
+ .../testcases/optimizations/dumps/merge_stmts.nft  |   5 +
+ tests/shell/testcases/optimizations/merge_stmts    |  13 +
+ 10 files changed, 586 insertions(+), 11 deletions(-)
+ create mode 100644 src/optimize.c
+ create mode 100644 tests/shell/testcases/optimizations/dumps/merge_stmts.nft
+ create mode 100755 tests/shell/testcases/optimizations/merge_stmts
+bisect found first 'bad' commit
+########## BUG1 RESULT: git bisect bad fb298877ece2739ffb08b1967c10829969859e2c
+# first 'bad' commit: [fb298877ece2739ffb08b1967c10829969859e2c] src: add ruleset optimization infrastructure
+Previous HEAD position was fb298877 src: add ruleset optimization infrastructure
+Switched to branch 'master'
+Your branch is up to date with 'origin/master'.
+########## BISECT BUG2 ##########
+Bisecting: 46 revisions left to test after this (roughly 6 steps)
+[07af4429241c9832a613cb8620331ac54257d9df] parser: allow quoted string in flowtable_expr_member
+running '/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/bisect_test.sh' 'bug2'
+Bisecting: 23 revisions left to test after this (roughly 5 steps)
+[8f85d9f4469e50ade883b652ab3c112c90d477c3] src: add a helper that returns a payload dependency for a particular base
+running '/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/bisect_test.sh' 'bug2'
+Bisecting: 11 revisions left to test after this (roughly 4 steps)
+[19a36424bc2949f2ae96731ada9714f8bce950d8] src: remove '$' in symbol_expr_print
+running '/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/bisect_test.sh' 'bug2'
+Bisecting: 5 revisions left to test after this (roughly 3 steps)
+[af03f4bde32a02b7a97bae586a45a05c9bdbd5a0] cache: do not set error code twice
+running '/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/bisect_test.sh' 'bug2'
+Bisecting: 2 revisions left to test after this (roughly 2 steps)
+[1542082e259b4a9270e0726904796730a5c310d6] optimize: merge same selector with different verdict into verdict map
+running '/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/bisect_test.sh' 'bug2'
+Bisecting: 0 revisions left to test after this (roughly 1 step)
+[8b4c95dae6c19eb29fb4ad5e931b67097851f0f1] optimize: merge rules with same selectors into a concatenation
+running '/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/bisect_test.sh' 'bug2'
+1542082e259b4a9270e0726904796730a5c310d6 is the first 'bad' commit
+commit 1542082e259b4a9270e0726904796730a5c310d6
+Author: Pablo Neira Ayuso <pablo@netfilter.org>
+Date:   Sun Jan 2 21:53:41 2022 +0100
+
+    optimize: merge same selector with different verdict into verdict map
+    
+    Transform:
+    
+      ct state invalid drop
+      ct state established,related accept
+    
+    into:
+    
+      ct state vmap { established : accept, related : accept, invalid : drop }
+    
+    Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+
+ src/optimize.c                                     | 162 +++++++++++++++++++--
+ .../optimizations/dumps/merge_stmts_vmap.nft       |   5 +
+ .../shell/testcases/optimizations/merge_stmts_vmap |  12 ++
+ 3 files changed, 164 insertions(+), 15 deletions(-)
+ create mode 100644 tests/shell/testcases/optimizations/dumps/merge_stmts_vmap.nft
+ create mode 100755 tests/shell/testcases/optimizations/merge_stmts_vmap
+bisect found first 'bad' commit
+########## BUG2 RESULT: git bisect good 8b4c95dae6c19eb29fb4ad5e931b67097851f0f1
+# first 'bad' commit: [1542082e259b4a9270e0726904796730a5c310d6] optimize: merge same selector with different verdict into verdict map
+Previous HEAD position was 8b4c95da optimize: merge rules with same selectors into a concatenation
+Switched to branch 'master'
+Your branch is up to date with 'origin/master'.

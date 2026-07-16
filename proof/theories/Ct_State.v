@@ -14,7 +14,7 @@
    i.e. it matches iff (state & 2) != 0, NOT state == 2.
 
    The parser lowers a single positive `ct state X` to
-     MMasked FCtState (neg:=true) X [0;0;0;0] [0;0;0;0]
+     MMasked FCtState CNe X [0;0;0;0] [0;0;0;0]
    which Semantics.v evaluates as
      eval_cmp CNe (data_bitops state X 0) 0 = (state & X) != 0,
    exactly matching the golden bytecode.
@@ -25,7 +25,7 @@
    exact-equality (MEq) alternative (66 <> 2). *)
 
 From Stdlib Require Import List Bool.
-From Nft Require Import Bytes Packet Verdict Syntax Semantics.
+From Nft Require Import Bytes Packet Verdict Bytecode Syntax Semantics.
 Import ListNotations.
 
 (* The conntrack-state value is read from the SHARED, flow-keyed table [e_ct]
@@ -50,7 +50,7 @@ Definition pkt_ctstate (st : data) : packet :=
 
 (* The matchcond the parser emits for a single positive `ct state established`. *)
 Definition m_estab : matchcond :=
-  MMasked FCtState true [0;0;0;2] [0;0;0;0] [0;0;0;0].
+  MMasked FCtState CNe [0;0;0;2] [0;0;0;0] [0;0;0;0].
 
 (* The refuted exact-equality lowering, for contrast. *)
 Definition m_estab_old : matchcond := MEq FCtState [0;0;0;2].

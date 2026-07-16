@@ -10,7 +10,7 @@
 
         [ payload load 1b @ network header + 1 ]
         [ bitwise reg 1 = ( reg 1 & 0xfc ) ^ 0x00 ]
-        [ cmp eq reg 1 (N << 2) ]                     -- [MMasked f false [0xfc] [0] v]
+        [ cmp eq reg 1 (N << 2) ]                     -- [MMasked f CEq [0xfc] [0] v]
 
     i.e. `(field & 0xfc) == v` where `v = N << 2` (dscp is the top 6 bits of the TOS
     byte).  `nft --optimize` folds a run of such rules — SAME field, SAME mask, SAME
@@ -57,7 +57,7 @@ Qed.
 
     A point set [map (v,v) vals] matched by [MSetT f [TBitAnd mask xor] false name]
     (membership of the MASKED field value) is exactly the [existsb] disjunction of the
-    run's [MMasked f false mask xor v] equalities — when the masked value's width
+    run's [MMasked f CEq mask xor v] equalities — when the masked value's width
     equals each element's width (so [MMasked]'s [firstn]-truncated equality coincides
     with the set's full-width membership). *)
 Lemma mmasked_set_existsb : forall f mask xor vals name e q,
@@ -65,7 +65,7 @@ Lemma mmasked_set_existsb : forall f mask xor vals name e q,
   (forall v, In v vals -> field_loadable f q = true ->
      length (data_bitops (field_value f e q) mask xor) = length v) ->
   eval_matchcond (MSetT f [TBitAnd mask xor] false name) e q
-  = existsb (fun v => eval_matchcond (MMasked f false mask xor v) e q) vals.
+  = existsb (fun v => eval_matchcond (MMasked f CEq mask xor v) e q) vals.
 Proof.
   intros f mask xor vals name e q Hset Hlen.
   unfold eval_matchcond at 1, eval_matchcond_body at 1.
@@ -88,17 +88,17 @@ Proof.
     reflexivity.
 Qed.
 
-(** ** Recogniser: a masked-equality head [BMatch (MMasked f false mask xor v) :: rest]. *)
+(** ** Recogniser: a masked-equality head [BMatch (MMasked f CEq mask xor v) :: rest]. *)
 Definition head_dscp (r : rule)
   : option (field * data * data * data * list body_item) :=
   match r_body r with
-  | BMatch (MMasked f false mask xor v) :: rest => Some (f, mask, xor, v, rest)
+  | BMatch (MMasked f CEq mask xor v) :: rest => Some (f, mask, xor, v, rest)
   | _ => None
   end.
 
 Lemma head_dscp_rbody : forall r f mask xor v body,
   head_dscp r = Some (f, mask, xor, v, body) ->
-  r_body r = BMatch (MMasked f false mask xor v) :: body.
+  r_body r = BMatch (MMasked f CEq mask xor v) :: body.
 Proof.
   intros r f mask xor v body H. unfold head_dscp in H.
   destruct (r_body r) as [| [m | s] tl] eqn:Eb; try discriminate.
@@ -109,7 +109,7 @@ Qed.
 
 Lemma head_dscp_canon : forall r f mask xor v body,
   head_dscp r = Some (f, mask, xor, v, body) ->
-  r = mk_head (MMasked f false mask xor v) body r.
+  r = mk_head (MMasked f CEq mask xor v) body r.
 Proof.
   intros r f mask xor v body H.
   pose proof (head_dscp_rbody r f mask xor v body H) as Hb.
@@ -117,7 +117,7 @@ Proof.
 Qed.
 
 (** Two rules form an eligible masked-value merge pair iff both heads are
-    [MMasked f false mask xor v_i] over the SAME fixed-width field [f], the SAME mask
+    [MMasked f CEq mask xor v_i] over the SAME fixed-width field [f], the SAME mask
     and xor (each of the field's fixed width), the SAME tail, the SAME end-fields, and
     DISTINCT values (also of that width).  Returns [(f, mask, xor, v1, v2, body)]. *)
 Definition dscp_merge_pair (r1 r2 : rule)
@@ -150,8 +150,8 @@ Definition dscp_merge_pair (r1 r2 : rule)
     side condition holds. *)
 Lemma dscp_merge_pair_shape : forall r1 r2 f mask xor v1 v2 body,
   dscp_merge_pair r1 r2 = Some (f, mask, xor, v1, v2, body) ->
-  r1 = mk_head (MMasked f false mask xor v1) body r1 /\
-  r2 = mk_head (MMasked f false mask xor v2) body r1 /\
+  r1 = mk_head (MMasked f CEq mask xor v1) body r1 /\
+  r2 = mk_head (MMasked f CEq mask xor v2) body r1 /\
   field_fixed_len f = Some (length v1) /\ field_fixed_len f = Some (length v2) /\
   length mask = length v1 /\ length xor = length v1.
 Proof.
@@ -172,7 +172,7 @@ Proof.
   inversion H; subst f1 m1 x1 u1 rest1 u2. clear H.
   pose proof (head_dscp_canon r1 f mask xor v1 body H1) as Hr1.
   pose proof (head_dscp_canon r2 f mask xor v2 body H2) as Hr2c.
-  pose proof (proj1 (rule_end_eqb_mk_head (MMasked f false mask xor v2) body r1 r2) Eeqb)
+  pose proof (proj1 (rule_end_eqb_mk_head (MMasked f CEq mask xor v2) body r1 r2) Eeqb)
     as Eshell.
   split; [exact Hr1 |].
   split; [rewrite Hr2c; symmetry; exact Eshell |].
@@ -186,7 +186,7 @@ Lemma dscp_merge_pair_with_head : forall r1 r2 f mask xor v1 body
   head_dscp r1 = Some (f, mask, xor, v1, body) ->
   dscp_merge_pair r1 r2 = Some (f', m', x', v1', v2, body') ->
   f' = f /\ m' = mask /\ x' = xor /\ v1' = v1 /\ body' = body /\
-  r2 = mk_head (MMasked f false mask xor v2) body r1 /\
+  r2 = mk_head (MMasked f CEq mask xor v2) body r1 /\
   field_fixed_len f = Some (length v2).
 Proof.
   intros r1 r2 f mask xor v1 body f' m' x' v1' v2 body' Hhd Hvm.
@@ -200,7 +200,7 @@ Qed.
 
 (** ** [match_loadable] agreement between the masked heads and the merged set head. *)
 Lemma match_loadable_mmasked : forall f mask xor v q,
-  match_loadable (MMasked f false mask xor v) q = field_loadable f q.
+  match_loadable (MMasked f CEq mask xor v) q = field_loadable f q.
 Proof. reflexivity. Qed.
 
 Lemma match_loadable_msett_bitand : forall f mask xor name q,
@@ -208,7 +208,7 @@ Lemma match_loadable_msett_bitand : forall f mask xor name q,
 Proof. reflexivity. Qed.
 
 Lemma match_loadable_dscp_run : forall f mask xor vals q m,
-  In m (map (fun v => MMasked f false mask xor v) vals) ->
+  In m (map (fun v => MMasked f CEq mask xor v) vals) ->
   match_loadable m q = field_loadable f q.
 Proof.
   intros f mask xor vals q m Hin. apply in_map_iff in Hin as [v [Hv _]]. subst m.
@@ -290,7 +290,7 @@ Proof. reflexivity. Qed.
 Lemma take_dscp_run_shape : forall r1 f mask xor v1 body rest vs rest',
   head_dscp r1 = Some (f, mask, xor, v1, body) ->
   take_dscp_run r1 rest = (vs, rest') ->
-  rest = map (fun v => mk_head (MMasked f false mask xor v) body r1) vs ++ rest'
+  rest = map (fun v => mk_head (MMasked f CEq mask xor v) body r1) vs ++ rest'
   /\ (forall v, In v vs -> field_fixed_len f = Some (length v)).
 Proof.
   intros r1 f mask xor v1 body rest. induction rest as [| r2 tl IH]; intros vs rest' Hhd H.
@@ -552,13 +552,13 @@ Qed.
     compared values are the dscp codepoints shifted into the header bits
     (10<<2 = 0x28 = 40, 20<<2 = 0x50 = 80). *)
 Definition acc_witness_d : rule :=
-  {| r_body := []; r_verdict := Accept; r_vmap := None; r_nat := None;
-     r_tproxy := None; r_fwd := None; r_queue := None; r_after := [] |}.
+  {| r_body := [];
+     r_outcome := OVerdict Accept; r_after := [] |}.
 
 Definition dscp_f : field := FPayload PNetwork 1 1.
 
 Definition dscp_r (v : data) : rule :=
-  mk_head (MMasked dscp_f false [252] [0] v) [] acc_witness_d.
+  mk_head (MMasked dscp_f CEq [252] [0] v) [] acc_witness_d.
 
 Example dscp_merge_fires :
   dscp_merge_pair (dscp_r [40]) (dscp_r [80])

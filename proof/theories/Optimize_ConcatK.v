@@ -219,9 +219,7 @@ Definition kmatches (fields : list field) (row : list data) : list body_item :=
 Definition orig_ruleK (fields : list field) (row : list data)
                       (body : list body_item) (r1 : rule) : rule :=
   {| r_body := kmatches fields row ++ body;
-     r_verdict := r_verdict r1; r_vmap := r_vmap r1; r_nat := r_nat r1;
-     r_tproxy := r_tproxy r1; r_fwd := r_fwd r1; r_queue := r_queue r1;
-     r_after := r_after r1 |}.
+     r_outcome := r_outcome r1; r_after := r_after r1 |}.
 
 Definition merged_ruleK (fields : list field) (name : String.string)
                         (body : list body_item) (r1 : rule) : rule :=
@@ -434,9 +432,8 @@ Qed.
 
 (** A record built from a body [b] and [r1]'s end fields. *)
 Definition with_end (b : list body_item) (r1 : rule) : rule :=
-  {| r_body := b; r_verdict := r_verdict r1; r_vmap := r_vmap r1; r_nat := r_nat r1;
-     r_tproxy := r_tproxy r1; r_fwd := r_fwd r1; r_queue := r_queue r1;
-     r_after := r_after r1 |}.
+  {| r_body := b;
+     r_outcome := r_outcome r1; r_after := r_after r1 |}.
 
 Lemma orig_ruleK_with_end : forall fields row body r1,
   orig_ruleK fields row body r1 = with_end (kmatches fields row ++ body) r1.
@@ -451,9 +448,9 @@ Lemma with_end_end_eqb : forall b r1 r2,
   rule_end_eqb r1 r2 = true -> with_end b r1 = with_end b r2.
 Proof.
   intros b r1 r2 H. unfold rule_end_eqb in H.
-  rewrite !Bool.andb_true_iff in H. rewrite !sumbool_eqb_true_iff, !opt_eqb_true_iff in H.
-  destruct H as [[[[[[Hv Hvm] Hn] Ht] Hf] Hq] Ha].
-  unfold with_end. rewrite Hv, Hvm, Hn, Ht, Hf, Hq, Ha. reflexivity.
+  rewrite Bool.andb_true_iff in H. rewrite !sumbool_eqb_true_iff in H.
+  destruct H as [Ho Ha].
+  unfold with_end. rewrite Ho, Ha. reflexivity.
 Qed.
 
 (** If [r1]'s prefix is [(ps, body)] then [r1] is its own [orig_ruleK] shell over

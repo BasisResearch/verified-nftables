@@ -159,8 +159,8 @@ Proof.
   split.
   - rewrite Hr2c. unfold orig_ruleGs in Eshell |- *.
     unfold mk_head in Eshell |- *.
-    injection Eshell as Eva Evm Ena Etp Efw Equ Eaf.
-    rewrite Eva, Evm, Ena, Etp, Efw, Equ, Eaf. reflexivity.
+    injection Eshell as Eo Eaf.
+    rewrite Eo, Eaf. reflexivity.
   - rewrite Hfx. split; f_equal; congruence.
 Qed.
 

@@ -358,8 +358,8 @@ Proof.
   - assert (Hr2 : r2 = orig_rule2 f1' g1' v2' v2b' b1'' r2).
     { unfold orig_rule2, mk_head. rewrite <- Eb2. destruct r2; reflexivity. }
     rewrite Hr2. unfold orig_rule2, mk_head in Eshell |- *.
-    injection Eshell as Eva Evm Ena Etp Efw Equ Eaf.
-    rewrite Eva, Evm, Ena, Etp, Efw, Equ, Eaf. reflexivity.
+    injection Eshell as Eo Eaf.
+    rewrite Eo, Eaf. reflexivity.
   - rewrite Hfxf, Hfxg. repeat split; f_equal; congruence.
 Qed.
 

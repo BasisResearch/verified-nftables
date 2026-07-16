@@ -1,0 +1,34 @@
+== 07af4429 bug1 ==
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/nftables/src/.libs/nft: unrecognized option '--optimize'
+== 8f85d9f4 bug1 ==
+Merging:
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/case_bug1.nft:4:5-24:     tcp flags syn accept
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/case_bug1.nft:5:5-24:     tcp flags ack accept
+into:
+	tcp flags { syn, ack } accept
+== 19a36424 bug1 ==
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/nftables/src/.libs/nft: unrecognized option '--optimize'
+== af03f4bd bug1 ==
+Merging:
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/case_bug1.nft:4:5-24:     tcp flags syn accept
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/case_bug1.nft:5:5-24:     tcp flags ack accept
+into:
+	tcp flags { syn, ack } accept
+== 1542082e bug1 ==
+Merging:
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/case_bug1.nft:4:5-24:     tcp flags syn accept
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/case_bug1.nft:5:5-24:     tcp flags ack accept
+into:
+	tcp flags { syn, ack } accept
+== 8b4c95da bug1 ==
+Merging:
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/case_bug1.nft:4:5-24:     tcp flags syn accept
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/case_bug1.nft:5:5-24:     tcp flags ack accept
+into:
+	tcp flags { syn, ack } accept
+== fb298877 bug1 ==
+Merging:
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/case_bug1.nft:4:5-24:     tcp flags syn accept
+/tmp/claude-1000/-home-yiyun-Projects-certified-nft/be172073-b22d-459e-bc40-7d60b9c79b6d/scratchpad/case_bug1.nft:5:5-24:     tcp flags ack accept
+into:
+	tcp flags { syn, ack } accept

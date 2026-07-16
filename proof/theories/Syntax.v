@@ -1,15 +1,17 @@
-(** * Syntax: a lowered, byte-level rule IR (the verified pipeline's source).
+(** * Syntax: the byte-level rule IR (the compiler's internal source).
 
     A ruleset is a list of tables, a table a list of named chains, a chain a
-    policy plus an ordered list of rules, and a rule a conjunction of match
-    conditions terminated by a verdict — but the leaves are LOWERED: match
-    values are pre-encoded register bytes (e.g. [MEq FIp4Saddr [81;209;165;42]],
-    not a typed address literal), and [transform] records the mask/shift/
-    byteorder/jhash operations the lowering inserts in front of a compare.
-    The typed surface syntax -> IR elaboration (datatype `kind` selection and
-    atom encoding) is UNVERIFIED OCaml: [extracted/nft_lower.ml] ([kind],
-    [enc_atom]).  [Nftval.v] provides the verified typed view of the byte
-    domain and proves it agrees with that encoding.
+    policy plus an ordered list of rules, and a rule an ordered body of match
+    conditions and statements followed by ONE outcome.  The leaves here are
+    byte-level: match values are register bytes, and [transform] records the
+    mask/shift/byteorder/jhash operations in front of a compare — this IR
+    models exactly what the kernel's expressions evaluate.  Generated source
+    terms ([*_Gen.v]) do NOT carry raw bytes: their immediates are TYPED
+    ([Nftval.nftval]) and reach this IR through the VERIFIED elaboration
+    [Elab.elab_m] (correctness: [Elab.elab_matchcond_correct]); the frontend
+    ([extracted/nft_lower.ml]) obtains every match immediate by applying the
+    verified [Nftval.encode]/[Elab.elab_m], so the typed->bytes step is proved,
+    not an OCaml byte table.
 
     Each [field] (e.g. "tcp dport") *denotes* a concrete way to read
     the packet, given by [field_load].  This denotation is the single source of
@@ -404,7 +406,7 @@ Inductive matchcond : Type :=
 | MEq     (f : field) (v : data)
 | MNeq    (f : field) (v : data)
 | MRange  (f : field) (neg : bool) (lo hi : data)
-| MMasked (f : field) (neg : bool) (mask xor v : data)   (* (field & mask) ^ xor cmp v *)
+| MMasked (f : field) (op : cmpop) (mask xor v : data)   (* (field & mask) ^ xor <op> v *)
 | MCmp    (f : field) (op : cmpop) (v : data)            (* ordered comparison field <op> v *)
 | MConcatSet (fields : list field) (neg : bool) (name : string)
                             (* (concatenation of [fields]) [!]in the named set/map
@@ -422,6 +424,16 @@ Inductive matchcond : Type :=
                             (* (concatenation of per-element-transformed fields)
                                [!]in a set/map; each element is loaded into its own
                                register slot and transformed in place *)
+
+(** The implicit-bitmask idiom: a positive `tcp flags X` / `ct state X` match
+    tests [(field & X) <> 0] (nft evaluate.c keeps OP_IMPLICIT over a
+    TYPE_BITMASK basetype as the implicit inequality against zero; golden
+    inet/tcp.t.payload `bitwise reg1 = (reg1 & X) ^ 0; cmp neq reg1 0`).  The
+    comparison polarity is [CNe] — the surface match is POSITIVE ("some flagged
+    bit is set"); [MFlagsSet] names the shape so a source term carries no
+    inverted-looking raw [MMasked]. *)
+Definition MFlagsSet (f : field) (bits : data) : matchcond :=
+  MMasked f CNe bits (List.repeat 0 (List.length bits)) (List.repeat 0 (List.length bits)).
 
 (** Verdict-neutral statements: they emit bytecode but do not change the packet's
     verdict (counter accounts; notrack disables conntrack). *)
@@ -469,7 +481,7 @@ Inductive stmt : Type :=
                                as terminal Drop), other TCP packets CONTINUE; see
                                [Semantics.synproxy_stops]/[run_rule]. *)
 | SLast    (info : string)                  (* `last used` accounting; verbatim *)
-| SDynset  (op name : string) (keyfs dataf : list field)
+| SDynset  (op : dynset_op) (name : string) (keyfs dataf : list field)
                             (* add/delete [keyfs] (-> [dataf] for a map) to a set *)
 | SExthdrReset (proto : string) (htype : nat)
                             (* reset (clear) a TCP option; verdict-neutral *)
@@ -479,7 +491,7 @@ Inductive stmt : Type :=
                                else reg 1); compile allocates the registers.
                                Verdict-neutral (the dup is a side effect) *)
 | SObjrefMap (keyfs : list field) (name : string)
-| SDynsetImm (op name : string) (keyfs : list field) (data_vals : list data)
+| SDynsetImm (op : dynset_op) (name : string) (keyfs : list field) (data_vals : list data)
                             (* REGISTER-FREE: dynset whose map data are immediate
                                constants; compile lays them into the registers
                                after the key fields.  Verdict-neutral *)
@@ -546,8 +558,8 @@ Record nat_spec : Type := {
                                in a named map (into register 1) *)
   nat_src      : option vsrc;       (* general operand value source (e.g. jhash map) *)
   nat_extra    : nat_2nd;           (* range-end / port (register-free) *)
-  nat_kind     : string;            (* "snat" / "dnat" / "masq" / "redir" *)
-  nat_family   : string;            (* "ip" / "ip6"; "" for masq/redir *)
+  nat_kind     : nat_op;            (* NKsnat / NKdnat / NKmasq / NKredir *)
+  nat_family   : nat_af;            (* NFip4 / NFip6 / NFinet (runtime-dispatched) *)
   nat_flags    : nat;
 }.
 
@@ -601,60 +613,151 @@ Inductive body_item : Type :=
 | BMatch (m : matchcond)
 | BStmt  (s : stmt).
 
+(** A SYNTHESIZED protocol-dependency guard (the implicit `meta l4proto`/
+    `meta nfproto`/`meta iiftype` match nft inserts before a payload selector),
+    as emitted by the frontend.  Definitionally the match it wraps — evaluation,
+    loadability and compilation are those of [BMatch] — the name only marks, in
+    a generated source term, which conjuncts the frontend synthesized versus
+    the user wrote. *)
+Definition BDep (m : matchcond) : body_item := BMatch m.
+
 (** The match conditions of a body, in order (statements dropped). *)
 Definition body_matches (b : list body_item) : list matchcond :=
   flat_map (fun it => match it with BMatch m => m :: nil | BStmt _ => nil end) b.
 
-(** The [dynset] op string denoting element removal (`delete @s {...}`), vs the
-    add/update insertion ops.  Defined here, where [String] notation is in scope,
-    so [Semantics.env_set_upd] can branch on it without importing [String]. *)
-Definition op_delete : string := "delete".
+(** The [dynset] op denoting element removal (`delete @s {...}`), vs the
+    add/update insertion ops ([dynset_op] is defined in Bytecode.v, next to the
+    other operator enums). *)
+Definition op_delete : dynset_op := SOdelete.
 
-(** The [nat_kind] strings, branched on by [Semantics.apply_nat] to select the
+(** The [nat_kind] values, branched on by [Semantics.apply_nat] to select the
     data-plane rewrite:
-    - [nat_masq_kind] ("masq") source-NATs to the exit interface's address;
-    - [nat_snat_kind] ("snat") source-NATs to the operand address (reg 1);
-    - [nat_dnat_kind] ("dnat") dest-NATs to the operand address (reg 1);
-    - [nat_redir_kind] ("redir") dest-NATs to the inbound interface's address
+    - [nat_masq_kind] ([NKmasq]) source-NATs to the exit interface's address;
+    - [nat_snat_kind] ([NKsnat]) source-NATs to the operand address (reg 1);
+    - [nat_dnat_kind] ([NKdnat]) dest-NATs to the operand address (reg 1);
+    - [nat_redir_kind] ([NKredir]) dest-NATs to the inbound interface's address
       (redirect = local DNAT). *)
-Definition nat_masq_kind  : string := "masq".
-Definition nat_snat_kind  : string := "snat".
-Definition nat_dnat_kind  : string := "dnat".
-Definition nat_redir_kind : string := "redir".
+Definition nat_masq_kind  : nat_op := NKmasq.
+Definition nat_snat_kind  : nat_op := NKsnat.
+Definition nat_dnat_kind  : nat_op := NKdnat.
+Definition nat_redir_kind : nat_op := NKredir.
 
-(** The [nat_family] strings, branched on by [Semantics.apply_nat] to pick the
-    address geometry: "ip" = the 32-bit IPv4 slot, "ip6" = the 128-bit IPv6 slot
-    (the kernel chooses 32 vs 128 bits by family — [nat_addrlen],
-    netlink_linearize.c:1237).  Defined here, where [String] is in scope. *)
-Definition nat_fam_ip4 : string := "ip".
-Definition nat_fam_ip6 : string := "ip6".
+(** The [nat_family] values, branched on by [Semantics.apply_nat] to pick the
+    address geometry: [NFip4] = the 32-bit IPv4 slot, [NFip6] = the 128-bit IPv6
+    slot (the kernel chooses 32 vs 128 bits by family — [nat_addrlen],
+    netlink_linearize.c:1237); [NFinet] is the runtime-dispatched sentinel (see
+    [nat_af] in Bytecode.v and [Semantics.nat_addrfamily_pkt]). *)
+Definition nat_fam_ip4 : nat_af := NFip4.
+Definition nat_fam_ip6 : nat_af := NFip6.
+Definition nat_fam_inet : nat_af := NFinet.
 
-(** The [inet] family is a RUNTIME-DISPATCHED sentinel: an `inet` table has ONE
-    NAT rule that processes BOTH IPv4 and IPv6 packets, and the kernel dispatches
-    on the PACKET's L3 family at runtime (nft_masq_inet_eval: `switch (nft_pf(pkt))`
-    -> NFPROTO_IPV4 -> nf_nat_masquerade_ipv4 (4-byte IPv4 slot) vs NFPROTO_IPV6 ->
-    nf_nat_masquerade_ipv6 (16-byte IPv6 slot)).  No STATIC family can be correct,
-    so a NAT statement in an inet table carries [nat_fam_inet], which the data-plane
-    NAT functions resolve per-packet ([Semantics.nat_addrfamily_pkt]). *)
-Definition nat_fam_inet : string := "inet".
+(** The "ip6" family-qualifier STRING of the still-stringly-typed fwd/tproxy
+    specs, used by [Compile.nfproto_of_family] (String is in scope here). *)
+Definition fam_ip6_str : string := "ip6".
 
-(** A rule: an ordered body (matches + verdict-neutral statements) then an
-    outcome — a static verdict, a verdict-map lookup ([r_vmap]), or a terminal
-    redirect ([r_nat] / [r_tproxy]). *)
+(** A rule's OUTCOME: exactly one of a static verdict, a fall-through, a
+    verdict-map lookup, or one of the four terminal side effects
+    (nat/tproxy/fwd/queue, each a terminal Accept whose redirect is a side
+    effect).  A rule has ONE outcome — the sum replaces the historical product
+    of a filler verdict plus five optional terminal slots. *)
+Inductive outcome : Type :=
+| OVerdict (v : verdict)    (* static terminal verdict (Accept/Drop/Jump/…) *)
+| ONone                     (* fall through: no outcome, traversal continues *)
+| OVmap   (s : vmap_spec)   (* verdict-map lookup; a miss falls through *)
+| OVmapNat (s : vmap_spec) (ns : nat_spec)
+                            (* verdict-map lookup whose MISS fires a terminal
+                               NAT (`… vmap {…} redirect`): the kernel runs the
+                               statements in order, so a map miss reaches the
+                               trailing NAT statement *)
+| ONat    (s : nat_spec)    (* snat/dnat/masquerade/redirect (terminal) *)
+| OTproxy (s : tproxy_spec) (* transparent proxy (terminal) *)
+| OFwd    (s : fwd_spec)    (* forward to a device (terminal) *)
+| OQueue  (s : queue_spec). (* value-sourced userspace queue (terminal) *)
+
+(** A rule: an ordered body (matches + verdict-neutral statements), one
+    outcome, and the verdict-neutral statements emitted *after* the outcome
+    (e.g. a counter after a verdict map) — they run for their side effect but
+    cannot change the verdict, which a terminal outcome already fixed. *)
 Record rule : Type := {
   r_body    : list body_item;
-  r_verdict : verdict;
-  r_vmap    : option vmap_spec;
-  r_nat     : option nat_spec;
-  r_tproxy  : option tproxy_spec;
-  r_fwd     : option fwd_spec;
-  r_queue   : option queue_spec;
+  r_outcome : outcome;
   r_after   : list stmt;
-                            (* verdict-neutral statements emitted *after* the
-                               outcome (e.g. a counter after a verdict map); they
-                               run for their side effect but cannot change the
-                               verdict, which the terminal outcome already fixed *)
 }.
+
+(** *** Projection views of the outcome sum.
+
+    The evaluators and the compiler dispatch on the outcome through these
+    single-constructor projections (each is [Some] exactly on its constructor).
+    [r_verdict] projects the static verdict, with [Continue] for every
+    non-[OVerdict] outcome — [ONone] IS the fall-through [Continue]. *)
+Definition r_verdict (r : rule) : verdict :=
+  match r_outcome r with OVerdict v => v | _ => Continue end.
+Definition r_vmap (r : rule) : option vmap_spec :=
+  match r_outcome r with OVmap s | OVmapNat s _ => Some s | _ => None end.
+Definition r_nat (r : rule) : option nat_spec :=
+  match r_outcome r with ONat s | OVmapNat _ s => Some s | _ => None end.
+Definition r_tproxy (r : rule) : option tproxy_spec :=
+  match r_outcome r with OTproxy s => Some s | _ => None end.
+Definition r_fwd (r : rule) : option fwd_spec :=
+  match r_outcome r with OFwd s => Some s | _ => None end.
+Definition r_queue (r : rule) : option queue_spec :=
+  match r_outcome r with OQueue s => Some s | _ => None end.
+
+(** *** The historical product encoding of a rule and its translation.
+
+    A rule used to carry a PRODUCT of one always-present verdict plus five
+    optional terminal specs, with dummy fillers ([Continue]/[None]) occupying
+    the unused slots.  [rule_prod] is that encoding, kept solely to state the
+    representation-change ratchet: [rule_of_prod] translates it into the
+    outcome sum along the old evaluation precedence (vmap first; then
+    nat > tproxy > fwd > queue; then the static verdict, [Continue] = fall
+    through), and [Semantics.run_rule_outcome_eq] proves the translation
+    evaluation-equal to the old product semantics for every well-formed
+    product ([prod_wf]: at most one populated slot, and a filler [Continue]
+    verdict under a vmap — exactly the shapes the frontend ever produced). *)
+Record rule_prod : Type := {
+  rp_body    : list body_item;
+  rp_verdict : verdict;
+  rp_vmap    : option vmap_spec;
+  rp_nat     : option nat_spec;
+  rp_tproxy  : option tproxy_spec;
+  rp_fwd     : option fwd_spec;
+  rp_queue   : option queue_spec;
+  rp_after   : list stmt;
+}.
+
+Definition outcome_of_prod (rp : rule_prod) : outcome :=
+  match rp_vmap rp with
+  | Some s => match rp_nat rp with
+              | Some ns => OVmapNat s ns
+              | None => OVmap s
+              end
+  | None =>
+  match rp_nat rp with Some s => ONat s | None =>
+  match rp_tproxy rp with Some s => OTproxy s | None =>
+  match rp_fwd rp with Some s => OFwd s | None =>
+  match rp_queue rp with Some s => OQueue s | None =>
+  match rp_verdict rp with Continue => ONone | v => OVerdict v end
+  end end end end end.
+
+Definition rule_of_prod (rp : rule_prod) : rule :=
+  {| r_body := rp_body rp; r_outcome := outcome_of_prod rp; r_after := rp_after rp |}.
+
+(** Well-formed products: at most one outcome slot is populated — except the
+    genuine vmap-then-NAT combination ([OVmapNat]) — and a pure vmap rule
+    carries the filler [Continue] verdict (its miss falls through). *)
+Definition prod_wf (rp : rule_prod) : bool :=
+  match rp_vmap rp, rp_nat rp, rp_tproxy rp, rp_fwd rp, rp_queue rp with
+  | Some _, Some _, None, None, None => true
+  | Some _, None, None, None, None =>
+      match rp_verdict rp with Continue => true | _ => false end
+  | None, None, None, None, None => true
+  | None, Some _, None, None, None => true
+  | None, None, Some _, None, None => true
+  | None, None, None, Some _, None => true
+  | None, None, None, None, Some _ => true
+  | _, _, _, _, _ => false
+  end.
 
 (** A base chain: a default policy and an ordered list of rules. *)
 Record chain : Type := {
