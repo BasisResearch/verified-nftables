@@ -102,6 +102,42 @@ Qed.
 Print Assumptions tutorial_accepts_rest.
 
 (* ================================================================== *)
+(** ** The budget is inert: the same exactness at EVERY adequate fuel.
+
+    [tut_fuel = 16] was an eyeballed budget.  The M4 fuel-adequacy layer
+    removes the eyeball: the tutorial chain never jumps ([chains_no_transfer]
+    computes [true] under every env, since its one rule's outcome is the
+    static [Drop]), so [Semantics.chain_ranked] holds by one [reflexivity],
+    [sufficient_fuel] computes to 4, and the headline holds VERBATIM at every
+    fuel >= 4 — [tutorial_blocks_exactly] is the [fuel = tut_fuel] instance.
+    See Semantics.v § "Fuel discipline for the jump strand" for why the bound
+    is needed at all (the policy fallback on exhaustion). *)
+
+Lemma tutorial_ranked : forall e, chain_ranked (fun _ => O) tutorial_chains e.
+Proof. intro e. apply chains_no_transfer_ranked. reflexivity. Qed.
+
+Example tutorial_sufficient_fuel :
+  sufficient_fuel tutorial_chains (c_rules tutorial_input) = 4.
+Proof. reflexivity. Qed.
+
+Theorem tutorial_blocks_exactly_any_fuel :
+  forall (e : env) (p : packet) (a b c d : nat) (fuel : nat),
+  sufficient_fuel tutorial_chains (c_rules tutorial_input) <= fuel ->
+  fieldof FIp4Saddr e p === ip4 a b c d ->
+  read_payload_ok PNetwork 12 4 p = true ->
+  ( tutorial_input denies p in e under tutorial_chains budget fuel
+    <-> a = 192 /\ b = 168 /\ c = 100 ).
+Proof.
+  intros e p a b c d fuel Hf Hs Hok.
+  eapply iff_trans.
+  { apply (nft_drops_fuel_indep (fun _ => O) tutorial_chains tutorial_input e p
+             fuel tut_fuel (tutorial_ranked e) Hf).
+    rewrite tutorial_sufficient_fuel. unfold tut_fuel. lia. }
+  exact (tutorial_blocks_exactly e p a b c d Hs Hok).
+Qed.
+Print Assumptions tutorial_blocks_exactly_any_fuel.
+
+(* ================================================================== *)
 (** ** Satisfiability / anti-vacuity: concrete packets on both sides.
 
     The symbolic theorems above would be vacuously true if no packet satisfied

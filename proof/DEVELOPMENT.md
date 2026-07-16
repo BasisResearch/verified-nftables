@@ -897,6 +897,33 @@ re-derives the original `Ruleset_Verified`-shaped theorem from the readable one,
 and `demo_smtp_not_accepted` / `Fail now nft_decide` witness that the tactics
 cannot prove a false property.
 
+**Two M4 soundness rules for this workflow** (full rationale in
+`CONFIG_PROOFS.md`, machine-checked artifacts cited):
+
+1. **Pin only what the lookups read — never `e = gen_env` next to an
+   env-reading field hypothesis.** `gen_env` empties every non-declaration
+   component (conntrack, routes, NAT, ifaddrs), so the whole-env pin can make
+   the hypothesis set unsatisfiable and the theorem vacuous. Two proved
+   instances: `Router_Realistic.ctstate_under_genenv_never_new` (the pin
+   contradicts `ct state new`) and
+   `Optiplex_Mark.genenv_fib_local_contradiction` (the pin contradicts
+   `fib daddr type local`). Relax to the `e_set`/`e_vmap` CONTENTS the chain
+   reads (`Router_Realistic.v` is the reference; `Optiplex_Mark.*_real` the
+   fib instance; `Optiplex_Antispoof.antispoof_general_any_env` the
+   pin-was-inert case), and always add a concrete satisfiability witness.
+   Classification of the superseded-vacuous originals: `THEOREMS.md` §5.
+2. **Discharge the fuel budget.** `eval_table` maps fuel exhaustion to the
+   chain policy (a verdict the kernel can never produce), and naive fuel
+   monotonicity is FALSE (`Semantics.eval_rules_j_not_naively_monotone`).
+   Above the computable `Semantics.sufficient_fuel` bound, under the
+   `chain_ranked` acyclicity witness (one `reflexivity` via
+   `chains_no_transfer_ranked` for jump-free environments), the verdict is
+   provably fuel-independent (`eval_table_fuel_indep`,
+   `Nft_Tactics.nft_*_fuel_indep`; worked instance
+   `Tutorial_Proofs.tutorial_blocks_exactly_any_fuel`). Semantics.v § "Fuel
+   discipline for the jump strand" carries the design rationale and the
+   kernel citations (load-time loop rejection; `NFT_JUMP_STACK_SIZE = 16`).
+
 ## Orientation for a fresh session (read this before picking up a TODO)
 
 **Build & verify (every change must keep ALL of these green):**
@@ -909,7 +936,7 @@ cannot prove a false property.
 | `make validate` | `field_load` offsets/names vs live `nft`: **28/28** |
 | `make semtest` | executable witnesses: DSL = VM = optimized on packet batteries (incl. the mutation / sequence witnesses) |
 | `make parse-test` | `.nft` frontend (TODO 9 M1): parses `../rulesets/ruleset.nft`, checks parsed-AST verdicts vs `Example_Ruleset.v`; difftest ruleset → `glue.ml`'s AST; live-`nft` round-trip; `mut_wf` discharge over all four rulesets; ExtrOcamlNatInt limit-rate rejection pins |
-| `make axioms` | build-failing `Print Assumptions` over every claimed theorem (41): all must be "Closed under the global context" |
+| `make axioms` | build-failing `Print Assumptions` over every claimed theorem (55): all must be "Closed under the global context" |
 | `make gen-check` | checked-in `theories/Generated/*_Gen.v` byte-identical to fresh `nft2coq` output (all four rulesets) |
 | `make gates` | the aggregate: `proofs axioms corpus validate parse-test gen-check`, sequentially |
 
@@ -921,7 +948,7 @@ cd theories && printf 'From Nft Require Import Correct Optimize_Uncond.\nPrint A
 or run **`make axioms`**, which checks the whole `THEOREMS.md` HEADLINE set +
 the `Correct.v` strata + every README-claimed config/semantics result
 (anti-spoofing, established-accept, masquerade/multi-address, fib host-local,
-ct-state — 41 theorems total) in one shot and FAILS on anything but "Closed
+ct-state, plus the M4 fuel-adequacy and de-vacuized config heads — 55 theorems total) in one shot and FAILS on anything but "Closed
 under the global context".  The in-file `Print Assumptions` lines across
 `theories/*.v` are informational (build-log only — they cannot fail a build).
 The theorem strata are listed in "The theorems" table above and classified in
@@ -1107,7 +1134,7 @@ mapping in `e_nat`, L3 (IPv4 header) + L4 (TCP/UDP) checksum updates, zero-UDP-c
 untouched (RFC 768), reply-direction un-NAT of address *and* port, `NF_DROP` on a
 no-usable-address interface, ip6-family geometry, inet-table runtime L3 dispatch. Because
 NAT is terminal, its rewrite is observed across hooks by the whole-chain trace evaluator
-`eval_chain_trace` (see `Optiplex_Mark.v`'s `streaming_flow_whole_ruleset`).
+`eval_chain_trace` (see `Optiplex_Mark.v`'s `streaming_flow_whole_ruleset_real`).
 **STILL OPEN — payload-mangle.** `payload set` (mangle), `ip dscp set`, ttl/hoplimit are
 still verdict-neutral straight-line statements (`SMangle` is not an `is_mut_stmt`), so a
 later rule reading the mangled bytes sees the original.
@@ -1311,7 +1338,7 @@ renderer).
     *generated* `firewall_inbound` rather than a hand copy.
   - `Optiplex_Antispoof.v` — **anti-spoofing** for `../rulesets/optiplex.nft`'s bridge
     `output` chain: a frame to a protected VM address leaving br.20 on the wrong
-    interface is **dropped** (`antispoof_general`; concrete
+    interface is **dropped** (`antispoof_general_any_env`, env-universal; concrete
     `vikunja_cannot_spoof_budget`, `gentoo_cannot_spoof_hass`), while the legit
     bound pair is **accepted** (`budget_legitimate_allowed`).
   - `Optiplex_Antispoof_Gaps.v` — **adversarial** analysis proving the binding is
@@ -1325,14 +1352,14 @@ renderer).
     by `eval_chain_trace` (a packet-returning whole-chain evaluator added to
     `Semantics.v`, proven verdict-identical to the verified `eval_chain_mut` by
     `eval_chain_trace_verdict`): it flows PAST rule 1 (the 3389 rule, which does
-    not match — `pre1_streaming_noop`) and is matched by rule 2, which BOTH marks
+    not match — `pre1_streaming_noop_real`) and is matched by rule 2, which BOTH marks
     the packet (the body) AND destination-NATs it (the terminal `dnat ip to
-    $windows` = 192.168.51.186).  The headline `streaming_prerouting_io`
+    $windows` = 192.168.51.186).  The headline `streaming_prerouting_io_real`
     characterises **what comes out**: `eval_chain_trace filter_prerouting p =
     (Accept, apply_nat … pre2 (set_meta p MKmark 0x99))` — the marked packet with
     the terminal dnat applied; `pre2_apply_dnat` shows the dnat rewrites the
-    destination address to the windows box, and `streaming_prerouting_mark` shows
-    the mark SURVIVES it.  `streaming_flow_whole_ruleset` then carries that packet
+    destination address to the windows box, and `streaming_prerouting_mark_real` shows
+    the mark SURVIVES it.  `streaming_flow_whole_ruleset_real` then carries that packet
     to the postrouting hook, where the (surviving) mark drives the masquerade rule
     (`masquerade_gated_on_mark`) and the chain accepts; the cross-hook skb mark is
     threaded explicitly (the model evaluates per base chain).  The postrouting

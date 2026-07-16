@@ -24,7 +24,10 @@
                                 that is NOT exactly ssh (tcp/22) from 81.209.165.42 is
                                 DROPPED.  No other world packet can reach the box.
       - [inbound_world_ssh_accept] : the single allowed world flow (ssh from that one
-                                host) IS accepted (the lockdown is not vacuous).
+                                host) IS accepted — but see the M4 note below:
+                                as stated (under the whole-env pin) this does NOT
+                                establish non-vacuity; the non-vacuous forms live
+                                in [Router_Realistic].
       - [inbound_loopback_accept]  : loopback (iif lo) is always accepted.
       - [inbound_unknown_drop]     : an unknown iif (not lo/ppp0/eth1), new ct -> Drop.
       - [inbound_invalid_dropped]  : ct-state invalid -> Drop (the __map1 entry fires).
@@ -37,7 +40,20 @@
                             the whole Internet); under it the wrong-source ssh packet
                             ACCEPTs, and [input_property_discriminates_bug] witnesses
                             the catastrophic ssh-to-the-world hole the lockdown rules
-                            out. *)
+                            out.
+
+    M4 NOTE — the whole-env pin makes the SYMBOLIC theorems here vacuous.
+    Every `e = gen_env` theorem below that also hypothesises
+    [field_value FCtState e p = cts_new] certifies ZERO packets: under
+    [gen_env] the ct-state load can never read NEW
+    ([Router_Realistic.ctstate_under_genenv_never_new], axiom-free).  The
+    CONCRETE witnesses ([pkt_world_ssh]/[pkt_world_bad] under [env_in]) are
+    unaffected — they never pin the whole env.  The de-vacuized re-statements
+    — env relaxed to exactly the vmap contents the chain's lookups read, per
+    the recipe in proof/CONFIG_PROOFS.md § "Pin only what the lookups read" —
+    are [Router_Realistic.world_ingress_locked_down_real] /
+    [inbound_world_ssh_accept_real] / [inbound_eth1_accept_iff_real]; cite
+    those, not the pinned forms here. *)
 
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen Nftval Eval_Fw.
@@ -376,8 +392,19 @@ Proof.
     rewrite ?Bool.andb_false_r; reflexivity.
 Qed.
 
-(** The single allowed world flow IS accepted (the lockdown is NOT vacuous): a new
-    packet on ppp0 that IS ssh (tcp/22) from 81.209.165.42 is ACCEPTed. *)
+(** The single allowed world flow IS accepted: a new packet on ppp0 that IS ssh
+    (tcp/22) from 81.209.165.42 is ACCEPTed.
+
+    M4 CORRECTION — this does NOT establish non-vacuity of the lockdown (the
+    pre-M4 comment here claimed it did).  Its own hypotheses are jointly
+    unsatisfiable: [e = gen_env] pins [e_ct] to the empty conntrack table,
+    under which [field_value FCtState e p] can never be [cts_new] —
+    [Router_Realistic.ctstate_under_genenv_never_new] proves the
+    contradiction, so BOTH this accept theorem and the drop theorems above
+    hold of zero packets as stated.  The genuinely non-vacuous forms (env
+    relaxed to the [__map1]/[__map2] vmap contents, discharged on the concrete
+    witnesses) are [Router_Realistic.inbound_world_ssh_accept_real] and
+    [Router_Realistic.world_ssh_accept_witnessed]. *)
 Theorem inbound_world_ssh_accept : forall e p,
   e = gen_env ->
   field_loadable FCtState p = true ->

@@ -39,11 +39,14 @@
     [run_program_mut_env_fst]), so their compiler proofs are derived, not
     re-proved. *)
 
-From Stdlib Require Import List NArith ZArith Bool Lia.
+From Stdlib Require Import String List NArith ZArith Bool Lia.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode.
 Import ListNotations.
-(* [String] is left UNimported (it shadows List's [concat]/[length]); the chain
-   environment uses the qualified [String.string] / [String.eqb]. *)
+(* [String] is imported FIRST so that [List] (imported after it) re-shadows the
+   names they share ([concat]/[length]) — the body below always means the List
+   ones.  The import exists only for the ["…"%string] literals of the fuel-probe
+   counterexample ([eval_rules_j_not_naively_monotone]); everything else uses
+   the qualified [String.string] / [String.eqb]. *)
 
 (** ** Declarative semantics. *)
 
@@ -3077,8 +3080,14 @@ Fixpoint seq_eval_env (ev : env -> packet -> verdict * env)
     fall-through or a [return]); a [goto n] tail-calls [n] and does NOT resume; a
     [return] pops to the caller.  A terminal verdict (accept/drop/reject/queue)
     reached anywhere stops the whole traversal.  Recursion through the named chain
-    environment is not structurally terminating (nft rejects jump loops), so the
-    interpreters are *fuel-bounded*; the correctness theorem holds for every fuel. *)
+    environment is not structurally terminating (nft rejects jump loops at load
+    time; the kernel additionally bounds jump nesting at 16 —
+    NFT_JUMP_STACK_SIZE, include/net/netfilter/nf_tables.h), so the
+    interpreters are *fuel-bounded*; the compile-correctness theorem holds for
+    every fuel.  Fuel EXHAUSTION, however, is observationally conflated with
+    fall-through ([None]) — see § "Fuel discipline for the jump strand" below
+    for the monotonicity/adequacy lemmas that make a chosen fuel budget a
+    checkable hypothesis instead of an unstated side condition. *)
 
 Fixpoint chain_lookup (cs : list (String.string * chain)) (n : String.string) : option chain :=
   match cs with
@@ -3175,6 +3184,529 @@ Definition run_table (fuel : nat) (cs : list (String.string * program))
   | Some v => v
   | None   => policy
   end.
+
+(* ================================================================== *)
+(** ** Fuel discipline for the jump strand: monotonicity + adequacy.
+
+    THE PROBLEM.  [eval_rules_j fuel] returns [None] BOTH on genuine
+    fall-through (empty rule list, [return], goto to a missing chain) AND on
+    fuel exhaustion, and [eval_table] maps [None] to the base chain's policy.
+    The exhaustion fallback is a verdict the kernel can never produce: nft
+    rejects jump/goto loops at load time (libnftables walks the chain-binding
+    graph and errors out on a cycle), and the kernel additionally bounds jump
+    nesting at 16 (include/net/netfilter/nf_tables.h, NFT_JUMP_STACK_SIZE = 16;
+    nft_do_chain breaks on overflow).  So a per-configuration theorem stated at
+    ONE fuel value is kernel-meaningful only if that fuel is ADEQUATE — large
+    enough that the exhaustion case is unreachable.  Before this section that
+    adequacy was an UNSTATED side condition on every config proof (each
+    Examples/ file picked its own budget by eyeball); the lemmas below turn it
+    into a checkable hypothesis and make the verdict provably fuel-independent
+    above a computable bound.
+
+    WHY NOT PLAIN MONOTONICITY.  The naive statement
+
+        eval_rules_j fuel cs rs e p = Some v ->
+        eval_rules_j (S fuel) cs rs e p = Some v
+
+    is FALSE for this evaluator, because a jump treats the callee's [None] as
+    the callee's fall-through and resumes the caller: with too little fuel the
+    callee exhausts, the caller resumes as if the callee fell through, and MORE
+    fuel can flip the verdict.  [eval_rules_j_not_naively_monotone] below pins
+    a two-chain counterexample (Some Accept at fuel 2, Some Drop at fuel 3),
+    machine-checked so the false statement cannot be "restored" by accident.
+
+    THE HONEST STATEMENT.  [eval_rules_jx] is the same traversal but with
+    exhaustion made OBSERVABLE: [None] only when fuel ran out somewhere,
+    [Some o] for a CLEAN run whose [eval_rules_j] result is [o]
+    ([eval_rules_jx_agree]).  Clean results are Kleene-monotone
+    ([eval_rules_jx_monotone]/[eval_rules_jx_stable]), hence the corrected
+    monotonicity: a CLEAN verdict is stable under every larger fuel
+    ([eval_rules_j_fuel_stable]).
+
+    ADEQUACY.  [sufficient_fuel cs rs] is a computable structural bound
+    (S (|rs| + |cs| * S (max chain length)) — fuel is a DESCENT budget, not a
+    work budget: a jump gives callee and continuation the SAME decremented
+    fuel, so the requirement is the longest chain of nested decrements, which
+    an acyclic jump graph bounds by one traversal of each chain plus the base).
+    Under [chain_ranked] — a rank function witnessing the load-time acyclicity
+    nft itself enforces (every realised jump/goto target of a chain's rule has
+    smaller rank; targets read from a verdict map depend on the ENV, so the
+    hypothesis is stated per-env, dischargeable once the relevant [e_vmap]
+    contents are pinned) — every run at [sufficient_fuel] or above is clean
+    ([eval_rules_jx_adequate]), so the verdict is fuel-independent there
+    ([eval_rules_j_fuel_indep]/[eval_table_fuel_indep]) and [eval_table]'s
+    policy fallback can only be genuine fall-through
+    ([eval_table_policy_is_fallthrough]).  For the common transfer-free case
+    (no rule outcome is ever Jump/Goto under the given env) the boolean
+    [chains_no_transfer] discharges [chain_ranked] in one [reflexivity]
+    ([chains_no_transfer_ranked]).
+
+    Alternatives considered: (a) proving the naive monotonicity — refuted, see
+    the counterexample; (b) an unfueled relational semantics — would duplicate
+    the whole jump strand and every compile theorem over it for the sake of a
+    side condition; (c) a per-(packet, env) vm_compute exhaustion check — not
+    packet-universal, so config theorems (∀ p) could not use it.  The jx layer
+    is additive: no existing evaluator or theorem changes.
+
+    VM side: the compiled mirror needs no second jx development —
+    [Correct.compile_table_correct] equates [run_table] with [eval_table] at
+    EVERY fuel, so fuel-independence transports to every compiled chain
+    environment ([Correct.run_table_fuel_indep_compiled]); a hand-written
+    program that no source chain compiles to has no jump-graph rank to speak
+    of, and is out of scope by design.
+
+    User-facing forms: [Nft_Tactics.nft_yields_fuel_indep] (and the
+    accepts/denies corollaries) + proof/CONFIG_PROOFS.md § "Choosing the fuel
+    budget"; worked instance [Tutorial_Proofs.tutorial_blocks_exactly_any_fuel]. *)
+
+Fixpoint eval_rules_jx (fuel : nat) (cs : list (String.string * chain))
+                       (rs : list rule) (e : env) (p : packet)
+  : option (option verdict) :=
+  match fuel with
+  | O => None
+  | S fuel' =>
+    match rs with
+    | [] => Some None
+    | r :: rest =>
+      if rule_loadable r e p && rule_applies r e p then
+        match outcome r e p with
+        | None => eval_rules_jx fuel' cs rest e p
+        | Some Return => Some None
+        | Some (Jump n) =>
+            match chain_lookup cs n with
+            | Some ch => match eval_rules_jx fuel' cs (c_rules ch) e p with
+                         | Some (Some v) => Some (Some v)
+                         | Some None => eval_rules_jx fuel' cs rest e p
+                         | None => None
+                         end
+            | None => eval_rules_jx fuel' cs rest e p
+            end
+        | Some (Goto n) =>
+            match chain_lookup cs n with
+            | Some ch => eval_rules_jx fuel' cs (c_rules ch) e p
+            | None    => Some None
+            end
+        | Some Continue => eval_rules_jx fuel' cs rest e p
+        | Some v => Some (Some v)
+        end
+      else eval_rules_jx fuel' cs rest e p
+    end
+  end.
+
+(** A clean run agrees with [eval_rules_j] at the same fuel. *)
+Lemma eval_rules_jx_agree : forall fuel cs rs e p o,
+  eval_rules_jx fuel cs rs e p = Some o ->
+  eval_rules_j fuel cs rs e p = o.
+Proof.
+  induction fuel as [| f IH]; intros cs rs e p o H; [ discriminate | ].
+  destruct rs as [| r rest]; cbn in *.
+  - now injection H as <-.
+  - destruct (rule_loadable r e p && rule_applies r e p); [ | now apply IH ].
+    destruct (outcome r e p) as [v|];
+      [ destruct v as [ | | | tc cc | lo hi bp fo | n | n | ] | now apply IH ];
+      try (now injection H as <-); try (now apply IH).
+    + (* Jump *)
+      destruct (chain_lookup cs n) as [ch|]; [ | now apply IH ].
+      destruct (eval_rules_jx f cs (c_rules ch) e p) as [[v'|]|] eqn:Hc;
+        [ | | discriminate ].
+      * apply IH in Hc. rewrite Hc. now injection H as <-.
+      * apply IH in Hc. rewrite Hc. now apply IH.
+    + (* Goto *)
+      destruct (chain_lookup cs n) as [ch|]; [ now apply IH | now injection H as <- ].
+Qed.
+
+(** One-step unfolding at a successor fuel (so proofs can step the fixpoint
+    without [cbn] eagerly refolding the recursive occurrences). *)
+Lemma eval_rules_jx_S : forall f cs rs e p,
+  eval_rules_jx (S f) cs rs e p =
+  match rs with
+  | [] => Some None
+  | r :: rest =>
+    if rule_loadable r e p && rule_applies r e p then
+      match outcome r e p with
+      | None => eval_rules_jx f cs rest e p
+      | Some Return => Some None
+      | Some (Jump n) =>
+          match chain_lookup cs n with
+          | Some ch => match eval_rules_jx f cs (c_rules ch) e p with
+                       | Some (Some v) => Some (Some v)
+                       | Some None => eval_rules_jx f cs rest e p
+                       | None => None
+                       end
+          | None => eval_rules_jx f cs rest e p
+          end
+      | Some (Goto n) =>
+          match chain_lookup cs n with
+          | Some ch => eval_rules_jx f cs (c_rules ch) e p
+          | None    => Some None
+          end
+      | Some Continue => eval_rules_jx f cs rest e p
+      | Some v => Some (Some v)
+      end
+    else eval_rules_jx f cs rest e p
+  end.
+Proof. reflexivity. Qed.
+
+(** Kleene monotonicity: a CLEAN result survives more fuel.  (This is the
+    correct form of fuel monotonicity for this strand; the naive
+    [eval_rules_j]-only form is REFUTED below.) *)
+Lemma eval_rules_jx_monotone : forall fuel cs rs e p o,
+  eval_rules_jx fuel cs rs e p = Some o ->
+  eval_rules_jx (S fuel) cs rs e p = Some o.
+Proof.
+  induction fuel as [| f IH]; intros cs rs e p o H; [ discriminate | ].
+  destruct rs as [| r rest].
+  - exact H.
+  - rewrite eval_rules_jx_S in H |- *.
+    destruct (rule_loadable r e p && rule_applies r e p); [ | now apply IH ].
+    destruct (outcome r e p) as [v|];
+      [ destruct v as [ | | | tc cc | lo hi bp fo | n | n | ] | now apply IH ];
+      try exact H; try (now apply IH).
+    + (* Jump *)
+      destruct (chain_lookup cs n) as [ch|]; [ | now apply IH ].
+      destruct (eval_rules_jx f cs (c_rules ch) e p) as [[v'|]|] eqn:Hc;
+        [ | | discriminate ].
+      * apply IH in Hc. rewrite Hc. exact H.
+      * apply IH in Hc. rewrite Hc. now apply IH.
+    + (* Goto *)
+      destruct (chain_lookup cs n) as [ch|]; [ now apply IH | exact H ].
+Qed.
+
+Lemma eval_rules_jx_stable : forall fuel fuel' cs rs e p o,
+  fuel <= fuel' ->
+  eval_rules_jx fuel cs rs e p = Some o ->
+  eval_rules_jx fuel' cs rs e p = Some o.
+Proof.
+  intros fuel fuel' cs rs e p o Hle H.
+  induction Hle; auto using eval_rules_jx_monotone.
+Qed.
+
+(** The corrected monotonicity statement: a verdict reached by a CLEAN run
+    (witnessed by [eval_rules_jx]) is the [eval_rules_j] verdict at EVERY
+    larger fuel. *)
+Theorem eval_rules_j_fuel_stable : forall fuel cs rs e p o,
+  eval_rules_jx fuel cs rs e p = Some o ->
+  forall fuel', fuel <= fuel' -> eval_rules_j fuel' cs rs e p = o.
+Proof.
+  intros fuel cs rs e p o H fuel' Hle.
+  apply eval_rules_jx_agree. eauto using eval_rules_jx_stable.
+Qed.
+
+(* ------------------------------------------------------------------ *)
+(** *** Counterexample: [eval_rules_j] alone is NOT fuel-monotone.
+
+    Base chain [jump b; accept], user chain b = [fall-through; drop].  At fuel
+    2 the callee exhausts after its first rule, the caller treats that as b's
+    fall-through and accepts; at fuel 3 the callee reaches its drop.  Any
+    fuel-monotonicity claim must therefore carry a cleanness witness — exactly
+    what [eval_rules_jx] provides.  ([reflexivity] proves both equations for
+    EVERY env and packet: the probe rules have empty bodies.) *)
+
+Definition fuel_probe_noop : rule :=
+  {| r_body := []; r_outcome := ONone; r_after := [] |}.
+Definition fuel_probe_drop : rule :=
+  {| r_body := []; r_outcome := OVerdict Drop; r_after := [] |}.
+Definition fuel_probe_accept : rule :=
+  {| r_body := []; r_outcome := OVerdict Accept; r_after := [] |}.
+Definition fuel_probe_jump : rule :=
+  {| r_body := []; r_outcome := OVerdict (Jump "b"%string); r_after := [] |}.
+Definition fuel_probe_cs : list (String.string * chain) :=
+  [("b"%string,
+    {| c_policy := Accept; c_rules := [fuel_probe_noop; fuel_probe_drop] |})].
+Definition fuel_probe_rs : list rule := [fuel_probe_jump; fuel_probe_accept].
+
+Example eval_rules_j_not_naively_monotone : forall e p,
+  eval_rules_j 2 fuel_probe_cs fuel_probe_rs e p = Some Accept
+  /\ eval_rules_j 3 fuel_probe_cs fuel_probe_rs e p = Some Drop.
+Proof. intros e p. split; reflexivity. Qed.
+
+(* ------------------------------------------------------------------ *)
+(** *** Adequacy: a computable sufficient fuel under an acyclic jump graph. *)
+
+Definition chain_len_max (cs : list (String.string * chain)) : nat :=
+  fold_right Nat.max 0 (map (fun nc => List.length (c_rules (snd nc))) cs).
+
+Lemma chain_lookup_len_max : forall cs n ch,
+  chain_lookup cs n = Some ch ->
+  List.length (c_rules ch) <= chain_len_max cs.
+Proof.
+  induction cs as [| [m ch'] cs IH]; intros n ch H; cbn in H; [ discriminate | ].
+  unfold chain_len_max; cbn [map fold_right snd].
+  destruct (String.eqb n m).
+  - injection H as <-. apply Nat.le_max_l.
+  - specialize (IH _ _ H). unfold chain_len_max in IH.
+    etransitivity; [ exact IH | apply Nat.le_max_r ].
+Qed.
+
+(** The computable bound: one traversal of the entry rule list plus one
+    traversal of every chain of the environment (each entered at most once on
+    any descent path of an acyclic graph).  Deliberately COARSE — it
+    over-approximates the exact need so it stays a one-liner a user can
+    [vm_compute]; the kernel's own bound is depth (16 jump frames), ours is the
+    acyclicity that load-time checking guarantees. *)
+Definition sufficient_fuel (cs : list (String.string * chain)) (rs : list rule) : nat :=
+  S (List.length rs + List.length cs * S (chain_len_max cs)).
+
+(** Every jump/goto target that rule [r] can realise (under env [e], on any
+    packet) and that resolves in [cs] has rank below [k]. *)
+Definition rule_targets_below (rank : String.string -> nat)
+    (cs : list (String.string * chain)) (e : env) (k : nat) (r : rule) : Prop :=
+  forall p m ch',
+    (outcome r e p = Some (Jump m) \/ outcome r e p = Some (Goto m)) ->
+    chain_lookup cs m = Some ch' ->
+    rank m < k.
+
+(** The acyclicity witness: a rank function under which every chain's realised
+    transfers strictly descend.  This is the semantic shadow of nft's
+    LOAD-TIME loop rejection (nft refuses a ruleset whose chain-binding graph
+    has a cycle), stated per-env because vmap verdicts — hence jump targets —
+    live in [e_vmap e]. *)
+Definition chain_ranked (rank : String.string -> nat)
+    (cs : list (String.string * chain)) (e : env) : Prop :=
+  forall n ch, chain_lookup cs n = Some ch ->
+    rank n < List.length cs /\
+    (forall r, In r (c_rules ch) -> rule_targets_below rank cs e (rank n) r).
+
+Lemma eval_rules_jx_adequate_aux : forall rank cs e,
+  chain_ranked rank cs e ->
+  forall fuel k rs p,
+    (forall r, In r rs -> rule_targets_below rank cs e k r) ->
+    S (List.length rs + k * S (chain_len_max cs)) <= fuel ->
+    exists o, eval_rules_jx fuel cs rs e p = Some o.
+Proof.
+  intros rank cs e Hcr.
+  induction fuel as [| f IH]; intros k rs p Htgt Hfuel; [ lia | ].
+  destruct rs as [| r rest].
+  - cbn. eauto.
+  - cbn [eval_rules_jx].
+    cbn [List.length] in Hfuel.
+    destruct (rule_loadable r e p && rule_applies r e p) eqn:Hga.
+    2:{ apply (IH k rest p); [ intros; apply Htgt; now right | lia ]. }
+    destruct (outcome r e p) as [v|] eqn:Hout.
+    2:{ apply (IH k rest p); [ intros; apply Htgt; now right | lia ]. }
+    destruct v as [ | | | tc cc | lo hi bp fo | n | n | ];
+      try (eexists; reflexivity);
+      try (apply (IH k rest p); [ intros; apply Htgt; now right | lia ]).
+    + (* Jump *)
+      destruct (chain_lookup cs n) as [ch|] eqn:Hlk.
+      2:{ apply (IH k rest p); [ intros; apply Htgt; now right | lia ]. }
+      assert (Hrn : rank n < k)
+        by (eapply (Htgt r (or_introl eq_refl) p n ch); eauto).
+      pose proof (chain_lookup_len_max cs n ch Hlk) as Hlen.
+      pose proof (proj2 (Hcr n ch Hlk)) as Hch.
+      destruct (IH (rank n) (c_rules ch) p) as [o' Hcall].
+      { intros r' Hin'. exact (Hch r' Hin'). }
+      { nia. }
+      rewrite Hcall. destruct o' as [v'|].
+      * eauto.
+      * apply (IH k rest p); [ intros; apply Htgt; now right | lia ].
+    + (* Goto *)
+      destruct (chain_lookup cs n) as [ch|] eqn:Hlk; [ | eauto ].
+      assert (Hrn : rank n < k)
+        by (eapply (Htgt r (or_introl eq_refl) p n ch); eauto).
+      pose proof (chain_lookup_len_max cs n ch Hlk) as Hlen.
+      pose proof (proj2 (Hcr n ch Hlk)) as Hch.
+      destruct (IH (rank n) (c_rules ch) p) as [o' Hcall].
+      { intros r' Hin'. exact (Hch r' Hin'). }
+      { nia. }
+      rewrite Hcall. eauto.
+Qed.
+
+(** THE ADEQUACY LEMMA: on a ranked (acyclic) chain environment, every run at
+    [sufficient_fuel] or above is CLEAN — fuel exhaustion is unreachable.  The
+    entry rule list needs no hypothesis of its own: any target it resolves in
+    [cs] has rank below [length cs] by [chain_ranked]. *)
+Theorem eval_rules_jx_adequate : forall rank cs e,
+  chain_ranked rank cs e ->
+  forall rs p fuel,
+    sufficient_fuel cs rs <= fuel ->
+    exists o, eval_rules_jx fuel cs rs e p = Some o.
+Proof.
+  intros rank cs e Hcr rs p fuel Hf.
+  apply (eval_rules_jx_adequate_aux rank cs e Hcr fuel (List.length cs) rs p).
+  - intros r _ q m ch' _ Hlk. exact (proj1 (Hcr m ch' Hlk)).
+  - exact Hf.
+Qed.
+
+(** Above the bound the verdict no longer depends on the fuel at all — the
+    fuel-free form config theorems quantify with. *)
+Theorem eval_rules_j_fuel_indep : forall rank cs e,
+  chain_ranked rank cs e ->
+  forall rs p fuel fuel',
+    sufficient_fuel cs rs <= fuel ->
+    sufficient_fuel cs rs <= fuel' ->
+    eval_rules_j fuel cs rs e p = eval_rules_j fuel' cs rs e p.
+Proof.
+  intros rank cs e Hcr rs p fuel fuel' Hf Hf'.
+  destruct (eval_rules_jx_adequate rank cs e Hcr rs p _ (le_n _)) as [o Ho].
+  rewrite (eval_rules_j_fuel_stable _ _ _ _ _ _ Ho _ Hf).
+  rewrite (eval_rules_j_fuel_stable _ _ _ _ _ _ Ho _ Hf').
+  reflexivity.
+Qed.
+
+Theorem eval_table_fuel_indep : forall rank cs e,
+  chain_ranked rank cs e ->
+  forall base p fuel fuel',
+    sufficient_fuel cs (c_rules base) <= fuel ->
+    sufficient_fuel cs (c_rules base) <= fuel' ->
+    eval_table fuel cs base e p = eval_table fuel' cs base e p.
+Proof.
+  intros rank cs e Hcr base p fuel fuel' Hf Hf'. unfold eval_table.
+  now rewrite (eval_rules_j_fuel_indep rank cs e Hcr (c_rules base) p fuel fuel').
+Qed.
+
+(** At adequate fuel, [eval_table]'s policy fallback can only be GENUINE
+    fall-through (the clean [Some None]), never fuel exhaustion — the property
+    that makes a policy-verdict config theorem kernel-meaningful. *)
+Theorem eval_table_policy_is_fallthrough : forall rank cs e,
+  chain_ranked rank cs e ->
+  forall base p fuel,
+    sufficient_fuel cs (c_rules base) <= fuel ->
+    eval_rules_j fuel cs (c_rules base) e p = None ->
+    eval_rules_jx fuel cs (c_rules base) e p = Some None.
+Proof.
+  intros rank cs e Hcr base p fuel Hf Hnone.
+  destruct (eval_rules_jx_adequate rank cs e Hcr (c_rules base) p fuel Hf) as [o Ho].
+  apply eval_rules_jx_agree in Ho as Hv. rewrite Hnone in Hv. now subst o.
+Qed.
+
+(* ------------------------------------------------------------------ *)
+(** *** Discharging [chain_ranked] for transfer-free chain environments.
+
+    Most config proofs are about chains none of whose rules can transfer
+    (every static verdict and every vmap verdict under the pinned env is
+    non-Jump/Goto).  [chains_no_transfer] decides that by computation and
+    [chains_no_transfer_ranked] turns it into the rank witness (rank 0 for
+    everything: no realisable transfer means nothing to descend on). *)
+
+Definition verdict_no_transfer (v : verdict) : bool :=
+  match v with Jump _ | Goto _ => false | _ => true end.
+
+Definition rule_no_transfer (e : env) (r : rule) : bool :=
+  match r_outcome r with
+  | OVerdict v => verdict_no_transfer v
+  | OVmap s | OVmapNat s _ =>
+      forallb (fun ent => verdict_no_transfer (snd ent)) (e_vmap e (vm_name s))
+  | _ => true
+  end.
+
+Lemma assoc_verdict_in : forall key l v,
+  assoc_verdict key l = Some v -> exists lo hi, In (lo, hi, v) l.
+Proof.
+  induction l as [| [[lo hi] v'] l IH]; cbn; intros v H; [ discriminate | ].
+  destruct (data_in_iv key (lo, hi)).
+  - injection H as <-. eauto.
+  - destruct (IH _ H) as (lo' & hi' & Hin). eauto.
+Qed.
+
+(** The only verdict [r_after] statements can produce is the synproxy [Drop]. *)
+Lemma stmts_after_outcome_drop : forall ss p v,
+  stmts_after_outcome ss p = Some v -> v = Drop.
+Proof.
+  induction ss as [| s ss IH]; cbn; intros p v H; [ discriminate | ].
+  destruct s; try (destruct (stmt_loadable _ p); [ eauto | discriminate ]).
+  destruct (synproxy_loadable p); [ | discriminate ].
+  destruct (synproxy_stops p); [ now injection H as <- | eauto ].
+Qed.
+
+Lemma rule_no_transfer_sound : forall e r,
+  rule_no_transfer e r = true ->
+  forall p m,
+    outcome r e p <> Some (Jump m) /\ outcome r e p <> Some (Goto m).
+Proof.
+  intros e r H p m.
+  unfold outcome, outcome_core, terminal_outcome.
+  destruct (body_synproxy_stops (r_body r) p); [ split; discriminate | ].
+  unfold rule_no_transfer in H.
+  unfold r_vmap, r_nat, r_tproxy, r_fwd, r_queue, r_verdict.
+  destruct (r_outcome r) as [ v | | s | s ns | ns | ts | fs | qs ]; cbn.
+  - (* OVerdict v *)
+    destruct v; try (split; discriminate); try discriminate H.
+    (* Continue: the static verdict falls through to the after-statements *)
+    split; intro Hc; apply stmts_after_outcome_drop in Hc; discriminate.
+  - (* ONone *)
+    split; intro Hc; apply stmts_after_outcome_drop in Hc; discriminate.
+  - (* OVmap *)
+    destruct (assoc_verdict _ (e_vmap e (vm_name s))) as [v|] eqn:Ha.
+    + apply assoc_verdict_in in Ha as (lo & hi & Hin).
+      eapply forallb_forall in H; [ | exact Hin ].
+      cbn in H. destruct v; try (split; discriminate); discriminate H.
+    + (* miss: falls through to the after-statements *)
+      split; intro Hc; apply stmts_after_outcome_drop in Hc; discriminate.
+  - (* OVmapNat *)
+    destruct (assoc_verdict _ (e_vmap e (vm_name s))) as [v|] eqn:Ha.
+    + apply assoc_verdict_in in Ha as (lo & hi & Hin).
+      eapply forallb_forall in H; [ | exact Hin ].
+      cbn in H. destruct v; try (split; discriminate); discriminate H.
+    + split; discriminate.
+  - split; discriminate.
+  - split; discriminate.
+  - split; discriminate.
+  - split; discriminate.
+Qed.
+
+Definition chains_no_transfer (e : env) (cs : list (String.string * chain)) : bool :=
+  forallb (fun nc => forallb (rule_no_transfer e) (c_rules (snd nc))) cs.
+
+Lemma chain_lookup_in : forall cs n ch,
+  chain_lookup cs n = Some ch -> In (n, ch) cs.
+Proof.
+  induction cs as [| [m ch'] cs IH]; cbn; intros n ch H; [ discriminate | ].
+  destruct (String.eqb n m) eqn:He.
+  - apply String.eqb_eq in He. subst m. injection H as <-. now left.
+  - right. now apply IH.
+Qed.
+
+Lemma chains_no_transfer_ranked : forall e cs,
+  chains_no_transfer e cs = true ->
+  chain_ranked (fun _ => O) cs e.
+Proof.
+  intros e cs H n ch Hlk.
+  pose proof (chain_lookup_in _ _ _ Hlk) as Hin. split.
+  - destruct cs; [ cbn in Hlk; discriminate | cbn; lia ].
+  - intros r Hr p m ch' Ho Hlk'.
+    exfalso.
+    unfold chains_no_transfer in H.
+    eapply forallb_forall in H; [ | exact Hin ].
+    eapply forallb_forall in H; [ | exact Hr ].
+    destruct (rule_no_transfer_sound _ _ H p m) as [H1 H2].
+    destruct Ho; auto.
+Qed.
+
+(* ------------------------------------------------------------------ *)
+(** *** The under-fueled fallback, exhibited and then excluded.
+
+    With fuel 1 the probe ruleset's [eval_table] returns the chain POLICY
+    ([Continue] here — a verdict no kernel hook can yield): the jump exhausts
+    and the fallback fires.  At [sufficient_fuel] (= 6, computable) and above,
+    the adequacy lemma pins the verdict to the real [Drop] for EVERY fuel —
+    the exhaustion fallback is gone. *)
+
+Example eval_table_under_fueled : forall e p,
+  eval_table 1 fuel_probe_cs
+    {| c_policy := Continue; c_rules := fuel_probe_rs |} e p = Continue.
+Proof. intros e p. reflexivity. Qed.
+
+Example fuel_probe_ranked : forall e, chain_ranked (fun _ => O) fuel_probe_cs e.
+Proof. intro e. apply chains_no_transfer_ranked. reflexivity. Qed.
+
+Example fuel_probe_sufficient :
+  sufficient_fuel fuel_probe_cs fuel_probe_rs = 6.
+Proof. reflexivity. Qed.
+
+Example eval_table_adequately_fueled : forall e p fuel,
+  6 <= fuel ->
+  eval_table fuel fuel_probe_cs
+    {| c_policy := Continue; c_rules := fuel_probe_rs |} e p = Drop.
+Proof.
+  intros e p fuel Hf.
+  set (base := {| c_policy := Continue; c_rules := fuel_probe_rs |}).
+  assert (Hs : sufficient_fuel fuel_probe_cs (c_rules base) <= fuel) by exact Hf.
+  assert (H6 : sufficient_fuel fuel_probe_cs (c_rules base) <= 6) by exact (le_n 6).
+  rewrite (eval_table_fuel_indep (fun _ => O) fuel_probe_cs e (fuel_probe_ranked e)
+             base p fuel 6 Hs H6).
+  reflexivity.
+Qed.
 
 (** ** Multi-table / multi-hook dispatch (netfilter verdict combination).
 

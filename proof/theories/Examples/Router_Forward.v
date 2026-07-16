@@ -34,7 +34,16 @@
       - [bug_forward] removes the eth1 guard (accepts every iif); under it the SAME
                       unsolicited ppp0 packet ACCEPTS, and [bug_breaks_unsolicited_drop]
                       witnesses the catastrophic open-forwarding leak that
-                      [forward_unsolicited_dropped] rules out. *)
+                      [forward_unsolicited_dropped] rules out.
+
+    M4 NOTE — the symbolic theorems below that combine [e = gen_env] with
+    [field_value FCtState e p = cts_new] are VACUOUS (the pin empties the
+    conntrack table, so NEW is unreadable —
+    [Router_Realistic.ctstate_under_genenv_never_new]).  The de-vacuized
+    forms, with the env relaxed to the [__map3] contents the chain's one
+    lookup reads (recipe: proof/CONFIG_PROOFS.md § "Pin only what the lookups
+    read"), are [Router_Realistic.forward_unsolicited_dropped_real] /
+    [forward_accept_iff_real]; cite those. *)
 
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen Nftval Eval_Fw.

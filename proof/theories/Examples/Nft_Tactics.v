@@ -153,6 +153,49 @@ Proof.
 Qed.
 
 (* ================================================================== *)
+(** * Fuel-budget discharge — making the notations' [budget] provably inert.
+
+    Every notation above carries a fuel budget, and [eval_table] silently falls
+    back to the chain POLICY when the budget runs out mid-jump — a verdict the
+    kernel can never produce (nft rejects jump loops at load time; the kernel
+    bounds the jump stack at 16).  Until M4 the adequacy of each module's
+    budget was an UNSTATED side condition.  The lemmas here discharge it:
+    once [Semantics.chain_ranked] holds (one [reflexivity] via
+    [Semantics.chains_no_transfer_ranked] for chains that never jump/goto under
+    the pinned env) and the budget is at least the computable
+    [Semantics.sufficient_fuel cs (c_rules c)] (a [vm_compute]-able number),
+    the stated property is the SAME at every adequate budget — so a theorem
+    proved at one budget is fuel-free above the bound.  Worked instance:
+    [Tutorial_Proofs.tutorial_blocks_exactly_any_fuel]; the full rationale
+    (including why naive fuel monotonicity is FALSE for [eval_rules_j]) sits on
+    Semantics.v § "Fuel discipline for the jump strand", and the user guidance
+    in proof/CONFIG_PROOFS.md § "Choosing the fuel budget". *)
+
+Lemma nft_yields_fuel_indep : forall rank cs c e p v fuel fuel',
+  chain_ranked rank cs e ->
+  sufficient_fuel cs (c_rules c) <= fuel ->
+  sufficient_fuel cs (c_rules c) <= fuel' ->
+  (nft_yields fuel cs c e p v <-> nft_yields fuel' cs c e p v).
+Proof.
+  intros rank cs c e p v fuel fuel' Hcr Hf Hf'. unfold nft_yields.
+  now rewrite (eval_table_fuel_indep rank cs e Hcr c p fuel fuel').
+Qed.
+
+Lemma nft_accepts_fuel_indep : forall rank cs c e p fuel fuel',
+  chain_ranked rank cs e ->
+  sufficient_fuel cs (c_rules c) <= fuel ->
+  sufficient_fuel cs (c_rules c) <= fuel' ->
+  (nft_accepts fuel cs c e p <-> nft_accepts fuel' cs c e p).
+Proof. intros. now apply nft_yields_fuel_indep with (rank := rank). Qed.
+
+Lemma nft_drops_fuel_indep : forall rank cs c e p fuel fuel',
+  chain_ranked rank cs e ->
+  sufficient_fuel cs (c_rules c) <= fuel ->
+  sufficient_fuel cs (c_rules c) <= fuel' ->
+  (nft_drops fuel cs c e p <-> nft_drops fuel' cs c e p).
+Proof. intros. now apply nft_yields_fuel_indep with (rank := rank). Qed.
+
+(* ================================================================== *)
 (** * Tactics. *)
 
 (** Unfold the readable predicates so the bare statement is exposed for the

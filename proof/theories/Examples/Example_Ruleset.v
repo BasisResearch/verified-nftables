@@ -202,7 +202,20 @@ Ltac eval_fw Hpe :=
 
     Each is universally quantified over the packet [p]; the only hypotheses are
     the field values the verdict actually depends on (and that [p] is evaluated
-    under the sets this ruleset declares). *)
+    under the sets this ruleset declares).
+
+    M4 KNOWN GAP — the [e = fw_env] pin makes the ESTABLISHED/RELATED/NEW
+    ct-state theorems below vacuous as stated: [fw_env] pins [e_ct] to the
+    empty conntrack table, under which [field_value FCtState] can only read
+    untracked ([0;0;0;64]), no-entry ([0;0;0;1] = invalid), or the empty
+    present-entry ([]) — never established/related/new (the proof shape:
+    [Router_Realistic.ctstate_under_genenv_never_new]).  The INVALID theorem
+    ([invalid_dropped]) and every non-ct theorem here are satisfiable and
+    unaffected.  The de-vacuization recipe (pin only the vmap/set CONTENTS the
+    chain reads, then witness satisfiability) is CONFIG_PROOFS.md § "Pin only
+    what the lookups read", applied end-to-end in [Router_Realistic.v] /
+    [Optiplex_Mark.v]; re-stating this file's ct theorems that way is recorded
+    follow-up work (THEOREMS.md §5), deliberately not silently rewritten here. *)
 
 (* Established connections are accepted (the first rule's vmap hit). *)
 Theorem established_accepted : forall e p,
