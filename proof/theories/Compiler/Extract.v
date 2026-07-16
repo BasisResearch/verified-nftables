@@ -140,6 +140,7 @@ Separate Extraction
   Lower.vmap_entries_concat
   Lower.decl_set_elems
   Lower.decl_vmap_ents
+  Lower.lower_ruleset
   TypedEval.eval_txm
   Selector.dep_ip4
   Selector.dep_ip6

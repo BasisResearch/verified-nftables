@@ -1,0 +1,9 @@
+# stmt-level lerr: `reject with icmp <name>` with an unknown ICMP code name.
+# Parses fine; the VERIFIED lowering refuses it (Lower.LEreject) rather than
+# guessing a code byte.
+table ip t {
+  chain c {
+    type filter hook input priority 0; policy accept;
+    ip protocol icmp reject with icmp bogus-code-name
+  }
+}

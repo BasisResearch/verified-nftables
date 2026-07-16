@@ -68,7 +68,20 @@ Inductive lerr : Type :=
                                     guard byte-order — honest refusal)       *)
 | LEtcpflagSet                   (* tcp flags brace-set (brace-vs-OR ambiguity) *)
 | LEconcatArity                  (* concat element arity <> declared key      *)
-| LEsettype    (atom : string).  (* unknown declared set type atom            *)
+| LEsettype    (atom : string)   (* unknown declared set type atom            *)
+(* --- M4: the statement / terminal / driver slice of the refusal list --- *)
+| LEundefVar   (name : string)   (* `$name` with no `define`                  *)
+| LEmetaSet    (name : string)   (* `meta <k> set` on an unsettable/unknown key *)
+| LEctSet      (name : string)   (* `ct <k> set` on an unsettable/unknown key  *)
+| LEnatFlag    (name : string)   (* unknown NAT flag word                      *)
+| LEtproxyTarget                 (* tproxy target is not an IPv4 literal       *)
+| LEreject     (ctx : string)    (* unknown `reject with ...` type/code        *)
+| LElimitUnit  (name : string)   (* unknown `limit ... /<unit>`                *)
+| LEmultiVmap                    (* more than one verdict map in a rule        *)
+| LEvmapStatic                   (* verdict map combined with a static verdict *)
+| LEmultiOutcome                 (* >1 terminal outcome (vmap / nat / tproxy)  *)
+| LEvalueMap                     (* value map (non-verdict data) not lowered   *)
+| LEconcatRhs.                   (* concatenated match without a set/ref rhs   *)
 
 Definition lerr_message (e : lerr) : string :=
   match e with
@@ -92,6 +105,18 @@ Definition lerr_message (e : lerr) : string :=
       "tcp flags set/list form is ambiguous (brace-set vs OR-mask); use a single `tcp flags X` / `tcp flags ! X` / `tcp flags == X`"
   | LEconcatArity => "concatenated element arity does not match the declared key"
   | LEsettype a => "set element type: " ++ a
+  | LEundefVar n => "undefined variable $" ++ n
+  | LEmetaSet n => "meta key is not settable: " ++ n
+  | LEctSet n => "ct key is not settable: " ++ n
+  | LEnatFlag n => "nat flag " ++ n
+  | LEtproxyTarget => "tproxy target is not an IPv4 literal"
+  | LEreject c => "reject with " ++ c
+  | LElimitUnit n => "limit unit " ++ n
+  | LEmultiVmap => "more than one verdict map in a rule"
+  | LEvmapStatic => "verdict map combined with a static verdict"
+  | LEmultiOutcome => "rule with more than one outcome (vmap/nat/tproxy)"
+  | LEvalueMap => "value maps (non-verdict map data) not yet lowered"
+  | LEconcatRhs => "concatenated match needs a set/ref rhs"
   end.
 
 Inductive lres (A : Type) : Type :=
@@ -812,6 +837,365 @@ Fixpoint decl_vmap_ents (types : list string) (elems : list (svalue * verdict))
       end
   end.
 
+(* ================================================================== *)
+(** ** M4: statement immediates, NAT / tproxy / reject terminals, and the
+    whole-ruleset driver.  With this the OCaml frontend composes NO byte at
+    all — it injects the surface tree (Nft_inject) and calls [lower_ruleset];
+    every value->byte decision (statement-set register widths, NAT/tproxy
+    address+port immediates and flag bits, reject family-default type/code
+    tables, syslog level canonicalisation, limit assembly) and every refusal
+    (an [lerr] constructor) lives HERE, verified. *)
+
+(** lres monadic bind. *)
+Definition lbind {A B : Type} (m : lres A) (k : A -> lres B) : lres B :=
+  match m with LOk a => k a | LErr e => LErr e end.
+Notation "x <-- m ;; k" := (lbind m (fun x => k))
+  (at level 61, right associativity).
+
+(* ---------- small string utilities (space split / assoc) ---------- *)
+
+Definition spc : Ascii.ascii := Ascii.ascii_of_nat 32.
+
+(** [split_on c s]: split [s] at every occurrence of [c], KEEPING empty
+    tokens — the semantics of OCaml [String.split_on_char] (n separators give
+    n+1 pieces), so [canon_log_opts]/[reject] word matching is faithful. *)
+Fixpoint split_on (c : Ascii.ascii) (s : string) : list string :=
+  match s with
+  | EmptyString => EmptyString :: nil
+  | String a rest =>
+      if Ascii.eqb a c then EmptyString :: split_on c rest
+      else match split_on c rest with
+           | w :: ws => String a w :: ws
+           | nil => (String a EmptyString) :: nil   (* unreachable *)
+           end
+  end.
+
+Fixpoint find_str {A : Type} (n : string) (l : list (string * A)) : option A :=
+  match l with
+  | nil => None
+  | (k, v) :: r => if String.eqb k n then Some v else find_str n r
+  end.
+
+(* ---------- define ($var) expansion (structural; fail-loud) ---------- *)
+
+Fixpoint resolve_sv (fuel : nat) (defs : list (string * svalue)) (v : svalue)
+  : lres svalue :=
+  match fuel with
+  | O => LErr (LEundefVar "<define recursion bound>")
+  | S fu =>
+      match v with
+      | SVVar n =>
+          match find_str n defs with
+          | Some v' => resolve_sv fu defs v'
+          | None => LErr (LEundefVar n)
+          end
+      | SVPrefix b l =>
+          b' <-- resolve_sv fu defs b ;; LOk (SVPrefix b' l)
+      | SVRange a b =>
+          a' <-- resolve_sv fu defs a ;;
+          b' <-- resolve_sv fu defs b ;; LOk (SVRange a' b')
+      | SVConcat vs =>
+          vs' <-- map_lres (resolve_sv fu defs) vs ;; LOk (SVConcat vs')
+      | SVSet vs =>
+          vs' <-- map_lres (resolve_sv fu defs) vs ;; LOk (SVSet vs')
+      | _ => LOk v
+      end
+  end.
+
+Definition resolve_setexpr (fuel : nat) (defs : list (string * svalue))
+    (se : ssetexpr) : lres ssetexpr :=
+  match se with
+  | SSEvalue v => v' <-- resolve_sv fuel defs v ;; LOk (SSEvalue v')
+  | SSElist vs => vs' <-- map_lres (resolve_sv fuel defs) vs ;; LOk (SSElist vs')
+  | SSEset vs => vs' <-- map_lres (resolve_sv fuel defs) vs ;; LOk (SSEset vs')
+  | SSEref n => LOk (SSEref n)
+  end.
+
+Definition resolve_rhs (fuel : nat) (defs : list (string * svalue)) (r : srhs)
+  : lres srhs :=
+  se' <-- resolve_setexpr fuel defs (sr_payload r) ;;
+  LOk (mkSrhs (sr_op r) (sr_neg r) se').
+
+(* ---------- statement immediates: `meta <k> set` / `ct <k> set` ----------
+   The register WIDTH the kernel uses when STORING a value is key-specific and
+   HOST-endian (net/netfilter/nft_ct.c, nft_meta.c): the immediate is a
+   [VHostInt] of that width, encoded little-endian.  This REPLACES the OCaml
+   [meta_set_kind]/[ct_set_kind] width tables and the [enc_atom] encode path. *)
+
+Definition meta_set_key (name : string) : option (meta_key * nat) :=
+  if String.eqb name "mark" then Some (MKmark, 4)
+  else if String.eqb name "priority" then Some (MKpriority, 4)
+  else if String.eqb name "pkttype" then Some (MKpkttype, 1)
+  else None.
+
+Definition ct_set_key (name : string) : option (ct_key * nat) :=
+  if String.eqb name "zone" then Some (CKzone, 2)
+  else if String.eqb name "label" then Some (CKlabel, 16)
+  else if String.eqb name "mark" then Some (CKmark, 4)
+  else if String.eqb name "event" then Some (CKevent, 4)
+  else None.
+
+(** The verified typed immediate: the set value resolved at a HOST-endian
+    integer of the key's register width (little-endian encode). *)
+Definition set_imm (w : nat) (v : svalue) (ctx : string) : lres vsrc :=
+  match resolve_value (DThostint w) v with
+  | Some tv => LOk (VImm (Nftval.encode tv))
+  | None => LErr (LEatom ctx)
+  end.
+
+Definition lower_meta_set (name : string) (v : svalue) : lres stmt :=
+  match meta_set_key name with
+  | Some (k, w) => vs <-- set_imm w v "meta set value" ;; LOk (SMetaSet k vs)
+  | None => LErr (LEmetaSet name)
+  end.
+
+Definition lower_ct_set (name : string) (v : svalue) : lres stmt :=
+  match ct_set_key name with
+  | Some (k, w) => vs <-- set_imm w v "ct set value" ;; LOk (SCtSet k vs)
+  | None => LErr (LEctSet name)
+  end.
+
+(* ---------- log canonicalisation (syslog level symbol table) ---------- *)
+
+Definition syslog_level (name : string) : option nat :=
+  if String.eqb name "emerg" then Some 0
+  else if String.eqb name "alert" then Some 1
+  else if String.eqb name "crit" then Some 2
+  else if String.eqb name "err" then Some 3
+  else if String.eqb name "warn" then Some 4
+  else if String.eqb name "warning" then Some 4
+  else if String.eqb name "notice" then Some 5
+  else if String.eqb name "info" then Some 6
+  else if String.eqb name "debug" then Some 7
+  else if String.eqb name "audit" then Some 8
+  else None.
+
+(** `log level <name>` renders with the NUMERIC level; every other log-option
+    form (prefix / group / ...) is left verbatim (as the golden does). *)
+Definition canon_log_opts (opts : string) : string :=
+  match split_on spc opts with
+  | lvl :: name :: nil =>
+      if String.eqb lvl "level"
+      then match syslog_level name with
+           | Some n => String.append "level " (nat_dec n)
+           | None => opts
+           end
+      else opts
+  | _ => opts
+  end.
+
+(* ---------- limit ---------- *)
+
+Definition limit_unit (u : string) : option nat :=
+  if String.eqb u "second" then Some 0
+  else if String.eqb u "minute" then Some 1
+  else if String.eqb u "hour" then Some 2
+  else if String.eqb u "day" then Some 3
+  else if String.eqb u "week" then Some 4
+  else None.
+
+(** `limit rate R/<unit> [over] [burst B] [bytes]`: bit 0 of [ls_flags] is
+    NFT_LIMIT_F_INV ("over").  The 2^40 extracted-int seam guard stays at the
+    OCaml injection boundary (see Extract.v); every rate/burst here is a bound
+    [nat]. *)
+Definition limit_spec (rate : nat) (u : string) (over : bool)
+    (burst : nat) (byte_rate : bool) : lres Packet.limit_spec :=
+  match limit_unit u with
+  | Some un =>
+      LOk {| Packet.ls_rate := rate; Packet.ls_unit := un;
+             Packet.ls_burst := burst; Packet.ls_bytes := byte_rate;
+             Packet.ls_flags := (if over then 1 else 0) |}
+  | None => LErr (LElimitUnit u)
+  end.
+
+(* ---------- reject: family-default and explicit type/code ---------- *)
+
+Definition reject_words (opts : string) : list string :=
+  filter (fun w => negb (String.eqb w EmptyString) && negb (String.eqb w "type"))
+         (split_on spc opts).
+
+Definition icmp_reject_code (name : string) : option nat :=
+  if String.eqb name "net-unreachable" then Some 0
+  else if String.eqb name "host-unreachable" then Some 1
+  else if String.eqb name "prot-unreachable" then Some 2
+  else if String.eqb name "port-unreachable" then Some 3
+  else if String.eqb name "net-prohibited" then Some 9
+  else if String.eqb name "host-prohibited" then Some 10
+  else if String.eqb name "admin-prohibited" then Some 13
+  else None.
+
+Definition icmpv6_reject_code (name : string) : option nat :=
+  if String.eqb name "no-route" then Some 0
+  else if String.eqb name "admin-prohibited" then Some 1
+  else if String.eqb name "addr-unreachable" then Some 3
+  else if String.eqb name "port-unreachable" then Some 4
+  else if String.eqb name "policy-fail" then Some 5
+  else if String.eqb name "reject-route" then Some 6
+  else None.
+
+Definition icmpx_reject_code (name : string) : option nat :=
+  if String.eqb name "no-route" then Some 0
+  else if String.eqb name "port-unreachable" then Some 1
+  else if String.eqb name "host-unreachable" then Some 2
+  else if String.eqb name "admin-prohibited" then Some 3
+  else None.
+
+(** The reject (type, code) for a chain of [family], mirroring evaluate.c
+    stmt_reject_default: a BARE reject is family-defaulted (ip icmp
+    port-unreach (0,3); ip6 icmpv6 port-unreach (0,4); L2/dual icmpx
+    port-unreach (2,1)); `tcp reset` is (1,0). *)
+Definition reject_type_code (family : string) (opts : string)
+  : lres (nat * nat) :=
+  match reject_words opts with
+  | nil =>
+      if String.eqb family "ip" then LOk (0, 3)
+      else if String.eqb family "ip6" then LOk (0, 4)
+      else LOk (2, 1)
+  | w1 :: rest =>
+      if String.eqb w1 "tcp" then
+        match rest with
+        | w2 :: _ => if String.eqb w2 "reset" then LOk (1, 0)
+                     else LErr (LEreject opts)
+        | _ => LErr (LEreject opts)
+        end
+      else match rest with
+        | name :: _ =>
+            if String.eqb w1 "icmp" then
+              match icmp_reject_code name with Some c => LOk (0, c) | None => LErr (LEreject opts) end
+            else if String.eqb w1 "icmpv6" then
+              match icmpv6_reject_code name with Some c => LOk (0, c) | None => LErr (LEreject opts) end
+            else if String.eqb w1 "icmpx" then
+              match icmpx_reject_code name with Some c => LOk (2, c) | None => LErr (LEreject opts) end
+            else LErr (LEreject opts)
+        | nil => LErr (LEreject opts)
+        end
+  end.
+
+(** The network guard a `reject with icmp/icmpv6 <x>` needs in a dual-stack
+    family (icmp -> ipv4, icmpv6 -> ipv6); a no-op in single-L3 ip/ip6. *)
+Definition reject_dep (opts : string) : list depspec :=
+  match reject_words opts with
+  | w1 :: _ =>
+      if String.eqb w1 "icmp" then [DepNfproto 2]
+      else if String.eqb w1 "icmpv6" then [DepNfproto 10]
+      else nil
+  | nil => nil
+  end.
+
+(* ---------- NAT / tproxy immediates ---------- *)
+
+Definition nat_l3_family (family : string) : nat_af :=
+  if String.eqb family "ip6" then NFip6
+  else if String.eqb family "inet" then NFinet
+  else NFip4.
+
+(** 2-byte big-endian port (the compiler loads it into the proto register). *)
+Definition port_bytes (p : nat) : data := N_to_data 2 (N.of_nat p).
+
+(** NAT flag words -> the kernel NF_NAT_RANGE_* bitmask (nf_nat.h). *)
+Definition nat_flag_bit (name : string) : option nat :=
+  if String.eqb name "random" then Some 4
+  else if String.eqb name "persistent" then Some 8
+  else if String.eqb name "fully-random" then Some 16
+  else None.
+
+Fixpoint nat_flags_of (fs : list string) : lres nat :=
+  match fs with
+  | nil => LOk 0
+  | f :: r =>
+      match nat_flag_bit f with
+      | Some b => rest <-- nat_flags_of r ;; LOk (Nat.lor b rest)
+      | None => LErr (LEnatFlag f)
+      end
+  end.
+
+Definition empty_nat (kind : nat_op) (fam : nat_af) (extra : nat_2nd) (flags : nat)
+  : nat_spec :=
+  {| nat_addr_imm := None; nat_field := None; nat_map := None; nat_src := None;
+     nat_extra := extra; nat_kind := kind; nat_family := fam; nat_flags := flags |}.
+
+Definition masq_spec (family : string) (flags : nat) : nat_spec :=
+  empty_nat NKmasq (nat_l3_family family) NXnone flags.
+
+(** `snat/dnat to <ipv4>[:<port>]`: only an IPv4 LITERAL target is modelled;
+    a resolvable non-literal (defined symbol/map/concat we don't lower) stays a
+    bare terminal Accept ([None]).  An undefined `$var` already failed loud at
+    [resolve_sv]. *)
+Definition addr_nat_spec (kind : nat_op) (port : option nat) (flags : nat)
+    (v : svalue) : option nat_spec :=
+  match v with
+  | SVIp4 b =>
+      let '(extra, f) :=
+        match port with
+        | Some p => (NXimm None (Some (port_bytes p)) None, Nat.lor flags 2)
+        | None => (NXnone, flags)
+        end in
+      Some {| nat_addr_imm := Some b; nat_field := None; nat_map := None;
+              nat_src := None; nat_extra := extra; nat_kind := kind;
+              nat_family := NFip4; nat_flags := f |}
+  | _ => None
+  end.
+
+(** Port-only `snat/dnat to :<port>`: no address operand (PROTO_SPECIFIED). *)
+Definition portonly_nat_spec (family : string) (kind : nat_op) (flags : nat)
+    (port : nat) : nat_spec :=
+  empty_nat kind (nat_l3_family family)
+            (NXimm None (Some (port_bytes port)) None) (Nat.lor flags 2).
+
+Definition redir_spec (flags : nat) (port : option nat) : nat_spec :=
+  match port with
+  | Some p => empty_nat NKredir NFip4 (NXimm None (Some (port_bytes p)) None) (Nat.lor flags 2)
+  | None => empty_nat NKredir NFip4 NXnone flags
+  end.
+
+(** `tproxy [ip|ip6] to <ipv4>[:<port>]` — an explicit ip/ip6 qualifier wins;
+    otherwise the enclosing table's L3 family (ip/ip6), or "" for a multi-L3
+    (inet/bridge/netdev) table.  Only an IPv4 literal target is modelled. *)
+Definition mk_tproxy (family qual : string) (addr : option svalue)
+    (port : option nat) : lres tproxy_spec :=
+  let tp_fam :=
+    if negb (String.eqb qual "") then qual
+    else if String.eqb family "ip" then "ip"
+    else if String.eqb family "ip6" then "ip6"
+    else "" in
+  match addr with
+  | None => LOk {| tp_addr := None; tp_port := option_map port_bytes port;
+                   tp_portmap := None; tp_family := tp_fam |}
+  | Some (SVIp4 b) => LOk {| tp_addr := Some b; tp_port := option_map port_bytes port;
+                             tp_portmap := None; tp_family := tp_fam |}
+  | Some _ => LErr LEtproxyTarget
+  end.
+
+(* ---------- verdict / statement lowering ---------- *)
+
+Definition lower_sverdict (v : sverdict) : verdict :=
+  match v with
+  | SVaccept => Accept
+  | SVdrop => Drop
+  | SVcontinue => Continue
+  | SVreturn => Return
+  | SVjump c => Jump c
+  | SVgoto c => Goto c
+  | SVqueue lo hi byp fan => Queue lo hi byp fan
+  | SVreject _ => Reject 0 0
+  end.
+
+(** One statement to a [stmt] (or [None] for verdict-neutral metadata /
+    terminal NAT, which the driver handles as a rule OUTCOME).  Values are
+    already define-expanded by the caller. *)
+Definition lower_stmt (s : sstmt) : lres (option stmt) :=
+  match s with
+  | StComment _ => LOk None
+  | StCounter => LOk (Some (SCounter 0 0))
+  | StLog opts => LOk (Some (SLog (canon_log_opts opts)))
+  | StNotrack => LOk (Some SNotrack)
+  | StMetaSet k v => st <-- lower_meta_set k v ;; LOk (Some st)
+  | StCtSet k v => st <-- lower_ct_set k v ;; LOk (Some st)
+  | StLimit _ _ _ _ _ => LOk None       (* intercepted as MLimit by the driver *)
+  | StMasquerade _ | StSnat _ _ _ | StDnat _ _ _
+  | StRedirect _ _ | StTproxy _ _ _ => LOk None   (* terminal outcome *)
+  end.
+
 (* ------------------------------------------------------------------ *)
 (** ** Byte-pin witnesses (vm_compute): the verified lowering produces the
     HISTORICAL bytes the golden corpus / byteorder-gate / difftest check
@@ -1057,3 +1441,508 @@ Example decl_set_concat_cidr :
     [SVConcat [SVPrefix (SVIp4 [10;0;0;0]) 8; SVNum 53]]
   = LOk [([10;0;0;0; 0;53; 0;0], [10;255;255;255; 0;53; 0;0])].
 Proof. vm_compute. reflexivity. Qed.
+
+(* ================================================================== *)
+(** ** M4: the whole-ruleset driver [lower_ruleset].
+
+    Mirrors the historical OCaml [lower_rule]/[lower_chain]/[lower] loop
+    exactly (clause order, dependency-guard dedup, discharge, outcome
+    assembly, declaration-then-chain interning order) but composes NO byte:
+    every match/set/statement/terminal value is the verified lowering above.
+    The OCaml frontend becomes [Nft_inject] (pure structural injection + the
+    ifindex oracle) plus a call to this function. *)
+
+(* ---------- guard-field equality (the small fixed set of dep fields) ---------- *)
+
+(** Only the implicit-guard fields ever enter the per-rule dedup set (from
+    [dep_guard]/[discharge]): the L3/L2/L4 protocol and link guards.  A total
+    equality on them (others never occur, so [false] is correct). *)
+Definition gfield_eqb (a b : field) : bool :=
+  match a, b with
+  | FMetaL4proto, FMetaL4proto => true
+  | FMetaNfproto, FMetaNfproto => true
+  | FMetaProtocol, FMetaProtocol => true
+  | FMetaIiftype, FMetaIiftype => true
+  | FEtherType, FEtherType => true
+  | _, _ => false
+  end.
+
+Definition pair_mem (p : field * data) (l : list (field * data)) : bool :=
+  existsb (fun q => andb (gfield_eqb (fst q) (fst p)) (data_eqb (snd q) (snd p))) l.
+
+Fixpoint dedup_add (news deps : list (field * data)) : list (field * data) :=
+  match news with
+  | nil => deps
+  | p :: r => dedup_add r (if pair_mem p deps then deps else p :: deps)
+  end.
+
+(* ---------- file-level and rule-level lowering state ---------- *)
+
+Record fstate : Type := mkFstate {
+  fs_ls    : lstate;                          (* interning (threaded) *)
+  fs_typed : list (matchcond * Elab.tmatch);  (* typed views for the emitter *)
+  fs_deps  : list matchcond }.                (* which matchconds are dep guards *)
+
+Record rloc : Type := mkRloc {
+  rl_body    : list body_item;      (* reversed accumulation *)
+  rl_deps    : list (field * data); (* guard dedup set *)
+  rl_verdict : verdict;
+  rl_vmap    : option vmap_spec;
+  rl_nat     : option nat_spec;
+  rl_tproxy  : option tproxy_spec }.
+
+Definition rl0 : rloc := mkRloc nil nil Continue None None None.
+
+Definition rl_with_verdict (v : verdict) (rl : rloc) : rloc :=
+  mkRloc (rl_body rl) (rl_deps rl) v (rl_vmap rl) (rl_nat rl) (rl_tproxy rl).
+Definition rl_with_nat (n : option nat_spec) (rl : rloc) : rloc :=
+  mkRloc (rl_body rl) (rl_deps rl) (rl_verdict rl) (rl_vmap rl) n (rl_tproxy rl).
+Definition rl_with_tproxy (t : option tproxy_spec) (rl : rloc) : rloc :=
+  mkRloc (rl_body rl) (rl_deps rl) (rl_verdict rl) (rl_vmap rl) (rl_nat rl) t.
+Definition rl_with_vmap (m : option vmap_spec) (rl : rloc) : rloc :=
+  mkRloc (rl_body rl) (rl_deps rl) (rl_verdict rl) m (rl_nat rl) (rl_tproxy rl).
+Definition rl_push (bi : body_item) (rl : rloc) : rloc :=
+  mkRloc (bi :: rl_body rl) (rl_deps rl) (rl_verdict rl) (rl_vmap rl) (rl_nat rl) (rl_tproxy rl).
+Definition rl_set_deps (d : list (field * data)) (rl : rloc) : rloc :=
+  mkRloc (rl_body rl) d (rl_verdict rl) (rl_vmap rl) (rl_nat rl) (rl_tproxy rl).
+
+(** Register a Coq-lowered typed match; if it has an Elab view, remember it so
+    the emitter prints [(elab_m tm)]. *)
+Definition fs_coq_mc (fs : fstate) (tx : txmatch) : matchcond * fstate :=
+  let mc := elab_tx tx in
+  match tx_view tx with
+  | Some tm => (mc, mkFstate (fs_ls fs) ((mc, tm) :: fs_typed fs) (fs_deps fs))
+  | None => (mc, fs)
+  end.
+
+(** Register a synthesized dependency guard (typed + tagged as a dep). *)
+Definition fs_reg_dep (fs : fstate) (tm : Elab.tmatch) : matchcond * fstate :=
+  let mc := Elab.elab_m tm in
+  (mc, mkFstate (fs_ls fs) ((mc, tm) :: fs_typed fs) (mc :: fs_deps fs)).
+
+(* ---------- implicit dependency guard materialisation ---------- *)
+
+Definition push_guard (da : dep_action) (rl : rloc) (fs : fstate) : rloc * fstate :=
+  match da with
+  | DAnone => (rl, fs)
+  | DAguard layer f key tm =>
+      let dup :=
+        if layer then existsb (fun p => gfield_eqb (fst p) f) (rl_deps rl)
+        else existsb (fun p => andb (gfield_eqb (fst p) f) (data_eqb (snd p) key)) (rl_deps rl) in
+      if dup then (rl, fs)
+      else let '(mc, fs') := fs_reg_dep fs tm in
+           (rl_push (BMatch mc) (rl_set_deps ((f, key) :: rl_deps rl) rl), fs')
+  end.
+
+Fixpoint ensure_dep (family : string) (ds : list depspec) (rl : rloc) (fs : fstate)
+  : lres (rloc * fstate) :=
+  match ds with
+  | nil => LOk (rl, fs)
+  | d :: rest =>
+      match dep_guard family d with
+      | LErr e => LErr e
+      | LOk da => let '(rl', fs') := push_guard da rl fs in
+                  ensure_dep family rest rl' fs'
+      end
+  end.
+
+(* ---------- selector helpers ---------- *)
+
+Definition sel_deps (kp : skeypath) : list depspec :=
+  match selector kp with Some (_, _, d) => d | None => nil end.
+
+Definition sel_field_dt (kp : skeypath) : lres (field * dtype) :=
+  match selector kp with
+  | Some (f, dt, _) => LOk (f, dt)
+  | None => LErr (LEselector kp)
+  end.
+
+(* ---------- the ifindex oracle hook (iif/oif interface NAME -> index) ---------- *)
+
+Definition is_iifoif (kp : skeypath) : bool :=
+  match kp with
+  | ("iif" :: nil) | ("oif" :: nil) => true
+  | ("meta" :: "iif" :: nil) | ("meta" :: "oif" :: nil) => true
+  | _ => false
+  end.
+
+Definition oracle_name_rewrite (oracle : string -> option nat)
+    (kp : skeypath) (v : svalue) : svalue :=
+  if is_iifoif kp then
+    match v with
+    | SVSym s | SVStr s => match oracle s with Some n => SVNum n | None => v end
+    | _ => v
+    end
+  else v.
+
+(* ---------- one match clause ---------- *)
+
+Definition driver_match (oracle : string -> option nat) (fuel : nat)
+    (defs : list (string * svalue)) (m : smatch) (fs : fstate)
+  : lres (list depspec * matchcond * fstate) :=
+  let neg := sr_neg (sm_rhs m) in
+  r <-- resolve_rhs fuel defs (sm_rhs m) ;;
+  match sm_keys m with
+  | kp :: nil =>
+      match sr_payload r with
+      | SSEref name =>
+          match selector kp with
+          | Some (f, _, deps) => LOk (deps, lower_set_ref [f] neg name, fs)
+          | None => LErr (LEselector kp)
+          end
+      | SSEset elems =>
+          match selector kp with
+          | Some (f, dt, deps) =>
+              match lower_anon_set (fs_ls fs) f dt neg elems with
+              | LOk (ls', mc) => LOk (deps, mc, mkFstate ls' (fs_typed fs) (fs_deps fs))
+              | LErr e => LErr e
+              end
+          | None => LErr (LEselector kp)
+          end
+      | SSEvalue (SVSet elems) =>
+          match selector kp with
+          | Some (f, dt, deps) =>
+              match lower_anon_set (fs_ls fs) f dt neg elems with
+              | LOk (ls', mc) => LOk (deps, mc, mkFstate ls' (fs_typed fs) (fs_deps fs))
+              | LErr e => LErr e
+              end
+          | None => LErr (LEselector kp)
+          end
+      | SSEvalue v =>
+          let v' := oracle_name_rewrite oracle kp v in
+          match lower_match (mkSmatch (kp :: nil)
+                              (mkSrhs (sr_op r) neg (SSEvalue v'))) with
+          | LOk (deps, tx) => let '(mc, fs') := fs_coq_mc fs tx in LOk (deps, mc, fs')
+          | LErr e => LErr e
+          end
+      | SSElist _ =>
+          match lower_match (mkSmatch (kp :: nil) r) with
+          | LOk (deps, tx) => let '(mc, fs') := fs_coq_mc fs tx in LOk (deps, mc, fs')
+          | LErr e => LErr e
+          end
+      end
+  | kps =>
+      infos <-- map_lres sel_field_dt kps ;;
+      let fields := map fst infos in
+      let dts := map snd infos in
+      let dep := List.concat (map sel_deps kps) in
+      match sr_payload r with
+      | SSEref nm => LOk (dep, lower_set_ref fields neg nm, fs)
+      | SSEset elems =>
+          match lower_concat_set (fs_ls fs) fields dts neg elems with
+          | LOk (ls', mc) => LOk (dep, mc, mkFstate ls' (fs_typed fs) (fs_deps fs))
+          | LErr e => LErr e
+          end
+      | SSEvalue (SVConcat vs) =>
+          match lower_concat_set (fs_ls fs) fields dts neg (SVConcat vs :: nil) with
+          | LOk (ls', mc) => LOk (dep, mc, mkFstate ls' (fs_typed fs) (fs_deps fs))
+          | LErr e => LErr e
+          end
+      | SSElist _ => LErr LEconcatRhs
+      | SSEvalue _ => LErr LEconcatRhs
+      end
+  end.
+
+(* ---------- statement value resolution + terminal handling ---------- *)
+
+Definition resolve_optsv (fuel : nat) (defs : list (string * svalue))
+    (o : option svalue) : lres (option svalue) :=
+  match o with
+  | None => LOk None
+  | Some v => v' <-- resolve_sv fuel defs v ;; LOk (Some v')
+  end.
+
+Definition resolve_stmt (fuel : nat) (defs : list (string * svalue)) (s : sstmt)
+  : lres sstmt :=
+  match s with
+  | StMetaSet k v => v' <-- resolve_sv fuel defs v ;; LOk (StMetaSet k v')
+  | StCtSet k v => v' <-- resolve_sv fuel defs v ;; LOk (StCtSet k v')
+  | StSnat a p f => a' <-- resolve_optsv fuel defs a ;; LOk (StSnat a' p f)
+  | StDnat a p f => a' <-- resolve_optsv fuel defs a ;; LOk (StDnat a' p f)
+  | StTproxy fam a p => a' <-- resolve_optsv fuel defs a ;; LOk (StTproxy fam a' p)
+  | _ => LOk s
+  end.
+
+(** Terminal NAT/tproxy statements set the rule verdict (Accept) and the
+    nat/tproxy outcome; [s] has its address already define-expanded. *)
+Definition lower_terminal (family : string) (s : sstmt) (rl : rloc) : lres rloc :=
+  let acc := rl_with_verdict Accept rl in
+  match s with
+  | StMasquerade fs =>
+      flags <-- nat_flags_of fs ;; LOk (rl_with_nat (Some (masq_spec family flags)) acc)
+  | StSnat (Some v) port fs =>
+      flags <-- nat_flags_of fs ;; LOk (rl_with_nat (addr_nat_spec NKsnat port flags v) acc)
+  | StDnat (Some v) port fs =>
+      flags <-- nat_flags_of fs ;; LOk (rl_with_nat (addr_nat_spec NKdnat port flags v) acc)
+  | StSnat None (Some port) fs =>
+      flags <-- nat_flags_of fs ;; LOk (rl_with_nat (Some (portonly_nat_spec family NKsnat flags port)) acc)
+  | StDnat None (Some port) fs =>
+      flags <-- nat_flags_of fs ;; LOk (rl_with_nat (Some (portonly_nat_spec family NKdnat flags port)) acc)
+  | StSnat None None _ => LOk acc
+  | StDnat None None _ => LOk acc
+  | StRedirect port fs =>
+      flags <-- nat_flags_of fs ;; LOk (rl_with_nat (Some (redir_spec flags port)) acc)
+  | StTproxy qual addr port =>
+      tp <-- mk_tproxy family qual addr port ;; LOk (rl_with_tproxy (Some tp) acc)
+  | _ => LOk rl
+  end.
+
+Definition lower_clause (oracle : string -> option nat) (fuel : nat)
+    (family : string) (defs : list (string * svalue))
+    (cl : sclause) (rl : rloc) (fs : fstate) : lres (rloc * fstate) :=
+  match cl with
+  | CVerdict (SVreject opts) =>
+      p <-- ensure_dep family (reject_dep opts) rl fs ;;
+      let '(rl1, fs1) := p in
+      tc <-- reject_type_code family opts ;;
+      let '(rt, rc) := tc in
+      LOk (rl_with_verdict (Reject rt rc) rl1, fs1)
+  | CVerdict v => LOk (rl_with_verdict (lower_sverdict v) rl, fs)
+  | CMatch m =>
+      r <-- driver_match oracle fuel defs m fs ;;
+      let '(dep, mc, fs1) := r in
+      p <-- ensure_dep family dep rl fs1 ;;
+      let '(rl1, fs2) := p in
+      LOk (rl_set_deps (dedup_add (discharge mc) (rl_deps rl1)) (rl_push (BMatch mc) rl1), fs2)
+  | CBitmatch kp op mask r0 =>
+      mask' <-- resolve_sv fuel defs mask ;;
+      r' <-- resolve_rhs fuel defs r0 ;;
+      match lower_bitmatch kp op mask' r' with
+      | LErr e => LErr e
+      | LOk (dep, tx) =>
+          p <-- ensure_dep family dep rl fs ;;
+          let '(rl1, fs1) := p in
+          let '(mc, fs2) := fs_coq_mc fs1 tx in
+          LOk (rl_push (BMatch mc) rl1, fs2)
+      end
+  | CVmap kps entries =>
+      match rl_vmap rl with
+      | Some _ => LErr LEmultiVmap
+      | None =>
+          infos <-- map_lres sel_field_dt kps ;;
+          let fields := map fst infos in
+          let dts := map snd infos in
+          p <-- ensure_dep family (List.concat (map sel_deps kps)) rl fs ;;
+          let '(rl1, fs1) := p in
+          let '(name, ls') := fresh_map (fs_ls fs1) in
+          coqents <-- map_lres (fun ve => let '(v, sv) := ve in
+                        v' <-- resolve_sv fuel defs v ;; LOk (v', lower_sverdict sv)) entries ;;
+          ents <-- (match dts with
+                    | dt :: nil => vmap_entries_single dt coqents
+                    | _ => vmap_entries_concat dts coqents
+                    end) ;;
+          let ls2 := add_vmap ls' name ents in
+          let vm := match fields with
+                    | f :: nil => {| vm_fields := nil; vm_keyf := Some (f, nil); vm_name := name |}
+                    | _ => {| vm_fields := fields; vm_keyf := None; vm_name := name |}
+                    end in
+          LOk (rl_with_vmap (Some vm) rl1, mkFstate ls2 (fs_typed fs1) (fs_deps fs1))
+      end
+  | CVmapRef kps name =>
+      match rl_vmap rl with
+      | Some _ => LErr LEmultiVmap
+      | None =>
+          infos <-- map_lres sel_field_dt kps ;;
+          let fields := map fst infos in
+          p <-- ensure_dep family (List.concat (map sel_deps kps)) rl fs ;;
+          let '(rl1, fs1) := p in
+          let vm := match fields with
+                    | f :: nil => {| vm_fields := nil; vm_keyf := Some (f, nil); vm_name := name |}
+                    | _ => {| vm_fields := fields; vm_keyf := None; vm_name := name |}
+                    end in
+          LOk (rl_with_vmap (Some vm) rl1, fs1)
+      end
+  | CStmt (StLimit rate u over burst byte_rate) =>
+      ls <-- limit_spec rate u over burst byte_rate ;;
+      LOk (rl_push (BMatch (MLimit ls)) rl, fs)
+  | CStmt s0 =>
+      s <-- resolve_stmt fuel defs s0 ;;
+      rl1 <-- lower_terminal family s rl ;;
+      ms <-- lower_stmt s ;;
+      match ms with
+      | Some st => LOk (rl_push (BStmt st) rl1, fs)
+      | None => LOk (rl1, fs)
+      end
+  end.
+
+Fixpoint lower_clauses (oracle : string -> option nat) (fuel : nat)
+    (family : string) (defs : list (string * svalue))
+    (cls : list sclause) (rl : rloc) (fs : fstate) : lres (rloc * fstate) :=
+  match cls with
+  | nil => LOk (rl, fs)
+  | cl :: rest =>
+      p <-- lower_clause oracle fuel family defs cl rl fs ;;
+      let '(rl', fs') := p in lower_clauses oracle fuel family defs rest rl' fs'
+  end.
+
+Definition is_continue (v : verdict) : bool :=
+  match v with Continue => true | _ => false end.
+
+Definition assemble_outcome (rl : rloc) : lres outcome :=
+  match rl_vmap rl, rl_nat rl, rl_tproxy rl with
+  | Some _, _, Some _ => LErr LEmultiOutcome
+  | _, Some _, Some _ => LErr LEmultiOutcome
+  | Some vm, Some ns, None => LOk (OVmapNat vm ns)
+  | Some vm, None, None =>
+      if is_continue (rl_verdict rl) then LOk (OVmap vm) else LErr LEvmapStatic
+  | None, Some ns, None => LOk (ONat ns)
+  | None, None, Some tp => LOk (OTproxy tp)
+  | None, None, None =>
+      match rl_verdict rl with Continue => LOk ONone | v => LOk (OVerdict v) end
+  end.
+
+Definition lower_rule (oracle : string -> option nat) (fuel : nat)
+    (family : string) (defs : list (string * svalue))
+    (cls : srule) (fs : fstate) : lres (rule * fstate) :=
+  p <-- lower_clauses oracle fuel family defs cls rl0 fs ;;
+  let '(rl, fs') := p in
+  outc <-- assemble_outcome rl ;;
+  LOk ({| r_body := rev (rl_body rl); r_outcome := outc; r_after := nil |}, fs').
+
+(* ---------- chains ---------- *)
+
+Definition chain_hookinfo (items : list schain_item)
+  : option (string * string * bool * nat) :=
+  fold_left (fun acc it => match it with
+                           | ITypeHook ct h pn pr => Some (ct, h, pn, pr)
+                           | _ => acc end) items None.
+
+Fixpoint lower_chain_items (oracle : string -> option nat) (fuel : nat)
+    (family : string) (defs : list (string * svalue)) (items : list schain_item)
+    (pol : option verdict) (rules : list rule) (fs : fstate)
+  : lres (option verdict * list rule * fstate) :=
+  match items with
+  | nil => LOk (pol, rules, fs)
+  | ITypeHook _ _ _ _ :: rest =>
+      lower_chain_items oracle fuel family defs rest pol rules fs
+  | IPolicy v :: rest =>
+      lower_chain_items oracle fuel family defs rest (Some (lower_sverdict v)) rules fs
+  | IRule cls :: rest =>
+      p <-- lower_rule oracle fuel family defs cls fs ;;
+      let '(r, fs') := p in
+      lower_chain_items oracle fuel family defs rest pol (r :: rules) fs'
+  end.
+
+Definition lower_chain (oracle : string -> option nat) (fuel : nat)
+    (family : string) (defs : list (string * svalue)) (sc : schain) (fs : fstate)
+  : lres ((string * chain) * option (string * string * bool * nat) * fstate) :=
+  let hookinfo := chain_hookinfo (sc_items sc) in
+  let is_base := match hookinfo with Some _ => true | None => false end in
+  p <-- lower_chain_items oracle fuel family defs (sc_items sc) None nil fs ;;
+  let '(pol, rules, fs') := p in
+  let c_policy := match pol with
+                  | Some v => v
+                  | None => if is_base then Accept else Continue end in
+  LOk ((sc_name sc, {| c_policy := c_policy; c_rules := rev rules |}), hookinfo, fs').
+
+(* ---------- declarations (pass 2) ---------- *)
+
+Definition lower_setdecl (fuel : nat) (defs : list (string * svalue))
+    (sd : ssetdecl) (fs : fstate) : lres fstate :=
+  let types := sd_type sd in
+  if sd_is_map sd then
+    if existsb (fun e => match snd e with Some _ => true | None => false end)
+               (sd_elements sd) then
+      ents <-- map_lres (fun e => let '(key, d) := e in
+                 key' <-- resolve_sv fuel defs key ;;
+                 LOk (key', match d with Some v => lower_sverdict v | None => Continue end))
+               (sd_elements sd) ;;
+      vents <-- decl_vmap_ents types ents ;;
+      LOk (mkFstate (add_vmap (fs_ls fs) (sd_name sd) vents) (fs_typed fs) (fs_deps fs))
+    else match sd_elements sd with
+         | nil => LOk (mkFstate (add_map (fs_ls fs) (sd_name sd) nil) (fs_typed fs) (fs_deps fs))
+         | _ => LErr LEvalueMap
+         end
+  else
+    keys <-- map_lres (fun e => resolve_sv fuel defs (fst e)) (sd_elements sd) ;;
+    elems <-- decl_set_elems types keys ;;
+    LOk (mkFstate (add_set (fs_ls fs) (sd_name sd) elems) (fs_typed fs) (fs_deps fs)).
+
+Fixpoint lower_table_setdecls (fuel : nat) (defs : list (string * svalue))
+    (items : list stable_item) (fs : fstate) : lres fstate :=
+  match items with
+  | nil => LOk fs
+  | TSet sd :: rest =>
+      fs' <-- lower_setdecl fuel defs sd fs ;; lower_table_setdecls fuel defs rest fs'
+  | _ :: rest => lower_table_setdecls fuel defs rest fs
+  end.
+
+Fixpoint lower_setdecls_top (fuel : nat) (defs : list (string * svalue))
+    (rs : sruleset) (fs : fstate) : lres fstate :=
+  match rs with
+  | nil => LOk fs
+  | TopTable t :: rest =>
+      fs' <-- lower_table_setdecls fuel defs (st_items t) fs ;;
+      lower_setdecls_top fuel defs rest fs'
+  | _ :: rest => lower_setdecls_top fuel defs rest fs
+  end.
+
+(* ---------- chains (pass 3) ---------- *)
+
+Fixpoint lower_table_chains (oracle : string -> option nat) (fuel : nat)
+    (defs : list (string * svalue)) (family : string) (items : list stable_item)
+    (chains : list (string * chain))
+    (hooks : list (string * string * string * bool * nat)) (fs : fstate)
+  : lres (list (string * chain) * list (string * string * string * bool * nat) * fstate) :=
+  match items with
+  | nil => LOk (rev chains, rev hooks, fs)
+  | TChain sc :: rest =>
+      p <-- lower_chain oracle fuel family defs sc fs ;;
+      let '(namedchain, hookinfo, fs') := p in
+      let hooks' := match hookinfo with
+                    | Some (ct, h, pn, pr) => (fst namedchain, ct, h, pn, pr) :: hooks
+                    | None => hooks end in
+      lower_table_chains oracle fuel defs family rest (namedchain :: chains) hooks' fs'
+  | _ :: rest => lower_table_chains oracle fuel defs family rest chains hooks fs
+  end.
+
+Fixpoint lower_tables (oracle : string -> option nat) (fuel : nat)
+    (defs : list (string * svalue)) (rs : sruleset)
+    (tables : list (string * string * list (string * chain)))
+    (allhooks : list (string * string * list (string * string * string * bool * nat)))
+    (fs : fstate)
+  : lres (list (string * string * list (string * chain)) *
+          list (string * string * list (string * string * string * bool * nat)) * fstate) :=
+  match rs with
+  | nil => LOk (rev tables, rev allhooks, fs)
+  | TopTable t :: rest =>
+      p <-- lower_table_chains oracle fuel defs (st_family t) (st_items t) nil nil fs ;;
+      let '(chains, hooks, fs') := p in
+      lower_tables oracle fuel defs rest
+        ((st_family t, st_name t, chains) :: tables)
+        ((st_family t, st_name t, hooks) :: allhooks) fs'
+  | _ :: rest => lower_tables oracle fuel defs rest tables allhooks fs
+  end.
+
+(* ---------- top level ---------- *)
+
+Definition collect_defines (rs : sruleset) : list (string * svalue) :=
+  fold_left (fun acc tl => match tl with TopDefine n v => (n, v) :: acc | _ => acc end)
+            rs nil.
+
+Record lowered_ruleset : Type := mkLoweredRuleset {
+  lr_tables : list (string * string * list (string * chain));
+  lr_hooks  : list (string * string * list (string * string * string * bool * nat));
+  lr_sets   : list (string * list (data * data));
+  lr_vmaps  : list (string * list (data * data * verdict));
+  lr_maps   : list (string * list (data * data));
+  lr_typed  : list (matchcond * Elab.tmatch);
+  lr_deps   : list matchcond }.
+
+(** The M4 entry point: [oracle] resolves iif/oif interface NAMES to indices
+    (the sole host-dependent residue, supplied by the OCaml frontend); the
+    ruleset is the pure structural injection of the surface tree.  No byte is
+    composed outside Coq. *)
+Definition lower_ruleset (oracle : string -> option nat) (rs : sruleset)
+  : lres lowered_ruleset :=
+  let defs := collect_defines rs in
+  let fuel := S (Nat.add (Nat.mul (List.length defs) 4) 16) in
+  fs1 <-- lower_setdecls_top fuel defs rs (mkFstate ls0 nil nil) ;;
+  res <-- lower_tables oracle fuel defs rs nil nil fs1 ;;
+  let '(tables, hooks, fs2) := res in
+  LOk {| lr_tables := tables; lr_hooks := hooks;
+         lr_sets := rev (ls_sets (fs_ls fs2));
+         lr_vmaps := rev (ls_vmaps (fs_ls fs2));
+         lr_maps := rev (ls_maps (fs_ls fs2));
+         lr_typed := fs_typed fs2;
+         lr_deps := fs_deps fs2 |}.

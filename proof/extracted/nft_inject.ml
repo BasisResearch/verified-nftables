@@ -147,3 +147,80 @@ let toplevel : Nft_ast.toplevel -> Ast.stoplevel = function
 
 (* a whole (include-expanded) surface file *)
 let file (f : Nft_ast.sfile) : Ast.sruleset = L.map toplevel f
+
+(* ================================================================== *)
+(* M4: the driver glue.  [Nft_inject] is now the ONLY untrusted OCaml
+   between the parser and the proofs: pure structural injection (above) +
+   the ifindex oracle + a call to the VERIFIED whole-ruleset lowering
+   [Lower.lower_ruleset], whose result is unpacked into the [parsed] record
+   the emitter / semantic tests consume.  NO byte is composed here. *)
+
+(* ---------- the ifindex oracle (the single host-dependent residue) ----------
+   Real nft resolves an interface NAME to a numeric index at LOAD time via
+   nft_if_nametoindex() against the live host.  The one kernel invariant known
+   without the live table is "lo" = 1 (the first device registered); any other
+   name has no faithful static answer, so the oracle DECLINES it and the
+   verified lowering then refuses (fail-loud).  This finite map is the sole
+   value the OCaml frontend hands the verified lowering; it composes no byte.
+   This is the kernel's `nametoindex` lookup, restricted to the one static
+   invariant. *)
+let ifindex_oracle (s : string) : int option =
+  match s with "lo" -> Some 1 | _ -> None
+
+(* the typed-view side channel the emitter reads: which produced matchconds
+   have an Elab typed source (printed as `(elab_m ...)`) and which are
+   synthesized protocol-dependency guards (tagged `BDep`).  Both come straight
+   from the verified [lower_ruleset] output — this file decides neither. *)
+let g_typed : (Syntax.matchcond * Elab.tmatch) list ref = ref []
+let g_deps : Syntax.matchcond list ref = ref []
+let typed_of (mc : Syntax.matchcond) : Elab.tmatch option = L.assoc_opt mc !g_typed
+let is_dep (mc : Syntax.matchcond) : bool = L.mem mc !g_deps
+
+exception Lower_error of string
+
+type parsed = {
+  p_tables : (string * string * (string * Syntax.chain) list) list;
+  p_hooks  : (string * string * (string * string * string * int) list) list;
+  p_env    : Packet.env;
+  p_sets   : (string * (Bytes.data * Bytes.data) list) list;
+  p_vmaps  : (string * ((Bytes.data * Bytes.data) * Verdict.verdict) list) list;
+  p_maps   : (string * (Bytes.data * Bytes.data) list) list;
+}
+
+(* the evaluation environment the model looks set/map contents up by name (the
+   contents themselves are the verified [lower_ruleset] interning output) *)
+let build_env sets vmaps maps : Packet.env =
+  { Packet.e_set  = (fun n -> match L.assoc_opt n sets  with Some e -> e | None -> []);
+    e_vmap        = (fun n -> match L.assoc_opt n vmaps with Some e -> e | None -> []);
+    e_map         = (fun n -> match L.assoc_opt n maps  with Some e -> e | None -> []);
+    e_routes = []; e_rt = (fun _ -> []); e_ifaddrs = (fun _ -> []); e_ifaddrs6 = (fun _ -> []);
+    e_limit = (fun _ -> 1); e_quota = (fun _ -> 1); e_connlimit = (fun _ -> []);
+    e_ct = (fun _ _ -> []); e_nat = (fun _ -> None); e_numgen = (fun _ -> 0) }
+
+let lower (f : Nft_ast.sfile) : parsed =
+  match Lower.lower_ruleset ifindex_oracle (file f) with
+  | Lower.LErr e -> raise (Lower_error (Lower.lerr_message e))
+  | Lower.LOk lr ->
+      g_typed := lr.Lower.lr_typed;
+      g_deps  := lr.Lower.lr_deps;
+      let p_tables =
+        L.map (fun ((fam, name), chains) -> (fam, name, chains)) lr.Lower.lr_tables in
+      let p_hooks =
+        L.map (fun ((fam, name), hooks) ->
+          (fam, name,
+           L.map (fun ((((cn, ct), hk), pn), pr) -> (cn, ct, hk, if pn then - pr else pr))
+             hooks))
+          lr.Lower.lr_hooks in
+      { p_tables; p_hooks;
+        p_env  = build_env lr.Lower.lr_sets lr.Lower.lr_vmaps lr.Lower.lr_maps;
+        p_sets = lr.Lower.lr_sets; p_vmaps = lr.Lower.lr_vmaps; p_maps = lr.Lower.lr_maps }
+
+(* ---------- lookups (pure structural) ---------- *)
+
+let find_table p name = L.find_opt (fun (_, n, _) -> n = name) p.p_tables
+let chains_of p ~table = match find_table p table with
+  | Some (_, _, chains) -> chains
+  | None -> raise (Lower_error ("no such table: " ^ table))
+let find_chain p ~table ~chain = match L.assoc_opt chain (chains_of p ~table) with
+  | Some c -> c
+  | None -> raise (Lower_error (Printf.sprintf "no chain %s in table %s" chain table))

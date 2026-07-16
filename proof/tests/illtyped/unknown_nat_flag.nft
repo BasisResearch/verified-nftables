@@ -1,0 +1,8 @@
+# stmt-level lerr: an unknown NAT flag word.  Parses (flags are raw idents);
+# the verified lowering refuses (Lower.LEnatFlag), never a silent flag byte.
+table ip t {
+  chain c {
+    type nat hook postrouting priority 100; policy accept;
+    masquerade bogusflag
+  }
+}

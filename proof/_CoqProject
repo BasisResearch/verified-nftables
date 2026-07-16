@@ -16,6 +16,7 @@ theories/Surface/Selector.v
 theories/Surface/Typecheck.v
 theories/Surface/Typed.v
 theories/Surface/Lower.v
+theories/Surface/Lower_Examples.v
 
 theories/Semantics/Semantics.v
 theories/Semantics/TypedEval.v

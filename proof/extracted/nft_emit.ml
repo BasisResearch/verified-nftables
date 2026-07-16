@@ -1,4 +1,4 @@
-(* Nft_emit: serialise a parsed ruleset (Nft_lower.parsed) back into Coq source.
+(* Nft_emit: serialise a parsed ruleset (Nft_inject.parsed) back into Coq source.
 
    This is the bridge that makes the parser *useful for proving*: instead of
    hand-translating a `.nft` file into the Syntax AST inside a `.v` file (which
@@ -202,13 +202,13 @@ let tmatch (tm : Elab.tmatch) : string = match tm with
    elaboration [elab_m]; a synthesized protocol-dependency guard is tagged
    [BDep] (a definitional alias of [BMatch]) *)
 let match_str (m : Syntax.matchcond) : string =
-  match Nft_lower.typed_of m with
+  match Nft_inject.typed_of m with
   | Some tm -> spf "(elab_m (%s))" (tmatch tm)
   | None -> matchcond m
 
 let body_item (b : Syntax.body_item) : string = match b with
   | Syntax.BMatch m ->
-      spf "(%s %s)" (if Nft_lower.is_dep m then "BDep" else "BMatch") (match_str m)
+      spf "(%s %s)" (if Nft_inject.is_dep m then "BDep" else "BMatch") (match_str m)
   | Syntax.BStmt s -> spf "(BStmt %s)" (stmt s)
 
 let vmap_spec (vm : Syntax.vmap_spec) : string =
@@ -309,7 +309,7 @@ let sanitize (s : string) : string =
   S.map (fun c -> if (c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9') then c
                   else '_') s
 
-let emit (src_path : string) (p : Nft_lower.parsed) : string =
+let emit (src_path : string) (p : Nft_inject.parsed) : string =
   let b = Buffer.create 4096 in
   let pr fmt = Printf.ksprintf (Buffer.add_string b) fmt in
   pr "(* AUTO-GENERATED from %s by nft2coq (extracted/nft_emit.ml). DO NOT EDIT.\n" src_path;
@@ -322,7 +322,7 @@ let emit (src_path : string) (p : Nft_lower.parsed) : string =
   pr "Import ListNotations.\nOpen Scope string_scope.\n\n";
   (* the declared/anonymous sets & maps *)
   pr "Definition decls : set_decls :=\n  {| sd_sets := %s;\n   sd_vmaps := %s;\n   sd_maps := %s |}.\n\n"
-    (assoc_ivs p.Nft_lower.p_sets) (assoc_kvs p.Nft_lower.p_vmaps) (assoc_ivs p.Nft_lower.p_maps);
+    (assoc_ivs p.Nft_inject.p_sets) (assoc_kvs p.Nft_inject.p_vmaps) (assoc_ivs p.Nft_inject.p_maps);
   pr "Definition base_env : env :=\n";
   pr "  {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];\n";
   pr "     e_routes := []; e_rt := fun _ => [];\n";
@@ -343,12 +343,12 @@ let emit (src_path : string) (p : Nft_lower.parsed) : string =
     (* hook registration for this table's base chains: emit a [hooked_chain] per
        `type _ hook H priority P` declaration, so dispatch (eval_hook/select_hook)
        runs the PARSER-chosen chain at each hook — not a chain the prover named. *)
-    let hooks = match L.find_opt (fun (_, n, _) -> n = tname) p.Nft_lower.p_hooks with
+    let hooks = match L.find_opt (fun (_, n, _) -> n = tname) p.Nft_inject.p_hooks with
       | Some (_, _, hs) -> hs | None -> [] in
     pr "Definition %s_hooks : list hooked_chain :=\n  [%s].\n\n" pfx
       (S.concat ";\n   "
          (L.map (fun (cname, _ctype, hook, prio) ->
             spf "{| hc_hook := %s; hc_prio := (%d)%%Z; hc_env := %s_chains; hc_base := %s_%s |}"
               (hook_id hook) prio pfx pfx (sanitize cname)) hooks)))
-    p.Nft_lower.p_tables;
+    p.Nft_inject.p_tables;
   Buffer.contents b

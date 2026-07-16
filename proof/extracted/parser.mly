@@ -1,6 +1,6 @@
 /* Menhir grammar for the nftables DSL surface syntax.
 
-   Produces the untrusted Nft_ast surface tree; Nft_lower turns that into the
+   Produces the untrusted Nft_ast surface tree; Nft_inject turns that into the
    trusted Syntax AST.  The grammar parses real structure faithfully — defines,
    named-set/map declarations, concatenations, named-set references, ranges,
    CIDR prefixes, negation, the common statement vocabulary — without inlining or
@@ -36,13 +36,13 @@
      check divides instead of multiplying so the guard itself cannot wrap.
      Before this guard, `limit rate 9000000000000 mbytes/second` silently
      wrapped into wrong bytecode; now it is a loud Unsupported, like every
-     other out-of-model construct.  (Re-checked in Nft_lower.limit_spec for
+     other out-of-model construct.  (Re-checked in Nft_inject.limit_spec for
      limit specs built by any other path.) *)
   let max_limit_value = 1 lsl 40
   let limit_value what n u =
     let s = byte_scale u in
     if n < 0 || n > max_limit_value / s then
-      raise (Nft_lower.Unsupported
+      raise (Nft_inject.Inject_error
         (Printf.sprintf
            "%s %d%s: scaled value exceeds the extracted-int-safe bound 2^40 \
             (see theories/Compiler/Extract.v)"
@@ -302,7 +302,7 @@ keyatom:
   | MARK          { ["mark"] }
   (* generic IDENT-led protocol selector: protocols whose names are NOT reserved
      keyword tokens (arp, ah, esp, comp, sctp, dccp, udplite, ...) lex as plain
-     IDENTs, e.g. `ah spi 111`, `sctp dport 23`.  The lowering (Nft_lower.key_field)
+     IDENTs, e.g. `ah spi 111`, `sctp dport 23`.  The lowering (Nft_inject.key_field)
      resolves the (proto, field) pair to a payload load; an unknown pair is a clean
      `Unsupported "selector: ..."`, so this cannot mis-parse into wrong bytecode. *)
   | IDENT IDENT       { [$1; $2] }
@@ -512,7 +512,7 @@ nat_to:
 
 (* trailing NAT flags: a comma-separated list of {random, fully-random,
    persistent} idents (nft: `masquerade random,persistent`).  Kept as raw
-   strings; Nft_lower.nat_flags_of resolves them to the flag bitmask (an unknown
+   strings; Nft_inject.nat_flags_of resolves them to the flag bitmask (an unknown
    word is a clean Unsupported, never silently dropped into wrong bytecode). *)
 natflags:
   | /* empty */            { [] }

@@ -121,10 +121,10 @@ let ifname16 s =
 let check_ruleset_nft () =
   Printf.printf "=== (A) ../../rulesets/ruleset.nft vs Example_Ruleset.v (extracted eval_table) ===\n";
   let parsed = Nft_parse.parse_file "../../rulesets/ruleset.nft" in
-  let env = parsed.Nft_lower.p_env in
-  let chains = Nft_lower.chains_of parsed ~table:"firewall" in
-  let inbound = Nft_lower.find_chain parsed ~table:"firewall" ~chain:"inbound" in
-  let forward = Nft_lower.find_chain parsed ~table:"firewall" ~chain:"forward" in
+  let env = parsed.Nft_inject.p_env in
+  let chains = Nft_inject.chains_of parsed ~table:"firewall" in
+  let inbound = Nft_inject.find_chain parsed ~table:"firewall" ~chain:"inbound" in
+  let forward = Nft_inject.find_chain parsed ~table:"firewall" ~chain:"forward" in
   let fuel = 8 in
   let run c ep = ev_table fuel chains c ep in
   let want name c p expected =
@@ -202,7 +202,7 @@ let expected_input_chain : Syntax.chain =
 let check_difftest_ast () =
   Printf.printf "=== (B) difftest.sh ruleset vs glue.ml's known-good AST ===\n";
   let parsed = Nft_parse.parse_string difftest_src in
-  let got = Nft_lower.find_chain parsed ~table:"filter" ~chain:"input" in
+  let got = Nft_inject.find_chain parsed ~table:"filter" ~chain:"input" in
   check "input chain == hand-built AST" (got = expected_input_chain);
   if got <> expected_input_chain then begin
     Printf.printf "    got %d rules, expected %d\n"
@@ -270,7 +270,7 @@ let check_live_nft () =
     let n = in_channel_length ic in
     let nft_text = really_input_string ic n in close_in ic;
     let parsed = Nft_parse.parse_string difftest_src in
-    let input = Nft_lower.find_chain parsed ~table:"filter" ~chain:"input" in
+    let input = Nft_inject.find_chain parsed ~table:"filter" ~chain:"input" in
     let compile_opt c = Compile.compile_chain (Optimize.optimize_chain c) in
     (match render_netlink (compile_opt input) with
      | exception Exit -> Printf.printf "  SKIP (instruction outside the local renderer)\n"
@@ -310,9 +310,9 @@ let mk_bridge ~env ~obrname ~oifname ~daddr : Packet.env * Packet.packet =
 let check_optiplex_antispoof () =
   Printf.printf "=== (D) optiplex.nft anti-spoofing vs Optiplex_Antispoof.v ===\n";
   let parsed = Nft_parse.parse_file "../../rulesets/optiplex.nft" in
-  let env = parsed.Nft_lower.p_env in
-  let chains = Nft_lower.chains_of parsed ~table:"vmfilter" in
-  let output = Nft_lower.find_chain parsed ~table:"vmfilter" ~chain:"output" in
+  let env = parsed.Nft_inject.p_env in
+  let chains = Nft_inject.chains_of parsed ~table:"vmfilter" in
+  let output = Nft_inject.find_chain parsed ~table:"vmfilter" ~chain:"output" in
   let run ~obrname ~oifname ~daddr =
     ev_table 4 chains output
       (mk_bridge ~env ~obrname:(ifname16 obrname) ~oifname:(ifname16 oifname)
@@ -377,9 +377,9 @@ let mark_of ep = fv Syntax.FMetaMark ep
 let check_optiplex_mark () =
   Printf.printf "=== (E) optiplex.nft firewall mark vs Optiplex_Mark.v ===\n";
   let parsed = Nft_parse.parse_file "../../rulesets/optiplex.nft" in
-  let env = parsed.Nft_lower.p_env in
-  let prerouting  = Nft_lower.find_chain parsed ~table:"filter" ~chain:"prerouting" in
-  let postrouting = Nft_lower.find_chain parsed ~table:"filter" ~chain:"postrouting" in
+  let env = parsed.Nft_inject.p_env in
+  let prerouting  = Nft_inject.find_chain parsed ~table:"filter" ~chain:"prerouting" in
+  let postrouting = Nft_inject.find_chain parsed ~table:"filter" ~chain:"postrouting" in
   (* a game-streaming packet enters with NO mark *)
   let p_in = mk_pkt_dport ~env ~dport:[187;138] in   (* dport 48010 *)
   Printf.printf "    packet in:  mark=%s\n" (let m = mark_of p_in in if m=[] then "(unset)" else show m);
@@ -435,8 +435,8 @@ let check_dnat_rewrite () =
     \  }\n\
      }\n" in
   let parsed = Nft_parse.parse_string src in
-  let env = parsed.Nft_lower.p_env in
-  let prerouting = Nft_lower.find_chain parsed ~table:"nat" ~chain:"prerouting" in
+  let env = parsed.Nft_inject.p_env in
+  let prerouting = Nft_inject.find_chain parsed ~table:"nat" ~chain:"prerouting" in
   let r0 = Stdlib.List.nth prerouting.Syntax.c_rules 0 in
   check "dnat lowers to a nat_spec (not a bare Accept)" (Syntax.r_nat r0 <> None);
   (* a packet whose destination starts 192.168.0.9 (nh bytes 16..19) *)
@@ -476,8 +476,8 @@ let check_dnat_rewrite () =
     \  }\n\
      }\n" in
   let parsed_p = Nft_parse.parse_string src_p in
-  let env_p = parsed_p.Nft_lower.p_env in
-  let pre_p = Nft_lower.find_chain parsed_p ~table:"nat" ~chain:"prerouting" in
+  let env_p = parsed_p.Nft_inject.p_env in
+  let pre_p = Nft_inject.find_chain parsed_p ~table:"nat" ~chain:"prerouting" in
   let rp = Stdlib.List.nth pre_p.Syntax.c_rules 0 in
   let ns = match Syntax.r_nat rp with Some n -> n | None -> failwith "no nat_spec" in
   check "dnat to A:PORT carries the port (8080=0x1f90) into nat_extra"
@@ -509,8 +509,8 @@ let check_dnat_rewrite () =
     \  }\n\
      }\n" in
   let parsed_po = Nft_parse.parse_string src_po in
-  let env_po = parsed_po.Nft_lower.p_env in
-  let pre_po = Nft_lower.find_chain parsed_po ~table:"nat" ~chain:"prerouting" in
+  let env_po = parsed_po.Nft_inject.p_env in
+  let pre_po = Nft_inject.find_chain parsed_po ~table:"nat" ~chain:"prerouting" in
   let rpo = Stdlib.List.nth pre_po.Syntax.c_rules 0 in
   let nso = match Syntax.r_nat rpo with
     | Some n -> n | None -> failwith "port-only dnat dropped to bare Accept" in
@@ -696,7 +696,7 @@ let check_ip6_nat () =
   let env =
     (Nft_parse.parse_string
        "table ip6 nat {\n  chain c { type nat hook prerouting priority 0; }\n}\n")
-      .Nft_lower.p_env in
+      .Nft_inject.p_env in
   let p_in = wire (fun p -> { p with Packet.pkt_nh = nh }) (mk_pkt ~env ()) in
   (* ip6 dnat: the IPv6 destination (bytes 24..39) becomes the target *)
   let p_d = apply_nat_on Semantics.Hprerouting (mk_rule (mk_spec Syntax.nat_dnat_kind)) p_in in
@@ -738,7 +738,7 @@ let check_ip6_nat () =
       \    masquerade\n\
       \  }\n\
        }\n" in
-  let post6 = Nft_lower.find_chain parsed6 ~table:"nat" ~chain:"post" in
+  let post6 = Nft_inject.find_chain parsed6 ~table:"nat" ~chain:"post" in
   let mr = Stdlib.List.nth post6.Syntax.c_rules 0 in
   (match Syntax.r_nat mr with
    | Some ns ->
@@ -748,7 +748,7 @@ let check_ip6_nat () =
   (* the exit interface's IPv6 address (16 bytes, all 0xBB) via e_ifaddr6; the IPv4
      e_ifaddr is a DIFFERENT value, to prove masquerade picks the IPv6 one *)
   let if6 = Stdlib.List.init 16 (fun _ -> 0xBB) in
-  let env6 = parsed6.Nft_lower.p_env in
+  let env6 = parsed6.Nft_inject.p_env in
   let env6 = { env6 with Packet.e_ifaddrs = (fun _ -> ifaddrs_of [9;9;9;9]);
                          e_ifaddrs6 = (fun _ -> ifaddrs_of if6) } in
   let p6 = wire (fun p -> { p with Packet.pkt_nh = nh }) (mk_pkt ~env:env6 ()) in
@@ -782,7 +782,7 @@ let check_ip6_nat () =
       \    masquerade\n\
       \  }\n\
        }\n" in
-  let post_inet = Nft_lower.find_chain parsed_inet ~table:"nat" ~chain:"post" in
+  let post_inet = Nft_inject.find_chain parsed_inet ~table:"nat" ~chain:"post" in
   let mr_inet = Stdlib.List.nth post_inet.Syntax.c_rules 0 in
   (match Syntax.r_nat mr_inet with
    | Some ns ->
@@ -791,7 +791,7 @@ let check_ip6_nat () =
    | None -> check "inet masquerade lowers to a nat_spec" false);
   (* exit interface: IPv4 = 9.9.9.9, IPv6 = 0xBB*16 (a DIFFERENT value) *)
   let inet_if6 = Stdlib.List.init 16 (fun _ -> 0xBB) in
-  let env_inet = parsed_inet.Nft_lower.p_env in
+  let env_inet = parsed_inet.Nft_inject.p_env in
   let env_inet = { env_inet with Packet.e_ifaddrs = (fun _ -> ifaddrs_of [9;9;9;9]);
                                  e_ifaddrs6 = (fun _ -> ifaddrs_of inet_if6) } in
   (* (a) IPv6 packet (nfproto = NFPROTO_IPV6 = 10): full 16-byte IPv6 rewrite. *)
@@ -847,7 +847,7 @@ let check_redir_hook () =
   let env =
     { (Nft_parse.parse_string
          "table ip nat {\n  chain c { type nat hook output priority 0; }\n}\n")
-        .Nft_lower.p_env
+        .Nft_inject.p_env
       with Packet.e_ifaddrs = (fun n -> ifaddrs_of (if n = eth0 then eth0_ip else [])) } in
   let nh = [0x45;0;0;0; 0;0;0;0; 64;6;0;0; 1;2;3;4; 192;168;0;9] in
   let p_in =
@@ -936,8 +936,8 @@ let check_iif_index () =
     \  }\n\
      }\n" in
   let parsed = Nft_parse.parse_string src in
-  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
-  let env = parsed.Nft_lower.p_env in
+  let c = Nft_inject.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_inject.p_env in
   let body i = (Stdlib.List.nth c.Syntax.c_rules i).Syntax.r_body in
   (* `iif lo` => the loopback index 1, little-endian; NOT ASCII "lo" = [108;111] *)
   check "iif lo lowers to numeric index [1;0;0;0] (not ASCII)"
@@ -978,7 +978,7 @@ let check_iif_index () =
     \  }\n\
      }\n" in
   let p_r = Nft_parse.parse_string src_r in
-  let c_r = Nft_lower.find_chain p_r ~table:"t" ~chain:"c" in
+  let c_r = Nft_inject.find_chain p_r ~table:"t" ~chain:"c" in
   let body_r i = match (Stdlib.List.nth c_r.Syntax.c_rules i).Syntax.r_body with
     | Syntax.BMatch m :: _ -> m | _ -> failwith "no iif/oif range match" in
   (* (1) lowering shape: MRangeT FMetaIif/FMetaOif [hton(4,4)] with BE bounds *)
@@ -1039,8 +1039,8 @@ let check_ct_state () =
     \  }\n\
      }\n" in
   let parsed = Nft_parse.parse_string src in
-  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
-  let env = parsed.Nft_lower.p_env in
+  let c = Nft_inject.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_inject.p_env in
   let body i = (Stdlib.List.nth c.Syntax.c_rules i).Syntax.r_body in
   (* `ct state established` => bitmask test (state & 2) != 0, NOT MEq *)
   check "ct state established lowers to MMasked bitmask test (not MEq)"
@@ -1142,8 +1142,8 @@ let check_ct_mark_crosspkt () =
     \  }\n\
      }\n" in
   let parsed = Nft_parse.parse_string src in
-  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
-  let env = parsed.Nft_lower.p_env in
+  let c = Nft_inject.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_inject.p_env in
   (* the rule lowers to a single ct-mark-set statement (writable key) *)
   check "ct mark set 0x99 lowers to SCtSet CKmark (VImm 0x99-le)"
     ((Stdlib.List.nth c.Syntax.c_rules 0).Syntax.r_body
@@ -1188,8 +1188,8 @@ let check_ct_set_noop () =
     \  }\n\
      }\n" in
   let parsed = Nft_parse.parse_string src in
-  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
-  let env = parsed.Nft_lower.p_env in
+  let c = Nft_inject.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_inject.p_env in
   let flow_a = [10;0;0;1] in
   (* packet 1 of flow A has NO conntrack entry (pkt_ct_present = false): the kernel
      no-op case.  Running the chain must NOT write the shared flow table. *)
@@ -1228,7 +1228,7 @@ let check_ct_meta_set_width () =
   Printf.printf "=== (I'') ct/meta set value width is key-specific (zone u16, mark u32) ===\n";
   let body_of src ~table ~chain =
     let parsed = Nft_parse.parse_string src in
-    let c = Nft_lower.find_chain parsed ~table ~chain in
+    let c = Nft_inject.find_chain parsed ~table ~chain in
     (Stdlib.List.nth c.Syntax.c_rules 0).Syntax.r_body in
   (* ct zone set 1 -> 2-byte (u16) host-endian value [1;0], NOT [1;0;0;0] *)
   let zb = body_of
@@ -1274,8 +1274,8 @@ let check_interval_vmap () =
   (* (1) it PARSES — the old point-only grammar raised a syntax error on `0-100`. *)
   let parsed = Nft_parse.parse_string src in
   check "an interval (range) vmap key PARSES (0-100 : drop)" true;
-  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
-  let env = parsed.Nft_lower.p_env in
+  let c = Nft_inject.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_inject.p_env in
   (* (2) the lowered vmap carries a genuine INTERVAL entry: lo=[0;0] hi=[0;100],
      i.e. a non-degenerate [lo,hi] (not a point [k,k]). *)
   let vm_name = match Syntax.r_vmap (Stdlib.List.hd c.Syntax.c_rules) with
@@ -1494,8 +1494,8 @@ let check_tcp_flags () =
     \  }\n\
      }\n" in
   let parsed = Nft_parse.parse_string src in
-  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
-  let env = parsed.Nft_lower.p_env in
+  let c = Nft_inject.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_inject.p_env in
   (* the l4proto-tcp dependency is prepended; the tcp-flags match is the LAST
      body item of each rule *)
   let last_match i =
@@ -1541,8 +1541,8 @@ let check_tcp_flags () =
    nfproto_tbl maps only ipv4=NFPROTO_IPV4=2 and ipv6=NFPROTO_IPV6=10.  Golden
    inet/meta.t.payload: `meta nfproto ipv4` => cmp eq reg1 0x02,
    `meta nfproto ipv6` => cmp eq reg1 0x0a.  These corpus rules (inet/meta.t:6-7
-   ;ok) were UNSUPPORTED before the fix because nfproto was wired to sym_l4proto
-   (tcp=6/udp=17/... — no ipv4/ipv6). *)
+   ;ok) were UNSUPPORTED before the fix because nfproto was wired to the
+   L4-protocol table (tcp=6/udp=17/... — no ipv4/ipv6). *)
 let check_meta_nfproto () =
   Printf.printf "=== (L) meta nfproto -> NFPROTO family (ipv4=2, ipv6=10) ===\n";
   let src =
@@ -1555,7 +1555,7 @@ let check_meta_nfproto () =
     \  }\n\
      }\n" in
   let parsed = Nft_parse.parse_string src in
-  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
+  let c = Nft_inject.find_chain parsed ~table:"t" ~chain:"c" in
   let body i = (Stdlib.List.nth c.Syntax.c_rules i).Syntax.r_body in
   (* `meta nfproto ipv4` => MEq FMetaNfproto [2] (NFPROTO_IPV4), matching the
      golden `cmp eq reg1 0x02` (FMetaNfproto reads MKnfproto, width 1). *)
@@ -1600,7 +1600,7 @@ let check_inet_nfproto_dep () =
        }\n" fam in
   let body fam i =
     let p = Nft_parse.parse_string (src fam) in
-    let c = Nft_lower.find_chain p ~table:"t" ~chain:"c" in
+    let c = Nft_inject.find_chain p ~table:"t" ~chain:"c" in
     (Stdlib.List.nth c.Syntax.c_rules i).Syntax.r_body in
   (* inet: ip saddr is guarded by `meta nfproto == 2` BEFORE the FIp4Saddr match *)
   check "inet ip saddr is guarded by FMetaNfproto [2] (nfproto dep, then match)"
@@ -1618,7 +1618,7 @@ let check_inet_nfproto_dep () =
   let env =
     (Nft_parse.parse_string
        "table inet t {\n  chain c {\n    type filter hook input priority 0; policy accept;\n  }\n}\n")
-      .Nft_lower.p_env in
+      .Nft_inject.p_env in
   (* network bytes 12..15 = 10.1.2.3.  In an IPv4 header that's the SOURCE
      ADDRESS; in an IPv6 header it's part of the (longer) source address. *)
   let nh_v4 = [0;0;0;0; 0;0;0;0; 0;0;0;0; 10;1;2;3] in
@@ -1673,7 +1673,7 @@ let check_inet_icmp_nfproto_dep () =
        }\n" fam sel in
   let body fam sel =
     let p = Nft_parse.parse_string (src fam sel) in
-    let c = Nft_lower.find_chain p ~table:"t" ~chain:"c" in
+    let c = Nft_inject.find_chain p ~table:"t" ~chain:"c" in
     (Stdlib.List.nth c.Syntax.c_rules 0).Syntax.r_body in
   (* inet icmp: nfproto==2 THEN l4proto==1 THEN icmp.type==8 (golden byte order) *)
   check "inet icmp type is guarded by FMetaNfproto [2] THEN FMetaL4proto [1]"
@@ -1703,7 +1703,7 @@ let check_inet_icmp_nfproto_dep () =
   let env =
     (Nft_parse.parse_string
        "table inet t {\n  chain c {\n    type filter hook input priority 0; policy accept;\n  }\n}\n")
-      .Nft_lower.p_env in
+      .Nft_inject.p_env in
   (* an IPv6 packet whose kernel-computed l4proto is 1 (next-header 1) and whose
      transport byte 0 is 8: the model's UNGUARDED body wrongly matched it. *)
   let mk_with nfp l4p th =
@@ -1749,7 +1749,7 @@ let check_synproxy () =
   let env =
     (Nft_parse.parse_string
        "table inet t {\n  chain c {\n    type filter hook input priority 0; policy accept;\n  }\n}\n")
-      .Nft_lower.p_env in
+      .Nft_inject.p_env in
   (* the SSynproxy statement is not on the .nft frontend, so build the AST directly *)
   let rule : Syntax.rule =
     { Syntax.r_body = [ Syntax.BStmt (Syntax.SSynproxy (1460, 7)) ];
@@ -1796,8 +1796,8 @@ let check_concat_iv () =
     \  }\n\
      }\n" in
   let parsed = Nft_parse.parse_string src in
-  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
-  let env = parsed.Nft_lower.p_env in
+  let c = Nft_inject.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_inject.p_env in
   let body0 = (Stdlib.List.nth c.Syntax.c_rules 0).Syntax.r_body in
   (* the match lowers to a 2-field MConcatSet whose stored element is the per-field
      concatenation lo = 10.0.0.0 ++ dport 10, hi = 10.255.255.255 ++ dport 23.
@@ -1862,8 +1862,8 @@ let check_concat_iv () =
     \  }\n\
      }\n" in
   let parsed2 = Nft_parse.parse_string src2 in
-  let c2 = Nft_lower.find_chain parsed2 ~table:"t" ~chain:"c" in
-  let env2 = parsed2.Nft_lower.p_env in
+  let c2 = Nft_inject.find_chain parsed2 ~table:"t" ~chain:"c" in
+  let env2 = parsed2.Nft_inject.p_env in
   let body2 = (Stdlib.List.nth c2.Syntax.c_rules 0).Syntax.r_body in
   let the_concat2 =
     L.find_opt (function
@@ -1909,8 +1909,8 @@ let check_ifname_exact () =
     \  }\n\
      }\n" in
   let parsed = Nft_parse.parse_string src in
-  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
-  let env = parsed.Nft_lower.p_env in
+  let c = Nft_inject.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_inject.p_env in
   let body i = (Stdlib.List.nth c.Syntax.c_rules i).Syntax.r_body in
   let dummy0_16 = ifname16 "dummy0" in   (* "dummy0" + 10 zero bytes, 16 total *)
   (* exact name -> full 16-byte zero-padded literal (golden payload:198-199) *)
@@ -1968,8 +1968,8 @@ let check_limit_over () =
     \  }\n\
      }\n" in
   let parsed = Nft_parse.parse_string src in
-  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
-  let env = parsed.Nft_lower.p_env in
+  let c = Nft_inject.find_chain parsed ~table:"t" ~chain:"c" in
+  let env = parsed.Nft_inject.p_env in
   let body i = (Stdlib.List.nth c.Syntax.c_rules i).Syntax.r_body in
   (* `limit rate 1/second` => MLimit with ls_flags bit 0 = 0 (non-inverted) *)
   check "limit rate 1/second lowers to MLimit with ls_flags=0 (non-over)"
@@ -2042,7 +2042,7 @@ let check_limit_over () =
     \  }\n\
      }\n" in
   let p2parsed = Nft_parse.parse_string src2 in
-  let c2 = Nft_lower.find_chain p2parsed ~table:"t2" ~chain:"c" in
+  let c2 = Nft_inject.find_chain p2parsed ~table:"t2" ~chain:"c" in
   let body2 i = (Stdlib.List.nth c2.Syntax.c_rules i).Syntax.r_body in
   let spec2 i = match body2 i with
     | [Syntax.BMatch (Syntax.MLimit s)] -> s | _ -> assert false in
@@ -2056,9 +2056,9 @@ let check_limit_over () =
      && ev_mc (Syntax.MLimit s_slow) pk = false);
   Printf.printf "\n"
 
-(* (M) fib route-type symbol -> RTN_ constant.  The Menhir frontend's
-   sym_fibtype must encode each `fib ... type SYM` surface symbol as the kernel
-   RTN_ route-type constant (rtnetlink.h:262-275 / nftables src/fib.c).  The
+(* (M) fib route-type symbol -> RTN_ constant.  The frontend must encode each
+   `fib ... type SYM` surface symbol as the kernel RTN_ route-type constant
+   (rtnetlink.h:262-275 / nftables src/fib.c).  The
    anycast symbol is RTN_ANYCAST=4 and MUST NOT collide with blackhole
    (RTN_BLACKHOLE=6); a previous mis-encoding gave anycast=6, conflating the two
    and inverting the verdict on anycast/blackhole packets.  KFibType compares the
@@ -2076,7 +2076,7 @@ let check_fib_type () =
     \  }\n\
      }\n" in
   let parsed = Nft_parse.parse_string src in
-  let c = Nft_lower.find_chain parsed ~table:"t" ~chain:"c" in
+  let c = Nft_inject.find_chain parsed ~table:"t" ~chain:"c" in
   let body i = (Stdlib.List.nth c.Syntax.c_rules i).Syntax.r_body in
   let rtype i = match body i with
     | [Syntax.BMatch (Syntax.MEq (Syntax.FFib (_, Packet.FRtype), v))] -> Some v
@@ -2100,7 +2100,7 @@ let check_fib_type () =
      The route oracle bytes are the same host-endian u32 the register holds. *)
   let m_any = match body 0 with [Syntax.BMatch m] -> m | _ -> assert false in
   let m_bh  = match body 1 with [Syntax.BMatch m] -> m | _ -> assert false in
-  let env = parsed.Nft_lower.p_env in
+  let env = parsed.Nft_inject.p_env in
   let mk_rtype t =
     let env' = { env with Packet.e_routes =
       [ (([0], [255]),
@@ -2123,10 +2123,10 @@ let check_fib_type () =
     \  }\n\
      }\n" in
   let pl = Nft_parse.parse_string src_local in
-  let cl = Nft_lower.find_chain pl ~table:"t" ~chain:"c" in
+  let cl = Nft_inject.find_chain pl ~table:"t" ~chain:"c" in
   let m_local = match (Stdlib.List.nth cl.Syntax.c_rules 0).Syntax.r_body with
     | [Syntax.BMatch m] -> m | _ -> assert false in
-  let envl = pl.Nft_lower.p_env in
+  let envl = pl.Nft_inject.p_env in
   let mk_rtype_l t =
     let env' = { envl with Packet.e_routes =
       [ (([0], [255]),
@@ -2161,8 +2161,8 @@ let check_mark_range () =
     \  }\n\
      }\n" in
   let parsed = Nft_parse.parse_string src in
-  let env = parsed.Nft_lower.p_env in
-  let input = Nft_lower.find_chain parsed ~table:"filter" ~chain:"input" in
+  let env = parsed.Nft_inject.p_env in
+  let input = Nft_inject.find_chain parsed ~table:"filter" ~chain:"input" in
   let r0 = Stdlib.List.nth input.Syntax.c_rules 0 in
   let mc = match r0.Syntax.r_body with
     | Syntax.BMatch m :: _ -> m | _ -> failwith "no mark match" in
@@ -2200,7 +2200,7 @@ let check_mark_range () =
     \  }\n\
      }\n" in
   let p_eq = Nft_parse.parse_string src_eq in
-  let c_eq = Nft_lower.find_chain p_eq ~table:"filter" ~chain:"input" in
+  let c_eq = Nft_inject.find_chain p_eq ~table:"filter" ~chain:"input" in
   let mc_eq = match (Stdlib.List.nth c_eq.Syntax.c_rules 0).Syntax.r_body with
     | Syntax.BMatch m :: _ -> m | _ -> failwith "no eq match" in
   (match mc_eq with
@@ -2225,7 +2225,7 @@ let check_mark_set () =
   Printf.printf "=== (O') host-endian mark interval set (hton before lookup) ===\n";
   let chain_of src =
     let p = Nft_parse.parse_string src in
-    (p, Nft_lower.find_chain p ~table:"filter" ~chain:"input") in
+    (p, Nft_inject.find_chain p ~table:"filter" ~chain:"input") in
   let mc_of c = match (Stdlib.List.nth c.Syntax.c_rules 0).Syntax.r_body with
     | Syntax.BMatch m :: _ -> m | _ -> failwith "no match" in
   (* (1) INTERVAL set: MSetT FCtMark [hton(4,4)] with NETWORK-order (BE) bounds *)
@@ -2237,7 +2237,7 @@ let check_mark_set () =
     \  }\n\
      }\n" in
   let (p_iv, c_iv) = chain_of src_iv in
-  let env_iv = p_iv.Nft_lower.p_env in
+  let env_iv = p_iv.Nft_inject.p_env in
   let mc_iv = mc_of c_iv in
   (match mc_iv with
    | Syntax.MSetT (Syntax.FCtMark, [Syntax.TByteorder (true, 4, 4)], false, nm) ->
@@ -2281,7 +2281,7 @@ let check_mark_set () =
     \  }\n\
      }\n" in
   let (p_ex, c_ex) = chain_of src_ex in
-  let env_ex = p_ex.Nft_lower.p_env in
+  let env_ex = p_ex.Nft_inject.p_env in
   let mc_ex = mc_of c_ex in
   (match mc_ex with
    | Syntax.MConcatSet ([Syntax.FCtMark], false, nm) ->
@@ -2306,7 +2306,7 @@ let cli (path : string) =
       print_endline (Codec.render_program prog);
       print_newline ())
       chains)
-    parsed.Nft_lower.p_tables
+    parsed.Nft_inject.p_tables
 
 (* ---------- (J) jump/goto are NOT silently ignored (jump-aware eval_table) ----------
    REGRESSION for the "compile_chain_correct certifies a jump-IGNORING semantics"
@@ -2319,7 +2319,7 @@ let check_jump_aware () =
   let env =
     (Nft_parse.parse_string
        "table ip filter {\n  chain c { type filter hook input priority 0; }\n}\n")
-      .Nft_lower.p_env in
+      .Nft_inject.p_env in
   let mk_rule v : Syntax.rule =
     { Syntax.r_body = []; r_outcome = Syntax.OVerdict v; r_after = [] } in
   let deny : Syntax.chain =
@@ -2363,7 +2363,7 @@ let check_connlimit_conn () =
   let env0 =
     (Nft_parse.parse_string
        "table ip t { chain c { type filter hook input priority 0; policy accept; } }\n")
-      .Nft_lower.p_env in
+      .Nft_inject.p_env in
   let base_env = { env0 with Packet.e_connlimit = (fun _ -> []) } in
   (* TWO packets of the SAME connection (same flow id). *)
   let flowA = [10;0;0;1] in
@@ -2399,7 +2399,7 @@ let check_ct_no_entry () =
   let env0 =
     (Nft_parse.parse_string
        "table ip t { chain c { type filter hook input priority 0; policy accept; } }\n")
-      .Nft_lower.p_env in
+      .Nft_inject.p_env in
   (* an env whose flow-keyed conntrack table WOULD report ct mark = 0x10 *)
   let base_env =
     { env0 with Packet.e_ct =
@@ -2448,7 +2448,7 @@ let check_mut_wf () =
         check (Printf.sprintf "mut_wf: %s %s/%s" name tname cn)
           (L.for_all Semantics.mut_wf c.Syntax.c_rules))
         chains)
-      parsed.Nft_lower.p_tables)
+      parsed.Nft_inject.p_tables)
     ["ruleset.nft"; "optiplex.nft"; "router.nft"; "tutorial.nft"];
   (* the checker is not vacuous: a meta-set in r_after — the one residual
      mutation case the axis-2 contract in Main.v names — trips it *)
@@ -2473,7 +2473,8 @@ let check_natint_guard () =
   let rejected body =
     match Nft_parse.parse_string (wrap body) with
     | _ -> false
-    | exception Nft_lower.Unsupported _ -> true
+    | exception Nft_inject.Inject_error _ -> true
+    | exception Nft_inject.Lower_error _ -> true
     | exception Nft_parse.Parse_error _ -> true in
   let accepted body =
     match Nft_parse.parse_string (wrap body) with
@@ -2492,19 +2493,18 @@ let check_natint_guard () =
 (* ---------- (R) typed-layer M1: the extracted Coq typechecker ----------
    theories/Surface/{Ast,Datatype,Symbols,Selector,Typecheck}.v, reached
    through the pure structural injection Nft_inject (the ONLY OCaml->Coq
-   translation site).  Three sub-gates:
+   translation site).  Two sub-gates:
      (a) all four committed rulesets TYPECHECK (the checker accepts every
          construct the proofs are about — non-vacuity, accept direction);
-     (b) every ../tests/illtyped/*.nft PARSES but is REJECTED (non-vacuity,
-         reject direction: cross-type bitwise, unknown symbols, width
-         overflow, set-type mismatch, non-bitmask comma lists, undefined
-         defines);
-     (c) KIND-PARITY: for each of nft_lower.ml's 24 `kind`s, the unverified
-         enc_atom bytes (corpus-green today) equal the VERIFIED
-         Nftval.encode of Typecheck.resolve_value at the Coq dtype — on
-         byteorder-revealing values, so the Coq dt_width/dt_byteorder tables
-         are pinned to the bytes the frontend actually emits.  This check is
-         temporary scaffolding: it dies with the OCaml kind table (M-C). *)
+     (b) every ../tests/illtyped/*.nft PARSES but is REJECTED — either by the
+         M1 typechecker or LOUD by the verified Coq lowering ([lerr]): cross-type
+         bitwise, unknown symbols, width overflow, set-type mismatch, non-bitmask
+         comma lists, undefined defines, and the M4 statement-level refusals
+         (unknown reject code / nat flag, non-literal tproxy, vmap+static verdict).
+   The former KIND-PARITY sub-gate (OCaml `kind` table vs Coq encode) is gone with
+   the OCaml kind table itself (M4/M-C); the datatype lattice's width/byteorder
+   decisions are now pinned by Lower_Examples.kind_encode_coverage and exercised
+   end-to-end by the 2532-rule corpus. *)
 
 let parse_surface (path : string) : Nft_ast.sfile =
   Nft_parse.expand (Filename.dirname path)
@@ -2541,88 +2541,17 @@ let check_typed_layer () =
           Printf.printf "  %-46s PARSE FAILED (%s)\n" f (Printexc.to_string e);
           incr fails; false
       | raw ->
-          let r = not (Typecheck.typecheck_ruleset (Nft_inject.file raw)) in
+          (* an ill-typed input is rejected either by the M1 Coq typechecker
+             or LOUD by the verified Coq lowering ([lerr], surfaced as
+             Nft_inject.Lower_error / Inject_error) — both are Coq-side
+             refusals, never a silent OCaml byte fallback (M4 fail-loud). *)
+          let lower_lerr =
+            (try ignore (Nft_inject.lower raw); false
+             with Nft_inject.Lower_error _ | Nft_inject.Inject_error _ -> true) in
+          let r = not (Typecheck.typecheck_ruleset (Nft_inject.file raw)) || lower_lerr in
           check (Printf.sprintf "illtyped rejected: %s" f) r; r)
     files in
   Printf.printf "ILLTYPED-REJECT %d/%d\n" (L.length rejected) total;
-  Printf.printf "\n"
-
-let check_kind_parity () =
-  Printf.printf "=== (S) KIND-PARITY: OCaml kind table vs Coq Surface.Datatype ===\n";
-  let enc_coq dt sv = match Typecheck.resolve_value dt sv with
-    | Some tv -> Some (Nftval.encode tv)
-    | None -> None in
-  (* one row per nft_lower kind (22 fixed + KNum/KNumLe at width 2); values
-     chosen so a byteorder flip changes the bytes wherever width > 1 *)
-  let v6 = [0x20; 0x01; 0x0d; 0xb8; 0;0;0;0; 0;0;0;0; 0;0;0;1] in
-  let rows = [
-    "KIfname",    Nft_lower.KIfname,    Datatype.DTifname,       Nft_ast.Vstr "eth0",  Ast.SVStr "eth0";
-    "KIfindex",   Nft_lower.KIfindex,   Datatype.DTifindex,      Nft_ast.Vnum 258,     Ast.SVNum 258;
-    "KIp4",       Nft_lower.KIp4,       Datatype.DTipv4,         Nft_ast.Vip4 [192;168;0;1], Ast.SVIp4 [192;168;0;1];
-    "KIp6",       Nft_lower.KIp6,       Datatype.DTipv6,         Nft_ast.Vip6 v6,      Ast.SVIp6 v6;
-    "KPort",      Nft_lower.KPort,      Datatype.DTinet_service, Nft_ast.Vsym "https", Ast.SVSym "https";
-    "KL4proto",   Nft_lower.KL4proto,   Datatype.DTinet_proto,   Nft_ast.Vsym "tcp",   Ast.SVSym "tcp";
-    "KNfproto",   Nft_lower.KNfproto,   Datatype.DTnfproto,      Nft_ast.Vsym "ipv6",  Ast.SVSym "ipv6";
-    "KEthertype", Nft_lower.KEthertype, Datatype.DTethertype,    Nft_ast.Vsym "arp",   Ast.SVSym "arp";
-    "KCtstate",   Nft_lower.KCtstate,   Datatype.DTct_state,     Nft_ast.Vsym "established", Ast.SVSym "established";
-    "KCtstatus",  Nft_lower.KCtstatus,  Datatype.DTct_status,    Nft_ast.Vsym "dying", Ast.SVSym "dying";
-    "KMark",      Nft_lower.KMark,      Datatype.DTmark,         Nft_ast.Vnum 258,     Ast.SVNum 258;
-    "KIcmp",      Nft_lower.KIcmp,      Datatype.DTicmp_type,    Nft_ast.Vsym "echo-request", Ast.SVSym "echo-request";
-    "KIcmpv6",    Nft_lower.KIcmpv6,    Datatype.DTicmpv6_type,  Nft_ast.Vsym "nd-neighbor-solicit", Ast.SVSym "nd-neighbor-solicit";
-    "KPkttype",   Nft_lower.KPkttype,   Datatype.DTpkttype,      Nft_ast.Vsym "broadcast", Ast.SVSym "broadcast";
-    "KFibType",   Nft_lower.KFibType,   Datatype.DTfib_addrtype, Nft_ast.Vsym "local", Ast.SVSym "local";
-    "KTcpflag",   Nft_lower.KTcpflag,   Datatype.DTtcp_flag,     Nft_ast.Vsym "syn",   Ast.SVSym "syn";
-    "KNum2",      Nft_lower.KNum 2,     Datatype.DTinteger 2,    Nft_ast.Vnum 258,     Ast.SVNum 258;
-    "KIgmp",      Nft_lower.KIgmp,      Datatype.DTigmp_type,    Nft_ast.Vsym "leave-group", Ast.SVSym "leave-group";
-    "KIcmpcode",  Nft_lower.KIcmpcode,  Datatype.DTicmp_code,    Nft_ast.Vsym "admin-prohibited", Ast.SVSym "admin-prohibited";
-    "KIcmp6code", Nft_lower.KIcmp6code, Datatype.DTicmpv6_code,  Nft_ast.Vsym "admin-prohibited", Ast.SVSym "admin-prohibited";
-    "KMhtype",    Nft_lower.KMhtype,    Datatype.DTmh_type,      Nft_ast.Vsym "binding-update", Ast.SVSym "binding-update";
-    "KCtdir",     Nft_lower.KCtdir,     Datatype.DTct_dir,       Nft_ast.Vsym "reply", Ast.SVSym "reply";
-    "KArpop",     Nft_lower.KArpop,     Datatype.DTarp_op,       Nft_ast.Vsym "reply", Ast.SVSym "reply";
-    "KNumLe2",    Nft_lower.KNumLe 2,   Datatype.DThostint 2,    Nft_ast.Vnum 258,     Ast.SVNum 258;
-  ] in
-  let okcnt = L.length (L.filter (fun (nm, k, dt, ov, sv) ->
-      let ob = (try Some (Nft_lower.enc_atom k ov) with _ -> None) in
-      let cb = enc_coq dt sv in
-      (* byte parity (pins width AND byteorder against the corpus-green
-         frontend bytes), Coq width-table consistency, and OCaml's
-         host_endian_kind set must be declared BoHost in Coq *)
-      let bytes_ok = ob <> None && ob = cb in
-      let width_ok = (match ob with
-        | Some b -> Datatype.dt_bytes dt = L.length b
-        | None -> false) in
-      let bo_ok = (not (Nft_lower.host_endian_kind k))
-                  || Datatype.dt_byteorder dt = Datatype.BoHost in
-      let r = bytes_ok && width_ok && bo_ok in
-      if not r then
-        Printf.printf "    %-10s ocaml=%s coq=%s\n" nm
-          (match ob with Some b -> show b | None -> "(refused)")
-          (match cb with Some b -> show b | None -> "(refused)");
-      check (Printf.sprintf "kind-parity %s" nm) r; r)
-    rows) in
-  Printf.printf "KIND-PARITY %d/24\n" okcnt;
-  (* the 8 declared-set type atoms lower to a point interval through the
-     VERIFIED [Lower.decl_set_elems], whose bytes are exactly the datatype's
-     [encode] of the resolved value (M3: the OCaml [bytes_of_typeatom] is gone). *)
-  let atoms = [
-    "ipv4_addr",    Ast.SVIp4 [10;0;0;1];
-    "ipv6_addr",    Ast.SVIp6 v6;
-    "ifname",       Ast.SVSym "eth0";
-    "iface_index",  Ast.SVNum 258;
-    "inet_service", Ast.SVNum 443;
-    "inet_proto",   Ast.SVSym "udp";
-    "ether_addr",   Ast.SVMac [1;2;3;4;5;6];
-    "mark",         Ast.SVNum 258;
-  ] in
-  L.iter (fun (atom, sv) ->
-      let lb = (match Lower.decl_set_elems [atom] [sv] with
-        | Lower.LOk [(lo, hi)] when lo = hi -> Some lo
-        | _ -> None) in
-      let cb = (match Typecheck.atom_dtype atom with
-        | Some dt -> enc_coq dt sv
-        | None -> None) in
-      check (Printf.sprintf "set-type-atom parity %s" atom) (lb <> None && lb = cb))
-    atoms;
   Printf.printf "\n"
 
 (* ---------- NEW GATE: compile the host-order corpus blocks FROM SOURCE ----------
@@ -2689,7 +2618,7 @@ let byteorder_gate files =
               | Some parsed ->
                 let progs = L.concat_map (fun (_f, _t, chains) ->
                     L.concat_map (fun (_cn, c) -> Compile.compile_chain c) chains)
-                    parsed.Nft_lower.p_tables in
+                    parsed.Nft_inject.p_tables in
                 (match progs with
                  | [rp] when L.exists bc_is_he_load rp
                              && L.exists bc_is_cmp_or_range rp
@@ -2758,7 +2687,6 @@ let () =
     check_mut_wf ();
     check_natint_guard ();
     check_typed_layer ();
-    check_kind_parity ();
     check_difftest_ast ();
     check_live_nft ();
     if !fails = 0 then Printf.printf "ALL PARSER CHECKS PASSED\n"

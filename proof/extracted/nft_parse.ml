@@ -1,9 +1,9 @@
 (* Nft_parse: the public entry point of the .nft frontend.
 
    parse_string / parse_file turn nftables DSL text into the trusted Syntax AST
-   (a [Nft_lower.parsed]: the tables' chains + the [Packet.env] their set/map
+   (a [Nft_inject.parsed]: the tables' chains + the [Packet.env] their set/map
    lookups read), via the Menhir parser (Parser/Lexer), `include` expansion, and
-   the lowering pass (Nft_lower).  Properties can then be proved about the AST in
+   the lowering pass (Nft_inject).  Properties can then be proved about the AST in
    Rocq (theories/*_Gen.v are this parser's output as Coq terms); via
    compile_table_correct they hold of the installed bytecode.  Untrusted glue. *)
 
@@ -40,9 +40,9 @@ let rec expand (base : string) (tls : Nft_ast.sfile) : Nft_ast.sfile =
          with Sys_error msg -> raise (Parse_error ("include: " ^ msg)))
     | t -> [t]) tls
 
-let parse_string (src : string) : Nft_lower.parsed =
+let parse_string (src : string) : Nft_inject.parsed =
   (* a string has no file context; a relative include cannot be resolved *)
-  Nft_lower.lower (expand (Sys.getcwd ()) (parse_raw src))
+  Nft_inject.lower (expand (Sys.getcwd ()) (parse_raw src))
 
-let parse_file (path : string) : Nft_lower.parsed =
-  Nft_lower.lower (expand (Filename.dirname path) (parse_raw (read_file path)))
+let parse_file (path : string) : Nft_inject.parsed =
+  Nft_inject.lower (expand (Filename.dirname path) (parse_raw (read_file path)))

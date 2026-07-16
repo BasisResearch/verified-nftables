@@ -31,7 +31,7 @@
  (flags (:standard -w -a)))
 
 ; The .nft -> Syntax-AST frontend (untrusted glue): an ocamllex lexer and a
-; Menhir parser feeding the lowering pass (Nft_lower). Part of the nftc library
+; Menhir parser feeding the lowering pass (Lower.lower_ruleset). Part of the nftc library
 ; so the parsed AST flows straight into the verified compile/optimize pipeline.
 (ocamllex lexer)
 (menhir (modules parser))

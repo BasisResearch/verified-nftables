@@ -109,7 +109,7 @@ let policy_code = function Verdict.Drop -> 0 | _ -> 1
    cross-packet mutation guarantees do NOT cover that chain — say so instead
    of staying silent.  (`make parse-test` asserts the same predicate over the
    four shipped rulesets, as a build failure.) *)
-let warn_mut_wf (p : Nft_lower.parsed) =
+let warn_mut_wf (p : Nft_inject.parsed) =
   L.iter
     (fun (_fam, tname, chains) ->
       L.iter
@@ -124,7 +124,7 @@ let warn_mut_wf (p : Nft_lower.parsed) =
                   per-packet verdict correctness (compile_chain_correct) \
                   still holds\n"))
         chains)
-    p.Nft_lower.p_tables
+    p.Nft_inject.p_tables
 
 (* the named sets/maps/vmaps a compiled program references, in lookup order *)
 let referenced_sets (prog : Bytecode.program) : string list =
@@ -141,7 +141,7 @@ let referenced_sets (prog : Bytecode.program) : string list =
 (* the base chains (table, chain-name, chain) of a parsed ruleset, optionally
    filtered by --table / --chain.  A chain is a BASE chain iff it is registered
    with a hook in p_hooks (a jump-target-only chain has no hook). *)
-let selected_chains (p : Nft_lower.parsed) ~table ~chain
+let selected_chains (p : Nft_inject.parsed) ~table ~chain
   : (string * string * Syntax.chain) list =
   let want_table t = match table with None -> true | Some t' -> t = t' in
   let want_chain c = match chain with None -> true | Some c' -> c = c' in
@@ -150,14 +150,14 @@ let selected_chains (p : Nft_lower.parsed) ~table ~chain
       if not (want_table tname) then []
       else
         let hooks =
-          match L.find_opt (fun (_f, n, _h) -> n = tname) p.Nft_lower.p_hooks with
+          match L.find_opt (fun (_f, n, _h) -> n = tname) p.Nft_inject.p_hooks with
           | Some (_f, _n, hs) -> hs | None -> [] in
         let is_base cn = L.exists (fun (n, _ctype, _hook, _prio) -> n = cn) hooks in
         L.filter_map
           (fun (cn, c) ->
             if is_base cn && want_chain cn then Some (tname, cn, c) else None)
           chains)
-    p.Nft_lower.p_tables
+    p.Nft_inject.p_tables
 
 (* render a compiled program with a table/chain header line *)
 let render_chain ~table ~chain (program : Bytecode.program) : string =
@@ -231,7 +231,7 @@ let () =
         with
         | Nft_parse.Parse_error msg ->
             prerr_string (prog ^ ": parse error: " ^ msg ^ "\n"); exit 1
-        | Nft_lower.Unsupported msg ->
+        | Nft_inject.Inject_error msg | Nft_inject.Lower_error msg ->
             prerr_string (prog ^ ": unsupported construct: " ^ msg ^ "\n"); exit 1
       in
       warn_mut_wf parsed;
@@ -265,7 +265,7 @@ let () =
            let want_table tn = match !table with None -> true | Some t -> t = tn in
            let want_chain cn = match !chain with None -> true | Some c -> c = cn in
            let sel_tables =
-             L.filter (fun (_f, tn, _) -> want_table tn) parsed.Nft_lower.p_tables in
+             L.filter (fun (_f, tn, _) -> want_table tn) parsed.Nft_inject.p_tables in
            if sel_tables = [] then
              (prerr_string (prog ^ ": no matching table\n"); exit 1);
            let next_id = let c = ref 0 in fun () -> incr c; !c in
@@ -279,7 +279,7 @@ let () =
                     | None -> Nl_send.nfproto_of_family fam_str in
                   add (Nl_send.msg_table ~family:fam ~table:tname);
                   let hooks =
-                    match L.find_opt (fun (_f, n, _h) -> n = tname) parsed.Nft_lower.p_hooks with
+                    match L.find_opt (fun (_f, n, _h) -> n = tname) parsed.Nft_inject.p_hooks with
                     | Some (_f, _n, hs) -> hs | None -> [] in
                   let base_of cn =
                     match L.find_opt (fun (n, _c, _h, _p) -> n = cn) hooks with
@@ -310,7 +310,7 @@ let () =
                       Hashtbl.add seen name ();
                       let find l1 l2 = match L.assoc_opt name l1 with
                         | Some x -> Some x | None -> L.assoc_opt name l2 in
-                      match find !synth_vmaps parsed.Nft_lower.p_vmaps with
+                      match find !synth_vmaps parsed.Nft_inject.p_vmaps with
                       | Some entries ->
                           let elems = L.map
                             (fun ((lo, _hi), v) ->
@@ -328,7 +328,7 @@ let () =
                           if elems <> [] then
                             add (Nl_send.msg_setelems ~family:fam ~table:tname ~set:name ~set_id:id ~key_fields elems)
                       | None ->
-                          (match find !synth_sets parsed.Nft_lower.p_sets with
+                          (match find !synth_sets parsed.Nft_inject.p_sets with
                            | Some els ->
                                let elems = L.map
                                  (fun (lo, hi) ->
