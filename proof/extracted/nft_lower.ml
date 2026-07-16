@@ -1182,6 +1182,17 @@ let limit_spec rate unit_ over burst bytes : Packet.limit_spec =
   let u = match unit_ with
     | "second"->0 | "minute"->1 | "hour"->2 | "day"->3 | "week"->4
     | _ -> raise (Unsupported ("limit unit " ^ unit_)) in
+  (* ExtrOcamlNatInt seam guard (re-check; the parser's [limit_value] bounds
+     every grammar path).  ls_rate/ls_burst enter extracted products with
+     lim_window <= 604800 (Semantics.lim_cost/lim_max); above 2^40 those
+     products can pass 2^62 and WRAP in the extracted 63-bit int — semantics
+     the proofs know nothing about.  See theories/Compiler/Extract.v. *)
+  let max_limit_value = 1 lsl 40 in
+  if rate < 0 || rate > max_limit_value || burst < 0 || burst > max_limit_value then
+    raise (Unsupported
+      (Printf.sprintf
+         "limit rate/burst %d/%d exceeds the extracted-int-safe bound 2^40 \
+          (see theories/Compiler/Extract.v)" rate burst));
   (* bit 0 of ls_flags = NFT_LIMIT_F_INV ("over"); the data-plane semantics XOR
      the under/not-exceeded test with this bit (Semantics.v eval_matchcond_body).
      [ls_burst]/[ls_bytes] now carry the parsed burst and packet-vs-byte rate

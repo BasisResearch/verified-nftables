@@ -2431,6 +2431,64 @@ let check_ct_no_entry () =
        (Syntax.MEq (Syntax.FCtState, [0;0;0;1])) p_noentry);
   Printf.printf "\n"
 
+(* ---------- (P) mut_wf tool-boundary discharge ----------
+   The mutation/cross-packet theorems (compile_chain_mut_correct /
+   compile_seq_mut_correct, THEOREMS.md axis 2) hold under the source-AST
+   hypothesis [Semantics.mut_wf] — deliberately decidable without running the
+   compiler.  This check DISCHARGES that hypothesis mechanically for every
+   chain of all four shipped rulesets (a violation is a build failure here,
+   and a warning in the nftc CLI), so "every real ruleset satisfies it" is a
+   gated fact, not an assumption. *)
+let check_mut_wf () =
+  Printf.printf "=== (P) mut_wf discharge over all four parsed rulesets ===\n";
+  L.iter (fun name ->
+    let parsed = Nft_parse.parse_file ("../../rulesets/" ^ name) in
+    L.iter (fun (_fam, tname, chains) ->
+      L.iter (fun (cn, (c : Syntax.chain)) ->
+        check (Printf.sprintf "mut_wf: %s %s/%s" name tname cn)
+          (L.for_all Semantics.mut_wf c.Syntax.c_rules))
+        chains)
+      parsed.Nft_lower.p_tables)
+    ["ruleset.nft"; "optiplex.nft"; "router.nft"; "tutorial.nft"];
+  (* the checker is not vacuous: a meta-set in r_after — the one residual
+     mutation case the axis-2 contract in Main.v names — trips it *)
+  let broken = { Syntax.r_body = []; r_outcome = Syntax.OVerdict Verdict.Accept;
+                 r_after = [Syntax.SMetaSet (Packet.MKmark, Syntax.VImm [0;0;0;1])] } in
+  check "mut_wf detector fires on a meta-set in r_after"
+    (not (Semantics.mut_wf broken));
+  Printf.printf "\n"
+
+(* ---------- (Q) ExtrOcamlNatInt seam: oversized limit rates rejected ----------
+   The extracted [nat] is OCaml's 63-bit int (theories/Compiler/Extract.v);
+   the frontend must reject any user-controlled nat that could push an
+   extracted product past 2^62 (Semantics.lim_cost/lim_max multiply
+   ls_rate/ls_burst by lim_window <= 604800).  These pins keep the rejection
+   loud: before the guard, the first case silently wrapped into wrong
+   bytecode and the third crashed with an uncaught int_of_string Failure. *)
+let check_natint_guard () =
+  Printf.printf "=== (Q) ExtrOcamlNatInt seam: oversized limit rates rejected loudly ===\n";
+  let wrap body =
+    "table ip t {\n chain c {\n  type filter hook input priority 0; policy accept;\n  "
+    ^ body ^ "\n }\n}\n" in
+  let rejected body =
+    match Nft_parse.parse_string (wrap body) with
+    | _ -> false
+    | exception Nft_lower.Unsupported _ -> true
+    | exception Nft_parse.Parse_error _ -> true in
+  let accepted body =
+    match Nft_parse.parse_string (wrap body) with
+    | _ -> true
+    | exception _ -> false in
+  check "limit rate 9000000000000 mbytes/second REJECTED (used to wrap silently)"
+    (rejected "limit rate 9000000000000 mbytes/second accept");
+  check "limit burst beyond 2^40 REJECTED"
+    (rejected "limit rate 5/second burst 2199023255553 packets accept");
+  check "literal > OCaml max_int is a CLEAN error (no int_of_string crash)"
+    (rejected "limit rate 99999999999999999999999999/second accept");
+  check "in-range byte rate still accepted (limit rate 1025 kbytes/second)"
+    (accepted "limit rate 1025 kbytes/second accept");
+  Printf.printf "\n"
+
 (* ---------- NEW GATE: compile the host-order corpus blocks FROM SOURCE ----------
    `make corpus` reconstructs bytecode FROM the .payload and re-renders — it never
    runs the SOURCE parser+compiler, so it is BLIND to a host/network byteorder
@@ -2561,6 +2619,8 @@ let () =
     check_fib_type ();
     check_mark_range ();
     check_mark_set ();
+    check_mut_wf ();
+    check_natint_guard ();
     check_difftest_ast ();
     check_live_nft ();
     if !fails = 0 then Printf.printf "ALL PARSER CHECKS PASSED\n"

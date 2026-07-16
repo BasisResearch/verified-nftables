@@ -108,8 +108,11 @@ Proof.
     rewrite ?Hok, Hobr, Hethip, ?app_nil_r, Hin, Hpair, ?Henv. vm_compute. reflexivity.
 Qed.
 
-(** Axiom-freedom guard (build-time; mirrors Fib_Local.v): prints "Closed under
-    the global context". *)
+(** Axiom-freedom print (INFORMATIONAL: it goes to the `make proofs` build log
+    but cannot fail the build).  The build-FAILING check is `make axioms`,
+    whose AXIOM_GATE_THEOREMS list includes [antispoof_general] and the three
+    concrete corollaries below — anything but "Closed under the global
+    context" fails that target. *)
 Print Assumptions antispoof_general.
 
 (** ** Concrete witness 1 — the spoofing attempt is blocked.
@@ -183,3 +186,9 @@ Qed.
 (** Every theorem above is about [eval_table], the specification; via
     [compile_table_correct] (Correct.v) the same verdict holds of the compiled
     netlink bytecode, exactly as Example_Ruleset.v shows for smtp_dropped. *)
+
+(** Informational prints for the concrete corollaries (the build-failing check
+    is `make axioms`, which gates all four theorems in this file). *)
+Print Assumptions vikunja_cannot_spoof_budget.
+Print Assumptions gentoo_cannot_spoof_hass.
+Print Assumptions budget_legitimate_allowed.

@@ -1398,11 +1398,11 @@ Proof.
       apply IH; [exact Hpre | exact Hlop] ].
 Qed.
 
-(** A "mutating" statement: a meta/ct set (mutates a packet field) OR a dynset
-    (mutates the named-set state).  These are the statements the mutation
-    threading handles specially; every other statement is meta/ct- and env-neutral. *)
-Definition is_mut_stmt (s : stmt) : bool :=
-  match s with SMetaSet _ _ | SCtSet _ _ | SDynset _ _ _ _ | SNotrack => true | _ => false end.
+(** A "mutating" statement — the definition lives in the Semantics stratum
+    (next to [simple_writes]/[rule_numgen_free]) so the tool-boundary predicate
+    [mut_wf] is decidable without this file; the abbreviation keeps every proof
+    and statement here verbatim. *)
+Notation is_mut_stmt := Semantics.is_mut_stmt.
 (** A SYN-proxy statement: write-neutral but NOT straight — it can BREAK (non-TCP)
     or STOP (SYN/ACK) the rule, so it is excluded from the straight-line scaffolding
     and handled explicitly (cf. [run_compile_body_writes]). *)
@@ -2956,10 +2956,14 @@ Qed.
     [numgen_free_compile_rule] makes this definition pointwise EQUAL to its
     bytecode-side variant with [numgen_free_prog (compile_rule r)] as the third
     conjunct, so no theorem over [mut_wf] changed strength when the conjunct
-    moved to the source AST. *)
-Definition mut_wf (r : rule) : bool :=
-  simple_writes r && forallb (fun s => negb (is_mut_stmt s)) (r_after r)
-  && rule_numgen_free r.
+    moved to the source AST.
+
+    The DEFINITION lives in the Semantics stratum ([Semantics.mut_wf], next to
+    [simple_writes]) so the extracted tool can evaluate it without pulling in
+    the compiler; the abbreviation keeps every theorem below stated verbatim.
+    The tool-boundary discharge (parse-test assertion + CLI warning) is
+    documented on [Semantics.mut_wf]. *)
+Notation mut_wf := Semantics.mut_wf.
 
 (** Ratchet: the bytecode-side well-formedness (the pre-M3 [mut_wf] body, whose
     third conjunct ran the compiler) is POINTWISE EQUAL to [mut_wf], so every

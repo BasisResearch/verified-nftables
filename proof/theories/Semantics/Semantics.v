@@ -143,7 +143,15 @@ Definition match_loadable (m : matchcond) (p : packet) : bool :=
     unit, but with the common NSEC_PER_SEC factor RESCALED OUT — it divides both
     the cost and the cap and the elapsed term identically, so the pass predicate
     [cost <= min(stored,max)] is unchanged by the rescaling, and the numbers stay
-    in [nat] range).  Elapsed wall-clock time is abstracted to +0 WITHIN one
+    tractable).  NOTE on "range": Rocq's [nat] is unbounded, so no arithmetic
+    here can overflow IN THE PROOFS.  The extracted OCaml realises [nat] as a
+    63-bit native int (ExtrOcamlNatInt — see the classification comment in
+    Compiler/Extract.v), so the EXTRACTED [lim_cost]/[lim_max] products
+    ([lim_window] <= 604800 times rate+burst) are only faithful while
+    rate+burst stays below 2^62 / 604800; the untrusted frontend therefore
+    bounds the user-controlled [ls_rate]/[ls_burst] at parse time
+    (extracted/parser.mly, `scaled_or_reject`) and rejects larger rates
+    loudly.  Elapsed wall-clock time is abstracted to +0 WITHIN one
     traversal (back-to-back packets in one ktime), exactly as documented for the
     consuming-bucket model; what this fix adds is that the per-packet COST and the
     bucket CAP are now genuine functions of [ls_rate]/[ls_unit]/[ls_burst] (and,
@@ -2174,6 +2182,41 @@ Definition simple_body (body : list body_item) : bool :=
                      | _ => true
                      end) body.
 Definition simple_writes (r : rule) : bool := simple_body (r_body r).
+
+(** A "mutating" statement: a meta/ct set (mutates a packet field) OR a dynset
+    (mutates the named-set state) OR notrack (sets the flow's ct state).  These
+    are the statements the mutation threading handles specially; every other
+    statement is meta/ct- and env-neutral. *)
+Definition is_mut_stmt (s : stmt) : bool :=
+  match s with SMetaSet _ _ | SCtSet _ _ | SDynset _ _ _ _ | SNotrack => true | _ => false end.
+
+(** [mut_wf] — the mutation strand's ONLY well-formedness hypothesis
+    ([compile_chain_mut_correct] / [compile_chain_mut_env_correct] /
+    [compile_seq_mut_correct] in Correct.v), NOT a feature scope.  It is stated
+    entirely on the source AST — [simple_writes], [is_mut_stmt] over [r_after],
+    and the syntactic [rule_numgen_free] — precisely so a TOOL can decide it
+    without running the compiler.  That decidability is discharged at the tool
+    boundary: `make parse-test` asserts [forallb mut_wf] over every chain of
+    the four shipped rulesets (build failure on violation), and the `nftc` CLI
+    prints a warning naming the uncovered mutation theorems when a parsed
+    chain violates it (extracted/parse_test.ml, extracted/nftc_cli.ml).
+
+    The three conjuncts (each satisfied by every real ruleset):
+    - [simple_writes]: every meta/ct *set* operand is non-degenerate (not a
+      malformed zero-field jhash/map/or);
+    - no mutating statement in [r_after] (post-outcome statements are
+      verdict-neutral — counter/log/objref — in every real ruleset; a meta-set
+      after a verdict map is the one residual mutation case);
+    - [rule_numgen_free]: no field position is an incremental `numgen` (numgen
+      has no parser/DSL surface), so the VM's [numgen_sweep_prog] is the
+      identity on the compiled rule.
+
+    [Correct.numgen_free_compile_rule] makes this definition pointwise EQUAL to
+    the historical bytecode-side variant (third conjunct
+    [numgen_free_prog (compile_rule r)]) — the ratchet [Correct.mut_wf_prog_eq]. *)
+Definition mut_wf (r : rule) : bool :=
+  simple_writes r && forallb (fun s => negb (is_mut_stmt s)) (r_after r)
+  && rule_numgen_free r.
 
 (** The declarative meta/ct effect of one rule's body, processed left-to-right
     exactly as the kernel executes it: a [set] writes [eval_vsrc vs] against the
