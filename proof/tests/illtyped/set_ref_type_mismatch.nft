@@ -1,0 +1,14 @@
+# ILL-TYPED: a named set of IPv4 addresses referenced from a PORT selector.
+# The declared datatype (ipv4_addr) and the selector datatype (inet_service)
+# meet on no basetype chain (nft: "datatype mismatch: expected internet
+# network service, set has type ipv4_addr").
+table ip t {
+  set addrs {
+    type ipv4_addr
+    elements = { 10.0.0.1 }
+  }
+  chain c {
+    type filter hook input priority 0; policy accept;
+    tcp dport @addrs accept
+  }
+}

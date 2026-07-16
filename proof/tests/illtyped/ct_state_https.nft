@@ -1,0 +1,10 @@
+# ILL-TYPED: a service name where a conntrack state is demanded.
+# "https" is in no table on ct_state's basetype chain (ct_state -> bitmask ->
+# integer) and is not an integer literal, so symbol resolution fails
+# (nft: "Error: Could not parse ct state; unqualified symbol https").
+table ip t {
+  chain c {
+    type filter hook input priority 0; policy accept;
+    ct state https accept
+  }
+}

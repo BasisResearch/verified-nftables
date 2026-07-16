@@ -9,6 +9,12 @@ theories/IR/Syntax.v
 theories/IR/Nftval.v
 theories/IR/Elab.v
 
+theories/Surface/Ast.v
+theories/Surface/Datatype.v
+theories/Surface/Symbols.v
+theories/Surface/Selector.v
+theories/Surface/Typecheck.v
+
 theories/Semantics/Semantics.v
 theories/Semantics/Fib_Local.v
 theories/Semantics/Netstate_MultiAddr.v

@@ -2489,6 +2489,140 @@ let check_natint_guard () =
     (accepted "limit rate 1025 kbytes/second accept");
   Printf.printf "\n"
 
+(* ---------- (R) typed-layer M1: the extracted Coq typechecker ----------
+   theories/Surface/{Ast,Datatype,Symbols,Selector,Typecheck}.v, reached
+   through the pure structural injection Nft_inject (the ONLY OCaml->Coq
+   translation site).  Three sub-gates:
+     (a) all four committed rulesets TYPECHECK (the checker accepts every
+         construct the proofs are about — non-vacuity, accept direction);
+     (b) every ../tests/illtyped/*.nft PARSES but is REJECTED (non-vacuity,
+         reject direction: cross-type bitwise, unknown symbols, width
+         overflow, set-type mismatch, non-bitmask comma lists, undefined
+         defines);
+     (c) KIND-PARITY: for each of nft_lower.ml's 24 `kind`s, the unverified
+         enc_atom bytes (corpus-green today) equal the VERIFIED
+         Nftval.encode of Typecheck.resolve_value at the Coq dtype — on
+         byteorder-revealing values, so the Coq dt_width/dt_byteorder tables
+         are pinned to the bytes the frontend actually emits.  This check is
+         temporary scaffolding: it dies with the OCaml kind table (M-C). *)
+
+let parse_surface (path : string) : Nft_ast.sfile =
+  Nft_parse.expand (Filename.dirname path)
+    (Nft_parse.parse_raw (Nft_parse.read_file path))
+
+let check_typed_layer () =
+  Printf.printf "=== (R) typed-layer: Coq surface typechecker over raw parse trees ===\n";
+  (* (a) accept direction: the four committed rulesets *)
+  let names = ["ruleset.nft"; "optiplex.nft"; "router.nft"; "tutorial.nft"] in
+  let ok = L.filter (fun n ->
+      let r =
+        match parse_surface ("../../rulesets/" ^ n) with
+        | exception e ->
+            Printf.printf "  parse/inject %s: %s\n" n (Printexc.to_string e);
+            false
+        | raw -> Typecheck.typecheck_ruleset (Nft_inject.file raw) in
+      check (Printf.sprintf "typecheck accepts %s" n) r; r)
+    names in
+  Printf.printf "TYPECHECK-RULESETS %d/4\n" (L.length ok);
+  (* (b) reject direction: the illtyped suite (each file must PARSE — the
+     rejection is the CHECKER's, not the grammar's) *)
+  let dir = "../tests/illtyped" in
+  let files =
+    Sys.readdir dir |> Stdlib.Array.to_list
+    |> L.filter (fun f -> Filename.check_suffix f ".nft")
+    |> L.sort compare in
+  let total = L.length files in
+  if total < 4 then begin
+    Printf.printf "  ILLTYPED suite too small (%d < 4)\n" total; incr fails
+  end;
+  let rejected = L.filter (fun f ->
+      match parse_surface (Filename.concat dir f) with
+      | exception e ->
+          Printf.printf "  %-46s PARSE FAILED (%s)\n" f (Printexc.to_string e);
+          incr fails; false
+      | raw ->
+          let r = not (Typecheck.typecheck_ruleset (Nft_inject.file raw)) in
+          check (Printf.sprintf "illtyped rejected: %s" f) r; r)
+    files in
+  Printf.printf "ILLTYPED-REJECT %d/%d\n" (L.length rejected) total;
+  Printf.printf "\n"
+
+let check_kind_parity () =
+  Printf.printf "=== (S) KIND-PARITY: OCaml kind table vs Coq Surface.Datatype ===\n";
+  let enc_coq dt sv = match Typecheck.resolve_value dt sv with
+    | Some tv -> Some (Nftval.encode tv)
+    | None -> None in
+  (* one row per nft_lower kind (22 fixed + KNum/KNumLe at width 2); values
+     chosen so a byteorder flip changes the bytes wherever width > 1 *)
+  let v6 = [0x20; 0x01; 0x0d; 0xb8; 0;0;0;0; 0;0;0;0; 0;0;0;1] in
+  let rows = [
+    "KIfname",    Nft_lower.KIfname,    Datatype.DTifname,       Nft_ast.Vstr "eth0",  Ast.SVStr "eth0";
+    "KIfindex",   Nft_lower.KIfindex,   Datatype.DTifindex,      Nft_ast.Vnum 258,     Ast.SVNum 258;
+    "KIp4",       Nft_lower.KIp4,       Datatype.DTipv4,         Nft_ast.Vip4 [192;168;0;1], Ast.SVIp4 [192;168;0;1];
+    "KIp6",       Nft_lower.KIp6,       Datatype.DTipv6,         Nft_ast.Vip6 v6,      Ast.SVIp6 v6;
+    "KPort",      Nft_lower.KPort,      Datatype.DTinet_service, Nft_ast.Vsym "https", Ast.SVSym "https";
+    "KL4proto",   Nft_lower.KL4proto,   Datatype.DTinet_proto,   Nft_ast.Vsym "tcp",   Ast.SVSym "tcp";
+    "KNfproto",   Nft_lower.KNfproto,   Datatype.DTnfproto,      Nft_ast.Vsym "ipv6",  Ast.SVSym "ipv6";
+    "KEthertype", Nft_lower.KEthertype, Datatype.DTethertype,    Nft_ast.Vsym "arp",   Ast.SVSym "arp";
+    "KCtstate",   Nft_lower.KCtstate,   Datatype.DTct_state,     Nft_ast.Vsym "established", Ast.SVSym "established";
+    "KCtstatus",  Nft_lower.KCtstatus,  Datatype.DTct_status,    Nft_ast.Vsym "dying", Ast.SVSym "dying";
+    "KMark",      Nft_lower.KMark,      Datatype.DTmark,         Nft_ast.Vnum 258,     Ast.SVNum 258;
+    "KIcmp",      Nft_lower.KIcmp,      Datatype.DTicmp_type,    Nft_ast.Vsym "echo-request", Ast.SVSym "echo-request";
+    "KIcmpv6",    Nft_lower.KIcmpv6,    Datatype.DTicmpv6_type,  Nft_ast.Vsym "nd-neighbor-solicit", Ast.SVSym "nd-neighbor-solicit";
+    "KPkttype",   Nft_lower.KPkttype,   Datatype.DTpkttype,      Nft_ast.Vsym "broadcast", Ast.SVSym "broadcast";
+    "KFibType",   Nft_lower.KFibType,   Datatype.DTfib_addrtype, Nft_ast.Vsym "local", Ast.SVSym "local";
+    "KTcpflag",   Nft_lower.KTcpflag,   Datatype.DTtcp_flag,     Nft_ast.Vsym "syn",   Ast.SVSym "syn";
+    "KNum2",      Nft_lower.KNum 2,     Datatype.DTinteger 2,    Nft_ast.Vnum 258,     Ast.SVNum 258;
+    "KIgmp",      Nft_lower.KIgmp,      Datatype.DTigmp_type,    Nft_ast.Vsym "leave-group", Ast.SVSym "leave-group";
+    "KIcmpcode",  Nft_lower.KIcmpcode,  Datatype.DTicmp_code,    Nft_ast.Vsym "admin-prohibited", Ast.SVSym "admin-prohibited";
+    "KIcmp6code", Nft_lower.KIcmp6code, Datatype.DTicmpv6_code,  Nft_ast.Vsym "admin-prohibited", Ast.SVSym "admin-prohibited";
+    "KMhtype",    Nft_lower.KMhtype,    Datatype.DTmh_type,      Nft_ast.Vsym "binding-update", Ast.SVSym "binding-update";
+    "KCtdir",     Nft_lower.KCtdir,     Datatype.DTct_dir,       Nft_ast.Vsym "reply", Ast.SVSym "reply";
+    "KArpop",     Nft_lower.KArpop,     Datatype.DTarp_op,       Nft_ast.Vsym "reply", Ast.SVSym "reply";
+    "KNumLe2",    Nft_lower.KNumLe 2,   Datatype.DThostint 2,    Nft_ast.Vnum 258,     Ast.SVNum 258;
+  ] in
+  let okcnt = L.length (L.filter (fun (nm, k, dt, ov, sv) ->
+      let ob = (try Some (Nft_lower.enc_atom k ov) with _ -> None) in
+      let cb = enc_coq dt sv in
+      (* byte parity (pins width AND byteorder against the corpus-green
+         frontend bytes), Coq width-table consistency, and OCaml's
+         host_endian_kind set must be declared BoHost in Coq *)
+      let bytes_ok = ob <> None && ob = cb in
+      let width_ok = (match ob with
+        | Some b -> Datatype.dt_bytes dt = L.length b
+        | None -> false) in
+      let bo_ok = (not (Nft_lower.host_endian_kind k))
+                  || Datatype.dt_byteorder dt = Datatype.BoHost in
+      let r = bytes_ok && width_ok && bo_ok in
+      if not r then
+        Printf.printf "    %-10s ocaml=%s coq=%s\n" nm
+          (match ob with Some b -> show b | None -> "(refused)")
+          (match cb with Some b -> show b | None -> "(refused)");
+      check (Printf.sprintf "kind-parity %s" nm) r; r)
+    rows) in
+  Printf.printf "KIND-PARITY %d/24\n" okcnt;
+  (* the 8 declared-set type atoms take the same verified path *)
+  let st = { Nft_lower.defines = Hashtbl.create 1; sets = []; vmaps = [];
+             maps = []; counter = 0 } in
+  let atoms = [
+    "ipv4_addr",    Nft_ast.Vip4 [10;0;0;1],  Ast.SVIp4 [10;0;0;1];
+    "ipv6_addr",    Nft_ast.Vip6 v6,          Ast.SVIp6 v6;
+    "ifname",       Nft_ast.Vsym "eth0",      Ast.SVSym "eth0";
+    "iface_index",  Nft_ast.Vnum 258,         Ast.SVNum 258;
+    "inet_service", Nft_ast.Vnum 443,         Ast.SVNum 443;
+    "inet_proto",   Nft_ast.Vsym "udp",       Ast.SVSym "udp";
+    "ether_addr",   Nft_ast.Vmac [1;2;3;4;5;6], Ast.SVMac [1;2;3;4;5;6];
+    "mark",         Nft_ast.Vnum 258,         Ast.SVNum 258;
+  ] in
+  L.iter (fun (atom, ov, sv) ->
+      let ob = (try Some (Nft_lower.bytes_of_typeatom st atom ov) with _ -> None) in
+      let cb = (match Typecheck.atom_dtype atom with
+        | Some dt -> enc_coq dt sv
+        | None -> None) in
+      check (Printf.sprintf "set-type-atom parity %s" atom) (ob <> None && ob = cb))
+    atoms;
+  Printf.printf "\n"
+
 (* ---------- NEW GATE: compile the host-order corpus blocks FROM SOURCE ----------
    `make corpus` reconstructs bytecode FROM the .payload and re-renders — it never
    runs the SOURCE parser+compiler, so it is BLIND to a host/network byteorder
@@ -2621,6 +2755,8 @@ let () =
     check_mark_set ();
     check_mut_wf ();
     check_natint_guard ();
+    check_typed_layer ();
+    check_kind_parity ();
     check_difftest_ast ();
     check_live_nft ();
     if !fails = 0 then Printf.printf "ALL PARSER CHECKS PASSED\n"

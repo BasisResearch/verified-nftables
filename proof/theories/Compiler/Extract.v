@@ -38,6 +38,12 @@ From Stdlib Require Import ExtrOcamlNatInt.
 From Stdlib Require Import ExtrOcamlNativeString.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile Optimize Nftval Elab.
 From Nft Require Import Optimize_ValueSet Optimize_Vmap Optimize_Concat Optimize_Table Optimize_Uncond.
+(* The typed-layer surface (T1): the Coq surface AST, datatype/coercion
+   lattice, symbol tables, selector map and typechecker.  Extracted so the
+   OCaml frontend can hand its untyped tree (via the pure structural
+   injection extracted/nft_inject.ml) to the VERIFIED checker — parse-test
+   gates all four rulesets and the tests/illtyped suite through it. *)
+From Nft Require Import Ast Datatype Symbols Selector Typecheck.
 
 Extraction Language OCaml.
 Set Extraction Output Directory "extracted".
@@ -52,6 +58,20 @@ Set Extraction Output Directory "extracted".
    injectivity), so the realisation does not enter any trusted proof. *)
 Extract Constant Optimize_ValueSet.string_of_nat =>
   "(fun n -> Stdlib.String.make n 'I')".
+
+(* [String.length] is the one Stdlib.Strings.String CONSTANT in the extracted
+   closure (Optimize_Uncond's fresh-name seed measures set-name lengths).
+   Left alone, extraction emits a String.ml for it whose presence inside the
+   (wrapped false) nftc library SHADOWS Stdlib.String — breaking the
+   `String.get`/`String.sub` calls in ExtrOcamlNativeString's inline
+   string-match realizer (Nftval.sbytes, Symbols.parse_dec destructure
+   strings) and any unqualified Stdlib.String use in hand-written glue.
+   Realise it natively instead: under ExtrOcamlNativeString (string = native
+   string) + ExtrOcamlNatInt (nat = int), Stdlib.String.length IS Coq's
+   String.length — same int on the same value.  Same seam class as
+   [string_of_nat] above; extracted/dune additionally excludes any stray
+   String module from the library. *)
+Extract Inlined Constant String.length => "Stdlib.String.length".
 
 (* The control-plane compiler/optimizer and the field table are what the glue
    needs; we also extract the packet semantics ([eval_chain] and the bytecode VM
@@ -85,4 +105,19 @@ Separate Extraction
   env_with_sets
   mut_wf
   Nftval.encode
-  Elab.elab_m.
+  Elab.elab_m
+  Typecheck.typecheck_ruleset
+  Typecheck.typecheck_rule
+  Typecheck.typecheck_clause
+  Typecheck.resolve_value
+  Typecheck.resolve_num
+  Symbols.lookup_symbol
+  Selector.selector
+  Selector.bitfield
+  Datatype.dt_width
+  Datatype.dt_bytes
+  Datatype.dt_byteorder
+  Datatype.basetype_of
+  Datatype.coercible
+  Datatype.int_basetype
+  Datatype.lit_fits.

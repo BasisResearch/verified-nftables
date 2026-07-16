@@ -1,0 +1,8 @@
+# ILL-TYPED: a reference to an undefined $define.  Expansion fails loudly
+# (nft: "unknown identifier 'nosuchdef'").
+table ip t {
+  chain c {
+    type filter hook input priority 0; policy accept;
+    ip saddr $nosuchdef accept
+  }
+}
