@@ -182,7 +182,9 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Ct_State.estab_misses_without_bit Ct_State.refuted_meq_rejects \
   Ct_State.refuted_alternative_diverges \
   Lower_Proofs.range_erasure_be Lower_Proofs.range_erasure_host \
-  Lower_Proofs.bitmask_erasure Lower_Proofs.bitfield_erasure
+  Lower_Proofs.bitmask_erasure Lower_Proofs.bitfield_erasure \
+  Lower_Proofs.set_interval_erasure Lower_Proofs.concat_key_erasure \
+  Lower_Proofs.cidr_interval_agrees_prefix_expand
 
 axioms:
 	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Elab Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs.\n'; \

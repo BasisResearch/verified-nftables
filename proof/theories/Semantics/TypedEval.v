@@ -74,6 +74,34 @@ Definition bound_ok (dt : dtype) (v : nftval) : bool :=
   Nat.eqb (val_width v) (dt_bytes dt) && val_wfb v.
 
 (* ------------------------------------------------------------------ *)
+(** ** M3: the INDEPENDENT numeric membership of set / concat elements.
+
+    A set element is a closed interval; membership of a DECODED register value
+    is the numeric test [lo <= x <= hi] in [N] — never through the byte
+    encoding or [data_le].  [set_mem_N] lifts it over an element list; the
+    agreement with the byte-level [set_mem] over the ENCODED intervals is
+    [Lower_Proofs.set_interval_erasure] (its obligation is byte-lexicographic
+    order = numeric order, same-width big-endian — the M2 [data_le_num] lemma).
+
+    For a CONCATENATED key each field is tested against its OWN decoded
+    interval ([field_mem_N]); the byte side splits the slot-padded key by the
+    per-field register slots and truncates the padding
+    ([Lower_Proofs.concat_key_erasure]). *)
+
+Definition iv_mem_N (x : N) (iv : data * data) : bool :=
+  andb (data_to_N (fst iv) <=? x)%N (x <=? data_to_N (snd iv))%N.
+
+Definition set_mem_N (x : N) (s : list (data * data)) : bool :=
+  existsb (iv_mem_N x) s.
+
+(** One field of a concatenated key: its decoded value against its decoded
+    per-field interval bounds (the [firstn] takes only the field's real bytes,
+    discarding the register-slot padding, before decoding). *)
+Definition field_mem_N (fw : nat) (fx : N) (iv : data * data) : bool :=
+  andb (data_to_N (firstn fw (fst iv)) <=? fx)%N
+       (fx <=? data_to_N (firstn fw (snd iv)))%N.
+
+(* ------------------------------------------------------------------ *)
 (** ** The typed evaluator. *)
 
 Definition eval_txm (t : txmatch) (e : env) (p : packet) : option bool :=

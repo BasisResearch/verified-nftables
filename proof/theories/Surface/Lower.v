@@ -38,7 +38,7 @@
     lower to the IDENTICAL typed term, and anything the M1 checker rejects
     (width overflow, cross-type operands, `iifname & 0xff`) cannot lower. *)
 
-From Stdlib Require Import List PeanoNat Bool NArith String.
+From Stdlib Require Import List PeanoNat Bool NArith String Ascii.
 From Nft Require Import Bytes Packet Verdict Bytecode Syntax Nftval Elab
   Ast Datatype Symbols Selector Typecheck Typed.
 Import ListNotations.
@@ -64,8 +64,11 @@ Inductive lerr : Type :=
                                     selector — the `iifname & 0xff` rejection *)
 | LEbitwiseOp  (op : string)     (* unknown bitwise operator                 *)
 | LEbitwiseRhs                   (* bitwise rhs is not a single value        *)
-| LEvlanNetdev.                  (* vlan match in netdev family (iiftype
+| LEvlanNetdev                   (* vlan match in netdev family (iiftype
                                     guard byte-order — honest refusal)       *)
+| LEtcpflagSet                   (* tcp flags brace-set (brace-vs-OR ambiguity) *)
+| LEconcatArity                  (* concat element arity <> declared key      *)
+| LEsettype    (atom : string).  (* unknown declared set type atom            *)
 
 Definition lerr_message (e : lerr) : string :=
   match e with
@@ -85,6 +88,10 @@ Definition lerr_message (e : lerr) : string :=
   | LEbitwiseOp op => "bitwise op " ++ op
   | LEbitwiseRhs => "bitwise mask match needs a single-value rhs"
   | LEvlanNetdev => "vlan match in netdev family (iiftype guard byte-order)"
+  | LEtcpflagSet =>
+      "tcp flags set/list form is ambiguous (brace-set vs OR-mask); use a single `tcp flags X` / `tcp flags ! X` / `tcp flags == X`"
+  | LEconcatArity => "concatenated element arity does not match the declared key"
+  | LEsettype a => "set element type: " ++ a
   end.
 
 Inductive lres (A : Type) : Type :=
@@ -462,6 +469,349 @@ Definition lower_bitmatch (kp : skeypath) (op : string) (mask : svalue)
       end
   end.
 
+(* ================================================================== *)
+(** ** M3: verified composite immediates — set / map / vmap elements.
+
+    Every set/map/vmap byte composition the frontend used to do in OCaml is
+    now built HERE, verified: point / range / CIDR (net+broadcast) element
+    intervals, the big-endian re-encoded interval path for host-endian fields,
+    declared-set type atoms, concatenated tuples with 4-byte register-slot
+    padding (and the FLAT unpadded vmap-key asymmetry), and the content-dedup
+    `__setN` interning as a state-passing fold.  The OCaml frontend loses every
+    [interval_of_value]/[bytes_of_typeatom]/[pad_to_slot]/[prefix_mask] and no
+    longer constructs [MSetT]/[MConcatSet]; it threads the [lstate] below and
+    reads back the set declarations. *)
+
+(** Bytewise OR: `(a & ~b) ^ b = a | b` per byte (the nft broadcast operand
+    `net | ~mask`; the numeric identity is [Lower_Proofs.land_not_xor_is_or]). *)
+Definition data_or (a b : data) : data := data_bitops a (Typed.data_not b) b.
+
+(** The CIDR net/broadcast interval — the ONE Coq expansion, built from the
+    SAME [Elab.prefix_mask]/[Elab.data_and] arithmetic that [Elab.prefix_expand]
+    uses (their membership agreement is [Lower_Proofs.cidr_interval_agrees_
+    prefix_expand], killing the two-implementations tension).  net = base & mask;
+    broadcast = net | ~mask. *)
+Definition cidr_interval (v : nftval) (plen : nat) : data * data :=
+  let bytes := Nftval.encode v in
+  let w := List.length bytes in
+  let mask := Elab.prefix_mask w plen in
+  let net := Elab.data_and bytes mask in
+  (net, data_or net (Typed.data_not mask)).
+
+(** One element's register encoding: big-endian re-encoded on the host-endian
+    interval path ([Typed.encode_be]), the ordinary register encoding
+    otherwise. *)
+Definition el_encode (be : bool) (tv : nftval) : data :=
+  if be then Typed.encode_be tv else Nftval.encode tv.
+
+(** One set element's byte interval at a datatype: a point is the degenerate
+    [b,b]; a range is the per-endpoint encoding; a CIDR is [cidr_interval]
+    (always big-endian — an address is network order regardless of [be]). *)
+Definition value_interval (dt : dtype) (be : bool) (v : svalue) : lres (data * data) :=
+  match v with
+  | SVRange lo hi =>
+      match resolve_value dt lo, resolve_value dt hi with
+      | Some a, Some b => LOk (el_encode be a, el_encode be b)
+      | _, _ => LErr (LEatom "set range bound")
+      end
+  | SVPrefix base plen =>
+      match base with
+      | SVIp4 _ | SVIp6 _ =>
+          match resolve_value dt base with
+          | Some tv => LOk (cidr_interval tv plen)
+          | None => LErr (LEatom "set CIDR base")
+          end
+      | _ => LErr (LEatom "CIDR over a non-address set element")
+      end
+  | _ =>
+      match resolve_value dt v with
+      | Some tv => let b := el_encode be tv in LOk (b, b)
+      | None => LErr (LEatom "set element")
+      end
+  end.
+
+(** A single-field set forces nft's `byteorder hton` path exactly when its
+    field is host-endian AND it has an interval element (a range or CIDR); an
+    exact-only set is an unordered memcmp lookup with no conversion. *)
+Definition set_has_interval (elems : list svalue) : bool :=
+  existsb (fun v => match v with SVRange _ _ | SVPrefix _ _ => true | _ => false end)
+          elems.
+
+Fixpoint map_lres {A B : Type} (f : A -> lres B) (xs : list A) : lres (list B) :=
+  match xs with
+  | [] => LOk []
+  | x :: r =>
+      match f x with
+      | LOk y => match map_lres f r with LOk ys => LOk (y :: ys) | LErr e => LErr e end
+      | LErr e => LErr e
+      end
+  end.
+
+(** Per-field intervals of a concatenated element (each field big-endian eq;
+    the arity is checked by the caller). *)
+Fixpoint concat_intervals (dts : list dtype) (vs : list svalue)
+  : lres (list (data * data)) :=
+  match dts, vs with
+  | [], [] => LOk []
+  | dt :: dts', v :: vs' =>
+      match value_interval dt false v with
+      | LOk iv =>
+          match concat_intervals dts' vs' with
+          | LOk r => LOk (iv :: r)
+          | LErr e => LErr e
+          end
+      | LErr e => LErr e
+      end
+  | _, _ => LErr LEconcatArity
+  end.
+
+(** Register-slot padding of ONE field's bytes: NFT_SET_CONCAT lays each field
+    in its own 4-byte register slot ([Bytes.reg_slot]), field bytes at the
+    front + trailing zeros.  The historical [pad_to_slot], now verified. *)
+Definition pad_slot (d : data) : data :=
+  (d ++ repeat 0 (reg_slot (List.length d) - List.length d))%list.
+
+(** A concatenated SET element's [lo,hi]: per-field bounds, each slot-padded,
+    concatenated.  (Concat sets pad; concat VMAP keys do NOT — [concat_flat].) *)
+Definition concat_padded (ivs : list (data * data)) : data * data :=
+  (List.concat (map (fun p => pad_slot (fst p)) ivs),
+   List.concat (map (fun p => pad_slot (snd p)) ivs)).
+
+(** A concatenated VMAP key's [lo,hi]: the FLAT (unpadded) per-field
+    concatenation — [assoc_verdict] tests the flat key with [data_in_iv]. *)
+Definition concat_flat (ivs : list (data * data)) : data * data :=
+  (List.concat (map fst ivs), List.concat (map snd ivs)).
+
+Definition concat_elem_padded (dts : list dtype) (v : svalue) : lres (data * data) :=
+  match v with
+  | SVConcat vs =>
+      if Nat.eqb (List.length vs) (List.length dts)
+      then match concat_intervals dts vs with
+           | LOk ivs => LOk (concat_padded ivs)
+           | LErr e => LErr e
+           end
+      else LErr LEconcatArity
+  | _ => LErr LEconcatArity
+  end.
+
+Definition concat_elem_flat (dts : list dtype) (v : svalue) : lres (data * data) :=
+  match v with
+  | SVConcat vs =>
+      if Nat.eqb (List.length vs) (List.length dts)
+      then match concat_intervals dts vs with
+           | LOk ivs => LOk (concat_flat ivs)
+           | LErr e => LErr e
+           end
+      else LErr LEconcatArity
+  | _ => LErr LEconcatArity
+  end.
+
+(* ------------------------------------------------------------------ *)
+(** ** Declared set type atoms -> datatypes ([bytes_of_typeatom]'s domain). *)
+
+Definition typeatom_dtype (a : string) : option dtype :=
+  if String.eqb a "ipv4_addr" then Some DTipv4
+  else if String.eqb a "ipv6_addr" then Some DTipv6
+  else if String.eqb a "ifname" then Some DTifname
+  else if String.eqb a "iface_index" then Some DTifindex
+  else if String.eqb a "inet_service" then Some DTinet_service
+  else if String.eqb a "inet_proto" then Some DTinet_proto
+  else if String.eqb a "ether_addr" then Some DTether
+  else if String.eqb a "mark" then Some DTmark
+  else None.
+
+Fixpoint typeatoms_dtypes (types : list string) : lres (list dtype) :=
+  match types with
+  | [] => LOk []
+  | t :: r =>
+      match typeatom_dtype t with
+      | Some dt => match typeatoms_dtypes r with
+                   | LOk dts => LOk (dt :: dts)
+                   | LErr e => LErr e
+                   end
+      | None => LErr (LEsettype t)
+      end
+  end.
+
+(** One declared-set element to an interval: single-typed (range/CIDR-on-ip/
+    point) or a slot-padded concatenation matching the declared arity. *)
+Definition decl_elem_interval (types : list string) (v : svalue) : lres (data * data) :=
+  match types with
+  | [t] =>
+      match typeatom_dtype t with
+      | Some dt => match v with
+                   | SVConcat _ => LErr LEconcatArity
+                   | _ => value_interval dt false v
+                   end
+      | None => LErr (LEsettype t)
+      end
+  | _ =>
+      match typeatoms_dtypes types with
+      | LOk dts => concat_elem_padded dts v
+      | LErr e => LErr e
+      end
+  end.
+
+(* ------------------------------------------------------------------ *)
+(** ** The interning state (content-dedup `__setN`/`__mapN` fold).
+
+    The byte-relevant slice of the driver state: the fresh-name counter and the
+    named set / verdict-map / value-map contents.  Named declarations and
+    anonymous inline sets share ONE set list, so an anonymous set with the same
+    contents as a declared set reuses the declared name (nft set identity by
+    contents).  Naming is decimal ([nat_dec] extracts to [string_of_int]) to
+    keep the generated `__set0`/`__map0` identifiers byte-identical. *)
+
+Record lstate : Type := mkLstate {
+  ls_ctr   : nat;
+  ls_sets  : list (String.string * list (data * data));
+  ls_vmaps : list (String.string * list (data * data * verdict));
+  ls_maps  : list (String.string * list (data * data)) }.
+
+Definition ls0 : lstate := mkLstate 0 [] [] [].
+
+(** Decimal rendering of a nat (extracted to OCaml [string_of_int]; the Coq
+    body is a faithful decimal used only by vm_compute, never trusted). *)
+Definition dec_digit (n : nat) : String.string :=
+  String.String (Ascii.ascii_of_nat (48 + n)) String.EmptyString.
+Fixpoint dec_aux (fuel n : nat) : String.string :=
+  match fuel with
+  | O => String.EmptyString
+  | S f =>
+      if Nat.ltb n 10 then dec_digit n
+      else String.append (dec_aux f (Nat.div n 10)) (dec_digit (Nat.modulo n 10))
+  end.
+Definition nat_dec (n : nat) : String.string := dec_aux (S n) n.
+
+Definition data_pair_eqb (p q : data * data) : bool :=
+  andb (data_eqb (fst p) (fst q)) (data_eqb (snd p) (snd q)).
+Fixpoint ivs_eqb (a b : list (data * data)) : bool :=
+  match a, b with
+  | [], [] => true
+  | x :: a', y :: b' => andb (data_pair_eqb x y) (ivs_eqb a' b')
+  | _, _ => false
+  end.
+
+Definition set_name (st : lstate) : String.string :=
+  String.append "__set" (nat_dec (ls_ctr st)).
+Definition map_name (st : lstate) : String.string :=
+  String.append "__map" (nat_dec (ls_ctr st)).
+
+(** Intern an encoded interval list, deduplicated by CONTENT against every
+    existing (named or anonymous) set. *)
+Definition intern_set (st : lstate) (elems : list (data * data))
+  : String.string * lstate :=
+  match find (fun ne => ivs_eqb (snd ne) elems) (ls_sets st) with
+  | Some (name, _) => (name, st)
+  | None =>
+      let name := set_name st in
+      (name, mkLstate (S (ls_ctr st)) ((name, elems) :: ls_sets st)
+                      (ls_vmaps st) (ls_maps st))
+  end.
+
+Definition fresh_map (st : lstate) : String.string * lstate :=
+  (map_name st,
+   mkLstate (S (ls_ctr st)) (ls_sets st) (ls_vmaps st) (ls_maps st)).
+
+Definition add_set (st : lstate) (name : String.string)
+    (elems : list (data * data)) : lstate :=
+  mkLstate (ls_ctr st) ((name, elems) :: ls_sets st) (ls_vmaps st) (ls_maps st).
+Definition add_vmap (st : lstate) (name : String.string)
+    (ents : list (data * data * verdict)) : lstate :=
+  mkLstate (ls_ctr st) (ls_sets st) ((name, ents) :: ls_vmaps st) (ls_maps st).
+Definition add_map (st : lstate) (name : String.string)
+    (ents : list (data * data)) : lstate :=
+  mkLstate (ls_ctr st) (ls_sets st) (ls_vmaps st) ((name, ents) :: ls_maps st).
+
+(* ------------------------------------------------------------------ *)
+(** ** The set / vmap / declaration lowering entry points (OCaml calls these;
+    it never constructs an [MSetT]/[MConcatSet] nor composes a byte). *)
+
+(** Inline `{...}` set over a single field: the interval bytes are built and
+    interned here, and the interval-over-host-endian-field case takes the
+    `byteorder hton` [MSetT] path with big-endian bounds. *)
+Definition lower_anon_set (st : lstate) (f : field) (dt : dtype) (neg : bool)
+    (elems : list svalue) : lres (lstate * matchcond) :=
+  if dtype_eqb dt DTtcp_flag then LErr LEtcpflagSet else
+  let be := andb (Typed.range_hton dt) (set_has_interval elems) in
+  match map_lres (value_interval dt be) elems with
+  | LErr e => LErr e
+  | LOk ivs =>
+      let '(name, st') := intern_set st ivs in
+      if be then
+        let w := dt_bytes dt in
+        LOk (st', MSetT f [TByteorder true w w] neg name)
+      else LOk (st', MConcatSet [f] neg name)
+  end.
+
+(** A named-set / concatenated-set `@name` reference (no bytes composed). *)
+Definition lower_set_ref (fields : list field) (neg : bool) (name : String.string)
+  : matchcond := MConcatSet fields neg name.
+
+(** Inline concatenated `{...}` set: per-field slot-padded intervals, interned. *)
+Definition lower_concat_set (st : lstate) (fields : list field) (dts : list dtype)
+    (neg : bool) (elems : list svalue) : lres (lstate * matchcond) :=
+  match map_lres (concat_elem_padded dts) elems with
+  | LErr e => LErr e
+  | LOk ivs =>
+      let '(name, st') := intern_set st ivs in
+      LOk (st', MConcatSet fields neg name)
+  end.
+
+(** Verdict-map entries (single-field key): each key's [lo,hi] interval + its
+    verdict. *)
+Fixpoint vmap_entries_single (dt : dtype) (entries : list (svalue * verdict))
+  : lres (list (data * data * verdict)) :=
+  match entries with
+  | [] => LOk []
+  | (v, sv) :: r =>
+      match value_interval dt false v with
+      | LOk (lo, hi) =>
+          match vmap_entries_single dt r with
+          | LOk rest => LOk ((lo, hi, sv) :: rest)
+          | LErr e => LErr e
+          end
+      | LErr e => LErr e
+      end
+  end.
+
+(** Verdict-map entries (concatenated key): the FLAT per-field key concatenation
+    (the model's [assoc_verdict] key), NOT slot-padded. *)
+Fixpoint vmap_entries_concat (dts : list dtype) (entries : list (svalue * verdict))
+  : lres (list (data * data * verdict)) :=
+  match entries with
+  | [] => LOk []
+  | (v, sv) :: r =>
+      match concat_elem_flat dts v with
+      | LOk (lo, hi) =>
+          match vmap_entries_concat dts r with
+          | LOk rest => LOk ((lo, hi, sv) :: rest)
+          | LErr e => LErr e
+          end
+      | LErr e => LErr e
+      end
+  end.
+
+(** A declared set's elements. *)
+Definition decl_set_elems (types : list string) (elems : list svalue)
+  : lres (list (data * data)) := map_lres (decl_elem_interval types) elems.
+
+(** A declared verdict-map's entries. *)
+Fixpoint decl_vmap_ents (types : list string) (elems : list (svalue * verdict))
+  : lres (list (data * data * verdict)) :=
+  match elems with
+  | [] => LOk []
+  | (v, sv) :: r =>
+      match decl_elem_interval types v with
+      | LOk (lo, hi) =>
+          match decl_vmap_ents types r with
+          | LOk rest => LOk ((lo, hi, sv) :: rest)
+          | LErr e => LErr e
+          end
+      | LErr e => LErr e
+      end
+  end.
+
 (* ------------------------------------------------------------------ *)
 (** ** Byte-pin witnesses (vm_compute): the verified lowering produces the
     HISTORICAL bytes the golden corpus / byteorder-gate / difftest check
@@ -610,4 +960,100 @@ Example dep_guard_bridge_ethertype :
 Proof. vm_compute. reflexivity. Qed.
 Example dep_guard_vlan_netdev_refused :
   dep_guard "netdev" (DepEther 0x8100) = LErr LEvlanNetdev.
+Proof. vm_compute. reflexivity. Qed.
+
+(* ------------------------------------------------------------------ *)
+(** ** M3 byte-pin witnesses: the set/map/vmap composition and its interning
+    produce the HISTORICAL bytes (golden corpus / gen-check pin them e2e). *)
+
+(** Decimal naming computes as expected (extraction uses [string_of_int]). *)
+Example nat_dec_pins : (nat_dec 0, nat_dec 7, nat_dec 42) = ("0", "7", "42").
+Proof. vm_compute. reflexivity. Qed.
+
+(** A ct-state set `{ established, related }` interns as `__set0` over
+    big-endian 4-byte points (no hton — an exact set). *)
+Example lower_anon_set_ctstate :
+  lower_anon_set ls0 FCtState DTct_state false
+    [SVSym "established"; SVSym "related"]
+  = LOk (mkLstate 1 [("__set0", [([0;0;0;2],[0;0;0;2]); ([0;0;0;4],[0;0;0;4])])] [] [],
+         MConcatSet [FCtState] false "__set0").
+Proof. vm_compute. reflexivity. Qed.
+
+(** `ct state 2` and `ct state established` intern the IDENTICAL bytes. *)
+Example lower_anon_set_same_bytes :
+  lower_anon_set ls0 FCtState DTct_state false [SVSym "established"]
+  = lower_anon_set ls0 FCtState DTct_state false [SVNum 2].
+Proof. vm_compute. reflexivity. Qed.
+
+(** A mark set `{ 0x100-0x200 }` over the host-endian mark field takes the hton
+    [MSetT] path with BIG-endian interval bounds. *)
+Example lower_anon_set_mark_interval :
+  lower_anon_set ls0 FMetaMark DTmark false [SVRange (SVNum 0x100) (SVNum 0x200)]
+  = LOk (mkLstate 1
+           [("__set0", [([0;0;1;0],[0;0;2;0])])] [] [],
+         MSetT FMetaMark [TByteorder true 4 4] false "__set0").
+Proof. vm_compute. reflexivity. Qed.
+
+(** An exact mark set `{ 0x99 }` stays the memcmp [MConcatSet] path with the
+    host-endian (little-endian) point bytes — no hton. *)
+Example lower_anon_set_mark_exact :
+  lower_anon_set ls0 FMetaMark DTmark false [SVNum 0x99]
+  = LOk (mkLstate 1 [("__set0", [([0x99;0;0;0],[0x99;0;0;0])])] [] [],
+         MConcatSet [FMetaMark] false "__set0").
+Proof. vm_compute. reflexivity. Qed.
+
+(** A tcp-flags brace set is refused (brace-vs-OR ambiguity — fail loud). *)
+Example lower_anon_set_tcpflags_refused :
+  lower_anon_set ls0 FTcpFlags DTtcp_flag false [SVSym "syn"; SVSym "ack"]
+  = LErr LEtcpflagSet.
+Proof. vm_compute. reflexivity. Qed.
+
+(** A single-field port set with a range `{ 22, 80-88 }`. *)
+Example lower_anon_set_port_range :
+  lower_anon_set ls0 FThDport DTinet_service false
+    [SVNum 22; SVRange (SVNum 80) (SVNum 88)]
+  = LOk (mkLstate 1
+           [("__set0", [([0;22],[0;22]); ([0;80],[0;88])])] [] [],
+         MConcatSet [FThDport] false "__set0").
+Proof. vm_compute. reflexivity. Qed.
+
+(** A CIDR set element `{ 192.168.0.0/16 }` expands to net .. broadcast. *)
+Example lower_anon_set_cidr :
+  lower_anon_set ls0 FIp4Saddr DTipv4 false [SVPrefix (SVIp4 [192;168;0;0]) 16]
+  = LOk (mkLstate 1
+           [("__set0", [([192;168;0;0],[192;168;255;255])])] [] [],
+         MConcatSet [FIp4Saddr] false "__set0").
+Proof. vm_compute. reflexivity. Qed.
+
+(** A concatenated SET element `1.2.3.4 . eth0` is per-field slot-padded: the
+    4-byte address fills its slot, the 16-byte ifname its slots (4+16 = 20). *)
+Example lower_concat_set_padded :
+  lower_concat_set ls0 [FIp4Daddr; FMetaOifname] [DTipv4; DTifname] false
+    [SVConcat [SVIp4 [1;2;3;4]; SVStr "eth0"]]
+  = LOk (mkLstate 1
+           [("__set0", [([1;2;3;4; 101;116;104;48; 0;0;0;0; 0;0;0;0; 0;0;0;0],
+                         [1;2;3;4; 101;116;104;48; 0;0;0;0; 0;0;0;0; 0;0;0;0])])] [] [],
+         MConcatSet [FIp4Daddr; FMetaOifname] false "__set0").
+Proof. vm_compute. reflexivity. Qed.
+
+(** A concatenated VMAP key `tcp . 22` is FLAT (unpadded): 1-byte protocol +
+    2-byte port = 3 bytes, no slot padding. *)
+Example vmap_entries_concat_flat :
+  vmap_entries_concat [DTinet_proto; DTinet_service]
+    [(SVConcat [SVSym "tcp"; SVNum 22], Verdict.Accept)]
+  = LOk [([6;0;22],[6;0;22], Verdict.Accept)].
+Proof. vm_compute. reflexivity. Qed.
+
+(** Interning dedups by content: the SAME set interned twice keeps one name. *)
+Example intern_dedup :
+  let '(n1, st1) := intern_set ls0 [([0;22],[0;22])] in
+  let '(n2, st2) := intern_set st1 [([0;22],[0;22])] in
+  (n1, n2, ls_ctr st2) = ("__set0", "__set0", 1).
+Proof. vm_compute. reflexivity. Qed.
+
+(** A declared concatenated set element with a per-field CIDR. *)
+Example decl_set_concat_cidr :
+  decl_set_elems ["ipv4_addr"; "inet_service"]
+    [SVConcat [SVPrefix (SVIp4 [10;0;0;0]) 8; SVNum 53]]
+  = LOk [([10;0;0;0; 0;53; 0;0], [10;255;255;255; 0;53; 0;0])].
 Proof. vm_compute. reflexivity. Qed.

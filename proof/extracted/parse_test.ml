@@ -2601,25 +2601,27 @@ let check_kind_parity () =
       check (Printf.sprintf "kind-parity %s" nm) r; r)
     rows) in
   Printf.printf "KIND-PARITY %d/24\n" okcnt;
-  (* the 8 declared-set type atoms take the same verified path *)
-  let st = { Nft_lower.defines = Hashtbl.create 1; sets = []; vmaps = [];
-             maps = []; counter = 0 } in
+  (* the 8 declared-set type atoms lower to a point interval through the
+     VERIFIED [Lower.decl_set_elems], whose bytes are exactly the datatype's
+     [encode] of the resolved value (M3: the OCaml [bytes_of_typeatom] is gone). *)
   let atoms = [
-    "ipv4_addr",    Nft_ast.Vip4 [10;0;0;1],  Ast.SVIp4 [10;0;0;1];
-    "ipv6_addr",    Nft_ast.Vip6 v6,          Ast.SVIp6 v6;
-    "ifname",       Nft_ast.Vsym "eth0",      Ast.SVSym "eth0";
-    "iface_index",  Nft_ast.Vnum 258,         Ast.SVNum 258;
-    "inet_service", Nft_ast.Vnum 443,         Ast.SVNum 443;
-    "inet_proto",   Nft_ast.Vsym "udp",       Ast.SVSym "udp";
-    "ether_addr",   Nft_ast.Vmac [1;2;3;4;5;6], Ast.SVMac [1;2;3;4;5;6];
-    "mark",         Nft_ast.Vnum 258,         Ast.SVNum 258;
+    "ipv4_addr",    Ast.SVIp4 [10;0;0;1];
+    "ipv6_addr",    Ast.SVIp6 v6;
+    "ifname",       Ast.SVSym "eth0";
+    "iface_index",  Ast.SVNum 258;
+    "inet_service", Ast.SVNum 443;
+    "inet_proto",   Ast.SVSym "udp";
+    "ether_addr",   Ast.SVMac [1;2;3;4;5;6];
+    "mark",         Ast.SVNum 258;
   ] in
-  L.iter (fun (atom, ov, sv) ->
-      let ob = (try Some (Nft_lower.bytes_of_typeatom st atom ov) with _ -> None) in
+  L.iter (fun (atom, sv) ->
+      let lb = (match Lower.decl_set_elems [atom] [sv] with
+        | Lower.LOk [(lo, hi)] when lo = hi -> Some lo
+        | _ -> None) in
       let cb = (match Typecheck.atom_dtype atom with
         | Some dt -> enc_coq dt sv
         | None -> None) in
-      check (Printf.sprintf "set-type-atom parity %s" atom) (ob <> None && ob = cb))
+      check (Printf.sprintf "set-type-atom parity %s" atom) (lb <> None && lb = cb))
     atoms;
   Printf.printf "\n"
 
