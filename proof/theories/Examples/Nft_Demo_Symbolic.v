@@ -17,7 +17,15 @@
     DEFINITIONALLY the raw statements ([reflexivity]); [demo_recovers_original]
     re-derives the ORIGINAL [Ruleset_Verified]-shaped statement (raw [eval_table],
     raw [cts_established]) from the readable one — so nothing was weakened.  Both
-    headline demos are guarded axiom-free by [Print Assumptions]. *)
+    headline demos are guarded axiom-free by [Print Assumptions].
+
+    M4 KNOWN GAP — these demos mirror [Ruleset_Verified]'s statements
+    INCLUDING their [e = gen_env] pin, so the established/new ct demos inherit
+    that file's vacuity as stated (empty [e_ct] makes the ct hypothesis
+    unsatisfiable; see Ruleset_Verified.v's M4 note).  This file's purpose is
+    the notation-soundness demonstration (readable form = raw form), which the
+    pin does not affect; when stating your own config theorems, follow
+    CONFIG_PROOFS.md § "Pin only what the lookups read" instead of this shape. *)
 
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Verdict Packet Syntax Semantics Nftval Eval_Fw

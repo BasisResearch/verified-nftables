@@ -75,9 +75,21 @@ Proof. intros f cs r rest e p Hap. cbn. rewrite Hap, Bool.andb_false_r. reflexiv
     For ANY frame leaving bridge port br.20 whose destination is a protected VM
     address but whose (destination, output-interface) pair is not the bound pair,
     the parsed ruleset's verdict is [Drop] — stated directly in terms of the two
-    set memberships, so it holds for every such address/interface. *)
-Theorem antispoof_general : forall e p,
-  e = gen_env ->
+    set memberships, so it holds for every such address/interface.
+
+    M4 NOTE — no whole-env pin.  This headline quantifies over the ENTIRE env:
+    the chain's only shared-state reads are the two set memberships, and those
+    are already the theorem's own hypotheses (over [e_set e], not [e_set
+    gen_env]), so pinning [e = gen_env] — as the pre-M4 statement did — added
+    NOTHING except a latent trap: had the chain ever grown an env-reading
+    match (ct/fib/rt/numgen), the pin would have silently narrowed "for all
+    frames" to the parser's empty world (empty conntrack, no routes) — exactly
+    the vacuity that bit Optiplex_Mark ([genenv_fib_local_contradiction]) and
+    the Router ct theorems ([Router_Realistic.ctstate_under_genenv_never_new]).
+    Machine-checked evidence the pin was inert: this proof is the pre-M4 proof
+    with the [?Henv] rewrite deleted and nothing else changed.  The pinned
+    original survives verbatim below as a corollary. *)
+Theorem antispoof_general_any_env : forall e p,
   field_value Fobrname e p = ifreg "br.20" ->
   (* the frame carries IPv4 — discharges the `ether type ip` dependency guard the
      frontend (faithfully to nft) inserts before reading `ip daddr` on bridge *)
@@ -91,7 +103,7 @@ Theorem antispoof_general : forall e p,
           (e_set e "vmantispoof") = false ->
   eval_table vm_fuel vmfilter_chains vmfilter_output e p = Drop.
 Proof.
-  intros e p Henv Hobr Hethip Hok Hin Hpair. unfold Fobrname in Hobr.
+  intros e p Hobr Hethip Hok Hin Hpair. unfold Fobrname in Hobr.
   unfold eval_table, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
   erewrite erj_drop_first; [ reflexivity | | | reflexivity ].
   (* rule_loadable (the antispoof rule) e p = true: only the ip daddr payload load
@@ -105,17 +117,42 @@ Proof.
   - unfold rule_applies, rule_applies_walk, eval_matchcond, match_loadable, eval_matchcond_body,
       fields_loadable, field_loadable, load_ok.
     cbn -[field_value read_payload_ok].
-    rewrite ?Hok, Hobr, Hethip, ?app_nil_r, Hin, Hpair, ?Henv. vm_compute. reflexivity.
+    rewrite ?Hok, Hobr, Hethip, ?app_nil_r, Hin, Hpair. vm_compute. reflexivity.
+Qed.
+
+(** The pre-M4 statement, verbatim: the same property with the (inert)
+    whole-env pin — a direct corollary of [antispoof_general_any_env].  Kept
+    because it is README-claimed and gate-listed under this name; new work
+    should cite [antispoof_general_any_env]. *)
+Theorem antispoof_general : forall e p,
+  e = gen_env ->
+  field_value Fobrname e p = ifreg "br.20" ->
+  field_value FMetaProtocol e p = [8; 0] ->
+  read_payload_ok PNetwork 16 4 p = true ->
+  concat_set_mem [field_value FIp4Daddr e p] (e_set e "vmaddrs") = true ->
+  concat_set_mem [field_value FIp4Daddr e p; field_value FMetaOifname e p]
+          (e_set e "vmantispoof") = false ->
+  eval_table vm_fuel vmfilter_chains vmfilter_output e p = Drop.
+Proof.
+  intros e p _ Hobr Hethip Hok Hin Hpair.
+  exact (antispoof_general_any_env e p Hobr Hethip Hok Hin Hpair).
 Qed.
 
 (** Axiom-freedom print (INFORMATIONAL: it goes to the `make proofs` build log
     but cannot fail the build).  The build-FAILING check is `make axioms`,
-    whose AXIOM_GATE_THEOREMS list includes [antispoof_general] and the three
-    concrete corollaries below — anything but "Closed under the global
-    context" fails that target. *)
+    whose AXIOM_GATE_THEOREMS list includes [antispoof_general_any_env],
+    [antispoof_general] and the three concrete corollaries below — anything
+    but "Closed under the global context" fails that target. *)
+Print Assumptions antispoof_general_any_env.
 Print Assumptions antispoof_general.
 
 (** ** Concrete witness 1 — the spoofing attempt is blocked.
+
+    In the three concrete corollaries the [e = gen_env] pin is a WITNESSING
+    instantiation, not a hypothesis to relax: it supplies the parser's own set
+    contents so the memberships compute, and — unlike the pre-M4 general form
+    or Optiplex_Mark — no env-reading field hypothesis coexists with it, so
+    the hypotheses are jointly satisfiable (the frames below are real).
 
     The container behind `inc-vikun` (vikunja, real address .14) sends a frame to
     budget's address 192.168.51.20.  The pair (192.168.51.20 . inc-vikun) is NOT

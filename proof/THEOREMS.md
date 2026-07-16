@@ -98,6 +98,7 @@ lock-in pins: `DEVELOPMENT.md` § "Known model infidelities" +
 | `compile_ruleset_correct` | SUPPORTING (stratum 6: + multi-table dispatch) | from `compile_table_correct` per base chain |
 | `compile_hook_correct` | **HEADLINE** (compiler axis) | = `compile_ruleset_correct` after pure hook selection/ordering |
 | `compile_seq_correct` | **HEADLINE** (congruence corollary — see scope note §1) | = `compile_hook_correct` + `seq_eval_ext` |
+| `run_table_fuel_indep_compiled` (Corollary) | SUPPORTING (VM mirror of the M4 fuel-adequacy result, §3) | = `compile_table_correct` (at both fuels) + `Semantics.eval_table_fuel_indep` |
 
 ### `Optimize.v` / `Optimize_ValueSet.v` (base pass and history)
 
@@ -150,6 +151,28 @@ theorem`.
 | `seq_eval` | no — the between-packet step is external/arbitrary; *no bridging theorem* | threaded between packets (by `step`) | **yes** (instantiated with `eval_hook`) | no — *no bridging theorem* | **yes** (via `eval_hook`) |
 | `seq_eval_env` | **yes** (instantiated with `eval_chain_mut_env`) | threaded between packets (by the evaluator itself) | no — *no bridging theorem* | no — *no bridging theorem* | no — *no bridging theorem* |
 
+**Fuel adequacy (RESOLVED, M4 config-proof soundness)**: the jump strand is
+fuel-bounded, and `eval_table` maps fuel EXHAUSTION to the chain policy — a
+verdict the kernel can never produce (nft rejects jump loops at load time;
+kernel jump stack is 16 deep, `NFT_JUMP_STACK_SIZE`).  Naive fuel
+monotonicity (`eval_rules_j fuel = Some v -> eval_rules_j (S fuel) = Some v`)
+is **false** — machine-refuted by
+`Semantics.eval_rules_j_not_naively_monotone` (an under-fueled callee's
+exhaustion reads as fall-through and more fuel flips the verdict).  The
+honest results (Semantics.v § "Fuel discipline for the jump strand"):
+`eval_rules_jx` makes exhaustion observable; clean runs agree with
+`eval_rules_j` (`eval_rules_jx_agree`), are Kleene-monotone
+(`eval_rules_jx_monotone`), and are the verdict at every larger fuel
+(`eval_rules_j_fuel_stable`); above the computable
+`sufficient_fuel cs rs`, under the `chain_ranked` acyclicity witness, every
+run is clean (`eval_rules_jx_adequate`), the verdict is fuel-independent
+(`eval_table_fuel_indep`), and the policy fallback is provably genuine
+fall-through (`eval_table_policy_is_fallthrough`).  Compiled mirror:
+`Correct.run_table_fuel_indep_compiled` (via `compile_table_correct`; no
+second VM development — rationale on the corollary).  User surface:
+`Nft_Tactics.nft_*_fuel_indep`, CONFIG_PROOFS.md § "Choosing the fuel
+budget", worked instance `Tutorial_Proofs.tutorial_blocks_exactly_any_fuel`.
+
 **Mutation × jump/goto is not jointly verified**: no evaluator both threads
 writes and follows jumps, and no theorem relates the mutation strand
 (`eval_rules_mut*`, `eval_rules_trace`, `seq_eval_env`) to the jump strand
@@ -197,11 +220,22 @@ chain that violates it.
 ## 4. Axiom-freedom gates
 
 - **`make axioms` is the build-FAILING gate** (`AXIOM_GATE_THEOREMS`,
-  proof/Makefile): `Print Assumptions` over 41 theorems, failing on anything
+  proof/Makefile): `Print Assumptions` over 55 theorems, failing on anything
   but `Closed under the global context`.  The list is
   - the HEADLINE set (§1) + the `Correct.v` strata + the optimizer DSL form +
     `Elab.elab_matchcond_correct` + the representation ratchet
-    `Semantics.run_rule_outcome_eq` (12 theorems), and
+    `Semantics.run_rule_outcome_eq` (12 theorems),
+  - the M4 fuel-adequacy heads (§3): `Semantics.eval_rules_jx_monotone`,
+    `eval_rules_j_fuel_stable`, `eval_rules_jx_adequate`,
+    `eval_table_fuel_indep`, `eval_table_policy_is_fallthrough`,
+    `Correct.run_table_fuel_indep_compiled`,
+    `Nft_Tactics.nft_yields_fuel_indep`,
+    `Tutorial_Proofs.tutorial_blocks_exactly_any_fuel` (8 theorems),
+  - the M4 de-vacuized config heads (§5):
+    `Optiplex_Antispoof.antispoof_general_any_env`,
+    `Optiplex_Mark.genenv_fib_local_contradiction` + the three
+    `Optiplex_Mark.streaming_*_real` heads +
+    `Optiplex_Mark.streaming_whole_ruleset_witnessed` (6 theorems), and
   - **every result the README claims axiom-free** (README § "Headline
     guarantees are axiom-free", 29 theorems): anti-spoofing
     (`Optiplex_Antispoof.antispoof_general` + its 3 concrete corollaries),
@@ -230,6 +264,25 @@ chain that violates it.
 - One-liner (the historical gate):
   `cd theories && printf 'From Nft Require Import Correct Optimize.\nPrint Assumptions compile_chain_correct.\n' | coqtop -R . Nft`
   → `Closed under the global context`.
+
+## 5. Config-proof claim surface (Examples/) — M4 de-vacuization
+
+Per-configuration security theorems used to pin the WHOLE env to the parser's
+`gen_env` (empty conntrack, no routes).  Where such a pin coexists with an
+env-reading field hypothesis the hypotheses are jointly **unsatisfiable** and
+the theorem certifies zero packets.  Status after M4:
+
+| claim | pre-M4 statement | class | successor (headline) | vacuity proof / witness |
+|---|---|---|---|---|
+| optiplex streaming mark, end-to-end | `Optiplex_Mark.streaming_flow_whole_ruleset` (+ `streaming_prerouting_io`/`_mark`, per-rule lemmas) | SUPERSEDED-vacuous (kept verbatim, derived from the contradiction) | `streaming_flow_whole_ruleset_real` (+ `_io_real`/`_mark_real`; env relaxed to the three `e_set` contents the chain reads) | `genenv_fib_local_contradiction`; witness `env_stream`/`pkt_stream` + `streaming_whole_ruleset_witnessed` |
+| optiplex anti-spoofing, general | `Optiplex_Antispoof.antispoof_general` (pin was INERT — memberships already hypothesised over `e_set e`) | SUPPORTING (verbatim corollary of the successor) | `antispoof_general_any_env` (no env pin at all) | proof = pre-M4 proof minus the `?Henv` rewrite; concrete corollaries unchanged (their pin is a satisfiable witnessing choice) |
+| router new-conn cruxes (input/forward/private/hooks) | `Router_Input.world_ingress_locked_down` et al. (`e = gen_env` + `cts_new`) | SUPERSEDED-vacuous (M3-era finding; kept verbatim, headers marked) | `Router_Realistic.*_real` + `*_witnessed` | `Router_Realistic.ctstate_under_genenv_never_new` |
+| workstation-firewall ct theorems (baseline + parser twin + notation demos) | `Example_Ruleset.established_accepted`, `Ruleset_Verified.established_accepted`/`smtp_dropped` et al., `Nft_Demo_Symbolic.demo_*` — the ones pairing the whole-env pin with an established/related/new ct hypothesis | **KNOWN-vacuous as stated, OPEN** (marked at the theorem sites; invalid/non-ct theorems in the same files are satisfiable and unaffected) | none yet — recorded follow-up: re-state over the `ctstate` vmap contents per the recipe | same contradiction shape (`ctstate_under_genenv_never_new`; `fw_env`/`gen_env` pin `e_ct` empty) |
+
+The recipe (relax to exactly what the lookups read + concrete satisfiability
+witness) is documented in CONFIG_PROOFS.md § "Pin only what the lookups read";
+`Router_Realistic.v` is the reference implementation.  The `_real`/any-env
+successors and the contradiction lemma are in `AXIOM_GATE_THEOREMS`.
 
 ## 6. Representation ratchets (M4)
 

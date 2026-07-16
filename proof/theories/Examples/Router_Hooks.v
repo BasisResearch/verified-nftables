@@ -29,6 +29,14 @@
    (inbound<->forward swapped onto each other's hooks) FAILS the hook-level
    theorems while satisfying every per-chain one, witnessed by a real LAN packet
    (tcp/25) that the bugged input hook ACCEPTs but the correct input hook DROPs.
+
+   M4 NOTE — the hook-level theorems below that combine [e = gen_env] with
+   [cts_new] inherit the per-chain VACUITY
+   ([Router_Realistic.ctstate_under_genenv_never_new]); the registration
+   bridges ([*_hook_drop_iff_*], no env hypothesis) and the mutation kill are
+   unaffected.  The de-vacuized hook-level forms are
+   [Router_Realistic.input_hook_world_locked_real] /
+   [forward_hook_unsolicited_dropped_real] (+ their witnessed instances).
    ========================================================================== *)
 
 From Stdlib Require Import List String ZArith.

@@ -52,7 +52,14 @@ Ltac eval_fw Hpe :=
     (eval_table over [fw_chains]/[inbound]); the copies HERE are over the
     parser-emitted chains ([firewall_chains]/[firewall_inbound], from
     [Ruleset_Gen.v]).  A grep by name finds both — this one is the
-    parser-output witness. *)
+    parser-output witness.
+
+    M4 KNOWN GAP — as in the baseline file: the [e = gen_env] pin makes the
+    established/related/new ct-state theorems below vacuous as stated
+    ([gen_env] has an empty [e_ct]; proof shape
+    [Router_Realistic.ctstate_under_genenv_never_new]); invalid/non-ct
+    theorems are unaffected.  Recipe + status: Example_Ruleset.v's M4 note,
+    CONFIG_PROOFS.md § "Pin only what the lookups read", THEOREMS.md §5. *)
 
 (* Established connections are accepted (the ct-state vmap hit). *)
 Theorem established_accepted : forall e p,

@@ -13,14 +13,24 @@
     parser-generated chains [filter_prerouting] / [filter_postrouting] in
     [Optiplex_Gen.v] — about the parser's actual output, not a hand copy.
 
-    The headline is [streaming_flow_whole_ruleset]: a game-streaming packet (dport
-    48010) goes IN, traverses the WHOLE prerouting chain — flowing past rule 1
-    (the 3389 rule, which does not match) and being marked by rule 2 — and the
-    packet that comes OUT is exactly the input with `meta mark` set to 0x99 and
+    The headline is [streaming_flow_whole_ruleset_real]: a game-streaming packet
+    (dport 48010) goes IN, traverses the WHOLE prerouting chain — flowing past
+    rule 1 (the 3389 rule, which does not match) and being marked by rule 2 — and
+    the packet that comes OUT is exactly the input with `meta mark` set to 0x99 and
     nothing else changed; carried to the postrouting hook, that mark drives the
     masquerade.  [eval_chain_trace] runs a whole chain threading the mutated packet
     rule-by-rule (its verdict is the verified [eval_chain_mut], by
-    [eval_chain_trace_verdict]); [chain_out] is the packet it leaves. *)
+    [eval_chain_trace_verdict]); [chain_out] is the packet it leaves.
+
+    M4 NOTE — [_real] vs the SUPERSEDED-vacuous originals: the pre-M4 theorems
+    pinned the WHOLE env ([e = gen_env]) while also hypothesising a firing
+    `fib daddr type local` — jointly unsatisfiable, since [gen_env] has no
+    routes ([genenv_fib_local_contradiction] below).  The [_real] forms relax
+    the pin to exactly the three [e_set] contents the chain's lookups read
+    (the Router_Realistic.v pattern; recipe in proof/CONFIG_PROOFS.md), the
+    originals survive verbatim as corollaries of the contradiction, and a
+    concrete witness (env WITH a local route + streaming packet) discharges
+    every [_real] hypothesis at once at the end of the file. *)
 
 From Stdlib Require Import List String Ascii NArith Lia.
 From Nft Require Import Bytes Verdict Packet Bytecode Syntax Semantics Optiplex_Gen Nftval.
@@ -42,6 +52,51 @@ Lemma l4_tcp_typed    : l4_tcp    = encode (inet_proto 6).         Proof. reflex
 Lemma port3389_typed  : port3389  = encode (Nftval.port 3389).     Proof. reflexivity. Qed.
 Lemma port48010_typed : port48010 = encode (Nftval.port 48010).    Proof. reflexivity. Qed.
 Lemma if_home_typed   : if_home   = encode (ifname "home"%string). Proof. reflexivity. Qed.
+
+(* ================================================================== *)
+(** ** M4: the whole-env pin [e = gen_env] made these theorems VACUOUS.
+
+    The prerouting rules match `fib daddr type local`, so every theorem below
+    hypothesises [field_value (FFib "daddr" FRtype) e p = fib_local].  But the
+    parser-emitted [gen_env] pins [e_routes = []] (a parser knows the SETS a
+    ruleset declares, not the host's routing table), and the fib load is
+    COMPUTED from the routes ([do_load (LFib …)] = [lpm_fib (e_routes e) …]),
+    so under [e = gen_env] it can only ever return [] — never [fib_local].
+    The two hypotheses are jointly UNSATISFIABLE: every [e = gen_env] theorem
+    in this file certified ZERO packets.  [genenv_fib_local_contradiction]
+    machine-checks that (the same shape as
+    [Router_Realistic.ctstate_under_genenv_never_new] for the ct pin).
+
+    THE FIX (same recipe as Router_Realistic.v, the documented pattern in
+    proof/CONFIG_PROOFS.md § "Pin only what the lookups read"): the chain's
+    lookups read exactly the THREE named sets below — so the [_real] theorems
+    relax [e = gen_env] to those three [e_set] equations, leaving [e_routes]
+    (hence the fib hypothesis) and [e_nat] free to be REAL.  The original
+    statements survive VERBATIM below, each derived from the contradiction
+    (SUPERSEDED-vacuous); the [_real] forms take the headline slot
+    (THEOREMS.md, `make axioms`), and the § "Non-vacuity witness" at the end
+    of the file exhibits a concrete env+packet satisfying every [_real]
+    hypothesis at once. *)
+
+(** What the prerouting chain's lookups actually read: the l4proto set, the
+    iifname set, and the streaming-dport set the parser emitted. *)
+Definition set_l4proto : list (data * data) := e_set gen_env "__set0".
+Definition set_iif     : list (data * data) := e_set gen_env "__set1".
+Definition set_sports  : list (data * data) := e_set gen_env "__set2".
+
+(** Under the whole-env pin the fib load is [] — the fib hypothesis of every
+    pinned theorem below is unsatisfiable. *)
+Lemma genenv_fib_daddr_empty : forall p,
+  field_value (FFib "daddr" FRtype) gen_env p = [].
+Proof. reflexivity. Qed.
+
+Theorem genenv_fib_local_contradiction : forall e p,
+  e = gen_env ->
+  field_value (FFib "daddr" FRtype) e p = fib_local ->
+  False.
+Proof.
+  intros e p -> H. rewrite genenv_fib_daddr_empty in H. discriminate.
+Qed.
 
 (** The rules of interest, taken straight from the generated chains. *)
 Definition dflt : rule :=
@@ -77,7 +132,31 @@ Qed.
     mark changed. *)
 
 (* rule 1 (the 3389 rule) does NOT match a streaming packet — its `th dport 3389`
-   fails, so the `mark set` after it never runs and the packet is unchanged. *)
+   fails, so the `mark set` after it never runs and the packet is unchanged.
+   [_real]: env relaxed to the one set rule 1's lookups read ([__set0]). *)
+Lemma pre1_streaming_noop_real : forall e p,
+  e_set e "__set0" = set_l4proto ->
+  field_value FMetaIifname e p = if_home ->
+  field_value (FFib "daddr" FRtype) e p = fib_local ->
+  field_value FMetaL4proto e p = l4_tcp ->
+  field_value FThDport e p = port48010 ->
+  read_payload_ok PTransport 2 2 p = true ->
+  dsl_writes pre1 e p = (e, p).
+Proof.
+  intros e p Hs0 Hiif Hfib Hl4 Hdport Hok.
+  unfold dsl_writes, pre1, filter_prerouting.
+  cbn -[field_value set_meta read_payload_ok].
+  unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
+    field_loadable, load_ok.
+  cbn -[field_value set_meta read_payload_ok].
+  rewrite ?Hok, !Hiif, !Hfib, !Hl4, !Hdport, !Hs0.
+  cbn -[set_meta read_payload_ok]. rewrite ?Hok. cbn -[set_meta]. reflexivity.
+Qed.
+
+(** SUPERSEDED-vacuous (M4): the original whole-env-pinned statement, kept
+    VERBATIM; its [e = gen_env] + fib hypotheses are jointly unsatisfiable
+    ([genenv_fib_local_contradiction]), so it is derived from the
+    contradiction.  Successor: [pre1_streaming_noop_real]. *)
 Lemma pre1_streaming_noop : forall e p,
   e = gen_env ->
   field_value FMetaIifname e p = if_home ->
@@ -88,17 +167,34 @@ Lemma pre1_streaming_noop : forall e p,
   dsl_writes pre1 e p = (e, p).
 Proof.
   intros e p Henv Hiif Hfib Hl4 Hdport Hok.
-  unfold dsl_writes, pre1, filter_prerouting.
+  exact (False_ind _ (genenv_fib_local_contradiction e p Henv Hfib)).
+Qed.
+
+(* rule 2 matches a streaming packet and sets the mark: the packet that comes out
+   is the input with meta mark := 0x99 (and nothing else).  [_real]: env relaxed
+   to the three sets rule 2's lookups read. *)
+Lemma pre2_streaming_marks_real : forall e p,
+  e_set e "__set0" = set_l4proto ->
+  e_set e "__set1" = set_iif ->
+  e_set e "__set2" = set_sports ->
+  field_value FMetaIifname e p = if_home ->
+  field_value (FFib "daddr" FRtype) e p = fib_local ->
+  field_value FMetaL4proto e p = l4_tcp ->
+  field_value FThDport e p = port48010 ->
+  read_payload_ok PTransport 2 2 p = true ->
+  dsl_writes pre2 e p = (e, set_meta p MKmark mark99).
+Proof.
+  intros e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok.
+  unfold dsl_writes, pre2, filter_prerouting.
   cbn -[field_value set_meta read_payload_ok].
   unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
     field_loadable, load_ok.
   cbn -[field_value set_meta read_payload_ok].
-  rewrite ?Hok, !Hiif, !Hfib, !Hl4, !Hdport, !Henv.
+  rewrite ?Hok, !Hiif, !Hfib, !Hl4, !Hdport, ?Hs0, ?Hs1, ?Hs2.
   cbn -[set_meta read_payload_ok]. rewrite ?Hok. cbn -[set_meta]. reflexivity.
 Qed.
 
-(* rule 2 matches a streaming packet and sets the mark: the packet that comes out
-   is the input with meta mark := 0x99 (and nothing else). *)
+(** SUPERSEDED-vacuous (M4); successor [pre2_streaming_marks_real]. *)
 Lemma pre2_streaming_marks : forall e p,
   e = gen_env ->
   field_value FMetaIifname e p = if_home ->
@@ -109,15 +205,28 @@ Lemma pre2_streaming_marks : forall e p,
   dsl_writes pre2 e p = (e, set_meta p MKmark mark99).
 Proof.
   intros e p Henv Hiif Hfib Hl4 Hdport Hok.
-  unfold dsl_writes, pre2, filter_prerouting.
-  cbn -[field_value set_meta read_payload_ok].
-  unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
-    field_loadable, load_ok.
-  cbn -[field_value set_meta read_payload_ok].
-  rewrite ?Hok, !Hiif, !Hfib, !Hl4, !Hdport, !Henv.
-  cbn -[set_meta read_payload_ok]. rewrite ?Hok. cbn -[set_meta]. reflexivity.
+  exact (False_ind _ (genenv_fib_local_contradiction e p Henv Hfib)).
 Qed.
 
+Lemma pre1_streaming_skips_real : forall e p,
+  e_set e "__set0" = set_l4proto ->
+  field_value FMetaIifname e p = if_home ->
+  field_value (FFib "daddr" FRtype) e p = fib_local ->
+  field_value FMetaL4proto e p = l4_tcp ->
+  field_value FThDport e p = port48010 ->
+  read_payload_ok PTransport 2 2 p = true ->
+  rule_applies pre1 e p = false.
+Proof.
+  intros e p Hs0 Hiif Hfib Hl4 Hdport Hok.
+  unfold rule_applies, rule_applies_walk, pre1, filter_prerouting.
+  cbn -[field_value read_payload_ok].
+  unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
+    field_loadable, load_ok.
+  cbn -[field_value read_payload_ok].
+  rewrite ?Hok, !Hiif, !Hfib, !Hl4, !Hdport, ?Hs0. vm_compute. reflexivity.
+Qed.
+
+(** SUPERSEDED-vacuous (M4); successor [pre1_streaming_skips_real]. *)
 Lemma pre1_streaming_skips : forall e p,
   e = gen_env ->
   field_value FMetaIifname e p = if_home ->
@@ -128,14 +237,30 @@ Lemma pre1_streaming_skips : forall e p,
   rule_applies pre1 e p = false.
 Proof.
   intros e p Henv Hiif Hfib Hl4 Hdport Hok.
-  unfold rule_applies, rule_applies_walk, pre1, filter_prerouting.
+  exact (False_ind _ (genenv_fib_local_contradiction e p Henv Hfib)).
+Qed.
+
+Lemma pre2_streaming_applies_real : forall e p,
+  e_set e "__set0" = set_l4proto ->
+  e_set e "__set1" = set_iif ->
+  e_set e "__set2" = set_sports ->
+  field_value FMetaIifname e p = if_home ->
+  field_value (FFib "daddr" FRtype) e p = fib_local ->
+  field_value FMetaL4proto e p = l4_tcp ->
+  field_value FThDport e p = port48010 ->
+  read_payload_ok PTransport 2 2 p = true ->
+  rule_applies pre2 e p = true.
+Proof.
+  intros e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok.
+  unfold rule_applies, rule_applies_walk, pre2, filter_prerouting.
   cbn -[field_value read_payload_ok].
   unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
     field_loadable, load_ok.
   cbn -[field_value read_payload_ok].
-  rewrite ?Hok, !Hiif, !Hfib, !Hl4, !Hdport, !Henv. vm_compute. reflexivity.
+  rewrite ?Hok, !Hiif, !Hfib, !Hl4, !Hdport, ?Hs0, ?Hs1, ?Hs2. vm_compute. reflexivity.
 Qed.
 
+(** SUPERSEDED-vacuous (M4); successor [pre2_streaming_applies_real]. *)
 Lemma pre2_streaming_applies : forall e p,
   e = gen_env ->
   field_value FMetaIifname e p = if_home ->
@@ -146,12 +271,7 @@ Lemma pre2_streaming_applies : forall e p,
   rule_applies pre2 e p = true.
 Proof.
   intros e p Henv Hiif Hfib Hl4 Hdport Hok.
-  unfold rule_applies, rule_applies_walk, pre2, filter_prerouting.
-  cbn -[field_value read_payload_ok].
-  unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
-    field_loadable, load_ok.
-  cbn -[field_value read_payload_ok].
-  rewrite ?Hok, !Hiif, !Hfib, !Hl4, !Hdport, !Henv. vm_compute. reflexivity.
+  exact (False_ind _ (genenv_fib_local_contradiction e p Henv Hfib)).
 Qed.
 
 Lemma pre2_outcome_accept : forall e p, outcome pre2 e p = Some Accept.
@@ -244,6 +364,39 @@ Qed.
     packet)] — packet in, packet out.  [pre2_apply_dnat] characterises the dnat
     (daddr rewritten to [windows_ip]); [streaming_prerouting_mark] shows the mark
     survives it. *)
+Theorem streaming_prerouting_io_real : forall e p,
+  e_set e "__set0" = set_l4proto ->
+  e_set e "__set1" = set_iif ->
+  e_set e "__set2" = set_sports ->
+  field_value FMetaIifname e p = if_home ->
+  field_value (FFib "daddr" FRtype) e p = fib_local ->
+  field_value FMetaL4proto e p = l4_tcp ->
+  field_value FThDport e p = port48010 ->
+  read_payload_ok PTransport 2 2 p = true ->
+  eval_chain_trace Hprerouting filter_prerouting e p
+    = (Accept, apply_nat Hprerouting pre2 e (set_meta p MKmark mark99)).
+Proof.
+  intros e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok.
+  unfold eval_chain_trace. rewrite prerouting_rules_eq.
+  (* rule 1: traversed but does not match; threads its (no-op) writes *)
+  cbn [eval_rules_trace dsl_rule_step].
+  rewrite pre1_streaming_skips_real by assumption.
+  rewrite Bool.andb_false_r.
+  rewrite (dsl_step_limit_free pre1 e p) by reflexivity.
+  rewrite pre1_streaming_noop_real by assumption.
+  (* rule 2: matches, terminal accept; the body marks the packet and the terminal
+     dnat rewrites the destination — the output is [apply_nat pre2 (marked packet)] *)
+  cbn [eval_rules_trace dsl_rule_step].
+  rewrite pre2_streaming_applies_real by assumption.
+  rewrite (pre2_loadable e p Hok).
+  rewrite pre2_outcome_accept. cbn [terminal].
+  rewrite (dsl_step_limit_free pre2 e p) by reflexivity.
+  rewrite pre2_streaming_marks_real by assumption.
+  rewrite pre2_no_natdrop. reflexivity.
+Qed.
+
+(** SUPERSEDED-vacuous (M4): kept verbatim, derived from the contradiction;
+    successor [streaming_prerouting_io_real]. *)
 Theorem streaming_prerouting_io : forall e p,
   e = gen_env ->
   field_value FMetaIifname e p = if_home ->
@@ -255,24 +408,34 @@ Theorem streaming_prerouting_io : forall e p,
     = (Accept, apply_nat Hprerouting pre2 e (set_meta p MKmark mark99)).
 Proof.
   intros e p Henv Hiif Hfib Hl4 Hdport Hok.
-  unfold eval_chain_trace. rewrite prerouting_rules_eq.
-  (* rule 1: traversed but does not match; threads its (no-op) writes *)
-  cbn [eval_rules_trace dsl_rule_step]. rewrite pre1_streaming_skips by assumption.
-  rewrite Bool.andb_false_r.
-  rewrite (dsl_step_limit_free pre1 e p) by reflexivity.
-  rewrite pre1_streaming_noop by assumption.
-  (* rule 2: matches, terminal accept; the body marks the packet and the terminal
-     dnat rewrites the destination — the output is [apply_nat pre2 (marked packet)] *)
-  cbn [eval_rules_trace dsl_rule_step]. rewrite pre2_streaming_applies by assumption.
-  rewrite (pre2_loadable e p Hok).
-  rewrite pre2_outcome_accept. cbn [terminal].
-  rewrite (dsl_step_limit_free pre2 e p) by reflexivity.
-  rewrite pre2_streaming_marks by assumption.
-  rewrite pre2_no_natdrop. reflexivity.
+  exact (False_ind _ (genenv_fib_local_contradiction e p Henv Hfib)).
 Qed.
 
 (** The firewall mark survives the terminal dnat: the packet leaving prerouting
     still has `meta mark` = 0x99 (so the postrouting masquerade still fires). *)
+Theorem streaming_prerouting_mark_real : forall e p,
+  e_set e "__set0" = set_l4proto ->
+  e_set e "__set1" = set_iif ->
+  e_set e "__set2" = set_sports ->
+  field_value FMetaIifname e p = if_home ->
+  field_value (FFib "daddr" FRtype) e p = fib_local ->
+  field_value FMetaL4proto e p = l4_tcp ->
+  field_value FThDport e p = port48010 ->
+  read_payload_ok PTransport 2 2 p = true ->
+  pkt_ctdir_orig p = true ->
+  e_nat e (pkt_flow p) = None ->
+  field_value FMetaMark e
+    (snd (snd (eval_chain_trace Hprerouting filter_prerouting e p))) = mark99.
+Proof.
+  intros e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok Horig Hnone.
+  rewrite (streaming_prerouting_io_real e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok).
+  cbn [snd].
+  rewrite (mark_through_dnat Hprerouting e (set_meta p MKmark mark99) Horig Hnone).
+  apply mark_after_set. reflexivity.
+Qed.
+
+(** SUPERSEDED-vacuous (M4): kept verbatim, derived from the contradiction;
+    successor [streaming_prerouting_mark_real]. *)
 Theorem streaming_prerouting_mark : forall e p,
   e = gen_env ->
   field_value FMetaIifname e p = if_home ->
@@ -286,9 +449,7 @@ Theorem streaming_prerouting_mark : forall e p,
     (snd (snd (eval_chain_trace Hprerouting filter_prerouting e p))) = mark99.
 Proof.
   intros e p Henv Hiif Hfib Hl4 Hdport Hok Horig Hnone.
-  rewrite (streaming_prerouting_io e p Henv Hiif Hfib Hl4 Hdport Hok). cbn [snd].
-  rewrite (mark_through_dnat Hprerouting e (set_meta p MKmark mark99) Horig Hnone).
-  apply mark_after_set. reflexivity.
+  exact (False_ind _ (genenv_fib_local_contradiction e p Henv Hfib)).
 Qed.
 
 (** ** The mark is read by the postrouting masquerade rule. *)
@@ -444,6 +605,50 @@ Qed.
     mark), is matched by the masquerade rule and the postrouting chain accepts it.
     No rule is applied by hand — each chain is run whole by [eval_chain_trace] /
     [eval_chain_mut]. *)
+Theorem streaming_flow_whole_ruleset_real : forall e p,
+  e_set e "__set0" = set_l4proto ->
+  e_set e "__set1" = set_iif ->
+  e_set e "__set2" = set_sports ->
+  field_value FMetaIifname e p = if_home ->
+  field_value (FFib "daddr" FRtype) e p = fib_local ->
+  field_value FMetaL4proto e p = l4_tcp ->
+  field_value FThDport e p = port48010 ->
+  read_payload_ok PTransport 2 2 p = true ->
+  pkt_ctdir_orig p = true ->
+  e_nat e (pkt_flow p) = None ->
+  (* [q] is the packet that leaves prerouting (the input marked AND dnat'd);
+     [e'] the env it leaves (the stored dnat mapping) *)
+  let q := snd (snd (eval_chain_trace Hprerouting filter_prerouting e p)) in
+  let e' := fst (snd (eval_chain_trace Hprerouting filter_prerouting e p)) in
+  (* prerouting: packet in p -> (Accept, q) out, with q still carrying mark 0x99 *)
+  fst (eval_chain_trace Hprerouting filter_prerouting e p) = Accept
+  /\ field_value FMetaMark e' q = mark99
+  (* postrouting reads the surviving mark and masquerades (terminal accept) *)
+  /\ rule_applies post1 e' q = true
+  /\ eval_chain_mut filter_postrouting e' q = Accept.
+Proof.
+  intros e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok Horig Hnone q e'.
+  assert (Hmark : field_value FMetaMark e' q = mark99).
+  { unfold q. rewrite <- (streaming_prerouting_mark_real e p); try assumption.
+    reflexivity. }
+  split; [| split; [exact Hmark | split]].
+  - unfold q.
+    rewrite (streaming_prerouting_io_real e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok).
+    reflexivity.
+  - now apply masquerade_gated_on_mark.
+  - unfold eval_chain_mut. rewrite postrouting_rules_eq. cbn [eval_rules_mut].
+    assert (Hov : fst (dsl_rule_step post1 e' q) = Some Accept).
+    { rewrite dsl_rule_step_fst.
+      rewrite (masquerade_gated_on_mark e' q Hmark).
+      replace (rule_loadable post1 e' q) with true by reflexivity.
+      reflexivity. }
+    destruct (dsl_rule_step post1 e' q) as [ov [e2 q2]].
+    cbn [fst] in Hov. subst ov. reflexivity.
+Qed.
+
+(** SUPERSEDED-vacuous (M4): the pre-M4 headline, kept verbatim, derived from
+    the contradiction; the headline slot (THEOREMS.md, `make axioms`) now
+    belongs to [streaming_flow_whole_ruleset_real]. *)
 Theorem streaming_flow_whole_ruleset : forall e p,
   e = gen_env ->
   field_value FMetaIifname e p = if_home ->
@@ -465,19 +670,118 @@ Theorem streaming_flow_whole_ruleset : forall e p,
   /\ eval_chain_mut filter_postrouting e' q = Accept.
 Proof.
   intros e p Henv Hiif Hfib Hl4 Hdport Hok Horig Hnone q e'.
-  assert (Hmark : field_value FMetaMark e' q = mark99).
-  { unfold q. rewrite <- (streaming_prerouting_mark e p); try assumption.
-    reflexivity. }
-  split; [| split; [exact Hmark | split]].
-  - unfold q. rewrite (streaming_prerouting_io e p Henv Hiif Hfib Hl4 Hdport Hok).
-    reflexivity.
-  - now apply masquerade_gated_on_mark.
-  - unfold eval_chain_mut. rewrite postrouting_rules_eq. cbn [eval_rules_mut].
-    assert (Hov : fst (dsl_rule_step post1 e' q) = Some Accept).
-    { rewrite dsl_rule_step_fst.
-      rewrite (masquerade_gated_on_mark e' q Hmark).
-      replace (rule_loadable post1 e' q) with true by reflexivity.
-      reflexivity. }
-    destruct (dsl_rule_step post1 e' q) as [ov [e2 q2]].
-    cbn [fst] in Hov. subst ov. reflexivity.
+  exact (False_ind _ (genenv_fib_local_contradiction e p Henv Hfib)).
 Qed.
+
+(* ================================================================== *)
+(** ** Non-vacuity witness: a concrete env+packet satisfying EVERY [_real]
+    hypothesis at once.
+
+    [env_stream] carries the parser's sets (via [env_with_sets … decls], so
+    the three [e_set] pins hold by computation) AND a real routing table: one
+    host-local route for 192.168.51.1 whose FRtype answer is [fib_local] —
+    the component [gen_env] pinned to [] (the vacuity source).  [pkt_stream]
+    is a TCP packet from the home bridge to 192.168.51.1, dport 48010, with a
+    wf fib key (the oracle returns the packet's real daddr bytes, the
+    [Fib_Local.fibkey_wf] discipline).  The [Example]s discharge each [_real]
+    hypothesis by [vm_compute] and then INSTANTIATE the repaired heads — the
+    hypotheses are jointly satisfiable, so the theorems constrain real
+    packets.  (Contrast [genenv_fib_local_contradiction]: the SUPERSEDED
+    originals provably constrain none.) *)
+
+Definition daddr_stream : data := [192; 168; 51; 1].
+
+Definition env_stream : env :=
+  env_with_sets
+    {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
+       e_routes := [(daddr_stream, daddr_stream,
+                     fun res => match res with FRtype => fib_local | _ => [] end)];
+       e_rt := fun _ => []; e_limit := fun _ => 0; e_quota := fun _ => 0;
+       e_ifaddrs := fun _ => []; e_ifaddrs6 := fun _ => [];
+       e_connlimit := fun _ => [];
+       e_ct := fun _ _ => []; e_nat := fun _ => None; e_numgen := fun _ => 0 |}
+    decls.
+
+Definition pkt_stream : packet :=
+  {| pkt_meta := fun k => match k with
+                          | MKiifname => if_home
+                          | MKl4proto => l4_tcp
+                          | _ => []
+                          end;
+     pkt_sock := fun _ => []; pkt_eh := fun _ _ _ _ _ => [];
+     pkt_lh := [];
+     (* a 20-byte IPv4 header: saddr 192.168.20.7 at 12, daddr 192.168.51.1 at 16 *)
+     pkt_nh := [69; 0; 0; 40; 0; 0; 0; 0; 64; 6; 0; 0;
+                192; 168; 20; 7; 192; 168; 51; 1];
+     (* transport header: sport 40000 (156;64), dport 48010 (187;138) *)
+     pkt_th := [156; 64; 187; 138];
+     pkt_ih := []; pkt_tnl := [];
+     (* wf fib key: the oracle returns the REAL daddr bytes (Fib_Local.fibkey_wf) *)
+     pkt_fibkey := fun sel =>
+       if (String.eqb sel "daddr" || String.eqb sel "daddr . iif")%bool
+       then daddr_stream else [];
+     pkt_numgen := fun _ => []; pkt_osf := [];
+     pkt_tunnel := fun _ => []; pkt_symhash := fun _ _ => [];
+     pkt_xfrm := fun _ _ _ => []; pkt_ctdir := fun _ _ => [];
+     pkt_inner := fun _ _ _ _ => [];
+     pkt_have_l2 := true; pkt_have_l4 := true; pkt_fragoff := 0;
+     pkt_flow := []; pkt_untracked := false;
+     pkt_ctdir_orig := true; pkt_ct_present := true |}.
+
+(** Every [_real] hypothesis holds on the witness pair (joint satisfiability). *)
+Example witness_sets :
+  e_set env_stream "__set0" = set_l4proto
+  /\ e_set env_stream "__set1" = set_iif
+  /\ e_set env_stream "__set2" = set_sports.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+Example witness_fields :
+  field_value FMetaIifname env_stream pkt_stream = if_home
+  /\ field_value (FFib "daddr" FRtype) env_stream pkt_stream = fib_local
+  /\ field_value FMetaL4proto env_stream pkt_stream = l4_tcp
+  /\ field_value FThDport env_stream pkt_stream = port48010.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+Example witness_flow :
+  read_payload_ok PTransport 2 2 pkt_stream = true
+  /\ pkt_ctdir_orig pkt_stream = true
+  /\ e_nat env_stream (pkt_flow pkt_stream) = None.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+(** The repaired heads, INSTANTIATED on the witness — non-vacuity of each. *)
+Theorem streaming_io_witnessed :
+  eval_chain_trace Hprerouting filter_prerouting env_stream pkt_stream
+    = (Accept,
+       apply_nat Hprerouting pre2 env_stream (set_meta pkt_stream MKmark mark99)).
+Proof.
+  destruct witness_sets as (Hs0 & Hs1 & Hs2).
+  destruct witness_fields as (Hiif & Hfib & Hl4 & Hdport).
+  destruct witness_flow as (Hok & _ & _).
+  exact (streaming_prerouting_io_real env_stream pkt_stream
+           Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok).
+Qed.
+
+Theorem streaming_whole_ruleset_witnessed :
+  let q := snd (snd (eval_chain_trace Hprerouting filter_prerouting
+                       env_stream pkt_stream)) in
+  let e' := fst (snd (eval_chain_trace Hprerouting filter_prerouting
+                        env_stream pkt_stream)) in
+  fst (eval_chain_trace Hprerouting filter_prerouting env_stream pkt_stream) = Accept
+  /\ field_value FMetaMark e' q = mark99
+  /\ rule_applies post1 e' q = true
+  /\ eval_chain_mut filter_postrouting e' q = Accept.
+Proof.
+  destruct witness_sets as (Hs0 & Hs1 & Hs2).
+  destruct witness_fields as (Hiif & Hfib & Hl4 & Hdport).
+  destruct witness_flow as (Hok & Horig & Hnone).
+  exact (streaming_flow_whole_ruleset_real env_stream pkt_stream
+           Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok Horig Hnone).
+Qed.
+
+(** And a raw evaluator pin, independent of the theorems: the mark on the
+    packet that actually leaves prerouting IS 0x99 (vm_compute end to end). *)
+Example streaming_mark_pin :
+  field_value FMetaMark env_stream
+    (snd (snd (eval_chain_trace Hprerouting filter_prerouting
+                 env_stream pkt_stream))) = mark99.
+Proof. vm_compute. reflexivity. Qed.

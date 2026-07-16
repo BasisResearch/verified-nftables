@@ -38,7 +38,13 @@
             limit is EXHAUSTED (the [limit 5/second] construct genuinely gates).
       - Non-vacuity witnesses (dns/dhcp/ssh accept; smtp drop) + the mutation kill
         [priv_property_discriminates_bug] (the catch-all [__map0] bug the prior
-        property set could not see). *)
+        property set could not see).
+
+    M4 NOTE — the symbolic theorems below that combine [e = gen_env] with
+    [cts_new] are VACUOUS ([Router_Realistic.ctstate_under_genenv_never_new]);
+    the concrete witnesses (under [env_lan]) are unaffected.  The de-vacuized
+    LAN-ingress crux is [Router_Realistic.inbound_eth1_accept_iff_real]
+    (recipe: proof/CONFIG_PROOFS.md § "Pin only what the lookups read"). *)
 
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen Router_Input Eval_Fw.

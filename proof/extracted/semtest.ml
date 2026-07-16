@@ -193,6 +193,13 @@ let () =
   (* (4) control flow: a base chain that JUMPs to a user chain "tcp_in" — tests
      compile_table_correct (jump -> callee accept, or fall-through -> resume base
      -> policy drop). The single-base-chain corpus cannot exercise this. *)
+  (* Traversal budget.  1000 is far above [Semantics.sufficient_fuel] for every
+     chain environment exercised here (each is a handful of chains of a handful
+     of rules; the bound is S (|rs| + |cs| * S (max chain len)) — tens, not
+     hundreds).  Above that bound the verdict is provably fuel-independent
+     (Semantics.eval_table_fuel_indep / Correct.run_table_fuel_indep_compiled),
+     so this constant is a comfortable over-approximation, not a tuned knob;
+     see proof/CONFIG_PROOFS.md § "Choosing the fuel budget". *)
   let fuel = 1000 in
   let tcp_in = chain Verdict.Continue [ rule [ meq Syntax.FThDport [0; 22] ] Verdict.Accept ] in
   let base   = chain Verdict.Drop     [ rule [ l4_tcp ] (Verdict.Jump "tcp_in") ] in

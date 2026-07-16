@@ -131,22 +131,40 @@ validate: glue
 #
 # The list = the THEOREMS.md HEADLINE set + the Correct.v strata + the
 # README §"Headline guarantees are axiom-free" claim surface:
-#   anti-spoofing        Optiplex_Antispoof (general + 3 concrete corollaries)
+#   anti-spoofing        Optiplex_Antispoof (any-env general + pinned original
+#                        + 3 concrete corollaries)
 #   established-accept   Example_Ruleset.established_accepted
 #   NAT-masquerade +
 #   multi-address        Netstate_MultiAddr (selection + drop-iff)
 #   fib host-local       Fib_Local (all 17 heads)
 #   ct-state             Ct_State (all 5 theorems)
+#   fuel adequacy (M4)   Semantics jx monotonicity/adequacy + eval_table
+#                        fuel-independence + compiled mirror + the tutorial
+#                        fuel-free corollary
+#   mark de-vacuized(M4) Optiplex_Mark _real heads + the gen_env/fib
+#                        contradiction + the witnessed instance
 # Any NEW README-claimed result must be added here in the same commit.
 AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   compile_chain_mut_env_correct compile_seq_mut_correct compile_table_correct \
   compile_ruleset_correct compile_hook_correct compile_seq_correct \
   optimize_table_uncond_correct optimize_table_uncond_compile_correct \
   elab_matchcond_correct Semantics.run_rule_outcome_eq \
+  Semantics.eval_rules_jx_monotone Semantics.eval_rules_j_fuel_stable \
+  Semantics.eval_rules_jx_adequate Semantics.eval_table_fuel_indep \
+  Semantics.eval_table_policy_is_fallthrough \
+  Correct.run_table_fuel_indep_compiled \
+  Nft_Tactics.nft_yields_fuel_indep \
+  Tutorial_Proofs.tutorial_blocks_exactly_any_fuel \
+  Optiplex_Antispoof.antispoof_general_any_env \
   Optiplex_Antispoof.antispoof_general \
   Optiplex_Antispoof.vikunja_cannot_spoof_budget \
   Optiplex_Antispoof.gentoo_cannot_spoof_hass \
   Optiplex_Antispoof.budget_legitimate_allowed \
+  Optiplex_Mark.genenv_fib_local_contradiction \
+  Optiplex_Mark.streaming_prerouting_io_real \
+  Optiplex_Mark.streaming_prerouting_mark_real \
+  Optiplex_Mark.streaming_flow_whole_ruleset_real \
+  Optiplex_Mark.streaming_whole_ruleset_witnessed \
   Example_Ruleset.established_accepted \
   Netstate_MultiAddr.masq_saddr_is_selected_primary \
   Netstate_MultiAddr.masq_drop_iff_no_eligible_addr \
@@ -165,7 +183,7 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Ct_State.refuted_alternative_diverges
 
 axioms:
-	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Elab Optiplex_Antispoof Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State.\n'; \
+	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Elab Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State.\n'; \
 	  for t in $(AXIOM_GATE_THEOREMS); do printf 'Print Assumptions %s.\n' "$$t"; done; } \
 	| coqtop -R . Nft 2>/dev/null \
 	| grep -E 'Closed under the global context|Axioms' \

@@ -3172,6 +3172,27 @@ Proof.
   rewrite run_eval_rules_j. reflexivity.
 Qed.
 
+(** VM mirror of the fuel-adequacy result (Semantics.v § "Fuel discipline"):
+    above [sufficient_fuel] the COMPILED table's verdict is fuel-independent
+    too.  No second exhaustion-tracking development is needed on the VM side —
+    [compile_table_correct] holds at EVERY fuel, so the DSL-side
+    [eval_table_fuel_indep] transports.  Scope: this covers every program the
+    compiler emits (the only programs the toolchain installs); a hand-written
+    [run_rules_j] program with no source chain has no jump-graph rank to state
+    adequacy against, and is out of scope by design. *)
+Corollary run_table_fuel_indep_compiled : forall rank cs e,
+  chain_ranked rank cs e ->
+  forall base p fuel fuel',
+    sufficient_fuel cs (c_rules base) <= fuel ->
+    sufficient_fuel cs (c_rules base) <= fuel' ->
+    run_table fuel (compile_env cs) (compile_chain base) (c_policy base) e p
+    = run_table fuel' (compile_env cs) (compile_chain base) (c_policy base) e p.
+Proof.
+  intros rank cs e Hcr base p fuel fuel' Hf Hf'.
+  rewrite !compile_table_correct.
+  eauto using eval_table_fuel_indep.
+Qed.
+
 (** ** Fidelity bridge: where the environment-FREE [eval_chain] is faithful.
 
     [compile_chain_correct] is a genuine *compiler*-correctness fact — the

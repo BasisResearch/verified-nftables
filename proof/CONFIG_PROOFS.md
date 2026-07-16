@@ -64,10 +64,10 @@ The layer gives you (all in `nft_scope`, opened by importing `Nft_Tactics`):
 
 | Notation                                             | Means (definitionally)                        |
 |------------------------------------------------------|-----------------------------------------------|
-| `C accepts p under cs budget f`                      | `eval_table f cs C p = Accept`                |
-| `C denies  p under cs budget f`                      | `eval_table f cs C p = Drop`                  |
-| `C gives v on p under cs budget f`                   | `eval_table f cs C p = v`                     |
-| `fieldof F p === v`                                  | `field_value F p = encode v`                  |
+| `C accepts p in e under cs budget f`                 | `eval_table f cs C e p = Accept`              |
+| `C denies  p in e under cs budget f`                 | `eval_table f cs C e p = Drop`                |
+| `C gives v on p in e under cs budget f`              | `eval_table f cs C e p = v`                   |
+| `fieldof F e p === v`                                | `field_value F e p = encode v`                |
 
 `v` in `fieldof … === v` is a **typed** [`Nftval`](theories/IR/Nftval.v) value —
 `ip4 192 168 51 20`, `ifname "eth0"`, `port 25`, `ct_established`, … — so the
@@ -76,34 +76,43 @@ bare byte list. (`encode (ip4 …)` `vm_compute`s to exactly the bytes the kerne
 compares.)
 
 ```coq
-Theorem lan_smtp_denied : forall p,
-  pkt_env p = gen_env ->
-  fieldof FCtState     p === ct_new ->
-  fieldof FMetaIifname p === ifname "eth0" ->
-  fieldof FMetaL4proto p === inet_proto 6 ->   (* tcp  *)
-  fieldof FThDport     p === port 25 ->        (* smtp *)
+Theorem lan_smtp_denied : forall e p,
+  e_vmap e "__map1" = e_vmap gen_env "__map1" ->  (* pin ONLY what the lookups read *)
+  fieldof FCtState     e p === ct_new ->
+  fieldof FMetaIifname e p === ifname "eth0" ->
+  fieldof FMetaL4proto e p === inet_proto 6 ->   (* tcp  *)
+  fieldof FThDport     e p === port 25 ->        (* smtp *)
   read_payload_ok PTransport 2 2 p = true ->
-  my_chain denies p under my_chains budget my_fuel.
+  my_chain denies p in e under my_chains budget my_fuel.
 ```
+
+Two deliberate choices in that statement, each with its own section below:
+the env hypothesis pins the **contents of the one vmap the chain reads**, not
+the whole env (§ "Pin only what the lookups read" — the whole-env pin
+`e = gen_env` silently contradicts `ct_new` and makes the theorem vacuous),
+and the fuel budget can be discharged as provably irrelevant
+(§ "Choosing the fuel budget").
 
 ### 4. Prove it with one tactic
 
-- **Symbolic packet** (constrained by `pkt_env`/`field_value` hypotheses) — pass
-  the `pkt_env p = …` hypothesis to **`nft_eval`**:
+- **Symbolic packet** (constrained by env-content/`field_value` hypotheses) —
+  pass the env-content equation to **`nft_eval`**:
 
   ```coq
-  Proof. intros p Hpe Hct Hiif Hl4 Hdp Hok. nft_eval Hpe. Qed.
+  Proof. intros e p Hvm Hct Hiif Hl4 Hdp Hok. nft_eval Hvm. Qed.
   ```
 
-  `nft_eval Hpe` unfolds the predicate, `autounfold`s your registered chains, and
+  `nft_eval Hvm` unfolds the predicate, `autounfold`s your registered chains, and
   runs the shared symbolic engine (`Eval_Fw.eval_fw_core`), which steps the chain
-  one rule at a time, rewriting each `field_value F p` from your hypotheses.
+  one rule at a time, rewriting the equation you passed and each
+  `field_value F e p` from your hypotheses.  (With several set/map pins,
+  rewrite the extra ones first, as `Router_Realistic.v`'s proofs do.)
 
 - **Fully concrete packet** (a closed `packet` record, closed chains) — use
   **`nft_decide`**:
 
   ```coq
-  Theorem dns_accepted : my_chain accepts pkt_dns under my_chains budget my_fuel.
+  Theorem dns_accepted : my_chain accepts pkt_dns in my_env under my_chains budget my_fuel.
   Proof. nft_decide. Qed.
   ```
 
@@ -111,6 +120,106 @@ Theorem lan_smtp_denied : forall p,
   field facts and concrete-verdict disequalities).
 
 That is the whole loop. See `theories/Nft_Demo_*.v` for compiling instances.
+
+---
+
+## Pin only what the lookups read (env hypotheses)
+
+**The rule: hypothesise the contents of the sets/vmaps/maps your chain
+actually looks up — never `e = gen_env`.**
+
+`gen_env` is the parser's output: it knows the sets/maps the ruleset
+*declares* and pins **every other env component to empty** — empty conntrack
+(`e_ct := fun _ _ => []`), no routes (`e_routes := []`), no NAT state, no
+interface addresses.  A parser cannot know the host's world; that is the
+right emission.  But it makes `e = gen_env` a **trap** as a theorem
+hypothesis: combined with any hypothesis about an env-reading field it can be
+*unsatisfiable*, and your "for all packets" theorem certifies zero packets.
+Two machine-checked instances in this repo:
+
+- `ct state new`: under `gen_env` the ct-state load can only read
+  untracked/absent/present-empty, never NEW —
+  `Router_Realistic.ctstate_under_genenv_never_new` proves
+  `e = gen_env -> field_value FCtState e p <> cts_new`.  Every pre-M4 Router
+  theorem combining the pin with `cts_new` was vacuous (both `= Drop` **and**
+  `= Accept` were provable).
+- `fib daddr type local`: under `gen_env` the fib lookup over `e_routes = []`
+  returns `[]`, never `type local` —
+  `Optiplex_Mark.genenv_fib_local_contradiction`.  The pre-M4 Optiplex mark
+  theorems were vacuous the same way.
+
+The fix costs one hypothesis per lookup: a vmap/set lookup evaluates
+`e_vmap e "name"` / `e_set e "name"` and nothing else, so state exactly those
+contents and leave the rest of the env universally quantified:
+
+```coq
+(* instead of:  e = gen_env  *)
+e_vmap e "__map1" = e_vmap gen_env "__map1" ->   (* or  = map1  with a named def *)
+e_set  e "vmaddrs" = e_set gen_env "vmaddrs" ->
+```
+
+Now `e_ct`/`e_routes`/`e_limit`/`e_nat` are free to carry a real world, the
+ct/fib hypotheses are satisfiable, and the theorem is strictly stronger (the
+pinned form is the trivial corollary).  Worked patterns:
+
+- `theories/Examples/Router_Realistic.v` — the reference file: states the
+  relaxation rationale, re-proves the Router cruxes over `__map0..3` contents,
+  and discharges every hypothesis on concrete witnesses.
+- `theories/Examples/Optiplex_Mark.v` (`*_real` + `env_stream` witness) — the
+  same recipe where the free component is `e_routes` (a real local route).
+- `theories/Examples/Optiplex_Antispoof.v` (`antispoof_general_any_env`) — the
+  degenerate case: the memberships were already hypotheses over `e_set e`, so
+  the pin constrained nothing and is simply dropped.
+
+**Always finish with a satisfiability witness**: a concrete env+packet that
+meets every hypothesis at once (`vm_compute`-checked `Example`s), then
+instantiate your theorem on it.  A universally quantified theorem whose
+hypotheses nothing satisfies is not a property of your ruleset.
+
+**When is the pin fine?**  When no env-reading field hypothesis coexists with
+it — e.g. the anti-spoofing concrete corollaries pin `gen_env` purely to
+compute the parser's set contents on frames whose other hypotheses touch only
+payload/meta fields.  Even then, prefer the relaxed form for headline
+statements; the pin narrows silently the day the chain grows a ct/fib/rt
+match.
+
+## Choosing the fuel budget
+
+Every `budget fuel` in the notations feeds `eval_table`'s fuel-bounded
+traversal, and **on fuel exhaustion `eval_table` silently falls back to the
+chain policy** — a verdict the real kernel can never produce (nft rejects
+jump loops at load time; the kernel bounds the jump stack at 16,
+`NFT_JUMP_STACK_SIZE`, include/net/netfilter/nf_tables.h).  Before M4, "is
+`my_fuel` big enough?" was an unstated soundness side condition: with an
+under-sized budget you can "prove" an accepts/denies statement that is really
+the exhaustion fallback (`Semantics.eval_table_under_fueled` exhibits one, and
+`Semantics.eval_rules_j_not_naively_monotone` shows more fuel can even FLIP a
+`Some` verdict — naive fuel monotonicity is false).
+
+M4 discharges the side condition (Semantics.v § "Fuel discipline for the jump
+strand"):
+
+1. **Compute the bound**: `sufficient_fuel cs (c_rules my_chain)` is a
+   closed-form number (`vm_compute` it; tutorial: 4).  Any budget at or above
+   it is adequate.
+2. **Witness acyclicity**: `chain_ranked rank cs e` says every realised
+   jump/goto strictly descends a rank — the load-time loop-freedom nft itself
+   enforces.  If no rule of `cs` can transfer at all (no `jump`/`goto`
+   verdicts, vmaps included), one line does it:
+   `apply chains_no_transfer_ranked; reflexivity.`
+3. **Conclude fuel-independence**: `Nft_Tactics.nft_yields_fuel_indep` (and
+   the `nft_accepts_/nft_drops_` forms) turn a theorem at your one budget into
+   the same theorem at EVERY adequate budget.  Worked instance:
+   `Tutorial_Proofs.tutorial_blocks_exactly_any_fuel` — the tutorial headline,
+   verbatim, for all `fuel >= sufficient_fuel …`.
+
+At adequate fuel the policy fallback is provably GENUINE fall-through
+(`Semantics.eval_table_policy_is_fallthrough`), and the compiled bytecode
+inherits all of this at every fuel via `Correct.run_table_fuel_indep_compiled`.
+For chains that do jump (e.g. the Router's `inbound -> inbound_world`),
+`chain_ranked` needs a real rank function and the vmap-verdict contents
+pinned per the previous section; the general lemmas take exactly those
+hypotheses.
 
 ---
 
@@ -176,19 +285,20 @@ to `_CoqProject`.
 `theories/Examples/Tutorial_Proofs.v`, using only the readable layer:
 
 ```coq
-Theorem tutorial_blocks_exactly : forall (p : packet) (a b c d : nat),
-  fieldof FIp4Saddr p === ip4 a b c d ->
+Theorem tutorial_blocks_exactly : forall (e : env) (p : packet) (a b c d : nat),
+  fieldof FIp4Saddr e p === ip4 a b c d ->
   read_payload_ok PNetwork 12 4 p = true ->
-  ( tutorial_input denies p under tutorial_chains budget tut_fuel
+  ( tutorial_input denies p in e under tutorial_chains budget tut_fuel
     <-> a = 192 /\ b = 168 /\ c = 100 ).
 ```
 
 Read it aloud: *for every packet whose IPv4 source address is `a.b.c.d` (and
 which really carries an IPv4 header — that is all `read_payload_ok … 12 4` says),
 the chain drops it **iff** `a.b.c` = `192.168.100`* — i.e. iff the source lies in
-192.168.100.0–192.168.100.255. Both quantifiers matter: `p` ranges over *all*
-packets (any conntrack state, any interface, any ports — note there is no
-`pkt_env` hypothesis at all), and `a b c d` range over all addresses.
+192.168.100.0–192.168.100.255. All three quantifiers matter: `e` ranges over *every* env (the
+chain reads no shared state, so no env hypothesis at all — not even a
+set-contents pin), `p` ranges over *all* packets (any conntrack state, any
+interface, any ports), and `a b c d` range over all addresses.
 
 ### 4. Prove it — with the exactness lemmas, not the internals
 
@@ -243,6 +353,11 @@ false claim. Finally:
 ```coq
 Print Assumptions tutorial_blocks_exactly.   (* Closed under the global context *)
 ```
+
+And close the fuel loop (§ "Choosing the fuel budget"):
+`Tutorial_Proofs.tutorial_blocks_exactly_any_fuel` re-states the headline at
+**every** budget `>= sufficient_fuel tutorial_chains (c_rules tutorial_input)`
+(= 4, by `reflexivity`), so the eyeballed `tut_fuel = 16` is provably inert.
 
 axiom-free — and since the statement is about the parser's own output, via
 `Correct.compile_table_correct` the same verdict holds of the compiled netlink
