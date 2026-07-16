@@ -5,13 +5,21 @@
     conditions and statements followed by ONE outcome.  The leaves here are
     byte-level: match values are register bytes, and [transform] records the
     mask/shift/byteorder/jhash operations in front of a compare — this IR
-    models exactly what the kernel's expressions evaluate.  Generated source
-    terms ([*_Gen.v]) do NOT carry raw bytes: their immediates are TYPED
-    ([Nftval.nftval]) and reach this IR through the VERIFIED elaboration
-    [Elab.elab_m] (correctness: [Elab.elab_matchcond_correct]); the frontend
-    ([extracted/nft_lower.ml]) obtains every match immediate by applying the
-    verified [Nftval.encode]/[Elab.elab_m], so the typed->bytes step is proved,
-    not an OCaml byte table.
+    models exactly what the kernel's expressions evaluate.  The typed->bytes
+    boundary, stated precisely: for the FOUR [Elab.tmatch] shapes — typed
+    eq / neq / CIDR-prefix / ifname-wildcard matches — a generated source term
+    ([*_Gen.v]) carries a TYPED immediate ([Nftval.nftval]) that reaches this
+    IR through the VERIFIED elaboration [Elab.elab_m] (correctness:
+    [Elab.elab_matchcond_correct]), and the per-atom encoding is everywhere the
+    verified [Nftval.encode].  Every OTHER immediate in a [*_Gen.v] term is a
+    raw byte list COMPOSED by the unverified frontend ([extracted/nft_lower.ml]):
+    set/map element intervals (incl. its own OCaml CIDR net/broadcast
+    expansion), range endpoints (incl. the host-endian [enc_atom_be] reversal),
+    vmap keys, NAT/tproxy target addresses/ports, mangle/vsrc immediates, and
+    bitwise masks.  Those bytes are checked by the untrusted differential
+    gates (corpus 2532/2532, validate 28/28, parse-test/e2e vs live nft), not
+    by a theorem — see [Elab.v]'s header and CONFIG_PROOFS.md ("What the Gen
+    bytes rest on").
 
     Each [field] (e.g. "tcp dport") *denotes* a concrete way to read
     the packet, given by [field_load].  This denotation is the single source of
@@ -286,8 +294,14 @@ Definition do_load (ld : loaddesc) (e : env) (p : packet) : data :=
          conntrack data, the FIRST packet of a flow reads whatever the entry was
          INITIALISED to (the kernel: NEW — established/related bits clear), and a
          fabricated packet can no longer report ESTABLISHED out of thin air: it can
-         only read what an entry for [pkt_flow p] holds.  See [ct_wf]/[Ct_Flow.v] for
-         the well-formedness invariant that pins the initial state to NEW.
+         only read what an entry for [pkt_flow p] holds.  [Regression/Ct_Flow.v]
+         proves these consequences ([ct_state_flow_keyed], [same_flow_same_state])
+         and provides [flow_is_new] — an ENTRY-STATE invariant on (env, packet)
+         hypotheses ("the table records NEW for this packet's flow"), under which
+         `ct state established` provably does not match; there is no global ct
+         well-formedness predicate.  Note also that [pkt_flow] itself is an opaque
+         packet oracle (no [flow_wf] ties it to the header 5-tuple yet — see the
+         rationale on [pkt_flow] in Core/Packet.v).
 
          The sole per-traversal exception is [CKstate] after a `notrack` statement:
          nft_notrack_eval sets the skb's ctinfo to IP_CT_UNTRACKED, so the subsequent

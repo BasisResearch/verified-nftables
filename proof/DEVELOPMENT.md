@@ -236,6 +236,14 @@ mostly closed — see the per-item markers and TODO 3)* — a statement that doe
   the verdict proof had delegated to the corpus. (`data_or`'s truncation is now a
   *modelled* choice both sides share, not an unchecked one.) Open: key-transformed
   value maps and the empty-field degenerate operands.
+- ⛔ STILL OPEN — **shared byte-level primitives with no external oracle**:
+  `data_jhash` is a structural abstraction of the kernel's Jenkins hash (a kernel
+  differential would fail BY DESIGN), and `data_byteorder` ignores its `hton` and
+  `len` parameters (safe only under the producer invariant stated on its docstring
+  in `Core/Bytes.v`). Both are shared by the DSL and the VM, so every compile
+  theorem is blind to them and **no shipped gate can catch a divergence there** —
+  see "Eyeball-trusted, never-differentially-tested semantics" in the Trust story
+  below for the full statement and what a closing gate would take.
 
 **What the theorem *does* still give** (honestly): the compiler and optimizer are
 *internally consistent* w.r.t. this semantics — the compiler introduces no bug
@@ -269,6 +277,14 @@ The gap-closing program was tracked as C→A→B→D. Status as of 2026-06:
   now flow-keyed** (`e_ct`, keyed by `pkt_flow`) by the 2026-06 audit — `ct
   mark`/`state`/`direction`/`connlimit` accumulate across a flow's packets. (See TODO 1
   and `../adversarial.md`.)
+  ⛔ Caveat on the KEY itself: **`pkt_flow` is an opaque packet oracle** — nothing
+  ties it to the header bytes' direction-normalised 5-tuple (+ l4proto/zone), the
+  same residual `Fib_Local.fibkey_wf` closed for the *fib* key (and closed only for
+  the four IPv4 daddr/saddr selectors it pins).  The ct/NAT theorems are congruences over that opaque
+  key, so their transfer to a real skb rests on an unverified injective-
+  canonicalisation assumption; a `flow_wf` layer analogous to `fibkey_wf` is the
+  designated de-oracling step.  Full rationale: the `pkt_flow` comment in
+  `theories/Core/Packet.v`; scope note in `THEOREMS.md` §1.
 - ✅ **(5) Data fidelity** (D): interval/prefix sets, wildcard ifnames, and **concat-key
   register-slot padding** are done — the 2026-06 audit's `13ee781` splits a stored
   concat element by 4-byte register slots (ifname = 16) rather than raw field widths, so
@@ -276,10 +292,14 @@ The gap-closing program was tracked as C→A→B→D. Status as of 2026-06:
   anti-spoofing proof's `ip daddr . oifname` key).
 
 So the headline honest gaps remaining are: **payload-mangle and immediate-data-dynset
-mutation threading**, **`meter`** state, the **netlink emitter shim** (TODO 6), and the
-**VST data-plane layer** (TODO 8) — plus the standing framing caveat that this is internal
-consistency against a self-authored semantics, with kernel fidelity now resting on the
-2026-06 adversarial audit (`../adversarial.md`) and `make validate` (28/28) rather than the
+mutation threading**, **`meter`** state, the **un-de-oracled packet keys**
+(`pkt_flow` — see the (4) caveat above — plus `pkt_fibkey` beyond the four
+`fibkey_wf`-pinned selectors, and `pkt_inner`), the **netlink emitter shim** (TODO 6),
+and the **VST data-plane layer** (TODO 8) — plus the standing framing caveat that this is
+internal consistency against a self-authored semantics, with kernel fidelity now resting
+on the 2026-06 adversarial audit (`../adversarial.md` — see its evidence-class ledger:
+most fixes are backed by kernel *source reading* + golden control-plane payloads, few by
+kernel-executed packet differentials) and `make validate` (28/28) rather than the
 corpus round-trip. Additionally, three **confirmed model-vs-kernel divergences inside
 modelled features** are known and deliberately left open — the ledger below.
 
@@ -559,6 +579,56 @@ field / meta-ct key to **live `nft`** (an independent oracle we don't control)
 and checks our `field_load` descriptor appears in nft's lowering — 28/28 pass.
 A wrong offset or name fails there.
 
+**The oracle direction (read before citing 2532/2532).** The name-table example
+above is an instance of a *general* property of this gate: `corpus_test.ml`'s
+`rule_of_block` reconstructs the DSL rule **from** the corpus netlink block, so
+the check is `render(compile_rule(rule_of_block(b))) = b` — a **fixed point of a
+payload-level round-trip**, not a differential from the rule's *source text*.
+Anything the reconstructor and the compiler systematically agree on — a shared
+misunderstanding of how nft lowers a given `.nft` construct, not just a shared
+table entry — round-trips cleanly and is invisible to this gate. (The one
+documented near-miss was exactly this shape: the compile path's host-order byte
+handling was wrong while `make corpus` stayed green, because the round-trip
+never runs the source compiler — see "Enforcement model" below and
+`../NOTES.md` § "Register byte-order sweep".)
+
+**Why not drive the whole corpus source-side?** Every corpus block carries its
+source rule as a `# <src>` header, so the stricter gate — parse `<src>` with our
+frontend, compile with the verified compiler, diff the rendered lines against
+the block — is *implementable today*, and we measured it (2026-07, this review,
+with a throwaway whole-corpus generalisation of `byteorder-gate`'s per-block
+loop in `extracted/parse_test.ml`; deliberately NOT wired in as a gate — see
+below). Of the **1742** headered blocks the harness can attempt, **1142 (65.6%)** already survive the full compile-from-source
+diff; **517** fail to parse/lower (frontend syntax gaps: constructs the Menhir
+frontend does not accept, e.g. exotic statements and set forms — loud
+`Parse_error`/`Unsupported`, never a mis-parse); **83** parse but render
+*differently* from the corpus. The 83 fall into three classes, all in
+territory `byteorder-gate` deliberately excludes:
+  - **host-order byte-order divergences** on cmp/range/bitwise immediates for
+    host-endian keys *outside* the gate's covered set (`meta
+    length`/`cpu`/`skuid`/`skgid`, `ct expiration`, the `meta mark and/or/xor`
+    mask+xor operands): the corpus renders `0x00000bb8` where we render
+    `0xb80b0000` — the display-vs-wire question `../NOTES.md` flags as *still
+    to adjudicate against a real kernel* for precisely these keys;
+  - **nft constant-folds/merges we don't replicate**: `meta mark xor 0x03 ==
+    0x01` → nft folds to a plain `cmp eq 0x02` (we emit `bitwise; cmp`), and
+    the adjacent-payload merge `tcp sport 1 tcp dport 2` → one 4-byte load
+    (we emit two 2-byte loads — semantically equal, textually not);
+  - **render/lowering text differences with no adjudicated wire divergence**:
+    dependency-guard synthesis in the vlan/ether/icmpv6 family contexts the
+    corpus varies, `reject` default type/code rendering, `log` option
+    defaults, `exthdr != exists` compare polarity.
+A full source-driven gate wired in **today would therefore be red** (83
+mismatches), and most of the red is *unadjudicated display-vs-wire divergence*,
+not established compiler error — so gating on it would freeze open questions as
+failures. That is why the shipped `make byteorder-gate` scopes itself to
+host-endian **plain cmp/range** blocks (13 blocks, byte-identical required):
+the one class where the wire truth *was* adjudicated (netns packet counters,
+`../NOTES.md`). The adjudication TODO — classify the 83, then widen the gate
+class-by-class as each display-vs-wire question is settled against a live
+kernel — is recorded in `../NOTES.md` § "Register byte-order sweep". Until the
+gate covers a class, a source-side mismatch in it is *not* machine-caught.
+
 ## Trust story (TCB)
 
 Trusted: the Rocq kernel; the `.v` *specifications* (`Semantics.v` defines what
@@ -589,13 +659,62 @@ untrusted-frontend code, and the parse-test pins are the gate.
 
 **Eyeball-trusted, never-differentially-tested semantics.** The corpus checks
 *structure*, not the data-plane *meaning* of register operations. The byte-level
-functions `data_bitops`, `data_le`, `data_mem`, `data_shift`, `data_byteorder`
-are not extracted (the glue never runs the packet semantics) and have no external
-oracle; their faithfulness rests on inspection of the `.v` definitions. They are
-written to match nft: `data_byteorder` reverses each `len`-byte element (matching
-nft's byteorder, not a whole-string `rev` stub); `data_shift` shifts via a
-big-endian `N` of the loaded width. A small data-plane differential test for
-these is future work.
+functions `data_bitops`, `data_le`, `data_mem`, `data_shift`, `data_byteorder`,
+`data_jhash` **are extracted and executed** — `make semtest` and `make
+parse-test` run the extracted DSL semantics and bytecode VM on concrete packets
+through them — but the expected outputs in those harnesses are **authored in
+this repo**, so they have **no external oracle**: their faithfulness rests on
+inspection of the `.v` definitions against the kernel source. They are written
+to match the kernel: `data_byteorder` reverses each `size`-byte element
+(matching nft_byteorder.c's per-element swap — the very shape fix `ab4c83d` in
+`../adversarial.md` records; NOT a whole-`len`-chunk or whole-string reversal;
+note its `hton`/`len` parameters are deliberately dead — see the docstring in
+`theories/Core/Bytes.v` for the producer invariant that makes that safe);
+`data_shift` shifts via a big-endian `N` of the loaded width. `data_jhash`
+deserves the strongest caveat: it is a **structural abstraction** of the real
+Jenkins hash (deterministic, input/seed-dependent, mod-bounded — but NOT the
+kernel's mixing function), so a kernel differential on a jhash-bearing rule
+would fail **by design**; jhash-dependent theorems match the kernel only up to
+a renaming of hash values. All of these are shared by the DSL semantics AND the
+VM, so every compile theorem is *blind* to them — the vacuous-by-shared-
+abstraction pattern this document warns about. No shipped gate can catch a
+divergence here (e.g. a hypothetical `len < length d` byteorder input, or any
+jhash value): these belong on the ⛔ STILL-OPEN list alongside the unmodelled
+features, and the only closing move is the data-plane differential below.
+
+**Why no at-scale data-plane differential yet (the fuzz-gate question).**
+Control-plane bytes are checked on 2532 blocks; packet *semantics* is checked
+only by hand-picked witnesses (`make semtest` batteries, `e2e.sh`'s B6 netns
+per-rule-counter probe, `vm-e2e`'s live ping/TCP counter checks). The obvious
+gate — random supported rulesets × random packets in a netns, kernel per-rule
+counters vs the extracted `eval_chain`/`eval_hook` — is *not* blocked on
+missing machinery. The ingredients exist: the evaluators (incl. the sequence
+form `seq_eval_env`) are extracted and runnable, `nftc send --commit` installs
+a verified-compiled ruleset atomically, `e2e.sh` B6 already reads back per-rule
+counters after crafted traffic in an unprivileged netns, and `vm-e2e` boots a
+stock kernel rootlessly for the cases netns cannot host. The honest blockers,
+in order:
+1. **Generator effort** (the bulk of it): a random-ruleset generator that stays
+   inside the supported subset, plus a packet generator that *reaches* the
+   generated matches (random bytes almost never hit a `ct state established`
+   or a specific concat-set element; you need constraint-aware packet
+   synthesis per rule) — engineering, not research, but substantial.
+2. **Observability of env state**: verdicts are observable per rule (counters),
+   but the model's `e_limit`/`e_quota` are *token counts* consumed by a
+   verdict-keyed sweep with no per-rule attribution (see infidelity 1 in the
+   ledger above), while the kernel's limits are *time-based* (tokens refill);
+   ct-entry internals are only partially readable (`conntrack -L`). So for
+   stateful rules the kernel exposes less than the model tracks, and the model
+   is known-divergent — a naive differential would mostly rediscover ledgered
+   infidelities. Scoping the fuzz gate to the stateless fragment first avoids
+   this.
+3. **Privileges**: netns covers most of it unprivileged; anything needing real
+   devices/timers goes through the (slower) `vm-e2e` path.
+So the answer to "effort or observability?" is: *effort for the stateless
+fragment* (where the gate is well-defined and would catch e.g. a `data_bitops`
+divergence), *observability + ledgered known-divergence for the stateful
+fragment*. Until it exists, the eyeball-trusted list above is exactly the
+data-plane TCB.
 
 **Known abstractions** (each faithful or documented, none a silent no-op):
 `reject`/`queue` model only their control-flow (stop traversal), not the emitted
@@ -626,7 +745,12 @@ because the inner packet is a distinct packet, not a function of the outer
 headers. The `fib` selector/result tokenization (free-form, so the round-trip
 can't self-check it) is confirmed against live `nft` by `make validate`.
 Ordered comparisons (`cmp lt/gt/lte/gte`) use `data_le`, a total order on the
-equal-width operands nft emits. Meta/ct `set` operand VALUES (immediate, field,
+equal-width operands nft emits. The `jhash` transform is `data_jhash`, a
+**structural abstraction** of the kernel's Jenkins hash (see "Eyeball-trusted"
+above): "proved equal on both sides" for a jhash-bearing operand means both
+sides compute the *same abstracted* hash — the value matches the real kernel
+only up to hash-value renaming, and no differential gate can (or is meant to)
+close that. Meta/ct `set` operand VALUES (immediate, field,
 value-map, jhash, OR-fold) are now Rocq-proved equal on both sides (the
 `eval_vsrc` value-correctness underlying `compile_chain_mut_correct`); the
 *mangle* (`SMangle` payload-write) value remains checked by the differential
@@ -1153,12 +1277,24 @@ datatype (`typed_atom : kind -> value -> Nftval.nftval`), inserts the implicit
 named-set/map *declarations* (and inline anonymous `{…}` sets / `vmap {…}`
 maps, incl. **concatenated** keys like `ip daddr . oifname`) into named `env`
 entries — anonymous sets DEDUPLICATED by contents.  The typed value -> register
-bytes step is NOT frontend code: every match immediate is produced by the
-VERIFIED `Nftval.encode` / `Elab.elab_m` (`enc_atom` is literally
-`encode ∘ typed_atom`), the CIDR byte-alignment split lives in the verified
-`Elab.prefix_expand`, and `Elab.elab_matchcond_correct` proves the elaborated
-term evaluates exactly as the typed source.  `Nft_parse.parse_file` adds
-`include` expansion (relative to the file dir).
+bytes step is verified **exactly this far** (state the boundary precisely,
+because the residue matters): (i) the per-ATOM byte encoding is everywhere the
+VERIFIED `Nftval.encode` (`enc_atom` is literally `encode ∘ typed_atom`), and
+(ii) for the four `Elab.tmatch` shapes — typed **eq / neq / CIDR-prefix /
+ifname-wildcard** matches — the whole match is produced by the VERIFIED
+`Elab.elab_m` (the CIDR byte-alignment split lives in the verified
+`Elab.prefix_expand`), with `Elab.elab_matchcond_correct` proving the
+elaborated term evaluates exactly as the typed source.  Everything that
+COMPOSES atoms beyond those four shapes is still **unverified OCaml** in
+`nft_lower.ml`: set/map ELEMENT intervals (incl. the OCaml CIDR
+net/broadcast expansion in `interval_of_value`, distinct from the verified
+`prefix_expand`), range endpoints (incl. `enc_atom_be`'s host-endian byte
+reversal), vmap keys, NAT/tproxy/redirect target addresses and ports,
+mangle/`vsrc` immediates, and bitwise masks.  Those raw byte lists land in
+`*_Gen.v` and are checked only by the untrusted differential gates
+(corpus/validate/parse-test/e2e), not by a theorem — see the boundary notes on
+`IR/Syntax.v`/`IR/Elab.v` and the trust paragraph in `CONFIG_PROOFS.md`.
+`Nft_parse.parse_file` adds `include` expansion (relative to the file dir).
 
 **The proof bridge (`nft_emit.ml` + `nft2coq`).** `make gen` runs the parser on a
 `.nft` file and EMITS its AST as Coq terms — `theories/Generated/Optiplex_Gen.v`,

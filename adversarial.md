@@ -113,67 +113,94 @@ from the improved repo state until a run returns `satisfied=true`.
 Grouped by theme. Every fix is axiom-free and keeps all gates green; commit hashes are on
 branch `verified-nft-compiler`. Full ordered list: `git log --reverse 75df26b..HEAD`.
 
+**Evidence classes (read the tags — they scope what "fixed faithfully" rests on).**
+Each bullet below carries the class(es) of evidence that back it:
+
+- **(a) kernel-executed packet-level evidence** — a real kernel ran packets against the
+  behaviour in question (netns per-rule counters, or the `vm-e2e` stock-kernel VM
+  battery).  Noted per fix whether it is a *differential* (could have refuted the model)
+  or only a *match witness* (shows the fixed form works, without refuting alternatives).
+- **(b) kernel C-source reading + golden control-plane bytes** — the red agent's
+  substantiation: quoted `net/netfilter/*` C at file:line, plus the corpus's golden
+  `.t.payload` blocks / live-`nft` lowering for the *encoding* side.  No kernel executed
+  the data-plane behaviour.
+- **(c) model-internal Coq repro** — an axiom-free theorem/regression pin (the `Red_*.v`
+  probes, now `theories/Regression/*`) that demonstrates the divergence in-model and
+  locks the fixed behaviour in.
+
+Every fix has (b) — it was the audit's admission criterion.  Most add (c).  **Almost
+none have (a)**: at fix time no kernel executed packets against any of these; the
+kernel-executed evidence that exists is post-hoc and narrow — `vm-e2e`'s live
+established-TCP/ping counter checks (exercising the flow-keyed `ct state` read
+end-to-end), the post-audit netns adjudication of the **meta/ct mark wire order**
+(`NOTES.md` § "Register byte-order sweep"), and `proof/e2e.sh`'s B6 bare-map
+break-on-miss witness (optimizer track).  `NOTES.md` also names what is **still to
+adjudicate against a real kernel**: `ct state`'s own representation and the remaining
+host-order `ct`/`meta`/`rt` keys, covered by class-level display fixes but not
+individually packet-tested.  Anyone citing "kernel fidelity" should read the Outcome
+scoping note below first.
+
 ### Conntrack & statefulness (the biggest class)
 The original model treated conntrack as a per-packet *oracle*. The kernel keeps writable
 state in the shared flow entry and derives read-only state per-skb at lookup. These fixes
 rebuilt that.
 
-- `4b90569` — ct mark/label persist across a flow's packets (shared conntrack table).
-- `13db31b` — ct **state** and all read-only ct keys are flow-keyed, not a per-packet oracle.
-- `6c0f15e` — ct **direction** derived from `pkt_ctdir_orig`, not a free oracle byte.
-- `e8fe429` — `connlimit` is a flow-keyed connection counter, not a per-packet bucket.
-- `a7a848d` — ct-state **INVALID** encoding fixed (`NF_CT_STATE_INVALID_BIT` = 1<<0, not 1<<5).
-- `1ecc297` — a non-state ct key on a **no-entry** packet BREAKs the rule (kernel `NFT_BREAK`).
-- `1a17d10` — `ct … set` (mark/secmark/label) is a **no-op** when the packet has no entry.
+- `4b90569` — ct mark/label persist across a flow's packets (shared conntrack table). *(b,c: `Red_CtMark_Crosspkt`)*
+- `13db31b` — ct **state** and all read-only ct keys are flow-keyed, not a per-packet oracle. *(b,c: `Ct_Flow`; a-witness: vm-e2e's live established-TCP counter matches through this read)*
+- `6c0f15e` — ct **direction** derived from `pkt_ctdir_orig`, not a free oracle byte. *(b,c: `Ct_Flow` direction theorems)*
+- `e8fe429` — `connlimit` is a flow-keyed connection counter, not a per-packet bucket. *(b,c)*
+- `a7a848d` — ct-state **INVALID** encoding fixed (`NF_CT_STATE_INVALID_BIT` = 1<<0, not 1<<5). *(b,c: `Red_Ct_Untracked`)*
+- `1ecc297` — a non-state ct key on a **no-entry** packet BREAKs the rule (kernel `NFT_BREAK`). *(b,c)*
+- `1a17d10` — `ct … set` (mark/secmark/label) is a **no-op** when the packet has no entry. *(b,c: `Red_CtMark_Crosspkt`)*
 - `528b12d` / `6d2711a` — `notrack` sets ct state to UNTRACKED, observed by later reads,
-  threaded intra-rule into the rule's own matches/terminal.
-- `598cf8b` — `notrack` is a **no-op** when a conntrack entry already exists (kernel guard).
+  threaded intra-rule into the rule's own matches/terminal. *(b,c: `Red_Notrack`/`Red_NotrackIntra`)*
+- `598cf8b` — `notrack` is a **no-op** when a conntrack entry already exists (kernel guard). *(b,c)*
 
 ### NAT (it was modelled as bare `accept`)
-- `0dc940e` — dnat/snat/redirect actually rewrite the address in the data-plane trace.
-- `9bd72ba` / `9fa4ac8` — address rewrite & masquerade geometry are family-aware (ip6 = 16 bytes).
-- `5af126a` / `e01f290` — L4 **port** rewrite, including un-rewriting the reply-direction port.
-- `f5aaa1c` — port-only dnat/snat preserves the L3 address (operand-presence gating).
+- `0dc940e` — dnat/snat/redirect actually rewrite the address in the data-plane trace. *(b,c: `Dnat_Rewrite`)*
+- `9bd72ba` / `9fa4ac8` — address rewrite & masquerade geometry are family-aware (ip6 = 16 bytes). *(b,c)*
+- `5af126a` / `e01f290` — L4 **port** rewrite, including un-rewriting the reply-direction port. *(b,c: `Red_NatReplyDir`)*
+- `f5aaa1c` — port-only dnat/snat preserves the L3 address (operand-presence gating). *(b,c)*
 - `8c2a226` / `5bc0f66` / `74ab93e` — IPv4 header checksum *and* L4 (TCP/UDP) checksum updated
-  on rewrite; a zero UDP checksum is left untouched (RFC 768).
+  on rewrite; a zero UDP checksum is left untouched (RFC 768). *(b,c: checksum lemmas in `Bytes.v`)*
 - `72cfca2` / `8189ee7` — NAT is flow-stateful: map once, store in a flow-keyed table, reuse
-  per flow, and un-NAT replies (store original addr + ctdir bit).
-- `e6f5907` — redirect destination-NAT is hook-dependent (loopback at the output hook).
-- `8be02fe` — NAT-core returns **NF_DROP** when the interface has no usable address.
-- `391987f` — inet-table NAT dispatches the L3 family at **runtime per packet**, not pinned to IPv4.
+  per flow, and un-NAT replies (store original addr + ctdir bit). *(b,c: `Red_NatPerPacket`)*
+- `e6f5907` — redirect destination-NAT is hook-dependent (loopback at the output hook). *(b,c)*
+- `8be02fe` — NAT-core returns **NF_DROP** when the interface has no usable address. *(b,c: `Red_NatNoAddrDrop`)*
+- `391987f` — inet-table NAT dispatches the L3 family at **runtime per packet**, not pinned to IPv4. *(b,c)*
 
 ### Rate limiting & accounting (were inert / per-packet)
-- `c44fc09` — honour the `over` (invert) flag in limit/quota/connlimit matches.
-- `aa3d9fe` — limit/quota/connlimit are shared **consuming** token buckets, not oracles.
-- `42d80bc` — limit rate/unit/burst made live (real token-bucket cost & cap; was inert).
-- `c2287e1` — quota counts **bytes** (`skb->len`) per eval, not a fixed −1.
+- `c44fc09` — honour the `over` (invert) flag in limit/quota/connlimit matches. *(b,c: `Limit_Over`)*
+- `aa3d9fe` — limit/quota/connlimit are shared **consuming** token buckets, not oracles. *(b,c: `Red_LimitProbe`)*
+- `42d80bc` — limit rate/unit/burst made live (real token-bucket cost & cap; was inert). *(b,c: `Limit_Over`)*
+- `c2287e1` — quota counts **bytes** (`skb->len`) per eval, not a fixed −1. *(b,c)*
 
 ### Payload / header loads (BREAK semantics)
-- `04407c0` — a failed transport-payload load fails the rule (`NFT_BREAK`); never truncates.
-- `c123b4a` — link-layer (`ether`) loads guard on MAC-header presence (`NFT_PAYLOAD_LL_HEADER`).
-- `8a5ebc6` — exthdr / TCP-option value loads guard on not-present (`NFT_BREAK`).
+- `04407c0` — a failed transport-payload load fails the rule (`NFT_BREAK`); never truncates. *(b,c: `Payload_Break`)*
+- `c123b4a` — link-layer (`ether`) loads guard on MAC-header presence (`NFT_PAYLOAD_LL_HEADER`). *(b,c: `Red_LinkLayer`)*
+- `8a5ebc6` — exthdr / TCP-option value loads guard on not-present (`NFT_BREAK`). *(b,c: `Red_Exthdr_Probe`)*
 
 ### Matching, sets & encoding
-- `5058ab9` / `a85c4fa` — single positive `ct state` / `tcp flags` lower to a **bitmask** test, not exact equality.
-- `dac1092` — distinguish a `ct state` comma OR-list from a brace set (bitmask fold).
+- `5058ab9` / `a85c4fa` — single positive `ct state` / `tcp flags` lower to a **bitmask** test, not exact equality. *(b,c: `Ct_State`/`Tcpflag`; the fixed form is also live-matched by vm-e2e, but an exact-eq lowering would match those packets too — witness, not differential)*
+- `dac1092` — distinguish a `ct state` comma OR-list from a brace set (bitmask fold). *(b — frontend-only fix, no Coq repro)*
 - `43202ed` / `13ee781` — concat-set membership is per-field cross-product, split by 4-byte
-  register slots (ifname = 16) — this underpins the anti-spoofing proof.
-- `8b168f8` — non-wildcard ifname matches padded to the kernel's 16-byte exact compare.
-- `3e03cd3` / `e107418` — iif/oif lower to the numeric interface **index** (host-endian, via `hton`), not the ASCII name.
+  register slots (ifname = 16) — this underpins the anti-spoofing proof. *(b,c: `Concat_Iv`)*
+- `8b168f8` — non-wildcard ifname matches padded to the kernel's 16-byte exact compare. *(b,c: `Ifname_Exact`)*
+- `3e03cd3` / `e107418` — iif/oif lower to the numeric interface **index** (host-endian, via `hton`), not the ASCII name. *(b,c: `Iif_Index`)*
 - `deb409a` / `c322ceb` / `44ef815` — `meta nfproto` wired to the L3 family table, with the
-  implicit nfproto guard lowered before inet ip/ip6 and icmp/icmpv6 matches.
-- `b52690b` / `420aaab` — host-endian `mark` ranges & interval-set membership emit `byteorder hton`.
-- `ab4c83d` — byteorder swaps each SIZE-byte element, not the whole LEN-byte chunk.
-- `91274be` — ct/meta `set` values encoded at the key's register width, not always u32.
-- `6fc196d` — interval/prefix verdict-map keys (`NFT_SET_INTERVAL | NFT_SET_MAP`).
-- `77f9a08` — fib route-type `anycast` = `RTN_ANYCAST` (4), not `RTN_BLACKHOLE` (6).
-- `ce6aa07` — fib route-type encoded host-endian (`BYTEORDER_HOST_ENDIAN`).
+  implicit nfproto guard lowered before inet ip/ip6 and icmp/icmpv6 matches. *(b — frontend lowering, gated by corpus/parse-test)*
+- `b52690b` / `420aaab` — host-endian `mark` ranges & interval-set membership emit `byteorder hton`. *(b; a post-audit: the meta/ct-mark wire order this class rests on was netns-packet-adjudicated later — `NOTES.md`)*
+- `ab4c83d` — byteorder swaps each SIZE-byte element, not the whole LEN-byte chunk. *(b,c: the `data_byteorder_*` per-element lemmas in `Bytes.v`)*
+- `91274be` — ct/meta `set` values encoded at the key's register width, not always u32. *(b)*
+- `6fc196d` — interval/prefix verdict-map keys (`NFT_SET_INTERVAL | NFT_SET_MAP`). *(b)*
+- `77f9a08` — fib route-type `anycast` = `RTN_ANYCAST` (4), not `RTN_BLACKHOLE` (6). *(b)*
+- `ce6aa07` — fib route-type encoded host-endian (`BYTEORDER_HOST_ENDIAN`). *(b)*
 
 ### Verdicts & control flow
-- `e1d3455` — synproxy is verdict-bearing (STOLEN/DROP/BREAK), not a no-op.
+- `e1d3455` — synproxy is verdict-bearing (STOLEN/DROP/BREAK), not a no-op. *(b,c: `Synproxy`)*
 - `eac4e54` — jump/goto fidelity bridged: `eval_chain` routed through the faithful
-  `eval_table`; jump-aware drop locked in.
-- `ee5193a` — `numgen inc` is a shared persistent round-robin counter, not a per-packet oracle.
+  `eval_table`; jump-aware drop locked in. *(b,c: bridge theorems in `Correct.v`)*
+- `ee5193a` — `numgen inc` is a shared persistent round-robin counter, not a per-packet oracle. *(b,c: `Red_NumgenProbe`)*
 
 *(10 conntrack + 14 NAT + 4 rate/accounting + 3 payload + 18 matching/sets/encoding + 3 verdicts/control-flow = 52.)*
 
@@ -204,6 +231,16 @@ make -f CoqMakefile theories/<File>.vo
 The model is now faithful enough that an adversarial prover, given the linux-6.18.33 kernel
 source, concedes. Re-running the workflow from this state is the way to keep it honest as the
 semantics grows.
+
+**Scoping note — what "kernel fidelity" means here.** The adjudicator of this audit was a
+red agent *reading* the linux-6.18.33 C source, not a running kernel: except where a fix
+carries an **(a)** tag above, "hardened against linux-6.18.33" means
+**fidelity-to-the-kernel-source-as-read** (plus golden control-plane bytes), and a shared
+misreading of the C by red and blue would survive it. Kernel-*executed* packet-level
+evidence exists only for the narrow set the evidence-class legend names, and `NOTES.md`
+records what is **still to adjudicate against a real kernel** (ct-state's representation;
+the remaining host-order `ct`/`meta`/`rt` keys, display-fixed by class but not
+individually packet-tested). Cite accordingly.
 
 **Residual infidelities found after convergence (scope of "red satisfied").** The verdict
 above means the red agent could substantiate no *further* divergence in that run — not that

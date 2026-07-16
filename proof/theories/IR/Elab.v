@@ -7,10 +7,19 @@
     VERIFIED elaboration of a typed match onto the byte-level [matchcond] IR the
     compiler consumes; [elab_matchcond_correct] proves the elaborated term
     evaluates exactly as the typed semantics [eval_tmatch] on every env/packet.
-    The per-field byte encoding (endianness, widths) is [Nftval.encode] — the
-    frontend (extracted/nft_lower.ml) obtains ALL its match immediates by
-    applying this verified [encode]/[elab_m], so the typed->bytes step is no
-    longer an unverified OCaml table.
+    The per-field byte encoding (endianness, widths) is [Nftval.encode].
+
+    SCOPE — what is and is not covered.  [tmatch] has exactly FOUR shapes
+    (typed eq / neq / CIDR-prefix / ifname-wildcard), so "the typed->bytes step
+    is proved" holds for THOSE matches plus every per-atom [encode] call the
+    frontend makes ([enc_atom] = [encode] o [typed_atom]).  It does NOT cover
+    the immediates the frontend COMPOSES outside [elab_m]: set/map element
+    intervals (nft_lower.ml's [interval_of_value] does its own OCaml CIDR
+    net/broadcast expansion — distinct from the verified [prefix_expand]),
+    range endpoints (incl. [enc_atom_be]'s host-endian reversal), vmap keys,
+    NAT/tproxy target addresses/ports, mangle/vsrc immediates, and bitwise
+    masks.  Those remain unverified frontend bytes, checked by the untrusted
+    differential gates (corpus/validate/parse-test/e2e), not by this theorem.
 
     The CIDR alignment special-case lives HERE, verified, not in the frontend:
     nft shortens a byte-aligned prefix on a plain payload field to a load of

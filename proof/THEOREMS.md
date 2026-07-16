@@ -39,7 +39,7 @@ axiom-free — without reading 3000 lines of `Correct.v`.
 | compiler, sequence form | `compile_seq_correct` | `Correct.v` | the same, lifted over a packet sequence under an **arbitrary step** `verdict -> env -> env` — a per-packet **congruence corollary** of `compile_hook_correct`, *not* a proof about ruleset-generated state (that is the next axis) |
 | mutation / cross-packet learning | `compile_seq_mut_correct` | `Correct.v` | compiled single-chain traversal threading the env each packet LEAVES (meta/ct writes, dynset learning) = DSL sequence, under `mut_wf` well-formedness |
 | optimizer pipeline | `optimize_table_uncond_compile_correct` | `Optimize_Uncond.v` | the shipped 18-stage `nft -o` pipeline + compilation preserves every packet's verdict against the synthesised declarations, for **any input chain** (no `rules_clean`, no freshness precondition) |
-| typed source elaboration | `elab_matchcond_correct` | `Elab.v` | the typed source-match layer (`Elab.tmatch`: typed immediates, CIDR-with-plen, ifname wildcards) elaborates onto the byte IR **evaluation-exactly**, for every match/env/packet — generated sources (`*_Gen.v`) carry typed terms whose meaning is the byte IR's by this theorem |
+| typed source elaboration | `elab_matchcond_correct` | `Elab.v` | the typed source-match layer elaborates onto the byte IR **evaluation-exactly**, for every match/env/packet — scoped to `Elab.tmatch`'s **four shapes** (typed eq/neq, CIDR-with-plen, ifname wildcard). Generated sources (`*_Gen.v`) carry typed terms for exactly those matches; their **other** immediates (set/map elements incl. the frontend's own CIDR expansion, range endpoints, vmap keys, NAT/tproxy addresses+ports, mangle/vsrc immediates, bitwise masks) are raw bytes composed by unverified `nft_lower.ml`, checked by the differential gates only (see `Elab.v`'s scope header) |
 
 Scope notes (each also sits on the theorem in the source):
 
@@ -60,6 +60,15 @@ Scope notes (each also sits on the theorem in the source):
 - The compiler axis (jump strand) threads **no writes**; the mutation axis
   follows **no jumps**. **Mutation × jump/goto is not jointly verified** (see
   the evaluator matrix, §3).
+- The mutation/ct axis is **parametric in flow identity**: every ct/NAT
+  statement is a congruence over the opaque key `pkt_flow` (and `e_ct`/`e_nat`
+  keyed by it). Nothing ties `pkt_flow` to the packet's header bytes — no
+  `flow_wf` analogous to `Fib_Local.fibkey_wf` exists yet — so transferring
+  these theorems to a real skb assumes an injective direction-normalised
+  (tuple + l4proto + zone) canonicalisation. A wrong canonicalisation makes
+  them true *about the wrong flow* (two distinct real flows sharing one model
+  key would merge their ct marks). Rationale + designated fix: the `pkt_flow`
+  comment in `Core/Packet.v`; honest-gaps entry in `DEVELOPMENT.md`.
 
 Known-gaps note: three **confirmed model-vs-kernel divergences** (limiter
 sweep past a failing match; `OVmapNat` vmap-hit trace NAT + spurious `e_nat`

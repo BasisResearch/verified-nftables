@@ -101,6 +101,21 @@ the per-shape classification and kernel-source citations.
   has). Still to adjudicate against a real kernel: `ct state`'s own representation and
   the remaining host-order `ct`/`meta`/`rt` keys the display fix covers by class but
   that were not individually packet-tested.
+  **Source-side corpus coverage (measured 2026-07; the widen-the-gate TODO).** Driving
+  the WHOLE corpus source-side (parse each block's `# <src>` header, compile with the
+  verified compiler, diff all rendered lines): of **1742** attemptable headered blocks,
+  **1142 (65.6 %)** are already byte-identical, **517** fail loudly on frontend syntax
+  gaps, and **83** are genuine text mismatches — host-order byte-order divergences on
+  keys *outside* byteorder-gate's set (`meta length/cpu/skuid/skgid`, `ct expiration`,
+  bitwise mask/xor operands), nft constant-folds/merges we don't replicate (`xor`
+  fold, adjacent-payload merge), and render/lowering text differences with no
+  adjudicated wire divergence (dependency guards, reject/log defaults).
+  A full source gate would be red today (83), and most of that red is *unadjudicated
+  display-vs-wire divergence*, so the gate stays scoped to the adjudicated host-order
+  plain-cmp/range class (13 blocks). TODO: adjudicate the mismatch classes against a
+  real kernel (netns packet counters, as for meta/ct mark), then widen the gate
+  class-by-class. Details: `proof/DEVELOPMENT.md` § "What the round-trip does and does
+  NOT validate".
 - **Field-unit faithfulness**: `FPayload` off/len are in bytes vs nft's bits;
   `SMangle`/`SExthdrWrite` carry raw byte geometry rather than a `field`.
 - **Network-state model**: single-address-per-interface assumption; the long-term
