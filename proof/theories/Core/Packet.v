@@ -390,7 +390,14 @@ Record packet : Type := {
                                     this packet (e.g. for "saddr . iif" the source
                                     address): genuinely packet-determined.  The
                                     routing-table LOOKUP on this key is computed by
-                                    [lpm_fib] against the shared [e_routes]. *)
+                                    [lpm_fib] against the shared [e_routes].
+                                    Still an ORACLE per selector: only the IPv4
+                                    "daddr"/"saddr" (and their ". iif") selectors
+                                    are pinned to the real header bytes, by
+                                    [Fib_Local.fibkey_wf] — every other selector's
+                                    key is un-de-oracled, the same residual class
+                                    as [pkt_flow] below (see the rationale
+                                    there). *)
   pkt_numgen : numgen_spec -> data;  (* oracle: the output of `numgen random`
                                         (nft_ng_random_gen: get_random_u32 — genuinely
                                         per-packet).  The INCREMENTAL generator does NOT
@@ -455,6 +462,39 @@ Record packet : Type := {
                                Derived from the (direction-normalised) 5-tuple; modelled
                                here as an opaque packet-determined value (the kernel
                                computes the tuple from the headers).
+
+                               WHY OPAQUE, AND WHAT THAT COSTS (design rationale).
+                               Every ct/NAT theorem is deliberately PARAMETRIC in flow
+                               identity: it is a congruence over this key — packets
+                               with the same [pkt_flow] share conntrack/NAT state,
+                               packets with different keys don't, whatever the key IS.
+                               That was the cheapest sound way to model "shared entry
+                               selected by nf_ct_get(skb)" without committing to a
+                               tuple-extraction function.  The COST: nothing connects
+                               [pkt_flow p] to the header bytes [p] actually carries
+                               ([pkt_nh]/[pkt_th] via [read_payload]), so transferring
+                               a ct/NAT theorem to a real skb rests on an UNVERIFIED
+                               assumption — that the instantiation of [pkt_flow] is an
+                               INJECTIVE direction-normalised canonicalisation of
+                               (5-tuple + l4proto + zone).  If it is not injective (two
+                               distinct real flows mapped to one model key), the
+                               theorems are true-but-about-the-wrong-flow: the two real
+                               flows would merge their ct marks/NAT tuples in the
+                               model.  The fib key had the same shape of gap and earned
+                               its pinning layer ([Fib_Local.fibkey_wf] ties
+                               [pkt_fibkey p "daddr"] to [read_payload PNetwork 16 4]);
+                               the ANALOGOUS, designated de-oracling step here is a
+                               [flow_wf] well-formedness tying [pkt_flow] to the header
+                               tuple (saddr/daddr/sport/dport from [pkt_nh]/[pkt_th],
+                               plus l4proto and zone, normalised so both directions
+                               yield the same key — the reply direction is already
+                               separately available as [pkt_ctdir_orig] below).  It is
+                               an ADDITIVE layer, like [Fib_Local]: no existing theorem
+                               changes; [flow_wf] hypotheses strengthen their transfer.
+                               Until it exists, [pkt_flow] (like [pkt_fibkey] beyond
+                               the four selectors [fibkey_wf] pins, and [pkt_inner]) is a
+                               free packet-record oracle — ledgered in DEVELOPMENT.md's
+                               honest-gaps list and scoped in THEOREMS.md §1.
 
                                NOTE on direction: [pkt_flow] is direction-NORMALISED, so
                                BOTH directions of a connection share it.  This is correct

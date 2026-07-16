@@ -10,6 +10,19 @@
 # cmp/range, it COMPILES <src> FROM SOURCE and requires the rendered cmp/range/
 # byteorder lines byte-identical to the corpus .payload.
 #
+# SCOPE — why only this class (and not the whole corpus source-side): the
+# host-order plain-cmp/range class is the one whose WIRE truth was adjudicated
+# against a real kernel (netns packet counters for meta/ct mark — NOTES.md,
+# "Register byte-order sweep").  Driving all 1742 headered corpus blocks
+# source-side currently yields 1142 byte-identical (65.6%), 517 loud frontend
+# syntax gaps, and 83 text mismatches in UNADJUDICATED display-vs-wire classes
+# (host-order keys outside this gate's set incl. bitwise mask/xor operands,
+# nft's xor constant-fold / adjacent-payload merge, dependency-guard and
+# reject/log render differences) — a full
+# source gate would be red on open questions, not established bugs.  Widen this
+# gate class-by-class as each mismatch class is kernel-adjudicated.  Numbers &
+# classes: DEVELOPMENT.md, "What the round-trip does and does NOT validate".
+#
 # Requires: git, dune.  Reuses the corpus clone (NFT_CORPUS, default /tmp/nftables-src).
 set -euo pipefail
 cd "$(dirname "$0")"

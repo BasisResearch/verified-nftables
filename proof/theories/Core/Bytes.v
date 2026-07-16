@@ -175,7 +175,14 @@ Proof. intros. unfold csum_update_field. apply csum_to_data_length. Qed.
     The real jhash is a specific mixing function; we model it as a deterministic
     function of the input bytes, seed, modulus and offset, bounded into
     [offset, offset+modulus) — faithful in *structure* (deterministic, input- and
-    seed-dependent, mod-bounded), an abstraction of the exact mixing. *)
+    seed-dependent, mod-bounded), an abstraction of the exact mixing.
+    CONSEQUENCE (be explicit): this is a STRUCTURAL abstraction shared by the
+    DSL semantics and the VM, so compile theorems over jhash-bearing rules hold,
+    but they match the real kernel only UP TO A RENAMING of hash values — a
+    packet-level kernel differential on a jhash rule would fail BY DESIGN
+    (our hash value differs from the kernel's for the same input).  No gate
+    covers this; it is ledgered with the other shared byte-level primitives in
+    DEVELOPMENT.md ("Eyeball-trusted" + the STILL-OPEN cross-link). *)
 Definition data_jhash (len seed modulus offset : nat) (d : data) : data :=
   N_to_data 4
     (N.of_nat offset +
@@ -186,11 +193,31 @@ Definition data_jhash (len seed modulus offset : nat) (d : data) : data :=
     8 bytes), and [len], the total number of bytes processed.  The kernel
     (net/netfilter/nft_byteorder.c) byte-swaps each [size]-byte element and
     iterates [len/size] times — e.g. a 16-byte IPv6 value with size=8 swaps two
-    8-byte halves; a 6-byte MAC with size=2 swaps three 2-byte elements.  ntoh
-    and hton are the same per-element byte reversal for a single conversion.  We
-    therefore reverse each [size]-byte chunk of the register value (the element
-    width), processing the first [len] bytes.  [fuel] (= [length d]) bounds the
-    recursion so it is structural even when [size = 0]. *)
+    8-byte halves; a 6-byte MAC with size=2 swaps three 2-byte elements.
+
+    WHAT THE DEFINITION BELOW ACTUALLY DOES (read the parameters honestly):
+    [data_byteorder hton size len d] reverses each [size]-byte chunk of the
+    WHOLE register value [d], and IGNORES both [hton] and [len].
+    - Ignoring [hton] is kernel-faithful: for a single conversion, NTOH and
+      HTON are the same per-element byte reversal (nft_byteorder.c performs
+      the identical swap in both directions for each element width), so the
+      direction flag cannot change the result.
+    - Ignoring [len] is NOT kernel-faithful in general — the kernel processes
+      only the first [len] bytes, so on a hypothetical input with
+      [len < length d] the two diverge (kernel: tail untouched; model: tail
+      swapped too).  It is safe under the PRODUCER INVARIANT that every
+      producer maintains: nft emits byteorder with [len] = the loaded
+      register-value width (so [len = length d]; the corpus's own blocks all
+      have this shape — e.g. size=8/len=16 on a 16-byte IPv6 value), and our
+      frontend only ever emits [TByteorder true w w] with [w] the loaded
+      field width (extracted/nft_lower.ml, the host-endian cmp/range/set
+      paths).  No theorem checks that invariant — [data_byteorder] is shared
+      by the DSL semantics and the VM, so a violation would be invisible to
+      every compile theorem (see DEVELOPMENT.md, "Eyeball-trusted"
+      + the STILL-OPEN entry cross-linking it).
+
+    [fuel] (= [length d]) bounds the recursion so it is structural even when
+    [size = 0]. *)
 Fixpoint byteorder_chunks (fuel size : nat) (d : data) : data :=
   match fuel with
   | 0 => d
