@@ -180,10 +180,12 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Fib_Local.fib_base_no_fire Fib_Local.fib_base_is_kernel_demo \
   Ct_State.estab_matches_pure Ct_State.estab_matches_established_plus_other \
   Ct_State.estab_misses_without_bit Ct_State.refuted_meq_rejects \
-  Ct_State.refuted_alternative_diverges
+  Ct_State.refuted_alternative_diverges \
+  Lower_Proofs.range_erasure_be Lower_Proofs.range_erasure_host \
+  Lower_Proofs.bitmask_erasure Lower_Proofs.bitfield_erasure
 
 axioms:
-	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Elab Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State.\n'; \
+	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Elab Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs.\n'; \
 	  for t in $(AXIOM_GATE_THEOREMS); do printf 'Print Assumptions %s.\n' "$$t"; done; } \
 	| coqtop -R . Nft 2>/dev/null \
 	| grep -E 'Closed under the global context|Axioms' \

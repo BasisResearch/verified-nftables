@@ -44,6 +44,13 @@ From Nft Require Import Optimize_ValueSet Optimize_Vmap Optimize_Concat Optimize
    injection extracted/nft_inject.ml) to the VERIFIED checker — parse-test
    gates all four rulesets and the tests/illtyped suite through it. *)
 From Nft Require Import Ast Datatype Symbols Selector Typecheck.
+(* The typed-layer scalar lowering (M2): typed match terms + verified
+   elaboration ([Typed]), the scalar-match lowering / dep-guard encoding /
+   guard discharge ([Lower]), and the independent typed semantics
+   ([TypedEval], extracted so a harness can execute the typed evaluator).
+   With these the OCaml frontend constructs NO byte-level match condition for
+   any scalar match shape — see extracted/nft_lower.ml (driver only). *)
+From Nft Require Import Typed Lower TypedEval.
 
 Extraction Language OCaml.
 Set Extraction Output Directory "extracted".
@@ -106,6 +113,16 @@ Separate Extraction
   mut_wf
   Nftval.encode
   Elab.elab_m
+  Typed.elab_tx
+  Typed.tx_view
+  Lower.lower_match
+  Lower.lower_bitmatch
+  Lower.dep_guard
+  Lower.discharge
+  Lower.lerr_message
+  TypedEval.eval_txm
+  Selector.dep_ip4
+  Selector.dep_ip6
   Typecheck.typecheck_ruleset
   Typecheck.typecheck_rule
   Typecheck.typecheck_clause
