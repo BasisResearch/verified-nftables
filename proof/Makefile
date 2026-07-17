@@ -11,7 +11,7 @@
 ROCQBIN ?=
 COQMAKE  = CoqMakefile
 
-.PHONY: all proofs glue lib example semtest difftest corpus byteorder-gate validate parse-test gen gen-check gates clean cli e2e nl-send parser-corpus axioms
+.PHONY: all proofs glue lib example semtest difftest corpus byteorder-gate validate parse-test gen gen-check gates boundary clean cli e2e nl-send parser-corpus axioms
 
 all: proofs glue
 
@@ -197,6 +197,32 @@ axioms:
 	      case "$$line" in *"Closed under the global context"*) ;; *) fail=1 ;; esac; \
 	    done; exit $$fail; }
 
+# M6: the migration-permanence gate.  Enforces the M-C boundary — the OCaml
+# frontend composes NO byte and makes NO datatype/byteorder decision — plus the
+# TypedEval independence property.  A regression that re-introduces value->byte
+# logic into OCaml, resurrects a symbol table or nft_lower.ml, or couples the
+# typed evaluator to the encode path, FAILS the build here.  The frontend is the
+# pure structural injection (nft_inject.ml) + emitter (nft_emit.ml) + driver;
+# all lowering is the verified Coq Lower.lower_ruleset.  See DEVELOPMENT.md
+# § "The M-C boundary is now permanent" and THEOREMS.md.
+FRONTEND_ML = extracted/nft_ast.ml extracted/nft_inject.ml extracted/nft_parse.ml \
+  extracted/nft_emit.ml extracted/nft2coq.ml
+boundary:
+	@# (1) no value->byte / kind / byteorder identifiers in the OCaml frontend
+	@if grep -nwE 'bytes_of_int|bytes_of_int_le|enc_atom|enc_atom_be|typed_atom|width_of_kind|host_endian_kind|prefix_mask|interval_of_value|interval_of_value_be|bytes_of_typeatom|pad_to_slot|reg_slot|mask_shift|ifname_bytes|bitfield_sel' $(FRONTEND_ML); then \
+	  echo "boundary FAIL: a value->byte identifier survives in the OCaml frontend (must be verified Coq)"; exit 1; fi
+	@# (2) no symbol tables in the OCaml frontend
+	@if grep -nwE 'sym_[a-z]+|syslog_level|icmp_reject_code|nat_flag_bit|tcpopt_num|key_field' $(FRONTEND_ML); then \
+	  echo "boundary FAIL: a symbol table survives in the OCaml frontend"; exit 1; fi
+	@# (3) nft_lower.ml is deleted — no unverified lowering module
+	@if ls extracted/nft_lower.ml >/dev/null 2>&1; then \
+	  echo "boundary FAIL: extracted/nft_lower.ml has reappeared"; exit 1; fi
+	@# (4) TypedEval's clauses are independent of the encode path (grep must be 0)
+	@n=$$(grep -cwE 'encode|data_eqb|firstn|eval_matchcond|elab_m' theories/Semantics/TypedEval.v); \
+	  if [ "$$n" != "0" ]; then \
+	    echo "boundary FAIL: TypedEval.v couples to the encode path ($$n hit(s))"; exit 1; fi
+	@echo "boundary ok: OCaml frontend byte-free; TypedEval encode-independent; nft_lower.ml gone"
+
 # THE aggregate gate: every README-advertised guarantee behind one command.
 # Sequential (not parallel prerequisites) so a failure is attributable to one
 # stage.  This is the enforcement point of the "every change keeps all gates
@@ -208,7 +234,8 @@ gates:
 	$(MAKE) validate
 	$(MAKE) parse-test
 	$(MAKE) gen-check
-	@echo "ALL GATES GREEN: proofs axioms corpus validate parse-test gen-check"
+	$(MAKE) boundary
+	@echo "ALL GATES GREEN: proofs axioms corpus validate parse-test gen-check boundary"
 
 clean:
 	-[ -f $(COQMAKE) ] && $(MAKE) -f $(COQMAKE) clean || true

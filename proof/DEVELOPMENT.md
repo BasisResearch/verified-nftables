@@ -426,8 +426,9 @@ read to trust a theorem":
 | `theories/Compiler/Extract.v` | extraction to `extracted/*.ml` |
 | `extracted/glue.ml` | *untrusted* glue: builds chains, renders nft-format bytecode (forward test) |
 | `extracted/lexer.mll` `parser.mly` `nft_ast.ml` `nft_inject.ml` `nft_parse.ml` | *untrusted* **`.nft` text → surface AST frontend** (TODO 9): ocamllex+Menhir surface parser → **pure structural** `Nft_ast → Ast.*` constructor injection (`nft_inject.ml`) + the single `ifindex` oracle (`nametoindex "lo" → 1`) + the 2^40 extraction-seam guard, then handed VERBATIM to the extracted Coq `Lower.lower_ruleset`. All lowering (define/symbol resolution, implicit-l4proto deps, CIDR/range/concat, anonymous-set/vmap → `env`, `include` expansion) is now the VERIFIED Coq `Lower.lower_ruleset`, **not** OCaml. `Nft_parse.parse_file` orchestrates parse → inject → lower |
-| `extracted/nft_emit.ml` `nft2coq.ml` | *untrusted* **AST → Coq emitter**: serialise the parsed chains + `set_decls`/`env` as Coq `Definition`s (`make gen`), so proofs reason about the parser's real output |
-| `theories/Generated/Optiplex_Gen.v` `Ruleset_Gen.v` `Router_Gen.v` `Tutorial_Gen.v` | **generated** by `nft2coq` from the matching `../rulesets/*.nft` (`make gen`, all four incl. router; `make gen-check` fails the gates if any is stale). `Tutorial_Gen.v` backs the [`CONFIG_PROOFS.md`](CONFIG_PROOFS.md) tutorial |
+| `extracted/nft_emit.ml` `nft2coq.ml` | *untrusted* **surface → Coq emitter** (M6): serialise the injected SURFACE ruleset as a Coq `Definition <name>_surface : sruleset` (only the untyped surface constructors — IP literals via the `sip4` smart ctor, i.e. decimal octets, never a raw byte list), plus the `<name>_lowered := lower_or_empty ifindex_pins <name>_surface` binding and the `lr_*` projections that carve out `decls`/`gen_env`/the per-table chains + hooks. The emitter composes NO byte and makes NO datatype/byteorder decision — every operand/element/target byte is produced by the VERIFIED Coq `Lower.lower_ruleset`, kernel-reduced, not written here |
+| `theories/Generated/Gen_Support.v` | the Semantics-level lowering projections the Gen files reduce (`lr_set_decls`, `lr_hooks_of`, `hook_id_of_string`); compiled after `Semantics`, before the four `*_Gen.v`. NOT extracted |
+| `theories/Generated/Optiplex_Gen.v` `Ruleset_Gen.v` `Router_Gen.v` `Tutorial_Gen.v` | **generated** by `nft2coq` from the matching `../rulesets/*.nft` (`make gen`, all four incl. router; `make gen-check` fails the gates if any is stale). Each carries `<name>_surface` + a fail-loud `Example <name>_lowers_ok : lower_ok ifindex_pins <name>_surface = true` (a refused construct breaks `make proofs`, never a silent OCaml byte). `Tutorial_Gen.v` backs the [`CONFIG_PROOFS.md`](CONFIG_PROOFS.md) tutorial |
 | `theories/Examples/Optiplex_Antispoof.v` | **anti-spoofing** proofs about the parsed `optiplex.nft` bridge `output` chain (+ legit-traffic-allowed); all axiom-free |
 | `theories/Examples/Optiplex_Antispoof_Gaps.v` | **adversarial** proofs: the binding is unenforced outside `@vmaddrs` / off br.20 (real bypasses), axiom-free |
 | `theories/Examples/Optiplex_Mark.v` | **firewall-mark** proofs about the parsed prerouting/postrouting chains: marking RDP traffic, mark-gated masquerade, cross-hook flow; axiom-free |
@@ -697,6 +698,36 @@ DECODES nothing — no symbol tables, no width/byteorder decisions, no
 interval/CIDR/mask arithmetic (the M-C banned-name grep over the frontend is 0).
 Everything semantic downstream of it is the verified `Lower.lower_ruleset`. This
 is the pure-structural-translation residue class the M-C ledger permits.
+
+**The M-C boundary is now permanent (`make boundary`, M6).** The migration is
+no longer a one-time state described in prose — it is a build gate. `make
+boundary` (part of `make gates`) enforces, on every build: (1) NO value→byte /
+kind / byteorder identifier (`bytes_of_int`, `enc_atom`, `width_of_kind`,
+`host_endian_kind`, `prefix_mask`, `interval_of_value`, `pad_to_slot`,
+`mask_shift`, `ifname_bytes`, `bitfield_sel`, …) in the OCaml frontend
+(`nft_ast`/`nft_inject`/`nft_parse`/`nft_emit`/`nft2coq`); (2) NO symbol table
+(`sym_*`, `syslog_level`, `nat_flag_bit`, `key_field`, …) there; (3)
+`extracted/nft_lower.ml` stays deleted; (4) `TypedEval.v`'s numeric evaluator
+stays independent of the encode path (`grep -cwE
+'encode|data_eqb|firstn|eval_matchcond|elab_m'` = 0).  The three residues the
+ledger permits — (a) the `nametoindex "lo" → 1` ifindex oracle, (b) the pure
+`Nft_ast → Ast.*` structural injection, (c) the `ExtrOcamlNatInt` 63-bit seam +
+its `2^40` guard — are exactly what remains; a regression that re-introduces
+lowering logic into OCaml fails the gate, not a code review.
+
+**TCB after M6 — the three residues, enumerated.**
+  - (a) *host-dependent ifindex oracle.* `nft_inject.ml`'s `ifindex_oracle`
+    (`"lo" → Some 1`, every other name `None`), pinned in each Gen file as the
+    finite map `ifindex_pins` so the file is self-contained and the
+    host-dependence is visible; the verified lowering fails loud on any declined
+    name.
+  - (b) *pure structural injection.* `nft_inject.ml`'s `Nft_ast → Ast.*`
+    constructor/int/string mapping (`nat` over the seam, `string` over
+    `ExtrOcamlNativeString`, IP/MAC as the lexer's digit-group lists — grouping,
+    not byteorder). Decodes nothing.
+  - (c) *extraction seam.* The `ExtrOcamlNatInt` 63-bit-int representation of
+    `nat` and the `2^40` injection guard (`nft_inject.ml` / the `limit` bound in
+    `Extract.v`) that keeps every extracted `nat` far below the wrap.
 
 **Eyeball-trusted, never-differentially-tested semantics.** The corpus checks
 *structure*, not the data-plane *meaning* of register operations. The byte-level
@@ -979,7 +1010,8 @@ cannot prove a false property.
 | `make parse-test` | `.nft` frontend (TODO 9 M1): parses `../rulesets/ruleset.nft`, checks parsed-AST verdicts vs `Example_Ruleset.v`; difftest ruleset → `glue.ml`'s AST; live-`nft` round-trip; `mut_wf` discharge over all four rulesets; ExtrOcamlNatInt limit-rate rejection pins |
 | `make axioms` | build-failing `Print Assumptions` over every claimed theorem (55): all must be "Closed under the global context" |
 | `make gen-check` | checked-in `theories/Generated/*_Gen.v` byte-identical to fresh `nft2coq` output (all four rulesets) |
-| `make gates` | the aggregate: `proofs axioms corpus validate parse-test gen-check`, sequentially |
+| `make boundary` | **the M-C migration-permanence gate** (M6): the OCaml frontend (`nft_ast`/`nft_inject`/`nft_parse`/`nft_emit`/`nft2coq`) contains NO value→byte identifier and NO symbol table; `extracted/nft_lower.ml` stays deleted; `TypedEval.v` stays independent of the encode path (`grep encode\|data_eqb\|firstn\|eval_matchcond\|elab_m` = 0). Fails the build on any regression |
+| `make gates` | the aggregate: `proofs axioms corpus validate parse-test gen-check boundary`, sequentially |
 
 Axiom-freedom — every headline theorem must print "Closed under the global
 context". Re-check the optimizer-pipeline headline (and the compile core) with:
@@ -1371,13 +1403,21 @@ differential gates (corpus/validate/parse-test/e2e). `Nft_parse.parse_file` adds
 `include` expansion (relative to the file dir).
 
 **The proof bridge (`nft_emit.ml` + `nft2coq`).** `make gen` runs the parser on a
-`.nft` file and EMITS its AST as Coq terms — `theories/Generated/Optiplex_Gen.v`,
-`theories/Generated/Ruleset_Gen.v` define the parsed chains and the `set_decls`/`env` their
-lookups read.  The proof files `Require Import` these and prove properties about
-the *parser's actual output*, closing the previously-eyeballed "the AST mirrors
-the text" link.  `nft2coq` IS the frontend; the emitted `.v` is checked by the
-Rocq kernel (untrusted emitter, kernel-checked result — same trust story as the
-renderer).
+`.nft` file and EMITS its **surface** tree as a Coq `Definition <name>_surface :
+sruleset` — `theories/Generated/Optiplex_Gen.v`, `theories/Generated/Ruleset_Gen.v`
+then define the chains and the `set_decls`/`env` their lookups read as the
+VERIFIED `Lower.lower_ruleset` applied to that surface term (`_lowered :=
+lower_or_empty ifindex_pins _surface`, reduced by `Eval vm_compute`, carved into
+the per-table `filter_chains`/`filter_input`/`decls`/… by the `lr_*`
+projections).  So the emitter writes NO byte: every match operand, set element,
+NAT target and hook priority the proofs reason about is the kernel-checked output
+of the verified lowering, and a construct the lowering refuses fails the
+generated `Example <name>_lowers_ok : lower_ok ifindex_pins <name>_surface = true`
+(fail-loud — `make proofs` breaks, never a silent OCaml byte).  The proof files
+`Require Import` these and prove properties about the *parser's actual output*,
+closing the previously-eyeballed "the AST mirrors the text" link.  `nft2coq` IS
+the frontend; the emitted `.v` is checked by the Rocq kernel (untrusted emitter,
+kernel-checked result — same trust story as the renderer).
 
 **Proven about the parsed rulesets (all axiom-free):**
   - `Ruleset_Verified.v` — the 8 packet-verdict properties of `../rulesets/ruleset.nft`

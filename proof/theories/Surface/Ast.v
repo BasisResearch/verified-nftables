@@ -49,6 +49,12 @@ Inductive svalue : Type :=
 | SVConcat (vs : list svalue)          (* concatenation, e.g. 1.2.3.4 . eth0   *)
 | SVSet    (vs : list svalue).         (* a `define`d set value, `{ $a, $b }`  *)
 
+(** Smart constructor for a dotted-quad IPv4 literal: the emitter prints
+    `sip4 192 168 100 0` for [SVIp4 [192;168;100;0]] so the generated Gen file
+    carries the address as decimal octets (the textual grammar view), never a
+    raw byte list.  This is grouping only — no byteorder decision. *)
+Definition sip4 (a b c d : nat) : svalue := SVIp4 [a; b; c; d].
+
 (** Verdicts as written (mirror of [Nft_ast.verdict]). *)
 Inductive sverdict : Type :=
 | SVaccept

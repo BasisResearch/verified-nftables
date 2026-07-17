@@ -81,7 +81,8 @@ Inductive lerr : Type :=
 | LEvmapStatic                   (* verdict map combined with a static verdict *)
 | LEmultiOutcome                 (* >1 terminal outcome (vmap / nat / tproxy)  *)
 | LEvalueMap                     (* value map (non-verdict data) not lowered   *)
-| LEconcatRhs.                   (* concatenated match without a set/ref rhs   *)
+| LEconcatRhs                    (* concatenated match without a set/ref rhs   *)
+| LEhook       (name : string).  (* base chain bound to an unknown netfilter hook *)
 
 Definition lerr_message (e : lerr) : string :=
   match e with
@@ -117,6 +118,7 @@ Definition lerr_message (e : lerr) : string :=
   | LEmultiOutcome => "rule with more than one outcome (vmap/nat/tproxy)"
   | LEvalueMap => "value maps (non-verdict map data) not yet lowered"
   | LEconcatRhs => "concatenated match needs a set/ref rhs"
+  | LEhook n => "base chain bound to an unknown netfilter hook: " ++ n
   end.
 
 Inductive lres (A : Type) : Type :=
@@ -1807,6 +1809,14 @@ Definition chain_hookinfo (items : list schain_item)
                            | ITypeHook ct h pn pr => Some (ct, h, pn, pr)
                            | _ => acc end) items None.
 
+(** The six netfilter hooks a base chain may bind.  An unknown hook name is a
+    fail-loud [LEhook] in the lowering (below), so every hook string that
+    survives into [lr_hooks] is one of these — and the [hook_id] resolution the
+    Gen files perform on it is total by construction. *)
+Definition is_known_hook (h : string) : bool :=
+  existsb (String.eqb h)
+    ["prerouting"; "input"; "forward"; "output"; "postrouting"; "ingress"].
+
 Fixpoint lower_chain_items (oracle : string -> option nat) (fuel : nat)
     (family : string) (defs : list (string * svalue)) (items : list schain_item)
     (pol : option verdict) (rules : list rule) (fs : fstate)
@@ -1828,6 +1838,9 @@ Definition lower_chain (oracle : string -> option nat) (fuel : nat)
   : lres ((string * chain) * option (string * string * bool * nat) * fstate) :=
   let hookinfo := chain_hookinfo (sc_items sc) in
   let is_base := match hookinfo with Some _ => true | None => false end in
+  _ <-- (match hookinfo with
+         | Some (_, h, _, _) => if is_known_hook h then LOk tt else LErr (LEhook h)
+         | None => LOk tt end) ;;
   p <-- lower_chain_items oracle fuel family defs (sc_items sc) None nil fs ;;
   let '(pol, rules, fs') := p in
   let c_policy := match pol with
@@ -1946,3 +1959,51 @@ Definition lower_ruleset (oracle : string -> option nat) (rs : sruleset)
          lr_maps := rev (ls_maps (fs_ls fs2));
          lr_typed := fs_typed fs2;
          lr_deps := fs_deps fs2 |}.
+
+(* ================================================================== *)
+(** ** M6: the fail-loud gate and the structural projections the Gen files use.
+
+    [lower_ok] is the boolean the generated [_lowers_ok] Example asserts: if the
+    surface ruleset fails to lower for ANY reason (unknown selector/symbol,
+    out-of-reach construct, …) it is [false] and `make proofs` fails on the
+    Example — a refused construct can never silently fall back to OCaml bytes.
+
+    [lower_or_empty] is the total view the Gen file's [_lowered] definition
+    reduces (via [Eval vm_compute]); the projections below carve the per-table
+    chains / hooks / declarations out of it so every downstream identifier
+    ([filter_chains], [filter_input], [decls], …) keeps its exact name while its
+    BYTES are produced by this verified lowering, not written by hand. *)
+
+Definition lower_ok (oracle : string -> option nat) (rs : sruleset) : bool :=
+  match lower_ruleset oracle rs with LOk _ => true | LErr _ => false end.
+
+Definition empty_lowered : lowered_ruleset :=
+  {| lr_tables := nil; lr_hooks := nil; lr_sets := nil;
+     lr_vmaps := nil; lr_maps := nil; lr_typed := nil; lr_deps := nil |}.
+
+Definition lower_or_empty (oracle : string -> option nat) (rs : sruleset)
+  : lowered_ruleset :=
+  match lower_ruleset oracle rs with LOk lr => lr | LErr _ => empty_lowered end.
+
+Definition empty_chain : chain := {| c_policy := Continue; c_rules := nil |}.
+
+(** The chains of the named table (empty if there is no such table). *)
+Definition lr_chains_of (lr : lowered_ruleset) (tbl : string)
+  : list (string * chain) :=
+  fold_right (fun t acc =>
+       let '(_, name, ch) := t in
+       if String.eqb name tbl then ch else acc) nil (lr_tables lr).
+
+(** One named chain of a named table ([empty_chain] if absent). *)
+Definition lr_chain_of (lr : lowered_ruleset) (tbl cn : string) : chain :=
+  match find (fun p => String.eqb (fst p) cn) (lr_chains_of lr tbl) with
+  | Some p => snd p
+  | None => empty_chain
+  end.
+
+(** The raw hook records of a named table (family, name-tagged). *)
+Definition lr_hookinfo_of (lr : lowered_ruleset) (tbl : string)
+  : list (string * string * string * bool * nat) :=
+  fold_right (fun t acc =>
+       let '(_, name, hs) := t in
+       if String.eqb name tbl then hs else acc) nil (lr_hooks lr).

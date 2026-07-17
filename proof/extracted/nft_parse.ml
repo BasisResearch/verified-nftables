@@ -46,3 +46,8 @@ let parse_string (src : string) : Nft_inject.parsed =
 
 let parse_file (path : string) : Nft_inject.parsed =
   Nft_inject.lower (expand (Filename.dirname path) (parse_raw (read_file path)))
+
+(* the include-expanded SURFACE tree (before lowering): what nft2coq emits as a
+   Coq [sruleset] for the Gen file to lower with the verified Coq lowering. *)
+let parse_file_surface (path : string) : Ast.sruleset =
+  Nft_inject.file (expand (Filename.dirname path) (parse_raw (read_file path)))
