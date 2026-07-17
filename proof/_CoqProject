@@ -7,7 +7,6 @@ theories/Core/Bytecode.v
 
 theories/IR/Syntax.v
 theories/IR/Nftval.v
-theories/IR/Elab.v
 
 theories/Surface/Ast.v
 theories/Surface/Datatype.v

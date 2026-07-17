@@ -402,7 +402,7 @@ read to trust a theorem":
 | Directory | Contents (trust role) |
 |---|---|
 | `theories/Core/` | the shared object language: bytes, verdicts, the packet record, the bytecode VM — read these to trust any statement |
-| `theories/IR/` | the rule IR (`Syntax.v`), the typed byte-domain view (`Nftval.v`), and the verified typed-source elaboration (`Elab.v`) |
+| `theories/IR/` | the rule IR (`Syntax.v`) and the typed byte-domain view (`Nftval.v`) |
 | `theories/Semantics/` | the evaluators (`Semantics.v`) plus the fib and multi-address network-state layers |
 | `theories/Compiler/` | `Compile.v`, the correctness strata (`Correct.v`), the machine-checked entry points (`Main.v`), extraction (`Extract.v`) |
 | `theories/Optimizer/` | the `nft -o` passes (`Optimize_<Shape>.v`, one file per `optimize_chain_<shape>` stage), pipeline composition (`Optimize_Table.v`, `Optimize_Table_Inv.v`, `Optimize_Uncond.v`) |
@@ -675,7 +675,7 @@ corpus / `gen-check` re-check every produced `__setN`/`__mapN` name end-to-end.
 The set membership decisions are proved: `set_interval_erasure` (byte interval =
 numeric membership), `concat_key_erasure` (slot padding is faithfully invertible
 — the historical padding bug), and `cidr_interval_agrees_prefix_expand` (the set
-CIDR expansion and `Elab.prefix_expand`'s masked compare decide membership
+CIDR expansion and `Typed.prefix_expand`'s masked compare decide membership
 identically — one Rocq expansion, no parallel OCaml CIDR).
 
 **The ifindex oracle (allowed residue (a): host-dependent lookup).** Interface
@@ -1399,9 +1399,12 @@ mangle/`vsrc` immediates, and bitwise masks are all composed by
 `concat_key_erasure`, `cidr_interval_agrees_prefix_expand`, the BE
 byte-lex-vs-numeric range order, `hton` re-encode). Every construct out of
 reach FAILS LOUD as an explicit `lerr` constructor — never a silent OCaml byte
-fallback. The four `Elab.tmatch` shapes (typed **eq / neq / CIDR-prefix /
-ifname-wildcard**) still route through the VERIFIED `Elab.elab_m` /
-`Elab.prefix_expand` (`Elab.elab_matchcond_correct`).
+fallback. The four scalar shapes (typed **eq / neq / CIDR-prefix /
+ifname-wildcard**, first-class `Typed.txmatch` constructors) route through the
+VERIFIED `Typed.elab_tx` / `Typed.prefix_expand`
+(`Lower_Proofs.eq/neq/prefix/wildcard_erasure`; the retired legacy module
+`IR/Elab.v` and its definitional `elab_matchcond_correct` are documented in
+THEOREMS.md § "Strata retirement").
 
 **The residue in `nft_inject.ml` is not value→byte logic** — it is (a) the
 single host-dependent `ifindex` oracle (`nametoindex "lo" → 1`; see the ledger

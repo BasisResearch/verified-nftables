@@ -36,7 +36,7 @@ From Stdlib Require Import ExtrOcamlBasic.
    `make parse-test` pins the oversized-rate rejection. *)
 From Stdlib Require Import ExtrOcamlNatInt.
 From Stdlib Require Import ExtrOcamlNativeString.
-From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile Optimize Nftval Elab.
+From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile Optimize Nftval.
 From Nft Require Import Optimize_ValueSet Optimize_Vmap Optimize_Concat Optimize_Table Optimize_Uncond.
 (* The typed-layer surface (T1): the Coq surface AST, datatype/coercion
    lattice, symbol tables, selector map and typechecker.  Extracted so the
@@ -120,9 +120,7 @@ Separate Extraction
   env_with_sets
   mut_wf
   Nftval.encode
-  Elab.elab_m
   Typed.elab_tx
-  Typed.tx_view
   Lower.lower_match
   Lower.lower_bitmatch
   Lower.dep_guard

@@ -10,7 +10,7 @@ axiom-free — without reading 3000 lines of `Correct.v`.
   shared world — restated over the bundled pair `Packet.pstate`
   (`ps_env`/`ps_wire`), each an `exact`/`apply` of its post-split successor.
 - Axiom gate: `make axioms` re-checks every HEADLINE theorem below (plus the
-  supporting strata, `Elab.elab_matchcond_correct`, the representation
+  supporting strata, the `Lower_Proofs.*_erasure` family, the representation
   ratchet `Semantics.run_rule_outcome_eq`, **and every result the README
   claims axiom-free** — anti-spoofing, established-accept, NAT-masquerade,
   multi-address, fib host-local, ct-state; see §4) from the compiled `.vo`
@@ -39,7 +39,7 @@ axiom-free — without reading 3000 lines of `Correct.v`.
 | compiler, sequence form | `compile_seq_correct` | `Correct.v` | the same, lifted over a packet sequence under an **arbitrary step** `verdict -> env -> env` — a per-packet **congruence corollary** of `compile_hook_correct`, *not* a proof about ruleset-generated state (that is the next axis) |
 | mutation / cross-packet learning | `compile_seq_mut_correct` | `Correct.v` | compiled single-chain traversal threading the env each packet LEAVES (meta/ct writes, dynset learning) = DSL sequence, under `mut_wf` well-formedness |
 | optimizer pipeline | `optimize_table_uncond_compile_correct` | `Optimize_Uncond.v` | the shipped 18-stage `nft -o` pipeline + compilation preserves every packet's verdict against the synthesised declarations, for **any input chain** (no `rules_clean`, no freshness precondition) |
-| typed source lowering (**`typed_erasure`**) | the `Lower_Proofs.*_erasure` family | `Lower_Proofs.v` | the verified lowering of a typed source construct produces exactly the byte IR the compiler consumes, with genuine per-construct obligations — `range_erasure_be`/`range_erasure_host` (BE vs host-endian range order), `bitmask_erasure`, `bitfield_erasure` (mask+shift), `set_interval_erasure` (byte-interval = numeric membership), `concat_key_erasure` (slot-padding invertibility), `cidr_interval_agrees_prefix_expand` (one CIDR expansion, not two). Since M6 the generated sources (`*_Gen.v`) carry the **surface** ruleset (`<name>_surface : sruleset`) and define every table/chain/decl as `Lower.lower_ruleset` applied to it, kernel-reduced — **no raw byte is written by hand** and a refused construct fails the generated `<name>_lowers_ok` Example (fail-loud). `Elab.elab_matchcond_correct` remains as a **consistency check** (definitional, `reflexivity`), not the erasure claim |
+| typed source lowering (**`typed_erasure`**) | the `Lower_Proofs.*_erasure` family (composed: `txmatch_erasure`) | `Lower_Proofs.v` | the verified lowering of a typed source construct produces exactly the byte IR the compiler consumes, with genuine per-construct obligations — `eq_erasure`/`neq_erasure` (register decode at the value's byteorder), `prefix_erasure` (CIDR: both the byte-aligned truncated-load shortening and the full-width masked compare), `wildcard_erasure` (leading-bytes short compare), `range_erasure_be`/`range_erasure_host` (BE vs host-endian range order), `bitmask_erasure`, `bitfield_erasure` (mask+shift), `set_interval_erasure` (byte-interval = numeric membership), `concat_key_erasure` (slot-padding invertibility), `cidr_interval_agrees_prefix_expand` (one CIDR expansion, not two). Since M6 the generated sources (`*_Gen.v`) carry the **surface** ruleset (`<name>_surface : sruleset`) and define every table/chain/decl as `Lower.lower_ruleset` applied to it, kernel-reduced — **no raw byte is written by hand** and a refused construct fails the generated `<name>_lowers_ok` Example (fail-loud) |
 
 Scope notes (each also sits on the theorem in the source):
 
@@ -238,11 +238,10 @@ chain that violates it.
 ## 4. Axiom-freedom gates
 
 - **`make axioms` is the build-FAILING gate** (`AXIOM_GATE_THEOREMS`,
-  proof/Makefile): `Print Assumptions` over 55 theorems, failing on anything
-  but `Closed under the global context`.  The list is
+  proof/Makefile): `Print Assumptions` over the listed theorems, failing on
+  anything but `Closed under the global context`.  The list is
   - the HEADLINE set (§1) + the `Correct.v` strata + the optimizer DSL form +
-    `Elab.elab_matchcond_correct` + the representation ratchet
-    `Semantics.run_rule_outcome_eq` (12 theorems),
+    the representation ratchet `Semantics.run_rule_outcome_eq`,
   - the M4 fuel-adequacy heads (§3): `Semantics.eval_rules_jx_monotone`,
     `eval_rules_j_fuel_stable`, `eval_rules_jx_adequate`,
     `eval_table_fuel_indep`, `eval_table_policy_is_fallthrough`,
@@ -310,7 +309,36 @@ replaced:
 | change | ratchet |
 |---|---|
 | rule outcome: 1 verdict + 5 optional slots -> `Syntax.outcome` sum | `Semantics.run_rule_outcome_eq`: for every well-formed product (`Syntax.prod_wf`), `outcome (rule_of_prod rp) = outcome_prod rp` on all env/packets (`outcome_prod` is the pre-sum evaluation, verbatim, over the historical record `Syntax.rule_prod`) |
-| typed source matches (`Elab.tmatch`) over the byte IR | `Elab.elab_matchcond_correct` (evaluation-exact elaboration); byte-faithfulness of the typed encodings: `Nftval.encode_*` vm_compute witnesses + `Elab.prefix_aligned_24`/`prefix_unaligned_20`/`elab_port_22`/`elab_wildcard` |
+| typed source matches (`Typed.txmatch`) over the byte IR | the `Lower_Proofs.*_erasure` family (`eq/neq/prefix/wildcard_erasure` for the scalar shapes); byte-faithfulness of the typed encodings: `Nftval.encode_*` vm_compute witnesses + `Typed.prefix_aligned_24`/`prefix_unaligned_20`/`elab_port_22`/`elab_wildcard` |
 | `MMasked` polarity bool -> `cmpop` | the eval clause is `eval_cmp op` (the VM's own comparator); `MFlagsSet` names the positive implicit-bitmask idiom (`(field & X) <> 0`, `CNe`) |
 | `nat_kind`/`nat_family`/dynset-op strings -> `Bytecode.nat_op`/`nat_af`/`dynset_op` | rendering strings exist only at the codec/netlink boundary (extracted/codec.ml, nl_send.ml); `make corpus` (2532/2532) pins the rendered bytes unchanged |
 | `BDep` dependency tag | a *definitional alias* of `BMatch` (`Syntax.BDep`): evaluation, loadability, compilation are those of the match it wraps, definitionally |
+
+### Strata retirement: `IR/Elab.v` (the legacy 4-shape typed-match module)
+
+Retired whole, per the TODO.md strata-retirement policy.  `Elab.tmatch`'s
+four shapes (typed eq / neq / CIDR-prefix / ifname-wildcard) are first-class
+`Surface.Typed.txmatch` constructors (`TXEq`/`TXNeq`/`TXPrefix`/`TXWildcard`
+— the `TXElab` embedding wrapper is gone), and `prefix_expand` with its
+helpers (`payload_prefix_field`/`mask_byte`/`prefix_mask`/`data_and`) moved
+verbatim into `Surface/Typed.v`.  Two theorems were retired with the module:
+
+- **`Elab.elab_matchcond_correct`** — a *definitional consistency check*
+  (proved by `reflexivity`, because the legacy typed semantics
+  `Elab.eval_tmatch` was itself defined through the byte encoding).
+  **Superseded by** the NON-definitional per-shape erasure theorems
+  `Lower_Proofs.eq_erasure`/`neq_erasure`/`prefix_erasure`/
+  `wildcard_erasure` (composed into `txmatch_erasure`): the four shapes now
+  have an *independent numeric* semantics in `Semantics/TypedEval.v` (under
+  the `make boundary` encode-independence grep gate), and the agreement with
+  the elaborated byte IR costs genuine decode/byteorder/mask-arithmetic
+  obligations — the same treatment every other typed shape gets.
+- **`Lower_Proofs.txelab_erasure`** — the `Some`-form restatement of the
+  above over the `TXElab` wrapper; subsumed by the same four theorems.
+
+The concrete elaboration witnesses (`prefix_aligned_24`/
+`prefix_unaligned_20`/`elab_port_22`/`elab_wildcard`) and the dormant
+set-element views `SEl`/`SRange` (+ `SEl_iv`/`SRange_iv`) moved with their
+statements intact (to `Surface/Typed.v` and `Surface/Lower.v` respectively);
+`make axioms` now gates the erasure family in `elab_matchcond_correct`'s
+place.

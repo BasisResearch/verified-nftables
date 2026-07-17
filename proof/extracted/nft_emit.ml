@@ -196,7 +196,7 @@ let emit (src_path : string) (rs : Ast.sruleset) : string =
   pr "   VERIFIED lowering [Lower.lower_ruleset] applied to it (no hand-written\n";
   pr "   bytes here).  A refused construct fails [%s_lowers_ok] (fail-loud). *)\n\n" base;
   pr "From Stdlib Require Import List String ZArith.\n";
-  pr "From Nft Require Import Bytes Verdict Packet Bytecode Syntax Semantics Nftval Elab.\n";
+  pr "From Nft Require Import Bytes Verdict Packet Bytecode Syntax Semantics Nftval.\n";
   pr "From Nft Require Import Surface.Ast Surface.Lower Gen_Support.\n";
   pr "Import ListNotations.\nOpen Scope string_scope.\n\n";
   (* the surface ruleset as written *)

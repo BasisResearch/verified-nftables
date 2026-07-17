@@ -24,10 +24,24 @@
         and/or/xor: (x & ~m) ^ m = x | m and (x & ~0) ^ m = x ^ m, within the
         register's bit width ([land_not_xor_is_or] etc.);
       - the bitfield mask/shift arithmetic: (x & ((2^bits-1) << s)) = v << s
-        iff ((x >> s) & (2^bits-1)) = v ([land_shiftl_mask] + shift-cancel).
+        iff ((x >> s) & (2^bits-1)) = v ([land_shiftl_mask] + shift-cancel);
+      - the typed eq/neq register decode at the VALUE's byteorder
+        ([eq_erasure]/[neq_erasure]) and the leading-bytes numeric view of a
+        genuinely short compare ([wildcard_erasure]);
+      - the CIDR prefix mask arithmetic, over BOTH prefix_expand branches —
+        nft's byte-aligned truncated-load shortening and the full-width
+        masked compare ([prefix_erasure]: a masked top-bits compare is
+        numerically a right-shift compare of both sides).
+
+    These four scalar-shape theorems SUPERSEDE the retired
+    [Elab.elab_matchcond_correct] (a definitional consistency check, proved
+    by [reflexivity] because the legacy typed semantics was itself defined
+    through the byte encoding); the shapes now carry the same NON-definitional
+    erasure obligations as every other typed construct.
 
     Every theorem here is axiom-free and enforced by `make axioms`
-    ([range_erasure_be], [range_erasure_host], [bitmask_erasure],
+    ([eq_erasure], [neq_erasure], [prefix_erasure], [wildcard_erasure],
+    [range_erasure_be], [range_erasure_host], [bitmask_erasure],
     [bitfield_erasure], [bitwise_erasure], [flag_erasure],
     [txmatch_erasure]).  Non-vacuity: concrete packets exercise each theorem's
     hypotheses at the bottom of the file (the typed side computes [Some true]
@@ -35,7 +49,7 @@
 
 From Stdlib Require Import List PeanoNat Bool NArith Lia String.
 From Nft Require Import Bytes Packet Verdict Bytecode Syntax Semantics Nftval
-  Elab Ast Datatype Symbols Selector Typecheck Typed Lower TypedEval.
+  Ast Datatype Symbols Selector Typecheck Typed Lower TypedEval.
 Import ListNotations.
 
 (* ================================================================== *)
@@ -547,6 +561,64 @@ Proof.
   cbn in H. injection H as <-. apply Nat.eqb_eq in E1. auto.
 Qed.
 
+(** [bytes_wfb] distributes over append and restricts to a prefix. *)
+Lemma bytes_wfb_app : forall a b : data,
+  bytes_wfb (a ++ b)%list = andb (bytes_wfb a) (bytes_wfb b).
+Proof. intros a b. unfold bytes_wfb. apply forallb_app. Qed.
+
+Lemma bytes_wfb_firstn : forall k d,
+  bytes_wfb d = true -> bytes_wfb (firstn k d) = true.
+Proof.
+  induction k as [|k IH]; intros [|x d] H; try reflexivity.
+  apply bytes_wfb_cons in H as [Hx Hd].
+  cbn [firstn]. unfold bytes_wfb. cbn [forallb].
+  apply andb_true_intro. split; [apply Nat.ltb_lt; exact Hx | apply IH; exact Hd].
+Qed.
+
+(** [data_to_N] splits over append: the leading bytes are the high-order
+    bits, so dropping the tail is a right shift. *)
+Lemma data_to_N_app : forall a b : data,
+  data_to_N (a ++ b)%list
+  = (data_to_N a * 256 ^ N.of_nat (List.length b) + data_to_N b)%N.
+Proof.
+  intros a b.
+  replace (data_to_N (a ++ b)%list)
+    with (fold_left (fun x y => (x * 256 + N.of_nat y)%N) b (data_to_N a))
+    by (unfold data_to_N; rewrite fold_left_app; reflexivity).
+  apply data_to_N_acc.
+Qed.
+
+Lemma data_to_N_app_shiftr : forall a b : data,
+  bytes_wfb b = true ->
+  N.shiftr (data_to_N (a ++ b)%list) (8 * N.of_nat (List.length b)) = data_to_N a.
+Proof.
+  intros a b Hwb.
+  rewrite data_to_N_app, N.shiftr_div_pow2, <- pow256_pow2.
+  rewrite N.div_add_l by (apply N.pow_nonzero; lia).
+  rewrite N.div_small by (apply data_to_N_bound; exact Hwb).
+  apply N.add_0_r.
+Qed.
+
+(** The leading-bytes register read ([TypedEval.read_lead_N]) returns exactly
+    the numeric value of the register's first [k] bytes. *)
+Lemma read_lead_N_inv : forall k d x, read_lead_N k d = Some x ->
+  (k <= List.length d)%nat /\ bytes_wfb d = true
+  /\ x = data_to_N (firstn k d).
+Proof.
+  intros k d x H. unfold read_lead_N in H.
+  destruct ((k <=? List.length d)%nat && bytes_wfb d) eqn:E; [|discriminate].
+  apply andb_prop in E as [Hk Hwf]. apply Nat.leb_le in Hk.
+  injection H as <-.
+  split; [exact Hk|]. split; [exact Hwf|].
+  assert (Hwb : bytes_wfb (skipn k d) = true).
+  { rewrite <- (firstn_skipn k d), bytes_wfb_app in Hwf.
+    apply andb_prop in Hwf as [_ Hwb]. exact Hwb. }
+  replace (List.length d - k)%nat with (List.length (skipn k d))
+    by (rewrite length_skipn; reflexivity).
+  rewrite <- (firstn_skipn k d) at 1.
+  apply data_to_N_app_shiftr. exact Hwb.
+Qed.
+
 Lemma eval_cmp_eq_num : forall fv vb,
   List.length vb = List.length fv ->
   bytes_wfb fv = true -> bytes_wfb vb = true ->
@@ -627,6 +699,182 @@ Proof.
   - apply N.eqb_neq in E. apply N.eqb_neq. intro Hc. apply E.
     apply N.mul_cancel_r in Hc; [exact Hc|].
     apply N.pow_nonzero. lia.
+Qed.
+
+(* ================================================================== *)
+(** ** Prefix-mask arithmetic (shared by [prefix_erasure] and the M3 CIDR
+    interval agreement below). *)
+
+Lemma prefix_mask_length : forall w plen, List.length (prefix_mask w plen) = w.
+Proof. intros w plen. unfold prefix_mask. rewrite length_map, length_seq. reflexivity. Qed.
+
+Lemma prefix_mask_cons : forall w plen,
+  prefix_mask (S w) plen = mask_byte plen :: prefix_mask w (plen - 8).
+Proof.
+  intros w plen. unfold prefix_mask. cbn [seq map]. f_equal.
+  - f_equal. lia.
+  - rewrite <- seq_shift, map_map. apply map_ext_in. intros i _. f_equal. lia.
+Qed.
+
+Lemma prefix_mask_wfb : forall w plen, bytes_wfb (prefix_mask w plen) = true.
+Proof.
+  intros w plen. apply bytes_wfb_Forall, Forall_forall.
+  intros x Hx. unfold prefix_mask in Hx. apply in_map_iff in Hx as (i & <- & _).
+  unfold mask_byte. assert (Nat.pow 2 (8 - Nat.min (plen - 8*i) 8) <= 256)%nat.
+  { transitivity (Nat.pow 2 8); [apply Nat.pow_le_mono_r; lia | cbn; lia]. }
+  assert (1 <= Nat.pow 2 (8 - Nat.min (plen - 8*i) 8))%nat
+    by (change 1%nat with (Nat.pow 2 0); apply Nat.pow_le_mono_r; lia). lia.
+Qed.
+
+Lemma data_and_length : forall a m, List.length m = List.length a ->
+  List.length (data_and a m) = List.length a.
+Proof.
+  intros a m H. unfold data_and. apply data_bitops_length_eq;
+    [exact H | rewrite repeat_length; reflexivity].
+Qed.
+
+Lemma data_and_wfb : forall a m, List.length m = List.length a ->
+  bytes_wfb a = true -> bytes_wfb m = true -> bytes_wfb (data_and a m) = true.
+Proof.
+  intros a m Hl Ha Hm. unfold data_and. apply data_bitops_wfb;
+    [exact Hl | rewrite repeat_length; reflexivity | exact Ha | exact Hm
+     | apply repeat_wfb; lia].
+Qed.
+
+Lemma data_to_N_data_and : forall a m, List.length m = List.length a ->
+  bytes_wfb a = true -> bytes_wfb m = true ->
+  data_to_N (data_and a m) = N.land (data_to_N a) (data_to_N m).
+Proof.
+  intros a m Hl Ha Hm. unfold data_and.
+  rewrite data_to_N_bitops;
+    [ | exact Hl | rewrite repeat_length; reflexivity | exact Ha | exact Hm
+      | apply repeat_wfb; lia].
+  rewrite data_to_N_repeat0, N.lxor_0_r. reflexivity.
+Qed.
+
+Lemma data_to_N_data_or : forall a b, List.length b = List.length a ->
+  bytes_wfb a = true -> bytes_wfb b = true ->
+  data_to_N (data_or a b) = N.lor (data_to_N a) (data_to_N b).
+Proof.
+  intros a b Hl Ha Hb. unfold data_or.
+  rewrite data_to_N_bitops;
+    [ | rewrite data_not_length; exact Hl | exact Hl | exact Ha
+      | apply data_not_wfb; exact Hb | exact Hb ].
+  rewrite data_to_N_data_not by exact Hb.
+  set (K := (8 * N.of_nat (List.length a))%N).
+  assert (Hbb : (256 ^ N.of_nat (List.length b))%N = (2 ^ K)%N)
+    by (unfold K; rewrite Hl, pow256_pow2; reflexivity).
+  rewrite Hbb.
+  assert (HaB : (data_to_N a < 2 ^ K)%N)
+    by (unfold K; rewrite <- pow256_pow2; apply data_to_N_bound; exact Ha).
+  assert (HbB : (data_to_N b < 2 ^ K)%N)
+    by (unfold K; rewrite <- pow256_pow2, <- Hl; apply data_to_N_bound; exact Hb).
+  apply land_not_xor_is_or; assumption.
+Qed.
+
+(** The numeric value of a prefix mask: the top [plen] bits set of a [w]-byte
+    big-endian word — i.e. [2^(8w) - 2^(8w-plen)]. *)
+Lemma prefix_mask_val : forall w plen, (plen <= 8 * w)%nat ->
+  data_to_N (prefix_mask w plen)
+  = (2 ^ (8 * N.of_nat w) - 2 ^ (8 * N.of_nat w - N.of_nat plen))%N.
+Proof.
+  induction w as [|w IH]; intros plen Hle.
+  - assert (plen = 0)%nat by lia. subst. reflexivity.
+  - rewrite prefix_mask_cons, data_to_N_cons, prefix_mask_length.
+    rewrite (IH (plen - 8) ltac:(lia)).
+    rewrite Nat2N.inj_succ.
+    replace (8 * N.succ (N.of_nat w))%N with (8 * N.of_nat w + 8)%N by lia.
+    rewrite pow256_pow2.
+    set (E := (8 * N.of_nat w)%N).
+    assert (Hpow8 : (2 ^ (E + 8) = 2 ^ E * 256)%N)
+      by (rewrite N.pow_add_r; reflexivity).
+    destruct (Nat.ltb plen 8) eqn:Hlt.
+    + apply Nat.ltb_lt in Hlt.
+      assert (Hmb : N.of_nat (mask_byte plen)
+                    = (256 - 2 ^ (8 - N.of_nat plen))%N).
+      { unfold mask_byte.
+        rewrite Nat.min_l by lia.
+        rewrite Nat2N.inj_sub, Nat2N.inj_pow, Nat2N.inj_sub. reflexivity. }
+      rewrite Hmb.
+      replace (plen - 8)%nat with 0%nat by lia. cbn [N.of_nat].
+      rewrite N.sub_0_r, N.sub_diag.
+      replace (E + 8 - N.of_nat plen)%N with (E + (8 - N.of_nat plen))%N by lia.
+      rewrite Hpow8, N.pow_add_r.
+      assert (H8 : (2 ^ (8 - N.of_nat plen) <= 256)%N).
+      { replace 256%N with (2 ^ 8)%N by reflexivity. apply N.pow_le_mono_r; lia. }
+      nia.
+    + apply Nat.ltb_ge in Hlt.
+      assert (Hmb : N.of_nat (mask_byte plen) = 255%N).
+      { unfold mask_byte. rewrite Nat.min_r by lia.
+        replace (8 - 8)%nat with 0%nat by lia. reflexivity. }
+      rewrite Hmb.
+      replace (E - N.of_nat (plen - 8))%N with (E + 8 - N.of_nat plen)%N
+        by (rewrite Nat2N.inj_sub; unfold E; lia).
+      rewrite Hpow8.
+      assert (Hle2 : (2 ^ (E + 8 - N.of_nat plen) <= 2 ^ E)%N).
+      { apply N.pow_le_mono_r; lia. }
+      set (X := (2 ^ (E + 8 - N.of_nat plen))%N) in *.
+      set (Y := (2 ^ E)%N) in *. lia.
+Qed.
+
+(** A prefix mask ANDs a [w]-byte value down to its top [plen] bits (the low
+    [8w-plen] bits cleared): [land x mask = (x >> k) << k], [k = 8w-plen]. *)
+Lemma land_prefix_mask : forall w plen x, (plen <= 8 * w)%nat ->
+  (x < 2 ^ (8 * N.of_nat w))%N ->
+  N.land x (data_to_N (prefix_mask w plen))
+  = N.shiftl (N.shiftr x (N.of_nat (8 * w - plen))) (N.of_nat (8 * w - plen)).
+Proof.
+  intros w plen x Hle Hx.
+  rewrite prefix_mask_val by exact Hle.
+  set (K := N.of_nat (8 * w - plen)).
+  assert (HK : K = (8 * N.of_nat w - N.of_nat plen)%N)
+    by (unfold K; rewrite Nat2N.inj_sub; lia).
+  assert (HP : (N.of_nat plen + K = 8 * N.of_nat w)%N) by (rewrite HK; lia).
+  assert (Hmask : (2 ^ (8 * N.of_nat w) - 2 ^ (8 * N.of_nat w - N.of_nat plen))%N
+                  = N.shiftl (N.ones (N.of_nat plen)) K).
+  { rewrite N.shiftl_mul_pow2, N.ones_equiv, <- N.sub_1_r.
+    rewrite N.mul_sub_distr_r, N.mul_1_l, <- N.pow_add_r, HP, <- HK. reflexivity. }
+  rewrite Hmask, land_shiftl_mask.
+  rewrite N.land_ones.
+  rewrite N.shiftr_div_pow2.
+  assert (Hlt : (x / 2 ^ K < 2 ^ N.of_nat plen)%N).
+  { apply N.div_lt_upper_bound; [apply N.pow_nonzero; lia|].
+    rewrite <- N.pow_add_r.
+    replace (K + N.of_nat plen)%N with (8 * N.of_nat w)%N by lia. exact Hx. }
+  rewrite N.mod_small by exact Hlt. reflexivity.
+Qed.
+
+(** The bytewise complement of a prefix mask is the low [8w-plen] bits set:
+    [~mask = 2^(8w-plen) - 1] (the broadcast host part). *)
+Lemma data_not_prefix_mask : forall w plen, (plen <= 8 * w)%nat ->
+  data_to_N (Typed.data_not (prefix_mask w plen))
+  = (2 ^ N.of_nat (8 * w - plen) - 1)%N.
+Proof.
+  intros w plen Hle.
+  rewrite data_to_N_data_not by apply prefix_mask_wfb.
+  rewrite prefix_mask_length, pow256_pow2.
+  rewrite prefix_mask_val by exact Hle.
+  set (K := N.of_nat (8 * w - plen)).
+  assert (HKn : K = (8 * N.of_nat w - N.of_nat plen)%N)
+    by (unfold K; rewrite Nat2N.inj_sub; lia).
+  set (M := (2 ^ (8 * N.of_nat w) - 2 ^ (8 * N.of_nat w - N.of_nat plen))%N).
+  assert (Hdisj : N.land M (2 ^ K - 1) = 0%N).
+  { unfold M. rewrite <- HKn.
+    apply N.bits_inj_iff. intro i. rewrite N.land_spec, N.bits_0.
+    destruct (N.lt_ge_cases i K) as [Hi|Hi].
+    - replace (2 ^ (8 * N.of_nat w) - 2 ^ K)%N
+        with (N.shiftl (2 ^ (8 * N.of_nat w - K) - 1) K).
+      2:{ rewrite N.shiftl_mul_pow2, N.mul_sub_distr_r, N.mul_1_l, <- N.pow_add_r.
+          replace (8 * N.of_nat w - K + K)%N with (8 * N.of_nat w)%N
+            by (rewrite HKn; lia). reflexivity. }
+      rewrite N.shiftl_spec_low by lia. reflexivity.
+    - rewrite N.sub_1_r, <- N.ones_equiv, N.ones_spec_high by lia. apply andb_false_r. }
+  assert (Hsum : (2 ^ (8 * N.of_nat w) - 1)%N = N.lxor M (2 ^ K - 1)).
+  { rewrite <- (N.add_nocarry_lxor _ _ Hdisj). unfold M. rewrite <- HKn.
+    assert (0 < 2 ^ K)%N by (apply N.neq_0_lt_0, N.pow_nonzero; lia).
+    assert (2 ^ K <= 2 ^ (8 * N.of_nat w))%N
+      by (apply N.pow_le_mono_r; [lia | rewrite HKn; lia]). lia. }
+  fold M. rewrite Hsum, <- N.lxor_assoc, N.lxor_nilpotent, N.lxor_0_l. reflexivity.
 Qed.
 
 (* ================================================================== *)
@@ -1050,14 +1298,313 @@ Proof.
       rewrite Hmnum, Hvnum. reflexivity.
 Qed.
 
-(** The four M0 shapes: their agreement is Elab's documented consistency
-    check ([elab_matchcond_correct]), restated in the [Some]-form. *)
-Corollary txelab_erasure : forall m e p b,
-  eval_txm (TXElab m) e p = Some b ->
-  eval_matchcond (elab_tx (TXElab m)) e p = b.
+(** Typed equality / inequality: the register decodes — at the VALUE's
+    byteorder — to the value's number exactly when the byte compare against
+    its register encoding succeeds (the host-endian case reduces to the
+    big-endian one by reversal on both sides).  These SUPERSEDE the retired
+    [Elab.elab_matchcond_correct] consistency check with genuine
+    decode-vs-encode obligations. *)
+
+(** The shared compare core of the eq / neq shapes. *)
+Lemma read_val_cmp_num : forall f v e p x,
+  val_wfb v = true ->
+  read_val_N v (field_value f e p) = Some x ->
+  eval_cmp CEq (field_value f e p) (Nftval.encode v) = (x =? val_N v)%N.
 Proof.
-  intros m e p b H. injection H as <-. cbn [elab_tx].
-  apply elab_matchcond_correct.
+  intros f v e p x Hwfv HR. unfold read_val_N in HR.
+  set (fv := field_value f e p) in *.
+  destruct (host_val v) eqn:Hh.
+  - (* host-endian: both compare sides reverse *)
+    apply read_be_N_inv in HR as (Hlen & Hwf & ->).
+    rewrite length_rev in Hlen.
+    cbn [eval_cmp].
+    rewrite val_width_encode, <- Hlen, firstn_all.
+    rewrite (encode_host_rev v Hh).
+    rewrite <- (rev_involutive fv) at 1.
+    rewrite data_eqb_rev.
+    rewrite data_eqb_num;
+      [ | rewrite encode_be_len, length_rev; congruence
+        | exact Hwf
+        | apply encode_be_wfb; exact Hwfv ].
+    rewrite encode_be_num by exact Hwfv. reflexivity.
+  - (* big-endian: the direct numeric compare *)
+    apply read_be_N_inv in HR as (Hlen & Hwf & ->).
+    cbn [eval_cmp].
+    rewrite val_width_encode, <- Hlen, firstn_all.
+    rewrite data_eqb_num;
+      [ | rewrite val_width_encode; congruence
+        | exact Hwf
+        | apply encode_wfb; exact Hwfv ].
+    rewrite encode_num_be by assumption. reflexivity.
+Qed.
+
+Theorem eq_erasure : forall f v e p b,
+  eval_txm (TXEq f v) e p = Some b ->
+  eval_matchcond (elab_tx (TXEq f v)) e p = b.
+Proof.
+  intros f v e p b Hev.
+  cbn [eval_txm] in Hev. cbn [elab_tx].
+  destruct (field_loadable f p) eqn:HL; cbn [negb] in Hev.
+  2:{ injection Hev as <-.
+      unfold eval_matchcond. cbn [match_loadable]. rewrite HL. reflexivity. }
+  destruct (val_wfb v) eqn:Hwfv; cbn [negb] in Hev; [|discriminate].
+  destruct (read_val_N v (field_value f e p)) as [x|] eqn:HR; [|discriminate].
+  injection Hev as <-.
+  unfold eval_matchcond. cbn [match_loadable]. rewrite HL.
+  cbn [eval_matchcond_body andb].
+  apply read_val_cmp_num; assumption.
+Qed.
+
+Theorem neq_erasure : forall f v e p b,
+  eval_txm (TXNeq f v) e p = Some b ->
+  eval_matchcond (elab_tx (TXNeq f v)) e p = b.
+Proof.
+  intros f v e p b Hev.
+  cbn [eval_txm] in Hev. cbn [elab_tx].
+  destruct (field_loadable f p) eqn:HL; cbn [negb] in Hev.
+  2:{ injection Hev as <-.
+      unfold eval_matchcond. cbn [match_loadable]. rewrite HL. reflexivity. }
+  destruct (val_wfb v) eqn:Hwfv; cbn [negb] in Hev; [|discriminate].
+  destruct (read_val_N v (field_value f e p)) as [x|] eqn:HR; [|discriminate].
+  injection Hev as <-.
+  unfold eval_matchcond. cbn [match_loadable]. rewrite HL.
+  cbn [eval_matchcond_body andb].
+  change (eval_cmp CNe ?a ?b) with (negb (eval_cmp CEq a b)).
+  rewrite (read_val_cmp_num f v e p x Hwfv HR). reflexivity.
+Qed.
+
+(** Wildcards: the field's LEADING bytes are the prefix — the leading bytes
+    of a big-endian word are its high-order bits ([read_lead_N]'s right
+    shift), so the short byte compare is the numeric compare of the shifted
+    register against the prefix value. *)
+Theorem wildcard_erasure : forall f pre e p b,
+  eval_txm (TXWildcard f pre) e p = Some b ->
+  eval_matchcond (elab_tx (TXWildcard f pre)) e p = b.
+Proof.
+  intros f pre e p b Hev.
+  cbn [eval_txm] in Hev. cbn [elab_tx].
+  destruct (field_loadable f p) eqn:HL; cbn [negb] in Hev.
+  2:{ injection Hev as <-.
+      unfold eval_matchcond. cbn [match_loadable]. rewrite HL. reflexivity. }
+  destruct (bytes_wfb pre) eqn:Hwp; cbn [negb] in Hev; [|discriminate].
+  destruct (read_lead_N (List.length pre) (field_value f e p)) as [x|] eqn:HR;
+    [|discriminate].
+  injection Hev as <-.
+  apply read_lead_N_inv in HR as (Hk & Hwf & ->).
+  set (fv := field_value f e p) in *.
+  unfold eval_matchcond. cbn [match_loadable]. rewrite HL.
+  cbn [eval_matchcond_body andb].
+  cbn [eval_cmp].
+  rewrite data_eqb_num;
+    [ reflexivity
+    | rewrite firstn_length_le by exact Hk; reflexivity
+    | apply bytes_wfb_firstn; exact Hwf
+    | exact Hwp ].
+Qed.
+
+(** CIDR prefixes: the verified expansion — BOTH branches: nft's
+    byte-aligned truncated-load shortening AND the full-width masked
+    compare — tests exactly "the top [plen] bits agree"; a masked top-bits
+    compare is numerically a right-shift compare of both sides
+    ([land_prefix_mask] + [shiftl_eqb_cancel]). *)
+
+(** The full-width masked branch. *)
+Lemma prefix_full_erasure : forall f (neg : bool) v plen e p b,
+  val_wfb v = true -> host_val v = false ->
+  (plen <= 8 * val_width v)%nat ->
+  prefix_full_N f neg v plen e p = Some b ->
+  eval_matchcond
+    (MMasked f (if neg then CNe else CEq)
+       (prefix_mask (val_width v) plen)
+       (repeat 0 (val_width v))
+       (data_and (Nftval.encode v) (prefix_mask (val_width v) plen))) e p = b.
+Proof.
+  intros f neg v plen e p b Hwfv Hnh Hple Hev.
+  unfold prefix_full_N in Hev.
+  destruct (field_loadable f p) eqn:HL; cbn [negb] in Hev.
+  2:{ injection Hev as <-.
+      unfold eval_matchcond. destruct neg; cbn [match_loadable];
+        rewrite HL; reflexivity. }
+  destruct (read_be_N (val_width v) (field_value f e p)) as [x|] eqn:HR;
+    [|discriminate].
+  injection Hev as <-.
+  apply read_be_N_inv in HR as (Hlen & Hwf & ->).
+  set (fv := field_value f e p) in *.
+  set (ev := Nftval.encode v) in *.
+  assert (Hew : List.length ev = val_width v) by apply val_width_encode.
+  set (w := val_width v) in *.
+  set (mask := prefix_mask w plen) in *.
+  set (net := data_and ev mask) in *.
+  assert (Hml : List.length mask = w) by apply prefix_mask_length.
+  assert (Hmw : bytes_wfb mask = true) by apply prefix_mask_wfb.
+  assert (Hwev : bytes_wfb ev = true) by (apply encode_wfb; exact Hwfv).
+  assert (Hnl : List.length net = w)
+    by (unfold net; rewrite data_and_length by congruence; congruence).
+  assert (Hnw : bytes_wfb net = true)
+    by (unfold net; apply data_and_wfb; [congruence | exact Hwev | exact Hmw]).
+  assert (Hxb : (data_to_N fv < 2 ^ (8 * N.of_nat w))%N)
+    by (rewrite <- pow256_pow2, <- Hlen; apply data_to_N_bound; exact Hwf).
+  assert (Heb : (data_to_N ev < 2 ^ (8 * N.of_nat w))%N)
+    by (rewrite <- pow256_pow2, <- Hew; apply data_to_N_bound; exact Hwev).
+  unfold eval_matchcond. destruct neg; cbn [match_loadable]; rewrite HL;
+    cbn [eval_matchcond_body andb]; fold fv.
+  - change (eval_cmp CNe ?a ?b) with (negb (eval_cmp CEq a b)).
+    rewrite eval_cmp_eq_num;
+      [ | rewrite data_bitops_length_eq
+            by (rewrite ?repeat_length; congruence); congruence
+        | apply data_bitops_wfb;
+          [ congruence | rewrite repeat_length; congruence | exact Hwf
+            | exact Hmw | apply repeat_wfb; lia ]
+        | exact Hnw ].
+    rewrite data_to_N_bitops;
+      [ | congruence | rewrite repeat_length; congruence | exact Hwf
+        | exact Hmw | apply repeat_wfb; lia ].
+    rewrite data_to_N_repeat0, N.lxor_0_r.
+    unfold net. rewrite data_to_N_data_and
+      by (congruence || assumption).
+    unfold mask. rewrite !land_prefix_mask by assumption.
+    rewrite shiftl_eqb_cancel.
+    unfold ev. rewrite encode_num_be by assumption.
+    reflexivity.
+  - rewrite eval_cmp_eq_num;
+      [ | rewrite data_bitops_length_eq
+            by (rewrite ?repeat_length; congruence); congruence
+        | apply data_bitops_wfb;
+          [ congruence | rewrite repeat_length; congruence | exact Hwf
+            | exact Hmw | apply repeat_wfb; lia ]
+        | exact Hnw ].
+    rewrite data_to_N_bitops;
+      [ | congruence | rewrite repeat_length; congruence | exact Hwf
+        | exact Hmw | apply repeat_wfb; lia ].
+    rewrite data_to_N_repeat0, N.lxor_0_r.
+    unfold net. rewrite data_to_N_data_and
+      by (congruence || assumption).
+    unfold mask. rewrite !land_prefix_mask by assumption.
+    rewrite shiftl_eqb_cancel.
+    unfold ev. rewrite encode_num_be by assumption.
+    reflexivity.
+Qed.
+
+(** The byte-aligned truncated-load branch: the elaborated form loads and
+    compares just the prefix bytes of [f']; the compared immediate — the
+    leading [k] bytes of the masked network address — is numerically the
+    value's top [plen] bits. *)
+Lemma prefix_short_erasure : forall f' (neg : bool) v plen k e p b,
+  val_wfb v = true -> host_val v = false ->
+  plen = (8 * k)%nat -> (k <= val_width v)%nat ->
+  (if negb (field_loadable f' p) then Some false else
+   match read_lead_N k (field_value f' e p) with
+   | Some x => Some (xorb neg (x =? N.shiftr (val_N v)
+                                     (N.of_nat (8 * val_width v - plen)))%N)
+   | None => None
+   end) = Some b ->
+  eval_matchcond
+    (if neg
+     then MNeq f' (firstn k (data_and (Nftval.encode v)
+                     (prefix_mask (val_width v) plen)))
+     else MEq f' (firstn k (data_and (Nftval.encode v)
+                     (prefix_mask (val_width v) plen)))) e p = b.
+Proof.
+  intros f' neg v plen k e p b Hwfv Hnh Hpk Hkw Hev.
+  destruct (field_loadable f' p) eqn:HL; cbn [negb] in Hev.
+  2:{ injection Hev as <-.
+      unfold eval_matchcond. destruct neg; cbn [match_loadable];
+        rewrite HL; reflexivity. }
+  destruct (read_lead_N k (field_value f' e p)) as [x|] eqn:HR; [|discriminate].
+  injection Hev as <-.
+  apply read_lead_N_inv in HR as (Hk & Hwf & ->).
+  set (fv := field_value f' e p) in *.
+  set (ev := Nftval.encode v) in *.
+  assert (Hew : List.length ev = val_width v) by apply val_width_encode.
+  set (w := val_width v) in *.
+  set (mask := prefix_mask w plen) in *.
+  set (net := data_and ev mask) in *.
+  assert (Hml : List.length mask = w) by apply prefix_mask_length.
+  assert (Hmw : bytes_wfb mask = true) by apply prefix_mask_wfb.
+  assert (Hwev : bytes_wfb ev = true) by (apply encode_wfb; exact Hwfv).
+  assert (Hnl : List.length net = w)
+    by (unfold net; rewrite data_and_length by congruence; congruence).
+  assert (Hnw : bytes_wfb net = true)
+    by (unfold net; apply data_and_wfb; [congruence | exact Hwev | exact Hmw]).
+  assert (Heb : (data_to_N ev < 2 ^ (8 * N.of_nat w))%N)
+    by (rewrite <- pow256_pow2, <- Hew; apply data_to_N_bound; exact Hwev).
+  assert (Hple : (plen <= 8 * w)%nat) by lia.
+  (* the shared CEq core *)
+  assert (Hcore : eval_cmp CEq fv (firstn k net)
+                  = (data_to_N (firstn k fv)
+                     =? N.shiftr (val_N v) (N.of_nat (8 * w - plen)))%N).
+  { cbn [eval_cmp].
+    rewrite firstn_length_le by lia.
+    rewrite data_eqb_num;
+      [ | rewrite !firstn_length_le by lia; reflexivity
+        | apply bytes_wfb_firstn; exact Hwf
+        | apply bytes_wfb_firstn; exact Hnw ].
+    assert (Hwbs : bytes_wfb (skipn k net) = true).
+    { pose proof Hnw as Hnw'.
+      rewrite <- (firstn_skipn k net), bytes_wfb_app in Hnw'.
+      apply andb_prop in Hnw' as [_ Hs]. exact Hs. }
+    assert (Hnetk : data_to_N (firstn k net)
+                    = N.shiftr (data_to_N net) (8 * N.of_nat (w - k))).
+    { replace (w - k)%nat with (List.length (skipn k net))
+        by (rewrite length_skipn; lia).
+      rewrite <- (firstn_skipn k net) at 2.
+      symmetry. apply data_to_N_app_shiftr. exact Hwbs. }
+    rewrite Hnetk.
+    unfold net. rewrite data_to_N_data_and by (congruence || assumption).
+    unfold mask. rewrite land_prefix_mask by assumption.
+    assert (HKM : (8 * N.of_nat (w - k))%N = N.of_nat (8 * w - plen)) by lia.
+    rewrite HKM.
+    rewrite N.shiftr_shiftl_l by lia.
+    rewrite N.sub_diag, N.shiftl_0_r.
+    unfold ev. rewrite encode_num_be by assumption.
+    reflexivity. }
+  destruct neg; unfold eval_matchcond; cbn [match_loadable]; rewrite HL;
+    cbn [eval_matchcond_body andb]; fold fv.
+  - change (eval_cmp CNe ?a ?b) with (negb (eval_cmp CEq a b)).
+    rewrite Hcore. reflexivity.
+  - rewrite Hcore. reflexivity.
+Qed.
+
+Theorem prefix_erasure : forall f op v plen e p b,
+  eval_txm (TXPrefix f op v plen) e p = Some b ->
+  eval_matchcond (elab_tx (TXPrefix f op v plen)) e p = b.
+Proof.
+  intros f op v plen e p b Hev.
+  cbn [eval_txm] in Hev. cbn [elab_tx].
+  destruct (val_wfb v && negb (host_val v) && (plen <=? 8 * val_width v)%nat)
+    eqn:HC; cbn [negb] in Hev; [|discriminate].
+  apply andb_prop in HC as [HC1 Hple]. apply andb_prop in HC1 as [Hwfv Hnh].
+  apply negb_true_iff in Hnh. apply Nat.leb_le in Hple.
+  destruct op; try discriminate;
+  cbv beta iota zeta in Hev;
+  cbv beta iota zeta delta [prefix_expand];
+  rewrite !(val_width_encode v).
+  - (* CEq *)
+    destruct ((0 <? plen)%nat && (plen <? 8 * val_width v)%nat
+              && (Nat.modulo plen 8 =? 0)%nat) eqn:HA.
+    + apply andb_prop in HA as [HA1 Hmod].
+      apply andb_prop in HA1 as [Hpos Hlt].
+      apply Nat.ltb_lt in Hpos, Hlt. apply Nat.eqb_eq in Hmod.
+      assert (Hpk : plen = (8 * Nat.div plen 8)%nat).
+      { rewrite (Nat.div_mod plen 8) at 1 by lia. lia. }
+      destruct (payload_prefix_field f (Nat.div plen 8)) as [f'|] eqn:HF.
+      * apply (prefix_short_erasure f' false v plen (Nat.div plen 8));
+          try assumption; lia.
+      * apply (prefix_full_erasure f false v plen); assumption.
+    + apply (prefix_full_erasure f false v plen); assumption.
+  - (* CNe *)
+    destruct ((0 <? plen)%nat && (plen <? 8 * val_width v)%nat
+              && (Nat.modulo plen 8 =? 0)%nat) eqn:HA.
+    + apply andb_prop in HA as [HA1 Hmod].
+      apply andb_prop in HA1 as [Hpos Hlt].
+      apply Nat.ltb_lt in Hpos, Hlt. apply Nat.eqb_eq in Hmod.
+      assert (Hpk : plen = (8 * Nat.div plen 8)%nat).
+      { rewrite (Nat.div_mod plen 8) at 1 by lia. lia. }
+      destruct (payload_prefix_field f (Nat.div plen 8)) as [f'|] eqn:HF.
+      * apply (prefix_short_erasure f' true v plen (Nat.div plen 8));
+          try assumption; lia.
+      * apply (prefix_full_erasure f true v plen); assumption.
+    + apply (prefix_full_erasure f true v plen); assumption.
 Qed.
 
 (** THE COMPOSED THEOREM (the M-D brick): whenever the typed numeric
@@ -1068,9 +1615,12 @@ Theorem txmatch_erasure : forall t e p b,
   eval_matchcond (elab_tx t) e p = b.
 Proof.
   intros t e p b H.
-  destruct t as [m|f dt neg lo hi|f dt op bits|spec neg v|f dt bop neg mask v
-                 |f neg v].
-  - apply txelab_erasure; exact H.
+  destruct t as [f v|f v|f op v plen|f pre|f dt neg lo hi|f dt op bits
+                 |spec neg v|f dt bop neg mask v|f neg v].
+  - apply eq_erasure; exact H.
+  - apply neq_erasure; exact H.
+  - apply prefix_erasure; exact H.
+  - apply wildcard_erasure; exact H.
   - destruct (range_hton dt) eqn:Hh.
     + apply range_erasure_host; assumption.
     + apply range_erasure_be; assumption.
@@ -1135,6 +1685,38 @@ Example erasure_flag_exercised :
      = true.
 Proof. vm_compute. split; reflexivity. Qed.
 
+Example erasure_eq_exercised :
+  eval_txm (TXEq FThDport (VPort 443)) tev_env tev_pkt4 = Some true
+  /\ eval_matchcond (elab_tx (TXEq FThDport (VPort 443))) tev_env tev_pkt4
+     = true.
+Proof. vm_compute. split; reflexivity. Qed.
+
+Example erasure_neq_exercised :
+  eval_txm (TXNeq FThDport (VPort 22)) tev_env tev_pkt4 = Some true
+  /\ eval_matchcond (elab_tx (TXNeq FThDport (VPort 22))) tev_env tev_pkt4
+     = true.
+Proof. vm_compute. split; reflexivity. Qed.
+
+(** BOTH prefix_expand branches: /24 is the byte-aligned truncated load, /20
+    the full-width masked compare — 192.168.100.7 is in both. *)
+Example erasure_prefix_exercised :
+  (eval_txm (TXPrefix FIp4Saddr CEq (VIpv4 [192;168;100;0]) 24)
+     tev_env tev_pkt4 = Some true
+   /\ eval_matchcond (elab_tx (TXPrefix FIp4Saddr CEq (VIpv4 [192;168;100;0]) 24))
+        tev_env tev_pkt4 = true)
+  /\ (eval_txm (TXPrefix FIp4Saddr CEq (VIpv4 [192;168;96;0]) 20)
+        tev_env tev_pkt4 = Some true
+      /\ eval_matchcond (elab_tx (TXPrefix FIp4Saddr CEq (VIpv4 [192;168;96;0]) 20))
+           tev_env tev_pkt4 = true).
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+Example erasure_wildcard_exercised :
+  eval_txm (TXWildcard FMetaIifname (sbytes "dummy")) tev_env tev_pkt4
+    = Some true
+  /\ eval_matchcond (elab_tx (TXWildcard FMetaIifname (sbytes "dummy")))
+       tev_env tev_pkt4 = true.
+Proof. vm_compute. split; reflexivity. Qed.
+
 (* ================================================================== *)
 (** ** M3: composite-immediate erasure — set / concat / CIDR.
 
@@ -1150,7 +1732,7 @@ Proof. vm_compute. split; reflexivity. Qed.
         concatenated-key membership is exactly the per-field cross product
         (the historical padding bug, proved by [split_by_recover] injectivity);
       - [cidr_interval_agrees_prefix_expand]: the CIDR net/broadcast interval
-        and [Elab.prefix_expand]'s masked compare decide membership
+        and [prefix_expand]'s masked compare decide membership
         IDENTICALLY (one Coq expansion, the two-implementations tension gone). *)
 
 (** *** Set-interval erasure (numeric = byte membership). *)
@@ -1299,177 +1881,6 @@ Qed.
 
 (** *** CIDR interval vs masked-prefix compare agreement. *)
 
-Lemma prefix_mask_length : forall w plen, List.length (Elab.prefix_mask w plen) = w.
-Proof. intros w plen. unfold Elab.prefix_mask. rewrite length_map, length_seq. reflexivity. Qed.
-
-Lemma prefix_mask_cons : forall w plen,
-  Elab.prefix_mask (S w) plen = Elab.mask_byte plen :: Elab.prefix_mask w (plen - 8).
-Proof.
-  intros w plen. unfold Elab.prefix_mask. cbn [seq map]. f_equal.
-  - f_equal. lia.
-  - rewrite <- seq_shift, map_map. apply map_ext_in. intros i _. f_equal. lia.
-Qed.
-
-Lemma prefix_mask_wfb : forall w plen, bytes_wfb (Elab.prefix_mask w plen) = true.
-Proof.
-  intros w plen. apply bytes_wfb_Forall, Forall_forall.
-  intros x Hx. unfold Elab.prefix_mask in Hx. apply in_map_iff in Hx as (i & <- & _).
-  unfold Elab.mask_byte. assert (Nat.pow 2 (8 - Nat.min (plen - 8*i) 8) <= 256)%nat.
-  { transitivity (Nat.pow 2 8); [apply Nat.pow_le_mono_r; lia | cbn; lia]. }
-  assert (1 <= Nat.pow 2 (8 - Nat.min (plen - 8*i) 8))%nat
-    by (change 1%nat with (Nat.pow 2 0); apply Nat.pow_le_mono_r; lia). lia.
-Qed.
-
-Lemma data_and_length : forall a m, List.length m = List.length a ->
-  List.length (Elab.data_and a m) = List.length a.
-Proof.
-  intros a m H. unfold Elab.data_and. apply data_bitops_length_eq;
-    [exact H | rewrite repeat_length; reflexivity].
-Qed.
-
-Lemma data_and_wfb : forall a m, List.length m = List.length a ->
-  bytes_wfb a = true -> bytes_wfb m = true -> bytes_wfb (Elab.data_and a m) = true.
-Proof.
-  intros a m Hl Ha Hm. unfold Elab.data_and. apply data_bitops_wfb;
-    [exact Hl | rewrite repeat_length; reflexivity | exact Ha | exact Hm
-     | apply repeat_wfb; lia].
-Qed.
-
-Lemma data_to_N_data_and : forall a m, List.length m = List.length a ->
-  bytes_wfb a = true -> bytes_wfb m = true ->
-  data_to_N (Elab.data_and a m) = N.land (data_to_N a) (data_to_N m).
-Proof.
-  intros a m Hl Ha Hm. unfold Elab.data_and.
-  rewrite data_to_N_bitops;
-    [ | exact Hl | rewrite repeat_length; reflexivity | exact Ha | exact Hm
-      | apply repeat_wfb; lia].
-  rewrite data_to_N_repeat0, N.lxor_0_r. reflexivity.
-Qed.
-
-Lemma data_to_N_data_or : forall a b, List.length b = List.length a ->
-  bytes_wfb a = true -> bytes_wfb b = true ->
-  data_to_N (data_or a b) = N.lor (data_to_N a) (data_to_N b).
-Proof.
-  intros a b Hl Ha Hb. unfold data_or.
-  rewrite data_to_N_bitops;
-    [ | rewrite data_not_length; exact Hl | exact Hl | exact Ha
-      | apply data_not_wfb; exact Hb | exact Hb ].
-  rewrite data_to_N_data_not by exact Hb.
-  set (K := (8 * N.of_nat (List.length a))%N).
-  assert (Hbb : (256 ^ N.of_nat (List.length b))%N = (2 ^ K)%N)
-    by (unfold K; rewrite Hl, pow256_pow2; reflexivity).
-  rewrite Hbb.
-  assert (HaB : (data_to_N a < 2 ^ K)%N)
-    by (unfold K; rewrite <- pow256_pow2; apply data_to_N_bound; exact Ha).
-  assert (HbB : (data_to_N b < 2 ^ K)%N)
-    by (unfold K; rewrite <- pow256_pow2, <- Hl; apply data_to_N_bound; exact Hb).
-  apply land_not_xor_is_or; assumption.
-Qed.
-
-(** The numeric value of a prefix mask: the top [plen] bits set of a [w]-byte
-    big-endian word — i.e. [2^(8w) - 2^(8w-plen)]. *)
-Lemma prefix_mask_val : forall w plen, (plen <= 8 * w)%nat ->
-  data_to_N (Elab.prefix_mask w plen)
-  = (2 ^ (8 * N.of_nat w) - 2 ^ (8 * N.of_nat w - N.of_nat plen))%N.
-Proof.
-  induction w as [|w IH]; intros plen Hle.
-  - assert (plen = 0)%nat by lia. subst. reflexivity.
-  - rewrite prefix_mask_cons, data_to_N_cons, prefix_mask_length.
-    rewrite (IH (plen - 8) ltac:(lia)).
-    rewrite Nat2N.inj_succ.
-    replace (8 * N.succ (N.of_nat w))%N with (8 * N.of_nat w + 8)%N by lia.
-    rewrite pow256_pow2.
-    set (E := (8 * N.of_nat w)%N).
-    assert (Hpow8 : (2 ^ (E + 8) = 2 ^ E * 256)%N)
-      by (rewrite N.pow_add_r; reflexivity).
-    destruct (Nat.ltb plen 8) eqn:Hlt.
-    + apply Nat.ltb_lt in Hlt.
-      assert (Hmb : N.of_nat (Elab.mask_byte plen)
-                    = (256 - 2 ^ (8 - N.of_nat plen))%N).
-      { unfold Elab.mask_byte.
-        rewrite Nat.min_l by lia.
-        rewrite Nat2N.inj_sub, Nat2N.inj_pow, Nat2N.inj_sub. reflexivity. }
-      rewrite Hmb.
-      replace (plen - 8)%nat with 0%nat by lia. cbn [N.of_nat].
-      rewrite N.sub_0_r, N.sub_diag.
-      replace (E + 8 - N.of_nat plen)%N with (E + (8 - N.of_nat plen))%N by lia.
-      rewrite Hpow8, N.pow_add_r.
-      assert (H8 : (2 ^ (8 - N.of_nat plen) <= 256)%N).
-      { replace 256%N with (2 ^ 8)%N by reflexivity. apply N.pow_le_mono_r; lia. }
-      nia.
-    + apply Nat.ltb_ge in Hlt.
-      assert (Hmb : N.of_nat (Elab.mask_byte plen) = 255%N).
-      { unfold Elab.mask_byte. rewrite Nat.min_r by lia.
-        replace (8 - 8)%nat with 0%nat by lia. reflexivity. }
-      rewrite Hmb.
-      replace (E - N.of_nat (plen - 8))%N with (E + 8 - N.of_nat plen)%N
-        by (rewrite Nat2N.inj_sub; unfold E; lia).
-      rewrite Hpow8.
-      assert (Hle2 : (2 ^ (E + 8 - N.of_nat plen) <= 2 ^ E)%N).
-      { apply N.pow_le_mono_r; lia. }
-      set (X := (2 ^ (E + 8 - N.of_nat plen))%N) in *.
-      set (Y := (2 ^ E)%N) in *. lia.
-Qed.
-
-(** A prefix mask ANDs a [w]-byte value down to its top [plen] bits (the low
-    [8w-plen] bits cleared): [land x mask = (x >> k) << k], [k = 8w-plen]. *)
-Lemma land_prefix_mask : forall w plen x, (plen <= 8 * w)%nat ->
-  (x < 2 ^ (8 * N.of_nat w))%N ->
-  N.land x (data_to_N (Elab.prefix_mask w plen))
-  = N.shiftl (N.shiftr x (N.of_nat (8 * w - plen))) (N.of_nat (8 * w - plen)).
-Proof.
-  intros w plen x Hle Hx.
-  rewrite prefix_mask_val by exact Hle.
-  set (K := N.of_nat (8 * w - plen)).
-  assert (HK : K = (8 * N.of_nat w - N.of_nat plen)%N)
-    by (unfold K; rewrite Nat2N.inj_sub; lia).
-  assert (HP : (N.of_nat plen + K = 8 * N.of_nat w)%N) by (rewrite HK; lia).
-  assert (Hmask : (2 ^ (8 * N.of_nat w) - 2 ^ (8 * N.of_nat w - N.of_nat plen))%N
-                  = N.shiftl (N.ones (N.of_nat plen)) K).
-  { rewrite N.shiftl_mul_pow2, N.ones_equiv, <- N.sub_1_r.
-    rewrite N.mul_sub_distr_r, N.mul_1_l, <- N.pow_add_r, HP, <- HK. reflexivity. }
-  rewrite Hmask, land_shiftl_mask.
-  rewrite N.land_ones.
-  rewrite N.shiftr_div_pow2.
-  assert (Hlt : (x / 2 ^ K < 2 ^ N.of_nat plen)%N).
-  { apply N.div_lt_upper_bound; [apply N.pow_nonzero; lia|].
-    rewrite <- N.pow_add_r.
-    replace (K + N.of_nat plen)%N with (8 * N.of_nat w)%N by lia. exact Hx. }
-  rewrite N.mod_small by exact Hlt. reflexivity.
-Qed.
-
-(** The bytewise complement of a prefix mask is the low [8w-plen] bits set:
-    [~mask = 2^(8w-plen) - 1] (the broadcast host part). *)
-Lemma data_not_prefix_mask : forall w plen, (plen <= 8 * w)%nat ->
-  data_to_N (Typed.data_not (Elab.prefix_mask w plen))
-  = (2 ^ N.of_nat (8 * w - plen) - 1)%N.
-Proof.
-  intros w plen Hle.
-  rewrite data_to_N_data_not by apply prefix_mask_wfb.
-  rewrite prefix_mask_length, pow256_pow2.
-  rewrite prefix_mask_val by exact Hle.
-  set (K := N.of_nat (8 * w - plen)).
-  assert (HKn : K = (8 * N.of_nat w - N.of_nat plen)%N)
-    by (unfold K; rewrite Nat2N.inj_sub; lia).
-  set (M := (2 ^ (8 * N.of_nat w) - 2 ^ (8 * N.of_nat w - N.of_nat plen))%N).
-  assert (Hdisj : N.land M (2 ^ K - 1) = 0%N).
-  { unfold M. rewrite <- HKn.
-    apply N.bits_inj_iff. intro i. rewrite N.land_spec, N.bits_0.
-    destruct (N.lt_ge_cases i K) as [Hi|Hi].
-    - replace (2 ^ (8 * N.of_nat w) - 2 ^ K)%N
-        with (N.shiftl (2 ^ (8 * N.of_nat w - K) - 1) K).
-      2:{ rewrite N.shiftl_mul_pow2, N.mul_sub_distr_r, N.mul_1_l, <- N.pow_add_r.
-          replace (8 * N.of_nat w - K + K)%N with (8 * N.of_nat w)%N
-            by (rewrite HKn; lia). reflexivity. }
-      rewrite N.shiftl_spec_low by lia. reflexivity.
-    - rewrite N.sub_1_r, <- N.ones_equiv, N.ones_spec_high by lia. apply andb_false_r. }
-  assert (Hsum : (2 ^ (8 * N.of_nat w) - 1)%N = N.lxor M (2 ^ K - 1)).
-  { rewrite <- (N.add_nocarry_lxor _ _ Hdisj). unfold M. rewrite <- HKn.
-    assert (0 < 2 ^ K)%N by (apply N.neq_0_lt_0, N.pow_nonzero; lia).
-    assert (2 ^ K <= 2 ^ (8 * N.of_nat w))%N
-      by (apply N.pow_le_mono_r; [lia | rewrite HKn; lia]). lia. }
-  fold M. rewrite Hsum, <- N.lxor_assoc, N.lxor_nilpotent, N.lxor_0_l. reflexivity.
-Qed.
 
 Theorem cidr_interval_agrees_prefix_expand : forall (v : nftval) (plen : nat) (fv : data),
   (plen <= 8 * List.length (Nftval.encode v))%nat ->
@@ -1477,14 +1888,14 @@ Theorem cidr_interval_agrees_prefix_expand : forall (v : nftval) (plen : nat) (f
   bytes_wfb (Nftval.encode v) = true ->
   bytes_wfb fv = true ->
   data_in_iv fv (cidr_interval v plen)
-  = data_eqb (Elab.data_and fv (Elab.prefix_mask (List.length (Nftval.encode v)) plen))
+  = data_eqb (data_and fv (prefix_mask (List.length (Nftval.encode v)) plen))
              (fst (cidr_interval v plen)).
 Proof.
   intros v plen fv Hle Hlen Hev Hfv.
   set (ev := Nftval.encode v) in *.
   set (w := List.length ev) in *.
-  set (mask := Elab.prefix_mask w plen) in *.
-  set (net := Elab.data_and ev mask) in *.
+  set (mask := prefix_mask w plen) in *.
+  set (net := data_and ev mask) in *.
   set (K := N.of_nat (8 * w - plen)) in *.
   (* length / wf bookkeeping *)
   assert (Hml : List.length mask = w) by (unfold mask; apply prefix_mask_length).
@@ -1526,7 +1937,7 @@ Proof.
   rewrite (data_le_num fv (data_or net (Typed.data_not mask)))
     by (try congruence; assumption).
   (* RHS: data_and fv mask =? net, numerically *)
-  rewrite (data_eqb_num (Elab.data_and fv mask) net)
+  rewrite (data_eqb_num (data_and fv mask) net)
     by (try (rewrite data_and_length; [congruence | rewrite Hml; congruence]);
         try (apply data_and_wfb; [rewrite Hml; congruence | exact Hfv | exact Hmw]);
         exact Hnw).
@@ -1546,7 +1957,7 @@ Proof.
     reflexivity. }
   rewrite Hbv, Hnetv.
   (* now purely numeric: A := ev>>K, B := fv>>K, everything as A*2^K, B*2^K *)
-  replace (data_to_N mask) with (data_to_N (Elab.prefix_mask w plen)) by reflexivity.
+  replace (data_to_N mask) with (data_to_N (prefix_mask w plen)) by reflexivity.
   rewrite land_prefix_mask by assumption. fold K.
   set (A := N.shiftr (data_to_N ev) K).
   set (B := N.shiftr (data_to_N fv) K).
@@ -1622,17 +2033,21 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
 Example cidr_agree_exercised :
   let v := VIpv4 [192;168;0;0] in let plen := 16%nat in
   (data_in_iv [192;168;5;7] (cidr_interval v plen)
-   = data_eqb (Elab.data_and [192;168;5;7] (Elab.prefix_mask 4 plen))
+   = data_eqb (data_and [192;168;5;7] (prefix_mask 4 plen))
               (fst (cidr_interval v plen)))
   /\ data_in_iv [192;168;5;7] (cidr_interval v plen) = true
   /\ (data_in_iv [10;0;0;0] (cidr_interval v plen)
-      = data_eqb (Elab.data_and [10;0;0;0] (Elab.prefix_mask 4 plen))
+      = data_eqb (data_and [10;0;0;0] (prefix_mask 4 plen))
                  (fst (cidr_interval v plen)))
   /\ data_in_iv [10;0;0;0] (cidr_interval v plen) = false.
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
 (** Axiom-freedom guards (informational; the enforcement point is
     `make axioms`). *)
+Print Assumptions eq_erasure.
+Print Assumptions neq_erasure.
+Print Assumptions prefix_erasure.
+Print Assumptions wildcard_erasure.
 Print Assumptions range_erasure_be.
 Print Assumptions range_erasure_host.
 Print Assumptions bitmask_erasure.
