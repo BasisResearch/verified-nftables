@@ -266,7 +266,6 @@ gates:
 	$(MAKE) parse-test
 	$(MAKE) gen-check
 	$(MAKE) boundary
-	$(MAKE) boundary
 	@echo "ALL GATES GREEN: proofs axioms corpus byteorder-gate source-sweep-gate validate parse-test gen-check boundary"
 
 clean:

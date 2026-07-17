@@ -177,14 +177,56 @@ Definition family_is_inet (fam : string) : bool := String.eqb fam "inet".
 Definition family_is_l2 (fam : string) : bool :=
   String.eqb fam "bridge" || String.eqb fam "netdev".
 
-Definition dep_guard (fam : string) (d : depspec) : lres dep_action :=
+(** The in-frame-ethertype network guard `payload load 2b @ link header + off`:
+    proto_eth (bridge LL) and proto_vlan carry a PAYLOAD protocol_key template
+    (no meta_key), so their next-protocol dependency reads the ethertype out of
+    the frame rather than off `skb->protocol` (src/proto.c proto_eth.protocol_key
+    = ETHHDR_TYPE @ 12, proto_vlan.protocol_key = VLANHDR_TYPE @ 16).  The read
+    differs from `meta protocol` on vlan-tagged frames, where nft_payload pretends
+    the tag was not offloaded (net/netfilter/nft_payload.c nft_payload_copy_vlan). *)
+Definition net_ll_guard (off : nat) (et : N) : dep_action :=
+  DAguard true (FPayload PLink off 2) (N_to_data 2 et)
+          (TXEq (FPayload PLink off 2) (VInteger 2 et)).
+
+(** The L2 in-frame ethertype offset: +16 once a vlan tag has been matched (the
+    protocol context is proto_vlan), else +12 (proto_eth). *)
+Definition ll_net_off (vlan : bool) : nat := if vlan then 16 else 12.
+
+(** [vlan]: a vlan tag (ethertype 0x8100) has already been matched in this rule,
+    shifting subsequent in-frame protocol reads past the 4-byte tag. *)
+Definition dep_guard (fam : string) (vlan : bool) (d : depspec) : lres dep_action :=
   match d with
   | DepL4 proto => LOk (guard false FMetaL4proto 1 (N.of_nat proto))
   | DepNfproto f =>
       if family_is_inet fam then LOk (guard true FMetaNfproto 1 (N.of_nat f))
       else if family_is_l2 fam then
         match nfproto_ethertype f with
-        | Some et => LOk (guard true FMetaProtocol 2 et)
+        | Some et =>
+            (* a DIRECT network selector (`ip saddr`) reaches the ethertype via
+               proto_netdev's `meta protocol` — UNLESS a vlan tag shifted the
+               protocol context to proto_vlan, an in-frame `payload @ link+16`. *)
+            if vlan then LOk (net_ll_guard 16 et)
+            else LOk (guard true FMetaProtocol 2 et)
+        | None => LOk DAnone
+        end
+      else LOk DAnone                (* single-L3 family: no guard emitted *)
+  | DepNetLL f =>
+      (* a network guard synthesised UNDER the link header (`icmp type`): bridge's
+         proto_eth reads the in-frame ethertype (`payload @ link+12`, or +16 past a
+         vlan tag); netdev's proto_netdev and inet's proto_inet still use the meta
+         template (`meta protocol` / `meta nfproto`) — src/payload.c
+         payload_gen_special_dependency + proto_eth/proto_netdev/proto_inet. *)
+      if family_is_inet fam then LOk (guard true FMetaNfproto 1 (N.of_nat f))
+      else if String.eqb fam "bridge" then
+        match nfproto_ethertype f with
+        | Some et => LOk (net_ll_guard (ll_net_off vlan) et)
+        | None => LOk DAnone
+        end
+      else if String.eqb fam "netdev" then
+        match nfproto_ethertype f with
+        | Some et =>
+            if vlan then LOk (net_ll_guard 16 et)
+            else LOk (guard true FMetaProtocol 2 et)
         | None => LOk DAnone
         end
       else LOk DAnone                (* single-L3 family: no guard emitted *)
@@ -992,19 +1034,24 @@ Definition lower_meta_set (name : string) (v : svalue) : lres stmt :=
 
 (** `ct label set <k>`: a ct label is a BIT POSITION in the 128-bit label
     bitmap (nft src/ct.c ct_label_type / the kernel nf_connlabels_replace sets
-    ONE bit), NOT a literal integer register.  nft emits the immediate
-    `2^k` (bit [k] of the 16-byte bitmap; golden any/ct.t.payload `ct label set
-    127` = `immediate 0x80000000 0x00000000 0x00000000 0x00000000` — bit 127 is
-    the top bit of the network-order bitmap).  A numeric literal is the bit
-    index (0..127); [N_to_data 16] is plain [N] arithmetic, so [2^127] does NOT
-    wrap (unlike the historical OCaml `lsl` on a 63-bit int — bug N's shift-wrap
-    half; this is its regression pin).  Symbolic label names resolve against a
-    live registry we do not model, so they are refused (fail-loud). *)
+    ONE bit), NOT a literal integer register.  nft builds the value by
+    `mpz_setbit(value, k)` then serialises the 16-byte register with
+    `mpz_export_data(..., BYTEORDER_HOST_ENDIAN, 16)` (src/ct.c
+    ct_label_type_parse; ct_label_type.byteorder = BYTEORDER_HOST_ENDIAN).
+    Host-endian export of a single 16-byte word writes the LEAST-significant
+    byte FIRST, so bit k lands in byte [k/8] at bit [k mod 8]: `ct label set
+    127` -> byte 15 = 0x80 (register bytes `00..00 80`), which live nft dumps as
+    `immediate 0x00000000 0x00000000 0x00000000 0x80000000`.  [N_to_data 16] is
+    big-endian [N] arithmetic (so [2^127] does NOT wrap — unlike the historical
+    OCaml `lsl` on a 63-bit int, bug N's shift-wrap half), and [List.rev] turns
+    that big-endian bitmap into the host-endian byte layout the kernel stores.
+    A numeric literal is the bit index (0..127); symbolic label names resolve
+    against a live registry we do not model, so they are refused (fail-loud). *)
 Definition ct_label_imm (v : svalue) : lres vsrc :=
   match v with
   | SVNum k =>
       if (k <? 128)%nat
-      then LOk (VImm (N_to_data 16 (2 ^ N.of_nat k)))
+      then LOk (VImm (List.rev (N_to_data 16 (2 ^ N.of_nat k))))
       else LErr (LEctSet "label bit index exceeds 127")
   | _ => LErr (LEctSet "label (symbolic name registry not modelled)")
   end.
@@ -1430,16 +1477,20 @@ Example reject_dep_bare : reject_dep "" = [].
 Proof. reflexivity. Qed.
 
 (** Class N regression: `ct label set 127` sets BIT 127 of the 128-bit bitmap
-    (immediate 2^127 = [0x80;0;...;0], 16 bytes big-endian) — NOT the literal
-    16-byte integer 127.  [N_to_data 16] is [N] arithmetic, so 2^127 does not
-    wrap (the OCaml `lsl`-on-63-bit shift-wrap half of bug N is dead). *)
+    and serialises it host-endian (src/ct.c mpz_export_data BYTEORDER_HOST_ENDIAN)
+    — so bit 127 lands in byte 15 (register bytes `00..00 0x80`), NOT the literal
+    16-byte integer 127 and NOT the big-endian byte-0 layout.  Live nft dumps
+    this immediate as `0x00000000 0x00000000 0x00000000 0x80000000`; the kernel
+    reads it back as `ct label set 127`.  [N_to_data 16] is [N] arithmetic, so
+    2^127 does not wrap (the OCaml `lsl`-on-63-bit shift-wrap half of bug N is
+    dead). *)
 Example lower_ct_label_set_127 :
-  lower_ct_set "label" (SVNum 127)
-  = LOk (SCtSet CKlabel (VImm [128;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0])).
+  lower_ct_set "label" (SVNum 127)      (* bit 127 = MSB = byte 15 host-endian *)
+  = LOk (SCtSet CKlabel (VImm [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;128])).
 Proof. vm_compute. reflexivity. Qed.
 Example lower_ct_label_set_0 :
-  lower_ct_set "label" (SVNum 0)      (* bit 0 = LSB = last byte of the BE bitmap *)
-  = LOk (SCtSet CKlabel (VImm [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1])).
+  lower_ct_set "label" (SVNum 0)        (* bit 0 = LSB = byte 0 host-endian *)
+  = LOk (SCtSet CKlabel (VImm [1;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0])).
 Proof. vm_compute. reflexivity. Qed.
 Example lower_ct_label_set_overflow :
   lower_ct_set "label" (SVNum 128)
@@ -1477,22 +1528,52 @@ Proof. vm_compute. reflexivity. Qed.
 (** Guard encoding: the icmp selector's two guards (nfproto THEN l4proto),
     family-aware — real matches in inet, none in the single-L3 ip family. *)
 Example dep_guard_icmp_inet :
-  map (dep_guard "inet") (dep_l4 "icmp")
+  map (dep_guard "inet" false) (dep_l4 "icmp")
   = [LOk (DAguard true FMetaNfproto [2]
             (TXEq FMetaNfproto (VInteger 1 2)));
      LOk (DAguard false FMetaL4proto [1]
             (TXEq FMetaL4proto (VInteger 1 1)))].
 Proof. vm_compute. reflexivity. Qed.
 Example dep_guard_ip_family_noop :
-  dep_guard "ip" (DepNfproto 2) = LOk DAnone.
+  dep_guard "ip" false (DepNfproto 2) = LOk DAnone.
 Proof. vm_compute. reflexivity. Qed.
 Example dep_guard_bridge_ethertype :
-  dep_guard "bridge" (DepNfproto 2)
+  dep_guard "bridge" false (DepNfproto 2)
   = LOk (DAguard true FMetaProtocol [8; 0]
            (TXEq FMetaProtocol (VInteger 2 0x0800))).
 Proof. vm_compute. reflexivity. Qed.
 Example dep_guard_vlan_netdev_refused :
-  dep_guard "netdev" (DepEther 0x8100) = LErr LEvlanNetdev.
+  dep_guard "netdev" false (DepEther 0x8100) = LErr LEvlanNetdev.
+Proof. vm_compute. reflexivity. Qed.
+
+(** Class-G regression pins (bridge/netdev in-frame ethertype network guard).
+    A transport-implied network guard (`icmp type`) in bridge reads the ethertype
+    with `payload load 2b @ link header + 12`, NOT `meta protocol`
+    (golden bridge/icmpX.t.payload). *)
+Example dep_guard_bridge_netll_icmp :
+  dep_guard "bridge" false (DepNetLL 2)
+  = LOk (DAguard true (FPayload PLink 12 2) [8; 0]
+           (TXEq (FPayload PLink 12 2) (VInteger 2 0x0800))).
+Proof. vm_compute. reflexivity. Qed.
+(** In netdev the same transport-implied guard uses proto_netdev's `meta protocol`
+    (golden any/icmpX.t.netdev.payload). *)
+Example dep_guard_netdev_netll_icmp :
+  dep_guard "netdev" false (DepNetLL 2)
+  = LOk (DAguard true FMetaProtocol [8; 0]
+           (TXEq FMetaProtocol (VInteger 2 0x0800))).
+Proof. vm_compute. reflexivity. Qed.
+(** After a vlan tag (proto_vlan context) the ethertype read moves to +16, in
+    BOTH L2 families, for a DIRECT `ip` network selector too
+    (golden bridge/vlan.t.payload{,.netdev}). *)
+Example dep_guard_bridge_vlan_ip :
+  dep_guard "bridge" true (DepNfproto 2)
+  = LOk (DAguard true (FPayload PLink 16 2) [8; 0]
+           (TXEq (FPayload PLink 16 2) (VInteger 2 0x0800))).
+Proof. vm_compute. reflexivity. Qed.
+Example dep_guard_netdev_vlan_ip :
+  dep_guard "netdev" true (DepNfproto 2)
+  = LOk (DAguard true (FPayload PLink 16 2) [8; 0]
+           (TXEq (FPayload PLink 16 2) (VInteger 2 0x0800))).
 Proof. vm_compute. reflexivity. Qed.
 
 (* ------------------------------------------------------------------ *)
@@ -1667,24 +1748,48 @@ Definition fs_reg_dep (fs : fstate) (tm : txmatch) : matchcond * fstate :=
 
 (* ---------- implicit dependency guard materialisation ---------- *)
 
+(** nft emits ONE network-layer guard per rule, whatever SHAPE it takes: the L2
+    in-frame ethertype guard has three interchangeable spellings — `meta protocol`
+    (proto_netdev), `payload @ link+12` (proto_eth) and `payload @ link+16`
+    (proto_vlan) — that all pin the same protocol base, so a later network guard is
+    dropped once ANY of them is present (payload.c pctx->protocol[base] is set once).
+    [layer_class f] is the set of fields that share [f]'s protocol layer for the
+    once-per-layer dedup; the inet `meta nfproto` guard is its own class. *)
+Definition layer_class (f : field) : list field :=
+  match f with
+  | FMetaNfproto => [FMetaNfproto]
+  | FMetaProtocol | FPayload PLink 12 2 | FPayload PLink 16 2 =>
+      [FMetaProtocol; FPayload PLink 12 2; FPayload PLink 16 2]
+  | _ => [f]
+  end.
+
 Definition push_guard (da : dep_action) (rl : rloc) (fs : fstate) : rloc * fstate :=
   match da with
   | DAnone => (rl, fs)
   | DAguard layer f key tm =>
       let dup :=
-        if layer then existsb (fun p => gfield_eqb (fst p) f) (rl_deps rl)
+        if layer then existsb (fun p => existsb (gfield_eqb (fst p)) (layer_class f)) (rl_deps rl)
         else existsb (fun p => andb (gfield_eqb (fst p) f) (data_eqb (snd p) key)) (rl_deps rl) in
       if dup then (rl, fs)
       else let '(mc, fs') := fs_reg_dep fs tm in
            (rl_push (BMatch mc) (rl_set_deps ((f, key) :: rl_deps rl) rl), fs')
   end.
 
+(** A vlan tag (`ether type == 0x8100`, whether from the `vlan` selector's
+    [DepEther] guard or an explicit `ether type vlan` discharged into the dedup
+    set) shifts subsequent in-frame protocol reads past the 4-byte tag: nft's
+    proto context becomes proto_vlan.  Detected from the per-rule guard set. *)
+Definition rloc_vlan (rl : rloc) : bool :=
+  existsb (fun p => andb (gfield_eqb (fst p) FEtherType)
+                         (data_eqb (snd p) (N_to_data 2 0x8100)))
+          (rl_deps rl).
+
 Fixpoint ensure_dep (family : string) (ds : list depspec) (rl : rloc) (fs : fstate)
   : lres (rloc * fstate) :=
   match ds with
   | nil => LOk (rl, fs)
   | d :: rest =>
-      match dep_guard family d with
+      match dep_guard family (rloc_vlan rl) d with
       | LErr e => LErr e
       | LOk da => let '(rl', fs') := push_guard da rl fs in
                   ensure_dep family rest rl' fs'

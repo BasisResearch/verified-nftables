@@ -625,27 +625,64 @@ into the verified Coq lowering, so the fixes are now IN the verified lowering:
 - **D (`exthdr`/`tcpopt` `!= exists|missing` polarity, 2 blocks + 1 corpus-invisible
   twin) — FIXED.** `Lower.lower_presence` threads the surface `!=` (regression
   pins `lower_exthdr_neq_exists`, `lower_tcpopt_neq_exists`).
-- **E (`reject with tcp reset` missing `meta l4proto 6`, 3 blocks) — FIXED.**
-  `reject_dep` adds `DepL4 6` for `tcp reset` (packet-proven: the RST no longer
-  fires on non-TCP).
+- **E (`reject with tcp reset` missing `meta l4proto 6`, 3 blocks) — FIXED
+  (packet-identical, wire-order divergent).** `reject_dep` adds `DepL4 6` for
+  `tcp reset` (packet-proven: the RST no longer fires on non-TCP). One residual
+  divergence, ledgered here: nft hoists the reject's L4 dependency to the FRONT
+  of the rule (`meta l4proto 6; meta mark N; reject`), whereas this pipeline
+  emits the reject's guard where the reject statement sits (`meta mark N; meta
+  l4proto 6; reject`). The two are packet-EQUIVALENT (both guards are pure
+  conjuncts that must all hold before the reject fires; kernel readback confirms
+  the ICMP-passes / TCP-RST behaviour matches nft) but NOT wire-identical. Making
+  it byte-identical means hoisting statement dependencies to rule scope — a
+  rule-assembly reordering left to a dedicated milestone rather than rushed under
+  this commit's ratchet.
 - **F (`ether type`/vlan missing the `meta iiftype == ether` guard, 4 blocks) —
   FIXED.** `Selector` attaches `dep_ether` to `ether type` and the vlan
   bitfields (a no-op in bridge, real in inet/netdev).
-- **N (`ct label set K` = bit K, 1 block) — FIXED.** `Lower.ct_label_imm` emits
-  `2^K` as a 16-byte big-endian bitmap; `N_to_data` is `N` arithmetic so `2^127`
-  does not wrap (the OCaml `lsl`-on-63-bit shift-wrap half of the bug died with
-  `nft_lower.ml`; pinned by `lower_ct_label_set_127`).
-- **G (L2 in-frame ethertype guard shape, 8 blocks) — DEFERRED.** In bridge/netdev
-  nft guards a network selector with `payload load 2b @ link header + 12` (or
-  `+16` past a vlan tag), not `meta protocol`. This changes the L2-family
-  network-guard SHAPE, which is consumed by the axiom-gated
-  `Optiplex_Antispoof`/`Optiplex_Mark` headline theorems (Optiplex has a
-  `table bridge vmfilter` whose `ip daddr` anti-spoofing rules use exactly this
-  guard) and by the `Optiplex_Gen` bytecode. A faithful fix must (a) model nft's
-  stateful vlan-offset protocol context (+12 vs +16), (b) regenerate
-  `Optiplex_Gen.v`, and (c) update those headline proofs in lock-step — a
-  dedicated milestone under the green-gates ratchet, not a rushed edit inside a
-  wide-scope commit.
+- **N (`ct label set K` = bit K, 1 block) — FIXED (wire-verified).**
+  `Lower.ct_label_imm` sets bit `K` of the 128-bit bitmap and serialises it
+  HOST-endian (`List.rev (N_to_data 16 (2^K))`), matching nft's `mpz_setbit`
+  + `mpz_export_data(BYTEORDER_HOST_ENDIAN)` (`src/ct.c ct_label_type_parse`,
+  `ct_label_type.byteorder = BYTEORDER_HOST_ENDIAN`): bit `K` lands in byte
+  `K/8` at bit `K mod 8`, so `ct label set 127` -> byte 15 = `0x80` (register
+  `00..00 80`), which the kernel reads back as `ct label set 127`. `N_to_data`
+  is `N` arithmetic so `2^127` does not wrap (the OCaml `lsl`-on-63-bit
+  shift-wrap half of the bug died with `nft_lower.ml`). Pinned by
+  `lower_ct_label_set_127`/`_0` (the width-128 encode test). VERIFIED against
+  live nft by kernel round-trip, NOT by corpus text: the committed golden
+  `ct.t.payload` (`immediate 0x80000000 0x0 0x0 0x0`, byte 0 = `0x80`) is
+  endian-unportable — it predates / disagrees with live nft v1.1.6, which dumps
+  the same rule as `0x00000000 0x00000000 0x00000000 0x80000000`. `make corpus`
+  is blind to this: its ct-label block reconstructs the rule from the golden
+  bytes through the low-level `Syntax`/`Compile` round-trip, never through the
+  surface `ct_label_imm`, so it neither catches nor is broken by this fix.
+- **G (L2 in-frame ethertype guard shape, 8 blocks) — FIXED.** In bridge/netdev
+  the network-layer ethertype guard is NOT always `meta protocol`. Its SHAPE
+  follows nft's protocol context (`src/proto.c` proto_eth / proto_netdev /
+  proto_vlan `protocol_key` template + `src/payload.c` `payload_gen_dependency` /
+  `payload_gen_special_dependency`):
+  - a DIRECT network selector (`ip saddr`/`ip protocol`) in bridge/netdev reaches
+    the ethertype through proto_netdev's `meta protocol` — the historical shape,
+    still correct and unchanged;
+  - a network guard synthesised UNDER the link header by a transport selector
+    (`icmp`/`icmpv6`/`igmp type`) uses proto_eth in **bridge** → `payload load 2b
+    @ link header + 12`; in **netdev** it stays proto_netdev → `meta protocol`
+    (golden `bridge/icmpX.t.payload` vs `any/icmpX.t.netdev.payload`);
+  - once a vlan tag (`ether type 0x8100`) has matched, the context is proto_vlan
+    and every subsequent in-frame protocol read moves to `payload load 2b @ link
+    header + 16`, in BOTH L2 families.
+  Implemented as a new `Selector.depspec` `DepNetLL` (the transport-implied
+  network dep) plus a vlan-context flag threaded into `Lower.dep_guard` and a
+  once-per-network-layer dedup (`Lower.layer_class`) that unifies the three
+  interchangeable spellings (`meta protocol`, `payload @ link+12`,
+  `payload @ link+16`). No IR field was added — the guard reuses the parametric
+  `FPayload PLink off 2`. The `table bridge vmfilter` in `Optiplex_Gen` is
+  UNAFFECTED: its `ip daddr` anti-spoofing rules are direct, non-vlan network
+  selectors, so they keep the `meta protocol` shape — `Optiplex_Gen.v` is
+  byte-identical and the axiom-gated `Optiplex_Antispoof`/`Optiplex_Mark` headline
+  proofs are untouched. All 8 blocks are byte-identical to live nft (source-sweep
+  pass 1168 → 1176).
 
 Machine-caught now: **`make byteorder-gate`** covers the ORDERED-RANGE class
 (its trigger fires on the hton `byteorder` transform, not just the narrow
@@ -773,6 +810,14 @@ re-introduces lowering logic into OCaml fails the gate, not a code review.
   - (c) *extraction seam.* The `ExtrOcamlNatInt` 63-bit-int representation of
     `nat` and the `2^40` injection guard (`nft_inject.ml` / the `limit` bound in
     `Extract.v`) that keeps every extracted `nat` far below the wrap.
+  - (d) *`N.of_nat` realization.* `Extract Constant N.of_nat` in
+    `Compiler/Extract.v` replaces Coq's default (`Pos.of_succ_nat`, non-tail
+    recursive → OCaml stack overflow at ~2^31) with a log-depth OCaml `N.of_nat`.
+    It is extensionally equal to the Coq function (`XH=1`, `XO p=2p`, `XI p=2p+1`,
+    so no proof observes the difference — the `.v` proofs use the real `N.of_nat`),
+    but it is UNVERIFIED OCaml, hence TCB. Guarded by the parse-test pin
+    `check_big_literal_no_overflow` (`meta mark 0x80000000`): a revert re-crashes
+    the gate.
 
 **Eyeball-trusted, never-differentially-tested semantics.** The corpus checks
 *structure*, not the data-plane *meaning* of register operations. The byte-level
