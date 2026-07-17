@@ -1,11 +1,21 @@
-(** * Surface.Typed: the typed match-term language (M2 scalar shapes) and its
-    VERIFIED elaboration onto the byte IR.
+(** * Surface.Typed: the typed match-term language and its VERIFIED
+    elaboration onto the byte IR.
 
-    Today's [Elab.tmatch] covers four shapes (typed eq / neq / CIDR prefix /
-    ifname wildcard).  This file extends the typed layer with every remaining
-    SCALAR match shape the frontend produces, so that the OCaml frontend stops
-    constructing byte-level match conditions altogether for scalar matches:
+    [txmatch] covers every SCALAR match shape the frontend produces, so the
+    OCaml frontend constructs no byte-level match condition for any scalar
+    match.  A typed term carries TYPED immediates ([Nftval.nftval] —
+    [VIpv4]/[VPort]/[VIfname]/[VCtState]/[VHostInt]/…), never raw register
+    bytes; the per-field byte encoding (endianness, widths) is
+    [Nftval.encode], applied only by the elaboration [elab_tx] below:
 
+      [TXEq]/[TXNeq] equality / inequality against a typed immediate.
+      [TXPrefix]   CIDR prefixes: the top [plen] bits of the field equal /
+                   differ from the network part of the value.  The verified
+                   [prefix_expand] owns nft's byte-aligned shortening decision
+                   (see its section header below).
+      [TXWildcard] trailing-`*` interface-name wildcards / ct-tuple CIDRs:
+                   the field's LEADING bytes equal a short prefix (the one
+                   surface construct whose meaning is a prefix compare).
       [TXRange]    inclusive ranges, where the selector DATATYPE decides the
                    byte form: the three kernel-adjudicated host-endian range
                    dtypes (mark / ifindex / fib_addrtype) take nft's mandatory
@@ -31,14 +41,12 @@
     per-shape NON-definitional erasure theorems (the typed numeric semantics of
     Semantics.TypedEval agrees with the byte-level evaluation of the elaborated
     form) live in Surface.Lower_Proofs — [txmatch_erasure] and its per-shape
-    lemmas [range_erasure_be]/[range_erasure_host]/[bitmask_erasure]/
-    [bitfield_erasure]/[bitwise_erasure]/[flag_erasure].
-
-    Elab.v is deliberately untouched: [TXElab] embeds its four shapes verbatim
-    and [elab_matchcond_correct] survives as the documented consistency check.  *)
+    lemmas [eq_erasure]/[neq_erasure]/[prefix_erasure]/[wildcard_erasure]/
+    [range_erasure_be]/[range_erasure_host]/[bitmask_erasure]/
+    [bitfield_erasure]/[bitwise_erasure]/[flag_erasure].  *)
 
 From Stdlib Require Import List PeanoNat Bool NArith String.
-From Nft Require Import Bytes Packet Verdict Bytecode Syntax Nftval Elab
+From Nft Require Import Bytes Packet Verdict Bytecode Syntax Nftval
   Ast Datatype Selector.
 Import ListNotations.
 
@@ -121,25 +129,82 @@ Definition range_hton (dt : dtype) : bool :=
   match dt with DTmark | DTifindex | DTfib_addrtype => true | _ => false end.
 
 (* ------------------------------------------------------------------ *)
+(** ** The verified CIDR expansion (the alignment decision, in Coq).
+
+    nft shortens a byte-aligned prefix on a plain payload field to a load of
+    just the prefix bytes plus a direct cmp (`ip saddr a.b.c.0/24` =>
+    `payload load 3b @ network+12 ; cmp eq`), and keeps the full-width
+    `load ; bitwise & mask ; cmp` form for every other prefix (golden
+    {ip,ip6}.t.payload) — [prefix_expand] makes that decision, verified, not
+    the frontend. *)
+
+(** The truncated-load field of a byte-aligned prefix on a plain payload
+    address (or the identity for a conntrack-tuple address, whose symbolic
+    `ct load` keeps the full-width load and shortens only the compare). *)
+Definition payload_prefix_field (f : field) (nbytes : nat) : option field :=
+  match f with
+  | FIp4Saddr => Some (FPayload PNetwork 12 nbytes)
+  | FIp4Daddr => Some (FPayload PNetwork 16 nbytes)
+  | FIp6Saddr => Some (FPayload PNetwork 8  nbytes)
+  | FIp6Daddr => Some (FPayload PNetwork 24 nbytes)
+  | FCtDir k d => Some (FCtDir k d)
+  | _ => None
+  end.
+
+(** Byte [i] of a big-endian prefix mask: the top [min b 8] bits set. *)
+Definition mask_byte (b : nat) : nat := 256 - Nat.pow 2 (8 - Nat.min b 8).
+
+(** The [w]-byte big-endian mask with the top [plen] bits set. *)
+Definition prefix_mask (w plen : nat) : data :=
+  map (fun i => mask_byte (plen - 8 * i)) (seq 0 w).
+
+(** Pointwise AND (an all-zero xor [data_bitops]). *)
+Definition data_and (a mask : data) : data :=
+  data_bitops a mask (repeat 0 (List.length a)).
+
+(** Expand a CIDR prefix to the byte IR: a byte-aligned prefix strictly inside
+    the field's width on a plain payload address shortens to a truncated-load
+    direct compare; every other prefix keeps the full-width masked compare. *)
+Definition prefix_expand (f : field) (op : cmpop) (v : nftval) (plen : nat)
+  : matchcond :=
+  let bytes := encode v in
+  let w := List.length bytes in
+  let mask := prefix_mask w plen in
+  let net := data_and bytes mask in
+  if (0 <? plen) && (plen <? 8 * w) && (Nat.eqb (Nat.modulo plen 8) 0)
+  then match payload_prefix_field f (Nat.div plen 8) with
+       | Some f' =>
+           let short := firstn (Nat.div plen 8) net in
+           match op with CNe => MNeq f' short | _ => MEq f' short end
+       | None => MMasked f op mask (repeat 0 w) net
+       end
+  else MMasked f op mask (repeat 0 w) net.
+
+(* ------------------------------------------------------------------ *)
 (** ** The typed match terms. *)
 
 (** The bitwise operator of an explicit `<sel> and|or|xor <mask>` match. *)
 Inductive bitop : Type := BOand | BOor | BOxor.
 
 Inductive txmatch : Type :=
-| TXElab     (m : Elab.tmatch)
-             (* the four M0 shapes, verbatim (Elab.v untouched)            *)
+| TXEq       (f : field) (v : nftval)
+             (* equality against a typed immediate                        *)
+| TXNeq      (f : field) (v : nftval)
+             (* inequality against a typed immediate                      *)
+| TXPrefix   (f : field) (op : cmpop) (v : nftval) (plen : nat)
+             (* CIDR: the top [plen] bits of [f] equal (op = CEq) / differ
+                from (op = CNe) the network part of [v]                   *)
+| TXWildcard (f : field) (prefix : data)
+             (* trailing-`*` interface-name wildcard / ct-tuple CIDR: the
+                field's LEADING bytes equal [prefix] (a genuinely SHORT
+                compare — the one surface construct whose meaning is a
+                prefix match)                                             *)
 | TXRange    (f : field) (dt : dtype) (neg : bool) (lo hi : nftval)
 | TXBitmask  (f : field) (dt : dtype) (op : srelop) (bits : list N)
 | TXBitfield (spec : bitfield_spec) (neg : bool) (v : N)
 | TXBitwise  (f : field) (dt : dtype) (bop : bitop) (neg : bool)
              (mask v : nftval)
 | TXFlag     (f : field) (neg : bool) (v : N).
-
-(** The legacy typed view (what nft_emit prints as [(elab_m (...))] in the
-    generated *_Gen.v files until the M6 Gen migration). *)
-Definition tx_view (t : txmatch) : option Elab.tmatch :=
-  match t with TXElab m => Some m | _ => None end.
 
 (* ------------------------------------------------------------------ *)
 (** ** The elaboration. *)
@@ -167,7 +232,10 @@ Definition bf_cmpval (spec : bitfield_spec) (v : N) : data :=
 
 Definition elab_tx (t : txmatch) : matchcond :=
   match t with
-  | TXElab m => elab_m m
+  | TXEq f v  => MEq  f (encode v)
+  | TXNeq f v => MNeq f (encode v)
+  | TXPrefix f op v plen => prefix_expand f op v plen
+  | TXWildcard f prefix => MEq f prefix
   | TXRange f dt neg lo hi =>
       if range_hton dt
       then
@@ -208,6 +276,28 @@ Definition elab_tx (t : txmatch) : matchcond :=
 (** ** Byte-pin witnesses (the elaboration is byte-for-byte the frontend's
     documented lowering; the golden corpus / byteorder-gate re-check the same
     bytes end-to-end). *)
+
+(** `ip saddr 192.168.100.0/24` — byte-aligned: truncated 3-byte load + cmp. *)
+Example prefix_aligned_24 :
+  elab_tx (TXPrefix FIp4Saddr CEq (VIpv4 [192;168;100;0]) 24)
+  = MEq (FPayload PNetwork 12 3) [192;168;100].
+Proof. vm_compute. reflexivity. Qed.
+
+(** `ip saddr 10.0.0.0/20` — unaligned: full-width mask + cmp. *)
+Example prefix_unaligned_20 :
+  elab_tx (TXPrefix FIp4Saddr CEq (VIpv4 [10;0;0;0]) 20)
+  = MMasked FIp4Saddr CEq [255;255;240;0] [0;0;0;0] [10;0;0;0].
+Proof. vm_compute. reflexivity. Qed.
+
+(** A typed port equality elaborates to the 2-byte big-endian register cmp. *)
+Example elab_port_22 : elab_tx (TXEq FThDport (VPort 22)) = MEq FThDport [0;22].
+Proof. vm_compute. reflexivity. Qed.
+
+(** A wildcard `iifname "dummy*"` is the short 5-byte prefix compare. *)
+Example elab_wildcard :
+  elab_tx (TXWildcard FMetaIifname (sbytes "dummy"))
+  = MEq FMetaIifname [100;117;109;109;121].
+Proof. vm_compute. reflexivity. Qed.
 
 (** `ct state established` (single positive: implicit bitmask, ct.t:35-40). *)
 Example elab_ct_state_established :

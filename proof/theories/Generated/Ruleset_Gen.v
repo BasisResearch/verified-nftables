@@ -5,7 +5,7 @@
    bytes here).  A refused construct fails [ruleset_lowers_ok] (fail-loud). *)
 
 From Stdlib Require Import List String ZArith.
-From Nft Require Import Bytes Verdict Packet Bytecode Syntax Semantics Nftval Elab.
+From Nft Require Import Bytes Verdict Packet Bytecode Syntax Semantics Nftval.
 From Nft Require Import Surface.Ast Surface.Lower Gen_Support.
 Import ListNotations.
 Open Scope string_scope.

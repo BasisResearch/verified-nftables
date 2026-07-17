@@ -9,7 +9,7 @@
     for a statement immediate to erase against). *)
 
 From Stdlib Require Import List NArith String.
-From Nft Require Import Bytes Packet Verdict Bytecode Syntax Nftval Elab
+From Nft Require Import Bytes Packet Verdict Bytecode Syntax Nftval
   Ast Datatype Symbols Selector Typecheck Typed Lower.
 Import ListNotations.
 Local Open Scope string_scope.

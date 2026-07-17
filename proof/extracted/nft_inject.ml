@@ -178,13 +178,13 @@ let file (f : Nft_ast.sfile) : Ast.sruleset = L.map toplevel f
 let ifindex_oracle (s : string) : int option =
   match s with "lo" -> Some 1 | _ -> None
 
-(* the typed-view side channel the emitter reads: which produced matchconds
-   have an Elab typed source (printed as `(elab_m ...)`) and which are
-   synthesized protocol-dependency guards (tagged `BDep`).  Both come straight
-   from the verified [lower_ruleset] output — this file decides neither. *)
-let g_typed : (Syntax.matchcond * Elab.tmatch) list ref = ref []
+(* the typed-view side channel: which produced matchconds have a typed source
+   term ([Typed.txmatch]) and which are synthesized protocol-dependency
+   guards.  Both come straight from the verified [lower_ruleset] output —
+   this file decides neither. *)
+let g_typed : (Syntax.matchcond * Typed.txmatch) list ref = ref []
 let g_deps : Syntax.matchcond list ref = ref []
-let typed_of (mc : Syntax.matchcond) : Elab.tmatch option = L.assoc_opt mc !g_typed
+let typed_of (mc : Syntax.matchcond) : Typed.txmatch option = L.assoc_opt mc !g_typed
 let is_dep (mc : Syntax.matchcond) : bool = L.mem mc !g_deps
 
 exception Lower_error of string

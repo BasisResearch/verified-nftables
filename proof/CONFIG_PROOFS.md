@@ -404,31 +404,22 @@ and the typed-match predicates `nft_match_fires` / `nft_match_blocks`
   `Print Assumptions … = "Closed under the global context"`.
 
 **What the `*_Gen.v` bytes rest on (read this before citing a config theorem).**
-A theorem proved through this workflow is about the *parser's output*, and the
-value bytes inside that output have two different trust stories:
-
-- For the four typed match shapes (`Elab.tmatch`: eq / neq / CIDR-prefix /
-  ifname-wildcard), the Gen term carries a **typed** immediate and the
-  bytes are produced by the **verified** `Nftval.encode`/`Elab.elab_m`
-  (`elab_matchcond_correct`) — the typed→bytes step is a theorem.
-- Every **other** immediate in a Gen file is a raw byte list composed by the
-  **unverified** OCaml frontend (`extracted/nft_lower.ml`): set/map *elements*
-  (including its own CIDR net/broadcast interval expansion), range endpoints
-  (including the host-endian `enc_atom_be` reversal), vmap keys, **NAT/tproxy
-  target addresses and ports**, mangle/`vsrc` immediates, and bitwise masks.
-
-The second class matters for exactly the theorems this guide helps you state:
-if `nft_lower` mis-encoded a NAT target or a set element, `make gen` would emit
-a *wrong-but-well-typed* AST, the proof would go through, and your theorem
-would be true **about the wrong addresses**. The checks standing between you
-and that outcome are the *untrusted differential gates*, not a proof: the
-corpus round-trip (2532/2532), `make validate` (28/28 vs live `nft`),
-`make parse-test`/`make e2e` (source-side diffs vs live `nft`), and
-`make gen-check` (the checked-in Gen file matches today's parser output).
-Concretely: sanity-check the Gen file's literals against your `.nft` source
-(step 2 above prints the interesting part), and remember the theorem's meaning
-is conditional on those frontend bytes being the ones `nft` itself would emit.
-The precise boundary statement lives in `theories/IR/Elab.v`'s header.
+A theorem proved through this workflow is about the *parser's output*.  A Gen
+file carries the **surface** ruleset (typed immediates and surface values —
+no raw byte list is written by hand), and every byte the proofs reason about
+is produced by the **verified** lowering `Lower.lower_ruleset` /
+`Typed.elab_tx` over `Nftval.encode` (the per-shape correctness is the
+`Lower_Proofs.*_erasure` family; `make boundary` enforces that the OCaml
+frontend composes no byte).  What remains *untrusted* is the parser's
+structural reading of your `.nft` text (did `1.2.3.4` become the literal you
+wrote?): the checks standing between you and a wrong-but-well-typed surface
+tree are the *differential gates* — the corpus round-trip (2532/2532),
+`make validate` (28/28 vs live `nft`), `make parse-test`/`make e2e`
+(source-side diffs vs live `nft`), and `make gen-check` (the checked-in Gen
+file matches today's parser output).  Concretely: sanity-check the Gen file's
+literals against your `.nft` source (step 2 above prints the interesting
+part), and remember the theorem's meaning is conditional on the parsed
+surface literals being the ones you wrote.
 
 The verdict you prove is about `eval_table` (the DSL specification); via
 `Correct.compile_table_correct` the same verdict holds of the compiled netlink

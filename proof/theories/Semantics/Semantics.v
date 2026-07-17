@@ -264,7 +264,7 @@ Definition eval_matchcond_body (m : matchcond) (e : env) (p : packet) : bool :=
      nft_cmp_eval's memcmp over the cmp value's length): exact equality for a
      full-width immediate, the kernel's short-value prefix compare otherwise.
      The SURFACE distinction (typed equality vs CIDR vs wildcard) lives in the
-     typed layer (Elab.tmatch), whose elaboration picks the shape. *)
+     typed layer (Surface.Typed.txmatch), whose elaboration picks the shape. *)
   | MEq  f v => eval_cmp CEq (field_value f e p) v
   | MNeq f v => eval_cmp CNe (field_value f e p) v
   | MRange f neg lo hi =>

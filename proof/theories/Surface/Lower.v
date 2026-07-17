@@ -7,7 +7,7 @@
     constructing byte-level match conditions for every SCALAR shape:
 
       - typed atoms (eq / neq), CIDR prefixes, ifname wildcards
-        (the four Elab shapes, now BUILT here instead of in OCaml);
+        (the four M0 scalar shapes, BUILT here instead of in OCaml);
       - inclusive ranges — plain big-endian, and the mark/ifindex/fib-type
         `byteorder hton` ranges;
       - bitmask forms (ct state / ct status / tcp flags): the 4-operator
@@ -39,7 +39,7 @@
     (width overflow, cross-type operands, `iifname & 0xff`) cannot lower. *)
 
 From Stdlib Require Import List PeanoNat Bool NArith String Ascii.
-From Nft Require Import Bytes Packet Verdict Bytecode Syntax Nftval Elab
+From Nft Require Import Bytes Packet Verdict Bytecode Syntax Nftval
   Ast Datatype Symbols Selector Typecheck Typed.
 Import ListNotations.
 Local Open Scope string_scope.
@@ -141,13 +141,13 @@ Arguments LErr {A}.
 
 Inductive dep_action : Type :=
 | DAnone
-| DAguard (layer_keyed : bool) (f : field) (key : data) (tm : Elab.tmatch).
+| DAguard (layer_keyed : bool) (f : field) (key : data) (tm : txmatch).
 (* [layer_keyed]: dedup by FIELD alone (one network-layer guard per rule,
    whatever the value — golden inet/icmp.t.payload emits nfproto ONCE for
    `meta nfproto ipv4 icmpv6 type ...`); otherwise dedup by (field, value). *)
 
 Definition guard (layer : bool) (f : field) (w : nat) (n : N) : dep_action :=
-  DAguard layer f (N_to_data w n) (Elab.TMEq f (VInteger w n)).
+  DAguard layer f (N_to_data w n) (TXEq f (VInteger w n)).
 
 (** The L2 families pin an ip/ip6 network match by the LINK-layer ethertype
     (`meta protocol ==`) instead of the NFPROTO guard: IPv4 (2) -> 0x0800,
@@ -278,8 +278,7 @@ Definition lower_value (f : field) (dt : dtype) (deps : list depspec)
           match atom dt base "CIDR base address" with
           | LOk tv =>
               if prefix_len_ok dt len
-              then LOk (deps,
-                        TXElab (Elab.MPrefix f (if neg then CNe else CEq) tv len))
+              then LOk (deps, TXPrefix f (if neg then CNe else CEq) tv len)
               else LErr LEprefixLen
           | LErr e => LErr e
           end
@@ -305,11 +304,9 @@ Definition lower_value (f : field) (dt : dtype) (deps : list depspec)
                    spelling: positive -> the dedicated short-prefix shape;
                    negated / exact 16-byte names -> the typed atom *)
                 if (List.length pre <? Typecheck.ifnamsiz)%nat && negb neg
-                then LOk (deps, TXElab (Elab.MWildcard f pre))
-                else LOk (deps, TXElab (if neg then Elab.TMNeq f tv
-                                        else Elab.TMEq f tv))
-            | _ => LOk (deps, TXElab (if neg then Elab.TMNeq f tv
-                                      else Elab.TMEq f tv))
+                then LOk (deps, TXWildcard f pre)
+                else LOk (deps, if neg then TXNeq f tv else TXEq f tv)
+            | _ => LOk (deps, if neg then TXNeq f tv else TXEq f tv)
             end
         | LErr e => LErr e
         end
@@ -514,16 +511,33 @@ Definition lower_bitmatch (kp : skeypath) (op : string) (mask : svalue)
 Definition data_or (a b : data) : data := data_bitops a (Typed.data_not b) b.
 
 (** The CIDR net/broadcast interval — the ONE Coq expansion, built from the
-    SAME [Elab.prefix_mask]/[Elab.data_and] arithmetic that [Elab.prefix_expand]
-    uses (their membership agreement is [Lower_Proofs.cidr_interval_agrees_
-    prefix_expand], killing the two-implementations tension).  net = base & mask;
+    SAME [Typed.prefix_mask]/[Typed.data_and] arithmetic that
+    [Typed.prefix_expand] uses (their membership agreement is
+    [Lower_Proofs.cidr_interval_agrees_prefix_expand], killing the
+    two-implementations tension).  net = base & mask;
     broadcast = net | ~mask. *)
 Definition cidr_interval (v : nftval) (plen : nat) : data * data :=
   let bytes := Nftval.encode v in
   let w := List.length bytes in
-  let mask := Elab.prefix_mask w plen in
-  let net := Elab.data_and bytes mask in
+  let mask := prefix_mask w plen in
+  let net := data_and bytes mask in
   (net, data_or net (Typed.data_not mask)).
+
+(** *** Source views of a set-declaration element.
+
+    A declared set element is either a POINT or an INTERVAL; the environment
+    stores closed intervals, a point as the degenerate [v,v] pair.  [SEl] and
+    [SRange] are the source-term views of those two shapes, so a generated
+    declaration reads [SEl v] / [SRange lo hi] instead of a degenerate pair.
+    They are definitional: [SEl v = (v, v)] and [SRange lo hi = (lo, hi)] hold
+    by [reflexivity], so every consumer of the interval pairs is unchanged. *)
+Definition SEl (v : data) : data * data := (v, v).
+Definition SRange (lo hi : data) : data * data := (lo, hi).
+
+Lemma SEl_iv : forall v, SEl v = (v, v).
+Proof. reflexivity. Qed.
+Lemma SRange_iv : forall lo hi, SRange lo hi = (lo, hi).
+Proof. reflexivity. Qed.
 
 (** One element's register encoding: big-endian re-encoded on the host-endian
     interval path ([Typed.encode_be]), the ordinary register encoding
@@ -1303,13 +1317,13 @@ Proof. vm_compute. reflexivity. Qed.
 Example lower_ifname_wildcard :
   lower_match (mkSmatch [["iifname"]]
                  (mrhs SOpImplicit false (SSEvalue (SVStr "dummy*"))))
-  = LOk ([], TXElab (Elab.MWildcard FMetaIifname [100;117;109;109;121])).
+  = LOk ([], TXWildcard FMetaIifname [100;117;109;109;121]).
 Proof. vm_compute. reflexivity. Qed.
 Example lower_ifname_exact :
   lower_match (mkSmatch [["iifname"]]
                  (mrhs SOpImplicit false (SSEvalue (SVStr "eth0"))))
-  = LOk ([], TXElab (Elab.TMEq FMetaIifname
-           (VIfname [101;116;104;48; 0;0;0;0; 0;0;0;0; 0;0;0;0]))).
+  = LOk ([], TXEq FMetaIifname
+           (VIfname [101;116;104;48; 0;0;0;0; 0;0;0;0; 0;0;0;0])).
 Proof. vm_compute. reflexivity. Qed.
 
 (** `iifname & 0xff` cannot lower (no integer basetype — M-B acceptance). *)
@@ -1332,9 +1346,9 @@ Proof. vm_compute. reflexivity. Qed.
 Example dep_guard_icmp_inet :
   map (dep_guard "inet") (dep_l4 "icmp")
   = [LOk (DAguard true FMetaNfproto [2]
-            (Elab.TMEq FMetaNfproto (VInteger 1 2)));
+            (TXEq FMetaNfproto (VInteger 1 2)));
      LOk (DAguard false FMetaL4proto [1]
-            (Elab.TMEq FMetaL4proto (VInteger 1 1)))].
+            (TXEq FMetaL4proto (VInteger 1 1)))].
 Proof. vm_compute. reflexivity. Qed.
 Example dep_guard_ip_family_noop :
   dep_guard "ip" (DepNfproto 2) = LOk DAnone.
@@ -1342,7 +1356,7 @@ Proof. vm_compute. reflexivity. Qed.
 Example dep_guard_bridge_ethertype :
   dep_guard "bridge" (DepNfproto 2)
   = LOk (DAguard true FMetaProtocol [8; 0]
-           (Elab.TMEq FMetaProtocol (VInteger 2 0x0800))).
+           (TXEq FMetaProtocol (VInteger 2 0x0800))).
 Proof. vm_compute. reflexivity. Qed.
 Example dep_guard_vlan_netdev_refused :
   dep_guard "netdev" (DepEther 0x8100) = LErr LEvlanNetdev.
@@ -1481,9 +1495,9 @@ Fixpoint dedup_add (news deps : list (field * data)) : list (field * data) :=
 (* ---------- file-level and rule-level lowering state ---------- *)
 
 Record fstate : Type := mkFstate {
-  fs_ls    : lstate;                          (* interning (threaded) *)
-  fs_typed : list (matchcond * Elab.tmatch);  (* typed views for the emitter *)
-  fs_deps  : list matchcond }.                (* which matchconds are dep guards *)
+  fs_ls    : lstate;                       (* interning (threaded) *)
+  fs_typed : list (matchcond * txmatch);   (* typed views (per lowered match) *)
+  fs_deps  : list matchcond }.             (* which matchconds are dep guards *)
 
 Record rloc : Type := mkRloc {
   rl_body    : list body_item;      (* reversed accumulation *)
@@ -1508,18 +1522,14 @@ Definition rl_push (bi : body_item) (rl : rloc) : rloc :=
 Definition rl_set_deps (d : list (field * data)) (rl : rloc) : rloc :=
   mkRloc (rl_body rl) d (rl_verdict rl) (rl_vmap rl) (rl_nat rl) (rl_tproxy rl).
 
-(** Register a Coq-lowered typed match; if it has an Elab view, remember it so
-    the emitter prints [(elab_m tm)]. *)
+(** Register a Coq-lowered typed match, remembering its typed source view. *)
 Definition fs_coq_mc (fs : fstate) (tx : txmatch) : matchcond * fstate :=
   let mc := elab_tx tx in
-  match tx_view tx with
-  | Some tm => (mc, mkFstate (fs_ls fs) ((mc, tm) :: fs_typed fs) (fs_deps fs))
-  | None => (mc, fs)
-  end.
+  (mc, mkFstate (fs_ls fs) ((mc, tx) :: fs_typed fs) (fs_deps fs)).
 
 (** Register a synthesized dependency guard (typed + tagged as a dep). *)
-Definition fs_reg_dep (fs : fstate) (tm : Elab.tmatch) : matchcond * fstate :=
-  let mc := Elab.elab_m tm in
+Definition fs_reg_dep (fs : fstate) (tm : txmatch) : matchcond * fstate :=
+  let mc := elab_tx tm in
   (mc, mkFstate (fs_ls fs) ((mc, tm) :: fs_typed fs) (mc :: fs_deps fs)).
 
 (* ---------- implicit dependency guard materialisation ---------- *)
@@ -1939,7 +1949,7 @@ Record lowered_ruleset : Type := mkLoweredRuleset {
   lr_sets   : list (string * list (data * data));
   lr_vmaps  : list (string * list (data * data * verdict));
   lr_maps   : list (string * list (data * data));
-  lr_typed  : list (matchcond * Elab.tmatch);
+  lr_typed  : list (matchcond * txmatch);
   lr_deps   : list matchcond }.
 
 (** The M4 entry point: [oracle] resolves iif/oif interface NAMES to indices

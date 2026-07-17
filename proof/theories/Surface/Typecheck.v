@@ -188,7 +188,7 @@ Definition resolve_value (dt : dtype) (v : svalue) : option nftval :=
 
 (** Every resolved value is well-formed — EXCEPT the deliberate sub-width
     ifname wildcard, whose SHORT prefix compare is the construct's meaning
-    (Elab.MWildcard).  The disjunct is tight: a wildcard's bytes are strictly
+    (Typed.TXWildcard).  The disjunct is tight: a wildcard's bytes are strictly
     shorter than the register. *)
 Lemma pad16_length : forall d,
   (List.length d <= 16)%nat -> List.length (pad16 d) = 16%nat.

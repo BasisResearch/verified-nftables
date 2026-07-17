@@ -6,20 +6,17 @@
     byte-level: match values are register bytes, and [transform] records the
     mask/shift/byteorder/jhash operations in front of a compare — this IR
     models exactly what the kernel's expressions evaluate.  The typed->bytes
-    boundary, stated precisely: for the FOUR [Elab.tmatch] shapes — typed
-    eq / neq / CIDR-prefix / ifname-wildcard matches — a generated source term
-    ([*_Gen.v]) carries a TYPED immediate ([Nftval.nftval]) that reaches this
-    IR through the VERIFIED elaboration [Elab.elab_m] (correctness:
-    [Elab.elab_matchcond_correct]), and the per-atom encoding is everywhere the
-    verified [Nftval.encode].  Every OTHER immediate in a [*_Gen.v] term is a
-    raw byte list COMPOSED by the unverified frontend ([extracted/nft_lower.ml]):
-    set/map element intervals (incl. its own OCaml CIDR net/broadcast
-    expansion), range endpoints (incl. the host-endian [enc_atom_be] reversal),
-    vmap keys, NAT/tproxy target addresses/ports, mangle/vsrc immediates, and
-    bitwise masks.  Those bytes are checked by the untrusted differential
-    gates (corpus 2532/2532, validate 28/28, parse-test/e2e vs live nft), not
-    by a theorem — see [Elab.v]'s header and CONFIG_PROOFS.md ("What the Gen
-    bytes rest on").
+    boundary, stated precisely: a generated source term ([*_Gen.v]) carries
+    the SURFACE ruleset with TYPED immediates ([Nftval.nftval] atoms inside
+    [Surface.Typed.txmatch] terms and surface set/statement values), which
+    reach this IR only through the VERIFIED lowering
+    ([Lower.lower_ruleset] / [Typed.elab_tx]); the per-atom encoding is
+    everywhere the verified [Nftval.encode], and the per-shape correctness is
+    the [Lower_Proofs.*_erasure] family.  No raw byte list is composed
+    outside Coq (`make boundary` enforces this); the same bytes are re-checked
+    end-to-end by the untrusted differential gates (corpus 2532/2532,
+    validate 28/28, parse-test/e2e vs live nft) — see CONFIG_PROOFS.md
+    ("What the Gen bytes rest on").
 
     Each [field] (e.g. "tcp dport") *denotes* a concrete way to read
     the packet, given by [field_load].  This denotation is the single source of

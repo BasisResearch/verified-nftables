@@ -148,7 +148,7 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   compile_chain_mut_env_correct compile_seq_mut_correct compile_table_correct \
   compile_ruleset_correct compile_hook_correct compile_seq_correct \
   optimize_table_uncond_correct optimize_table_uncond_compile_correct \
-  elab_matchcond_correct Semantics.run_rule_outcome_eq \
+  Semantics.run_rule_outcome_eq \
   Semantics.eval_rules_jx_monotone Semantics.eval_rules_j_fuel_stable \
   Semantics.eval_rules_jx_adequate Semantics.eval_table_fuel_indep \
   Semantics.eval_table_policy_is_fallthrough \
@@ -181,13 +181,16 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Ct_State.estab_matches_pure Ct_State.estab_matches_established_plus_other \
   Ct_State.estab_misses_without_bit Ct_State.refuted_meq_rejects \
   Ct_State.refuted_alternative_diverges \
+  Lower_Proofs.eq_erasure Lower_Proofs.neq_erasure \
+  Lower_Proofs.prefix_erasure Lower_Proofs.wildcard_erasure \
   Lower_Proofs.range_erasure_be Lower_Proofs.range_erasure_host \
   Lower_Proofs.bitmask_erasure Lower_Proofs.bitfield_erasure \
+  Lower_Proofs.txmatch_erasure \
   Lower_Proofs.set_interval_erasure Lower_Proofs.concat_key_erasure \
   Lower_Proofs.cidr_interval_agrees_prefix_expand
 
 axioms:
-	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Elab Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs.\n'; \
+	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs.\n'; \
 	  for t in $(AXIOM_GATE_THEOREMS); do printf 'Print Assumptions %s.\n' "$$t"; done; } \
 	| coqtop -R . Nft 2>/dev/null \
 	| grep -E 'Closed under the global context|Axioms' \
