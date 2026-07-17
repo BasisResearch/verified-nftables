@@ -20,7 +20,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 # Pinned pass-count FLOOR (compile-from-source blocks byte-identical to corpus).
-SOURCE_SWEEP_FLOOR="${SOURCE_SWEEP_FLOOR:-1166}"
+# Raised 1166 -> 1176 when the class-G in-frame-ethertype network guard landed
+# (8 bridge/netdev vlan+icmp blocks moved from divergent to byte-identical).
+SOURCE_SWEEP_FLOOR="${SOURCE_SWEEP_FLOOR:-1176}"
 
 CORPUS_DIR="${NFT_CORPUS:-/tmp/nftables-src}"
 if [ ! -d "$CORPUS_DIR/tests/py" ]; then

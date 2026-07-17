@@ -32,6 +32,16 @@ Local Open Scope string_scope.
 Inductive depspec : Type :=
 | DepL4       (proto : nat)   (* `meta l4proto == proto` transport guard      *)
 | DepNfproto  (fam : nat)     (* `meta nfproto == fam` network guard (inet)   *)
+| DepNetLL    (fam : nat)     (* network guard synthesised UNDER the link
+                                 header (payload.c payload_gen_special_dependency,
+                                 e.g. `icmp type` in bridge): the guard's SHAPE
+                                 differs from [DepNfproto] only in the L2 families
+                                 — proto_eth reads the in-frame ethertype with a
+                                 `payload load 2b @ link + 12`, where a direct
+                                 network selector ([DepNfproto]) reaches the
+                                 protocol via proto_netdev's `meta protocol`
+                                 (src/proto.c proto_eth vs proto_netdev
+                                 protocol_key template).                       *)
 | DepEther    (et : N)        (* `ether type == et` VLAN guard                *)
 | DepL2proto  (et : N)        (* `meta protocol == et` L2-family net guard    *)
 | DepIiftype  (t : nat)       (* `meta iiftype == ARPHRD t` link guard        *)
@@ -49,9 +59,9 @@ Definition dep_l4 (proto : string) : list depspec :=
   else if String.eqb proto "sctp" then [DepL4 132]
   else if String.eqb proto "dccp" then [DepL4 33]
   else if String.eqb proto "udplite" then [DepL4 136]
-  else if String.eqb proto "icmp" then [DepNfproto 2; DepL4 1]
-  else if String.eqb proto "icmpv6" then [DepNfproto 10; DepL4 58]
-  else if String.eqb proto "igmp" then [DepNfproto 2; DepL4 2]
+  else if String.eqb proto "icmp" then [DepNetLL 2; DepL4 1]
+  else if String.eqb proto "icmpv6" then [DepNetLL 10; DepL4 58]
+  else if String.eqb proto "igmp" then [DepNetLL 2; DepL4 2]
   else [].
 
 Definition dep_ip4 : list depspec := [DepNfproto 2].
@@ -409,5 +419,5 @@ Example selector_tcp_dport :
 Proof. reflexivity. Qed.
 Example selector_icmp_two_deps :
   selector ["icmp"; "type"]
-  = Some (FIcmpType, DTicmp_type, [DepNfproto 2; DepL4 1]).
+  = Some (FIcmpType, DTicmp_type, [DepNetLL 2; DepL4 1]).
 Proof. reflexivity. Qed.

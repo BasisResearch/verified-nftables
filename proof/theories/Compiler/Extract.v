@@ -36,6 +36,7 @@ From Stdlib Require Import ExtrOcamlBasic.
    `make parse-test` pins the oversized-rate rejection. *)
 From Stdlib Require Import ExtrOcamlNatInt.
 From Stdlib Require Import ExtrOcamlNativeString.
+From Stdlib Require Import BinNat.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile Optimize Nftval.
 From Nft Require Import Optimize_ValueSet Optimize_Vmap Optimize_Concat Optimize_Table Optimize_Uncond.
 (* The typed-layer surface (T1): the Coq surface AST, datatype/coercion
@@ -87,6 +88,26 @@ Extract Constant Lower.nat_dec => "Stdlib.string_of_int".
    [string_of_nat] above; extracted/dune additionally excludes any stray
    String module from the library. *)
 Extract Inlined Constant String.length => "Stdlib.String.length".
+
+(* [N.of_nat] converts a literal int (nat = OCaml int under ExtrOcamlNatInt) to
+   the binary [N] a register value is built from ([Typecheck.resolve_num]
+   receives `N.of_nat n` for every `SVNum n`).  Coq's [N.of_nat] runs through
+   [Pos.of_succ_nat], which recurses ONCE PER UNIT — O(n), non-tail — so a
+   real literal like `meta mark 0x80000000` (2^31, well within the frontend's
+   2^40 seam bound) exhausts the OCaml stack before it ever reaches the range
+   check.  Realise it in log(n) by reading the int's bits directly; the value
+   is identical to Coq's [N.of_nat] (XH=1, XO p=2p, XI p=2p+1), so no proof or
+   corpus round-trip observes a difference — only the recursion depth changes.
+   Placed in [BinNat]'s scope (open BinNums), so [N0]/[Npos]/[Coq_x*] resolve. *)
+Extract Constant N.of_nat =>
+  "(fun n ->
+      if n <= 0 then N0
+      else
+        let rec pos_of_int m =
+          if m <= 1 then Coq_xH
+          else if m land 1 = 1 then Coq_xI (pos_of_int (m asr 1))
+          else Coq_xO (pos_of_int (m asr 1)) in
+        Npos (pos_of_int n))".
 
 (* The control-plane compiler/optimizer and the field table are what the glue
    needs; we also extract the packet semantics ([eval_chain] and the bytecode VM

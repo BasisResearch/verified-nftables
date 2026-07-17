@@ -13,7 +13,13 @@
        int whose arithmetic the proofs know nothing about below 0);
      - literals >= 2^40 are rejected, the same bound the `limit` guard
        enforces (see theories/Compiler/Extract.v's ExtrOcamlNatInt note), so
-       no extracted nat computation can approach the 63-bit wrap.
+       no extracted nat ARITHMETIC can reach the 63-bit wrap.
+   Note the wrap bound is NOT the whole story for a large-but-in-bounds
+   literal: a value like `meta mark 0x80000000` (2^31) is well under 2^40 yet
+   would overflow the OCaml stack in Coq's O(n) [N.of_nat]/[Pos.of_succ_nat]
+   when the verified lowering builds its register value.  [N.of_nat] is
+   therefore realised in log(n) at the extraction seam (Extract.v), so every
+   literal the parser admits (< 2^40) compiles without a stack overflow.
    A negative base-chain priority (`priority -100`) crosses in SIGN-MAGNITUDE
    form (Ast.ITypeHook's prio_neg flag), so no negative number meets nat. *)
 

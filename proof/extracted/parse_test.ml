@@ -2221,6 +2221,32 @@ let check_mark_range () =
    lowers to MSetT + hton(4,4) with BE bounds (mirroring the direct-range
    fix on the set path), while an EXACT-only set stays a bare MConcatSet (memcmp
    eq is order-independent — nft emits no hton there either). *)
+(* (N.of_nat crash regression) A literal above 2^30 (`meta mark 0x80000000` =
+   2^31) is routed through the extracted [N.of_nat] on its way to the register
+   bytes.  Coq's default [N.of_nat] realization goes through the NON-tail-recursive
+   [Pos.of_succ_nat], so extraction recurses ~2^31 deep and blows the OCaml stack;
+   the [Extract Constant N.of_nat] in Compiler/Extract.v gives it a log-depth
+   realization.  This check merely COMPILES the literal — a revert of that Extract
+   Constant turns the parse into a `Stack overflow`, reddening the parse-test gate. *)
+let check_big_literal_no_overflow () =
+  Printf.printf "=== (N.of_nat) 2^31 literal compiles without stack overflow ===\n";
+  let src =
+    "table ip filter {\n\
+    \  chain input {\n\
+    \    type filter hook input priority 0; policy drop;\n\
+    \    meta mark 0x80000000 accept\n\
+    \  }\n\
+     }\n" in
+  let parsed = Nft_parse.parse_string src in
+  let input = Nft_inject.find_chain parsed ~table:"filter" ~chain:"input" in
+  let mc = match (Stdlib.List.nth input.Syntax.c_rules 0).Syntax.r_body with
+    | Syntax.BMatch m :: _ -> m | _ -> failwith "no mark match" in
+  (match mc with
+   | Syntax.MEq (Syntax.FMetaMark, [0;0;0;128]) ->
+       check "meta mark 0x80000000 -> host-endian [0;0;0;128], no overflow" true
+   | _ -> check "meta mark 0x80000000 -> host-endian [0;0;0;128], no overflow" false);
+  Printf.printf "\n"
+
 let check_mark_set () =
   Printf.printf "=== (O') host-endian mark interval set (hton before lookup) ===\n";
   let chain_of src =
@@ -2813,6 +2839,7 @@ let () =
     check_fib_type ();
     check_mark_range ();
     check_mark_set ();
+    check_big_literal_no_overflow ();
     check_numgen_free ();
     check_natint_guard ();
     check_typed_layer ();
