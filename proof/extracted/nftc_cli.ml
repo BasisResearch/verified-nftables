@@ -36,7 +36,23 @@ let prog = "nftc"
 
 let usage_line =
   "usage: " ^ prog ^ " {compile|optimize|send} [FILE.nft | -] \
-   [--table T] [--chain C] [--family F] [--no-optimize] [--commit]\n"
+   [--table T] [--chain C] [--family F] [-O p1,p2,...] [--no-optimize] [--commit]\n\
+   \       " ^ prog ^ " --list-passes\n"
+
+(* comma-separated pass-name list, empties dropped *)
+let split_commas s =
+  Stdlib.String.split_on_char ',' s |> L.filter (fun x -> x <> "")
+
+(* the ordered pass registry, extracted from Coq (Optimize_Registry): the two
+   intra-rule passes + the chain-level pipeline stages, plus the special name
+   `default` = the whole-table consolidation (Optimize_Uncond.optimize_table_uncond).
+   `-O` parses names into a pass list; the fold and its eval-preservation proof
+   ([run_passes]/[run_passes_correct]) live in Coq — this only chooses the list. *)
+let list_passes () =
+  print_string "available -O passes (applied left-to-right in the given order):\n";
+  L.iter (fun n -> print_string ("  " ^ n ^ "\n")) Optimize_Registry.registry_names;
+  print_string "  default   (whole-table consolidation: optimize_table_uncond)\n";
+  exit 0
 
 (* a USAGE ERROR: goes to stderr, exit 2 (the conventional "misuse" code). *)
 let usage () = prerr_string usage_line; exit 2
@@ -183,27 +199,44 @@ let () =
   let args = Stdlib.Array.to_list Sys.argv in
   match args with
   | _ :: ("-h" | "--help") :: _ -> help ()
+  | _ :: "--list-passes" :: _ -> list_passes ()
   | [_] -> usage ()
   | _ :: cmd :: rest ->
       let file = ref None and table = ref None and chain = ref None in
       let no_opt = ref false and commit = ref false and family = ref None in
+      (* -O pass list: None = command default; Some names = apply these passes *)
+      let opt_passes = ref None in
       let rec go = function
         | [] -> ()
         | "--table" :: t :: r -> table := Some t; go r
         | "--chain" :: c :: r -> chain := Some c; go r
         | "--family" :: f :: r -> family := Some f; go r
+        | "-O" :: spec :: r -> opt_passes := Some (split_commas spec); go r
+        | "--list-passes" :: _ -> list_passes ()
         | "--no-optimize" :: r -> no_opt := true; go r
         | "--commit" :: r -> commit := true; go r
         | ("-h" | "--help") :: _ -> help ()
         (* a value-taking option given as the LAST token has no argument: report
            that specifically rather than the misleading "unknown option". *)
-        | (("--table" | "--chain" | "--family") as opt) :: [] ->
+        | (("--table" | "--chain" | "--family" | "-O") as opt) :: [] ->
             prerr_string (prog ^ ": option " ^ opt ^ " requires an argument\n"); usage ()
         | x :: _ when String.length x > 0 && x.[0] = '-' && x <> "-" ->
             prerr_string (prog ^ ": unknown option " ^ x ^ "\n"); usage ()
         | x :: r -> (match !file with None -> file := Some x | Some _ -> usage ()); go r
       in
       go rest;
+      (* resolve a `-O` pass list into a chain transform.  `default` = the
+         whole-table pipeline (handled at the compile site so it can emit the
+         synthesised declarations); every other name is a pure chain->chain pass
+         from the verified registry, folded by Optimize_Registry.run_passes. *)
+      let apply_passes names (c : Syntax.chain) : Syntax.chain =
+        match Optimize_Registry.resolve_passes names with
+        | Some ps -> Optimize_Registry.run_passes ps c
+        | None ->
+            prerr_string
+              (prog ^ ": -O: unknown pass name (see " ^ prog ^ " --list-passes)\n");
+            exit 2
+      in
       let text = read_input !file in
       let parsed =
         try Nft_parse.parse_string text
@@ -219,10 +252,32 @@ let () =
       (match cmd with
        | "compile" ->
            need_chains ();
-           L.iter
-             (fun (t, cn, c) ->
-               print_string (render_chain ~table:t ~chain:cn (Compile.compile_chain c)))
-             chains
+           (* `-O` on compile: `default` runs the whole-table pipeline (emitting
+              its synthesised set/map declarations, byte-identical to `optimize`);
+              any other list is the pure-pass fold applied before compile. *)
+           (match !opt_passes with
+            | Some ["default"] ->
+                L.iter
+                  (fun (t, cn, c) ->
+                    let (decls, c') = optimize_table c in
+                    print_string (render_chain ~table:t ~chain:cn (Compile.compile_chain c'));
+                    let ds = render_decls decls in
+                    if String.length ds > 0 then
+                      (print_string "  # synthesised by the verified optimizer:\n";
+                       print_string ds))
+                  chains
+            | Some names ->
+                L.iter
+                  (fun (t, cn, c) ->
+                    print_string
+                      (render_chain ~table:t ~chain:cn
+                         (Compile.compile_chain (apply_passes names c))))
+                  chains
+            | None ->
+                L.iter
+                  (fun (t, cn, c) ->
+                    print_string (render_chain ~table:t ~chain:cn (Compile.compile_chain c)))
+                  chains)
        | "optimize" ->
            need_chains ();
            L.iter

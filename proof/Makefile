@@ -156,11 +156,19 @@ validate: glue
 #   single-fold (T1)     the numgen-freedom discharge over every lowering,
 #                        the mut-free fold coincidence, and the intra-rule
 #                        set-then-read / dynset-feedback positive pins
+#   intra-rule opt (T2B) the two UNCONDITIONAL passes — adjacent-payload merge
+#                        (paymerge_chain_eval, corpus class I) and bitwise-xor
+#                        constant fold (xorfold_chain_eval, corpus class L) — plus
+#                        the ONE generic pass-composition theorem
+#                        (run_passes_correct: folding any registry pass list
+#                        preserves eval_chain)
 # Any NEW README-claimed result must be added here in the same commit.
 AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   compile_chain_mut_env_correct compile_seq_mut_correct compile_table_correct \
   compile_ruleset_correct compile_hook_correct compile_seq_correct \
   optimize_table_uncond_correct optimize_table_uncond_compile_correct \
+  Optimize_PayMerge.paymerge_chain_eval Optimize_XorFold.xorfold_chain_eval \
+  Optimize_Registry.run_passes_correct \
   Semantics.run_rule_outcome_eq \
   Semantics.eval_rules_jx_monotone Semantics.eval_rules_j_fuel_stable \
   Semantics.eval_rules_jx_adequate Semantics.eval_table_fuel_indep \
@@ -207,7 +215,7 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Setread_IntraRule.dynset_feedback_accepted Setread_IntraRule.vm_dynset_feedback_accepted
 
 axioms:
-	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs Setread_IntraRule.\n'; \
+	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optimize_PayMerge Optimize_XorFold Optimize_Registry Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs Setread_IntraRule.\n'; \
 	  for t in $(AXIOM_GATE_THEOREMS); do printf 'Print Assumptions %s.\n' "$$t"; done; } \
 	| coqtop -R . Nft 2>/dev/null \
 	| grep -E 'Closed under the global context|Axioms' \

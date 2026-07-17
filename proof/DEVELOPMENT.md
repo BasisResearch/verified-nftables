@@ -692,6 +692,46 @@ the Makefile, so a frontend regression that drops a block below the floor turns
 the build red while the endian-unportable / benign display classes stay visible
 without freezing the gate.
 
+### Class I — the adjacent-payload merge, now a verified optimizer pass (T2B)
+
+Class I ("adjacent-payload merge not replicated", 5 blocks, packet-proven equal)
+is closed by a NEW intra-rule optimizer pass, **`Optimize_PayMerge.paymerge_chain`**:
+two byte-contiguous full-width payload equalities in the same header fuse into
+one wider load+compare, exactly where nft's own `payload_can_merge`
+(src/payload.c) does — adjacent, combined width ≤ 16 bytes, and either ≤ 4 bytes
+(u32 fast path), a link-layer base, or a side already > u32. The pass is
+SELF-GUARDING and its correctness is UNCONDITIONAL (`paymerge_chain_eval`,
+axiom-gated): a payload read and its loadability split at any interior offset for
+EVERY packet, so no byte-/length-well-formedness hypothesis is needed. It is
+applied source-side in the sweep (5 blocks moved from divergent to
+byte-identical: `inet/payloadmerge.t.payload:1`, `inet/tcp.t.payload:166/173/182`,
+`bridge/vlan.t.payload:279`; **floor 1176 → 1181**) and is exposed by name to the
+`nftc -O paymerge` CLI.
+
+Class L ("xor constant-fold not replicated", 4 blocks) gets the companion pass
+**`Optimize_XorFold.xorfold_chain`**, which performs nft's `binop_transfer` step
+— transferring the pure-xor register operand onto the compare value
+(`(reg & 0xff..) ^ C <op> V → ^ 0 <op> V^C`), UNCONDITIONAL by xor's involutivity
+(`xorfold_chain_eval`, axiom-gated). Note that class L does NOT move the
+source-sweep floor: its blocks are `mark`-based, so they are host-endian
+**endian-unportable** in the text corpus (the same reason the whole host-order
+family cannot be text-green cross-endian, above), AND nft additionally DROPS the
+now-trivial `& 0xff.. ^ 0` binop — a register-byte-width fact this
+over-approximating packet model (unbounded `nat` bytes from `pkt_meta`/`e_ct`)
+cannot carry soundly. The pass is the maximal fold the model supports soundly;
+it is exposed as `nftc -O xorfold`.
+
+Both passes plus the pipeline's chain-level stages are entries in the extracted
+pass **registry** (`Optimize_Registry`), and the ONE generic composition theorem
+`run_passes_correct` proves that folding any registry pass list preserves
+`eval_chain`. `nftc -O p1,p2,...` parses names into a pass list and folds them
+left-to-right; `nftc --list-passes` enumerates the registry; `-O default` runs
+the whole-table pipeline (`optimize_table_uncond`), byte-identical to `nftc
+optimize`. The two intra-rule passes act on disjoint matchcond shapes (payload
+equalities vs `MMasked` xor), so they commute at the bytecode level; the CLI
+still applies them in the given order and the composition theorem holds for every
+order.
+
 ### Class O — `ct id` byte order: WE are kernel-faithful, nft is not
 
 The one upstream bug. `nft` declares `NFT_CT_ID` `BYTEORDER_BIG_ENDIAN`
