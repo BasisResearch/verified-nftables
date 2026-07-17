@@ -1303,7 +1303,13 @@ Definition lower_sverdict (v : sverdict) : verdict :=
 Definition lower_stmt (s : sstmt) : lres (option stmt) :=
   match s with
   | StComment _ => LOk None
-  | StCounter => LOk (Some (SCounter 0 0))
+  | StCounter pkts bytes => LOk (Some (SCounter pkts bytes))
+      (* `counter packets N bytes N` — the initial values reach the compiled
+         [SCounter] (kernel: nft_counter_init seeds the counter from the
+         declaration; net/netfilter/nft_counter.c) *)
+  | StObjref k name => LOk (Some (SObjref (objkind_otype k) name))
+      (* `counter name X` / `quota name X` / `ct helper set X` etc. -> an
+         objref carrying the NFT_OBJECT_* type (src/statement.c objref_stmt) *)
   | StLog opts => LOk (Some (SLog (canon_log_opts opts)))
   | StNotrack => LOk (Some SNotrack)
   | StMetaSet k v => st <-- lower_meta_set k v ;; LOk (Some st)
@@ -2002,6 +2008,20 @@ Definition lower_clause (oracle : string -> option nat) (fuel : nat)
                     end in
           LOk (rl_with_vmap (Some vm) rl1, fs1)
       end
+  | CObjrefMap _ kps _ =>
+      (* `counter name <key> map { v : "obj" }`: load the (concatenated) key
+         fields and emit a verdict-neutral objref-map statement against a fresh
+         anonymous map name (src/statement.c objref_stmt: NFT_EXPR_OBJREF with
+         set_id).  The map's element->object bindings are a verdict-neutral side
+         effect not read by the semantics, so they are not interned into the
+         verdict environment (documented model boundary, DEVELOPMENT.md). *)
+      infos <-- map_lres sel_field_dt kps ;;
+      let fields := map fst infos in
+      p <-- ensure_dep family (List.concat (map sel_deps kps)) rl fs ;;
+      let '(rl1, fs1) := p in
+      let '(name, ls') := fresh_map (fs_ls fs1) in
+      LOk (rl_push (BStmt (SObjrefMap fields name)) rl1,
+           mkFstate ls' (fs_typed fs1) (fs_deps fs1))
   | CStmt (StLimit rate u over burst byte_rate) =>
       ls <-- limit_spec rate u over burst byte_rate ;;
       LOk (rl_push (BMatch (MLimit ls)) rl, fs)

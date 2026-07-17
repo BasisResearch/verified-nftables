@@ -28,7 +28,11 @@ cd "$(dirname "$0")"
 # bridge/vlan.t.payload:279 — moved from divergent to byte-identical; the pass is
 # applied source-side in parse_test's sweep, verdict-preserving by
 # Optimize_PayMerge.paymerge_chain_eval).
-SOURCE_SWEEP_FLOOR="${SOURCE_SWEEP_FLOOR:-1181}"
+# Raised 1181 -> 1187 when T3 named-object references landed (ip/objects.t.payload
+# `counter name`/`quota name`/`ct helper set`/`limit name`/`ct timeout set`/`ct
+# expectation set` blocks now compile from source to byte-identical
+# `[ objref type N name X ]`).
+SOURCE_SWEEP_FLOOR="${SOURCE_SWEEP_FLOOR:-1187}"
 
 CORPUS_DIR="${NFT_CORPUS:-/tmp/nftables-src}"
 if [ ! -d "$CORPUS_DIR/tests/py" ]; then

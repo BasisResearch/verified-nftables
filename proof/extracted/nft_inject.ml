@@ -63,6 +63,12 @@ let rec value : Nft_ast.value -> Ast.svalue = function
   | Nft_ast.Vconcat vs -> Ast.SVConcat (L.map value vs)
   | Nft_ast.Vset vs -> Ast.SVSet (L.map value vs)
 
+let sobjkind : Nft_ast.sobjkind -> Ast.sobjkind = function
+  | Nft_ast.OKcounter -> Ast.OKcounter | Nft_ast.OKquota -> Ast.OKquota
+  | Nft_ast.OKlimit -> Ast.OKlimit | Nft_ast.OKcthelper -> Ast.OKcthelper
+  | Nft_ast.OKcttimeout -> Ast.OKcttimeout | Nft_ast.OKctexpect -> Ast.OKctexpect
+  | Nft_ast.OKsecmark -> Ast.OKsecmark | Nft_ast.OKsynproxy -> Ast.OKsynproxy
+
 let verdict : Nft_ast.verdict -> Ast.sverdict = function
   | Nft_ast.SVaccept -> Ast.SVaccept
   | Nft_ast.SVdrop -> Ast.SVdrop
@@ -99,7 +105,8 @@ let opt_nat : int option -> int option = function
 
 let stmt : Nft_ast.sstmt -> Ast.sstmt = function
   | Nft_ast.StComment c -> Ast.StComment c
-  | Nft_ast.StCounter -> Ast.StCounter
+  | Nft_ast.StCounter (p, b) -> Ast.StCounter (nat p, nat b)
+  | Nft_ast.StObjref (k, n) -> Ast.StObjref (sobjkind k, n)
   | Nft_ast.StLog opts -> Ast.StLog opts
   | Nft_ast.StLimit (rate, unit_, over, burst, bytes) ->
       Ast.StLimit (nat rate, unit_, over, nat burst, bytes)
@@ -122,6 +129,8 @@ let clause : Nft_ast.clause -> Ast.sclause = function
   | Nft_ast.CVmapRef (keys, name) -> Ast.CVmapRef (keys, name)
   | Nft_ast.CVerdict v -> Ast.CVerdict (verdict v)
   | Nft_ast.CStmt s -> Ast.CStmt (stmt s)
+  | Nft_ast.CObjrefMap (k, keys, entries) ->
+      Ast.CObjrefMap (sobjkind k, keys, L.map (fun (v, n) -> (value v, n)) entries)
   | Nft_ast.CBitmatch (kp, op, mask, r) ->
       Ast.CBitmatch (kp, op, value mask, rhs r)
 
@@ -149,7 +158,7 @@ let chain (sc : Nft_ast.schain) : Ast.schain =
 let table_item : Nft_ast.table_item -> Ast.stable_item = function
   | Nft_ast.TChain c -> Ast.TChain (chain c)
   | Nft_ast.TSet sd -> Ast.TSet (setdecl sd)
-  | Nft_ast.TObj n -> Ast.TObj n
+  | Nft_ast.TObj (n, k) -> Ast.TObj (n, sobjkind k)
 
 let table (t : Nft_ast.stable) : Ast.stable =
   { Ast.st_family = t.Nft_ast.st_family;
@@ -160,7 +169,10 @@ let toplevel : Nft_ast.toplevel -> Ast.stoplevel = function
   | Nft_ast.TopDefine (n, v) -> Ast.TopDefine (n, value v)
   | Nft_ast.TopTable t -> Ast.TopTable (table t)
   | Nft_ast.TopInclude p -> Ast.TopInclude p
-  | Nft_ast.TopNop -> Ast.TopNop
+  | Nft_ast.TopOp _ ->
+      (* config-management ops are applied by the driver (Nft_config) BEFORE
+         injection; none should survive to here. *)
+      raise (Inject_error "internal: unapplied config op reached injection")
 
 (* a whole (include-expanded) surface file *)
 let file (f : Nft_ast.sfile) : Ast.sruleset = L.map toplevel f

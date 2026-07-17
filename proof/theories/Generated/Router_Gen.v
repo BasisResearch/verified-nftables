@@ -11,9 +11,7 @@ Import ListNotations.
 Open Scope string_scope.
 
 Definition router_surface : sruleset :=
-  [TopNop;
-
-   (TopDefine "DEV_PRIVATE" (SVSym "eth1"));
+  [(TopDefine "DEV_PRIVATE" (SVSym "eth1"));
 
    (TopDefine "DEV_WORLD" (SVSym "ppp0"));
 

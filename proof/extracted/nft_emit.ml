@@ -94,9 +94,16 @@ let smatch (m : Ast.smatch) : string =
   spf "{| sm_keys := %s; sm_rhs := %s |}"
     (keypath_list m.Ast.sm_keys) (srhs m.Ast.sm_rhs)
 
+let sobjkind (k : Ast.sobjkind) : string = match k with
+  | Ast.OKcounter -> "OKcounter" | Ast.OKquota -> "OKquota"
+  | Ast.OKlimit -> "OKlimit" | Ast.OKcthelper -> "OKcthelper"
+  | Ast.OKcttimeout -> "OKcttimeout" | Ast.OKctexpect -> "OKctexpect"
+  | Ast.OKsecmark -> "OKsecmark" | Ast.OKsynproxy -> "OKsynproxy"
+
 let sstmt (s : Ast.sstmt) : string = match s with
   | Ast.StComment c -> spf "(StComment %s)" (qstring c)
-  | Ast.StCounter -> "StCounter"
+  | Ast.StCounter (p, b) -> spf "(StCounter %d %d)" p b
+  | Ast.StObjref (k, n) -> spf "(StObjref %s %s)" (sobjkind k) (qstring n)
   | Ast.StLog opts -> spf "(StLog %s)" (qstring opts)
   | Ast.StLimit (rate, unit, over, burst, byte_rate) ->
       spf "(StLimit %d %s %s %d %s)" rate (qstring unit) (bool over) burst (bool byte_rate)
@@ -125,6 +132,9 @@ let sclause (c : Ast.sclause) : string = match c with
       spf "(CVmapRef %s %s)" (keypath_list keys) (qstring name)
   | Ast.CVerdict v -> spf "(CVerdict %s)" (sverdict v)
   | Ast.CStmt s -> spf "(CStmt %s)" (sstmt s)
+  | Ast.CObjrefMap (k, keys, entries) ->
+      spf "(CObjrefMap %s %s [%s])" (sobjkind k) (keypath_list keys)
+        (S.concat "; " (L.map (fun (v, n) -> spf "(%s, %s)" (svalue v) (qstring n)) entries))
   | Ast.CBitmatch (kp, op, mask, r) ->
       spf "(CBitmatch %s %s %s %s)" (keypath kp) (qstring op) (svalue mask) (srhs r)
 
@@ -156,7 +166,7 @@ let schain (c : Ast.schain) : string =
 let stable_item (it : Ast.stable_item) : string = match it with
   | Ast.TChain c -> schain c
   | Ast.TSet sd -> ssetdecl sd
-  | Ast.TObj n -> spf "(TObj %s)" (qstring n)
+  | Ast.TObj (n, k) -> spf "(TObj %s %s)" (qstring n) (sobjkind k)
 
 let stable (t : Ast.stable) : string =
   spf "(TopTable {| st_family := %s; st_name := %s;\n      st_items := [%s] |})"

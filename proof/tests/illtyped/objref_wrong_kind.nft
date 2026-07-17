@@ -1,0 +1,12 @@
+# ILL-TYPED: a `quota name` reference whose target is declared, but as a
+# COUNTER, not a quota.  nft's object lookup is kind-scoped ("object 'cnt1' of
+# type quota does not exist"); the Coq typechecker refuses it because
+# [objkind_declared] requires the declared kind's NFT_OBJECT_* type to match the
+# reference's (Surface/Typecheck.objkind_declared).
+table ip t {
+  counter cnt1 { }
+  chain c {
+    type filter hook input priority 0; policy accept;
+    ip saddr 192.168.1.3 quota name "cnt1"
+  }
+}

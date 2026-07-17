@@ -76,10 +76,20 @@ type keypath = string list
    (`ip daddr . oifname` is two), then its right-hand side. *)
 type smatch = { m_keys : keypath list; m_rhs : rhs }
 
+(* Named stateful objects (mirror of Coq Ast.sobjkind).  A rule references one
+   by name (`counter name X`); the injection carries the kind so the verified
+   typechecker can check declared-existence + kind agreement. *)
+type sobjkind =
+  | OKcounter | OKquota | OKlimit | OKcthelper
+  | OKcttimeout | OKctexpect | OKsecmark | OKsynproxy
+
 (* Verdict-neutral / terminal action statements that are not plain verdicts. *)
 type sstmt =
   | StComment   of string
-  | StCounter
+  | StCounter   of int * int       (* `counter [packets N bytes N]`; initial values *)
+  | StObjref    of sobjkind * string
+                          (* `counter name X` / `quota name X` / `ct helper set X`
+                             / `limit name X` / `synproxy name X` *)
   | StLog       of string          (* options string (e.g. the prefix), verbatim *)
   | StLimit     of int * string * bool * int * bool
                           (* rate, time-unit, over/invert, burst, is-byte-rate;
@@ -103,6 +113,8 @@ type clause =
   | CVmapRef of keypath list * string              (* `<key>[.<key>...] vmap @named_map` *)
   | CVerdict of verdict
   | CStmt    of sstmt
+  | CObjrefMap of sobjkind * keypath list * (value * string) list
+                          (* `counter name <key> map { v : "obj" }` *)
   | CBitmatch of keypath * string * value * rhs
                           (* `<sel> and|or|xor <mask> <relop> <val>`, e.g.
                              `meta mark and 0x3 == 0x1`; nft lowers this to a
@@ -130,18 +142,33 @@ type schain = { sc_name : string; sc_items : chain_item list }
 type table_item =
   | TChain of schain
   | TSet   of setdecl
-  | TObj   of string               (* a named stateful object (ct helper / secmark /
-                                       counter / limit / quota ...) — parsed and
-                                       skipped: it declares state, not verdict logic *)
+  | TObj   of string * sobjkind    (* a named stateful object (ct helper / secmark /
+                                       counter / limit / quota ...): its contents are
+                                       parsed structurally; the injection retains the
+                                       name+kind for reference checking *)
 
 type stable = { st_family : string; st_name : string; st_items : table_item list }
 
-(* A whole file: defines (collected), and the tables.  `flush`/`destroy` lines are
-   parsed and dropped. *)
+(* Configuration-management operations (delete / destroy / flush).  These are
+   applied, in file order, by the UNVERIFIED driver (Nft_config) to the parsed
+   config BEFORE it is handed to the verified injection/lowering — nft evaluates
+   them as imperative ruleset edits, not as installed rules.  `delete` errors on
+   a missing entity; `destroy` is delete-if-exists; `flush` empties. *)
+type config_target =
+  | CTtable   of string                  (* table NAME (family folded for our model) *)
+  | CTchain   of string * string         (* table, chain *)
+  | CTruleset                            (* the whole ruleset *)
+
+type config_op =
+  | OpDelete  of config_target
+  | OpDestroy of config_target
+  | OpFlush   of config_target
+
+(* A whole file: defines (collected), the tables, and config ops. *)
 type toplevel =
   | TopDefine  of string * value
   | TopTable   of stable
   | TopInclude of string           (* `include "path"` — expanded by the driver *)
-  | TopNop                         (* flush ruleset / destroy table ... *)
+  | TopOp      of config_op        (* delete/destroy/flush — driver-applied *)
 
 type sfile = toplevel list

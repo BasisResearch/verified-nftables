@@ -2534,7 +2534,10 @@ let check_natint_guard () =
    end-to-end by the 2532-rule corpus. *)
 
 let parse_surface (path : string) : Nft_ast.sfile =
-  Nft_parse.expand (Filename.dirname path)
+  (* include-expand AND apply config-management ops (delete/destroy/flush) — the
+     same untrusted preprocessing the real driver runs, so a TopOp never reaches
+     the injection (which refuses one). *)
+  Nft_parse.preprocess (Filename.dirname path)
     (Nft_parse.parse_raw (Nft_parse.read_file path))
 
 let check_typed_layer () =
@@ -2811,9 +2814,128 @@ let source_sweep_gate minpass files =
   end else
     Printf.printf "SOURCE-SWEEP OK: pass=%d >= floor %d\n" p minpass
 
+(* ---------- OBJECTS OK/FAIL SWEEP (T3) ----------
+   Run the corpus `.t` RULE lines (the `;ok` / `;fail` reference forms) through
+   the full frontend — parse + config-op apply + typecheck + verified lowering —
+   and check the outcome against the corpus verdict.  Acceptance is BIDIRECTIONAL:
+   every `;ok` rule must be ACCEPTED (all three stages succeed); every `;fail`
+   rule must be REJECTED (parse error, or typecheck false, or a lowering lerr).
+
+   Object DECLARATION lines (`%name type ...`) populate the table's object
+   environment (the `;ok` ones only); their own `;ok`/`;fail` verdicts test deep
+   object-body validity (helper protocol modules, ct-timeout policy state names,
+   l3proto compatibility) which is kernel-module behaviour OUTSIDE this model, so
+   the sweep scopes to RULE lines and LEDGERS the declaration-validity residual
+   (DEVELOPMENT.md).  This is the tracked-count ratchet's oracle. *)
+module OSweep = struct
+  let starts_with s p =
+    String.length s >= String.length p && String.sub s 0 (String.length p) = p
+
+  (* split a `.t` line at its FINAL ';' into (payload, verdict) *)
+  let split_verdict (l : string) : (string * string) option =
+    match String.rindex_opt l ';' with
+    | None -> None
+    | Some i -> Some (String.sub l 0 i,
+                      String.trim (String.sub l (i+1) (String.length l - i - 1)))
+
+  (* `%NAME type SPEC` -> a real nft object declaration `KIND NAME { body }` *)
+  let translate_decl (line : string) : string option =
+    (* line begins with '%'; drop it, split NAME and the "type ..." remainder *)
+    let body = String.trim (String.sub line 1 (String.length line - 1)) in
+    match String.index_opt body ' ' with
+    | None -> None
+    | Some i ->
+        let name = String.sub body 0 i in
+        let rest = String.trim (String.sub body (i+1) (String.length body - i - 1)) in
+        if not (starts_with rest "type ") then None else
+        let spec = String.trim (String.sub rest 5 (String.length rest - 5)) in
+        if starts_with spec "ct " then
+          (* ct helper/timeout/expectation { body } *)
+          let r = String.trim (String.sub spec 3 (String.length spec - 3)) in
+          (match String.index_opt r '{' with
+           | Some bi ->
+               let kw = String.trim (String.sub r 0 bi) in
+               let bd = String.sub r bi (String.length r - bi) in
+               Some (Printf.sprintf "ct %s %s %s" kw name bd)
+           | None -> Some (Printf.sprintf "ct %s %s { }" r name))
+        else
+          let ki = match String.index_opt spec ' ' with Some k -> k | None -> String.length spec in
+          let kind = String.sub spec 0 ki in
+          let rst = String.trim (String.sub spec ki (String.length spec - ki)) in
+          if rst = "" then Some (Printf.sprintf "%s %s { }" kind name)
+          else if rst.[0] = '{' then Some (Printf.sprintf "%s %s %s" kind name rst)
+          else Some (Printf.sprintf "%s %s { %s }" kind name rst)
+
+  (* accepted iff parse + typecheck + verified lowering all succeed *)
+  let accepted (text : string) : bool =
+    match (try Some (Nft_parse.parse_raw text) with _ -> None) with
+    | None -> false
+    | Some raw ->
+        (try
+           let surface = Nft_inject.file raw in
+           Typecheck.typecheck_ruleset surface
+           && (try ignore (Nft_inject.lower raw); true with _ -> false)
+         with _ -> false)
+
+  (* sweep one .t file; returns (rule lines matching their verdict, total rules) *)
+  let sweep_file (path : string) : int * int =
+    let ic = open_in path in
+    let n = in_channel_length ic in
+    let raw = really_input_string ic n in close_in ic;
+    let lines = String.split_on_char '\n' raw in
+    let table = ref "t" and chain = ref "c" and hook = ref "type filter hook input priority 0" in
+    let decls = ref [] and rules = ref [] in
+    L.iter (fun l0 ->
+      let l = String.trim l0 in
+      if l = "" || starts_with l "#" then ()
+      else if starts_with l "*" then
+        (match String.split_on_char ';' (String.sub l 1 (String.length l - 1)) with
+         | _fam :: tbl :: chns :: _ -> table := tbl;
+             (match String.split_on_char ',' chns with c :: _ -> chain := c | [] -> ())
+         | _ -> ())
+      else if starts_with l ":" then
+        (match String.split_on_char ';' (String.sub l 1 (String.length l - 1)) with
+         | _cn :: hk :: _ -> hook := String.trim hk | _ -> ())
+      else match split_verdict l with
+        | None -> ()
+        | Some (payload, verdict) ->
+            let payload = String.trim payload in
+            if starts_with payload "%" then
+              (if verdict = "ok" then
+                 match translate_decl payload with Some d -> decls := d :: !decls | None -> ())
+            else rules := (payload, verdict) :: !rules)
+      lines;
+    let decl_text = String.concat "\n  " (L.rev !decls) in
+    let build rule =
+      Printf.sprintf "table ip %s {\n  %s\n  chain %s {\n    %s\n    %s\n  }\n}\n"
+        !table decl_text !chain !hook rule in
+    let rules = L.rev !rules in
+    let pass = L.fold_left (fun acc (rule, verdict) ->
+        let got = accepted (build rule) in
+        let want = (verdict = "ok") in
+        if got = want then acc + 1
+        else (Printf.printf "  MISS [%s want=%s got=%s]: %s\n"
+                (Filename.basename path) verdict (if got then "ok" else "fail") rule; acc))
+      0 rules in
+    (pass, L.length rules)
+
+  let sweep (files : string list) : int * int =
+    L.fold_left (fun (p, t) f -> let (p', t') = sweep_file f in (p + p', t + t')) (0, 0) files
+end
+
+let objects_sweep_gate (floor : int) (files : string list) : unit =
+  let (pass, total) = OSweep.sweep files in
+  Printf.printf "OBJECTS-SWEEP %d/%d rule lines (floor %d)\n" pass total floor;
+  if pass < floor then begin
+    Printf.printf "OBJECTS-SWEEP FAIL: %d < floor %d (a reference form regressed)\n" pass floor;
+    exit 1
+  end
+
 let () =
   match Stdlib.Array.to_list Sys.argv with
   | _ :: "byteorder-gate" :: files -> byteorder_gate files
+  | _ :: "objects-sweep" :: floor :: files ->
+      objects_sweep_gate (int_of_string floor) files
   | _ :: "source-sweep" :: files -> ignore (source_sweep files)
   | _ :: "source-sweep-gate" :: min :: files ->
       source_sweep_gate (int_of_string min) files

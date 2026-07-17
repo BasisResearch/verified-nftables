@@ -38,6 +38,13 @@
      wrapped into wrong bytecode; now it is a loud Unsupported, like every
      other out-of-model construct.  (Re-checked in Nft_inject.limit_spec for
      limit specs built by any other path.) *)
+  (* the `ct <sub> { ... }` object kind: helper / timeout / expectation.  An
+     unrecognised sub-word is a LOUD refusal (never a silent skip). *)
+  let ct_obj_kind = function
+    | "helper" -> OKcthelper | "timeout" -> OKcttimeout
+    | "expectation" -> OKctexpect
+    | w -> raise (Nft_inject.Inject_error ("unknown ct object kind: ct " ^ w))
+
   let max_limit_value = 1 lsl 40
   let limit_value what n u =
     let s = byte_scale u in
@@ -53,6 +60,8 @@
 /* structural keywords */
 %token FLUSH RULESET DESTROY DELETE TABLE CHAIN SET MAP DEFINE INCLUDE ELEMENTS FLAGS
 %token TYPE HOOK PRIORITY POLICY COMMENT VMAP
+/* named-object leads */
+%token QUOTA SECMARK SYNPROXY FLOWTABLE
 /* verdicts */
 %token ACCEPT DROP CONTINUE RETURN JUMP GOTO QUEUE REJECT
 /* statements */
@@ -96,11 +105,23 @@ toplevels:
   | toplevels seps toplevel  { $1 @ [$3] }
 
 toplevel:
-  | FLUSH RULESET                 { TopNop }
-  | DESTROY TABLE family IDENT    { TopNop }
-  | DESTROY TABLE IDENT           { TopNop }   (* `destroy table NAME` (no family) *)
-  | DELETE TABLE family IDENT     { TopNop }
-  | DELETE TABLE IDENT            { TopNop }
+  (* configuration-management ops: parsed into structured [TopOp]s that the
+     UNVERIFIED driver (Nft_config) applies, in file order, to the parsed config
+     before the verified injection.  The family qualifier is folded away (our
+     model keys tables by name); the entity name(s) are retained. *)
+  | FLUSH RULESET                 { TopOp (OpFlush CTruleset) }
+  | FLUSH TABLE family IDENT      { TopOp (OpFlush (CTtable $4)) }
+  | FLUSH TABLE IDENT             { TopOp (OpFlush (CTtable $3)) }
+  | FLUSH CHAIN family IDENT IDENT { TopOp (OpFlush (CTchain ($4, $5))) }
+  | FLUSH CHAIN IDENT IDENT       { TopOp (OpFlush (CTchain ($3, $4))) }
+  | DESTROY TABLE family IDENT    { TopOp (OpDestroy (CTtable $4)) }
+  | DESTROY TABLE IDENT           { TopOp (OpDestroy (CTtable $3)) }
+  | DESTROY CHAIN family IDENT IDENT { TopOp (OpDestroy (CTchain ($4, $5))) }
+  | DESTROY CHAIN IDENT IDENT     { TopOp (OpDestroy (CTchain ($3, $4))) }
+  | DELETE TABLE family IDENT     { TopOp (OpDelete (CTtable $4)) }
+  | DELETE TABLE IDENT            { TopOp (OpDelete (CTtable $3)) }
+  | DELETE CHAIN family IDENT IDENT { TopOp (OpDelete (CTchain ($4, $5))) }
+  | DELETE CHAIN IDENT IDENT      { TopOp (OpDelete (CTchain ($3, $4))) }
   | INCLUDE STRING                { TopInclude $2 }
   | DEFINE IDENT EQUALS value     { TopDefine ($2, $4) }
   | DEFINE IDENT EQUALS LBRACE nls valueseq nls RBRACE
@@ -123,34 +144,51 @@ table_item:
   | setdecl { TSet $1 }
   | objdecl { $1 }
 
-(* Named stateful objects (ct helper/timeout/expectation, secmark, counter,
-   limit, quota, synproxy ...).  They declare state referenced elsewhere but carry
-   no verdict logic, so we parse their block (whatever it contains) and skip it.
-   The body is an arbitrary token soup up to the matching brace. *)
+(* Named stateful object DECLARATIONS, one real production per kind (`counter
+   NAME { ... }`, `ct helper NAME { ... }`, `flowtable NAME { ... }`, ...).  The
+   token-soup catch-all is GONE: the declaration retains the object's name+kind (which
+   a rule reference is checked against), the body is a STRUCTURED grammar (a run
+   of typed [obj_seg]s, incl. the real `policy = { ... }` sub-block — not an
+   arbitrary token soup), and any two-word table item whose lead is NOT a known
+   object kind has no production and is a genuine parse error.  A `flowtable` is
+   parsed structurally then LOUDLY refused (offload is out of model). *)
 objdecl:
-  | CT IDENT IDENT LBRACE junk RBRACE { TObj $3 }   (* ct helper NAME { ... } *)
-  | IDENT IDENT LBRACE junk RBRACE    { TObj $2 }   (* secmark/quota/... NAME { ... } *)
-  | COUNTER IDENT LBRACE junk RBRACE  { TObj $2 }
-  | LIMIT IDENT LBRACE junk RBRACE    { TObj $2 }
+  | COUNTER IDENT LBRACE obj_body RBRACE   { TObj ($2, OKcounter) }
+  | QUOTA IDENT LBRACE obj_body RBRACE     { TObj ($2, OKquota) }
+  | LIMIT IDENT LBRACE obj_body RBRACE     { TObj ($2, OKlimit) }
+  | SECMARK IDENT LBRACE obj_body RBRACE   { TObj ($2, OKsecmark) }
+  | SYNPROXY IDENT LBRACE obj_body RBRACE  { TObj ($2, OKsynproxy) }
+  | CT IDENT IDENT LBRACE obj_body RBRACE  { TObj ($3, ct_obj_kind $2) }
+  | FLOWTABLE IDENT LBRACE obj_body RBRACE
+      { raise (Nft_inject.Inject_error
+                 ("flowtable " ^ $2 ^ ": offload flowtables are not modelled")) }
 
-junk:
+(* A structured object body: a run of typed segments separated by the usual
+   newline/semicolon separators.  The only nested brace is the real ct-timeout
+   `policy = { state : N, ... }` block; there is no arbitrary-token / arbitrary-
+   brace catch-all.  Bodies are retained for structure only (the model keeps the
+   object's kind); their deep validation is unverified preprocessing. *)
+obj_body:
   | /* empty */          { () }
-  | junk junktok         { () }
-  | junk LBRACE junk RBRACE { () }   (* nested braces *)
+  | obj_body SEMI        { () }
+  | obj_body NEWLINE     { () }
+  | obj_body obj_seg     { () }
 
-junktok:
-  | INT {} | IPV4 {} | IPV6 {} | MAC {} | IDENT {} | STRING {} | VAR {} | AT {}
-  | COLON {} | COMMA {} | DOT {} | SLASH {} | EQUALS {} | NE {} | EQ {} | BANG {}
-  | DASH {} | SEMI {} | NEWLINE {}
-  | AMP {} | PIPE {} | CARET {} | AND {} | OR {} | XOR {} | ORIGINAL {} | REPLY {}
-  | TYPE {} | HOOK {} | PRIORITY {} | POLICY {} | COMMENT {} | VMAP {} | FLAGS {}
-  | ELEMENTS {} | SET {} | MAP {} | TABLE {} | CHAIN {} | DEFINE {} | INCLUDE {}
-  | ACCEPT {} | DROP {} | CONTINUE {} | RETURN {} | JUMP {} | GOTO {} | QUEUE {}
-  | REJECT {} | COUNTER {} | LOG {} | PREFIX {} | LIMIT {} | RATE {} | OVER {} | WITH {}
-  | TO {} | MASQUERADE {} | SNAT {} | DNAT {} | REDIRECT {} | TPROXY {} | NOTRACK {} | META {} | CT {} | IP {} | IP6 {}
-  | TCP {} | UDP {} | TH {} | ICMP {} | ICMPV6 {} | ETHER {} | FIB {} | IIF {}
-  | OIF {} | IIFNAME {} | OIFNAME {} | PKTTYPE {} | MARK {} | FLUSH {} | RULESET {}
-  | DESTROY {} | DELETE {} | OPTION {} | EXISTS {} | MISSING {}
+obj_seg:
+  | obj_atom { () }
+  (* the one brace sub-block object bodies use: an assignment to a group, e.g.
+     ct-timeout `policy = { established : 122, ... }` or a flowtable
+     `devices = { eth0, eth1 }`.  NOT an arbitrary anywhere-brace. *)
+  | obj_kw EQUALS LBRACE nls obj_body nls RBRACE { () }
+
+obj_kw:
+  | IDENT {} | POLICY {}
+
+obj_atom:
+  | IDENT {} | INT {} | STRING {} | TYPE {} | COMMENT {} | OVER {} | RATE {}
+  | MARK {} | HOOK {} | PRIORITY {} | FLAGS {}
+  | TCP {} | UDP {} | ICMP {} | ICMPV6 {} | IP {} | IP6 {}
+  | SLASH {} | DASH {} | COMMA {} | COLON {}
 
 (* ---- named set / map declarations ---- *)
 setdecl:
@@ -236,6 +274,14 @@ clause:
   | keyatom binop value rhs      { CBitmatch ($1, $2, $3, $4) }
   | concat_keys VMAP vmapset     { CVmap ($1, $3) }
   | concat_keys VMAP AT          { CVmapRef ($1, $3) }   (* vmap @named_map *)
+  (* objref verdict-maps: `<objkw> name <key> map { v : "obj" }` — the looked-up
+     datum is a NAMED object of the given kind.  (`ct helper set` uses `set`, not
+     `name`, as its objref keyword — src/parser_bison.y objref_stmt.) *)
+  | COUNTER IDENT concat_keys MAP objrefmapset  { CObjrefMap (OKcounter, $3, $5) }
+  | QUOTA IDENT concat_keys MAP objrefmapset    { CObjrefMap (OKquota, $3, $5) }
+  | LIMIT IDENT concat_keys MAP objrefmapset    { CObjrefMap (OKlimit, $3, $5) }
+  | SYNPROXY IDENT concat_keys MAP objrefmapset { CObjrefMap (OKsynproxy, $3, $5) }
+  | CT IDENT SET concat_keys MAP objrefmapset   { CObjrefMap (ct_obj_kind $2, $4, $6) }
   | verdict                      { CVerdict $1 }
   | stmt                         { CStmt $1 }
 
@@ -395,6 +441,15 @@ value:
   | SNAT     { Vsym "snat" }
   | DNAT     { Vsym "dnat" }
 
+(* ---- objref-map body (`{ key : "objname", ... }`) ---- *)
+objrefmapset:
+  | LBRACE nls objref_entries nls RBRACE { $3 }
+objref_entries:
+  | objref_entry                              { [$1] }
+  | objref_entries nls COMMA nls objref_entry { $1 @ [$5] }
+objref_entry:
+  | elem COLON STRING { ($1, $3) }
+
 (* ---- verdict-map (`vmap { k : verdict, ... }`) ---- *)
 vmapset:
   | LBRACE nls vmapseq nls RBRACE { $3 }
@@ -449,8 +504,16 @@ reject_opt:
 (* ---- statements ---- *)
 stmt:
   | COMMENT STRING            { StComment $2 }
-  | COUNTER                   { StCounter }
-  | COUNTER IDENT INT IDENT INT { StCounter }  (* `counter packets N bytes N` *)
+  | COUNTER                   { StCounter (0, 0) }
+  | COUNTER IDENT INT IDENT INT { StCounter ($3, $5) }  (* `counter packets N bytes N` *)
+  (* named-object references (`counter name "X"`, ...): the initial `name`
+     bareword is the objref keyword; the target is the object name string.  `ct
+     helper set "X"` uses `set` and is dispatched from the `CT IDENT SET value`
+     rule below. *)
+  | COUNTER IDENT STRING      { StObjref (OKcounter, $3) }
+  | QUOTA IDENT STRING        { StObjref (OKquota, $3) }
+  | LIMIT IDENT STRING        { StObjref (OKlimit, $3) }
+  | SYNPROXY IDENT STRING     { StObjref (OKsynproxy, $3) }
   | NOTRACK                   { StNotrack }
   | LOG log_opts              { StLog $2 }
   | LIMIT RATE limit_over limit_rate limit_burst
@@ -469,7 +532,14 @@ stmt:
   | MARK SET value            { StMetaSet ("mark", $3) }
   | META IDENT SET value      { StMetaSet ($2, $4) }
   | META MARK SET value       { StMetaSet ("mark", $4) }  (* `mark` lexes as MARK, not IDENT *)
-  | CT IDENT SET value        { StCtSet ($2, $4) }
+  | CT IDENT SET value
+      { (* `ct {helper,timeout,expectation} set "X"` is an objref of the
+           corresponding ct object type; every other `ct <k> set v` is a
+           conntrack-field write. *)
+        match $2, $4 with
+        | ("helper" | "timeout" | "expectation"), (Vstr s | Vsym s) ->
+            StObjref (ct_obj_kind $2, s)
+        | _ -> StCtSet ($2, $4) }
   | CT MARK SET value         { StCtSet ("mark", $4) }  (* `mark` lexes as MARK, not IDENT *)
 
 (* optional `ip`/`ip6` family qualifier on a tproxy target *)

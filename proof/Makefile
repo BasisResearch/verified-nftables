@@ -11,7 +11,7 @@
 ROCQBIN ?=
 COQMAKE  = CoqMakefile
 
-.PHONY: all proofs glue lib example semtest difftest corpus byteorder-gate source-sweep-gate validate parse-test gen gen-check gates boundary clean cli e2e nl-send parser-corpus axioms
+.PHONY: all proofs glue lib example semtest difftest corpus byteorder-gate source-sweep-gate objects-sweep-gate validate parse-test gen gen-check gates boundary clean cli e2e nl-send parser-corpus axioms
 
 all: proofs glue
 
@@ -118,6 +118,14 @@ byteorder-gate: proofs
 # source-divergences, adjudicated (T2A)".
 source-sweep-gate: proofs
 	./source-sweep-gate.sh
+
+# OBJECTS OK/FAIL SWEEP tracked-count ratchet (T3): run every RULE line of the
+# corpus `objects.t` (the named-object reference forms — `counter name`, `quota
+# name`, `ct helper set`, objref verdict-maps, ...) through parse + config-op
+# apply + typecheck + verified lowering, BIDIRECTIONALLY (`;ok` accepted,
+# `;fail` rejected), and require the match count to stay at/above the floor.
+objects-sweep-gate: proofs
+	./objects-sweep-gate.sh
 
 # Honest coverage of the UNTRUSTED .nft frontend: run `nftc compile` over a
 # large, diverse, REAL rule corpus (nftables tests/py + shipped examples + mined
@@ -234,7 +242,7 @@ axioms:
 # all lowering is the verified Coq Lower.lower_ruleset.  See DEVELOPMENT.md
 # § "The M-C boundary is now permanent" and THEOREMS.md.
 FRONTEND_ML = extracted/nft_ast.ml extracted/nft_inject.ml extracted/nft_parse.ml \
-  extracted/nft_emit.ml extracted/nft2coq.ml
+  extracted/nft_emit.ml extracted/nft2coq.ml extracted/nft_config.ml
 boundary:
 	@# (1) no value->byte / kind / byteorder identifiers in the OCaml frontend
 	@if grep -nwE 'bytes_of_int|bytes_of_int_le|enc_atom|enc_atom_be|typed_atom|width_of_kind|host_endian_kind|prefix_mask|interval_of_value|interval_of_value_be|bytes_of_typeatom|pad_to_slot|reg_slot|mask_shift|ifname_bytes|bitfield_sel' $(FRONTEND_ML); then \
@@ -270,11 +278,12 @@ gates:
 	$(MAKE) corpus
 	$(MAKE) byteorder-gate
 	$(MAKE) source-sweep-gate
+	$(MAKE) objects-sweep-gate
 	$(MAKE) validate
 	$(MAKE) parse-test
 	$(MAKE) gen-check
 	$(MAKE) boundary
-	@echo "ALL GATES GREEN: proofs axioms corpus byteorder-gate source-sweep-gate validate parse-test gen-check boundary"
+	@echo "ALL GATES GREEN: proofs axioms corpus byteorder-gate source-sweep-gate objects-sweep-gate validate parse-test gen-check boundary"
 
 clean:
 	-[ -f $(COQMAKE) ] && $(MAKE) -f $(COQMAKE) clean || true

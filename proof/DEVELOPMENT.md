@@ -743,6 +743,69 @@ kernel register. Draft upstream report with both citations:
 `reports/upstream-ct-id.md`. (Source-adjudicated; no packet demo — the id is a
 random siphash.)
 
+## T3 — full frontend coverage: named objects, config ops, parser sweep
+
+Three additions closing the parser's silent-drop gaps. The verified core already
+carried the object IR (`SObjref`, `SObjrefMap`, `MQuota`, `SCounter`); T3 wires
+the surface layer to it and gates the reference forms.
+
+**Named stateful objects (end-to-end).** A table declares objects
+(`counter`/`quota`/`limit`/`ct helper`/`ct timeout`/`ct expectation`/`secmark`/
+`synproxy`); a rule references one by name. The surface AST carries the object's
+`sobjkind` (`Surface/Ast.v`); the typechecker checks a reference for
+declared-existence + kind agreement (`objkind_declared`, `tc_objrefmap` in
+`Surface/Typecheck.v` — an undeclared or wrong-kind reference is rejected, pinned
+by `objref_{declared_accepts,undeclared_rejects,wrong_kind_rejects,...}` and the
+`tests/illtyped/objref_*.nft` suite); the lowering emits `SObjref (objkind_otype
+k) name` / `SObjrefMap` (`Surface/Lower.v`). `counter packets N bytes N` now
+keeps its initial values (`StCounter pkts bytes` → `SCounter pkts bytes`), no
+longer discarded. Object type numbers are the kernel's `NFT_OBJECT_*`
+(`include/linux/netfilter/nf_tables.h`), verified against live nft's payload
+(`ip/objects.t.payload`: `counter name "cnt2"` → `[ objref type 1 name cnt2 ]`,
+`ct helper set "cthelp1"` → `type 3`, `ct timeout set` → `type 7`, `ct
+expectation set` → `type 9`, ...).
+
+*Model boundaries (ledgered, not refusals — the reference forms all lower):*
+- A **named quota's over-limit drop** is not modelled: `quota name X` lowers to a
+  verdict-neutral `SObjref` (the object accounts; the verdict effect of a
+  depleted named quota is not threaded). Anonymous inline `quota N bytes` keeps
+  its `MQuota` drop semantics. Follow-up: thread named-quota state through `env`
+  like `e_quota` and give `SObjref` of a quota a `MQuota`-style verdict.
+- An **objref verdict-map's element→object bindings** (`counter name <key> map {
+  443 : "cnt1" }`) are a verdict-neutral side effect not read by the semantics,
+  so they are not interned into the verdict `env`; `SObjrefMap` references a
+  fresh anonymous map name and compiles to `[ objref sreg 1 set __mapN ]`. The
+  netlink `send` path does not yet emit the map's element set. Follow-up: record
+  the bindings for `send` emission.
+- **Object-body deep validation** (helper protocol modules, ct-timeout policy
+  state names, l3proto compatibility) is kernel-module behaviour outside this
+  model. Object bodies are parsed *structurally* (a typed `obj_body` grammar,
+  not the deleted `junk` catch-all) but only the object's kind is retained. The
+  `objects-sweep-gate` therefore scopes to RULE lines; the `%name type ...`
+  DECLARATION `;ok`/`;fail` verdicts (which test that body validity) are the
+  ledgered residual.
+
+**Config-management ops (unverified preprocessing).** `delete`/`destroy`/`flush`
+of a table/chain/ruleset parse to structured `TopOp`s that the UNVERIFIED driver
+(`extracted/nft_config.ml`) applies, in file order, to the parsed config before
+the verified injection sees a `TopOp`-free config — exactly like `include`
+expansion. Semantics mirror nft: `delete` errors on a missing entity, `destroy`
+is delete-if-exists, `flush` empties. Zero `TopNop` productions remain
+(`parser.mly`); the `.nft` `flush ruleset`/`destroy table` lines that were
+silently dropped now visibly edit the compiled output (a CLI test writes
+delete/destroy/flush and observes the entity gone/emptied, and a `delete` of a
+nonexistent table errors like nft). *Follow-up (verified modelling):* model a
+stateful ruleset as a sequence of NEW/DEL/FLUSH batch messages inside Coq and
+prove the frontend's fold agrees.
+
+**Parser junk catch-all deleted.** `objdecl`'s `IDENT IDENT LBRACE junk RBRACE`
+(which swallowed ANY unknown two-word table item — a flowtable vanished) is gone:
+object declarations have real per-kind productions, an unknown table item
+(`frobtable x { }`) is a genuine parse error, and a `flowtable` is parsed
+structurally then LOUDLY refused (offload is out of model). The `objects-sweep-
+gate` ratchet runs every `objects.t` rule line through parse+typecheck+lowering
+BIDIRECTIONALLY (`;ok` accepted, `;fail` rejected) — 14/14 within scope.
+
 ## Trust story (TCB)
 
 Trusted: the Rocq kernel; the `.v` *specifications* (`Semantics.v` defines what
