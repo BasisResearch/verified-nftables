@@ -601,16 +601,70 @@ territory `byteorder-gate` deliberately excludes:
     dependency-guard synthesis in the vlan/ether/icmpv6 family contexts the
     corpus varies, `reject` default type/code rendering, `log` option
     defaults, `exthdr != exists` compare polarity.
-A full source-driven gate wired in **today would therefore be red** (83
-mismatches), and most of the red is *unadjudicated display-vs-wire divergence*,
-not established compiler error — so gating on it would freeze open questions as
-failures. That is why the shipped `make byteorder-gate` scopes itself to
-host-endian **plain cmp/range** blocks (13 blocks, byte-identical required):
-the one class where the wire truth *was* adjudicated (netns packet counters,
-`../NOTES.md`). The adjudication TODO — classify the 83, then widen the gate
-class-by-class as each display-vs-wire question is settled against a live
-kernel — is recorded in `../NOTES.md` § "Register byte-order sweep". Until the
-gate covers a class, a source-side mismatch in it is *not* machine-caught.
+### The 83 source-divergences, adjudicated (T2A)
+
+The 83 compile-from-source text mismatches were adjudicated against two
+independent oracles (live `nft` 1.1.6 + the corpus) and kernel source, with
+netns packet counters where a wire question needed a behaviour test:
+`reports/discrepancy-adjudication.md` (82 rows after two harness-artefact
+corrections) and `reports/corpus-divergence-bugs.md`. The verdict: **31 real
+wire-level bugs**, **1 upstream nftables bug** (class O below), **50 benign**
+(wire-identical or provably same-packets). Every bug was a decision in the
+**frontend's** source→DSL encoding — the Rocq DSL≡bytecode theorems were never
+contradicted — and the typed-layer migration ported those decisions verbatim
+into the verified Coq lowering, so the fixes are now IN the verified lowering:
+
+- **B (host-endian ordered ranges, 10 blocks) — FIXED.** `Surface.Typed.range_hton`
+  is now `dt_byteorder = BoHost`, so EVERY host-endian ordered range
+  (meta length/skuid/skgid/cpu/cgroup/iifgroup/oifgroup, ct id/zone, mark/iif/
+  oif/fib-type) takes nft's mandatory `byteorder hton` + big-endian-bounds path
+  (`range_erasure_host`, unchanged, now covers them).
+- **C (`ct expiration` unit+byteorder, 3 blocks) — FIXED.** A new `DTtime`
+  datatype scales the SECONDS literal to the kernel's MILLISECONDS register
+  (`resolve_num DTtime n = VHostInt 4 (n*1000)`) and rides the class-B hton path.
+- **D (`exthdr`/`tcpopt` `!= exists|missing` polarity, 2 blocks + 1 corpus-invisible
+  twin) — FIXED.** `Lower.lower_presence` threads the surface `!=` (regression
+  pins `lower_exthdr_neq_exists`, `lower_tcpopt_neq_exists`).
+- **E (`reject with tcp reset` missing `meta l4proto 6`, 3 blocks) — FIXED.**
+  `reject_dep` adds `DepL4 6` for `tcp reset` (packet-proven: the RST no longer
+  fires on non-TCP).
+- **F (`ether type`/vlan missing the `meta iiftype == ether` guard, 4 blocks) —
+  FIXED.** `Selector` attaches `dep_ether` to `ether type` and the vlan
+  bitfields (a no-op in bridge, real in inet/netdev).
+- **N (`ct label set K` = bit K, 1 block) — FIXED.** `Lower.ct_label_imm` emits
+  `2^K` as a 16-byte big-endian bitmap; `N_to_data` is `N` arithmetic so `2^127`
+  does not wrap (the OCaml `lsl`-on-63-bit shift-wrap half of the bug died with
+  `nft_lower.ml`; pinned by `lower_ct_label_set_127`).
+- **G (L2 in-frame ethertype guard shape, 8 blocks) — DEFERRED.** In bridge/netdev
+  nft guards a network selector with `payload load 2b @ link header + 12` (or
+  `+16` past a vlan tag), not `meta protocol`. This changes the L2-family
+  network-guard SHAPE, which is consumed by the axiom-gated
+  `Optiplex_Antispoof`/`Optiplex_Mark` headline theorems (Optiplex has a
+  `table bridge vmfilter` whose `ip daddr` anti-spoofing rules use exactly this
+  guard) and by the `Optiplex_Gen` bytecode. A faithful fix must (a) model nft's
+  stateful vlan-offset protocol context (+12 vs +16), (b) regenerate
+  `Optiplex_Gen.v`, and (c) update those headline proofs in lock-step — a
+  dedicated milestone under the green-gates ratchet, not a rushed edit inside a
+  wide-scope commit.
+
+Machine-caught now: **`make byteorder-gate`** covers the ORDERED-RANGE class
+(its trigger fires on the hton `byteorder` transform, not just the narrow
+mark/ct-mark loads), and the new **`make source-sweep-gate`** is a TRACKED-COUNT
+RATCHET — the compile-from-source byte-identical count is pinned as a floor in
+the Makefile, so a frontend regression that drops a block below the floor turns
+the build red while the endian-unportable / benign display classes stay visible
+without freezing the gate.
+
+### Class O — `ct id` byte order: WE are kernel-faithful, nft is not
+
+The one upstream bug. `nft` declares `NFT_CT_ID` `BYTEORDER_BIG_ENDIAN`
+(`src/ct.c:317`) and emits a big-endian immediate, but the kernel writes the
+conntrack id as a native `u32` (`nft_ct.c:174`, `*dest = nf_ct_get_id(ct)`, no
+byte-swap), so on little-endian hosts `nft`'s `ct id <n>` can essentially never
+match. We type `ct id` host-endian (`Selector`: `DThostint 4`), matching the
+kernel register. Draft upstream report with both citations:
+`reports/upstream-ct-id.md`. (Source-adjudicated; no packet demo — the id is a
+random siphash.)
 
 ## Trust story (TCB)
 

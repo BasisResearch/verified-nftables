@@ -26,9 +26,9 @@
         (a host-endian value where the datatype stores big-endian), or a
         CIDR prefix over a host-endian value / with a non-eq/ne operator /
         wider than the value;
-      - a range over a register form with NO adjudicated numeric meaning
-        (the plain host-endian [DThostint] range class — see
-        [Typed.range_hton]'s rationale).
+      - an ordered (range) match whose loaded register cannot be decoded at
+        the datatype width (a host-endian register absent from the packet, or
+        of the wrong length).
     A field whose LOAD breaks ([field_loadable] = false) is [Some false] —
     the kernel's NFT_BREAK rule-skip — never stuck.  Stuckness is REACHABLE:
     concrete [Example]s below exhibit stuck terms next to [Some]-valued ones
@@ -209,10 +209,10 @@ Definition eval_txm (t : txmatch) (e : env) (p : packet) : option bool :=
         | None => None
         end
       else
-        (* the UNADJUDICATED class: a plain range over a [DThostint] register
-           (meta skuid/length/..., ct id/zone/...) byte-compares little-endian
-           bytes lexicographically — that has no numeric meaning, and this
-           semantics refuses to invent one (see Typed.range_hton).  STUCK. *)
+        (* DEAD branch: [range_hton dt] is [dt_byteorder dt = BoHost], so
+           [range_hton dt = false] forces [dt_byteorder dt = BoBig] and the
+           [BoBig] arm above already fired.  Kept for totality — every ordered
+           match over a host-endian register goes through the hton path. *)
         None
 
   | TXBitmask f dt op bits =>
@@ -393,18 +393,27 @@ Example tev_stuck_prefix_host :
   eval_txm (TXPrefix FCtMark CEq (VHostInt 4 5) 8) tev_env tev_pkt4 = None.
 Proof. vm_compute. reflexivity. Qed.
 
-(** STUCK (reachable), three distinct incoherences on the SAME packet:
-    - a range over a plain host-endian register class (meta skuid) — the
-      unadjudicated byte-lex-over-little-endian form has no numeric meaning;
+(** A host-endian ORDERED range is now MEANINGFUL (the mandatory hton path):
+    it reads the register host-order and compares NUMERICALLY.  The ct-mark
+    register holds host-endian 0x40, so `0x30-0x50` MATCHES and `2001-2005`
+    MISSES — a real [Some _], no longer the stuck [None] of the old
+    unadjudicated class. *)
+Example tev_hostint_range_hton_hit :
+  eval_txm (TXRange FCtMark (DThostint 4) false
+              (VHostInt 4 0x30) (VHostInt 4 0x50)) tev_env tev_pkt
+  = Some true.
+Proof. vm_compute. reflexivity. Qed.
+Example tev_hostint_range_hton_miss :
+  eval_txm (TXRange FCtMark (DThostint 4) false
+              (VHostInt 4 2001) (VHostInt 4 2005)) tev_env tev_pkt
+  = Some false.
+Proof. vm_compute. reflexivity. Qed.
+
+(** STUCK (reachable), two distinct incoherences on the SAME packet:
     - a width-incoherent comparison (a 2-byte port bound against the 4-byte
       ct mark register);
     - an undecodable stored value (the ct zone register bytes are absent —
       the flow table holds nothing for CKzone, so the 2-byte decode fails). *)
-Example tev_stuck_hostint_range :
-  eval_txm (TXRange FMetaSkuid (DThostint 4) false
-              (VHostInt 4 2001) (VHostInt 4 2005)) tev_env tev_pkt
-  = None.
-Proof. vm_compute. reflexivity. Qed.
 Example tev_stuck_width_mismatch :
   eval_txm (TXRange FCtMark DTmark false (VPort 22) (VPort 80)) tev_env tev_pkt
   = None.

@@ -2595,6 +2595,14 @@ let is_value_line l =
 let bc_is_he_load i = Codec.bc_load_host_endian_reg i <> None
 let bc_is_cmp_or_range = function
   | Bytecode.ICmp _ | Bytecode.IRange _ -> true | _ -> false
+(* An ordered (range) match over a host-endian register carries the mandatory
+   `byteorder hton` transform (Surface.Typed.range_hton over every BoHost
+   dtype: mark/ifindex/fib-type AND meta length/skuid/skgid/cpu/cgroup/
+   iifgroup/oifgroup, ct id/zone/expiration).  Its presence marks the block as
+   an ordered host-endian match even when the raw LOAD is not in
+   [bc_load_host_endian_reg]'s (equality-display) set — so this gate now COVERS
+   the ordered-range class, not just the mark/ct-mark equality loads. *)
+let bc_is_byteorder = function Bytecode.IByteorder _ -> true | _ -> false
 let bc_only_load_bo_cmp = function
   | Bytecode.IMetaLoad _ | Bytecode.ICtLoad _ | Bytecode.IFibLoad _
   | Bytecode.IByteorder _ | Bytecode.ICmp _ | Bytecode.IRange _ -> true
@@ -2621,7 +2629,7 @@ let byteorder_gate files =
                     L.concat_map (fun (_cn, c) -> Compile.compile_chain c) chains)
                     parsed.Nft_inject.p_tables in
                 (match progs with
-                 | [rp] when L.exists bc_is_he_load rp
+                 | [rp] when (L.exists bc_is_he_load rp || L.exists bc_is_byteorder rp)
                              && L.exists bc_is_cmp_or_range rp
                              && L.for_all bc_only_load_bo_cmp rp ->
                      incr checked;
@@ -2650,9 +2658,129 @@ let byteorder_gate files =
     Printf.printf "OK: %d/%d host-order blocks: compile-from-source == corpus .payload\n"
       !passed !checked
 
+(* ---------- SOURCE-SWEEP: a compile-from-source TRACKED-COUNT RATCHET ----------
+   The byteorder-gate above is a red/green byte-identity gate on the narrow
+   host-order class.  This sweep is BROADER: it compiles the `# <src>` header of
+   EVERY `.t.payload` block from source, renders it, and diffs the whole rendered
+   rule against the block's recorded instructions.  The corpus goldens are
+   endian-unportable for hton'd host-endian constants (upstream nft-test.py -H
+   fails those lines on x86-64) and several benign classes render differently, so
+   a naive text sweep can never be red/green.  Instead it is a RATCHET: the pass
+   count is pinned in the Makefile as a FLOOR, and a frontend regression that
+   drops a block below the floor turns the build red — while the open
+   display/optimization classes stay visible without freezing the gate.  The
+   class B/C range fixes ADD passing blocks (their `byteorder hton` + big-endian
+   bounds now match the corpus), lifting the floor. *)
+
+(* line-numbered block splitter (blocks separated by blank lines) *)
+let payload_blocks_ln path =
+  let lines = read_lines path in
+  let flush cur startln acc =
+    match cur with [] -> acc | _ -> (startln, L.rev cur) :: acc in
+  let rec go cur startln n acc = function
+    | [] -> L.rev (flush cur startln acc)
+    | "" :: rest -> go [] 0 (n + 1) (flush cur startln acc) rest
+    | l :: rest ->
+        let st = if cur = [] then n else startln in
+        go (l :: cur) st (n + 1) acc rest in
+  go [] 0 1 [] lines
+
+(* upstream records `<file>.t.payload.<family>` per FAMILY; the `<fam> <tbl>
+   <chn>` line inside a block is not authoritative (a stale ip4 line can head an
+   inet-family recording), so the family is the filename suffix when present. *)
+let family_of_payload_path path =
+  let base = Filename.basename path in
+  match Stdlib.String.split_on_char '.' base |> L.rev with
+  | fam :: "payload" :: _ when fam <> "payload" -> Some fam
+  | _ -> None
+
+(* recordings are made in BASE chains; nft's dependency synthesis is
+   context-sensitive, so the wrap must declare the hook. *)
+let hook_line_of_chain chn =
+  match chn with
+  | "input" | "output" | "forward" | "prerouting" | "postrouting" ->
+      Printf.sprintf "type filter hook %s priority 0;" chn
+  | "ingress" | "egress" ->
+      Printf.sprintf "type filter hook %s device lo priority 0;" chn
+  | _ -> "type filter hook input priority 0;"
+
+(* __set0 / __set12 -> __set%d (the corpus placeholder) *)
+let normalise_set_names (s : string) : string =
+  let b = Buffer.create (S.length s) in
+  let n = S.length s in
+  let is_digit c = c >= '0' && c <= '9' in
+  let rec go i =
+    if i >= n then ()
+    else if i + 5 <= n && S.sub s i 5 = "__set" && i + 5 < n && is_digit (S.get s (i+5))
+    then begin
+      Buffer.add_string b "__set%d";
+      let j = ref (i + 5) in
+      while !j < n && is_digit (S.get s !j) do incr j done;
+      go !j
+    end else (Buffer.add_char b (S.get s i); go (i + 1)) in
+  go 0; Buffer.contents b
+
+let source_sweep files =
+  let attempted = ref 0 and passed = ref 0 and parsefail = ref 0 and mism = ref 0 in
+  L.iter (fun path ->
+    L.iter (fun (ln, block) ->
+      match block with
+      | hdr :: fam_line :: instrs
+        when S.length hdr > 2 && S.get hdr 0 = '#' && starts_bracket
+               (match instrs with i :: _ -> i | [] -> "") ->
+          let src = S.trim (S.sub hdr 1 (S.length hdr - 1)) in
+          (match S.split_on_char ' ' (S.trim fam_line)
+                 |> L.filter (fun s -> s <> "") with
+           | [fam; tbl; chn] ->
+             incr attempted;
+             let fam = match family_of_payload_path path with
+               | Some f -> f | None -> fam in
+             let where = Printf.sprintf "%s:%d" path ln in
+             let wrapped =
+               Printf.sprintf "table %s %s {\n chain %s {\n  %s\n  %s\n }\n}\n"
+                 fam tbl chn (hook_line_of_chain chn) src in
+             (match (try Some (Nft_parse.parse_string wrapped) with _ -> None) with
+              | None -> incr parsefail
+              | Some parsed ->
+                (match
+                   (try
+                      Some (L.concat_map (fun (_f, _t, chains) ->
+                          L.concat_map (fun (_cn, c) -> Compile.compile_chain c) chains)
+                          parsed.Nft_inject.p_tables)
+                    with _ -> None)
+                 with
+                 | None | Some [] -> incr parsefail
+                 | Some rules ->
+                     let ours =
+                       L.concat_map Codec.render_rule_lines rules
+                       |> L.map (fun l -> normalise_set_names (S.trim l)) in
+                     let theirs = take_while starts_bracket instrs |> L.map S.trim in
+                     if ours = theirs then incr passed else incr mism))
+           | _ -> ())
+      | _ -> ()) (payload_blocks_ln path))
+    files;
+  Printf.printf
+    "SOURCE-SWEEP\tattempted=%d\tpass=%d\tparsefail=%d\tmismatch=%d\n"
+    !attempted !passed !parsefail !mism;
+  !passed
+
+(* ratchet: PASS if the byte-identical count is >= the pinned floor. *)
+let source_sweep_gate minpass files =
+  let p = source_sweep files in
+  if p < minpass then begin
+    Printf.printf
+      "SOURCE-SWEEP FAIL: pass=%d below pinned floor %d (a frontend regression dropped a block; investigate before lowering the floor)\n"
+      p minpass;
+    exit 1
+  end else
+    Printf.printf "SOURCE-SWEEP OK: pass=%d >= floor %d\n" p minpass
+
 let () =
   match Stdlib.Array.to_list Sys.argv with
   | _ :: "byteorder-gate" :: files -> byteorder_gate files
+  | _ :: "source-sweep" :: files -> ignore (source_sweep files)
+  | _ :: "source-sweep-gate" :: min :: files ->
+      source_sweep_gate (int_of_string min) files
   | _ :: path :: _ -> cli path
   | _ ->
   begin

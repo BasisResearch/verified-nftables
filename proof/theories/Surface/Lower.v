@@ -154,6 +154,17 @@ Inductive dep_action : Type :=
 Definition guard (layer : bool) (f : field) (w : nat) (n : N) : dep_action :=
   DAguard layer f (N_to_data w n) (TXEq f (VInteger w n)).
 
+(** A guard whose register is HOST-endian (little-endian immediate): `meta
+    iiftype` is BYTEORDER_HOST_ENDIAN (nft src/meta.c arphrd_type / the
+    NFT_META_IIFTYPE template), so `meta iiftype == ARPHRD_ETHER` must compare a
+    host-order immediate ([1;0] for value 1) — a big-endian [0;1] would read as
+    256 and the guard would wrongly BREAK on real ethernet (it only happened to
+    break correctly on non-ethernet devices because neither value equals the
+    device's iiftype).  [Nftval.encode (VHostInt w n)] is the little-endian
+    register encoding. *)
+Definition guard_host (layer : bool) (f : field) (w : nat) (n : N) : dep_action :=
+  DAguard layer f (Nftval.encode (VHostInt w n)) (TXEq f (VHostInt w n)).
+
 (** The L2 families pin an ip/ip6 network match by the LINK-layer ethertype
     (`meta protocol ==`) instead of the NFPROTO guard: IPv4 (2) -> 0x0800,
     IPv6 (10) -> 0x86dd (golden arp.t.payload.netdev / bridge payloads). *)
@@ -184,7 +195,7 @@ Definition dep_guard (fam : string) (d : depspec) : lres dep_action :=
       (* the `meta iiftype == ARPHRD_ETHER` link guard: a no-op only in
          bridge (an inherently-ethernet family) *)
       if String.eqb fam "bridge" then LOk DAnone
-      else LOk (guard false FMetaIiftype 2 (N.of_nat t))
+      else LOk (guard_host false FMetaIiftype 2 (N.of_nat t))
   | DepEther et =>
       (* In netdev nft would ALSO prepend an iiftype guard whose host-endian
          immediate this pipeline renders in the wrong byte order vs the
@@ -370,14 +381,23 @@ Definition presence_payload (se : ssetexpr) : option bool :=
     0 — `missing` is eq, `exists` neq; the chosen result column is irrelevant
     under the present flag.  `exthdr <p>` / `tcp option <n>`: the exthdr
     walker's 1-byte present flag compared to 1 (exists) / 0 (missing) —
-    golden ip6/exthdr.t.payload, any/tcpopt.t.payload. *)
-Definition lower_presence (kp : skeypath) (ex : bool) : option (lres lowered) :=
+    golden ip6/exthdr.t.payload, any/tcpopt.t.payload.
+
+    The surface COMPARISON operator [neg] (`!=`) is threaded through: nft emits
+    `cmp neq` for `exthdr hbh != exists` (src/statement.c / the exthdr
+    expression's OP_NEQ), which our historical frontend dropped — matching the
+    exact COMPLEMENT of the intended packet set (reports/corpus-divergence-bugs
+    class D).  For the exthdr/tcpopt eq-1 present form the surface `!=` is the
+    flag's negation directly; for the fib neq-0 present form it XORs with the
+    exists/missing polarity (a `!=` flips `exists`<->`missing`). *)
+Definition lower_presence (kp : skeypath) (ex neg : bool)
+  : option (lres lowered) :=
   match kp with
   | k :: rest =>
       if String.eqb k "fib" then
         match rest with
         | sel :: _res :: nil =>
-            Some (LOk ([], TXFlag (FFib sel FRpresent) ex 0))
+            Some (LOk ([], TXFlag (FFib sel FRpresent) (xorb ex neg) 0))
         | _ => None
         end
       else if String.eqb k "exthdr" then
@@ -385,7 +405,7 @@ Definition lower_presence (kp : skeypath) (ex : bool) : option (lres lowered) :=
         | proto :: nil =>
             Some match exthdr_htype proto with
                  | Some h => LOk (dep_ip6,
-                                  TXFlag (FExthdr EPipv6 h 0 1 true) false
+                                  TXFlag (FExthdr EPipv6 h 0 1 true) neg
                                          (if ex then 1%N else 0%N))
                  | None => LErr (LEexthdr proto)
                  end
@@ -397,7 +417,7 @@ Definition lower_presence (kp : skeypath) (ex : bool) : option (lres lowered) :=
             Some match dt_tcpopt_num name with
                  | Some n => LOk ([],
                                   TXFlag (FExthdr EPtcpopt (N.to_nat n) 0 1 true)
-                                         false (if ex then 1%N else 0%N))
+                                         neg (if ex then 1%N else 0%N))
                  | None => LErr (LEtcpopt name)
                  end
         | _ => None
@@ -429,7 +449,7 @@ Definition lower_rhs (f : field) (dt : dtype) (deps : list depspec) (r : srhs)
 Definition lower_single (kp : skeypath) (r : srhs) : lres lowered :=
   match presence_payload (sr_payload r) with
   | Some ex =>
-      match lower_presence kp ex with
+      match lower_presence kp ex (sr_neg r) with
       | Some res => res
       | None =>
           (* not a presence-bearing key path: `missing`/`exists` fall through
@@ -970,11 +990,32 @@ Definition lower_meta_set (name : string) (v : svalue) : lres stmt :=
   | None => LErr (LEmetaSet name)
   end.
 
-Definition lower_ct_set (name : string) (v : svalue) : lres stmt :=
-  match ct_set_key name with
-  | Some (k, w) => vs <-- set_imm w v "ct set value" ;; LOk (SCtSet k vs)
-  | None => LErr (LEctSet name)
+(** `ct label set <k>`: a ct label is a BIT POSITION in the 128-bit label
+    bitmap (nft src/ct.c ct_label_type / the kernel nf_connlabels_replace sets
+    ONE bit), NOT a literal integer register.  nft emits the immediate
+    `2^k` (bit [k] of the 16-byte bitmap; golden any/ct.t.payload `ct label set
+    127` = `immediate 0x80000000 0x00000000 0x00000000 0x00000000` — bit 127 is
+    the top bit of the network-order bitmap).  A numeric literal is the bit
+    index (0..127); [N_to_data 16] is plain [N] arithmetic, so [2^127] does NOT
+    wrap (unlike the historical OCaml `lsl` on a 63-bit int — bug N's shift-wrap
+    half; this is its regression pin).  Symbolic label names resolve against a
+    live registry we do not model, so they are refused (fail-loud). *)
+Definition ct_label_imm (v : svalue) : lres vsrc :=
+  match v with
+  | SVNum k =>
+      if (k <? 128)%nat
+      then LOk (VImm (N_to_data 16 (2 ^ N.of_nat k)))
+      else LErr (LEctSet "label bit index exceeds 127")
+  | _ => LErr (LEctSet "label (symbolic name registry not modelled)")
   end.
+
+Definition lower_ct_set (name : string) (v : svalue) : lres stmt :=
+  if String.eqb name "label"
+  then vs <-- ct_label_imm v ;; LOk (SCtSet CKlabel vs)
+  else match ct_set_key name with
+       | Some (k, w) => vs <-- set_imm w v "ct set value" ;; LOk (SCtSet k vs)
+       | None => LErr (LEctSet name)
+       end.
 
 (* ---------- log canonicalisation (syslog level symbol table) ---------- *)
 
@@ -1092,13 +1133,21 @@ Definition reject_type_code (family : string) (opts : string)
         end
   end.
 
-(** The network guard a `reject with icmp/icmpv6 <x>` needs in a dual-stack
-    family (icmp -> ipv4, icmpv6 -> ipv6); a no-op in single-L3 ip/ip6. *)
+(** The protocol guard a `reject with ...` needs: a `reject with icmp/icmpv6
+    <x>` needs the network guard in a dual-stack family (icmp -> ipv4, icmpv6
+    -> ipv6; a no-op in single-L3 ip/ip6); a `reject with tcp reset` needs
+    `meta l4proto 6` (DepL4 6) — the kernel [nft_reject] eval sends the RST
+    UNCONDITIONALLY of L4 protocol (net/netfilter/nft_reject.c
+    nft_reject_eval), so nft prepends the TCP guard (evaluate.c
+    stmt_reject_gen_dependency -> NFT_META_L4PROTO) to keep a TCP-RST reject
+    from firing on non-TCP packets; our historical frontend dropped it
+    (reports/corpus-divergence-bugs class E, packet-proven). *)
 Definition reject_dep (opts : string) : list depspec :=
   match reject_words opts with
   | w1 :: _ =>
       if String.eqb w1 "icmp" then [DepNfproto 2]
       else if String.eqb w1 "icmpv6" then [DepNfproto 10]
+      else if String.eqb w1 "tcp" then [DepL4 6]   (* tcp reset -> l4proto tcp *)
       else nil
   | nil => nil
   end.
@@ -1316,6 +1365,85 @@ Example lower_exthdr_exists :
   lower_single ["exthdr"; "frag"]
     (mrhs SOpImplicit false (SSEvalue (SVSym "exists")))
   = LOk ([DepNfproto 10], TXFlag (FExthdr EPipv6 44 0 1 true) false 1).
+Proof. vm_compute. reflexivity. Qed.
+
+(** Class D regression: `exthdr hbh != exists` threads the `!=` (neg = true)
+    so the present-flag compare is `cmp NEQ 0x01`, the COMPLEMENT of the
+    historical `cmp eq 0x01` (which silently dropped the operator). *)
+Example lower_exthdr_neq_exists :
+  match lower_single ["exthdr"; "hbh"]
+          (mrhs SOpNe true (SSEvalue (SVSym "exists")))
+  with LOk (deps, tx) => (deps, tx, elab_tx tx) | LErr _ => ([], TXFlag FCtId false 0, MEq FCtId []) end
+  = ([DepNfproto 10], TXFlag (FExthdr EPipv6 0 0 1 true) true 1,
+     MNeq (FExthdr EPipv6 0 0 1 true) [1]).
+Proof. vm_compute. reflexivity. Qed.
+
+(** Class D regression, the CORPUS-INVISIBLE twin: `tcp option sack != exists`
+    (tcpopt 5) is `cmp NEQ 0x01` too — no corpus block exercises it, so this is
+    its only guard. *)
+Example lower_tcpopt_neq_exists :
+  match lower_single ["tcpopt"; "sack"]
+          (mrhs SOpNe true (SSEvalue (SVSym "exists")))
+  with LOk (deps, tx) => (deps, tx, elab_tx tx) | LErr _ => ([], TXFlag FCtId false 0, MEq FCtId []) end
+  = ([], TXFlag (FExthdr EPtcpopt 5 0 1 true) true 1,
+     MNeq (FExthdr EPtcpopt 5 0 1 true) [1]).
+Proof. vm_compute. reflexivity. Qed.
+Example lower_tcpopt_exists_positive :
+  match lower_single ["tcpopt"; "sack"]
+          (mrhs SOpImplicit false (SSEvalue (SVSym "exists")))
+  with LOk (_, tx) => elab_tx tx | LErr _ => MEq FCtId [] end
+  = MEq (FExthdr EPtcpopt 5 0 1 true) [1].
+Proof. vm_compute. reflexivity. Qed.
+
+(** Class B regression: `meta length 33-45` (a [DThostint 4] ordered range)
+    takes the mandatory hton path — `byteorder hton` + big-endian bounds — not
+    the historical plain host-LE [MRange]. *)
+Example lower_metalen_range :
+  match lower_single ["meta"; "length"]
+          (mrhs SOpImplicit false (SSEvalue (SVRange (SVNum 33) (SVNum 45))))
+  with LOk (_, tx) => elab_tx tx | LErr _ => MEq FMetaLen [] end
+  = MRangeT FMetaLen [TByteorder true 4 4] false [0;0;0;33] [0;0;0;45].
+Proof. vm_compute. reflexivity. Qed.
+
+(** Class C regression: `ct expiration 33-45` — SECONDS scaled to MILLISECONDS
+    (33->33000, 45->45000) AND the hton path (host-endian ct register).
+    33000 = 0x80e8, 45000 = 0xafc8 (golden any/ct.t.payload). *)
+Example lower_ctexpiration_range :
+  match lower_single ["ct"; "expiration"]
+          (mrhs SOpImplicit false (SSEvalue (SVRange (SVNum 33) (SVNum 45))))
+  with LOk (_, tx) => elab_tx tx | LErr _ => MEq FCtExpiration [] end
+  = MRangeT FCtExpiration [TByteorder true 4 4] false
+      [0;0;0x80;0xe8] [0;0;0xaf;0xc8].
+Proof. vm_compute. reflexivity. Qed.
+Example lower_ctexpiration_neq :
+  match lower_single ["ct"; "expiration"]
+          (mrhs SOpNe true (SSEvalue (SVNum 233)))
+  with LOk (_, tx) => elab_tx tx | LErr _ => MEq FCtExpiration [] end
+  = MNeq FCtExpiration [0x28;0x8e;0x03;0x00].    (* 233000 host-endian (LE) *)
+Proof. vm_compute. reflexivity. Qed.
+
+(** Class E regression: `reject with tcp reset` carries the `meta l4proto 6`
+    guard so the RST cannot fire on non-TCP; a bare/icmp reject does not. *)
+Example reject_dep_tcp_reset : reject_dep "tcp reset" = [DepL4 6].
+Proof. reflexivity. Qed.
+Example reject_dep_bare : reject_dep "" = [].
+Proof. reflexivity. Qed.
+
+(** Class N regression: `ct label set 127` sets BIT 127 of the 128-bit bitmap
+    (immediate 2^127 = [0x80;0;...;0], 16 bytes big-endian) — NOT the literal
+    16-byte integer 127.  [N_to_data 16] is [N] arithmetic, so 2^127 does not
+    wrap (the OCaml `lsl`-on-63-bit shift-wrap half of bug N is dead). *)
+Example lower_ct_label_set_127 :
+  lower_ct_set "label" (SVNum 127)
+  = LOk (SCtSet CKlabel (VImm [128;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0])).
+Proof. vm_compute. reflexivity. Qed.
+Example lower_ct_label_set_0 :
+  lower_ct_set "label" (SVNum 0)      (* bit 0 = LSB = last byte of the BE bitmap *)
+  = LOk (SCtSet CKlabel (VImm [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1])).
+Proof. vm_compute. reflexivity. Qed.
+Example lower_ct_label_set_overflow :
+  lower_ct_set "label" (SVNum 128)
+  = LErr (LEctSet "label bit index exceeds 127").
 Proof. vm_compute. reflexivity. Qed.
 
 (** The wildcard/exact ifname split survives the verified path. *)

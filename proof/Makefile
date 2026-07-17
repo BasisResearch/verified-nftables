@@ -11,7 +11,7 @@
 ROCQBIN ?=
 COQMAKE  = CoqMakefile
 
-.PHONY: all proofs glue lib example semtest difftest corpus byteorder-gate validate parse-test gen gen-check gates boundary clean cli e2e nl-send parser-corpus axioms
+.PHONY: all proofs glue lib example semtest difftest corpus byteorder-gate source-sweep-gate validate parse-test gen gen-check gates boundary clean cli e2e nl-send parser-corpus axioms
 
 all: proofs glue
 
@@ -108,6 +108,16 @@ corpus: proofs
 # (payload->render round-trip only) cannot see.  Fails on any mismatch.
 byteorder-gate: proofs
 	./byteorder-gate.sh
+
+# Compile-from-source SOURCE-SWEEP tracked-count ratchet: render every corpus
+# `.t.payload` block from source and require the byte-identical PASS count to
+# stay at/above a pinned FLOOR (Makefile-gated; a frontend regression that drops
+# a block below the floor turns the build red).  Broader than byteorder-gate
+# (which is red/green on the narrow host-order class); the floor accommodates
+# the endian-unportable / benign display classes.  See DEVELOPMENT.md § "The 83
+# source-divergences, adjudicated (T2A)".
+source-sweep-gate: proofs
+	./source-sweep-gate.sh
 
 # Honest coverage of the UNTRUSTED .nft frontend: run `nftc compile` over a
 # large, diverse, REAL rule corpus (nftables tests/py + shipped examples + mined
@@ -250,12 +260,14 @@ gates:
 	$(MAKE) proofs
 	$(MAKE) axioms
 	$(MAKE) corpus
+	$(MAKE) byteorder-gate
+	$(MAKE) source-sweep-gate
 	$(MAKE) validate
 	$(MAKE) parse-test
 	$(MAKE) gen-check
 	$(MAKE) boundary
 	$(MAKE) boundary
-	@echo "ALL GATES GREEN: proofs axioms corpus validate parse-test gen-check boundary"
+	@echo "ALL GATES GREEN: proofs axioms corpus byteorder-gate source-sweep-gate validate parse-test gen-check boundary"
 
 clean:
 	-[ -f $(COQMAKE) ] && $(MAKE) -f $(COQMAKE) clean || true

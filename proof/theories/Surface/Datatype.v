@@ -89,6 +89,13 @@ Inductive dtype : Type :=
                            (proto.c:583-589)                                   *)
 | DTdscp                (* dscp_type: a 6-BIT codepoint (proto.c) — the raw
                            value of the `ip dscp` sub-byte bitfield            *)
+| DTtime                (* time_type (datatype.c time_type): a duration whose
+                           surface literal is in SECONDS but whose kernel
+                           register is MILLISECONDS, HOST-endian 32 bit — nft's
+                           time_parse scales *1000, matching the kernel's
+                           jiffies_to_msecs store (net/netfilter/nft_ct.c
+                           nft_ct_get_eval NFT_CT_EXPIRATION).  Carried by
+                           `ct expiration`.                                    *)
 | DTicmp_type           (* KIcmp:     icmp_type_type, 8 bit                    *)
 | DTicmp_code           (* KIcmpcode: icmp_code_type, 8 bit                    *)
 | DTicmpv6_type         (* KIcmpv6:   icmp6_type_type, 8 bit                   *)
@@ -131,6 +138,7 @@ Definition dtype_eqb (a b : dtype) : bool :=
   | DTct_state, DTct_state | DTct_status, DTct_status | DTct_dir, DTct_dir
   | DTmark, DTmark | DTpkttype, DTpkttype
   | DTfib_addrtype, DTfib_addrtype | DTtcp_flag, DTtcp_flag | DTdscp, DTdscp
+  | DTtime, DTtime
   | DTicmp_type, DTicmp_type | DTicmp_code, DTicmp_code
   | DTicmpv6_type, DTicmpv6_type | DTicmpv6_code, DTicmpv6_code
   | DTigmp_type, DTigmp_type | DTmh_type, DTmh_type | DTarp_op, DTarp_op => true
@@ -176,6 +184,7 @@ Definition dt_width (dt : dtype) : nat :=
   | DTfib_addrtype  => 32
   | DTtcp_flag      => 8
   | DTdscp          => 6     (* the one sub-byte datatype (proto.c dscp_type) *)
+  | DTtime          => 32    (* ct expiration register: 4-byte ms, host-order *)
   | DTicmp_type | DTicmp_code | DTicmpv6_type | DTicmpv6_code
   | DTigmp_type | DTmh_type => 8
   | DTarp_op        => 16
@@ -194,7 +203,7 @@ Definition dt_bytes (dt : dtype) : nat := Nat.div (dt_width dt + 7) 8.
     which is what [Nftval.VCtState] encodes and what this function reports. *)
 Definition dt_byteorder (dt : dtype) : byteorder :=
   match dt with
-  | DThostint _ | DTmark | DTifindex | DTfib_addrtype => BoHost
+  | DThostint _ | DTmark | DTifindex | DTfib_addrtype | DTtime => BoHost
   | _ => BoBig
   end.
 
@@ -229,6 +238,7 @@ Definition basetype_of (dt : dtype) : option dtype :=
   | DTfib_addrtype => Some (DThostint 4)      (* fib.c:52 + HOST               *)
   | DTtcp_flag     => Some (DTbitmask 1)      (* proto.c:589                   *)
   | DTdscp         => Some (DTinteger 1)
+  | DTtime         => Some (DThostint 4)      (* time_type -> host integer 4  *)
   | DTicmp_type | DTicmp_code | DTicmpv6_type | DTicmpv6_code
   | DTigmp_type | DTmh_type => Some (DTinteger 1)
   | DTarp_op       => Some (DTinteger 2)
@@ -308,7 +318,11 @@ Definition numeric_dtype (dt : dtype) : bool :=
     `ip dscp 64` ("Value 64 exceeds valid range 0-63"); byte-masking it (the
     OCaml [typed_atom] `land 0xff` habit) would silently corrupt.  *)
 Definition lit_fits (n : nat) (dt : dtype) : bool :=
-  numeric_dtype dt && (N.of_nat n <? 2 ^ N.of_nat (dt_width dt))%N.
+  numeric_dtype dt &&
+  match dt with
+  | DTtime => (N.of_nat n * 1000 <? 256 ^ 4)%N   (* the SCALED ms value fits  *)
+  | _ => (N.of_nat n <? 2 ^ N.of_nat (dt_width dt))%N
+  end.
 
 (* ------------------------------------------------------------------ *)
 (** ** Non-vacuity witnesses (the lattice is a real restriction). *)

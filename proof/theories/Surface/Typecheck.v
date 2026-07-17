@@ -90,7 +90,10 @@ Definition ifname_bytes (s : string) : option data :=
     width admission is bit-precise ([dt_width]): `ip protocol 300` and
     `ip dscp 64` are refused, exactly as nft refuses them. *)
 Definition fits (dt : dtype) (n : N) : bool :=
-  (n <? 2 ^ N.of_nat (dt_width dt))%N.
+  match dt with
+  | DTtime => (n * 1000 <? 256 ^ 4)%N   (* the SCALED ms value fits 4 bytes  *)
+  | _ => (n <? 2 ^ N.of_nat (dt_width dt))%N
+  end.
 
 Definition resolve_num (dt : dtype) (n : N) : option nftval :=
   if negb (fits dt n) then None else
@@ -117,6 +120,12 @@ Definition resolve_num (dt : dtype) (n : N) : option nftval :=
   | DTfib_addrtype => Some (VFibType n)
   | DTtcp_flag     => Some (VInteger 1 n)
   | DTdscp         => Some (VInteger 1 n)
+  | DTtime         => Some (VHostInt 4 (n * 1000))
+      (* nft's time_type parses SECONDS and stores MILLISECONDS (time_parse
+         *1000; src/datatype.c); the register is host-endian 4-byte, so the
+         literal [n] seconds becomes [VHostInt 4 (n*1000)].  [fits DTtime]
+         bounds the SCALED value against the 4-byte register, so an
+         overflowing duration is refused rather than silently wrapped. *)
   | DTicmp_type | DTicmp_code | DTicmpv6_type | DTicmpv6_code
   | DTigmp_type | DTmh_type => Some (VInteger 1 n)
   | DTarp_op       => Some (VInteger 2 n)
@@ -127,8 +136,10 @@ Lemma resolve_num_lit_fits : forall dt n,
   lit_fits n dt = true -> resolve_num dt (N.of_nat n) <> None.
 Proof.
   intros dt n H. unfold lit_fits in H.
-  apply andb_prop in H as [Hn Hf]. unfold resolve_num, fits.
-  rewrite Hf. destruct dt; simpl in Hn; try discriminate Hn; discriminate.
+  apply andb_prop in H as [Hn Hf]. unfold resolve_num.
+  assert (Hfits : fits dt (N.of_nat n) = true) by (unfold fits; exact Hf).
+  rewrite Hfits. cbn [negb].
+  destruct dt; simpl in Hn; try discriminate Hn; discriminate.
 Qed.
 
 (** Symbolic resolution: names for ifname/ifindex, symbol tables (walking
@@ -237,12 +248,12 @@ Theorem resolve_num_wf : forall dt n x,
 Proof.
   intros dt n x H. unfold resolve_num in H.
   destruct (fits dt n) eqn:Hf; simpl in H; [|discriminate].
-  unfold fits in Hf; apply N.ltb_lt in Hf.
-  destruct dt; try discriminate; injection H as <-; cbn [Nftval.wf].
-  all: cbn [dt_width] in Hf.
+  destruct dt; try discriminate; injection H as <-; cbn [Nftval.wf];
+    unfold fits in Hf; cbn [dt_width] in Hf; apply N.ltb_lt in Hf.
   (* the parametric integer/host-integer widths *)
   1-2: apply (fits_pow_bytes _ _ Hf).
-  (* the fixed-width datatypes: convert the bit bound to the byte bound *)
+  (* the fixed-width datatypes AND DTtime (whose [fits] already bounds the
+     scaled ms value by 256^4): convert the bit/scaled bound to the byte bound *)
   all: try (eapply N.lt_le_trans; [exact Hf|]; vm_compute; discriminate).
 Qed.
 
