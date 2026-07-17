@@ -115,18 +115,23 @@ Definition encode_be (v : nftval) : data :=
   | _ => encode v
   end.
 
-(** The three HOST-ENDIAN dtypes whose range/ordered path is
-    kernel-adjudicated to take the `byteorder hton` conversion (golden
-    any/ct.t.payload `ct mark 0x32-0x45`; the byteorder-gate pins mark / iif /
-    oif / ct mark / fib type from source).  The OTHER host-endian register
-    dtypes ([DThostint w]: meta skuid/length/cpu/..., ct id/zone/expiration)
-    keep the frontend's HISTORICAL plain-[MRange] form with host-endian
-    bounds — an UNADJUDICATED display-vs-wire class (see byteorder-gate.sh's
-    SCOPE note); the typed semantics deliberately gives that form NO meaning
-    (evaluation is STUCK on it, Semantics/TypedEval.v), rather than blessing a
-    byte-lexicographic compare of little-endian bytes as numeric. *)
+(** An ORDERED (range / interval) match over a HOST-endian register takes nft's
+    mandatory `byteorder reg = hton(reg, w, w)` conversion: the kernel's range
+    test is a lexicographic `memcmp` (net/netfilter/nft_range.c nft_range_eval),
+    so a host-endian (little-endian on x86-64) register must be converted to
+    network order first for the compare to be NUMERIC — nft emits the
+    [byteorder] expression and big-endian bounds for EVERY host-endian ordered
+    match (src/evaluate.c byteorder_conversion), not only mark/ifindex/fib type.
+    The host-endian register dtypes are exactly the [BoHost] byteorder set
+    ([DThostint w] — meta length/skuid/skgid/cpu/cgroup/iifgroup/oifgroup/ct
+    id/zone; [DTtime] — ct expiration; mark / ifindex / fib_addrtype), so the
+    hton classification IS the datatype's byteorder, read straight off the
+    [dt_byteorder] table (byteorder-gate pins the class end-to-end from source;
+    golden any/{meta,ct}.t.payload `meta length 33-45`, `ct expiration 33-45`).
+    An EQUALITY compare needs no conversion — both operands are the same
+    (host-endian) register bytes, so the memcmp is order-agnostic there. *)
 Definition range_hton (dt : dtype) : bool :=
-  match dt with DTmark | DTifindex | DTfib_addrtype => true | _ => false end.
+  byteorder_eqb (dt_byteorder dt) BoHost.
 
 (* ------------------------------------------------------------------ *)
 (** ** The verified CIDR expansion (the alignment decision, in Coq).

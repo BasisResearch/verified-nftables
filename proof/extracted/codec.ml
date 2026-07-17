@@ -183,6 +183,9 @@ let render_value_le (d : int list) : string =
 let loaddesc_host_endian (ld : Syntax.loaddesc) = match ld with
   | Syntax.LMeta Packet.MKmark
   | Syntax.LMeta Packet.MKiif | Syntax.LMeta Packet.MKoif
+  (* iiftype/oiftype are BYTEORDER_HOST_ENDIAN (nft meta.c arphrd_type) — the
+     register (and nft's own `meta iiftype ==` immediate) is little-endian. *)
+  | Syntax.LMeta Packet.MKiiftype | Syntax.LMeta Packet.MKoiftype
   | Syntax.LCt   Packet.CKmark
   | Syntax.LFib (_, Packet.FRtype) -> true
   | _ -> false
@@ -197,6 +200,8 @@ let bc_load_host_endian_reg (i : Bytecode.instr) = match i with
   | Bytecode.IMetaLoad (Packet.MKmark, r)
   | Bytecode.IMetaLoad (Packet.MKiif, r)
   | Bytecode.IMetaLoad (Packet.MKoif, r)
+  | Bytecode.IMetaLoad (Packet.MKiiftype, r)
+  | Bytecode.IMetaLoad (Packet.MKoiftype, r)
   | Bytecode.ICtLoad   (Packet.CKmark, r)
   | Bytecode.IFibLoad  (_, Packet.FRtype, r) -> Some r
   | _ -> None

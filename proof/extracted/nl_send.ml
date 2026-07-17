@@ -230,8 +230,15 @@ let nft_limit_pkt_bytes = 1
 let nfta_reject_type      = 1
 let nfta_reject_icmp_code = 2
 
-(* log *)
-let nfta_log_prefix = 2
+(* log — enum nft_log_attributes (uapi/linux/netfilter/nf_tables.h):
+   GROUP (NLA_U16), PREFIX (NLA_STRING), SNAPLEN (NLA_U32),
+   QTHRESHOLD (NLA_U16), LEVEL (NLA_U32), FLAGS (NLA_U32). *)
+let nfta_log_group       = 1
+let nfta_log_prefix      = 2
+let nfta_log_snaplen     = 3
+let nfta_log_qthreshold  = 4
+let nfta_log_level       = 5
+let nfta_log_flags       = 6
 
 (* fib *)
 let nfta_fib_dreg   = 1
@@ -770,7 +777,39 @@ let encode_instr (ins : Bytecode.instr) : string * string =
   | Bytecode.IReject (t, c) ->
       ("reject", attr_u32 nfta_reject_type t ^ attr_u8 nfta_reject_icmp_code c)
   | Bytecode.ILog opts ->
-      ("log", if opts = "" then "" else attr_str nfta_log_prefix opts)
+      (* Parse the verbatim log-option string into DISTINCT NFTA_LOG_*
+         attributes (the historical encoder stuffed the whole string into
+         NFTA_LOG_PREFIX, so `log group 2` installed a bogus prefix and no
+         group).  Keyword-led values: group/snaplen/queue-threshold/level
+         (numeric), flags (numeric bitmask; symbolic names skipped), and prefix
+         (the run of tokens up to the next keyword — nft prefixes may contain
+         spaces).  A leading run with no keyword is a bare prefix (back-compat
+         with `log prefix "..."` whose sole token stream is the prefix). *)
+      let toks = L.filter (fun s -> s <> "") (String.split_on_char ' ' opts) in
+      let is_kw k =
+        L.mem k ["group"; "snaplen"; "queue-threshold"; "level"; "flags"; "prefix"] in
+      let iopt s = try Some (int_of_string s) with _ -> None in
+      let buf = Buffer.create 32 in
+      let add_num attr v = match iopt v with
+        | Some n -> Buffer.add_string buf (attr n) | None -> () in
+      let rec take_prefix acc = function
+        | t :: rest when not (is_kw t) -> take_prefix (t :: acc) rest
+        | rest ->
+            let p = String.concat " " (L.rev acc) in
+            if p <> "" then Buffer.add_string buf (attr_str nfta_log_prefix p);
+            go rest
+      and go = function
+        | [] -> ()
+        | "group" :: v :: rest -> add_num (attr_be16 nfta_log_group) v; go rest
+        | "snaplen" :: v :: rest -> add_num (attr_u32 nfta_log_snaplen) v; go rest
+        | "queue-threshold" :: v :: rest -> add_num (attr_be16 nfta_log_qthreshold) v; go rest
+        | "level" :: v :: rest -> add_num (attr_u32 nfta_log_level) v; go rest
+        | "flags" :: v :: rest -> add_num (attr_u32 nfta_log_flags) v; go rest
+        | "prefix" :: rest -> take_prefix [] rest
+        | other -> take_prefix [] other   (* leading bare tokens = prefix *)
+      in
+      go toks;
+      ("log", Buffer.contents buf)
   | Bytecode.INotrack -> ("notrack", "")
   | Bytecode.IFibLoad (sel, res, r) ->
       let toks = L.map String.trim (String.split_on_char '.' sel) in

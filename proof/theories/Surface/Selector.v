@@ -120,8 +120,14 @@ Definition sel_table : list (skeypath * selinfo) := [
   (["tcp"; "urgptr"],   (FPayload PTransport 18 2, DTinteger 2, dep_l4 "tcp"));
   (["udp"; "length"],   (FUdpLen,  DTinteger 2, dep_l4 "udp"));
   (["udp"; "checksum"], (FUdpCsum, DTinteger 2, dep_l4 "udp"));
-  (* link layer *)
-  (["ether"; "type"],  (FEtherType,  DTethertype, []));
+  (* link layer.  `ether type` / vlan selectors carry the `meta iiftype ==
+     ARPHRD_ETHER` link guard so they cannot fire on a non-ethernet device
+     (loopback / tunnels) in inet/netdev — nft prepends it (payload.c
+     payload_gen_dependency -> proto_dev, ARPHRD_ETHER); [dep_ether] makes it a
+     no-op in bridge (an inherently ethernet family).  Historically it was
+     attached only to ether ADDRESS selectors, so `ether type`/`vlan` fired on
+     loopback (reports/corpus-divergence-bugs class F, packet-proven). *)
+  (["ether"; "type"],  (FEtherType,  DTethertype, dep_ether));
   (["ether"; "saddr"], (FEtherSaddr, DTether, dep_ether));
   (["ether"; "daddr"], (FEtherDaddr, DTether, dep_ether));
   (* meta *)
@@ -159,7 +165,7 @@ Definition sel_table : list (skeypath * selinfo) := [
   (["ct"; "mark"],       (FCtMark,       DTmark,      []));
   (["ct"; "direction"],  (FCtDirection,  DTct_dir,    []));
   (["ct"; "id"],         (FCtId,         DThostint 4, []));
-  (["ct"; "expiration"], (FCtExpiration, DThostint 4, []));
+  (["ct"; "expiration"], (FCtExpiration, DTtime,      []));
   (["ct"; "zone"],       (FCtGen CKzone, DThostint 2, []));
   (* ARP header (network header; L2 families pin `meta protocol == 0x0806`) *)
   (["arp"; "htype"],     (FPayload PNetwork 0 2, DTinteger 2, dep_arp));
@@ -329,10 +335,12 @@ Definition bitfield_table : list (skeypath * bitfield_spec) := [
   (["ip6"; "dscp"],     bf (FPayload PNetwork 0 2) 2 6 6 dep_ip6 true);
   (["ip6"; "flowlabel"],bf (FPayload PNetwork 1 3) 3 20 0 dep_ip6 false);
   (["tcp"; "doff"],     bf (FPayload PTransport 12 1) 1 4 4 (dep_l4 "tcp") false);
-  (["vlan"; "id"],      bf (FPayload PLink 14 2) 2 12 0 [DepEther 0x8100] false);
-  (["vlan"; "pcp"],     bf (FPayload PLink 14 1) 1 3 5 [DepEther 0x8100] false);
-  (["vlan"; "dei"],     bf (FPayload PLink 14 1) 1 1 4 [DepEther 0x8100] false);
-  (["vlan"; "cfi"],     bf (FPayload PLink 14 1) 1 1 4 [DepEther 0x8100] false);
+  (* vlan bitfields: the iiftype link guard (F, no-op in bridge) THEN the
+     `ether type 0x8100` in-frame guard (payload.c proto_vlan). *)
+  (["vlan"; "id"],      bf (FPayload PLink 14 2) 2 12 0 (dep_ether ++ [DepEther 0x8100]) false);
+  (["vlan"; "pcp"],     bf (FPayload PLink 14 1) 1 3 5 (dep_ether ++ [DepEther 0x8100]) false);
+  (["vlan"; "dei"],     bf (FPayload PLink 14 1) 1 1 4 (dep_ether ++ [DepEther 0x8100]) false);
+  (["vlan"; "cfi"],     bf (FPayload PLink 14 1) 1 1 4 (dep_ether ++ [DepEther 0x8100]) false);
   (["frag"; "frag-off"],       bf (FExthdr EPipv6 44 2 2 false) 2 13 3 dep_ip6 false);
   (["frag"; "reserved2"],      bf (FExthdr EPipv6 44 3 1 false) 1 2 1 dep_ip6 false);
   (["frag"; "more-fragments"], bf (FExthdr EPipv6 44 3 1 false) 1 1 0 dep_ip6 false)
