@@ -15,10 +15,6 @@ Definition optiplex_surface : sruleset :=
 
    (TopDefine "lan" (SVSym "lan0"));
 
-   TopNop;
-
-   TopNop;
-
    (TopTable {| st_family := "inet"; st_name := "filter";
       st_items := [(TChain {| sc_name := "prerouting";
         sc_items := [(ITypeHook "nat" "prerouting" true 100);
@@ -110,10 +106,10 @@ Definition optiplex_surface : sruleset :=
            (CVerdict SVaccept)]);
          (IRule [(CMatch {| sm_keys := [["pkttype"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "host")) |} |});
            (CStmt (StLimit 5 "second" false 5 false));
-           (CStmt StCounter);
+           (CStmt (StCounter 0 0));
            (CVerdict (SVreject "icmpx type admin-prohibited"))]);
          (IRule [(CStmt (StLog "prefix [nft:reject]"));
-           (CStmt StCounter)])] |});
+           (CStmt (StCounter 0 0))])] |});
       (TChain {| sc_name := "forward";
         sc_items := [(ITypeHook "filter" "forward" false 0);
          (IPolicy SVdrop);

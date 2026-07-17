@@ -170,10 +170,42 @@ Record smatch : Type := mkSmatch {
   sm_keys : list skeypath;
   sm_rhs  : srhs }.
 
+(** ** Named stateful objects.
+
+    A table declares objects (counter, quota, limit, ct helper/timeout/
+    expectation, secmark, synproxy) that rules later reference by name.  The
+    [sobjkind] tags the object's kind; [objkind_otype] maps it to the kernel's
+    NFT_OBJECT_* number (include/linux/netfilter/nf_tables.h) that the objref
+    statement/verdict carries.  Object-body validation beyond kind agreement
+    (helper protocol modules, timeout policy state names, l3proto) is kernel-
+    module behaviour outside this model — the declaration carries its kind, and
+    a rule reference is checked for declared-existence + kind agreement. *)
+Inductive sobjkind : Type :=
+| OKcounter | OKquota | OKlimit | OKcthelper
+| OKcttimeout | OKctexpect | OKsecmark | OKsynproxy.
+
+(** The NFT_OBJECT_* type number a reference to an object of this kind carries
+    (include/linux/netfilter/nf_tables.h: COUNTER=1, QUOTA=2, CT_HELPER=3,
+    LIMIT=4, CT_TIMEOUT=7, SECMARK=8, CT_EXPECT=9, SYNPROXY=10). *)
+Definition objkind_otype (k : sobjkind) : nat :=
+  match k with
+  | OKcounter => 1 | OKquota => 2 | OKcthelper => 3 | OKlimit => 4
+  | OKcttimeout => 7 | OKsecmark => 8 | OKctexpect => 9 | OKsynproxy => 10
+  end.
+
 (** Verdict-neutral / terminal action statements (mirror of [Nft_ast.sstmt]). *)
 Inductive sstmt : Type :=
 | StComment    (c : string)
-| StCounter
+| StCounter    (pkts bytes : nat)      (* `counter [packets N bytes N]` — the
+                                          initial values reach the compiled
+                                          [SCounter], not silently dropped      *)
+| StObjref     (kind : sobjkind) (name : string)
+                                       (* `counter name X` / `quota name X` /
+                                          `limit name X` / `ct helper set X` /
+                                          `synproxy name X`: reference a declared
+                                          object; verdict-neutral (a named
+                                          quota's over-limit drop is a documented
+                                          model boundary, see DEVELOPMENT.md)   *)
 | StLog        (opts : string)         (* options verbatim                     *)
 | StLimit      (rate : nat) (unit : string) (over : bool)
                (burst : nat) (byte_rate : bool)
@@ -193,6 +225,11 @@ Inductive sclause : Type :=
 | CVmapRef  (keys : list skeypath) (name : string)   (* `... vmap @named_map`  *)
 | CVerdict  (v : sverdict)
 | CStmt     (s : sstmt)
+| CObjrefMap (kind : sobjkind) (keys : list skeypath)
+             (entries : list (svalue * string))
+                                       (* `counter name <key> map { v : "obj" }`
+                                          objref verdict-map: the looked-up datum
+                                          is a named object of [kind]           *)
 | CBitmatch (kp : skeypath) (op : string) (mask : svalue) (r : srhs).
                                        (* `<sel> and|or|xor <mask> <relop> <v>` *)
 
@@ -219,7 +256,11 @@ Record schain : Type := mkSchain {
 Inductive stable_item : Type :=
 | TChain (c : schain)
 | TSet   (sd : ssetdecl)
-| TObj   (name : string).              (* named stateful object: parsed, skipped *)
+| TObj   (name : string) (kind : sobjkind).
+                                       (* named stateful object declaration:
+                                          its kind is retained so a rule's
+                                          `counter name X` etc. can be checked
+                                          for existence + kind agreement        *)
 
 Record stable : Type := mkStable {
   st_family : string;

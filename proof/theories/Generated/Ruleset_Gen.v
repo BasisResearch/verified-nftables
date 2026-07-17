@@ -11,9 +11,7 @@ Import ListNotations.
 Open Scope string_scope.
 
 Definition ruleset_surface : sruleset :=
-  [TopNop;
-
-   (TopTable {| st_family := "inet"; st_name := "firewall";
+  [(TopTable {| st_family := "inet"; st_name := "firewall";
       st_items := [(TChain {| sc_name := "inbound_ipv4";
         sc_items := [] |});
       (TChain {| sc_name := "inbound_ipv6";

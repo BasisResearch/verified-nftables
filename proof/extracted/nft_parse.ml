@@ -40,14 +40,20 @@ let rec expand (base : string) (tls : Nft_ast.sfile) : Nft_ast.sfile =
          with Sys_error msg -> raise (Parse_error ("include: " ^ msg)))
     | t -> [t]) tls
 
+(* include-expand, then apply config-management ops (delete/destroy/flush) in
+   file order — the two UNTRUSTED preprocessing stages that run before the
+   verified injection sees a TopOp-free, include-free config. *)
+let preprocess (base : string) (tls : Nft_ast.sfile) : Nft_ast.sfile =
+  Nft_config.apply (expand base tls)
+
 let parse_string (src : string) : Nft_inject.parsed =
   (* a string has no file context; a relative include cannot be resolved *)
-  Nft_inject.lower (expand (Sys.getcwd ()) (parse_raw src))
+  Nft_inject.lower (preprocess (Sys.getcwd ()) (parse_raw src))
 
 let parse_file (path : string) : Nft_inject.parsed =
-  Nft_inject.lower (expand (Filename.dirname path) (parse_raw (read_file path)))
+  Nft_inject.lower (preprocess (Filename.dirname path) (parse_raw (read_file path)))
 
 (* the include-expanded SURFACE tree (before lowering): what nft2coq emits as a
    Coq [sruleset] for the Gen file to lower with the verified Coq lowering. *)
 let parse_file_surface (path : string) : Ast.sruleset =
-  Nft_inject.file (expand (Filename.dirname path) (parse_raw (read_file path)))
+  Nft_inject.file (preprocess (Filename.dirname path) (parse_raw (read_file path)))

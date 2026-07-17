@@ -245,6 +245,8 @@ let () =
             prerr_string (prog ^ ": parse error: " ^ msg ^ "\n"); exit 1
         | Nft_inject.Inject_error msg | Nft_inject.Lower_error msg ->
             prerr_string (prog ^ ": unsupported construct: " ^ msg ^ "\n"); exit 1
+        | Nft_config.Config_error msg ->
+            prerr_string (prog ^ ": " ^ msg ^ "\n"); exit 1
       in
       let chains = selected_chains parsed ~table:!table ~chain:!chain in
       let need_chains () =

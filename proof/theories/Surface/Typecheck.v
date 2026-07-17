@@ -700,9 +700,22 @@ Definition ct_set_dtype (key : string) : option dtype :=
   else if String.eqb key "event" then Some (DThostint 4)
   else None.
 
-Definition tc_stmt (defs : defs_ctx) (s : sstmt) : bool :=
+(** A table's declared objects (name -> kind), the mirror of [decl_ctx] for
+    named-set references: a `counter name X` / `quota name X` / `ct helper set X`
+    reference must name an object DECLARED in the same table, WITH THE MATCHING
+    kind (referencing a quota as a counter is rejected — mirrors nft's
+    "object X of type counter does not exist" load error). *)
+Definition obj_ctx : Type := list (string * sobjkind).
+
+Definition objkind_declared (objs : obj_ctx) (name : string) (k : sobjkind) : bool :=
+  existsb (fun '(n, k') =>
+             String.eqb n name && Nat.eqb (objkind_otype k') (objkind_otype k))
+          objs.
+
+Definition tc_stmt (defs : defs_ctx) (objs : obj_ctx) (s : sstmt) : bool :=
   match s with
-  | StComment _ | StCounter | StLog _ | StNotrack => true
+  | StObjref k name => objkind_declared objs name k
+  | StComment _ | StCounter _ _ | StLog _ | StNotrack => true
   | StLimit _ _ _ _ _ => true
       (* magnitudes are seam-guarded at injection + in the parser; typing
          adds nothing here (see the header's SCOPE note) *)
@@ -730,7 +743,30 @@ Definition tc_stmt (defs : defs_ctx) (s : sstmt) : bool :=
 (* ------------------------------------------------------------------ *)
 (** ** Clauses, rules, declarations, tables, rulesets. *)
 
-Definition typecheck_clause (defs : defs_ctx) (decls : decl_ctx)
+(** An objref verdict-map (`counter name <key> map { v : "obj" }`): the key
+    values type against the (concatenated) key selector — exactly as a [CVmap]
+    key does — and every datum names an object DECLARED with the reference's
+    kind (an undeclared / wrong-kind datum is rejected). *)
+Definition tc_objrefmap (defs : defs_ctx) (objs : obj_ctx) (k : sobjkind)
+                        (kps : list skeypath)
+                        (entries : list (svalue * string)) : bool :=
+  match sel_dtypes kps with
+  | Some [dt] =>
+      forallb (fun '(v, on) =>
+                 expanded_check defs (check_elem dt) v && objkind_declared objs on k)
+              entries
+  | Some dts =>
+      forallb (fun '(v, on) =>
+                 expanded_check defs
+                   (fun v' => match v' with
+                              | SVConcat parts => check_concat_elem dts parts
+                              | _ => false
+                              end) v
+                 && objkind_declared objs on k) entries
+  | None => false
+  end.
+
+Definition typecheck_clause (defs : defs_ctx) (decls : decl_ctx) (objs : obj_ctx)
                             (cl : sclause) : bool :=
   match cl with
   | CMatch m =>
@@ -742,13 +778,14 @@ Definition typecheck_clause (defs : defs_ctx) (decls : decl_ctx)
   | CVmap keys entries => tc_vmap defs keys entries
   | CVmapRef keys name => tc_vmapref decls keys name
   | CVerdict _ => true          (* control flow, not data typing *)
-  | CStmt s => tc_stmt defs s
+  | CStmt s => tc_stmt defs objs s
+  | CObjrefMap k keys entries => tc_objrefmap defs objs k keys entries
   | CBitmatch kp op mask r => tc_bitmatch defs kp op mask r
   end.
 
-Definition typecheck_rule (defs : defs_ctx) (decls : decl_ctx)
+Definition typecheck_rule (defs : defs_ctx) (decls : decl_ctx) (objs : obj_ctx)
                           (r : srule) : bool :=
-  forallb (typecheck_clause defs decls) r.
+  forallb (typecheck_clause defs decls objs) r.
 
 (** A declared set/map: known type atoms; every element types at the declared
     (concatenated) datatype; a MAP with elements must be a VERDICT map (value
@@ -786,10 +823,10 @@ Definition tc_setdecl (defs : defs_ctx) (sd : ssetdecl) : bool :=
           else true)
   end.
 
-Definition typecheck_chain (defs : defs_ctx) (decls : decl_ctx)
+Definition typecheck_chain (defs : defs_ctx) (decls : decl_ctx) (objs : obj_ctx)
                            (c : schain) : bool :=
   forallb (fun it => match it with
-                     | IRule r => typecheck_rule defs decls r
+                     | IRule r => typecheck_rule defs decls objs r
                      | _ => true
                      end) (sc_items c).
 
@@ -799,12 +836,19 @@ Definition decls_of_table (t : stable) : decl_ctx :=
                             | _ => acc
                             end) [] (st_items t).
 
+Definition objs_of_table (t : stable) : obj_ctx :=
+  fold_right (fun it acc => match it with
+                            | TObj n k => (n, k) :: acc
+                            | _ => acc
+                            end) [] (st_items t).
+
 Definition typecheck_table (defs : defs_ctx) (t : stable) : bool :=
   let decls := decls_of_table t in
+  let objs := objs_of_table t in
   forallb (fun it => match it with
                      | TSet sd => tc_setdecl defs sd
-                     | TChain c => typecheck_chain defs decls c
-                     | TObj _ => true
+                     | TChain c => typecheck_chain defs decls objs c
+                     | TObj _ _ => true
                      end) (st_items t).
 
 (** Defines are collected file-wide first (mirror of lower's pass 1); a later
@@ -836,7 +880,7 @@ Proof. vm_compute. split; reflexivity. Qed.
 
 (** `iifname & 0xff` is REJECTED (ifname has no integer basetype)... *)
 Example reject_iifname_and_0xff :
-  typecheck_clause [] []
+  typecheck_clause [] [] []
     (CBitmatch ["iifname"] "and" (SVNum 255)
        (mkSrhs SOpEq false (SSEvalue (SVNum 1)))) = false.
 Proof. vm_compute. reflexivity. Qed.
@@ -844,44 +888,72 @@ Proof. vm_compute. reflexivity. Qed.
 (** ...while the SAME expression over an integer-basetype selector types
     (the rejection is the selector's chain, not the clause shape). *)
 Example accept_mark_and_0x3 :
-  typecheck_clause [] []
+  typecheck_clause [] [] []
     (CBitmatch ["mark"] "and" (SVNum 3)
        (mkSrhs SOpEq false (SSEvalue (SVNum 1)))) = true.
 Proof. vm_compute. reflexivity. Qed.
 
 (** More rejection witnesses (each an illtyped-suite case). *)
 Example reject_ct_state_https :
-  typecheck_clause [] []
+  typecheck_clause [] [] []
     (CMatch (mkSmatch [["ct"; "state"]]
        (mkSrhs SOpImplicit false (SSEvalue (SVSym "https"))))) = false.
 Proof. vm_compute. reflexivity. Qed.
 Example reject_ip_protocol_300 :
-  typecheck_clause [] []
+  typecheck_clause [] [] []
     (CMatch (mkSmatch [["ip"; "protocol"]]
        (mkSrhs SOpImplicit false (SSEvalue (SVNum 300))))) = false.
 Proof. vm_compute. reflexivity. Qed.
 Example reject_comma_list_on_ports :
   (* bare comma list over a NON-bitmask selector (evaluate.c:1871) *)
-  typecheck_clause [] []
+  typecheck_clause [] [] []
     (CMatch (mkSmatch [["tcp"; "dport"]]
        (mkSrhs SOpImplicit false (SSElist [SVNum 22; SVNum 80])))) = false.
 Proof. vm_compute. reflexivity. Qed.
 Example accept_comma_list_on_ct_state :
-  typecheck_clause [] []
+  typecheck_clause [] [] []
     (CMatch (mkSmatch [["ct"; "state"]]
        (mkSrhs SOpImplicit false
           (SSElist [SVSym "new"; SVSym "established"])))) = true.
 Proof. vm_compute. reflexivity. Qed.
 Example reject_set_ref_type_mismatch :
   (* an ipv4_addr set referenced from an inet_service selector *)
-  typecheck_clause [] [("addrs", ["ipv4_addr"])]
+  typecheck_clause [] [("addrs", ["ipv4_addr"])] []
     (CMatch (mkSmatch [["tcp"; "dport"]]
        (mkSrhs SOpImplicit false (SSEref "addrs")))) = false.
 Proof. vm_compute. reflexivity. Qed.
 Example accept_set_ref_matching :
-  typecheck_clause [] [("addrs", ["ipv4_addr"])]
+  typecheck_clause [] [("addrs", ["ipv4_addr"])] []
     (CMatch (mkSmatch [["ip"; "daddr"]]
        (mkSrhs SOpImplicit false (SSEref "addrs")))) = true.
+Proof. vm_compute. reflexivity. Qed.
+
+(** Named-object references type against the table's declared objects.  A
+    reference to a declared object of the matching kind is accepted; an
+    undeclared name, or a declared name of the WRONG kind, is rejected — the
+    `counter name`/`quota name`/`ct helper set` existence+kind check. *)
+Example objref_declared_accepts :
+  typecheck_clause [] [] [("cnt1", OKcounter)]
+    (CStmt (StObjref OKcounter "cnt1")) = true.
+Proof. vm_compute. reflexivity. Qed.
+Example objref_undeclared_rejects :
+  typecheck_clause [] [] []
+    (CStmt (StObjref OKcounter "cnt1")) = false.
+Proof. vm_compute. reflexivity. Qed.
+Example objref_wrong_kind_rejects :
+  (* declared as a COUNTER, referenced as a QUOTA *)
+  typecheck_clause [] [] [("cnt1", OKcounter)]
+    (CStmt (StObjref OKquota "cnt1")) = false.
+Proof. vm_compute. reflexivity. Qed.
+Example objrefmap_declared_accepts :
+  typecheck_clause [] [] [("cnt1", OKcounter); ("cnt2", OKcounter)]
+    (CObjrefMap OKcounter [["tcp"; "dport"]]
+       [(SVNum 443, "cnt1"); (SVNum 80, "cnt2")]) = true.
+Proof. vm_compute. reflexivity. Qed.
+Example objrefmap_undeclared_rejects :
+  typecheck_clause [] [] [("cnt1", OKcounter)]
+    (CObjrefMap OKcounter [["tcp"; "dport"]]
+       [(SVNum 443, "cnt1"); (SVNum 80, "nope")]) = false.
 Proof. vm_compute. reflexivity. Qed.
 
 (** The per-dtype width/byteorder table, one row per nft_lower `kind` (the
