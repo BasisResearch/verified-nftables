@@ -766,6 +766,16 @@ Definition tc_objrefmap (defs : defs_ctx) (objs : obj_ctx) (k : sobjkind)
   | None => false
   end.
 
+(** A verdict's own well-formedness (independent of any data typing): the
+    `queue num` argument is a 16-bit queue index (kernel nf_queue: the queue
+    number field is a __u16; evaluate.c stmt_evaluate_queue caps it), so an
+    out-of-range `queue num 65536` is refused. *)
+Definition sverdict_valid (v : sverdict) : bool :=
+  match v with
+  | SVqueue lo hi _ _ => andb (Nat.leb lo 65535) (Nat.leb hi 65535)
+  | _ => true
+  end.
+
 Definition typecheck_clause (defs : defs_ctx) (decls : decl_ctx) (objs : obj_ctx)
                             (cl : sclause) : bool :=
   match cl with
@@ -775,9 +785,11 @@ Definition typecheck_clause (defs : defs_ctx) (decls : decl_ctx) (objs : obj_ctx
       | [kp] => tc_single defs decls kp (sm_rhs m)
       | kps => tc_concat defs decls kps (sr_payload (sm_rhs m))
       end
-  | CVmap keys entries => tc_vmap defs keys entries
+  | CVmap keys entries =>
+      tc_vmap defs keys entries
+      && forallb (fun '(_, sv) => sverdict_valid sv) entries
   | CVmapRef keys name => tc_vmapref decls keys name
-  | CVerdict _ => true          (* control flow, not data typing *)
+  | CVerdict v => sverdict_valid v
   | CStmt s => tc_stmt defs objs s
   | CObjrefMap k keys entries => tc_objrefmap defs objs k keys entries
   | CBitmatch kp op mask r => tc_bitmatch defs kp op mask r

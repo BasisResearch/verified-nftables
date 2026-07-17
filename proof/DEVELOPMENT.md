@@ -806,6 +806,78 @@ structurally then LOUDLY refused (offload is out of model). The `objects-sweep-
 gate` ratchet runs every `objects.t` rule line through parse+typecheck+lowering
 BIDIRECTIONALLY (`;ok` accepted, `;fail` rejected) — 14/14 within scope.
 
+**Corpus ok/fail sweep (bidirectional ratchet).** Beyond `objects.t`, the
+`corpus-okfail-gate` runs EVERY rule line of the model's supported families
+(ip, inet, any — 1432 lines) through parse + typecheck + verified lowering and
+checks accept/reject against the corpus `;ok`/`;fail` verdict. Two counts are
+pinned (`corpus-okfail-gate.sh`): `pass >= 671` (a supported `;ok` line newly
+rejected, or a `;fail` line newly accepted, drops pass → red) and
+`false_accept <= 42` (a NEW invalid `;fail` line slipping through → red). The
+harness strips the corpus `- ` list-output continuation prefix and skips
+`define`/variable lines, so the residual list is trustworthy. This gate is the
+`;fail`-direction check that `source-sweep-gate` (a one-directional byte-identity
+PASS-count ratchet) is *structurally blind to* — the earlier claim that broader
+corpus coverage was "covered by source-sweep-gate and the semantic gates" was
+false for false-accepts and is retracted here.
+
+Two argument-range validations landed with this gate (previously silent
+accepts): a `queue num` argument is a 16-bit queue index (kernel nf_queue:
+`__u16`; `Typecheck.sverdict_valid` rejects `queue num 65536`), and a `tcp
+option` kind is a byte with per-option template fields (nft `tcpopt.c`:
+`Symbols.dt_tcpopt_num` rejects a raw kind > 255, `tcpopt_field_valid` rejects a
+field absent from the option's template such as `tcp option eol left`, since
+`eol`/`nop` carry only `kind`).
+
+*The 42 residual `;fail` lines still accepted (per-case ledger — each is a
+validation OUTSIDE the model, not a laziness gap; loud refusal of the valid
+reference forms is not acceptable, so these accept the payload and skip the
+context check nft performs):*
+- **NAT/tproxy hook-context (22 lines):** `masquerade`/`redirect`/`snat`/`dnat`/
+  `tproxy` are legal only in specific hooks (nat postrouting/prerouting, mangle
+  prerouting); the corpus places them in a `filter input` chain, where nft
+  rejects on hook context. Instances: `masquerade.t` (`tcp dport 22 masquerade
+  counter … accept`, `tcp sport 22 masquerade accept`, `ip saddr 10.1.1.1
+  masquerade drop`); `redirect.t` (`redirect to :1234`, `tcp dport 22 redirect
+  counter … accept`, `tcp sport 22 redirect accept`, `ip saddr 10.1.1.1 redirect
+  drop`); `snat.t` (`snat to 192.168.3.2`, `snat to dead::beef`); `dnat.t`
+  (`dnat ip6 to 1.2.3.4`, `dnat to 1.2.3.4`, `ip6 daddr dead::beef dnat to
+  10.1.2.3`, `meta l4proto { tcp, udp } tcp dport 20 dnat to 1.1.1.1:80`, `ip
+  protocol { tcp, udp } tcp dport 20 dnat to 1.1.1.1:80`); `tproxy.t` (`tproxy`,
+  `tproxy to 192.0.2.1`, `tproxy to 192.0.2.1:50080`, `tproxy to :50080`, `meta
+  l4proto 17 tproxy to 192.0.2.1`, `meta l4proto 6 tproxy to 192.0.2.1:50080`,
+  `ip6 nexthdr 6 tproxy ip to 192.0.2.1`). The model has no hook/family context
+  threaded into statement typing. Follow-up: carry the chain's hook type into
+  `tc_stmt` and reject hook-incompatible statements.
+- **Family / nfproto-scoped selectors and reject types (10 lines):** `meta
+  ibrname`/`obrname` (input/output bridge port name) are bridge-family only —
+  `meta.t` (2 lines, in both ip and inet tables = 4 instances); a `reject with`
+  code must match the L3 family/`nfproto` — `reject.t` (`reject with icmpv6
+  no-route` in ip; `meta nfproto ipv6 reject with icmp host-unreachable`; `meta
+  nfproto ipv4 ip protocol icmp reject with icmpv6 no-route`; `meta nfproto ipv6
+  ip protocol icmp reject with icmp host-unreachable`; `meta l4proto udp reject
+  with tcp reset`); a direction-qualified ct address must match `nfproto` —
+  `ct.t` (`meta nfproto ipv6 ct original ip saddr 1.2.3.4`). The model does not
+  cross-check a selector/reject against a runtime `nfproto`/family constraint.
+  Follow-up: a family-context lattice checked in `tc_stmt`/`tc_single`.
+- **`log` option mutual-exclusion (8 lines):** nft forbids combining a syslog
+  `level`/`level audit` with `group`/`snaplen`/`queue-threshold`/`prefix`/`flags`
+  (group selects nfnetlink_log, disjoint from the syslog path) — `log.t` (`log
+  level emerg group 2`, `log level alert group 2 prefix "log test2"`, `log level
+  audit prefix "foo"`, `log level audit group 42`, `log level audit snaplen 23`,
+  `log level audit queue-threshold 1337`, `log level audit flags all`, `log
+  flags all group 2`). The model accepts the log-option bag verbatim (`SLog`
+  carries the option string; it is verdict-neutral). Follow-up: validate the
+  option-set exclusivity in the log-statement typecheck.
+- **`fib` key-set validity (1 line):** `fib daddr . oif type local` — the
+  `daddr . oif` selector tuple is not a valid fib lookup key for the `type`
+  result (`fib.t`). The model resolves fib keys structurally without the
+  key/result compatibility table. Follow-up: a fib key-set validity check.
+- **icmp field inter-dependency (1 line):** `icmp code != 1 icmp type 2 icmp mtu
+  5` (`icmp.t`) — nft rejects the combination because `icmp mtu` carries an
+  implicit dependency incompatible with the preceding `icmp code`/`type` in one
+  rule. The model loads each icmp field independently without the conflict check.
+  Follow-up: model the icmp field dependency graph.
+
 ## Trust story (TCB)
 
 Trusted: the Rocq kernel; the `.v` *specifications* (`Semantics.v` defines what

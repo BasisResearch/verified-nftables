@@ -267,13 +267,14 @@ Record stable : Type := mkStable {
   st_name   : string;
   st_items  : list stable_item }.
 
-(** A whole file: defines (collected), and the tables.  `flush`/`destroy`
-    lines parse to [TopNop]; `include` is expanded by the OCaml driver BEFORE
-    injection, so a [TopInclude] never reaches the typechecker. *)
+(** A whole file: defines (collected), and the tables.  `include` is expanded by
+    the OCaml driver BEFORE injection, so a [TopInclude] never reaches the
+    typechecker; `delete`/`destroy`/`flush` are structured [TopOp]s the OCaml
+    config driver (nft_config.ml) applies before injection, so no config-op node
+    reaches this surface AST either. *)
 Inductive stoplevel : Type :=
 | TopDefine  (name : string) (v : svalue)
 | TopTable   (t : stable)
-| TopInclude (path : string)
-| TopNop.
+| TopInclude (path : string).
 
 Definition sruleset : Type := list stoplevel.
