@@ -82,7 +82,11 @@ Inductive lerr : Type :=
 | LEmultiOutcome                 (* >1 terminal outcome (vmap / nat / tproxy)  *)
 | LEvalueMap                     (* value map (non-verdict data) not lowered   *)
 | LEconcatRhs                    (* concatenated match without a set/ref rhs   *)
-| LEhook       (name : string).  (* base chain bound to an unknown netfilter hook *)
+| LEhook       (name : string)   (* base chain bound to an unknown netfilter hook *)
+| LEnumgen.                      (* incremental `numgen` (no source surface; the
+                                    mutation strand's VM-side counter sweep has no
+                                    DSL twin, so such a rule is refused instead of
+                                    silently leaving the verified domain) *)
 
 Definition lerr_message (e : lerr) : string :=
   match e with
@@ -119,6 +123,7 @@ Definition lerr_message (e : lerr) : string :=
   | LEvalueMap => "value maps (non-verdict map data) not yet lowered"
   | LEconcatRhs => "concatenated match needs a set/ref rhs"
   | LEhook n => "base chain bound to an unknown netfilter hook: " ++ n
+  | LEnumgen => "incremental numgen has no source surface (rule refused)"
   end.
 
 Inductive lres (A : Type) : Type :=
@@ -1809,7 +1814,11 @@ Definition lower_rule (oracle : string -> option nat) (fuel : nat)
   p <-- lower_clauses oracle fuel family defs cls rl0 fs ;;
   let '(rl, fs') := p in
   outc <-- assemble_outcome rl ;;
-  LOk ({| r_body := rev (rl_body rl); r_outcome := outc; r_after := nil |}, fs').
+  let r := {| r_body := rev (rl_body rl); r_outcome := outc; r_after := nil |} in
+  (* fail-loud admission: every rule the lowering EMITS is numgen-free, which
+     discharges the mutation strand's [rule_numgen_free] hypothesis for every
+     frontend program ([Lower_Proofs.lower_ruleset_numgen_free]). *)
+  if rule_numgen_free r then LOk (r, fs') else LErr LEnumgen.
 
 (* ---------- chains ---------- *)
 

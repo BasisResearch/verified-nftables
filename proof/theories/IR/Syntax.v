@@ -340,8 +340,10 @@ Definition do_load (ld : loaddesc) (e : env) (p : packet) : data :=
   | LNumgen spec    =>
       (* `numgen inc` reads the SHARED, persistent counter from the env and renders
          the round-robin value [(counter mod modulus) + offset]; the increment that
-         makes the NEXT evaluation differ is applied by the write-side threading
-         ([set_numgen] in [run_rule_writes]/[body_writes]).  `numgen random`
+         makes the NEXT evaluation differ is applied by [numgen_sweep_prog] at the
+         [vm_rule_step] boundary (VM-only: the lowering rejects incremental numgen
+         fail-loud, [Lower.LEnumgen], so every frontend-emitted rule is
+         [rule_numgen_free] and the sweep is the identity there).  `numgen random`
          (ng_random = true: get_random_u32) is genuinely per-packet, so it stays the
          oracle [pkt_numgen]. *)
       if ng_random spec then pkt_numgen p spec
@@ -775,6 +777,101 @@ Definition prod_wf (rp : rule_prod) : bool :=
   | None, None, None, None, Some _ => true
   | _, _, _, _, _ => false
   end.
+
+(** *** Source-side numgen-freedom.
+
+    An incremental `numgen` ([FNumgen] with [ng_random = false]) has no
+    parser/DSL surface: the lowering REJECTS any rule carrying one (fail-loud
+    [Lower.LEnumgen]), so [Lower_Proofs.lower_ruleset_numgen_free] discharges
+    the [rule_numgen_free] hypothesis of the mutation-strand compiler theorems
+    over EVERY frontend-emitted program.  The predicate is decidable on the
+    source rule — a compiled incremental [INumgen] arises only from a load of
+    an incremental [FNumgen] field, and [Correct.numgen_free_compile_rule]
+    proves the two agree exactly:
+    [numgen_free_prog (compile_rule r) = rule_numgen_free r]. *)
+Definition field_ngfree (f : field) : bool :=
+  match f with FNumgen spec => ng_random spec | _ => true end.
+
+Definition vsrc_ngfree (vs : vsrc) : bool :=
+  match vs with
+  | VImm _ => true
+  | VField f _ => field_ngfree f
+  | VMap fields _ _ | VHash fields _ _ _ _ | VHashMap fields _ _ _ _ _ =>
+      forallb field_ngfree fields
+  | VOr srcs _ => forallb (fun e => field_ngfree (fst e)) srcs
+  | VMapT elems _ => forallb (fun e => field_ngfree (fst e)) elems
+  end.
+
+Definition match_ngfree (m : matchcond) : bool :=
+  match m with
+  | MEq f _ | MNeq f _ | MRange f _ _ _ | MMasked f _ _ _ _
+  | MCmp f _ _ | MTransform f _ _ _ | MSetT f _ _ _ | MRangeT f _ _ _ _ =>
+      field_ngfree f
+  | MConcatSet fields _ _ => forallb field_ngfree fields
+  | MConcatSetT elems _ _ => forallb (fun fe => field_ngfree (fst fe)) elems
+  | MLimit _ | MQuota _ | MConnlimit _ => true
+  end.
+
+Definition stmt_ngfree (s : stmt) : bool :=
+  match s with
+  | SMangle vs _ _ _ _ _ _ => vsrc_ngfree vs
+  | SMetaSet _ vs | SCtSet _ vs => vsrc_ngfree vs
+  | SCtSetDir _ _ vs => vsrc_ngfree vs
+  | SExthdrWrite vs _ _ _ _ => vsrc_ngfree vs
+  | SDupSrc src _ _ => vsrc_ngfree src
+  | SDynset _ _ keyfs dataf => forallb field_ngfree (keyfs ++ dataf)
+  | SObjrefMap keyfs _ => forallb field_ngfree keyfs
+  | SDynsetImm _ _ keyfs _ => forallb field_ngfree keyfs
+  | SCounter _ _ | SNotrack | SLog _ | SObjref _ _ | SSynproxy _ _
+  | SLast _ | SExthdrReset _ _ | SDup _ _ => true
+  end.
+
+Definition body_item_ngfree (it : body_item) : bool :=
+  match it with BMatch m => match_ngfree m | BStmt s => stmt_ngfree s end.
+
+Definition vmap_ngfree (ov : option vmap_spec) : bool :=
+  match ov with
+  | None => true
+  | Some vm => match vm_keyf vm with
+               | Some (f, _) => field_ngfree f
+               | None => forallb field_ngfree (vm_fields vm)
+               end
+  end.
+
+(** The terminal's field positions, mirroring [Compile.compile_terminal]'s
+    dispatch order (nat, then tproxy, then fwd, then queue, then the static
+    verdict): only a nat operand / fwd device / queue number can load a field;
+    tproxy and a static verdict load none. *)
+Definition terminal_ngfree (r : rule) : bool :=
+  match r_nat r with
+  | Some n => match nat_src n with
+              | Some vs => vsrc_ngfree vs
+              | None => match nat_map n with
+                        | Some (fields, _, _) => forallb field_ngfree fields
+                        | None => match nat_field n with
+                                  | Some (f, _) => field_ngfree f
+                                  | None => true
+                                  end
+                        end
+              end
+  | None =>
+  match r_tproxy r with
+  | Some _ => true
+  | None =>
+  match r_fwd r with
+  | Some w => vsrc_ngfree (fwd_dev w)
+  | None =>
+  match r_queue r with
+  | Some q => vsrc_ngfree (q_num q)
+  | None => true
+  end end end end.
+
+(** A rule with no incremental `numgen` in ANY field position. *)
+Definition rule_numgen_free (r : rule) : bool :=
+  forallb body_item_ngfree (r_body r)
+  && vmap_ngfree (r_vmap r)
+  && terminal_ngfree r
+  && forallb stmt_ngfree (r_after r).
 
 (** A base chain: a default policy and an ordered list of rules. *)
 Record chain : Type := {

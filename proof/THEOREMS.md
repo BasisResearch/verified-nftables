@@ -37,7 +37,7 @@ axiom-free — without reading 3000 lines of `Correct.v`.
 |---|---|---|---|
 | compiler (rulesets/hooks) | `compile_hook_correct` | `Correct.v` | compiled hook dispatch (jump/goto/return, user chains, multi-table, priority order) = DSL `eval_hook`, for every fuel/ruleset/hook/packet/environment |
 | compiler, sequence form | `compile_seq_correct` | `Correct.v` | the same, lifted over a packet sequence under an **arbitrary step** `verdict -> env -> env` — a per-packet **congruence corollary** of `compile_hook_correct`, *not* a proof about ruleset-generated state (that is the next axis) |
-| mutation / cross-packet learning | `compile_seq_mut_correct` | `Correct.v` | compiled single-chain traversal threading the env each packet LEAVES (meta/ct writes, dynset learning) = DSL sequence, under `mut_wf` well-formedness |
+| mutation / cross-packet learning | `compile_seq_mut_correct` | `Correct.v` | compiled single-chain traversal threading the env each packet LEAVES (meta/ct writes, dynset learning) = DSL sequence, under `rule_numgen_free` (discharged for EVERY frontend program by `Lower_Proofs.lower_ruleset_numgen_free`) |
 | optimizer pipeline | `optimize_table_uncond_compile_correct` | `Optimize_Uncond.v` | the shipped 18-stage `nft -o` pipeline + compilation preserves every packet's verdict against the synthesised declarations, for **any input chain** (no `rules_clean`, no freshness precondition) |
 | typed source lowering (**`typed_erasure`**) | the `Lower_Proofs.*_erasure` family (composed: `txmatch_erasure`) | `Lower_Proofs.v` | the verified lowering of a typed source construct produces exactly the byte IR the compiler consumes, with genuine per-construct obligations — `eq_erasure`/`neq_erasure` (register decode at the value's byteorder), `prefix_erasure` (CIDR: both the byte-aligned truncated-load shortening and the full-width masked compare), `wildcard_erasure` (leading-bytes short compare), `range_erasure_be`/`range_erasure_host` (BE vs host-endian range order), `bitmask_erasure`, `bitfield_erasure` (mask+shift), `set_interval_erasure` (byte-interval = numeric membership), `concat_key_erasure` (slot-padding invertibility), `cidr_interval_agrees_prefix_expand` (one CIDR expansion, not two). Since M6 the generated sources (`*_Gen.v`) carry the **surface** ruleset (`<name>_surface : sruleset`) and define every table/chain/decl as `Lower.lower_ruleset` applied to it, kernel-reduced — **no raw byte is written by hand** and a refused construct fails the generated `<name>_lowers_ok` Example (fail-loud) |
 
@@ -105,7 +105,7 @@ lock-in pins: `DEVELOPMENT.md` § "Known model infidelities" +
 | `compile_chain_correct` | SUPPORTING (stratum 1: one chain, pure verdict) | from `run_program_compile_chain`; consumed by the optimizer headline via `compile_chain_sets_correct` |
 | `compile_chain_sets_correct` (Corollary) | SUPPORTING | corollary of `compile_chain_correct` at `env_with_sets`; consumed by `optimize_table_uncond_compile_correct` |
 | `compile_chain_mut_correct` | SUPPORTING (stratum 2: + in-traversal mutation) | **derived**: the `fst` projection of stratum 3 (`run_program_mut_env_fst` / `eval_rules_mut_env_fst`), no second induction |
-| `compile_chain_mut_env_correct` | SUPPORTING (stratum 3: + env the chain leaves) | from `run_program_mut_env_compile_chain`, one induction over the per-rule step equation `vm_rule_step_compile_rule` (`vm_rule_step (compile_rule r) e p = dsl_rule_step r e p` under `mut_wf`) |
+| `compile_chain_mut_env_correct` | SUPPORTING (stratum 3: + env the chain leaves) | from `run_program_mut_env_compile_chain`, one induction over the per-rule step equation `vm_rule_step_compile_rule` (`vm_rule_step (compile_rule r) e p = dsl_rule_step r e p` under `rule_numgen_free`) |
 | `compile_seq_mut_correct` | **HEADLINE** (mutation/sequence axis) | = `compile_chain_mut_env_correct` + `seq_eval_env_ext` |
 | `compile_table_correct` | SUPPORTING (stratum 5: + jump/goto/return) | from `run_eval_rules_j`; consumed by `compile_ruleset_correct` |
 | `eval_chain_eq_table_jumpfree` | SUPPORTING (fidelity bridge: `eval_chain` = `eval_table` on jump-free chains) | from `eval_rules_jumpfree_eq_j` |
@@ -213,27 +213,55 @@ compile theorem in §2 equates one DSL row with its VM mirror.  The VM mirror of
 the `fst` bridge is `run_program_mut_env_fst` / `run_chain_mut_env_fst`.
 
 Every mutation/trace evaluator consumes a single per-rule STEP function —
-`dsl_rule_step` (DSL) / `vm_rule_step` (VM), each returning the pair
-(loadability-guarded verdict, `(env, packet)` left: writes + limiter
-consumption; the `numgen inc` counter advance is **VM-side only** —
-`vm_rule_step` composes `numgen_sweep_prog`, `dsl_rule_step` deliberately has
-no numgen sweep, and `mut_wf`'s `rule_numgen_free` conjunct makes the VM sweep
-the identity on the theorems' whole domain, so numgen-inc rules — which no
-parser can produce — are outside every mutation theorem and the round-robin
-behaviour `Regression/Numgen_RoundRobin.v` pins is not compiler-preserved;
-rationale on `Semantics.dsl_step`).  The DSL/VM agreement obligation is the one equation
-`vm_rule_step_compile_rule : mut_wf r = true -> vm_rule_step (compile_rule r) e p
-= dsl_rule_step r e p` (`Correct.v`).  `mut_wf` itself lives in the Semantics
-stratum (`Semantics.mut_wf`; `Correct.v` re-exports it as an abbreviation) and
-is stated entirely on the source AST: its numgen conjunct is the syntactic
-`rule_numgen_free` (`Semantics.v`), which equals the bytecode-side
-`numgen_free_prog (compile_rule r)` by `Correct.numgen_free_compile_rule` (the
-old-shape hypothesis is restored verbatim by `Correct.mut_wf_prog_eq`).
-Because it is source-side, the hypothesis is **discharged at the tool
-boundary**: `Semantics.mut_wf` is extracted, `make parse-test` asserts
-`forallb mut_wf` over every chain of the four shipped rulesets (build failure
-on violation), and the `nftc` CLI warns — naming this axis — on any parsed
-chain that violates it.
+`dsl_rule_step` (DSL) / `vm_rule_step` (VM).  Since the T1 single-fold rework,
+each is a projection of ONE left-to-right fold per rule —
+`Semantics.rule_step` (DSL) / `Semantics.run_rule_step` (bytecode) — modelling
+exactly the kernel's expression walk (nf_tables_core.c
+`nft_rule_dp_for_each_expr`): every expression (match, statement operand,
+verdict-map key, limiter check) sees the writes — packet-local meta/ct sets
+AND dynset env writes — of the expressions BEFORE it in the SAME rule; a
+failing match or breaking load stops the walk KEEPING the earlier writes; a
+statement after a terminal verdict never runs; the post-outcome (`r_after`)
+statements run (writes included) only on a `Continue` fall-through.  The step
+adds the limiter consumption sweep, and on the VM side only the `numgen inc`
+counter advance (`numgen_sweep_prog` — the DSL step deliberately has no
+numgen twin; rationale on `Semantics.dsl_rule_step`).
+
+The DSL/VM agreement obligation is the one per-rule equation
+`vm_rule_step_compile_rule : rule_numgen_free r = true ->
+vm_rule_step (compile_rule r) e p = dsl_rule_step r e p` (`Correct.v`), built
+on the UNCONDITIONAL fold bridge `run_rule_step_compile_rule :
+run_rule_step empty_rf (compile_rule r) e p = rule_step r e p` (degenerate
+zero-field operands included — `Compile.compile_vsrc` pins their source
+register).  `rule_numgen_free` (IR/Syntax.v) is the strand's ONLY hypothesis,
+and it is discharged by THEOREM over every frontend-emitted program:
+`Lower.lower_rule` refuses incremental numgen fail-loud (`LEnumgen`), and
+`Lower_Proofs.lower_ruleset_numgen_free` proves every chain of every
+successful lowering numgen-free — not a per-ruleset gate spot-check.
+
+**Strata retirement (T1 single-fold).**  The historical TWO-fold per-rule
+split — an entry-packet verdict pass (`rule_applies`/`outcome` paired into
+the old `dsl_rule_step`; `run_rule_writes` as a separate write pass) — is
+RETIRED; its successor is the strictly stronger single fold above (it
+additionally covers intra-rule set-then-read, intra-rule dynset feedback and
+mutating `r_after` statements, and flipped known-infidelity entry 3 —
+positive pins in `Regression/Setread_IntraRule.v`).  Concretely:
+`Semantics.mut_wf` (with `simple_vsrc`/`simple_writes` and the no-mutation-
+in-`r_after` conjunct) and `Correct.mut_wf_prog_eq` are DELETED — the
+operand-degeneracy conjunct is proved correct instead, the `r_after` conjunct
+is modelled instead, and the numgen conjunct survives as the discharged
+`rule_numgen_free`; the `run_rule_writes`/`body_writes` fixpoints are folded
+into `run_rule_step`/`body_step` (`body_writes` remains as the state
+projection of the body fold); `stmts_after_outcome` remains in the pure
+strand, coinciding with `after_step` on mutation-free statement lists
+(`after_step_mutfree`).  `rule_applies`/`outcome`/`rule_loadable` and the
+write-free `run_rule` REMAIN as the pure strand's evaluator (what
+`eval_rules`/`run_program` and the optimizer theorems consume) and are proved
+to be the mut-free projection of the fold: `Semantics.rule_step_mutfree`
+(`rule_mutfree r = true -> rule_step r e p = (if rule_loadable && rule_applies
+then outcome else None, (e, p))`) and `Correct.run_rule_step_no_writes`
+(`no_writes is = true -> run_rule_step rf is e p = (run_rule rf is e p,
+(e, p))`).
 
 ## 4. Axiom-freedom gates
 

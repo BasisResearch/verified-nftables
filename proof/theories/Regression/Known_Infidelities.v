@@ -13,10 +13,14 @@
     (../adversarial.md), not to a documentation milestone; until then this file
     keeps the divergent behaviour checked instead of merely described.
 
-    Three entries:
+    Two entries:
       (1) whole-body limiter sweep     — [gate_*] theorems below;
-      (2) OVmapNat vmap-HIT trace NAT  — [vmaphit_*] theorems below;
-      (3) intra-rule set-then-read     — [setread_*] theorems below. *)
+      (2) OVmapNat vmap-HIT trace NAT  — [vmaphit_*] theorems below.
+
+    (The historical third entry — intra-rule set-then-read — is REPAIRED: the
+    single-fold rule semantics runs every expression against the running
+    state, so `meta mark set 0x1 meta mark 0x1 accept` now ACCEPTS on both
+    sides.  Its positive successors live in Regression/Setread_IntraRule.v.) *)
 
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Bytecode Syntax Semantics Compile.
@@ -171,69 +175,4 @@ Proof. vm_compute. reflexivity. Qed.
 Theorem vmaphit_stores_nat_mapping :
   e_nat (fst (snd vmaphit_res)) [7;7]
   = Some (Some [1;2;3;4], Some [10;0;0;1], None, None).
-Proof. vm_compute. reflexivity. Qed.
-
-(* ------------------------------------------------------------------------ *)
-(** ** (3) KNOWN INFIDELITY — intra-rule set-then-read: the verdict pass does
-    not see the same rule's earlier write.
-
-    Kernel: the single rule `meta mark set 0x1 meta mark 0x1 accept` ACCEPTS —
-    expressions run left-to-right against the running packet (nf_tables_core.c
-    nft_rule_dp_for_each_expr), so the mark comparison reads the mark the
-    preceding meta-set statement just wrote (nft_meta_set_eval, then
-    nft_meta_get_eval/nft_cmp_eval on the updated skb->mark).
-
-    Model: the per-rule semantics is deliberately TWO folds ([dsl_rule_step]'s
-    header, Semantics.v): the VERDICT pass ([rule_applies]/[outcome]/[run_rule])
-    evaluates every load against the packet the rule ENTERED with — [SMetaSet]/
-    [SCtSet] ([IMetaSet]/[ICtSet]) are walked as register no-ops — while the
-    WRITE pass ([body_writes]/[run_rule_writes]) does thread the write.  Only
-    `notrack`/synproxy are threaded into the verdict pass intra-rule
-    ([rule_applies_walk]).  So the model's verdict pass misses the write, the
-    rule does not apply, and the chain falls to its Drop policy — on BOTH the
-    DSL and the VM side (the compiler theorems are honest; the shared
-    abstraction is what diverges).  The CROSS-rule form (`meta mark set 0x1` ;
-    `meta mark 0x1 accept` as two rules) IS faithful ([eval_rules_mut]).
-
-    PINNED (model behaviour; a fidelity fix MUST flip [setread_dropped] /
-    [vm_setread_dropped] to "= Accept" and update the ledger). *)
-
-Definition setread_rule : rule :=
-  {| r_body := [ BStmt (SMetaSet MKmark (VImm [0;0;0;1]))
-               ; BMatch (MEq FMetaMark [0;0;0;1]) ];
-     r_outcome := OVerdict Accept; r_after := [] |}.
-Definition setread_chain : chain := {| c_policy := Drop; c_rules := [setread_rule] |}.
-
-Definition env0 : env :=
-  {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
-     e_routes := []; e_rt := fun _ => []; e_limit := fun _ => 0;
-     e_quota := fun _ => 0; e_ifaddrs := fun _ => []; e_ifaddrs6 := fun _ => [];
-     e_connlimit := fun _ => []; e_ct := fun _ _ => []; e_nat := fun _ => None;
-     e_numgen := fun _ => 0 |}.
-
-Definition pkt_mark0 : packet := mkpkt base_meta [] [] [3;3].
-
-(* The rule is INSIDE the mutation theorems' domain — [mut_wf] holds — so this
-   is a kernel-fidelity gap of the shared abstraction, not a domain exclusion. *)
-Lemma setread_mut_wf : mut_wf setread_rule = true.
-Proof. vm_compute. reflexivity. Qed.
-
-(* The verdict pass does NOT see the intra-rule write: the rule does not apply. *)
-Lemma setread_not_applies : rule_applies setread_rule env0 pkt_mark0 = false.
-Proof. vm_compute. reflexivity. Qed.
-
-(* ... while the WRITE pass of the very same rule DOES write the mark (and its
-   own walk even re-reads it: [body_writes]' match gate passes on the mutated
-   packet) — the two folds observably disagree about the same statement list. *)
-Lemma setread_write_happens :
-  pkt_meta (snd (dsl_step setread_rule env0 pkt_mark0)) MKmark = [0;0;0;1].
-Proof. vm_compute. reflexivity. Qed.
-
-(* THE DIVERGENCE: the model DROPS the packet the kernel ACCEPTS. *)
-Theorem setread_dropped : eval_chain_mut setread_chain env0 pkt_mark0 = Drop.
-Proof. vm_compute. reflexivity. Qed.
-
-(* The compiled VM agrees with the DSL (and hence also diverges from the kernel). *)
-Theorem vm_setread_dropped :
-  run_chain_mut (compile_chain setread_chain) Drop env0 pkt_mark0 = Drop.
 Proof. vm_compute. reflexivity. Qed.

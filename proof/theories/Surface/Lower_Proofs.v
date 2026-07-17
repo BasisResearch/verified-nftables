@@ -2058,3 +2058,145 @@ Print Assumptions txmatch_erasure.
 Print Assumptions set_interval_erasure.
 Print Assumptions concat_key_erasure.
 Print Assumptions cidr_interval_agrees_prefix_expand.
+
+(* ================================================================== *)
+(** ** T1: the numgen-freedom discharge — over EVERY frontend-emitted program.
+
+    [Lower.lower_rule] refuses (fail-loud [LEnumgen]) any rule carrying an
+    incremental `numgen`, so every rule in every chain of every table a
+    successful [lower_ruleset] emits satisfies [rule_numgen_free].  This is the
+    theorem that discharges the ONLY hypothesis of the mutation-strand compiler
+    theorems ([Correct.compile_chain_mut_correct] and friends) for every
+    program the frontend can produce — quantified over ALL lowerings, not a
+    per-ruleset spot check. *)
+
+Lemma lower_rule_numgen_free : forall oracle fuel family defs cls fs r fs',
+  lower_rule oracle fuel family defs cls fs = LOk (r, fs') ->
+  rule_numgen_free r = true.
+Proof.
+  intros oracle fuel family defs cls fs r fs' H.
+  unfold lower_rule in H.
+  destruct (lower_clauses oracle fuel family defs cls rl0 fs) as [[rl fs1]|];
+    [| discriminate H].
+  cbn in H.
+  destruct (assemble_outcome rl) as [outc|]; [| discriminate H].
+  cbn in H.
+  destruct (rule_numgen_free
+              {| r_body := rev (rl_body rl); r_outcome := outc; r_after := nil |})
+    eqn:E; [| discriminate H].
+  injection H as <- _. exact E.
+Qed.
+
+Lemma lower_chain_items_numgen_free :
+  forall oracle fuel family defs items pol rules fs pol' rules' fs',
+    lower_chain_items oracle fuel family defs items pol rules fs
+      = LOk (pol', rules', fs') ->
+    forallb rule_numgen_free rules = true ->
+    forallb rule_numgen_free rules' = true.
+Proof.
+  intros oracle fuel family defs items.
+  induction items as [| it items IH]; intros pol rules fs pol' rules' fs' H Hacc.
+  - cbn in H. injection H as <- <- <-. exact Hacc.
+  - destruct it; cbn in H.
+    + (* ITypeHook *) eapply IH; eassumption.
+    + (* IPolicy *) eapply IH; eassumption.
+    + (* IRule *)
+      destruct (lower_rule oracle fuel family defs r fs) as [[r0 fs1]|] eqn:Hr;
+        [| discriminate H].
+      cbn in H.
+      eapply IH; [exact H |].
+      cbn [forallb]. rewrite (lower_rule_numgen_free _ _ _ _ _ _ _ _ Hr), Hacc.
+      reflexivity.
+Qed.
+
+Lemma forallb_rev : forall {A} (f : A -> bool) (l : list A),
+  forallb f (rev l) = forallb f l.
+Proof.
+  intros A f l. induction l as [| x l IH]; [reflexivity|].
+  cbn [rev forallb]. rewrite forallb_app, IH.
+  cbn [forallb]. rewrite Bool.andb_true_r, Bool.andb_comm. reflexivity.
+Qed.
+
+Lemma lower_chain_numgen_free : forall oracle fuel family defs sc fs nm c hk fs',
+  lower_chain oracle fuel family defs sc fs = LOk ((nm, c), hk, fs') ->
+  forallb rule_numgen_free (c_rules c) = true.
+Proof.
+  intros oracle fuel family defs sc fs nm c hk fs' H.
+  unfold lower_chain in H.
+  destruct (match chain_hookinfo (sc_items sc) with
+            | Some (_, h, _, _) => if is_known_hook h then LOk tt else LErr (LEhook h)
+            | None => LOk tt end); [| discriminate H].
+  cbn in H.
+  destruct (lower_chain_items oracle fuel family defs (sc_items sc) None nil fs)
+    as [[[pol rules] fs1]|] eqn:Hi; [| discriminate H].
+  cbn in H. injection H as _ <- _ _.
+  cbn [c_rules]. rewrite forallb_rev.
+  eapply lower_chain_items_numgen_free; [exact Hi | reflexivity].
+Qed.
+
+Definition chains_numgen_free (chains : list (string * chain)) : bool :=
+  forallb (fun nc => forallb rule_numgen_free (c_rules (snd nc))) chains.
+
+Lemma lower_table_chains_numgen_free :
+  forall oracle fuel defs family items chains hooks fs chains' hooks' fs',
+    lower_table_chains oracle fuel defs family items chains hooks fs
+      = LOk (chains', hooks', fs') ->
+    chains_numgen_free chains = true ->
+    chains_numgen_free chains' = true.
+Proof.
+  intros oracle fuel defs family items.
+  induction items as [| it items IH]; intros chains hooks fs chains' hooks' fs' H Hacc.
+  - cbn in H. injection H as <- _ _. unfold chains_numgen_free. rewrite forallb_rev.
+    exact Hacc.
+  - destruct it; cbn in H; try (eapply IH; eassumption).
+    (* SChain *)
+    destruct (lower_chain oracle fuel family defs c fs)
+      as [[[[nm c0] hk] fs1]|] eqn:Hc; [| discriminate H].
+    cbn in H.
+    eapply IH; [exact H |].
+    unfold chains_numgen_free in Hacc |- *. cbn [forallb snd].
+    rewrite (lower_chain_numgen_free _ _ _ _ _ _ _ _ _ _ Hc), Hacc. reflexivity.
+Qed.
+
+Definition tables_numgen_free
+    (tables : list (string * string * list (string * chain))) : bool :=
+  forallb (fun t => let '(_, _, chains) := t in chains_numgen_free chains) tables.
+
+Lemma lower_tables_numgen_free :
+  forall oracle fuel defs rs tables allhooks fs tables' hooks' fs',
+    lower_tables oracle fuel defs rs tables allhooks fs
+      = LOk (tables', hooks', fs') ->
+    tables_numgen_free tables = true ->
+    tables_numgen_free tables' = true.
+Proof.
+  intros oracle fuel defs rs.
+  induction rs as [| tl rs IH]; intros tables allhooks fs tables' hooks' fs' H Hacc.
+  - cbn in H. injection H as <- _ _.
+    unfold tables_numgen_free in Hacc |- *. rewrite forallb_rev. exact Hacc.
+  - destruct tl; cbn in H; try (eapply IH; eassumption).
+    (* TopTable *)
+    destruct (lower_table_chains oracle fuel defs (st_family t) (st_items t) nil nil fs)
+      as [[[chains hooks] fs1]|] eqn:Hc; [| discriminate H].
+    cbn in H.
+    eapply IH; [exact H |].
+    unfold tables_numgen_free in Hacc |- *. cbn [forallb].
+    rewrite Hacc, Bool.andb_true_r.
+    exact (lower_table_chains_numgen_free _ _ _ _ _ _ _ _ _ _ _ Hc eq_refl).
+Qed.
+
+(** HEADLINE (discharge): every chain of every table a successful lowering
+    emits is numgen-free — the mutation strand's hypothesis holds for every
+    frontend-emitted program. *)
+Theorem lower_ruleset_numgen_free : forall oracle rs lr,
+  lower_ruleset oracle rs = LOk lr ->
+  tables_numgen_free (lr_tables lr) = true.
+Proof.
+  intros oracle rs lr H. unfold lower_ruleset in H.
+  destruct (lower_setdecls_top _ _ _ _) as [fs1|]; [| discriminate H].
+  cbn in H.
+  destruct (lower_tables oracle _ (collect_defines rs) rs nil nil fs1)
+    as [[[tables hooks] fs2]|] eqn:Ht; [| discriminate H].
+  cbn in H. injection H as <-. cbn [lr_tables].
+  exact (lower_tables_numgen_free _ _ _ _ _ _ _ _ _ _ Ht eq_refl).
+Qed.
+Print Assumptions lower_ruleset_numgen_free.

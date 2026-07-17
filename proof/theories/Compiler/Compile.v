@@ -152,9 +152,21 @@ Definition compile_vsrc (vs : vsrc) : list instr :=
   match vs with
   | VImm v      => [IImmediateData 1 v]
   | VField f ts => compile_load (field_load f) 1 :: compile_transforms ts
+  (* A ZERO-FIELD map/hash/or operand loads nothing, so its source register
+     would otherwise hold whatever an earlier instruction of the rule left
+     there.  The kernel never evaluates such an expression (no frontend emits
+     one), so the compiled form is free to pin the source deterministically:
+     an [IImmediateData _ []] makes the register the empty operand the DSL
+     [eval_vsrc] uses — keeping compiler correctness UNCONDITIONAL over the
+     AST instead of hypothesis-guarded. *)
+  | VMap [] ts name =>
+      IImmediateData 1 [] :: compile_transforms ts ++
+      [ILookupVal [1] name 1]
   | VMap fields ts name =>
       load_fields (alloc_regs 0 fields) ++ compile_transforms ts ++
       [ILookupVal (map snd (alloc_regs 0 fields)) name 1]
+  | VHash [] len seed modulus offset =>
+      [IImmediateData 1 []; IJhash 1 1 len seed modulus offset]
   | VHash fields len seed modulus offset =>
       (* nft allocates the jhash output in reg 1 and the concatenated source from
          the next 128-bit register (slot 4); the hash reads it into reg 1 *)
@@ -163,7 +175,7 @@ Definition compile_vsrc (vs : vsrc) : list instr :=
               len seed modulus offset]
   | VOr srcs final =>
       match srcs with
-      | []             => []
+      | []             => [IImmediateData 1 []]
       | (f0, ts0) :: rest =>
           (compile_load (field_load f0) 1 :: compile_transforms_at 1 ts0) ++
           flat_map (fun e =>
@@ -174,6 +186,9 @@ Definition compile_vsrc (vs : vsrc) : list instr :=
   | VMapT elems name =>
       load_fields_t 0 elems ++
       [ILookupVal (map snd (alloc_regs 0 (map fst elems))) name 1]
+  | VHashMap [] len seed modulus offset name =>
+      [IImmediateData 1 []; IJhash 1 1 len seed modulus offset;
+       ILookupVal [1] name 1]
   | VHashMap fields len seed modulus offset name =>
       load_fields (alloc_regs 4 fields) ++
       [IJhash 1 (match map snd (alloc_regs 4 fields) with r :: _ => r | [] => 1 end)

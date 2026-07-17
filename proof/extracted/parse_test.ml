@@ -1304,7 +1304,7 @@ let check_interval_vmap () =
    LATER `ct state` read observes NF_CT_STATE_UNTRACKED_BIT (= 64).  Kernel nft_ct.c:
    nft_notrack_eval calls nf_ct_set(skb, NULL, IP_CT_UNTRACKED); nft_ct_get_eval's
    NFT_CT_STATE case then returns NF_CT_STATE_UNTRACKED_BIT.  The model now applies
-   set_untracked on SNotrack/INotrack (body_writes/run_rule_writes), threaded across
+   set_untracked on SNotrack/INotrack (body_step/run_rule_step), threaded across
    rules by eval_chain_mut.  set_untracked mirrors nft_notrack_eval's guard
    `if (ct || ctinfo == IP_CT_UNTRACKED) return;`: it is a NO-OP when an entry already
    exists (pkt_ct_present = true) and otherwise sets pkt_untracked, so do_load
@@ -2431,31 +2431,32 @@ let check_ct_no_entry () =
        (Syntax.MEq (Syntax.FCtState, [0;0;0;1])) p_noentry);
   Printf.printf "\n"
 
-(* ---------- (P) mut_wf tool-boundary discharge ----------
+(* ---------- (P) numgen-freedom: discharged by THEOREM, sanity-pinned here ----------
    The mutation/cross-packet theorems (compile_chain_mut_correct /
    compile_seq_mut_correct, THEOREMS.md axis 2) hold under the source-AST
-   hypothesis [Semantics.mut_wf] — deliberately decidable without running the
-   compiler.  This check DISCHARGES that hypothesis mechanically for every
-   chain of all four shipped rulesets (a violation is a build failure here,
-   and a warning in the nftc CLI), so "every real ruleset satisfies it" is a
-   gated fact, not an assumption. *)
-let check_mut_wf () =
-  Printf.printf "=== (P) mut_wf discharge over all four parsed rulesets ===\n";
+   hypothesis [rule_numgen_free], and Lower_Proofs.lower_ruleset_numgen_free
+   discharges it for EVERY successful lowering (lower_rule refuses incremental
+   numgen fail-loud, Lower.LEnumgen).  This check is therefore a SANITY pin of
+   the extracted predicate, not the discharge itself: the four shipped
+   rulesets are numgen-free, and the detector fires on a hand-built
+   numgen-inc rule (non-vacuity). *)
+let check_numgen_free () =
+  Printf.printf "=== (P) rule_numgen_free sanity over all four parsed rulesets ===\n";
   L.iter (fun name ->
     let parsed = Nft_parse.parse_file ("../../rulesets/" ^ name) in
     L.iter (fun (_fam, tname, chains) ->
       L.iter (fun (cn, (c : Syntax.chain)) ->
-        check (Printf.sprintf "mut_wf: %s %s/%s" name tname cn)
-          (L.for_all Semantics.mut_wf c.Syntax.c_rules))
+        check (Printf.sprintf "numgen-free: %s %s/%s" name tname cn)
+          (L.for_all Syntax.rule_numgen_free c.Syntax.c_rules))
         chains)
       parsed.Nft_inject.p_tables)
     ["ruleset.nft"; "optiplex.nft"; "router.nft"; "tutorial.nft"];
-  (* the checker is not vacuous: a meta-set in r_after — the one residual
-     mutation case the axis-2 contract in Main.v names — trips it *)
-  let broken = { Syntax.r_body = []; r_outcome = Syntax.OVerdict Verdict.Accept;
-                 r_after = [Syntax.SMetaSet (Packet.MKmark, Syntax.VImm [0;0;0;1])] } in
-  check "mut_wf detector fires on a meta-set in r_after"
-    (not (Semantics.mut_wf broken));
+  (* the detector is not vacuous: an incremental numgen field trips it *)
+  let ng = { Packet.ng_random = false; ng_mod = 2; ng_offset = 0 } in
+  let broken = { Syntax.r_body = [Syntax.BMatch (Syntax.MEq (Syntax.FNumgen ng, [0;0;0;1]))];
+                 r_outcome = Syntax.OVerdict Verdict.Accept; r_after = [] } in
+  check "numgen-free detector fires on an incremental numgen match"
+    (not (Syntax.rule_numgen_free broken));
   Printf.printf "\n"
 
 (* ---------- (Q) ExtrOcamlNatInt seam: oversized limit rates rejected ----------
@@ -2684,7 +2685,7 @@ let () =
     check_fib_type ();
     check_mark_range ();
     check_mark_set ();
-    check_mut_wf ();
+    check_numgen_free ();
     check_natint_guard ();
     check_typed_layer ();
     check_difftest_ast ();

@@ -21,7 +21,7 @@
     (an entry exists).  [load_ok (LCt CKstate) = true] (state is the lone always-
     readable key); [load_ok (LCt k<>CKstate) = pkt_ct_present p] — the non-state load
     BREAKs when there is no entry, exactly mirroring the kernel's NFT_BREAK.  The VM
-    ([ICtLoad] in [run_rule]/[run_rule_writes]) gates on the SAME [load_ok], so DSL and
+    ([ICtLoad] in [run_rule]/[run_rule_step]) gates on the SAME [load_ok], so DSL and
     VM stay in lock-step (compile_chain_correct is axiom-free with this gate).
     [do_load (LCt CKstate)] returns NF_CT_STATE_INVALID_BIT ([0;0;0;1]) on a no-entry,
     non-untracked packet and NF_CT_STATE_UNTRACKED_BIT ([0;0;0;64]) on an untracked one,

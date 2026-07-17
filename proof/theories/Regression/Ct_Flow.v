@@ -182,11 +182,9 @@ Proof.
   intros e p Hnew.
   pose proof (new_flow_not_established e p Hnew) as Hf.
   unfold eval_chain_mut, stateful_chain. cbn [c_rules c_policy eval_rules_mut].
-  assert (Happ : rule_applies estab_accept_rule e p = false).
-  { unfold rule_applies, estab_accept_rule; cbn [r_body rule_applies_walk].
-    rewrite Hf. reflexivity. }
   assert (Hov : fst (dsl_rule_step estab_accept_rule e p) = None).
-  { rewrite dsl_rule_step_fst, Happ. now rewrite Bool.andb_false_r. }
+  { rewrite dsl_rule_step_fst. unfold rule_step.
+    cbn [estab_accept_rule r_body body_step]. rewrite Hf. reflexivity. }
   destruct (dsl_rule_step estab_accept_rule e p) as [ov [e' p']].
   cbn [fst] in Hov. subst ov. reflexivity.
 Qed.
@@ -206,10 +204,8 @@ Proof.
     cbn. rewrite Hunt, Hpres, Hentry. vm_compute. reflexivity. }
   unfold eval_chain_mut, stateful_chain. cbn [c_rules c_policy eval_rules_mut].
   assert (Hov : fst (dsl_rule_step estab_accept_rule e p) = Some Accept).
-  { rewrite dsl_rule_step_fst.
-    replace (rule_loadable estab_accept_rule e p) with true by reflexivity.
-    unfold rule_applies, estab_accept_rule; cbn [r_body rule_applies_walk].
-    rewrite Hm. reflexivity. }
+  { rewrite dsl_rule_step_fst. unfold rule_step.
+    cbn [estab_accept_rule r_body body_step]. rewrite Hm. reflexivity. }
   destruct (dsl_rule_step estab_accept_rule e p) as [ov [e' p']].
   cbn [fst] in Hov. subst ov. reflexivity.
 Qed.

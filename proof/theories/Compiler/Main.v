@@ -50,15 +50,15 @@ Print Assumptions main_compile_seq_correct.
 
 (** ** Axis 2 — mutation and cross-packet learning ([compile_seq_mut_correct]).
 
-    For a single chain [c] whose rules are well-formed ([mut_wf] — a
-    non-degeneracy condition on the SOURCE AST that every real ruleset
-    satisfies, not a feature scope; decidable without running the compiler).
-    That decidability is DISCHARGED at the tool boundary, not assumed:
-    [Semantics.mut_wf] is extracted (Extract.v), `make parse-test` asserts
-    [forallb mut_wf] over every chain of the four shipped rulesets (build
-    failure on violation), and the `nftc` CLI warns — naming this axis — when
-    a parsed chain violates it (see the contract comment on
-    [Semantics.mut_wf]).  With that hypothesis:
+    For a single chain [c] whose rules are numgen-free ([rule_numgen_free] —
+    the ONLY hypothesis of the mutation strand; incremental `numgen` has no
+    parser/DSL surface and the LOWERING rejects it fail-loud
+    ([Lower.LEnumgen]), so [Lower_Proofs.lower_ruleset_numgen_free] discharges
+    this hypothesis for EVERY frontend-emitted program — not a gate
+    spot-check).  Per rule the semantics is the SINGLE left-to-right fold
+    [rule_step]/[run_rule_step] (kernel nft_rule_dp_for_each_expr): every
+    expression sees the writes — packet-local meta/ct sets AND dynset env
+    writes — of the expressions before it in the SAME rule.  With that:
     running a packet sequence with the compiled bytecode, threading the
     environment each traversal LEAVES (meta/ct writes, dynset-learned set/map
     elements) into the next packet, reproduces the DSL sequence verdict-for-
@@ -67,7 +67,7 @@ Print Assumptions main_compile_seq_correct.
     provably reaches a `lookup @s` on a later one.  This strand covers
     mutation but not jump/goto (single chain, no chain environment). *)
 Theorem main_compile_seq_mut_correct : forall c e packets,
-  forallb mut_wf (c_rules c) = true ->
+  forallb rule_numgen_free (c_rules c) = true ->
   seq_eval_env (fun e' p => run_chain_mut_env (compile_chain c) (c_policy c) e' p) e packets
   = seq_eval_env (fun e' p => eval_chain_mut_env c e' p) e packets.
 Proof. exact compile_seq_mut_correct. Qed.
@@ -113,14 +113,14 @@ Proof. intros c s. apply compile_chain_correct. Qed.
 Print Assumptions pre_split_compile_chain_correct.
 
 Corollary pre_split_compile_chain_mut_correct : forall c (s : pstate),
-  forallb mut_wf (c_rules c) = true ->
+  forallb rule_numgen_free (c_rules c) = true ->
   run_chain_mut (compile_chain c) (c_policy c) (ps_env s) (ps_wire s)
   = eval_chain_mut c (ps_env s) (ps_wire s).
 Proof. intros c s H. apply compile_chain_mut_correct. exact H. Qed.
 Print Assumptions pre_split_compile_chain_mut_correct.
 
 Corollary pre_split_compile_chain_mut_env_correct : forall c (s : pstate),
-  forallb mut_wf (c_rules c) = true ->
+  forallb rule_numgen_free (c_rules c) = true ->
   run_chain_mut_env (compile_chain c) (c_policy c) (ps_env s) (ps_wire s)
   = eval_chain_mut_env c (ps_env s) (ps_wire s).
 Proof. intros c s H. apply compile_chain_mut_env_correct. exact H. Qed.
@@ -131,7 +131,7 @@ Print Assumptions pre_split_compile_chain_mut_env_correct.
     so the transported claim quantifies over pre-split packets ([pstate]s) and
     evaluates their wire halves under the threaded env. *)
 Corollary pre_split_compile_seq_mut_correct : forall c e (packets : list pstate),
-  forallb mut_wf (c_rules c) = true ->
+  forallb rule_numgen_free (c_rules c) = true ->
   seq_eval_env (fun e' s => run_chain_mut_env (compile_chain c) (c_policy c) e' s)
                e (map ps_wire packets)
   = seq_eval_env (fun e' s => eval_chain_mut_env c e' s) e (map ps_wire packets).

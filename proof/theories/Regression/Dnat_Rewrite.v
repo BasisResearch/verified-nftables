@@ -83,10 +83,9 @@ Theorem dnat_output : forall h e p,
                 set_daddr nat_fam_ip4 p [10;0;0;1])).
 Proof.
   intros h e p Horig Hnone.
-  assert (Hw : dsl_writes dnat_rule e p = (e, p)) by reflexivity.
-  unfold eval_chain_trace, dnat_chain. cbn [c_rules eval_rules_trace dsl_rule_step].
-  rewrite (dsl_step_limit_free dnat_rule e p) by reflexivity.
-  cbn -[apply_nat dnat_rule dsl_writes nat_drops]. rewrite Hw.
+  unfold eval_chain_trace, dnat_chain. cbn [c_rules eval_rules_trace].
+  replace (dsl_rule_step dnat_rule e p) with (Some Accept, (e, p)) by reflexivity.
+  cbn -[apply_nat dnat_rule nat_drops].
   rewrite dnat_no_drop.
   rewrite (dnat_apply h e p Horig Hnone). reflexivity.
 Qed.
@@ -290,10 +289,9 @@ Theorem dnat_port_output : forall h e p,
                 set_dport (set_daddr nat_fam_ip4 p [10;0;0;1]) [31; 144])).
 Proof.
   intros h e p Horig Hnone.
-  assert (Hw : dsl_writes dnat_port_rule e p = (e, p)) by reflexivity.
-  unfold eval_chain_trace, dnat_port_chain. cbn [c_rules eval_rules_trace dsl_rule_step].
-  rewrite (dsl_step_limit_free dnat_port_rule e p) by reflexivity.
-  cbn -[apply_nat dnat_port_rule dsl_writes nat_drops]. rewrite Hw.
+  unfold eval_chain_trace, dnat_port_chain. cbn [c_rules eval_rules_trace].
+  replace (dsl_rule_step dnat_port_rule e p) with (Some Accept, (e, p)) by reflexivity.
+  cbn -[apply_nat dnat_port_rule nat_drops].
   rewrite dnat_port_no_drop.
   rewrite (dnat_port_apply h e p Horig Hnone). reflexivity.
 Qed.

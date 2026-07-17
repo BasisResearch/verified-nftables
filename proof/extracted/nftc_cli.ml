@@ -98,33 +98,12 @@ let optimize_table (c : Syntax.chain) : Semantics.set_decls * Syntax.chain =
 (* base-chain policy verdict -> NFTA_CHAIN_POLICY (NF_ACCEPT=1 / NF_DROP=0) *)
 let policy_code = function Verdict.Drop -> 0 | _ -> 1
 
-(* mut_wf discharge at the tool boundary.  The single-packet verdict theorems
-   (compile_chain_correct / compile_hook_correct / the optimizer headline)
-   need NO hypothesis, but the mutation/cross-packet axis —
-   compile_chain_mut_correct, compile_chain_mut_env_correct,
-   compile_seq_mut_correct (THEOREMS.md axis 2) — holds only for chains whose
-   every rule satisfies [Semantics.mut_wf] (stated on the source AST precisely
-   so this tool can decide it without running the compiler).  A user whose
-   ruleset violates it still gets correct-per-packet bytecode, but the
-   cross-packet mutation guarantees do NOT cover that chain — say so instead
-   of staying silent.  (`make parse-test` asserts the same predicate over the
-   four shipped rulesets, as a build failure.) *)
-let warn_mut_wf (p : Nft_inject.parsed) =
-  L.iter
-    (fun (_fam, tname, chains) ->
-      L.iter
-        (fun (cn, (c : Syntax.chain)) ->
-          if not (L.for_all Semantics.mut_wf c.Syntax.c_rules) then
-            prerr_string
-              (prog ^ ": warning: table " ^ tname ^ " chain " ^ cn
-               ^ " has a rule violating mut_wf (a degenerate meta/ct-set \
-                  operand or a mutating statement after the rule's outcome); \
-                  the mutation theorems compile_chain_mut_correct / \
-                  compile_seq_mut_correct do not cover this chain — \
-                  per-packet verdict correctness (compile_chain_correct) \
-                  still holds\n"))
-        chains)
-    p.Nft_inject.p_tables
+(* Numgen-freedom needs NO tool-boundary warning: the mutation/cross-packet
+   theorems' only hypothesis, [rule_numgen_free], is discharged by
+   Lower_Proofs.lower_ruleset_numgen_free for EVERY ruleset this parser can
+   produce (the verified lowering refuses incremental numgen fail-loud,
+   Lower.LEnumgen), so a parsed chain is always inside the mutation strand's
+   domain. *)
 
 (* the named sets/maps/vmaps a compiled program references, in lookup order *)
 let referenced_sets (prog : Bytecode.program) : string list =
@@ -234,7 +213,6 @@ let () =
         | Nft_inject.Inject_error msg | Nft_inject.Lower_error msg ->
             prerr_string (prog ^ ": unsupported construct: " ^ msg ^ "\n"); exit 1
       in
-      warn_mut_wf parsed;
       let chains = selected_chains parsed ~table:!table ~chain:!chain in
       let need_chains () =
         if chains = [] then (prerr_string (prog ^ ": no matching base chain\n"); exit 1) in
