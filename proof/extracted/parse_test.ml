@@ -2761,7 +2761,7 @@ let source_sweep files =
              incr attempted;
              let fam = match family_of_payload_path path with
                | Some f -> f | None -> fam in
-             let where = Printf.sprintf "%s:%d" path ln in
+             let _where = Printf.sprintf "%s:%d" path ln in
              let wrapped =
                Printf.sprintf "table %s %s {\n chain %s {\n  %s\n  %s\n }\n}\n"
                  fam tbl chn (hook_line_of_chain chn) src in
@@ -2770,8 +2770,18 @@ let source_sweep files =
               | Some parsed ->
                 (match
                    (try
+                      (* Enable the adjacent-payload-load merge (Optimize_PayMerge,
+                         corpus class I): nft ALWAYS performs this fusion
+                         (stmt_reduce/payload_can_merge), so the source-side
+                         bytecode is byte-identical only with the pass applied.
+                         The pass is verdict-preserving (paymerge_chain_eval) and
+                         merges exactly nft's cases; the host-endian xor fold
+                         (class L) is NOT applied here — its blocks are
+                         endian-unportable in the text corpus. *)
                       Some (L.concat_map (fun (_f, _t, chains) ->
-                          L.concat_map (fun (_cn, c) -> Compile.compile_chain c) chains)
+                          L.concat_map (fun (_cn, c) ->
+                            Compile.compile_chain (Optimize_PayMerge.paymerge_chain c))
+                            chains)
                           parsed.Nft_inject.p_tables)
                     with _ -> None)
                  with

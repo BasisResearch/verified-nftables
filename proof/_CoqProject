@@ -28,6 +28,8 @@ theories/Compiler/Correct.v
 
 theories/Optimizer/Optimize.v
 theories/Optimizer/Optimize_Normalize.v
+theories/Optimizer/Optimize_PayMerge.v
+theories/Optimizer/Optimize_XorFold.v
 theories/Optimizer/Optimize_ValueSet.v
 theories/Optimizer/Optimize_Vmap.v
 theories/Optimizer/Optimize_VmapGuarded.v
@@ -49,6 +51,7 @@ theories/Optimizer/Optimize_Snat.v
 theories/Optimizer/Optimize_Table_Inv.v
 theories/Optimizer/Optimize_Table.v
 theories/Optimizer/Optimize_Uncond.v
+theories/Optimizer/Optimize_Registry.v
 
 theories/Optimizer/Witness/Optimize_ValueSet_Meta_Witness.v
 theories/Optimizer/Witness/Optimize_SetGuarded_LinkLayer_Witness.v

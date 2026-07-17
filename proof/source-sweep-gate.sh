@@ -22,7 +22,13 @@ cd "$(dirname "$0")"
 # Pinned pass-count FLOOR (compile-from-source blocks byte-identical to corpus).
 # Raised 1166 -> 1176 when the class-G in-frame-ethertype network guard landed
 # (8 bridge/netdev vlan+icmp blocks moved from divergent to byte-identical).
-SOURCE_SWEEP_FLOOR="${SOURCE_SWEEP_FLOOR:-1176}"
+# Raised 1176 -> 1181 when the adjacent-payload-load merge landed
+# (Optimize_PayMerge, corpus class I: the 5 tcp sport/dport + ether saddr/type
+# fusion blocks — inet/payloadmerge.t.payload:1, inet/tcp.t.payload:166/173/182,
+# bridge/vlan.t.payload:279 — moved from divergent to byte-identical; the pass is
+# applied source-side in parse_test's sweep, verdict-preserving by
+# Optimize_PayMerge.paymerge_chain_eval).
+SOURCE_SWEEP_FLOOR="${SOURCE_SWEEP_FLOOR:-1181}"
 
 CORPUS_DIR="${NFT_CORPUS:-/tmp/nftables-src}"
 if [ ! -d "$CORPUS_DIR/tests/py" ]; then

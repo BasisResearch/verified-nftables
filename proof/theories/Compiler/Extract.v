@@ -39,6 +39,12 @@ From Stdlib Require Import ExtrOcamlNativeString.
 From Stdlib Require Import BinNat.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile Optimize Nftval.
 From Nft Require Import Optimize_ValueSet Optimize_Vmap Optimize_Concat Optimize_Table Optimize_Uncond.
+(* The named, composable pass system: the two intra-rule passes plus the
+   chain-level pipeline stages, each bundled with its eval-preservation proof,
+   and the ONE generic composition theorem [run_passes_correct].  Extracted so
+   the CLI's [-O p1,p2,...] parses names into a pass list and folds them
+   ([resolve_passes]/[run_passes]) with no proof of its own. *)
+From Nft Require Import Optimize_PayMerge Optimize_XorFold Optimize_Registry.
 (* The typed-layer surface (T1): the Coq surface AST, datatype/coercion
    lattice, symbol tables, selector map and typechecker.  Extracted so the
    OCaml frontend can hand its untyped tree (via the pure structural
@@ -118,6 +124,12 @@ Separate Extraction
   optimize_chain
   optimize_table
   optimize_table_uncond
+  paymerge_chain
+  xorfold_chain
+  run_passes
+  resolve_passes
+  registry
+  registry_names
   optimize_chain_valueset
   optimize_chain_vmap
   optimize_chain_concat
