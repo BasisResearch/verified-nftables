@@ -2866,6 +2866,39 @@ module OSweep = struct
           else if rst.[0] = '{' then Some (Printf.sprintf "%s %s %s" kind name rst)
           else Some (Printf.sprintf "%s %s { %s }" kind name rst)
 
+  (* `!NAME type SPEC [attrs]` -> a real nft set/map declaration.  The corpus
+     `!` prefix declares a named set (or, with a `type K : V`, a map); a `?` line
+     adds elements.  Only the TYPE (and an interval `flags`) determines whether a
+     rule that references `@NAME` typechecks and lowers, so the sweep injects the
+     declaration and drops the stateful attributes (timeout/size/gc-interval/...)
+     the set-body grammar does not carry.  `typeof`-typed sets/maps are not
+     modelled (their key type is an expression, not a datatype) and are skipped
+     — a rule referencing such a set is then a ledgered model boundary. *)
+  let set_attr_stop =
+    ["timeout"; "size"; "gc-interval"; "auto-merge"; "comment"; "elements"; "policy"]
+  let translate_setdecl (line : string) : string option =
+    let body = String.trim (String.sub line 1 (String.length line - 1)) in
+    match String.index_opt body ' ' with
+    | None -> None
+    | Some i ->
+        let name = String.sub body 0 i in
+        let rest = String.trim (String.sub body (i+1) (String.length body - i - 1)) in
+        if not (starts_with rest "type ") then None   (* typeof / unsupported *)
+        else
+          let spec = String.trim (String.sub rest 5 (String.length rest - 5)) in
+          let toks = String.split_on_char ' ' spec |> L.filter (fun s -> s <> "") in
+          let rec split_type acc = function
+            | [] -> (L.rev acc, [])
+            | k :: _ as r when k = "flags" || L.mem k set_attr_stop -> (L.rev acc, r)
+            | t :: tl -> split_type (t :: acc) tl in
+          let (type_toks, tail) = split_type [] toks in
+          let type_str = String.concat " " type_toks in
+          if type_str = "" then None else
+          let flags_clause =
+            match tail with "flags" :: f :: _ -> Printf.sprintf " flags %s;" f | _ -> "" in
+          let kw = if L.mem ":" type_toks then "map" else "set" in
+          Some (Printf.sprintf "%s %s { type %s;%s }" kw name type_str flags_clause)
+
   (* accepted iff parse + typecheck + verified lowering all succeed *)
   let accepted (text : string) : bool =
     match (try Some (Nft_parse.parse_raw text) with _ -> None) with
@@ -2892,7 +2925,7 @@ module OSweep = struct
     let n = in_channel_length ic in
     let raw = really_input_string ic n in close_in ic;
     let lines = String.split_on_char '\n' raw in
-    let table = ref "t" and chain = ref "c" and hook = ref "type filter hook input priority 0" in
+    let table = ref "t" and chain = ref "c" in
     let decls = ref [] and rules = ref [] in
     L.iter (fun l0 ->
       (* a leading `- ` marks an alternate list-output form of a rule; strip it
@@ -2909,9 +2942,13 @@ module OSweep = struct
          | _fam :: tbl :: chns :: _ -> table := tbl;
              (match String.split_on_char ',' chns with c :: _ -> chain := c | [] -> ())
          | _ -> ())
-      else if starts_with l ":" then
-        (match String.split_on_char ';' (String.sub l 1 (String.length l - 1)) with
-         | _cn :: hk :: _ -> hook := String.trim hk | _ -> ())
+      (* `:chain;<hook decl>` lines record the chain's own hook, but that hook is
+         family-specific (netdev files end on `hook egress device lo`, an
+         ip-invalid hook).  The sweep hardcodes `table ip` (see [build]), so the
+         chain's recorded hook is NOT used to wrap the rule — a fixed ip-valid
+         hook is (below).  This branch only consumes the `:` line so it is not
+         mistaken for a rule. *)
+      else if starts_with l ":" then ()
       else match split_verdict l with
         | None -> ()
         | Some (payload, verdict) ->
@@ -2919,13 +2956,37 @@ module OSweep = struct
             if starts_with payload "%" then
               (if verdict = "ok" then
                  match translate_decl payload with Some d -> decls := d :: !decls | None -> ())
+            else if starts_with payload "!" then
+              (* named-set/map declaration: inject the `;ok` ones so `@NAME`
+                 rules resolve (the decl's own ok/fail verdict tests set-body
+                 validity, a ledgered declaration-validity class like `%`). *)
+              (if verdict = "ok" then
+                 match translate_setdecl payload with Some d -> decls := d :: !decls | None -> ())
+            else if starts_with payload "?" then ()  (* set element add — not a rule *)
             else if has_var payload then ()   (* skip `$var` references *)
             else rules := (payload, verdict) :: !rules)
       lines;
-    let decl_text = String.concat "\n  " (L.rev !decls) in
+    (* Keep only declarations that INDIVIDUALLY parse/typecheck/lower.  A set
+       whose element datatype is not modelled (`type time`, `type inet_proto`)
+       would otherwise poison the whole wrapped table and turn every rule in the
+       file into a spurious false-reject; dropping it makes exactly the rules
+       that reference that unmodelled set fail (a genuine model boundary), while
+       every other rule is judged on its own. *)
+    let decl_ok d =
+      accepted (Printf.sprintf
+        "table ip t {\n  %s\n  chain c { type filter hook input priority 0; }\n}\n" d) in
+    let decl_text = String.concat "\n  " (L.rev (L.filter decl_ok !decls)) in
+    (* Wrap each rule in an ip-family filter/input base chain.  The sweep
+       hardcodes `table ip`, and `type filter hook input priority 0` is valid for
+       every ip/inet filter chain (nf_tables.h: NF_INET_LOCAL_IN is a valid hook
+       for NFPROTO_IPV4/NFPROTO_INET), so lowering never fails for a hook reason.
+       The rule's original chain hook (from a `:` line) is family-specific and is
+       deliberately NOT used — a netdev `hook egress` would be ip-invalid and
+       fail EVERY rule in that file, masking false-accepts. *)
     let build rule =
-      Printf.sprintf "table ip %s {\n  %s\n  chain %s {\n    %s\n    %s\n  }\n}\n"
-        !table decl_text !chain !hook rule in
+      Printf.sprintf
+        "table ip %s {\n  %s\n  chain %s {\n    type filter hook input priority 0;\n    %s\n  }\n}\n"
+        !table decl_text !chain rule in
     L.iter (fun (rule, verdict) ->
         let got = accepted (build rule) in
         let want = (verdict = "ok") in

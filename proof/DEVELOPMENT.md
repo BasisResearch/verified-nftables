@@ -808,30 +808,52 @@ BIDIRECTIONALLY (`;ok` accepted, `;fail` rejected) — 14/14 within scope.
 
 **Corpus ok/fail sweep (bidirectional ratchet).** Beyond `objects.t`, the
 `corpus-okfail-gate` runs EVERY rule line of the model's supported families
-(ip, inet, any — 1432 lines) through parse + typecheck + verified lowering and
-checks accept/reject against the corpus `;ok`/`;fail` verdict. Two counts are
-pinned (`corpus-okfail-gate.sh`): `pass >= 671` (a supported `;ok` line newly
-rejected, or a `;fail` line newly accepted, drops pass → red) and
-`false_accept <= 42` (a NEW invalid `;fail` line slipping through → red). The
-harness strips the corpus `- ` list-output continuation prefix and skips
-`define`/variable lines, so the residual list is trustworthy. This gate is the
+(ip, inet, any — 1391 rule lines after non-rule directives are excluded, see
+below) through parse + typecheck + verified lowering and checks accept/reject
+against the corpus `;ok`/`;fail` verdict. Two counts are pinned
+(`corpus-okfail-gate.sh`): `pass >= 1003` (a supported `;ok` line newly rejected,
+or a `;fail` line newly accepted, drops pass → red) and `false_accept <= 47`
+(a NEW invalid `;fail` line slipping through → red). This gate is the
 `;fail`-direction check that `source-sweep-gate` (a one-directional byte-identity
-PASS-count ratchet) is *structurally blind to* — the earlier claim that broader
-corpus coverage was "covered by source-sweep-gate and the semantic gates" was
-false for false-accepts and is retracted here.
+PASS-count ratchet) is *structurally blind to*.
 
-Two argument-range validations landed with this gate (previously silent
-accepts): a `queue num` argument is a 16-bit queue index (kernel nf_queue:
-`__u16`; `Typecheck.sverdict_valid` rejects `queue num 65536`), and a `tcp
-option` kind is a byte with per-option template fields (nft `tcpopt.c`:
-`Symbols.dt_tcpopt_num` rejects a raw kind > 255, `tcpopt_field_valid` rejects a
-field absent from the option's template such as `tcp option eol left`, since
-`eol`/`nop` carry only `kind`).
+*Harness correctness (the residual list must reflect model coverage, not wrap
+artifacts).* Each rule is wrapped in a hardcoded `table ip` / `chain … { type
+filter hook input priority 0; … }` base chain — `NF_INET_LOCAL_IN` is a valid
+hook for every ip/inet filter chain, so lowering never fails for a *hook* reason.
+The wrap deliberately IGNORES the rule's own chain hook recorded on the corpus
+`:` line: netdev files end on `hook egress device lo`, an ip-invalid hook that
+would fail EVERY rule in those ~30 files and mask false-accepts there. The harness
+strips the `- ` list-output continuation prefix; skips `define`/variable lines;
+translates the corpus `%name type …` (stateful object), `!name type …` (named
+set/map) declaration directives into real declarations and injects the ones that
+individually typecheck+lower so `@name` / object-reference rules resolve (a decl
+with an unmodelled element datatype is dropped rather than poisoning the whole
+wrapped table); and skips `?name elem` set-element directives (not rules). What
+remains in the residual is therefore genuine model coverage. (An earlier revision
+tracked the chain hook last-wins and hardcoded `table ip`, so it silently failed
+every rule in the netdev-hook files and undercounted false-accepts; that ceiling
+was unsound and is corrected here.)
 
-*The 42 residual `;fail` lines still accepted (per-case ledger — each is a
+Several argument-validations landed with this gate (previously silent accepts):
+a `queue num` argument is a 16-bit queue index (kernel nf_queue: `__u16`;
+`Typecheck.sverdict_valid` rejects `queue num 65536`); a `tcp option` kind is a
+byte with per-option template fields (nft `tcpopt.c`: `Symbols.dt_tcpopt_num`
+rejects a raw kind > 255, `tcpopt_field_valid` rejects a field absent from the
+option's template such as `tcp option eol left`, since `eol`/`nop` carry only
+`kind`); and a `limit`'s data-rate units follow nft's grammar (`parser.mly`
+`byte_unit_scale`/`limit_burst`) — the only valid byte units are
+`bytes`/`kbytes`/`mbytes` (`src/statement.c` `data_unit[]`, so `1 gbytes/second`
+is refused, not silently scaled by 1), and a packet-rate pairs only with a
+packet-burst and a byte-rate only with a byte-burst (`src/parser_bison.y`
+`limit_args` has no crossed production, so `rate 1023/second burst 10 bytes` and
+`rate 512 kbytes/second burst 5 packets` are refused).
+
+*The 47 residual `;fail` lines still accepted (per-case ledger — each is a
 validation OUTSIDE the model, not a laziness gap; loud refusal of the valid
 reference forms is not acceptable, so these accept the payload and skip the
-context check nft performs):*
+context check nft performs). The count is the true post-harness-fix figure and
+the pinned `false_accept` ceiling:*
 - **NAT/tproxy hook-context (22 lines):** `masquerade`/`redirect`/`snat`/`dnat`/
   `tproxy` are legal only in specific hooks (nat postrouting/prerouting, mangle
   prerouting); the corpus places them in a `filter input` chain, where nft
@@ -848,26 +870,48 @@ context check nft performs):*
   `ip6 nexthdr 6 tproxy ip to 192.0.2.1`). The model has no hook/family context
   threaded into statement typing. Follow-up: carry the chain's hook type into
   `tc_stmt` and reject hook-incompatible statements.
-- **Family / nfproto-scoped selectors and reject types (10 lines):** `meta
+- **`reject` type family/`nfproto` scope (5 lines):** a `reject with` code must
+  match the L3 family/`nfproto` — `reject.t` (`reject with icmpv6 no-route` in an
+  ip table; `meta nfproto ipv6 reject with icmp host-unreachable`; `meta nfproto
+  ipv4 ip protocol icmp reject with icmpv6 no-route`; `meta nfproto ipv6 ip
+  protocol icmp reject with icmp host-unreachable`; `meta l4proto udp reject with
+  tcp reset`). The model does not cross-check the reject code against a
+  runtime `nfproto`/family constraint. Follow-up: a family-context lattice
+  checked in `tc_stmt`.
+- **`ct` direction address `nfproto` scope (1 line):** a direction-qualified ct
+  address must match `nfproto` — `ct.t` (`meta nfproto ipv6 ct original ip saddr
+  1.2.3.4`, an IPv4 address under an ipv6 nfproto guard). Same missing
+  family-context lattice as above.
+- **Bridge-family selectors + empty interface name (6 lines):** `meta
   ibrname`/`obrname` (input/output bridge port name) are bridge-family only —
-  `meta.t` (2 lines, in both ip and inet tables = 4 instances); a `reject with`
-  code must match the L3 family/`nfproto` — `reject.t` (`reject with icmpv6
-  no-route` in ip; `meta nfproto ipv6 reject with icmp host-unreachable`; `meta
-  nfproto ipv4 ip protocol icmp reject with icmpv6 no-route`; `meta nfproto ipv6
-  ip protocol icmp reject with icmp host-unreachable`; `meta l4proto udp reject
-  with tcp reset`); a direction-qualified ct address must match `nfproto` —
-  `ct.t` (`meta nfproto ipv6 ct original ip saddr 1.2.3.4`). The model does not
-  cross-check a selector/reject against a runtime `nfproto`/family constraint.
-  Follow-up: a family-context lattice checked in `tc_stmt`/`tc_single`.
+  `meta.t` (2 lines, in both the ip and inet tables = 4 instances); and `meta
+  iifname ""` / `meta oifname ""` name an interface with the empty string, which
+  nft refuses (an interface name cannot be empty) — `meta.t` (2 instances). The
+  model treats an ifname as a 16-byte buffer (`""` is the all-zero buffer) and
+  does not scope a selector to a bridge family or validate string content.
+  Follow-up: the family-context lattice, plus a non-empty-string check on
+  ifname-typed match values.
 - **`log` option mutual-exclusion (8 lines):** nft forbids combining a syslog
   `level`/`level audit` with `group`/`snaplen`/`queue-threshold`/`prefix`/`flags`
   (group selects nfnetlink_log, disjoint from the syslog path) — `log.t` (`log
   level emerg group 2`, `log level alert group 2 prefix "log test2"`, `log level
   audit prefix "foo"`, `log level audit group 42`, `log level audit snaplen 23`,
   `log level audit queue-threshold 1337`, `log level audit flags all`, `log
-  flags all group 2`). The model accepts the log-option bag verbatim (`SLog`
+  flags all group 2`). The model accepts the log-option bag verbatim (`StLog`
   carries the option string; it is verdict-neutral). Follow-up: validate the
   option-set exclusivity in the log-statement typecheck.
+- **vmap overlapping-interval detection (2 lines):** `ip.t` (`ip saddr vmap {
+  10.0.1.0-10.0.1.255 : accept, 10.0.1.1-10.0.2.255 : drop }` and `ip saddr vmap
+  { 3.3.3.3-3.3.3.4 : accept, 1.1.1.1-1.1.1.255 : accept, 1.1.1.0-1.1.2.1 : drop
+  }`) — the interval entries overlap, which nft's interval-set builder rejects.
+  The model lowers each vmap entry independently and has no interval-overlap
+  check. Follow-up: an interval-disjointness check in the vmap/interval-set
+  lowering.
+- **`ether` payload-dependency (1 line):** `ether type ip vlan id 1` (`ether.t`)
+  — accessing `vlan id` requires the ethertype to be `8021q`/`8021ad`, so
+  `ether type ip` (IPv4) contradicts the implicit vlan dependency. The model
+  loads each payload field without the ethertype-dependency chain. Follow-up:
+  model the payload-protocol dependency graph.
 - **`fib` key-set validity (1 line):** `fib daddr . oif type local` — the
   `daddr . oif` selector tuple is not a valid fib lookup key for the `type`
   result (`fib.t`). The model resolves fib keys structurally without the
@@ -877,6 +921,23 @@ context check nft performs):*
   implicit dependency incompatible with the preceding `icmp code`/`type` in one
   rule. The model loads each icmp field independently without the conflict check.
   Follow-up: model the icmp field dependency graph.
+
+*The `;ok` lines still rejected (`false_reject`, 341) are genuine unsupported-
+construct model boundaries — whole feature families rather than laziness gaps in
+the supported ones. The major buckets: unsupported L4/tunnel protocols
+(`sctp`, `dccp`, `gre`/`gretap`, `geneve`, `vxlan`, `comp`, `osf`, `rt`,
+`ipsec`, `socket`, `hash`, `numgen`, `synproxy`, `rawpayload`); unsupported
+`meta` selectors (`priority`/tc-handle, `iiftype`/`oiftype`, `time`/`day`/`hour`,
+`nftrace`, `rtclassid`, `sdif`/`sdifname`, `ipsec`); relational `<`/`>`
+comparisons (parser has `==`/`!=` only — `ct expiration > …`, `ct bytes > …`,
+`meta time < …`); sub-byte bitfield set/range matches (`ip hdrlength`, `ip
+dscp`, `tcp doff` — the masked set/range lookup shape is not lowered, see the
+`tc_bitfield` note in `Surface/Typecheck.v`); payload set-statement mangling
+(`ip ttl set …`, `ip dscp set …`, `tcp flags set …`); anonymous stateful
+statements (`quota N bytes`, `ct count …`); dynamic set-add statements (`add
+@set { … }`); and `typeof`-typed sets/maps and wildcard (`*`) vmap defaults.
+Each is a named construct the typed frontend does not yet cover; none is a
+regression in a construct it does cover.*
 
 ## Trust story (TCB)
 

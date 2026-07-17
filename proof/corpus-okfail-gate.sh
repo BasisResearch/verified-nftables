@@ -19,24 +19,31 @@
 #                            above the ceiling and turns the build red, even if a
 #                            simultaneously-gained `;ok` line keeps pass level.
 #
-# The harness strips the corpus `- ` list-output continuation prefix and skips
-# `define`/variable lines, so the residual list is trustworthy.  The floor is a
-# lower bound and the ceiling an upper bound: raise the floor / lower the ceiling
-# (never the reverse) whenever a fix improves coverage.  This is broader and
-# bidirectional where source-sweep-gate is a one-directional byte-identity
-# PASS-count ratchet (blind to false-accepts of invalid input).
+# So the residual reflects MODEL COVERAGE (not wrap artifacts), the harness wraps
+# each rule in a fixed ip/filter/input base chain — a hook valid for the
+# hardcoded family, so lowering never fails for a hook reason, NOT the rule's own
+# (possibly netdev-egress) chain hook — strips the corpus `- ` list-output
+# continuation prefix, skips `define`/variable and `?` set-element lines, and
+# injects the `%`/`!` object/set/map DECLARATIONS that individually typecheck so
+# `@name`/objref rules resolve.  The floor is a lower bound and the ceiling an
+# upper bound: raise the floor / lower the ceiling (never the reverse) whenever a
+# fix improves coverage.  This is broader and bidirectional where source-sweep-
+# gate is a one-directional byte-identity PASS-count ratchet (blind to
+# false-accepts of invalid input).
 #
 # Requires: git, dune.  Reuses the corpus clone (NFT_CORPUS, default /tmp/nftables-src).
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Pinned bidirectional counts over ip+inet+any (1432 rule lines total).
-# pass FLOOR = matched lines (both directions); false_accept CEIL = the 42
-# ledgered residual `;fail` lines still accepted (NAT/tproxy hook-context,
-# family/nfproto-scoped selectors + reject types, fib key-set, log option
-# mutual-exclusion, icmp field inter-dependency).  See DEVELOPMENT.md.
-CORPUS_OKFAIL_FLOOR="${CORPUS_OKFAIL_FLOOR:-671}"
-CORPUS_OKFAIL_CEIL="${CORPUS_OKFAIL_CEIL:-42}"
+# Pinned bidirectional counts over ip+inet+any (1391 rule lines, after non-rule
+# `?`/`define` directives are excluded).  pass FLOOR = matched lines (both
+# directions); false_accept CEIL = the 47 ledgered residual `;fail` lines still
+# accepted (NAT/tproxy hook-context, reject/ct nfproto scope, bridge-family
+# selectors + empty ifname, log option mutual-exclusion, vmap interval overlap,
+# ether payload-dependency, fib key-set, icmp field inter-dependency).  See
+# DEVELOPMENT.md "T3 corpus ok/fail residual".
+CORPUS_OKFAIL_FLOOR="${CORPUS_OKFAIL_FLOOR:-1003}"
+CORPUS_OKFAIL_CEIL="${CORPUS_OKFAIL_CEIL:-47}"
 
 CORPUS_DIR="${NFT_CORPUS:-/tmp/nftables-src}"
 if [ ! -d "$CORPUS_DIR/tests/py" ]; then
