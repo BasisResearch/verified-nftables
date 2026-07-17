@@ -163,10 +163,15 @@ Definition resolve_value (dt : dtype) (v : svalue) : option nftval :=
                | DTipv4 => if Nat.eqb (List.length b) 4 then Some (VIpv4 b) else None
                | _ => None
                end
-  | SVIp6 b => match dt with
-               | DTipv6 => if Nat.eqb (List.length b) 16 then Some (VIpv6 b) else None
-               | _ => None
-               end
+  | SVIp6 l r => match dt with
+                 | DTipv6 =>
+                     match sip6_bytes l r with
+                     | Some b => if Nat.eqb (List.length b) 16
+                                 then Some (VIpv6 b) else None
+                     | None => None
+                     end
+                 | _ => None
+                 end
       (* NOTE: typed_atom also maps a bare IPv4 literal in an ip6 context to
          a raw 4-byte VIpv6 ("v4-mapped").  That value is not [wf] (an IPv6
          register is 16 bytes) and nft's own spelling for it is the mapped
@@ -321,6 +326,7 @@ Proof.
     destruct (Nat.eqb (List.length b) 4) eqn:Hl; [|discriminate H].
     injection H as <-. left. apply Nat.eqb_eq in Hl. exact Hl.
   - (* SVIp6 *) destruct dt; cbv beta iota in H; try discriminate H.
+    destruct (sip6_bytes _ _) as [b|] eqn:Hb; [|discriminate H].
     destruct (Nat.eqb (List.length b) 16) eqn:Hl; [|discriminate H].
     injection H as <-. left. apply Nat.eqb_eq in Hl. exact Hl.
   - (* SVMac *) destruct dt; cbv beta iota in H; try discriminate H.
@@ -423,7 +429,7 @@ Definition check_atom (dt : dtype) (v : svalue) : bool :=
 Definition prefix_ok (dt : dtype) (base : svalue) (len : nat) : bool :=
   match base with
   | SVIp4 _ => dtype_eqb dt DTipv4 && check_atom dt base && (len <=? 32)%nat
-  | SVIp6 _ => dtype_eqb dt DTipv6 && check_atom dt base && (len <=? 128)%nat
+  | SVIp6 _ _ => dtype_eqb dt DTipv6 && check_atom dt base && (len <=? 128)%nat
   | _ => false
   end.
 

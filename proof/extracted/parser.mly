@@ -68,7 +68,7 @@
 /* literals */
 %token <int> INT
 %token <int list> IPV4
-%token <int list> IPV6
+%token <Nft_ast.ip6lit> IPV6
 %token <int list> MAC
 %token <string> IDENT
 %token <string> STRING

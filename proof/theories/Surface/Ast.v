@@ -14,17 +14,22 @@
         `limit` guard enforces — see theories/Compiler/Extract.v), so every
         [nat] here is a genuine natural far below the 63-bit wrap.
       - OCaml [string] -> [string] over ExtrOcamlNativeString.
-      - IP/MAC literals arrive as the lexer's byte-group lists ([data]); the
-        grouping is textual grammar work (dotted quad, colon-hex), NOT a
-        byteorder decision — byteorder is decided only by the Coq datatype
-        layer (Surface.Datatype / IR.Nftval).
+      - IPv4/MAC literals arrive as the lexer's byte-group lists ([data]): a
+        dotted-quad octet or a colon-hex byte pair is exactly ONE byte, so the
+        grouping is textual grammar work, NOT a byteorder decision.  An IPv6
+        literal is DIFFERENT — each colon group is a 16-bit value that must be
+        split into two big-endian bytes, and `::` expands to a zero run — so it
+        arrives UN-expanded, as [ip6grp] groups, and [sip6_bytes] below performs
+        the big-endian split and `::` expansion IN COQ (failing loud on a
+        literal that cannot be 16 bytes).  Byteorder is decided only on the
+        verified side (here + Surface.Datatype / IR.Nftval), never in OCaml.
       - The base-chain priority is an OCaml [int] that can be negative
         (`priority -100`); it crosses the seam in SIGN-MAGNITUDE form
         ([prio_neg], [priority]) so no negative number meets [nat].
 
     NO functions and NO bytes-with-meaning live here: this file is pure syntax. *)
 
-From Stdlib Require Import List String.
+From Stdlib Require Import List String PeanoNat Lia.
 From Nft Require Import Bytes.
 Import ListNotations.
 Local Open Scope string_scope.
@@ -36,12 +41,83 @@ Local Open Scope string_scope.
     depends on the datatype of the selector it appears under (a port is 2
     big-endian bytes, an ifname is a 16-byte NUL-padded buffer, `established`
     is a 4-byte conntrack-state word). *)
+(* ------------------------------------------------------------------ *)
+(** ** IPv6 literal groups (un-expanded).
+
+    An IPv6 literal is carried as its colon-separated groups, split at the
+    single `::` zero-run (if any).  A group is either a 16-bit hex value
+    ([G16], 0..65535) or an embedded trailing IPv4 tail ([G4], its already-
+    grouped octets, one byte each, from `::ffff:1.2.3.4`).  The lexer does the
+    numeral parsing and octet grouping (residue (b): int/grouping only); the
+    big-endian 16-bit split and the `::` zero-fill are done here, in Coq. *)
+Inductive ip6grp : Type :=
+| G16 (n : nat)      (* a 1-4 hex-digit colon group, value 0..65535 *)
+| G4  (os : data).   (* an embedded IPv4 tail: octets, one byte each *)
+
+Definition ip6grp_bytes (g : ip6grp) : data :=
+  match g with
+  (* the big-endian 16-bit split — the byteorder decision, made HERE in Coq *)
+  | G16 n => [Nat.div n 256; Nat.modulo n 256]
+  | G4 os => os
+  end.
+
+Definition ip6grps_bytes (gs : list ip6grp) : data :=
+  List.concat (List.map ip6grp_bytes gs).
+
+(** [front ++ zero-fill ++ back] is exactly 16 bytes when the two ends fit.
+    Stated over abstract [data] and proved cleanly (so the subtraction is a real
+    [Nat.sub], not the giant nested match a concrete literal [16] iota-reduces
+    to inside the caller's pipeline); the caller discharges its goal by [apply],
+    whose up-to-conversion unification bridges the two forms. *)
+Lemma ip6_fill_len : forall (x y : data),
+  (List.length x + List.length y <= 16)%nat ->
+  List.length (x ++ List.repeat 0 (16 - (List.length x + List.length y)) ++ y)%list
+    = 16%nat.
+Proof.
+  intros x y H. unfold data, byte in *.
+  rewrite !length_app, repeat_length. lia.
+Qed.
+
+(** Expand a textual IPv6 literal to its 16 network-order bytes.
+    [r = None]  : no `::`; the groups must already total 16 bytes.
+    [r = Some rs]: the `::` zero-run sits between [l] and [rs], filled with as
+    many zero bytes as needed to reach 16.  Fails loud ([None]) on any literal
+    that cannot form exactly 16 bytes. *)
+Definition sip6_bytes (l : list ip6grp) (r : option (list ip6grp)) : option data :=
+  match r with
+  | None =>
+      let b := ip6grps_bytes l in
+      if Nat.eqb (List.length b) 16 then Some b else None
+  | Some rs =>
+      let lb := ip6grps_bytes l in
+      let rb := ip6grps_bytes rs in
+      let have := (List.length lb + List.length rb)%nat in
+      if Nat.leb have 16
+      then Some (lb ++ List.repeat 0 (16 - have) ++ rb)%list
+      else None
+  end.
+
+(** The expansion, when it succeeds, always yields exactly a 16-byte register. *)
+Lemma sip6_bytes_len : forall l r b,
+  sip6_bytes l r = Some b -> List.length b = 16%nat.
+Proof.
+  intros l r b H. unfold sip6_bytes in H. destruct r as [rs|]; cbv zeta in H.
+  - destruct (Nat.leb (List.length (ip6grps_bytes l)
+                       + List.length (ip6grps_bytes rs)) 16) eqn:E;
+      [|discriminate H].
+    injection H as <-. apply ip6_fill_len. apply Nat.leb_le, E.
+  - destruct (Nat.eqb (List.length (ip6grps_bytes l)) 16) eqn:E;
+      [|discriminate H].
+    injection H as <-. apply Nat.eqb_eq, E.
+Qed.
+
 Inductive svalue : Type :=
 | SVNum    (n : nat)                   (* decimal or 0x-hex integer literal    *)
 | SVSym    (s : string)                (* bareword: symbolic constant / ifname *)
 | SVStr    (s : string)                (* double-quoted string, e.g. "eth0"    *)
 | SVIp4    (b : data)                  (* dotted IPv4 literal, 4 bytes         *)
-| SVIp6    (b : data)                  (* IPv6 literal, 16 bytes (big-endian)  *)
+| SVIp6    (l : list ip6grp) (r : option (list ip6grp))
+                                       (* IPv6 literal groups; -> 16 BE bytes  *)
 | SVMac    (b : data)                  (* MAC literal, 6 bytes                 *)
 | SVVar    (s : string)                (* `$name` reference to a `define`      *)
 | SVPrefix (v : svalue) (len : nat)    (* CIDR prefix, e.g. 192.168.50.0/24    *)
