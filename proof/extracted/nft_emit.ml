@@ -1,16 +1,22 @@
-(* Nft_emit: serialise a parsed ruleset (Nft_inject.parsed) back into Coq source.
+(* Nft_emit: serialise the SURFACE ruleset (the parser's structural injection,
+   [Ast.sruleset]) back into a Coq source file.
 
-   This is the bridge that makes the parser *useful for proving*: instead of
-   hand-translating a `.nft` file into the Syntax AST inside a `.v` file (which
-   would leave "the AST mirrors the text" eyeballed and untrusted), the parser
-   EMITS the AST as Coq `Definition`s, and the proof `Require Import`s the
-   generated file and proves properties about *that* term.  So the thing proved
-   IS the parser's output — there is no hand step between text and theorem.
+   This is the bridge that makes the parser useful for proving: instead of
+   hand-translating a `.nft` file into an AST inside a `.v` file (which would
+   leave "the AST mirrors the text" eyeballed and untrusted), the parser EMITS
+   the SURFACE tree as a Coq `Definition <name>_surface : sruleset`, and the Gen
+   file then LOWERS it with the VERIFIED Coq `Lower.lower_ruleset` (via
+   [lower_or_empty] / the [lr_*] projections).  So every byte the proofs reason
+   about — every match operand, set element, NAT target, hook priority — is
+   produced by the kernel-checked lowering, NOT written here.  This emitter
+   composes NO byte and makes NO datatype/byteorder decision: it prints only the
+   untyped surface constructors (IP literals via the [sip4] smart ctor, i.e. as
+   decimal octets, so the Gen file carries no raw byte list).
 
-   The emitter is untrusted glue (like the renderer); the generated `.v` is
-   checked by the Rocq kernel, and every property proved of it transports to the
-   installed bytecode via compile_table_correct.  Constructors the lowering never
-   produces raise [Unsupported] rather than emitting something unchecked.
+   Fail-loud: a generated `Example <name>_lowers_ok : lower_ok ... = true` breaks
+   `make proofs` if the ruleset does not lower — a refused construct can never
+   silently fall back to OCaml bytes.  Surface constructors the emitter has no
+   spelling for raise [Unsupported] rather than emitting something unchecked.
    See TODO 9 in ../DEVELOPMENT.md. *)
 
 module L = Stdlib.List
@@ -22,9 +28,6 @@ exception Unsupported of string
 
 let bool b = if b then "true" else "false"
 
-let data (d : Bytes.data) : string =
-  "[" ^ S.concat "; " (L.map string_of_int d) ^ "]"
-
 let qstring (s : string) : string =
   let b = Buffer.create (S.length s + 2) in
   Buffer.add_char b '"';
@@ -32,276 +35,139 @@ let qstring (s : string) : string =
                    Buffer.add_char b c) s;
   Buffer.add_char b '"'; Buffer.contents b
 
-let verdict (v : Verdict.verdict) : string =
-  match v with
-  | Verdict.Accept -> "Accept" | Verdict.Drop -> "Drop"
-  | Verdict.Continue -> "Continue" | Verdict.Return -> "Return"
-  | Verdict.Reject (t, c) -> spf "(Reject %d %d)" t c
-  | Verdict.Queue (lo, hi, byp, fan) -> spf "(Queue %d %d %s %s)" lo hi (bool byp) (bool fan)
-  | Verdict.Jump n -> spf "(Jump %s)" (qstring n)
-  | Verdict.Goto n -> spf "(Goto %s)" (qstring n)
+let str_list (l : string list) : string =
+  "[" ^ S.concat "; " (L.map qstring l) ^ "]"
 
-(* meta/ct keys: emit the Coq constructor name (= the extracted OCaml one) *)
-let meta_key (k : Packet.meta_key) : string = match k with
-  | Packet.MKl4proto->"MKl4proto" | Packet.MKnfproto->"MKnfproto"
-  | Packet.MKprotocol->"MKprotocol" | Packet.MKmark->"MKmark"
-  | Packet.MKiif->"MKiif" | Packet.MKoif->"MKoif"
-  | Packet.MKiiftype->"MKiiftype" | Packet.MKoiftype->"MKoiftype"
-  | Packet.MKiifname->"MKiifname" | Packet.MKoifname->"MKoifname"
-  | Packet.MKlen->"MKlen" | Packet.MKpkttype->"MKpkttype" | Packet.MKcpu->"MKcpu"
-  | Packet.MKskuid->"MKskuid" | Packet.MKskgid->"MKskgid"
-  | Packet.MKpriority->"MKpriority" | Packet.MKcgroup->"MKcgroup"
-  | Packet.MKday->"MKday" | Packet.MKhour->"MKhour"
-  | Packet.MKiifgroup->"MKiifgroup" | Packet.MKoifgroup->"MKoifgroup"
-  | Packet.MKprandom->"MKprandom" | Packet.MKrtclassid->"MKrtclassid"
-  | Packet.MKsdif->"MKsdif" | Packet.MKsdifname->"MKsdifname"
-  | Packet.MKsecpath->"MKsecpath" | Packet.MKtime->"MKtime"
-  | Packet.MKbri_iifname->"MKbri_iifname" | Packet.MKbri_oifname->"MKbri_oifname"
-  | Packet.MKbri_iifpvid->"MKbri_iifpvid" | Packet.MKbri_iifvproto->"MKbri_iifvproto"
-  | Packet.MKibrhwaddr->"MKibrhwaddr" | Packet.MKbroute->"MKbroute"
+(* a selector key path [["tcp";"dport"]] and a list of them *)
+let keypath (kp : Ast.skeypath) : string = str_list kp
+let keypath_list (kps : Ast.skeypath list) : string =
+  "[" ^ S.concat "; " (L.map keypath kps) ^ "]"
 
-let ct_key (k : Packet.ct_key) : string = match k with
-  | Packet.CKstate->"CKstate" | Packet.CKstatus->"CKstatus" | Packet.CKmark->"CKmark"
-  | Packet.CKdirection->"CKdirection" | Packet.CKexpiration->"CKexpiration"
-  | Packet.CKid->"CKid" | Packet.CKavgpkt->"CKavgpkt" | Packet.CKbytes->"CKbytes"
-  | Packet.CKhelper->"CKhelper" | Packet.CKl3proto->"CKl3proto" | Packet.CKlabel->"CKlabel"
-  | Packet.CKpackets->"CKpackets" | Packet.CKproto->"CKproto" | Packet.CKzone->"CKzone"
-  | Packet.CKevent->"CKevent"
+let opt_nat = function None -> "None" | Some (n : int) -> spf "(Some %d)" n
 
-let rec field (f : Syntax.field) : string = match f with
-  | Syntax.FMetaL4proto->"FMetaL4proto" | Syntax.FMetaNfproto->"FMetaNfproto"
-  | Syntax.FMetaProtocol->"FMetaProtocol" | Syntax.FMetaMark->"FMetaMark"
-  | Syntax.FMetaIif->"FMetaIif" | Syntax.FMetaOif->"FMetaOif"
-  | Syntax.FMetaIiftype->"FMetaIiftype" | Syntax.FMetaOiftype->"FMetaOiftype"
-  | Syntax.FMetaIifname->"FMetaIifname" | Syntax.FMetaOifname->"FMetaOifname"
-  | Syntax.FMetaLen->"FMetaLen" | Syntax.FMetaPkttype->"FMetaPkttype"
-  | Syntax.FMetaCpu->"FMetaCpu" | Syntax.FMetaSkuid->"FMetaSkuid"
-  | Syntax.FMetaSkgid->"FMetaSkgid" | Syntax.FMetaPriority->"FMetaPriority"
-  | Syntax.FCtState->"FCtState" | Syntax.FCtStatus->"FCtStatus"
-  | Syntax.FCtMark->"FCtMark" | Syntax.FCtDirection->"FCtDirection"
-  | Syntax.FCtExpiration->"FCtExpiration" | Syntax.FCtId->"FCtId"
-  | Syntax.FEtherDaddr->"FEtherDaddr" | Syntax.FEtherSaddr->"FEtherSaddr"
-  | Syntax.FEtherType->"FEtherType" | Syntax.FLinkVlan->"FLinkVlan"
-  | Syntax.FIp4VerHdrlen->"FIp4VerHdrlen" | Syntax.FIp4Word0->"FIp4Word0"
-  | Syntax.FIp4Tos->"FIp4Tos" | Syntax.FIp4Totlen->"FIp4Totlen"
-  | Syntax.FIp4Id->"FIp4Id" | Syntax.FIp4FragOff->"FIp4FragOff"
-  | Syntax.FIp4Ttl->"FIp4Ttl" | Syntax.FIp4Protocol->"FIp4Protocol"
-  | Syntax.FIp4Csum->"FIp4Csum" | Syntax.FIp4Saddr->"FIp4Saddr"
-  | Syntax.FIp4Daddr->"FIp4Daddr" | Syntax.FIp6Saddr->"FIp6Saddr"
-  | Syntax.FIp6Daddr->"FIp6Daddr" | Syntax.FThSport->"FThSport"
-  | Syntax.FThDport->"FThDport" | Syntax.FTcpSeq->"FTcpSeq" | Syntax.FTcpAck->"FTcpAck"
-  | Syntax.FTcpFlags->"FTcpFlags" | Syntax.FUdpLen->"FUdpLen" | Syntax.FUdpCsum->"FUdpCsum"
-  | Syntax.FIcmpType->"FIcmpType" | Syntax.FIcmpCode->"FIcmpCode"
-  | Syntax.FMetaGen k -> spf "(FMetaGen %s)" (meta_key k)
-  | Syntax.FCtGen k -> spf "(FCtGen %s)" (ct_key k)
-  | Syntax.FFib (sel, res) -> spf "(FFib %s %s)" (qstring sel) (fib_result res)
-  (* raw payload slice: byte-aligned address prefixes (`ip saddr a.b.c.0/24`
-     -> FPayload PNetwork 12 3) and the ip6/tcp/igmp raw header fields *)
-  | Syntax.FPayload (b, off, len) -> spf "(FPayload %s %d %d)" (pbase b) off len
-  | _ -> raise (Unsupported "field constructor not emittable (extend nft_emit.field)")
+(* ---------- surface values (mirror of Ast.svalue) ----------
+   IP literals print through the [sip4] smart ctor (decimal octets), never a
+   raw byte list; the byteorder of those octets is decided only by the Coq
+   datatype layer during lowering. *)
+let rec svalue (v : Ast.svalue) : string = match v with
+  | Ast.SVNum n -> spf "(SVNum %d)" n
+  | Ast.SVSym s -> spf "(SVSym %s)" (qstring s)
+  | Ast.SVStr s -> spf "(SVStr %s)" (qstring s)
+  | Ast.SVIp4 [a; b; c; d] -> spf "(sip4 %d %d %d %d)" a b c d
+  | Ast.SVIp4 _ -> raise (Unsupported "IPv4 literal is not 4 octets")
+  | Ast.SVIp6 _ -> raise (Unsupported "IPv6 literal emission (add an sip6 smart ctor)")
+  | Ast.SVMac _ -> raise (Unsupported "MAC literal emission (add an smac smart ctor)")
+  | Ast.SVVar s -> spf "(SVVar %s)" (qstring s)
+  | Ast.SVPrefix (v, l) -> spf "(SVPrefix %s %d)" (svalue v) l
+  | Ast.SVRange (a, b) -> spf "(SVRange %s %s)" (svalue a) (svalue b)
+  | Ast.SVConcat vs -> spf "(SVConcat %s)" (svalue_list vs)
+  | Ast.SVSet vs -> spf "(SVSet %s)" (svalue_list vs)
+and svalue_list (vs : Ast.svalue list) : string =
+  "[" ^ S.concat "; " (L.map svalue vs) ^ "]"
 
-and pbase (b : Packet.pbase) : string = match b with
-  | Packet.PLink -> "PLink" | Packet.PNetwork -> "PNetwork"
-  | Packet.PTransport -> "PTransport"
+let opt_svalue = function None -> "None" | Some v -> spf "(Some %s)" (svalue v)
 
-and fib_result (r : Packet.fib_result) : string = match r with
-  | Packet.FRoif -> "FRoif" | Packet.FRoifname -> "FRoifname"
-  | Packet.FRtype -> "FRtype" | Packet.FRpresent -> "FRpresent"
+let sverdict (v : Ast.sverdict) : string = match v with
+  | Ast.SVaccept -> "SVaccept" | Ast.SVdrop -> "SVdrop"
+  | Ast.SVcontinue -> "SVcontinue" | Ast.SVreturn -> "SVreturn"
+  | Ast.SVjump c -> spf "(SVjump %s)" (qstring c)
+  | Ast.SVgoto c -> spf "(SVgoto %s)" (qstring c)
+  | Ast.SVqueue (lo, hi, byp, fan) ->
+      spf "(SVqueue %d %d %s %s)" lo hi (bool byp) (bool fan)
+  | Ast.SVreject opts -> spf "(SVreject %s)" (qstring opts)
 
-let field_list (fs : Syntax.field list) : string =
-  "[" ^ S.concat "; " (L.map field fs) ^ "]"
+let ssetexpr (e : Ast.ssetexpr) : string = match e with
+  | Ast.SSEvalue v -> spf "(SSEvalue %s)" (svalue v)
+  | Ast.SSEset vs -> spf "(SSEset %s)" (svalue_list vs)
+  | Ast.SSElist vs -> spf "(SSElist %s)" (svalue_list vs)
+  | Ast.SSEref n -> spf "(SSEref %s)" (qstring n)
 
-let transform (t : Syntax.transform) : string = match t with
-  | Syntax.TBitAnd (m, x) -> spf "(TBitAnd %s %s)" (data m) (data x)
-  | Syntax.TShift (shl, n) -> spf "(TShift %s %d)" (bool shl) n
-  | Syntax.TByteorder (h, s, l) -> spf "(TByteorder %s %d %d)" (bool h) s l
-  | Syntax.TJhash (l, s, m, o) -> spf "(TJhash %d %d %d %d)" l s m o
-let transform_list ts = "[" ^ S.concat "; " (L.map transform ts) ^ "]"
+let srelop (o : Ast.srelop) : string = match o with
+  | Ast.SOpImplicit -> "SOpImplicit" | Ast.SOpEq -> "SOpEq"
+  | Ast.SOpNe -> "SOpNe" | Ast.SOpBang -> "SOpBang"
 
-let vsrc (v : Syntax.vsrc) : string = match v with
-  | Syntax.VImm d -> spf "(VImm %s)" (data d)
-  | _ -> raise (Unsupported "vsrc constructor not emittable (extend nft_emit.vsrc)")
+let srhs (r : Ast.srhs) : string =
+  spf "{| sr_op := %s; sr_neg := %s; sr_payload := %s |}"
+    (srelop r.Ast.sr_op) (bool r.Ast.sr_neg) (ssetexpr r.Ast.sr_payload)
 
-let limit_spec (s : Packet.limit_spec) : string =
-  spf "{| ls_rate := %d; ls_unit := %d; ls_burst := %d; ls_bytes := %s; ls_flags := %d |}"
-    s.Packet.ls_rate s.Packet.ls_unit s.Packet.ls_burst (bool s.Packet.ls_bytes)
-    s.Packet.ls_flags
+let smatch (m : Ast.smatch) : string =
+  spf "{| sm_keys := %s; sm_rhs := %s |}"
+    (keypath_list m.Ast.sm_keys) (srhs m.Ast.sm_rhs)
 
-(* ---------- typed values / typed matches (the Elab layer) ---------- *)
+let sstmt (s : Ast.sstmt) : string = match s with
+  | Ast.StComment c -> spf "(StComment %s)" (qstring c)
+  | Ast.StCounter -> "StCounter"
+  | Ast.StLog opts -> spf "(StLog %s)" (qstring opts)
+  | Ast.StLimit (rate, unit, over, burst, byte_rate) ->
+      spf "(StLimit %d %s %s %d %s)" rate (qstring unit) (bool over) burst (bool byte_rate)
+  | Ast.StMasquerade flags -> spf "(StMasquerade %s)" (str_list flags)
+  | Ast.StSnat (addr, port, flags) ->
+      spf "(StSnat %s %s %s)" (opt_svalue addr) (opt_nat port) (str_list flags)
+  | Ast.StDnat (addr, port, flags) ->
+      spf "(StDnat %s %s %s)" (opt_svalue addr) (opt_nat port) (str_list flags)
+  | Ast.StRedirect (port, flags) ->
+      spf "(StRedirect %s %s)" (opt_nat port) (str_list flags)
+  | Ast.StTproxy (fam, addr, port) ->
+      spf "(StTproxy %s %s %s)" (qstring fam) (opt_svalue addr) (opt_nat port)
+  | Ast.StMetaSet (k, v) -> spf "(StMetaSet %s %s)" (qstring k) (svalue v)
+  | Ast.StCtSet (k, v) -> spf "(StCtSet %s %s)" (qstring k) (svalue v)
+  | Ast.StNotrack -> "StNotrack"
 
-let n_int (n : BinNums.coq_N) : int = BinNat.N.to_nat n
+let vmap_entry ((v, sv) : Ast.svalue * Ast.sverdict) : string =
+  spf "(%s, %s)" (svalue v) (sverdict sv)
 
-let printable (c : int) = c >= 0x20 && c < 0x7f && c <> Char.code '"' && c <> Char.code '\\'
+let sclause (c : Ast.sclause) : string = match c with
+  | Ast.CMatch m -> spf "(CMatch %s)" (smatch m)
+  | Ast.CVmap (keys, entries) ->
+      spf "(CVmap %s [%s])" (keypath_list keys)
+        (S.concat "; " (L.map vmap_entry entries))
+  | Ast.CVmapRef (keys, name) ->
+      spf "(CVmapRef %s %s)" (keypath_list keys) (qstring name)
+  | Ast.CVerdict v -> spf "(CVerdict %s)" (sverdict v)
+  | Ast.CStmt s -> spf "(CStmt %s)" (sstmt s)
+  | Ast.CBitmatch (kp, op, mask, r) ->
+      spf "(CBitmatch %s %s %s %s)" (keypath kp) (qstring op) (svalue mask) (srhs r)
 
-let nftval (v : Nftval.nftval) : string = match v with
-  | Nftval.VInteger (w, n) -> spf "(VInteger %d %d)" w (n_int n)
-  | Nftval.VIpv4 [a;b;c;d] -> spf "(ip4 %d %d %d %d)" a b c d
-  | Nftval.VIpv4 b -> spf "(VIpv4 %s)" (data b)
-  | Nftval.VIpv6 b -> spf "(VIpv6 %s)" (data b)
-  | Nftval.VIfname s when
-      (* a full 16-byte NUL-padded printable name prints via the smart ctor *)
-      L.length s = 16 &&
-      (let rec split acc = function
-         | 0 :: rest -> L.for_all (fun c -> c = 0) rest && acc <> []
-         | c :: rest -> printable c && split (c :: acc) rest
-         | [] -> false
-       in split [] s) ->
-      let name = S.init (L.length (L.filter (fun c -> c <> 0) s))
-                   (fun i -> Char.chr (L.nth s i)) in
-      spf "(ifname %s)" (qstring name)
-  | Nftval.VIfname s -> spf "(VIfname %s)" (data s)
-  | Nftval.VPort n -> spf "(VPort %d)" (n_int n)
-  | Nftval.VEther b -> spf "(VEther %s)" (data b)
-  | Nftval.VVerdict n -> spf "(VVerdict %d)" (n_int n)
-  | Nftval.VCtState n -> spf "(VCtState %d)" (n_int n)
-  | Nftval.VFibType n -> spf "(VFibType %d)" (n_int n)
-  | Nftval.VHostInt (w, n) -> spf "(VHostInt %d %d)" w (n_int n)
+let srule (r : Ast.srule) : string =
+  "[" ^ S.concat ";\n           " (L.map sclause r) ^ "]"
 
-let cmpop (op : Bytecode.cmpop) : string = match op with
-  | Bytecode.CEq -> "CEq" | Bytecode.CNe -> "CNe" | Bytecode.CLt -> "CLt"
-  | Bytecode.CGt -> "CGt" | Bytecode.CLe -> "CLe" | Bytecode.CGe -> "CGe"
+let opt_sverdict = function None -> "None" | Some v -> spf "(Some %s)" (sverdict v)
 
-let matchcond (m : Syntax.matchcond) : string = match m with
-  | Syntax.MEq (f, v) -> spf "(MEq %s %s)" (field f) (data v)
-  | Syntax.MNeq (f, v) -> spf "(MNeq %s %s)" (field f) (data v)
-  | Syntax.MRange (f, neg, lo, hi) ->
-      spf "(MRange %s %s %s %s)" (field f) (bool neg) (data lo) (data hi)
-  (* the implicit-bitmask idiom prints as its derived form [MFlagsSet]:
-     (field & bits) <> 0 with an all-zero xor/cmp operand of the mask's width *)
-  | Syntax.MMasked (f, Bytecode.CNe, mask, xor, v)
-    when xor = Stdlib.List.init (Stdlib.List.length mask) (fun _ -> 0)
-      && v = xor ->
-      spf "(MFlagsSet %s %s)" (field f) (data mask)
-  | Syntax.MMasked (f, op, mask, xor, v) ->
-      spf "(MMasked %s %s %s %s %s)" (field f) (cmpop op) (data mask) (data xor) (data v)
-  | Syntax.MConcatSet (fs, neg, name) ->
-      spf "(MConcatSet %s %s %s)" (field_list fs) (bool neg) (qstring name)
-  | Syntax.MSetT (f, ts, neg, name) ->
-      spf "(MSetT %s %s %s %s)" (field f) (transform_list ts) (bool neg) (qstring name)
-  | Syntax.MRangeT (f, ts, neg, lo, hi) ->
-      spf "(MRangeT %s %s %s %s %s)"
-        (field f) (transform_list ts) (bool neg) (data lo) (data hi)
-  | Syntax.MLimit s -> spf "(MLimit %s)" (limit_spec s)
-  | _ -> raise (Unsupported "matchcond constructor not emittable (extend nft_emit.matchcond)")
+let setdecl_elem ((v, d) : Ast.svalue * Ast.sverdict option) : string =
+  spf "(%s, %s)" (svalue v) (opt_sverdict d)
 
-let stmt (s : Syntax.stmt) : string = match s with
-  | Syntax.SCounter (p, b) -> spf "(SCounter %d %d)" p b
-  | Syntax.SLog opts -> spf "(SLog %s)" (qstring opts)
-  | Syntax.SMetaSet (k, vs) -> spf "(SMetaSet %s %s)" (meta_key k) (vsrc vs)
-  | Syntax.SCtSet (k, vs) -> spf "(SCtSet %s %s)" (ct_key k) (vsrc vs)
-  | _ -> raise (Unsupported "stmt constructor not emittable (extend nft_emit.stmt)")
+let ssetdecl (sd : Ast.ssetdecl) : string =
+  spf "(TSet {| sd_name := %s; sd_is_map := %s; sd_type := %s; sd_flags := %s;\n            sd_elements := [%s] |})"
+    (qstring sd.Ast.sd_name) (bool sd.Ast.sd_is_map)
+    (str_list sd.Ast.sd_type) (str_list sd.Ast.sd_flags)
+    (S.concat "; " (L.map setdecl_elem sd.Ast.sd_elements))
 
-let tmatch (tm : Elab.tmatch) : string = match tm with
-  | Elab.TMEq (f, v) -> spf "TMEq %s %s" (field f) (nftval v)
-  | Elab.TMNeq (f, v) -> spf "TMNeq %s %s" (field f) (nftval v)
-  | Elab.MPrefix (f, op, v, plen) ->
-      spf "MPrefix %s %s %s %d" (field f) (cmpop op) (nftval v) plen
-  | Elab.MWildcard (f, prefix) -> spf "MWildcard %s %s" (field f) (data prefix)
+let schain_item (it : Ast.schain_item) : string = match it with
+  | Ast.ITypeHook (ct, hook, pn, prio) ->
+      spf "(ITypeHook %s %s %s %d)" (qstring ct) (qstring hook) (bool pn) prio
+  | Ast.IPolicy v -> spf "(IPolicy %s)" (sverdict v)
+  | Ast.IRule r -> spf "(IRule %s)" (srule r)
 
-(* a typed-representable match prints as its typed source under the VERIFIED
-   elaboration [elab_m]; a synthesized protocol-dependency guard is tagged
-   [BDep] (a definitional alias of [BMatch]) *)
-let match_str (m : Syntax.matchcond) : string =
-  match Nft_inject.typed_of m with
-  | Some tm -> spf "(elab_m (%s))" (tmatch tm)
-  | None -> matchcond m
+let schain (c : Ast.schain) : string =
+  spf "(TChain {| sc_name := %s;\n        sc_items := [%s] |})"
+    (qstring c.Ast.sc_name)
+    (S.concat ";\n         " (L.map schain_item c.Ast.sc_items))
 
-let body_item (b : Syntax.body_item) : string = match b with
-  | Syntax.BMatch m ->
-      spf "(%s %s)" (if Nft_inject.is_dep m then "BDep" else "BMatch") (match_str m)
-  | Syntax.BStmt s -> spf "(BStmt %s)" (stmt s)
+let stable_item (it : Ast.stable_item) : string = match it with
+  | Ast.TChain c -> schain c
+  | Ast.TSet sd -> ssetdecl sd
+  | Ast.TObj n -> spf "(TObj %s)" (qstring n)
 
-let vmap_spec (vm : Syntax.vmap_spec) : string =
-  let keyf = match vm.Syntax.vm_keyf with
-    | None -> "None"
-    | Some (f, ts) -> spf "(Some (%s, %s))" (field f) (transform_list ts) in
-  spf "{| vm_fields := %s; vm_keyf := %s; vm_name := %s |}"
-    (field_list vm.Syntax.vm_fields) keyf (qstring vm.Syntax.vm_name)
+let stable (t : Ast.stable) : string =
+  spf "(TopTable {| st_family := %s; st_name := %s;\n      st_items := [%s] |})"
+    (qstring t.Ast.st_family) (qstring t.Ast.st_name)
+    (S.concat ";\n      " (L.map stable_item t.Ast.st_items))
 
-let opt_int = function None -> "None" | Some n -> spf "(Some %d)" n
-
-let nat_2nd_str (e : Syntax.nat_2nd) : string =
-  match e with
-  | Syntax.NXnone -> "NXnone"
-  | Syntax.NXimm (amax, pmin, pmax) ->
-      let od = function Some v -> spf "(Some %s)" (data v) | None -> "None" in
-      spf "(NXimm %s %s %s)" (od amax) (od pmin) (od pmax)
-  | Syntax.NXmap_addr_max -> "NXmap_addr_max"
-  | Syntax.NXmap_port -> "NXmap_port"
-  | Syntax.NXmap_full -> "NXmap_full"
-
-let nat_op (k : Bytecode.nat_op) : string = match k with
-  | Bytecode.NKsnat -> "NKsnat" | Bytecode.NKdnat -> "NKdnat"
-  | Bytecode.NKmasq -> "NKmasq" | Bytecode.NKredir -> "NKredir"
-let nat_af (f : Bytecode.nat_af) : string = match f with
-  | Bytecode.NFip4 -> "NFip4" | Bytecode.NFip6 -> "NFip6" | Bytecode.NFinet -> "NFinet"
-
-let nat_spec (ns : Syntax.nat_spec) : string =
-  (* the lowering produces `masquerade` (no operand) and immediate-address/port
-     `snat`/`dnat to <ipv4>[:<port>]` (register-free: nat_addr_imm / nat_extra).
-     Field/map/src-sourced NAT operands are not produced by the lowering. *)
-  (match ns.Syntax.nat_field, ns.Syntax.nat_map, ns.Syntax.nat_src with
-   | None, None, None -> ()
-   | _ -> raise (Unsupported "nat operand emission (extend nft_emit.nat_spec)"));
-  ignore opt_int;
-  spf "{| nat_addr_imm := %s; nat_field := None; nat_map := None; nat_src := None; nat_extra := %s; nat_kind := %s; nat_family := %s; nat_flags := %d |}"
-    (match ns.Syntax.nat_addr_imm with Some v -> spf "(Some %s)" (data v) | None -> "None")
-    (nat_2nd_str ns.Syntax.nat_extra)
-    (nat_op ns.Syntax.nat_kind) (nat_af ns.Syntax.nat_family) ns.Syntax.nat_flags
-
-let outcome (o : Syntax.outcome) : string = match o with
-  | Syntax.OVerdict v ->
-      let vs = verdict v in
-      spf "OVerdict %s" (if S.contains vs ' ' && not (S.get vs 0 = '(') then "(" ^ vs ^ ")" else vs)
-  | Syntax.ONone -> "ONone"
-  | Syntax.OVmap vm -> spf "OVmap %s" (vmap_spec vm)
-  | Syntax.OVmapNat (vm, ns) -> spf "OVmapNat %s %s" (vmap_spec vm) (nat_spec ns)
-  | Syntax.ONat ns -> spf "ONat %s" (nat_spec ns)
-  | Syntax.OTproxy _ | Syntax.OFwd _ | Syntax.OQueue _ ->
-      raise (Unsupported "outcome constructor not emittable (extend nft_emit.outcome)")
-
-let rule (r : Syntax.rule) : string =
-  let body = "[" ^ S.concat ";\n             " (L.map body_item r.Syntax.r_body) ^ "]" in
-  spf "{| r_body := %s;\n     r_outcome := %s; r_after := [] |}"
-    body (outcome r.Syntax.r_outcome)
-
-let chain (c : Syntax.chain) : string =
-  let rules = "[" ^ S.concat ";\n\n   " (L.map rule c.Syntax.c_rules) ^ "]" in
-  spf "{| c_policy := %s;\n   c_rules := %s |}" (verdict c.Syntax.c_policy) rules
-
-(* ---------- set/map declarations -> a set_decls record ---------- *)
-
-(* a set element prints as its source view: a point via [SEl], an interval via
-   [SRange] (both definitional aliases of the stored pair, Elab.v) *)
-let iv (lo, hi) =
-  if lo = hi then spf "(SEl %s)" (data lo)
-  else spf "(SRange %s %s)" (data lo) (data hi)
-(* a verdict-map entry is an interval KEY [lo,hi] paired with its verdict
-   (NFT_SET_INTERVAL | NFT_SET_MAP); emit the Coq triple [(lo, hi, v)] which
-   parses as [((lo,hi),v) : data * data * verdict]. *)
-let kv ((lo, hi), v) = spf "(%s, %s, %s)" (data lo) (data hi) (verdict v)
-
-let assoc_ivs (l : (string * (Bytes.data * Bytes.data) list) list) : string =
-  "[" ^ S.concat ";\n   "
-    (L.map (fun (n, ivs) ->
-       spf "(%s, [%s])" (qstring n) (S.concat "; " (L.map iv ivs))) l) ^ "]"
-let assoc_kvs (l : (string * ((Bytes.data * Bytes.data) * Verdict.verdict) list) list) : string =
-  "[" ^ S.concat ";\n   "
-    (L.map (fun (n, kvs) ->
-       spf "(%s, [%s])" (qstring n) (S.concat "; " (L.map kv kvs))) l) ^ "]"
-
-(* ---------- hook registration ---------- *)
-
-(* map an nftables hook name to the Coq [hook_id] constructor.  Fail loudly on an
-   unknown hook so a base chain is never silently dropped from dispatch. *)
-let hook_id (h : string) : string = match S.lowercase_ascii h with
-  | "prerouting"  -> "Hprerouting"
-  | "input"       -> "Hinput"
-  | "forward"     -> "Hforward"
-  | "output"      -> "Houtput"
-  | "postrouting" -> "Hpostrouting"
-  | "ingress"     -> "Hingress"
-  | other -> raise (Unsupported ("unknown netfilter hook: " ^ other))
+let stoplevel (tl : Ast.stoplevel) : string = match tl with
+  | Ast.TopDefine (n, v) -> spf "(TopDefine %s %s)" (qstring n) (svalue v)
+  | Ast.TopTable t -> stable t
+  | Ast.TopInclude p -> spf "(TopInclude %s)" (qstring p)
+  | Ast.TopNop -> "TopNop"
 
 (* ---------- whole-file emission ---------- *)
 
@@ -309,20 +175,46 @@ let sanitize (s : string) : string =
   S.map (fun c -> if (c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9') then c
                   else '_') s
 
-let emit (src_path : string) (p : Nft_inject.parsed) : string =
-  let b = Buffer.create 4096 in
+(* the tables of the surface ruleset, with their chain names (for the
+   per-table / per-chain projection definitions the proofs reference) *)
+let tables_of (rs : Ast.sruleset) : (string * string * string list) list =
+  L.filter_map (function
+    | Ast.TopTable t ->
+        let chains = L.filter_map (function
+          | Ast.TChain c -> Some c.Ast.sc_name
+          | _ -> None) t.Ast.st_items in
+        Some (t.Ast.st_family, t.Ast.st_name, chains)
+    | _ -> None) rs
+
+let emit (src_path : string) (rs : Ast.sruleset) : string =
+  let base = sanitize (Filename.remove_extension (Filename.basename src_path)) in
+  let b = Buffer.create 8192 in
   let pr fmt = Printf.ksprintf (Buffer.add_string b) fmt in
   pr "(* AUTO-GENERATED from %s by nft2coq (extracted/nft_emit.ml). DO NOT EDIT.\n" src_path;
-  pr "   This is the parser's output as Coq terms: the chains and the set/map\n";
-  pr "   declarations their lookups read.  Properties proved about these terms\n";
-  pr "   are properties of the parsed ruleset (and, via compile_table_correct, of\n";
-  pr "   the installed bytecode). *)\n\n";
+  pr "   This is the parser's SURFACE output as a Coq [sruleset]; the tables,\n";
+  pr "   chains, hooks and set/map declarations the proofs reason about are the\n";
+  pr "   VERIFIED lowering [Lower.lower_ruleset] applied to it (no hand-written\n";
+  pr "   bytes here).  A refused construct fails [%s_lowers_ok] (fail-loud). *)\n\n" base;
   pr "From Stdlib Require Import List String ZArith.\n";
   pr "From Nft Require Import Bytes Verdict Packet Bytecode Syntax Semantics Nftval Elab.\n";
+  pr "From Nft Require Import Surface.Ast Surface.Lower Gen_Support.\n";
   pr "Import ListNotations.\nOpen Scope string_scope.\n\n";
-  (* the declared/anonymous sets & maps *)
-  pr "Definition decls : set_decls :=\n  {| sd_sets := %s;\n   sd_vmaps := %s;\n   sd_maps := %s |}.\n\n"
-    (assoc_ivs p.Nft_inject.p_sets) (assoc_kvs p.Nft_inject.p_vmaps) (assoc_ivs p.Nft_inject.p_maps);
+  (* the surface ruleset as written *)
+  pr "Definition %s_surface : sruleset :=\n  [%s].\n\n"
+    base (S.concat ";\n\n   " (L.map stoplevel rs));
+  (* the single host-dependent residue, pinned as a finite map (allowed residue
+     (a) — the ifindex oracle; see DEVELOPMENT.md).  `iif "lo"` -> 1; every
+     other name declines and the verified lowering fails loud. *)
+  pr "Definition ifindex_pins (s : string) : option nat :=\n";
+  pr "  if String.eqb s \"lo\" then Some 1%%nat else None.\n\n";
+  (* fail-loud: the ruleset lowers, or `make proofs` breaks here *)
+  pr "Example %s_lowers_ok : lower_ok ifindex_pins %s_surface = true.\n" base base;
+  pr "Proof. vm_compute. reflexivity. Qed.\n\n";
+  (* the verified lowering's output, reduced once to a literal *)
+  pr "Definition %s_lowered : lowered_ruleset :=\n" base;
+  pr "  Eval vm_compute in lower_or_empty ifindex_pins %s_surface.\n\n" base;
+  (* the declarations gen_env reads, and the evaluation environment *)
+  pr "Definition decls : set_decls := Eval vm_compute in lr_set_decls %s_lowered.\n\n" base;
   pr "Definition base_env : env :=\n";
   pr "  {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];\n";
   pr "     e_routes := []; e_rt := fun _ => [];\n";
@@ -330,25 +222,17 @@ let emit (src_path : string) (p : Nft_inject.parsed) : string =
   pr "     e_limit := fun _ => 0; e_quota := fun _ => 0; e_connlimit := fun _ => [];\n";
   pr "     e_ct := fun _ _ => []; e_nat := fun _ => None; e_numgen := fun _ => 0 |}.\n\n";
   pr "Definition gen_env : env := env_with_sets base_env decls.\n\n";
-  (* each table's chains, then the per-table chain environment *)
+  (* per-table: the chains (individually and as the table's environment) and the
+     hook registrations, each carved out of the same verified lowering *)
   L.iter (fun (fam, tname, chains) ->
     let pfx = sanitize tname in
     pr "(* ===== table %s %s ===== *)\n\n" fam tname;
-    L.iter (fun (cname, c) ->
-      pr "Definition %s_%s : chain :=\n  %s.\n\n" pfx (sanitize cname) (chain c)) chains;
-    pr "Definition %s_chains : list (string * chain) :=\n  [%s].\n\n" pfx
-      (S.concat ";\n   "
-         (L.map (fun (cname, _) ->
-            spf "(%s, %s_%s)" (qstring cname) pfx (sanitize cname)) chains));
-    (* hook registration for this table's base chains: emit a [hooked_chain] per
-       `type _ hook H priority P` declaration, so dispatch (eval_hook/select_hook)
-       runs the PARSER-chosen chain at each hook — not a chain the prover named. *)
-    let hooks = match L.find_opt (fun (_, n, _) -> n = tname) p.Nft_inject.p_hooks with
-      | Some (_, _, hs) -> hs | None -> [] in
-    pr "Definition %s_hooks : list hooked_chain :=\n  [%s].\n\n" pfx
-      (S.concat ";\n   "
-         (L.map (fun (cname, _ctype, hook, prio) ->
-            spf "{| hc_hook := %s; hc_prio := (%d)%%Z; hc_env := %s_chains; hc_base := %s_%s |}"
-              (hook_id hook) prio pfx pfx (sanitize cname)) hooks)))
-    p.Nft_inject.p_tables;
+    L.iter (fun cname ->
+      pr "Definition %s_%s : chain :=\n  Eval vm_compute in lr_chain_of %s_lowered %s %s.\n\n"
+        pfx (sanitize cname) base (qstring tname) (qstring cname)) chains;
+    pr "Definition %s_chains : list (string * chain) :=\n  Eval vm_compute in lr_chains_of %s_lowered %s.\n\n"
+      pfx base (qstring tname);
+    pr "Definition %s_hooks : list hooked_chain :=\n  Eval vm_compute in lr_hooks_of %s_lowered %s.\n\n"
+      pfx base (qstring tname))
+    (tables_of rs);
   Buffer.contents b

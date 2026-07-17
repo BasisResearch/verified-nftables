@@ -39,10 +39,28 @@ axiom-free — without reading 3000 lines of `Correct.v`.
 | compiler, sequence form | `compile_seq_correct` | `Correct.v` | the same, lifted over a packet sequence under an **arbitrary step** `verdict -> env -> env` — a per-packet **congruence corollary** of `compile_hook_correct`, *not* a proof about ruleset-generated state (that is the next axis) |
 | mutation / cross-packet learning | `compile_seq_mut_correct` | `Correct.v` | compiled single-chain traversal threading the env each packet LEAVES (meta/ct writes, dynset learning) = DSL sequence, under `mut_wf` well-formedness |
 | optimizer pipeline | `optimize_table_uncond_compile_correct` | `Optimize_Uncond.v` | the shipped 18-stage `nft -o` pipeline + compilation preserves every packet's verdict against the synthesised declarations, for **any input chain** (no `rules_clean`, no freshness precondition) |
-| typed source elaboration | `elab_matchcond_correct` | `Elab.v` | the typed source-match layer elaborates onto the byte IR **evaluation-exactly**, for every match/env/packet — scoped to `Elab.tmatch`'s **four shapes** (typed eq/neq, CIDR-with-plen, ifname wildcard). Generated sources (`*_Gen.v`) carry typed terms for exactly those matches; their **other** immediates (set/map elements incl. the frontend's own CIDR expansion, range endpoints, vmap keys, NAT/tproxy addresses+ports, mangle/vsrc immediates, bitwise masks) are raw bytes composed by unverified `nft_lower.ml`, checked by the differential gates only (see `Elab.v`'s scope header) |
+| typed source lowering (**`typed_erasure`**) | the `Lower_Proofs.*_erasure` family | `Lower_Proofs.v` | the verified lowering of a typed source construct produces exactly the byte IR the compiler consumes, with genuine per-construct obligations — `range_erasure_be`/`range_erasure_host` (BE vs host-endian range order), `bitmask_erasure`, `bitfield_erasure` (mask+shift), `set_interval_erasure` (byte-interval = numeric membership), `concat_key_erasure` (slot-padding invertibility), `cidr_interval_agrees_prefix_expand` (one CIDR expansion, not two). Since M6 the generated sources (`*_Gen.v`) carry the **surface** ruleset (`<name>_surface : sruleset`) and define every table/chain/decl as `Lower.lower_ruleset` applied to it, kernel-reduced — **no raw byte is written by hand** and a refused construct fails the generated `<name>_lowers_ok` Example (fail-loud). `Elab.elab_matchcond_correct` remains as a **consistency check** (definitional, `reflexivity`), not the erasure claim |
 
 Scope notes (each also sits on the theorem in the source):
 
+- **Typed-layer M-D discharge level (`typed_erasure` vs `typed_progress` /
+  `typed_source_vm`).** The M-D obligation is discharged at the **per-construct**
+  level: `typed_erasure` is realized as the `Lower_Proofs.*_erasure` family (the
+  Coq lowering of a typed construct = the byte IR the compiler consumes, with
+  real round-trip / slot-padding / BE-range-order obligations — never
+  `reflexivity` over an encode-defined term); **fail-loud** is the generated
+  `<name>_lowers_ok` Example (an out-of-reach construct is an explicit
+  `lower_ok = false`, never a silent OCaml byte); the **typecheck stuck
+  witness** lives in `TypedEval.v` (a concrete ill-typed term whose typed
+  evaluation is `None`/stuck, with the `Typecheck` gate rejecting it). The
+  standalone whole-language `typed_progress` (`well_typed r -> eval_typed r <>
+  stuck`) and `typed_source_vm` (typed⇔VM composition) theorems were **descoped
+  by the project owner for this run** and are deliberately NOT built — the
+  independent whole-language typed evaluator is future work, and the
+  per-construct erasure lemmas above are the milestone's declared M-D level.
+  `TypedEval.v`'s numeric evaluator stays **independent of the encode path**
+  (the `make boundary` gate greps `encode|data_eqb|firstn|eval_matchcond|elab_m`
+  in it to `0`).
 - The optimizer headline is **per chain**: quantified over a single chain and
   all environments/packets. Multi-chain/hook preservation is the separate
   `compile_ruleset_correct`/`compile_hook_correct` family — **not composed

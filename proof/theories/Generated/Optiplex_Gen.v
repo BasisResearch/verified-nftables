@@ -1,27 +1,197 @@
 (* AUTO-GENERATED from ../../rulesets/optiplex.nft by nft2coq (extracted/nft_emit.ml). DO NOT EDIT.
-   This is the parser's output as Coq terms: the chains and the set/map
-   declarations their lookups read.  Properties proved about these terms
-   are properties of the parsed ruleset (and, via compile_table_correct, of
-   the installed bytecode). *)
+   This is the parser's SURFACE output as a Coq [sruleset]; the tables,
+   chains, hooks and set/map declarations the proofs reason about are the
+   VERIFIED lowering [Lower.lower_ruleset] applied to it (no hand-written
+   bytes here).  A refused construct fails [optiplex_lowers_ok] (fail-loud). *)
 
 From Stdlib Require Import List String ZArith.
 From Nft Require Import Bytes Verdict Packet Bytecode Syntax Semantics Nftval Elab.
+From Nft Require Import Surface.Ast Surface.Lower Gen_Support.
 Import ListNotations.
 Open Scope string_scope.
 
-Definition decls : set_decls :=
-  {| sd_sets := [("vmaddrs", [(SEl [192; 168; 51; 20]); (SEl [192; 168; 51; 14]); (SEl [192; 168; 51; 15]); (SEl [192; 168; 51; 12]); (SEl [192; 168; 51; 10]); (SEl [192; 168; 51; 1]); (SEl [192; 168; 51; 21]); (SEl [192; 168; 51; 22]); (SEl [192; 168; 51; 23]); (SEl [192; 168; 51; 24])]);
-   ("vmantispoof", [(SEl [192; 168; 51; 20; 105; 110; 99; 45; 98; 117; 100; 103; 101; 0; 0; 0; 0; 0; 0; 0]); (SEl [192; 168; 51; 14; 105; 110; 99; 45; 118; 105; 107; 117; 110; 0; 0; 0; 0; 0; 0; 0]); (SEl [192; 168; 51; 15; 105; 110; 99; 45; 102; 114; 101; 115; 104; 0; 0; 0; 0; 0; 0; 0]); (SEl [192; 168; 51; 12; 118; 98; 45; 103; 101; 110; 116; 111; 111; 0; 0; 0; 0; 0; 0; 0]); (SEl [192; 168; 51; 10; 118; 98; 45; 104; 97; 115; 115; 0; 0; 0; 0; 0; 0; 0; 0; 0]); (SEl [192; 168; 51; 1; 118; 108; 97; 110; 46; 50; 48; 0; 0; 0; 0; 0; 0; 0; 0; 0]); (SEl [192; 168; 51; 21; 118; 98; 45; 109; 101; 109; 111; 115; 0; 0; 0; 0; 0; 0; 0; 0]); (SEl [192; 168; 51; 22; 118; 98; 45; 105; 115; 115; 111; 0; 0; 0; 0; 0; 0; 0; 0; 0]); (SEl [192; 168; 51; 23; 118; 98; 45; 110; 116; 102; 121; 0; 0; 0; 0; 0; 0; 0; 0; 0]); (SEl [192; 168; 51; 24; 118; 98; 45; 99; 111; 108; 108; 0; 0; 0; 0; 0; 0; 0; 0; 0])]);
-   ("__set0", [(SEl [6]); (SEl [17])]);
-   ("__set1", [(SEl [108; 97; 110; 48; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0]); (SEl [104; 111; 109; 101; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0])]);
-   ("__set2", [(SEl [187; 112]); (SEl [187; 117]); (SEl [187; 138]); (SEl [187; 126]); (SEl [187; 127]); (SEl [187; 128]); (SEl [187; 130])]);
-   ("__set3", [(SEl [0; 0; 0; 2]); (SEl [0; 0; 0; 4])]);
-   ("__set4", [(SEl [0; 22]); (SEl [0; 80]); (SEl [1; 187]); (SEl [4; 222])]);
-   ("__set5", [(SRange [116; 115] [116; 118]); (SEl [105; 137]); (SEl [106; 81]); (SEl [31; 107])]);
-   ("__set6", [(SEl [153; 0; 0; 0]); (SEl [0; 1; 0; 0])]);
-   ("__set7", [(SEl [118; 98; 45; 106; 101; 108; 108; 121; 0; 0; 0; 0; 0; 0; 0; 0]); (SEl [118; 98; 45; 115; 97; 98; 0; 0; 0; 0; 0; 0; 0; 0; 0; 0]); (SEl [118; 98; 45; 114; 97; 100; 97; 114; 0; 0; 0; 0; 0; 0; 0; 0])])];
-   sd_vmaps := [];
-   sd_maps := [] |}.
+Definition optiplex_surface : sruleset :=
+  [(TopDefine "windows" (sip4 192 168 51 186));
+
+   (TopDefine "lan" (SVSym "lan0"));
+
+   TopNop;
+
+   TopNop;
+
+   (TopTable {| st_family := "inet"; st_name := "filter";
+      st_items := [(TChain {| sc_name := "prerouting";
+        sc_items := [(ITypeHook "nat" "prerouting" true 100);
+         (IPolicy SVaccept);
+         (IRule [(CMatch {| sm_keys := [["iifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "home")) |} |});
+           (CMatch {| sm_keys := [["fib"; "daddr"; "type"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "local")) |} |});
+           (CMatch {| sm_keys := [["meta"; "l4proto"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVSym "tcp"); (SVSym "udp")]) |} |});
+           (CMatch {| sm_keys := [["th"; "dport"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVNum 3389)) |} |});
+           (CStmt (StMetaSet "mark" (SVNum 153)));
+           (CStmt (StLog "prefix [nft:rdppre]"));
+           (CStmt (StDnat (Some (SVVar "windows")) None []))]);
+         (IRule [(CMatch {| sm_keys := [["iifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVVar "lan"); (SVSym "home")]) |} |});
+           (CMatch {| sm_keys := [["fib"; "daddr"; "type"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "local")) |} |});
+           (CMatch {| sm_keys := [["meta"; "l4proto"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVSym "tcp"); (SVSym "udp")]) |} |});
+           (CMatch {| sm_keys := [["th"; "dport"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVNum 47984); (SVNum 47989); (SVNum 48010); (SVNum 47998); (SVNum 47999); (SVNum 48000); (SVNum 48002)]) |} |});
+           (CStmt (StMetaSet "mark" (SVNum 153)));
+           (CStmt (StLog "prefix [nft:rdppre]"));
+           (CStmt (StDnat (Some (SVVar "windows")) None []))]);
+         (IRule [(CMatch {| sm_keys := [["iifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVVar "lan"); (SVSym "home")]) |} |});
+           (CMatch {| sm_keys := [["fib"; "daddr"; "type"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "local")) |} |});
+           (CMatch {| sm_keys := [["meta"; "l4proto"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVSym "tcp"); (SVSym "udp")]) |} |});
+           (CMatch {| sm_keys := [["th"; "dport"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVNum 47984); (SVNum 47989); (SVNum 48010); (SVNum 47998); (SVNum 47999); (SVNum 48000); (SVNum 48002)]) |} |});
+           (CStmt (StMetaSet "mark" (SVNum 153)));
+           (CStmt (StLog "prefix [nft:rdppre]"));
+           (CStmt (StDnat (Some (SVVar "windows")) None []))])] |});
+      (TChain {| sc_name := "postrouting";
+        sc_items := [(ITypeHook "nat" "postrouting" false 100);
+         (IPolicy SVaccept);
+         (IRule [(CMatch {| sm_keys := [["mark"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVNum 153)) |} |});
+           (CStmt (StLog "prefix [nft:rdppost]"));
+           (CStmt (StMasquerade []))])] |});
+      (TChain {| sc_name := "input";
+        sc_items := [(ITypeHook "filter" "input" false 0);
+         (IPolicy SVdrop);
+         (IRule [(CMatch {| sm_keys := [["ct"; "state"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVSym "established"); (SVSym "related")]) |} |});
+           (CVerdict SVaccept);
+           (CStmt (StComment "allow tracked connections"))]);
+         (IRule [(CMatch {| sm_keys := [["iif"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "lo")) |} |});
+           (CVerdict SVaccept);
+           (CStmt (StComment "allow from loopback"))]);
+         (IRule [(CMatch {| sm_keys := [["ip"; "protocol"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "icmp")) |} |});
+           (CVerdict SVaccept);
+           (CStmt (StComment "allow icmp"))]);
+         (IRule [(CMatch {| sm_keys := [["meta"; "l4proto"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "ipv6-icmp")) |} |});
+           (CVerdict SVaccept);
+           (CStmt (StComment "allow icmp v6"))]);
+         (IRule [(CMatch {| sm_keys := [["iifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "br.20")) |} |});
+           (CMatch {| sm_keys := [["tcp"; "dport"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "https")) |} |});
+           (CVerdict SVaccept);
+           (CStmt (StComment "allow incoming https request from the vms"))]);
+         (IRule [(CMatch {| sm_keys := [["iifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "br.20")) |} |});
+           (CMatch {| sm_keys := [["udp"; "dport"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVNum 51820)) |} |});
+           (CVerdict SVaccept);
+           (CStmt (StComment "allow incoming wireguard"))]);
+         (IRule [(CMatch {| sm_keys := [["iifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVVar "lan")) |} |});
+           (CMatch {| sm_keys := [["ip"; "saddr"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVPrefix (sip4 192 168 50 0) 24)) |} |});
+           (CMatch {| sm_keys := [["tcp"; "dport"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVNum 2049)) |} |});
+           (CVerdict SVaccept);
+           (CStmt (StComment "give everyone access to nfs share"))]);
+         (IRule [(CMatch {| sm_keys := [["iifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "vlan.25")) |} |});
+           (CMatch {| sm_keys := [["udp"; "dport"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVNum 67)) |} |});
+           (CVerdict SVaccept);
+           (CStmt (StComment "allow incoming printer dhcp request"))]);
+         (IRule [(CMatch {| sm_keys := [["iifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVVar "lan"); (SVSym "home")]) |} |});
+           (CMatch {| sm_keys := [["tcp"; "dport"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVSym "ssh"); (SVSym "http"); (SVSym "https"); (SVNum 1246)]) |} |});
+           (CVerdict SVaccept);
+           (CStmt (StComment "allow services"))]);
+         (IRule [(CMatch {| sm_keys := [["iifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVVar "lan"); (SVSym "home")]) |} |});
+           (CMatch {| sm_keys := [["meta"; "l4proto"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVSym "tcp"); (SVSym "udp")]) |} |});
+           (CMatch {| sm_keys := [["th"; "dport"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVNum 22000)) |} |});
+           (CVerdict SVaccept);
+           (CStmt (StComment "allow syncthing"))]);
+         (IRule [(CMatch {| sm_keys := [["iifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVVar "lan")) |} |});
+           (CMatch {| sm_keys := [["tcp"; "dport"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVRange (SVNum 29811) (SVNum 29814)); (SVNum 27017); (SVNum 27217); (SVNum 8043)]) |} |});
+           (CVerdict SVaccept);
+           (CStmt (StComment "allow omada"))]);
+         (IRule [(CMatch {| sm_keys := [["iifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVVar "lan")) |} |});
+           (CMatch {| sm_keys := [["udp"; "dport"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVNum 29810)) |} |});
+           (CVerdict SVaccept);
+           (CStmt (StComment "allow omada"))]);
+         (IRule [(CMatch {| sm_keys := [["iifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVVar "lan")) |} |});
+           (CMatch {| sm_keys := [["udp"; "dport"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVNum 45747)) |} |});
+           (CStmt (StLog "prefix [nft:wg]"));
+           (CVerdict SVaccept);
+           (CStmt (StComment "allow wireguard"))]);
+         (IRule [(CMatch {| sm_keys := [["iifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "immich")) |} |});
+           (CMatch {| sm_keys := [["meta"; "l4proto"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVSym "tcp"); (SVSym "udp")]) |} |});
+           (CMatch {| sm_keys := [["th"; "dport"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVNum 53)) |} |});
+           (CVerdict SVaccept)]);
+         (IRule [(CMatch {| sm_keys := [["pkttype"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "host")) |} |});
+           (CStmt (StLimit 5 "second" false 5 false));
+           (CStmt StCounter);
+           (CVerdict (SVreject "icmpx type admin-prohibited"))]);
+         (IRule [(CStmt (StLog "prefix [nft:reject]"));
+           (CStmt StCounter)])] |});
+      (TChain {| sc_name := "forward";
+        sc_items := [(ITypeHook "filter" "forward" false 0);
+         (IPolicy SVdrop);
+         (IRule [(CStmt (StLog "prefix [forwarding]"))]);
+         (IRule [(CMatch {| sm_keys := [["iifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "podman*")) |} |});
+           (CVerdict SVaccept)]);
+         (IRule [(CMatch {| sm_keys := [["iifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "immich")) |} |});
+           (CVerdict SVaccept)]);
+         (IRule [(CMatch {| sm_keys := [["ct"; "state"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVSym "established"); (SVSym "related")]) |} |});
+           (CVerdict SVaccept);
+           (CStmt (StComment "allow tracked connections"))]);
+         (IRule [(CMatch {| sm_keys := [["mark"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVNum 153); (SVNum 256)]) |} |});
+           (CStmt (StLog "prefix [nft:rdpforward]"));
+           (CVerdict SVaccept)])] |})] |});
+
+   (TopTable {| st_family := "bridge"; st_name := "vmfilter";
+      st_items := [(TSet {| sd_name := "vmaddrs"; sd_is_map := false; sd_type := ["ipv4_addr"]; sd_flags := ["constant"];
+            sd_elements := [((sip4 192 168 51 20), None); ((sip4 192 168 51 14), None); ((sip4 192 168 51 15), None); ((sip4 192 168 51 12), None); ((sip4 192 168 51 10), None); ((sip4 192 168 51 1), None); ((sip4 192 168 51 21), None); ((sip4 192 168 51 22), None); ((sip4 192 168 51 23), None); ((sip4 192 168 51 24), None)] |});
+      (TSet {| sd_name := "vmantispoof"; sd_is_map := false; sd_type := ["ipv4_addr"; "ifname"]; sd_flags := ["constant"];
+            sd_elements := [((SVConcat [(sip4 192 168 51 20); (SVSym "inc-budge")]), None); ((SVConcat [(sip4 192 168 51 14); (SVSym "inc-vikun")]), None); ((SVConcat [(sip4 192 168 51 15); (SVSym "inc-fresh")]), None); ((SVConcat [(sip4 192 168 51 12); (SVSym "vb-gentoo")]), None); ((SVConcat [(sip4 192 168 51 10); (SVSym "vb-hass")]), None); ((SVConcat [(sip4 192 168 51 1); (SVSym "vlan.20")]), None); ((SVConcat [(sip4 192 168 51 21); (SVSym "vb-memos")]), None); ((SVConcat [(sip4 192 168 51 22); (SVSym "vb-isso")]), None); ((SVConcat [(sip4 192 168 51 23); (SVSym "vb-ntfy")]), None); ((SVConcat [(sip4 192 168 51 24); (SVSym "vb-coll")]), None)] |});
+      (TChain {| sc_name := "vm";
+        sc_items := [(IRule [(CMatch {| sm_keys := [["iifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "vlan.20")) |} |});
+           (CMatch {| sm_keys := [["udp"; "sport"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVNum 67)) |} |});
+           (CVerdict SVaccept)]);
+         (IRule [(CMatch {| sm_keys := [["oifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "vlan.20")) |} |});
+           (CVerdict SVaccept)]);
+         (IRule [(CMatch {| sm_keys := [["iifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVSym "vb-jelly"); (SVSym "vb-sab"); (SVSym "vb-radar")]) |} |});
+           (CMatch {| sm_keys := [["oifname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVSym "vb-jelly"); (SVSym "vb-sab"); (SVSym "vb-radar")]) |} |});
+           (CVerdict SVaccept)])] |});
+      (TChain {| sc_name := "iot";
+        sc_items := [(IRule [(CVerdict SVaccept)])] |});
+      (TChain {| sc_name := "cam";
+        sc_items := [(IRule [(CVerdict SVaccept)])] |});
+      (TChain {| sc_name := "scanner";
+        sc_items := [(IRule [(CVerdict SVaccept)])] |});
+      (TChain {| sc_name := "output";
+        sc_items := [(ITypeHook "filter" "output" false 0);
+         (IPolicy SVaccept);
+         (IRule [(CMatch {| sm_keys := [["meta"; "obrname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "br.20")) |} |});
+           (CMatch {| sm_keys := [["ip"; "daddr"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEref "vmaddrs") |} |});
+           (CMatch {| sm_keys := [["ip"; "daddr"]; ["oifname"]]; sm_rhs := {| sr_op := SOpNe; sr_neg := true; sr_payload := (SSEref "vmantispoof") |} |});
+           (CVerdict SVdrop)]);
+         (IRule [(CMatch {| sm_keys := [["meta"; "obrname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "br.1")) |} |});
+           (CMatch {| sm_keys := [["ip"; "daddr"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (sip4 192 168 100 2)) |} |});
+           (CMatch {| sm_keys := [["oifname"]]; sm_rhs := {| sr_op := SOpNe; sr_neg := true; sr_payload := (SSEvalue (SVSym "vb-hass")) |} |});
+           (CVerdict SVdrop)])] |});
+      (TChain {| sc_name := "forward";
+        sc_items := [(ITypeHook "filter" "forward" false 0);
+         (IPolicy SVdrop);
+         (IRule [(CMatch {| sm_keys := [["ether"; "type"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "arp")) |} |});
+           (CVerdict SVaccept)]);
+         (IRule [(CMatch {| sm_keys := [["ct"; "state"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEset [(SVSym "established"); (SVSym "related")]) |} |});
+           (CVerdict SVaccept)]);
+         (IRule [(CMatch {| sm_keys := [["ip"; "protocol"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "icmp")) |} |});
+           (CVerdict SVaccept);
+           (CStmt (StComment "allow icmp"))]);
+         (IRule [(CMatch {| sm_keys := [["meta"; "l4proto"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "ipv6-icmp")) |} |});
+           (CVerdict SVaccept);
+           (CStmt (StComment "allow icmp v6"))]);
+         (IRule [(CMatch {| sm_keys := [["meta"; "ibrname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "br.1")) |} |});
+           (CVerdict (SVgoto "iot"))]);
+         (IRule [(CMatch {| sm_keys := [["meta"; "ibrname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "br.20")) |} |});
+           (CVerdict (SVgoto "vm"))]);
+         (IRule [(CMatch {| sm_keys := [["meta"; "ibrname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "br.3")) |} |});
+           (CVerdict (SVgoto "scanner"))]);
+         (IRule [(CMatch {| sm_keys := [["meta"; "ibrname"]]; sm_rhs := {| sr_op := SOpImplicit; sr_neg := false; sr_payload := (SSEvalue (SVSym "br.110")) |} |});
+           (CVerdict (SVgoto "cam"))])] |})] |})].
+
+Definition ifindex_pins (s : string) : option nat :=
+  if String.eqb s "lo" then Some 1%nat else None.
+
+Example optiplex_lowers_ok : lower_ok ifindex_pins optiplex_surface = true.
+Proof. vm_compute. reflexivity. Qed.
+
+Definition optiplex_lowered : lowered_ruleset :=
+  Eval vm_compute in lower_or_empty ifindex_pins optiplex_surface.
+
+Definition decls : set_decls := Eval vm_compute in lr_set_decls optiplex_lowered.
 
 Definition base_env : env :=
   {| e_set := fun _ => []; e_vmap := fun _ => []; e_map := fun _ => [];
@@ -35,225 +205,46 @@ Definition gen_env : env := env_with_sets base_env decls.
 (* ===== table inet filter ===== *)
 
 Definition filter_prerouting : chain :=
-  {| c_policy := Accept;
-   c_rules := [{| r_body := [(BMatch (elab_m (TMEq FMetaIifname (ifname "home"))));
-             (BMatch (elab_m (TMEq (FFib "daddr" FRtype) (VFibType 2))));
-             (BMatch (MConcatSet [FMetaL4proto] false "__set0"));
-             (BMatch (elab_m (TMEq FThDport (VPort 3389))));
-             (BStmt (SMetaSet MKmark (VImm [153; 0; 0; 0])));
-             (BStmt (SLog "prefix [nft:rdppre]"))];
-     r_outcome := ONat {| nat_addr_imm := (Some [192; 168; 51; 186]); nat_field := None; nat_map := None; nat_src := None; nat_extra := NXnone; nat_kind := NKdnat; nat_family := NFip4; nat_flags := 0 |}; r_after := [] |};
-
-   {| r_body := [(BMatch (MConcatSet [FMetaIifname] false "__set1"));
-             (BMatch (elab_m (TMEq (FFib "daddr" FRtype) (VFibType 2))));
-             (BMatch (MConcatSet [FMetaL4proto] false "__set0"));
-             (BMatch (MConcatSet [FThDport] false "__set2"));
-             (BStmt (SMetaSet MKmark (VImm [153; 0; 0; 0])));
-             (BStmt (SLog "prefix [nft:rdppre]"))];
-     r_outcome := ONat {| nat_addr_imm := (Some [192; 168; 51; 186]); nat_field := None; nat_map := None; nat_src := None; nat_extra := NXnone; nat_kind := NKdnat; nat_family := NFip4; nat_flags := 0 |}; r_after := [] |};
-
-   {| r_body := [(BMatch (MConcatSet [FMetaIifname] false "__set1"));
-             (BMatch (elab_m (TMEq (FFib "daddr" FRtype) (VFibType 2))));
-             (BMatch (MConcatSet [FMetaL4proto] false "__set0"));
-             (BMatch (MConcatSet [FThDport] false "__set2"));
-             (BStmt (SMetaSet MKmark (VImm [153; 0; 0; 0])));
-             (BStmt (SLog "prefix [nft:rdppre]"))];
-     r_outcome := ONat {| nat_addr_imm := (Some [192; 168; 51; 186]); nat_field := None; nat_map := None; nat_src := None; nat_extra := NXnone; nat_kind := NKdnat; nat_family := NFip4; nat_flags := 0 |}; r_after := [] |}] |}.
+  Eval vm_compute in lr_chain_of optiplex_lowered "filter" "prerouting".
 
 Definition filter_postrouting : chain :=
-  {| c_policy := Accept;
-   c_rules := [{| r_body := [(BMatch (elab_m (TMEq FMetaMark (VHostInt 4 153))));
-             (BStmt (SLog "prefix [nft:rdppost]"))];
-     r_outcome := ONat {| nat_addr_imm := None; nat_field := None; nat_map := None; nat_src := None; nat_extra := NXnone; nat_kind := NKmasq; nat_family := NFinet; nat_flags := 0 |}; r_after := [] |}] |}.
+  Eval vm_compute in lr_chain_of optiplex_lowered "filter" "postrouting".
 
 Definition filter_input : chain :=
-  {| c_policy := Drop;
-   c_rules := [{| r_body := [(BMatch (MConcatSet [FCtState] false "__set3"))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq FMetaIif (VHostInt 4 1))))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BDep (elab_m (TMEq FMetaNfproto (VInteger 1 2))));
-             (BMatch (elab_m (TMEq FIp4Protocol (VInteger 1 1))))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq FMetaL4proto (VInteger 1 58))))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq FMetaIifname (ifname "br.20"))));
-             (BDep (elab_m (TMEq FMetaL4proto (VInteger 1 6))));
-             (BMatch (elab_m (TMEq FThDport (VPort 443))))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq FMetaIifname (ifname "br.20"))));
-             (BDep (elab_m (TMEq FMetaL4proto (VInteger 1 17))));
-             (BMatch (elab_m (TMEq FThDport (VPort 51820))))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq FMetaIifname (ifname "lan0"))));
-             (BDep (elab_m (TMEq FMetaNfproto (VInteger 1 2))));
-             (BMatch (elab_m (MPrefix FIp4Saddr CEq (ip4 192 168 50 0) 24)));
-             (BDep (elab_m (TMEq FMetaL4proto (VInteger 1 6))));
-             (BMatch (elab_m (TMEq FThDport (VPort 2049))))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq FMetaIifname (ifname "vlan.25"))));
-             (BDep (elab_m (TMEq FMetaL4proto (VInteger 1 17))));
-             (BMatch (elab_m (TMEq FThDport (VPort 67))))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (MConcatSet [FMetaIifname] false "__set1"));
-             (BDep (elab_m (TMEq FMetaL4proto (VInteger 1 6))));
-             (BMatch (MConcatSet [FThDport] false "__set4"))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (MConcatSet [FMetaIifname] false "__set1"));
-             (BMatch (MConcatSet [FMetaL4proto] false "__set0"));
-             (BMatch (elab_m (TMEq FThDport (VPort 22000))))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq FMetaIifname (ifname "lan0"))));
-             (BDep (elab_m (TMEq FMetaL4proto (VInteger 1 6))));
-             (BMatch (MConcatSet [FThDport] false "__set5"))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq FMetaIifname (ifname "lan0"))));
-             (BDep (elab_m (TMEq FMetaL4proto (VInteger 1 17))));
-             (BMatch (elab_m (TMEq FThDport (VPort 29810))))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq FMetaIifname (ifname "lan0"))));
-             (BDep (elab_m (TMEq FMetaL4proto (VInteger 1 17))));
-             (BMatch (elab_m (TMEq FThDport (VPort 45747))));
-             (BStmt (SLog "prefix [nft:wg]"))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq FMetaIifname (ifname "immich"))));
-             (BMatch (MConcatSet [FMetaL4proto] false "__set0"));
-             (BMatch (elab_m (TMEq FThDport (VPort 53))))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq FMetaPkttype (VInteger 1 0))));
-             (BMatch (MLimit {| ls_rate := 5; ls_unit := 0; ls_burst := 5; ls_bytes := false; ls_flags := 0 |}));
-             (BStmt (SCounter 0 0))];
-     r_outcome := OVerdict (Reject 2 3); r_after := [] |};
-
-   {| r_body := [(BStmt (SLog "prefix [nft:reject]"));
-             (BStmt (SCounter 0 0))];
-     r_outcome := ONone; r_after := [] |}] |}.
+  Eval vm_compute in lr_chain_of optiplex_lowered "filter" "input".
 
 Definition filter_forward : chain :=
-  {| c_policy := Drop;
-   c_rules := [{| r_body := [(BStmt (SLog "prefix [forwarding]"))];
-     r_outcome := ONone; r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (MWildcard FMetaIifname [112; 111; 100; 109; 97; 110])))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq FMetaIifname (ifname "immich"))))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (MConcatSet [FCtState] false "__set3"))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (MConcatSet [FMetaMark] false "__set6"));
-             (BStmt (SLog "prefix [nft:rdpforward]"))];
-     r_outcome := OVerdict Accept; r_after := [] |}] |}.
+  Eval vm_compute in lr_chain_of optiplex_lowered "filter" "forward".
 
 Definition filter_chains : list (string * chain) :=
-  [("prerouting", filter_prerouting);
-   ("postrouting", filter_postrouting);
-   ("input", filter_input);
-   ("forward", filter_forward)].
+  Eval vm_compute in lr_chains_of optiplex_lowered "filter".
 
 Definition filter_hooks : list hooked_chain :=
-  [{| hc_hook := Hprerouting; hc_prio := (-100)%Z; hc_env := filter_chains; hc_base := filter_prerouting |};
-   {| hc_hook := Hpostrouting; hc_prio := (100)%Z; hc_env := filter_chains; hc_base := filter_postrouting |};
-   {| hc_hook := Hinput; hc_prio := (0)%Z; hc_env := filter_chains; hc_base := filter_input |};
-   {| hc_hook := Hforward; hc_prio := (0)%Z; hc_env := filter_chains; hc_base := filter_forward |}].
+  Eval vm_compute in lr_hooks_of optiplex_lowered "filter".
 
 (* ===== table bridge vmfilter ===== *)
 
 Definition vmfilter_vm : chain :=
-  {| c_policy := Continue;
-   c_rules := [{| r_body := [(BMatch (elab_m (TMEq FMetaIifname (ifname "vlan.20"))));
-             (BDep (elab_m (TMEq FMetaL4proto (VInteger 1 17))));
-             (BMatch (elab_m (TMEq FThSport (VPort 67))))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq FMetaOifname (ifname "vlan.20"))))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (MConcatSet [FMetaIifname] false "__set7"));
-             (BMatch (MConcatSet [FMetaOifname] false "__set7"))];
-     r_outcome := OVerdict Accept; r_after := [] |}] |}.
+  Eval vm_compute in lr_chain_of optiplex_lowered "vmfilter" "vm".
 
 Definition vmfilter_iot : chain :=
-  {| c_policy := Continue;
-   c_rules := [{| r_body := [];
-     r_outcome := OVerdict Accept; r_after := [] |}] |}.
+  Eval vm_compute in lr_chain_of optiplex_lowered "vmfilter" "iot".
 
 Definition vmfilter_cam : chain :=
-  {| c_policy := Continue;
-   c_rules := [{| r_body := [];
-     r_outcome := OVerdict Accept; r_after := [] |}] |}.
+  Eval vm_compute in lr_chain_of optiplex_lowered "vmfilter" "cam".
 
 Definition vmfilter_scanner : chain :=
-  {| c_policy := Continue;
-   c_rules := [{| r_body := [];
-     r_outcome := OVerdict Accept; r_after := [] |}] |}.
+  Eval vm_compute in lr_chain_of optiplex_lowered "vmfilter" "scanner".
 
 Definition vmfilter_output : chain :=
-  {| c_policy := Accept;
-   c_rules := [{| r_body := [(BMatch (elab_m (TMEq (FMetaGen MKbri_oifname) (ifname "br.20"))));
-             (BDep (elab_m (TMEq FMetaProtocol (VInteger 2 2048))));
-             (BMatch (MConcatSet [FIp4Daddr] false "vmaddrs"));
-             (BMatch (MConcatSet [FIp4Daddr; FMetaOifname] true "vmantispoof"))];
-     r_outcome := OVerdict Drop; r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq (FMetaGen MKbri_oifname) (ifname "br.1"))));
-             (BDep (elab_m (TMEq FMetaProtocol (VInteger 2 2048))));
-             (BMatch (elab_m (TMEq FIp4Daddr (ip4 192 168 100 2))));
-             (BMatch (elab_m (TMNeq FMetaOifname (ifname "vb-hass"))))];
-     r_outcome := OVerdict Drop; r_after := [] |}] |}.
+  Eval vm_compute in lr_chain_of optiplex_lowered "vmfilter" "output".
 
 Definition vmfilter_forward : chain :=
-  {| c_policy := Drop;
-   c_rules := [{| r_body := [(BMatch (elab_m (TMEq FEtherType (VInteger 2 2054))))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (MConcatSet [FCtState] false "__set3"))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BDep (elab_m (TMEq FMetaProtocol (VInteger 2 2048))));
-             (BMatch (elab_m (TMEq FIp4Protocol (VInteger 1 1))))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq FMetaL4proto (VInteger 1 58))))];
-     r_outcome := OVerdict Accept; r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq (FMetaGen MKbri_iifname) (ifname "br.1"))))];
-     r_outcome := OVerdict (Goto "iot"); r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq (FMetaGen MKbri_iifname) (ifname "br.20"))))];
-     r_outcome := OVerdict (Goto "vm"); r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq (FMetaGen MKbri_iifname) (ifname "br.3"))))];
-     r_outcome := OVerdict (Goto "scanner"); r_after := [] |};
-
-   {| r_body := [(BMatch (elab_m (TMEq (FMetaGen MKbri_iifname) (ifname "br.110"))))];
-     r_outcome := OVerdict (Goto "cam"); r_after := [] |}] |}.
+  Eval vm_compute in lr_chain_of optiplex_lowered "vmfilter" "forward".
 
 Definition vmfilter_chains : list (string * chain) :=
-  [("vm", vmfilter_vm);
-   ("iot", vmfilter_iot);
-   ("cam", vmfilter_cam);
-   ("scanner", vmfilter_scanner);
-   ("output", vmfilter_output);
-   ("forward", vmfilter_forward)].
+  Eval vm_compute in lr_chains_of optiplex_lowered "vmfilter".
 
 Definition vmfilter_hooks : list hooked_chain :=
-  [{| hc_hook := Houtput; hc_prio := (0)%Z; hc_env := vmfilter_chains; hc_base := vmfilter_output |};
-   {| hc_hook := Hforward; hc_prio := (0)%Z; hc_env := vmfilter_chains; hc_base := vmfilter_forward |}].
+  Eval vm_compute in lr_hooks_of optiplex_lowered "vmfilter".
 

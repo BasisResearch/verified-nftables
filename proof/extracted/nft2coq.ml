@@ -10,5 +10,5 @@ let () =
   if Stdlib.Array.length Sys.argv < 2 then
     (prerr_endline "usage: nft2coq <file.nft>"; exit 2);
   let path = Sys.argv.(1) in
-  let parsed = Nft_parse.parse_file path in
-  print_string (Nft_emit.emit path parsed)
+  let surface = Nft_parse.parse_file_surface path in
+  print_string (Nft_emit.emit path surface)

@@ -9,17 +9,21 @@
     evaluates exactly as the typed semantics [eval_tmatch] on every env/packet.
     The per-field byte encoding (endianness, widths) is [Nftval.encode].
 
-    SCOPE — what is and is not covered.  [tmatch] has exactly FOUR shapes
-    (typed eq / neq / CIDR-prefix / ifname-wildcard), so "the typed->bytes step
-    is proved" holds for THOSE matches plus every per-atom [encode] call the
-    frontend makes ([enc_atom] = [encode] o [typed_atom]).  It does NOT cover
-    the immediates the frontend COMPOSES outside [elab_m]: set/map element
-    intervals (nft_lower.ml's [interval_of_value] does its own OCaml CIDR
-    net/broadcast expansion — distinct from the verified [prefix_expand]),
-    range endpoints (incl. [enc_atom_be]'s host-endian reversal), vmap keys,
-    NAT/tproxy target addresses/ports, mangle/vsrc immediates, and bitwise
-    masks.  Those remain unverified frontend bytes, checked by the untrusted
-    differential gates (corpus/validate/parse-test/e2e), not by this theorem.
+    SCOPE — [elab_matchcond_correct] is a CONSISTENCY CHECK, not the erasure
+    theorem.  [tmatch] has exactly FOUR shapes (typed eq / neq / CIDR-prefix /
+    ifname-wildcard); [elab_matchcond_correct] is proved by [reflexivity]
+    because [eval_tmatch] is itself defined via [encode]/[firstn]/[data_eqb] —
+    both sides evaluate through the same encoding, so it certifies that [elab_m]
+    is CONSISTENT with that encoding, it does not independently prove the
+    typed→bytes step.  The real per-construct erasure obligations — for the
+    other immediates the lowering produces (set/map element intervals with a
+    single verified CIDR net/broadcast expansion, range endpoints incl. the
+    host-endian hton reversal, vmap keys, concat slot padding, bitmask/bitfield
+    forms) — are discharged with genuine round-trip / byte-order / padding
+    lemmas in [Lower_Proofs.v] (the [*_erasure] family), over the VERIFIED
+    [Lower.lower_ruleset] that since M6 produces every one of those bytes (the
+    OCaml frontend composes none; see DEVELOPMENT.md § "The M-C boundary is now
+    permanent").
 
     The CIDR alignment special-case lives HERE, verified, not in the frontend:
     nft shortens a byte-aligned prefix on a plain payload field to a load of
