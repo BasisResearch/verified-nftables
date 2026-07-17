@@ -2877,8 +2877,17 @@ module OSweep = struct
            && (try ignore (Nft_inject.lower raw); true with _ -> false)
          with _ -> false)
 
-  (* sweep one .t file; returns (rule lines matching their verdict, total rules) *)
-  let sweep_file (path : string) : int * int =
+  (* a rule payload that this sweep cannot faithfully judge standalone: a
+     `$var` reference needs a `define` (which we skip — no variable table), and
+     the sweep would otherwise mis-count it as a false ok-reject. *)
+  let has_var (s : string) : bool = String.contains s '$'
+
+  (* one accumulator of the four directional counts across the sweep. *)
+  type tally = { mutable pass : int; mutable total : int;
+                 mutable false_accept : int; mutable false_reject : int }
+
+  (* sweep one .t file into [acc] (bidirectional ok/fail count). *)
+  let sweep_file (verbose : bool) (acc : tally) (path : string) : unit =
     let ic = open_in path in
     let n = in_channel_length ic in
     let raw = really_input_string ic n in close_in ic;
@@ -2886,8 +2895,15 @@ module OSweep = struct
     let table = ref "t" and chain = ref "c" and hook = ref "type filter hook input priority 0" in
     let decls = ref [] and rules = ref [] in
     L.iter (fun l0 ->
-      let l = String.trim l0 in
+      (* a leading `- ` marks an alternate list-output form of a rule; strip it
+         so the payload is judged on its own (nft-test.py treats it as a normal
+         rule line). *)
+      let l1 = String.trim l0 in
+      let l = if starts_with l1 "- " then String.trim (String.sub l1 2 (String.length l1 - 2)) else l1 in
       if l = "" || starts_with l "#" then ()
+      (* variable machinery is out of the sweep's scope (no `define` table). *)
+      else if starts_with l "define " || starts_with l "redefine "
+              || starts_with l "undefine " then ()
       else if starts_with l "*" then
         (match String.split_on_char ';' (String.sub l 1 (String.length l - 1)) with
          | _fam :: tbl :: chns :: _ -> table := tbl;
@@ -2903,39 +2919,71 @@ module OSweep = struct
             if starts_with payload "%" then
               (if verdict = "ok" then
                  match translate_decl payload with Some d -> decls := d :: !decls | None -> ())
+            else if has_var payload then ()   (* skip `$var` references *)
             else rules := (payload, verdict) :: !rules)
       lines;
     let decl_text = String.concat "\n  " (L.rev !decls) in
     let build rule =
       Printf.sprintf "table ip %s {\n  %s\n  chain %s {\n    %s\n    %s\n  }\n}\n"
         !table decl_text !chain !hook rule in
-    let rules = L.rev !rules in
-    let pass = L.fold_left (fun acc (rule, verdict) ->
+    L.iter (fun (rule, verdict) ->
         let got = accepted (build rule) in
         let want = (verdict = "ok") in
-        if got = want then acc + 1
-        else (Printf.printf "  MISS [%s want=%s got=%s]: %s\n"
-                (Filename.basename path) verdict (if got then "ok" else "fail") rule; acc))
-      0 rules in
-    (pass, L.length rules)
+        acc.total <- acc.total + 1;
+        if got = want then acc.pass <- acc.pass + 1
+        else begin
+          if got (* want=fail *) then acc.false_accept <- acc.false_accept + 1
+          else acc.false_reject <- acc.false_reject + 1;
+          if verbose then
+            Printf.printf "  MISS [%s want=%s got=%s]: %s\n"
+              (Filename.basename path) verdict (if got then "ok" else "fail") rule
+        end)
+      (L.rev !rules)
 
-  let sweep (files : string list) : int * int =
-    L.fold_left (fun (p, t) f -> let (p', t') = sweep_file f in (p + p', t + t')) (0, 0) files
+  let sweep ?(verbose=true) (files : string list) : tally =
+    let acc = { pass = 0; total = 0; false_accept = 0; false_reject = 0 } in
+    L.iter (sweep_file verbose acc) files; acc
 end
 
 let objects_sweep_gate (floor : int) (files : string list) : unit =
-  let (pass, total) = OSweep.sweep files in
-  Printf.printf "OBJECTS-SWEEP %d/%d rule lines (floor %d)\n" pass total floor;
-  if pass < floor then begin
-    Printf.printf "OBJECTS-SWEEP FAIL: %d < floor %d (a reference form regressed)\n" pass floor;
+  let t = OSweep.sweep files in
+  Printf.printf "OBJECTS-SWEEP %d/%d rule lines (floor %d)\n" t.OSweep.pass t.OSweep.total floor;
+  if t.OSweep.pass < floor then begin
+    Printf.printf "OBJECTS-SWEEP FAIL: %d < floor %d (a reference form regressed)\n" t.OSweep.pass floor;
     exit 1
   end
+
+(* Broad bidirectional ok/fail corpus ratchet over the model's supported
+   families.  Two pinned counts: [pass] (lines whose accept/reject matches the
+   corpus verdict) must not fall below [floor]; [false_accept] (invalid `;fail`
+   lines the frontend wrongly accepts — the ledgered residual model boundaries)
+   must not rise above [ceil].  A regression that newly accepts an invalid
+   `;fail` line raises false_accept OR lowers pass; one that newly rejects a
+   supported `;ok` line lowers pass — either turns the build red. *)
+let corpus_okfail_gate (floor : int) (ceil : int) (files : string list) : unit =
+  let t = OSweep.sweep files in
+  Printf.printf
+    "CORPUS-OKFAIL pass=%d/%d floor=%d | false_accept=%d ceil=%d (false_reject=%d)\n"
+    t.OSweep.pass t.OSweep.total floor t.OSweep.false_accept ceil t.OSweep.false_reject;
+  let bad = ref false in
+  if t.OSweep.pass < floor then begin
+    Printf.printf "CORPUS-OKFAIL FAIL: pass %d < floor %d (a supported line regressed)\n"
+      t.OSweep.pass floor; bad := true
+  end;
+  if t.OSweep.false_accept > ceil then begin
+    Printf.printf
+      "CORPUS-OKFAIL FAIL: false_accept %d > ceil %d (a new invalid ;fail line is accepted)\n"
+      t.OSweep.false_accept ceil; bad := true
+  end;
+  if !bad then exit 1
 
 let () =
   match Stdlib.Array.to_list Sys.argv with
   | _ :: "byteorder-gate" :: files -> byteorder_gate files
   | _ :: "objects-sweep" :: floor :: files ->
       objects_sweep_gate (int_of_string floor) files
+  | _ :: "corpus-okfail-gate" :: floor :: ceil :: files ->
+      corpus_okfail_gate (int_of_string floor) (int_of_string ceil) files
   | _ :: "source-sweep" :: files -> ignore (source_sweep files)
   | _ :: "source-sweep-gate" :: min :: files ->
       source_sweep_gate (int_of_string min) files

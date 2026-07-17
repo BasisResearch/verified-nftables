@@ -11,7 +11,7 @@
 ROCQBIN ?=
 COQMAKE  = CoqMakefile
 
-.PHONY: all proofs glue lib example semtest difftest corpus byteorder-gate source-sweep-gate objects-sweep-gate validate parse-test gen gen-check gates boundary clean cli e2e nl-send parser-corpus axioms
+.PHONY: all proofs glue lib example semtest difftest corpus byteorder-gate source-sweep-gate objects-sweep-gate corpus-okfail-gate validate parse-test gen gen-check gates boundary clean cli e2e nl-send parser-corpus axioms
 
 all: proofs glue
 
@@ -126,6 +126,16 @@ source-sweep-gate: proofs
 # `;fail` rejected), and require the match count to stay at/above the floor.
 objects-sweep-gate: proofs
 	./objects-sweep-gate.sh
+
+# CORPUS OK/FAIL SWEEP tracked-count ratchet (T3): run EVERY rule line of the
+# supported families (ip, inet, any) through parse + typecheck + verified
+# lowering BIDIRECTIONALLY and pin two counts — pass >= FLOOR (a supported `;ok`
+# line newly rejected, or a `;fail` line newly accepted, drops pass -> red) and
+# false_accept <= CEIL (a NEW invalid `;fail` line slipping through -> red).
+# Broader than objects-sweep-gate (objects.t only) and catches the false-accept
+# direction that source-sweep-gate (byte-identity PASS ratchet) is blind to.
+corpus-okfail-gate: proofs
+	./corpus-okfail-gate.sh
 
 # Honest coverage of the UNTRUSTED .nft frontend: run `nftc compile` over a
 # large, diverse, REAL rule corpus (nftables tests/py + shipped examples + mined
@@ -279,11 +289,12 @@ gates:
 	$(MAKE) byteorder-gate
 	$(MAKE) source-sweep-gate
 	$(MAKE) objects-sweep-gate
+	$(MAKE) corpus-okfail-gate
 	$(MAKE) validate
 	$(MAKE) parse-test
 	$(MAKE) gen-check
 	$(MAKE) boundary
-	@echo "ALL GATES GREEN: proofs axioms corpus byteorder-gate source-sweep-gate objects-sweep-gate validate parse-test gen-check boundary"
+	@echo "ALL GATES GREEN: proofs axioms corpus byteorder-gate source-sweep-gate objects-sweep-gate corpus-okfail-gate validate parse-test gen-check boundary"
 
 clean:
 	-[ -f $(COQMAKE) ] && $(MAKE) -f $(COQMAKE) clean || true

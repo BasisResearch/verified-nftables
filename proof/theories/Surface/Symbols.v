@@ -249,11 +249,38 @@ Definition dt_tcpopt_num_tbl : list (string * N) :=
 Definition dt_tcpopt_num (name : string) : option N :=
   match assoc_str name dt_tcpopt_num_tbl with
   | Some n => Some n
-  | None => parse_dec name
+  | None =>
+      (* A raw option kind is a single byte (nft tcpopt.c reads the kind at
+         offset 0 width 8; TCPOPT kinds are u8), so a numeric name > 255 has no
+         representation and is refused. *)
+      match parse_dec name with
+      | Some n => if N.leb n 255 then Some n else None
+      | None => None
+      end
   end.
 
+(** Which fields a given TCP option exposes (nft tcpopt.c per-option template
+    tables): `eol`/`nop` are single-byte options carrying ONLY `kind` (their
+    template has no COMMON_LENGTH row); `size` belongs to maxseg, `count` to
+    window, `left`/`right` to sack, `tsval`/`tsecr` to timestamp.  A field
+    outside the option's template (e.g. `tcp option eol left`) is refused. *)
+Definition tcpopt_field_valid (name field : string) : bool :=
+  if String.eqb field "kind" then true
+  else if orb (String.eqb name "eol") (String.eqb name "nop") then false
+  else if String.eqb field "length" then true
+  else if String.eqb field "size" then
+    orb (String.eqb name "maxseg") (String.eqb name "mss")
+  else if String.eqb field "count" then String.eqb name "window"
+  else if orb (String.eqb field "left") (String.eqb field "right") then
+    List.existsb (String.eqb name) ["sack"; "sack0"; "sack1"; "sack2"; "sack3"]
+  else if orb (String.eqb field "tsval") (String.eqb field "tsecr") then
+    String.eqb name "timestamp"
+  else false.
+
 (** Field position (off, len-bytes) within a TCP option; `left`/`right` on a
-    multi-block SACK step by one 8-byte block (nft tcpopt.c templates). *)
+    multi-block SACK step by one 8-byte block (nft tcpopt.c templates).  Gated
+    by [tcpopt_field_valid] so a field absent from the option's template is
+    refused rather than silently read at a bogus offset. *)
 Definition dt_tcpopt_sackn (name : string) : nat :=
   if String.eqb name "sack1" then 1
   else if String.eqb name "sack2" then 2
@@ -261,7 +288,8 @@ Definition dt_tcpopt_sackn (name : string) : nat :=
   else 0.
 Definition dt_tcpopt_field (name field : string) : option (nat * nat) :=
   let sackn := dt_tcpopt_sackn name in
-  if String.eqb field "kind" then Some (0, 1)%nat
+  if negb (tcpopt_field_valid name field) then None
+  else if String.eqb field "kind" then Some (0, 1)%nat
   else if String.eqb field "length" then Some (1, 1)%nat
   else if String.eqb field "size" then Some (2, 2)%nat      (* maxseg size    *)
   else if String.eqb field "count" then Some (2, 1)%nat     (* window shift   *)

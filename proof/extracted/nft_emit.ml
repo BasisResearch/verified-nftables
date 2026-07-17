@@ -177,7 +177,6 @@ let stoplevel (tl : Ast.stoplevel) : string = match tl with
   | Ast.TopDefine (n, v) -> spf "(TopDefine %s %s)" (qstring n) (svalue v)
   | Ast.TopTable t -> stable t
   | Ast.TopInclude p -> spf "(TopInclude %s)" (qstring p)
-  | Ast.TopNop -> "TopNop"
 
 (* ---------- whole-file emission ---------- *)
 
