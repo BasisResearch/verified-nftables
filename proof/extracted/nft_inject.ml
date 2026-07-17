@@ -33,12 +33,23 @@ let nat (n : int) : int =
 
 let byte_list (b : int list) : int list = L.map nat b
 
+(* IPv6 literal groups: pure structural injection of the lexer's UN-expanded
+   groups onto the Coq [Ast.ip6grp] constructors (int -> nat, octet grouping).
+   The big-endian 16-bit split and `::` zero-fill are done in verified Coq
+   ([Ast.sip6_bytes], reached from [Lower]); nothing here decides a byte. *)
+let ip6grp : Nft_ast.ip6grp -> Ast.ip6grp = function
+  | Nft_ast.Ip6_g16 n  -> Ast.G16 (nat n)
+  | Nft_ast.Ip6_g4 os  -> Ast.G4 (byte_list os)
+
+let ip6grps (gs : Nft_ast.ip6grp list) : Ast.ip6grp list = L.map ip6grp gs
+
 let rec value : Nft_ast.value -> Ast.svalue = function
   | Nft_ast.Vnum n -> Ast.SVNum (nat n)
   | Nft_ast.Vsym s -> Ast.SVSym s
   | Nft_ast.Vstr s -> Ast.SVStr s
   | Nft_ast.Vip4 b -> Ast.SVIp4 (byte_list b)
-  | Nft_ast.Vip6 b -> Ast.SVIp6 (byte_list b)
+  | Nft_ast.Vip6 lit -> Ast.SVIp6 (ip6grps lit.Nft_ast.il_left,
+                                   Option.map ip6grps lit.Nft_ast.il_right)
   | Nft_ast.Vmac b -> Ast.SVMac (byte_list b)
   | Nft_ast.Vvar s -> Ast.SVVar s
   | Nft_ast.Vprefix (v, l) -> Ast.SVPrefix (value v, nat l)

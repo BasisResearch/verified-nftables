@@ -221,7 +221,16 @@ boundary:
 	@n=$$(grep -cwE 'encode|data_eqb|firstn|eval_matchcond|elab_m' theories/Semantics/TypedEval.v); \
 	  if [ "$$n" != "0" ]; then \
 	    echo "boundary FAIL: TypedEval.v couples to the encode path ($$n hit(s))"; exit 1; fi
-	@echo "boundary ok: OCaml frontend byte-free; TypedEval encode-independent; nft_lower.ml gone"
+	@# (5) the lexer decides NO byte order: it may parse numerals (int_of_string)
+	@#     and group dotted octets, but any bit-arithmetic (an IPv6 16-bit-group
+	@#     split, a mask/shift) is a byteorder/value->byte decision that must live
+	@#     in verified Coq.  IPv6 literal expansion is Surface.Ast.sip6_bytes; the
+	@#     lexer carries only the un-expanded groups.  (lexer.mll is outside
+	@#     FRONTEND_ML because it is generated pre-injection glue, so it gets this
+	@#     dedicated no-bit-arithmetic check.)
+	@if grep -nwE 'lsl|lsr|land|lor|asr' extracted/lexer.mll; then \
+	  echo "boundary FAIL: bit-arithmetic in lexer.mll (a byteorder/byte decode belongs in verified Coq, e.g. Surface.Ast.sip6_bytes)"; exit 1; fi
+	@echo "boundary ok: OCaml frontend byte-free; lexer bit-arithmetic-free; TypedEval encode-independent; nft_lower.ml gone"
 
 # THE aggregate gate: every README-advertised guarantee behind one command.
 # Sequential (not parallel prerequisites) so a failure is attributable to one
@@ -234,6 +243,7 @@ gates:
 	$(MAKE) validate
 	$(MAKE) parse-test
 	$(MAKE) gen-check
+	$(MAKE) boundary
 	$(MAKE) boundary
 	@echo "ALL GATES GREEN: proofs axioms corpus validate parse-test gen-check boundary"
 

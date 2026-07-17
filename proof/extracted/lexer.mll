@@ -51,20 +51,25 @@
       if n < 0 || n > 255 then raise (Lex_error ("bad IPv4 octet: " ^ p));
       n) parts
 
-  (* Expand an IPv6 textual literal (`dead::beef`, `::1`, `fe80::`, a full
+  (* Split an IPv6 textual literal (`dead::beef`, `::1`, `fe80::`, a full
      8-group form, optionally with an embedded trailing IPv4 `::ffff:1.2.3.4`)
-     to its 16 network-order bytes.  `::` marks the single run of zero groups. *)
-  let ipv6_bytes (s : string) : int list =
+     into its colon groups, cut at the single `::` zero-run (if any).  This does
+     NO byte decoding: each group is parsed as a numeral (a 1-4 hex-digit value)
+     or, for an embedded IPv4 tail, its dotted octets (one byte each) — exactly
+     the residue the M-C ledger permits.  The big-endian 16-bit split of each
+     group and the `::` zero-fill are performed in verified Coq
+     ([Surface.Ast.sip6_bytes], reached via Nft_inject -> Lower), NOT here. *)
+  let ipv6_groups (s : string) : Nft_ast.ip6lit =
     let module S = Stdlib.String in
     let module L = Stdlib.List in
-    (* a group is 1-4 hex digits -> 2 bytes big-endian; an embedded IPv4 tail
-       (the last group contains a '.') contributes its 4 bytes directly. *)
-    let group_bytes (g : string) : int list =
-      if S.contains g '.' then ipv4_bytes g
-      else let n = int_of_string ("0x" ^ g) in [ (n lsr 8) land 0xff; n land 0xff ] in
-    let groups (part : string) : int list list =
+    (* a group is 1-4 hex digits (a 16-bit numeral) or, if it contains '.', an
+       embedded IPv4 tail contributing its dotted octets *)
+    let group (g : string) : Nft_ast.ip6grp =
+      if S.contains g '.' then Nft_ast.Ip6_g4 (ipv4_bytes g)
+      else Nft_ast.Ip6_g16 (int_of_string ("0x" ^ g)) in
+    let groups (part : string) : Nft_ast.ip6grp list =
       if part = "" then []
-      else L.map group_bytes (S.split_on_char ':' part) in
+      else L.map group (S.split_on_char ':' part) in
     let idx =
       (* locate the "::" zero-run split, if any *)
       let rec find i =
@@ -72,23 +77,12 @@
         else if S.get s i = ':' && S.get s (i+1) = ':' then i
         else find (i+1) in
       find 0 in
-    let bytes =
-      if idx < 0 then
-        (* no ::, must be a full 8-group address *)
-        L.concat (groups s)
-      else begin
-        let left  = groups (S.sub s 0 idx) in
-        let right = groups (S.sub s (idx+2) (S.length s - idx - 2)) in
-        let have = L.length left + L.length right in
-        let zeros = L.init (8 - have) (fun _ -> [0;0]) in
-        L.concat (left @ zeros @ right)
-      end in
-    (* pad/truncate defensively to 16 bytes *)
-    let b = bytes in
-    let n = L.length b in
-    if n = 16 then b
-    else if n < 16 then b @ L.init (16 - n) (fun _ -> 0)
-    else raise (Lex_error ("malformed IPv6 literal: " ^ s))
+    if idx < 0 then
+      (* no ::, must be a full address; Coq checks it totals 16 bytes *)
+      { Nft_ast.il_left = groups s; il_right = None }
+    else
+      { Nft_ast.il_left = groups (S.sub s 0 idx);
+        il_right = Some (groups (S.sub s (idx+2) (S.length s - idx - 2))) }
 }
 
 let digit   = ['0'-'9']
@@ -141,7 +135,7 @@ rule token = parse
   | digit+ ('.' digit+)+ as s   { IPV4 (ipv4_bytes s) }
   | mac as s                    { MAC (Stdlib.List.map (fun g -> int_of_string ("0x" ^ g))
                                         (Stdlib.String.split_on_char ':' s)) }
-  | (ip6full | ip6comp) as s    { IPV6 (ipv6_bytes s) }
+  | (ip6full | ip6comp) as s    { IPV6 (ipv6_groups s) }
   (* An integer literal beyond OCaml's native int (2^62-1) cannot be
      represented by the extracted [nat] realisation (ExtrOcamlNatInt, see
      theories/Compiler/Extract.v): reject it as a clean lexical error rather

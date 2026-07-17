@@ -55,7 +55,7 @@ let rec svalue (v : Ast.svalue) : string = match v with
   | Ast.SVStr s -> spf "(SVStr %s)" (qstring s)
   | Ast.SVIp4 [a; b; c; d] -> spf "(sip4 %d %d %d %d)" a b c d
   | Ast.SVIp4 _ -> raise (Unsupported "IPv4 literal is not 4 octets")
-  | Ast.SVIp6 _ -> raise (Unsupported "IPv6 literal emission (add an sip6 smart ctor)")
+  | Ast.SVIp6 (_, _) -> raise (Unsupported "IPv6 literal emission (add an sip6 smart ctor)")
   | Ast.SVMac _ -> raise (Unsupported "MAC literal emission (add an smac smart ctor)")
   | Ast.SVVar s -> spf "(SVVar %s)" (qstring s)
   | Ast.SVPrefix (v, l) -> spf "(SVPrefix %s %d)" (svalue v) l

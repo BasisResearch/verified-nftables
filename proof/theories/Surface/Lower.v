@@ -274,7 +274,7 @@ Definition lower_value (f : field) (dt : dtype) (deps : list depspec)
       end
   | SVPrefix base len =>
       match base with
-      | SVIp4 _ | SVIp6 _ =>
+      | SVIp4 _ | SVIp6 _ _ =>
           match atom dt base "CIDR base address" with
           | LOk tv =>
               if prefix_len_ok dt len
@@ -543,7 +543,7 @@ Definition value_interval (dt : dtype) (be : bool) (v : svalue) : lres (data * d
       end
   | SVPrefix base plen =>
       match base with
-      | SVIp4 _ | SVIp6 _ =>
+      | SVIp4 _ | SVIp6 _ _ =>
           match resolve_value dt base with
           | Some tv => LOk (cidr_interval tv plen)
           | None => LErr (LEatom "set CIDR base")

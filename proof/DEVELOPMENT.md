@@ -709,11 +709,14 @@ kind / byteorder identifier (`bytes_of_int`, `enc_atom`, `width_of_kind`,
 (`sym_*`, `syslog_level`, `nat_flag_bit`, `key_field`, …) there; (3)
 `extracted/nft_lower.ml` stays deleted; (4) `TypedEval.v`'s numeric evaluator
 stays independent of the encode path (`grep -cwE
-'encode|data_eqb|firstn|eval_matchcond|elab_m'` = 0).  The three residues the
-ledger permits — (a) the `nametoindex "lo" → 1` ifindex oracle, (b) the pure
-`Nft_ast → Ast.*` structural injection, (c) the `ExtrOcamlNatInt` 63-bit seam +
-its `2^40` guard — are exactly what remains; a regression that re-introduces
-lowering logic into OCaml fails the gate, not a code review.
+'encode|data_eqb|firstn|eval_matchcond|elab_m'` = 0); (5) `extracted/lexer.mll`
+does NO bit-arithmetic (`grep -nwE 'lsl|lsr|land|lor|asr'` = 0) — the lexer may
+parse numerals and group dotted octets, but any byteorder split (historically
+the IPv6 16-bit-group `lsr 8` split) must live in verified Coq.  The three
+residues the ledger permits — (a) the `nametoindex "lo" → 1` ifindex oracle,
+(b) the pure `Nft_ast → Ast.*` structural injection, (c) the `ExtrOcamlNatInt`
+63-bit seam + its `2^40` guard — are exactly what remains; a regression that
+re-introduces lowering logic into OCaml fails the gate, not a code review.
 
 **TCB after M6 — the three residues, enumerated.**
   - (a) *host-dependent ifindex oracle.* `nft_inject.ml`'s `ifindex_oracle`
@@ -723,8 +726,14 @@ lowering logic into OCaml fails the gate, not a code review.
     name.
   - (b) *pure structural injection.* `nft_inject.ml`'s `Nft_ast → Ast.*`
     constructor/int/string mapping (`nat` over the seam, `string` over
-    `ExtrOcamlNativeString`, IP/MAC as the lexer's digit-group lists — grouping,
-    not byteorder). Decodes nothing.
+    `ExtrOcamlNativeString`, IPv4/MAC as the lexer's digit-group lists, IPv6 as
+    the lexer's UN-expanded `ip6grp` groups). It decides NO byte order: an IPv4
+    octet and a MAC hex pair are each exactly one byte (grouping only), and an
+    IPv6 literal's 16-bit-group big-endian split + `::` zero-fill are performed
+    by the verified `Surface.Ast.sip6_bytes` (reached from `Lower`), which fails
+    loud (`None`) on any literal that cannot form 16 bytes — the injection just
+    carries the numerals and octet groups the lexer parsed. Boundary check (5)
+    (`make boundary`) forbids bit-arithmetic in the lexer so this cannot regress.
   - (c) *extraction seam.* The `ExtrOcamlNatInt` 63-bit-int representation of
     `nat` and the `2^40` injection guard (`nft_inject.ml` / the `limit` bound in
     `Extract.v`) that keeps every extracted `nat` far below the wrap.

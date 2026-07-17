@@ -15,6 +15,15 @@
    in their declarations.  All of that resolution happens, explicitly, in
    Nft_inject. *)
 
+(* An IPv6 literal, carried UN-expanded: its colon groups, split at the single
+   `::` zero-run (if any).  A group is a 16-bit hex value ([Ip6_g16], 0..0xffff)
+   or an embedded trailing IPv4 tail ([Ip6_g4], its already-grouped octets from
+   `::ffff:1.2.3.4`).  The lexer does only numeral parsing + octet grouping; the
+   big-endian 16-bit split and the `::` zero-fill are done in verified Coq
+   ([Surface.Ast.sip6_bytes]), never here — see nft_inject.ml. *)
+type ip6grp = Ip6_g16 of int | Ip6_g4 of int list
+type ip6lit = { il_left : ip6grp list; il_right : ip6grp list option }
+
 (* A literal/expression value as written.  Resolution of its *bytes* is deferred
    to Nft_inject because it depends on the selector it appears under (a port is 2
    bytes, an ifname is ASCII, `established` is a 4-byte conntrack-state word). *)
@@ -23,7 +32,7 @@ type value =
   | Vsym    of string              (* a bareword: symbolic constant / service / ifname *)
   | Vstr    of string              (* a double-quoted string, e.g. "eth0" *)
   | Vip4    of int list            (* a dotted IPv4 literal, already 4 bytes *)
-  | Vip6    of int list            (* an IPv6 literal, already 16 bytes (big-endian) *)
+  | Vip6    of ip6lit              (* an IPv6 literal, UN-expanded groups (see above) *)
   | Vmac    of int list            (* a MAC literal, 6 bytes, e.g. aa:bb:cc:dd:ee:ff *)
   | Vvar    of string              (* a `$name` reference to a `define` *)
   | Vprefix of value * int         (* a CIDR prefix, e.g. 192.168.50.0/24 *)
