@@ -20,10 +20,15 @@
     | "raw" -> -300 | "mangle" -> -150 | "dstnat" -> -100 | "filter" -> 0
     | "security" -> 50 | "srcnat" -> 100 | "out" -> 100 | _ -> 0
 
-  (* byte-rate unit multiplier (nft: `kbytes`=1024, `mbytes`=1024*1024) *)
-  let byte_scale = function
+  (* byte-rate unit multiplier.  nft accepts ONLY bytes/kbytes/mbytes as a
+     data-rate unit (src/statement.c data_unit[] = {"bytes","kbytes","mbytes"});
+     an unknown unit like `gbytes` is a grammar error there, NOT a silently
+     scale-1 value, so it is a loud refusal here too. *)
+  let byte_unit_scale = function
     | "bytes" -> 1 | "kbytes" -> 1024 | "mbytes" -> 1024 * 1024
-    | _ -> 1
+    | u -> raise (Nft_inject.Inject_error
+                    ("limit: unknown byte-rate unit '" ^ u ^
+                     "'; nft accepts only bytes/kbytes/mbytes"))
 
   (* ExtrOcamlNatInt seam guard.  The verified core's [nat]s extract to
      OCaml's 63-bit int with WRAPPING arithmetic the Rocq proofs know nothing
@@ -46,14 +51,13 @@
     | w -> raise (Nft_inject.Inject_error ("unknown ct object kind: ct " ^ w))
 
   let max_limit_value = 1 lsl 40
-  let limit_value what n u =
-    let s = byte_scale u in
+  let limit_value what n s =
     if n < 0 || n > max_limit_value / s then
       raise (Nft_inject.Inject_error
         (Printf.sprintf
-           "%s %d%s: scaled value exceeds the extracted-int-safe bound 2^40 \
-            (see theories/Compiler/Extract.v)"
-           what n (if u = "" then "" else " " ^ u)))
+           "%s %d (scale %d): scaled value exceeds the extracted-int-safe bound \
+            2^40 (see theories/Compiler/Extract.v)"
+           what n s))
     else n * s
 %}
 
@@ -518,7 +522,14 @@ stmt:
   | LOG log_opts              { StLog $2 }
   | LIMIT RATE limit_over limit_rate limit_burst
       { let (rate, unit_, bytes) = $4 in
-        let burst = match $5 with Some b -> b | None -> if bytes then 0 else 5 in
+        (* nft pairs a packet-rate only with a packet-burst and a byte-rate only
+           with a byte-burst; a crossed unit domain is a grammar error. *)
+        let burst = match $5 with
+          | Some (_b, Some byte_burst) when byte_burst <> bytes ->
+              raise (Nft_inject.Inject_error
+                "limit: burst unit domain (bytes vs packets) must match the rate domain")
+          | Some (b, _) -> b
+          | None -> if bytes then 0 else 5 in
         StLimit (rate, unit_, $3, burst, bytes) }
   | MASQUERADE natflags       { StMasquerade $2 }
   | SNAT nat_to natflags      { let (a,p) = $2 in StSnat (a,p,$3) }
@@ -567,12 +578,21 @@ limit_over:
   | /* empty */ { false }
   | OVER        { true }
 limit_rate:
-  | INT SLASH IDENT        { (limit_value "limit rate" $1 "", $3, false) }   (* N/second *)
-  | INT IDENT SLASH IDENT  { (limit_value "limit rate" $1 $2, $4, true) }    (* N kbytes/second *)
+  | INT SLASH IDENT        { (limit_value "limit rate" $1 1, $3, false) }              (* N/second (packet rate) *)
+  | INT IDENT SLASH IDENT  { (limit_value "limit rate" $1 (byte_unit_scale $2), $4, true) } (* N kbytes/second (byte rate) *)
+(* burst returns its value and its unit DOMAIN (Some true = byte unit, Some
+   false = `packets`, None = bare `burst N`).  nft's grammar pairs a packet-rate
+   with a packet-burst (limit_burst_pkts: BURST NUM PACKETS) and a byte-rate with
+   a byte-burst (limit_burst_bytes: BURST NUM bytes_unit); a crossed pair has no
+   production and is a parse error (src/parser_bison.y limit_args).  The domain is
+   checked against the rate at the LIMIT RATE statement. *)
 limit_burst:
   | /* empty */       { None }
-  | IDENT INT         { Some (limit_value "limit burst" $2 "") }        (* `burst N` *)
-  | IDENT INT IDENT   { Some (limit_value "limit burst" $2 $3) }  (* `burst N kbytes` / `burst N packets` *)
+  | IDENT INT         { Some (limit_value "limit burst" $2 1, None) }              (* bare `burst N` *)
+  | IDENT INT IDENT   { let (scale, is_byte) =
+                          if $3 = "packets" then (1, false)
+                          else (byte_unit_scale $3, true) in
+                        Some (limit_value "limit burst" $2 scale, Some is_byte) }  (* `burst N kbytes` / `burst N packets` *)
 
 nat_to:
   | /* empty */          { (None, None) }
