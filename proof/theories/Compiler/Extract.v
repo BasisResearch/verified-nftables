@@ -118,7 +118,8 @@ Separate Extraction
   run_ruleset
   seq_eval
   env_with_sets
-  mut_wf
+  rule_numgen_free
+  dsl_step dsl_writes rule_step
   Nftval.encode
   Typed.elab_tx
   Lower.lower_match

@@ -295,7 +295,7 @@ let () =
      and (b) mutation actually changes the result (mut != no-mut). *)
   Printf.printf "=== counter; meta mark set 0x1; log ; meta mark 0x1 accept (mutation, mixed stmts) ===\n";
   (* the first rule MIXES non-set statements (counter, log) with the meta-set —
-     exactly what the old `plain_simple` scope excluded; mut_wf now covers it. *)
+     the single-fold mutation theorems cover it with no shape hypothesis. *)
   let mut_chain = chain Verdict.Drop [
     rule_b [ Syntax.BStmt (Syntax.SCounter (0, 0));
              Syntax.BStmt (Syntax.SMetaSet (Packet.MKmark, Syntax.VImm [1]));

@@ -143,6 +143,9 @@ validate: glue
 #                        fuel-free corollary
 #   mark de-vacuized(M4) Optiplex_Mark _real heads + the gen_env/fib
 #                        contradiction + the witnessed instance
+#   single-fold (T1)     the numgen-freedom discharge over every lowering,
+#                        the mut-free fold coincidence, and the intra-rule
+#                        set-then-read / dynset-feedback positive pins
 # Any NEW README-claimed result must be added here in the same commit.
 AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   compile_chain_mut_env_correct compile_seq_mut_correct compile_table_correct \
@@ -187,10 +190,14 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Lower_Proofs.bitmask_erasure Lower_Proofs.bitfield_erasure \
   Lower_Proofs.txmatch_erasure \
   Lower_Proofs.set_interval_erasure Lower_Proofs.concat_key_erasure \
-  Lower_Proofs.cidr_interval_agrees_prefix_expand
+  Lower_Proofs.cidr_interval_agrees_prefix_expand \
+  Lower_Proofs.lower_ruleset_numgen_free \
+  Semantics.rule_step_mutfree \
+  Setread_IntraRule.setread_accepted Setread_IntraRule.vm_setread_accepted \
+  Setread_IntraRule.dynset_feedback_accepted Setread_IntraRule.vm_dynset_feedback_accepted
 
 axioms:
-	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs.\n'; \
+	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs Setread_IntraRule.\n'; \
 	  for t in $(AXIOM_GATE_THEOREMS); do printf 'Print Assumptions %s.\n' "$$t"; done; } \
 	| coqtop -R . Nft 2>/dev/null \
 	| grep -E 'Closed under the global context|Axioms' \

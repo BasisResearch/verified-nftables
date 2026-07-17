@@ -355,6 +355,51 @@ Proof.
   destruct (e_nat e (pkt_flow p)); [reflexivity | apply Bool.andb_false_r].
 Qed.
 
+(** Single-fold per-rule STEPS of the two prerouting rules on a streaming packet:
+    rule 1 breaks at its `th dport 3389` compare (no verdict, state kept), rule 2
+    walks to its terminal dnat with the mark written — verdict and state from ONE
+    traversal ([rule_step]). *)
+Lemma pre1_streaming_step_real : forall e p,
+  e_set e "__set0" = set_l4proto ->
+  field_value FMetaIifname e p = if_home ->
+  field_value (FFib "daddr" FRtype) e p = fib_local ->
+  field_value FMetaL4proto e p = l4_tcp ->
+  field_value FThDport e p = port48010 ->
+  read_payload_ok PTransport 2 2 p = true ->
+  dsl_rule_step pre1 e p = (None, (e, p)).
+Proof.
+  intros e p Hs0 Hiif Hfib Hl4 Hdport Hok.
+  unfold dsl_rule_step, rule_step, pre1, filter_prerouting.
+  cbn -[field_value set_meta read_payload_ok].
+  unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
+    field_loadable, load_ok.
+  cbn -[field_value set_meta read_payload_ok].
+  rewrite ?Hok, !Hiif, !Hfib, !Hl4, !Hdport, ?Hs0.
+  cbn -[set_meta read_payload_ok]. rewrite ?Hok. cbn -[set_meta].
+  vm_compute. reflexivity.
+Qed.
+
+Lemma pre2_streaming_step_real : forall e p,
+  e_set e "__set0" = set_l4proto ->
+  e_set e "__set1" = set_iif ->
+  e_set e "__set2" = set_sports ->
+  field_value FMetaIifname e p = if_home ->
+  field_value (FFib "daddr" FRtype) e p = fib_local ->
+  field_value FMetaL4proto e p = l4_tcp ->
+  field_value FThDport e p = port48010 ->
+  read_payload_ok PTransport 2 2 p = true ->
+  dsl_rule_step pre2 e p = (Some Accept, (e, set_meta p MKmark mark99)).
+Proof.
+  intros e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok.
+  unfold dsl_rule_step, rule_step, pre2, filter_prerouting.
+  cbn -[field_value set_meta read_payload_ok].
+  unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
+    field_loadable, load_ok.
+  cbn -[field_value set_meta read_payload_ok].
+  rewrite ?Hok, !Hiif, !Hfib, !Hl4, !Hdport, ?Hs0, ?Hs1, ?Hs2.
+  cbn -[set_meta read_payload_ok]. rewrite ?Hok. cbn -[set_meta]. reflexivity.
+Qed.
+
 (** ** What comes out of the prerouting chain.
 
     Run the WHOLE prerouting chain on a streaming packet: it traverses rule 1
@@ -378,20 +423,13 @@ Theorem streaming_prerouting_io_real : forall e p,
 Proof.
   intros e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok.
   unfold eval_chain_trace. rewrite prerouting_rules_eq.
-  (* rule 1: traversed but does not match; threads its (no-op) writes *)
-  cbn [eval_rules_trace dsl_rule_step].
-  rewrite pre1_streaming_skips_real by assumption.
-  rewrite Bool.andb_false_r.
-  rewrite (dsl_step_limit_free pre1 e p) by reflexivity.
-  rewrite pre1_streaming_noop_real by assumption.
-  (* rule 2: matches, terminal accept; the body marks the packet and the terminal
-     dnat rewrites the destination — the output is [apply_nat pre2 (marked packet)] *)
-  cbn [eval_rules_trace dsl_rule_step].
-  rewrite pre2_streaming_applies_real by assumption.
-  rewrite (pre2_loadable e p Hok).
-  rewrite pre2_outcome_accept. cbn [terminal].
-  rewrite (dsl_step_limit_free pre2 e p) by reflexivity.
-  rewrite pre2_streaming_marks_real by assumption.
+  (* rule 1: traversed but breaks at its dport compare; state kept *)
+  cbn [eval_rules_trace].
+  rewrite pre1_streaming_step_real by assumption.
+  (* rule 2: walks to its terminal dnat with the mark written *)
+  cbn [eval_rules_trace].
+  rewrite pre2_streaming_step_real by assumption.
+  cbn [terminal].
   rewrite pre2_no_natdrop. reflexivity.
 Qed.
 
@@ -561,10 +599,13 @@ Theorem masquerade_output : forall e p ifaddr,
                 set_saddr nat_fam_ip4 p ifaddr)).
 Proof.
   intros e p ifaddr Hfam Hmark Horig Hnone Hifa Hne.
-  unfold eval_chain_trace. rewrite postrouting_rules_eq. cbn [eval_rules_trace dsl_rule_step].
-  rewrite (masquerade_gated_on_mark e p Hmark), post1_outcome_accept. cbn [terminal].
-  rewrite (dsl_step_limit_free post1 e p) by reflexivity.
-  rewrite (post1_dsl_noop e p Hmark).
+  unfold eval_chain_trace. rewrite postrouting_rules_eq. cbn [eval_rules_trace].
+  assert (Hd : dsl_rule_step post1 e p = (Some Accept, (e, p))).
+  { unfold dsl_rule_step. rewrite rule_step_mutfree by reflexivity.
+    rewrite (masquerade_gated_on_mark e p Hmark), post1_outcome_accept.
+    replace (rule_loadable post1 e p) with true by reflexivity.
+    reflexivity. }
+  rewrite Hd. cbn [terminal].
   rewrite (post1_nat_no_drop e p ifaddr Hfam Horig Hnone Hifa Hne).
   rewrite (post1_apply_masq Hpostrouting e p Hfam Horig Hnone), Hifa.
   reflexivity.
@@ -638,7 +679,8 @@ Proof.
   - now apply masquerade_gated_on_mark.
   - unfold eval_chain_mut. rewrite postrouting_rules_eq. cbn [eval_rules_mut].
     assert (Hov : fst (dsl_rule_step post1 e' q) = Some Accept).
-    { rewrite dsl_rule_step_fst.
+    { rewrite dsl_rule_step_fst. rewrite rule_step_mutfree by reflexivity.
+      cbn [fst].
       rewrite (masquerade_gated_on_mark e' q Hmark).
       replace (rule_loadable post1 e' q) with true by reflexivity.
       reflexivity. }

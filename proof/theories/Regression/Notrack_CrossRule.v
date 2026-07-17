@@ -20,10 +20,13 @@
        `ct state` read returns the entry's REAL state.
 
     ── Model ─────────────────────────────────────────────────────────────────────
-    [SNotrack]/[INotrack] apply [set_untracked] in [body_writes]/[run_rule_writes].
+    [SNotrack]/[INotrack] apply [set_untracked] in [body_step]/[run_rule_step] — the
+    single per-rule fold threads the write to the REST of the same rule's walk and
+    keeps it on any later break.
     [set_untracked] mirrors the kernel guard: it is a NO-OP when [pkt_ct_present = true]
     and otherwise sets the per-packet-traversal flag [pkt_untracked := true].  The
-    cross-rule threader [eval_rules_mut] carries [dsl_writes r1 e p] (= [set_untracked p])
+    cross-rule threader [eval_rules_mut] carries rule 1's step state (here
+    [set_untracked p], = [dsl_writes r1 e p] on this match-free rule)
     into the NEXT rule, whose `ct state` match reads [do_load (LCt CKstate)] = [0;0;0;64]
     on a no-entry packet ([pkt_untracked] override) and the live entry state otherwise.
     The DSL and the VM apply the SAME [set_untracked], so [compile_chain_correct] stays
@@ -110,26 +113,22 @@ Proof.
   intros e p Hp.
   assert (Hu : pkt_untracked (set_untracked p) = true)
     by (unfold set_untracked; rewrite Hp; reflexivity).
-  (* rule 2 sees the threaded state [dsl_step notrack_only e p], which (the body is
+  (* rule 2 sees the threaded state left by rule 1's fold, which (the body is
      just the notrack) is exactly [(e, set_untracked p)]; its `ct state untracked`
-     match reads the UNTRACKED latch and applies. *)
-  assert (Hstep : dsl_step notrack_only e p = (e, set_untracked p)) by reflexivity.
-  assert (Ha : rule_applies ctstate_rule e (set_untracked p) = true).
-  { unfold rule_applies. cbn [ctstate_rule r_body rule_applies_walk].
-    unfold eval_matchcond, m_untracked. cbn [match_loadable].
+     match reads the UNTRACKED latch and the fold reaches the Accept end. *)
+  assert (Hm : eval_matchcond m_untracked e (set_untracked p) = true).
+  { unfold eval_matchcond, m_untracked. cbn [match_loadable].
     unfold field_loadable, field_load. cbn [load_ok].
     unfold eval_matchcond_body. cbn [field_value field_load do_load].
     rewrite Hu. reflexivity. }
-  assert (Hout : outcome ctstate_rule e (set_untracked p) = Some Accept) by reflexivity.
+  assert (Hstep2 : rule_step ctstate_rule e (set_untracked p)
+                   = (Some Accept, (e, set_untracked p))).
+  { unfold rule_step. cbn [ctstate_rule r_body body_step]. rewrite Hm. reflexivity. }
   unfold eval_chain_mut, notrack_chain. cbn [c_rules c_policy].
-  cbn [eval_rules_mut dsl_rule_step].
-  replace (rule_loadable notrack_only e p) with true by reflexivity.
-  replace (rule_applies notrack_only e p) with true by reflexivity.
-  replace (outcome notrack_only e p) with (@None verdict) by reflexivity.
-  rewrite Hstep.
-  replace (rule_loadable ctstate_rule e (set_untracked p)) with true by reflexivity.
-  rewrite Ha, Hout.
-  destruct (dsl_step ctstate_rule e (set_untracked p)) as [e2 p2]. reflexivity.
+  cbn [eval_rules_mut].
+  replace (dsl_rule_step notrack_only e p)
+    with (@None verdict, (e, set_untracked p)) by reflexivity.
+  unfold dsl_rule_step. rewrite Hstep2. reflexivity.
 Qed.
 
 (* KERNEL GUARD (the notrack-no-op refinement): on a packet that ALREADY has a

@@ -104,7 +104,7 @@ theorem is stated against is **not** faithful in these areas. Grouped by kind:
   instead of being verdict-neutral.  `env_set_upd` (in `Semantics.v`)
   inserts the exact element `[key,key]` (add/update — so a later `set_mem` on `key`
   succeeds) or drop it (delete); this is threaded through the mutation machinery
-  (`run_rule_writes` on `IDynset _ None`, `body_writes` on `SDynset _ _ _ []`), so a
+  (`run_rule_step` on `IDynset _ None`, `body_step` on `SDynset _ _ _ []`), so a
   LATER rule's `lookup @s` observes the element this rule learned — the dynamic-set
   feedback loop.  It is carried by the SAME axiom-free theorem as meta/ct mutation,
   **`compile_chain_mut_correct`** (dynset is now an `is_mut_stmt`, no longer a
@@ -144,41 +144,37 @@ mostly closed — see the per-item markers and TODO 3)* — a statement that doe
   compiler theorem still proves because BOTH the DSL semantics and the VM no-op
   the set — a textbook vacuous-theorem case.
 
-  *Status: FIXED (2026-06) for the common fragment — **cross-rule**. The
-  **intra-rule** instance of the same idiom is still OPEN (see below).* A mutated packet is threaded
-  across rules: the VM effect `run_rule_writes` (mirrors `run_rule`'s register
-  threading but, on an `IMetaSet/ICtSet` reached after the matches pass, returns
-  `set_meta/set_ct p k (rf src)`; cmp/range/lookup/limit break → unchanged `p`)
-  and the DSL `body_writes`/`dsl_writes` (left-to-right: a `set` writes
-  `eval_vsrc vs` against the packet mutated so far; a failing match stops, keeping
-  earlier writes). `eval_rules_mut`/`run_program_mut` (and `eval/run_chain_mut`)
-  thread the writes so a later rule observes an earlier `set`. A **set-`dynset`**
-  (`add`/`update`/`delete @s {key}`) likewise mutates the env's named-set state
-  (`run_rule_writes` on `IDynset _ None` → `env_set_upd`; `body_writes` on
-  `SDynset _ _ _ []`), so a later `lookup @s` sees the learned element — the
-  dynamic-set feedback loop (semtest 5b). The theorem
+  *Status: FIXED — cross-rule (2026-06) AND intra-rule (T1 single-fold).* The
+  per-rule semantics is ONE left-to-right fold (`Semantics.rule_step` /
+  `Semantics.run_rule_step`), exactly the kernel's expression walk
+  (nf_tables_core.c `nft_rule_dp_for_each_expr`): every expression — a match,
+  a statement operand, the verdict-map key, a limiter check — sees the writes
+  (packet-local `set_meta`/`set_ct` AND dynset `env_set_upd`/`env_map_upd`)
+  of the expressions before it in the SAME rule; a failing match or breaking
+  load stops the walk keeping the earlier writes; statements after a terminal
+  verdict never run; `r_after` statements (writes included) run only on a
+  `Continue` fall-through.  `eval_rules_mut`/`run_program_mut` (and
+  `eval/run_chain_mut`) thread the state a rule leaves to the next rule, so
+  BOTH the cross-rule and the intra-rule `meta mark set 0x1 … meta mark 0x1
+  accept` forms now ACCEPT (positive pins:
+  `Regression/Setread_IntraRule.v`; intra-rule dynset feedback — `add @s
+  {key}` then `@s` lookup in ONE rule — is pinned there too).  The theorem
   **`compile_chain_mut_correct`** (axiom-free) proves
-  `run_chain_mut (compile_chain c) policy = eval_chain_mut c` for **every rule**
-  (`mut_wf`, a well-formedness — NOT a feature scope): matches, meta/ct sets,
-  set-dynsets, AND every other statement (mangle, NAT, dup, counter, log, map-dynset,
-  exthdr, objref, …, threaded as state-neutral via the `straight`-line-prefix lemma). The
-  cited **cross-rule** `meta mark set 0x1 ; meta mark 0x1 accept` bug (TWO rules) now
-  ACCEPTS on both sides, and
-  semtest witnesses a rule *mixing* `counter`/`log` with the meta-set.
-  ⛔ STILL OPEN — the **intra-rule** form (`meta mark set 0x1 meta mark 0x1
-  accept` as ONE rule) remains unfaithful-by-shared-abstraction: the verdict
-  pass evaluates loads against the packet the rule *entered* with, so the model
-  drops (both sides) where the kernel accepts — a confirmed divergence, entry 3
-  of **"Known model infidelities"** below (pinned in
-  `Regression/Known_Infidelities.v`; only `notrack`/synproxy are threaded
-  intra-rule). Built on the
-  operand value-correctness `eval_vsrc vs p = (regfile after compile_vsrc vs) 1`,
-  proved for every operand kind (immediate, field(+transforms), value map (any key
-  transform), `VMapT`, jhash, jhash-map, OR-fold). The only `mut_wf` exclusions are a
-  malformed zero-field jhash/map/or operand (no real ruleset emits one) and a
-  meta/ct set inside the post-outcome (`r_after`) statements (always verdict-neutral
-  — counter/log/objref — in the corpus); the *old* `plain_simple` scope (which hid
-  every rule with a non-set statement) is gone.
+  `run_chain_mut (compile_chain c) policy = eval_chain_mut c` for every
+  numgen-free rule — `rule_numgen_free` is the strand's ONLY hypothesis, and
+  `Lower_Proofs.lower_ruleset_numgen_free` discharges it for EVERY
+  frontend-emitted program (the lowering refuses incremental numgen
+  fail-loud, `Lower.LEnumgen`).  Matches, meta/ct sets, set-dynsets, AND
+  every other statement (mangle, NAT, dup, counter, log, map-dynset, exthdr,
+  objref, …, threaded as state-neutral via the `straight`-line-prefix lemma)
+  are in scope; semtest witnesses a rule *mixing* `counter`/`log` with the
+  meta-set.  Built on the operand value-correctness `eval_vsrc vs p =
+  (regfile after compile_vsrc vs) 1`, proved for EVERY operand kind
+  (immediate, field(+transforms), value map (any key transform), `VMapT`,
+  jhash, jhash-map, OR-fold — including the degenerate zero-field shapes,
+  whose source register the compiler now pins with an `IImmediateData _ []`,
+  keeping the bridge unconditional).  The historical `mut_wf` well-formedness
+  hypothesis is GONE (see "Known model infidelities" for the flipped entry).
 
 **C. Control flow** *(jump/goto/return + user chains, AND multi-table dispatch: FIXED, 2026-06)*:
 - ✅ **Multi-table / multi-hook dispatch**: `eval_ruleset`/`run_ruleset` traverse a
@@ -270,9 +266,11 @@ The gap-closing program was tracked as C→A→B→D. Status as of 2026-06:
   no-usable-address — observed across hooks by the whole-chain trace evaluator
   (`eval_chain_trace`). **STILL OPEN:** payload-mangle (`SMangle`) and IMMEDIATE-data
   dynsets are threaded only as state-*neutral* (their own writes are not yet visible
-  to later rules); and three *confirmed divergences inside the modelled features*
-  (limiter sweep past a failing match, `OVmapNat` vmap-hit trace NAT, intra-rule
-  set-then-read) are ledgered in **"Known model infidelities"** below.
+  to later rules); and two *confirmed divergences inside the modelled features*
+  (limiter sweep past a failing match, `OVmapNat` vmap-hit trace NAT) are
+  ledgered in **"Known model infidelities"** below (the third — intra-rule
+  set-then-read — is REPAIRED by the T1 single-fold rule semantics; positive
+  pins in `Regression/Setread_IntraRule.v`).
 - ✅ **(4) Explicit tables** (D-ish): FIB done (`lpm_fib`); the **conntrack table is
   now flow-keyed** (`e_ct`, keyed by `pkt_flow`) by the 2026-06 audit — `ct
   mark`/`state`/`direction`/`connlimit` accumulate across a flow's packets. (See TODO 1
@@ -300,7 +298,7 @@ internal consistency against a self-authored semantics, with kernel fidelity now
 on the 2026-06 adversarial audit (`../adversarial.md` — see its evidence-class ledger:
 most fixes are backed by kernel *source reading* + golden control-plane payloads, few by
 kernel-executed packet differentials) and `make validate` (28/28) rather than the
-corpus round-trip. Additionally, three **confirmed model-vs-kernel divergences inside
+corpus round-trip. Additionally, two **confirmed model-vs-kernel divergences inside
 modelled features** are known and deliberately left open — the ledger below.
 
 ## Known model infidelities (open, confirmed)
@@ -317,7 +315,7 @@ theorem in [`theories/Regression/Known_Infidelities.v`](theories/Regression/Know
 that pins the **model's divergent behaviour**: a future fidelity fix MUST flip
 that pin (it becomes unprovable) and update this ledger, so the divergence can
 be neither forgotten nor silently half-fixed. The DSL and the VM **agree** on
-all three (the compiler theorems are honest); the divergence is model-vs-kernel.
+both (the compiler theorems are honest); the divergence is model-vs-kernel.
 
 **1. The limiter sweep depletes buckets the kernel never evaluates.**
 - *Kernel*: a rule's expressions run left-to-right; a failing match sets
@@ -334,9 +332,11 @@ all three (the compiler theorems are honest); the divergence is model-vs-kernel.
   non-matching packet leaves `e_limit = 0` (kernel: 1); verdict sequences over
   `seq_eval_env` then diverge observably from the kernel.
 - *Pin*: `Known_Infidelities.gate_limit_drained` / `vm_gate_limit_drained`.
-- *Why open*: the faithful shape folds the consumption into the break-aware
-  `body_writes`/`run_rule_writes` walk — a rework of the mutation step function
-  on both sides (semantics change; audit track).
+- *Why open*: the faithful shape folds the CONSUMPTION into the break-aware
+  `body_step`/`run_rule_step` fold at the limiter's position (the CHECK already
+  evaluates there against the running state; only the depletion remains a
+  whole-body sweep at the `dsl_rule_step`/`vm_rule_step` boundary) — a semantics
+  change on both sides (audit track).
 
 **2. A vmap HIT on an `OVmapNat` rule still runs the trailing NAT in the trace
 evaluator (including a spurious flow-state write).**
@@ -360,39 +360,19 @@ evaluator (including a spurious flow-state write).**
   the trace evaluator — a semantics change (audit track). Plain `ONat` rules
   (the corpus/ruleset-common shape) are unaffected.
 
-**3. Intra-rule set-then-read: the verdict pass does not see the same rule's
-earlier write.**
-- *Kernel*: the ONE rule `meta mark set 0x1 meta mark 0x1 accept` **accepts** —
-  expressions run left-to-right against the running packet
-  (nf_tables_core.c `nft_rule_dp_for_each_expr`; `nft_meta_set_eval` then
-  `nft_cmp_eval` on the updated mark).
-- *Model*: the per-rule semantics is deliberately TWO folds
-  (`Semantics.dsl_rule_step`'s header): the verdict pass
-  (`rule_applies`/`outcome`/`run_rule`) evaluates every load against the packet
-  the rule **entered** with (`SMetaSet`/`IMetaSet` walked as no-ops), while the
-  write pass (`body_writes`/`run_rule_writes`) does perform the write. So the
-  rule fails to match and the chain falls to policy — on both sides. Only
-  `notrack`/synproxy are threaded intra-rule (`rule_applies_walk`) — audit
-  findings with a real-ruleset idiom behind them. The **cross-rule** form
-  (two rules) IS faithful (§B above; `compile_chain_mut_correct`).
-- *Repro*: the one-rule chain above with policy drop: model drops the packet
-  the kernel accepts, while the write pass demonstrably writes the mark.
-- *Pin*: `Known_Infidelities.setread_dropped` / `setread_write_happens` /
-  `vm_setread_dropped` (and `setread_mut_wf`: the rule is *inside* `mut_wf`,
-  i.e. this is a fidelity gap of the shared abstraction, not a domain
-  exclusion).
-- *Why open*: threading writes into the verdict pass collapses the two folds
-  into one — a rework of the whole verdict stratum and its compile proofs
-  (semantics change; audit track). Why the audit's vacuity criterion missed
-  it: §B's original bug (and its fix + semtest witness) was the **cross-rule**
-  instance; the intra-rule instance shares the abstraction on both sides, so
-  no gate diverged. It was found by asking the two-fold design question
-  directly.
+**(repaired) 3. Intra-rule set-then-read.**  The historical third entry — the
+one-rule `meta mark set 0x1 meta mark 0x1 accept` dropping where the kernel
+accepts, an artefact of the retired two-fold verdict/write split — is FIXED by
+the T1 single-fold rule semantics (`rule_step`/`run_rule_step` run every
+expression against the running state).  Its pins flipped from divergence locks
+to POSITIVE witnesses: `Regression/Setread_IntraRule.v`
+(`setread_accepted`/`vm_setread_accepted`, the intra-rule dynset-feedback
+pins, and the break-keeps-earlier-writes pins).
 
 Cross-references: `THEOREMS.md` §1 scope notes and §3 (evaluator matrix);
 `../adversarial.md` "Outcome" (scoping note). The in-source ⚠ KNOWN INFIDELITY
-markers sit on `limit_sweep_prog`, `vm_rule_step`'s two-fold header, and
-`eval_rules_trace` in `Semantics.v`, and on `OVmapNat` in `IR/Syntax.v`.
+markers sit on `limit_sweep_prog` and `eval_rules_trace` in `Semantics.v`,
+and on `OVmapNat` in `IR/Syntax.v`.
 
 ## What exists
 
@@ -495,7 +475,7 @@ lemmas in `Optimize_Uncond.v`), all likewise axiom-free — re-check any with
 | `compile_chain_correct` | a single base chain's per-packet verdict |
 | `optimize_chain_correct` | the rule-local base pass changes no verdict (SUPERSEDED as a standalone result — the shipped pipeline's theorem is `optimize_table_uncond_compile_correct`) |
 | `compile_chain_sets_correct` | a `lookup @s` reads the elements *declared* for `s` (named state as a declared object) |
-| `compile_chain_mut_correct` | in-traversal **mutation** (meta/ct `set`, set-`dynset` learning, field-data map-`dynset` learning) is visible to later rules; holds for *every* rule under `mut_wf` well-formedness |
+| `compile_chain_mut_correct` | in-traversal **mutation** (meta/ct `set`, set-`dynset` learning, field-data map-`dynset` learning) is visible to later rules AND to later expressions of the SAME rule (single-fold); holds for every numgen-free rule (`rule_numgen_free`, discharged for all frontend programs by `Lower_Proofs.lower_ruleset_numgen_free`) |
 | `compile_chain_mut_env_correct` | the **env a chain leaves** (its dynset-learned sets/maps) is preserved too — basis for cross-packet learning |
 | `compile_table_correct` | **control flow**: `jump`/`goto`/`return` + user chains (fuel-bounded) |
 | `compile_chain_faithful_jumpfree` | the single-chain `compile_chain` agrees with the faithful jump-aware `eval_table` on jump-free chains (bridges the two engines) |
@@ -557,10 +537,12 @@ statements (counter/notrack/log), reject/queue verdicts, stateful
 `limit`/`quota`/`connlimit` (rendered here; their *semantics* are now live consuming
 token buckets, not oracles — 2026-06 audit), all meta keys, rt/socket/osf oracle loads
 and `numgen` (whose `inc` form is now a persistent counter in `env` — advanced by the
-**VM-side** mutation evaluators only: the DSL step has no numgen sweep, and `mut_wf`'s
-`rule_numgen_free` conjunct excludes numgen-inc rules from every mutation-strand
-compiler theorem, so the round-robin behaviour `Regression/Numgen_RoundRobin.v` pins is
-**not compiler-preserved**; rationale on `Semantics.dsl_step`, cross-referenced in
+**VM-side** mutation evaluators only: the DSL step has no numgen sweep, and the
+`rule_numgen_free` hypothesis excludes numgen-inc rules from every mutation-strand
+compiler theorem — discharged for all frontend programs by
+`Lower_Proofs.lower_ruleset_numgen_free` (the lowering refuses incremental numgen,
+`Lower.LEnumgen`) — so the round-robin behaviour `Regression/Numgen_RoundRobin.v` pins is
+**not compiler-preserved**; rationale on `Semantics.dsl_rule_step`, cross-referenced in
 `THEOREMS.md` §3), **verified
 multi-register concatenation** (a real register-allocation proof: distinct
 registers via `NoDup`, non-clobbering loads, concat lookup), **sets/ranges over
@@ -1016,7 +998,7 @@ cannot prove a false property.
 | `make difftest` | compiled bytecode **byte-identical** to live `nft --debug=netlink` |
 | `make validate` | `field_load` offsets/names vs live `nft`: **28/28** |
 | `make semtest` | executable witnesses: DSL = VM = optimized on packet batteries (incl. the mutation / sequence witnesses) |
-| `make parse-test` | `.nft` frontend (TODO 9 M1): parses `../rulesets/ruleset.nft`, checks parsed-AST verdicts vs `Example_Ruleset.v`; difftest ruleset → `glue.ml`'s AST; live-`nft` round-trip; `mut_wf` discharge over all four rulesets; ExtrOcamlNatInt limit-rate rejection pins |
+| `make parse-test` | `.nft` frontend (TODO 9 M1): parses `../rulesets/ruleset.nft`, checks parsed-AST verdicts vs `Example_Ruleset.v`; difftest ruleset → `glue.ml`'s AST; live-`nft` round-trip; `rule_numgen_free` sanity pins (the discharge itself is the theorem `Lower_Proofs.lower_ruleset_numgen_free`); ExtrOcamlNatInt limit-rate rejection pins |
 | `make axioms` | build-failing `Print Assumptions` over every claimed theorem (55): all must be "Closed under the global context" |
 | `make gen-check` | checked-in `theories/Generated/*_Gen.v` byte-identical to fresh `nft2coq` output (all four rulesets) |
 | `make boundary` | **the M-C migration-permanence gate** (M6): the OCaml frontend (`nft_ast`/`nft_inject`/`nft_parse`/`nft_emit`/`nft2coq`) contains NO value→byte identifier and NO symbol table; `extracted/nft_lower.ml` stays deleted; `TypedEval.v` stays independent of the encode path (`grep encode\|data_eqb\|firstn\|eval_matchcond\|elab_m` = 0). Fails the build on any regression |
@@ -1079,7 +1061,8 @@ Be precise about this, because the honest answer is layered:
   `alloc_regs`/`reg_of_slot`/`field_slots`/`load_fields`.
 - `theories/Semantics/Semantics.v` — verdict semantics (`eval_chain`/`run_chain`, jump-aware
   `eval_table`/`run_table`, hook `eval_ruleset`/`eval_hook`); **mutation** machinery
-  (`run_rule_writes`/`body_writes`, `eval_chain_mut`/`run_chain_mut`); **cross-packet**
+  (the per-rule folds `body_step`/`run_rule_step` and their step boundary
+  `dsl_rule_step`/`vm_rule_step`, `eval_chain_mut`/`run_chain_mut`); **cross-packet**
   (`eval_chain_mut_env`/`run_chain_mut_env`/`seq_eval_env`); packet/env mutators
   (`set_meta`/`set_ct`/`env_set_upd`/`env_map_upd`).
 - `theories/Compiler/Correct.v` — all the theorems and their scaffolding.
@@ -1103,24 +1086,32 @@ non-vacuous.
 
 **To relocate a per-packet oracle into `env`** (e.g. the conntrack TODO): change
 BOTH `Syntax.do_load` (the relevant `L*` case) and the matching VM load case in
-`Semantics.run_rule`/`run_rule_writes` so they read the new `env` field; the
+`Semantics.run_rule`/`run_rule_step` so they read the new `env` field; the
 `compile_load`-style correctness lemmas realign automatically because both sides
 read the *same* env function.
 
 **To add a new in-traversal MUTATION** (a statement whose write a later rule sees):
-1. `Semantics.v`: give its compiled instruction an effect in `run_rule_writes`
-   (return the mutated packet), and its DSL effect in `body_writes`. Keep the
-   *verdict* semantics (`run_rule`/`eval_rules`/`outcome`) neutral — mutation only
-   affects *later* rules, which `eval_rules_mut`/`run_program_mut` already thread.
+1. `Semantics.v`: give its compiled instruction an effect in `run_rule_step`
+   (thread the mutated state to the REST of the walk), and its DSL effect in the
+   matching `body_step` case. The single fold makes the write visible to later
+   matches/operands of the SAME rule as well as to later rules
+   (`eval_rules_mut`/`run_program_mut` thread the step state). Add the statement
+   to `is_mut_stmt` so the write-free projection (`run_rule`/`eval_rules`/
+   `outcome`) and the mut-free coincidence lemmas (`rule_step_mutfree`/
+   `run_rule_step_no_writes`) keep excluding it.
 2. `Correct.v`: mark the instruction as a write in `writes_instr` (`true`) and
-   non-straight in `straight_instr` (`false`); add the statement to `is_mut_stmt`;
-   handle it in `run_compile_body_writes`'s `is_mut_stmt = true` branch with a
-   *readback* lemma proving `run_rule_writes (compile …) = body_writes …`. Re-check
-   that `run_rule_writes_neutral`, `straight_imp_nw`, `run_rule_writes_straight`
-   still discharge the instruction's pattern (they `destruct` the instruction —
-   add `option`/`bool` sub-destructs for new argument shapes, as the `IDynset`
+   non-straight in `straight_instr` (`false`);
+   handle it in `run_step_compile_body`'s `is_mut_stmt = true` branch (and in
+   `step_compile_after` if it may appear post-outcome) with a *readback* lemma
+   proving the compiled statement's `run_rule_step` threading equals the
+   `body_step`/`after_step` case. Re-check that `run_rule_step_no_writes`,
+   `straight_imp_nw`, `run_rule_step_straight` still discharge the
+   instruction's pattern (they `destruct` the instruction — add
+   `option`/`bool` sub-destructs for new argument shapes, as the `IDynset`
    cases already do).
-3. Add `mut_wf` well-formedness ONLY to exclude a genuinely malformed sub-case.
+3. Do NOT add a well-formedness hypothesis for a shape the frontend can emit:
+   either prove it correct or make the lowering refuse it fail-loud (the
+   `LEnumgen` pattern), with the discharge theorem over `lower_ruleset`.
 4. Witness it in `semtest.ml`: show `DSL_mut = VM_mut` AND that mutation changes the
    verdict vs the verdict-only `eval_chain` (the adversarial check).
 
@@ -1171,7 +1162,8 @@ abstracted away.
    and `e_ct : flow_key -> ct_key -> data` to `env`; add `pkt_flowkey : flow_key`
    to `packet` (packet-determined, like `pkt_fibkey`).
 2. `Syntax.do_load`: `LCt k => e_ct e (pkt_flowkey p) k`. Mirror in the VM
-   `ICtLoad` case in `Semantics.run_rule` AND `run_rule_writes`.
+   `ICtLoad` case in `Semantics.run_rule` AND `run_rule_writes` (a since-retired
+   evaluator; its successor is `run_rule_step`).
 3. Replace `set_ct` (packet mutator) with an `env`-level `env_ct_upd e flow k v`
    (threaded through the `env` half of the evaluators' state).
    `ICtSet`/`SCtSet` then mutate `env` (like the dynset), so a `ct mark set` is
@@ -1197,15 +1189,24 @@ accept` → `[…; accept]`, with a *different* flow staying at the policy.
 field-data map dynsets (`fdata=true`) are modelled.
 **Why it matters.** Completeness of map learning; lower value than TODO 1 (constant
 map data is rarer than field/conntrack-derived data).
-**Plan.** Make `fdata=false` a write too. The data value is the immediate at `dreg`:
+**Plan.** Make `fdata=false` a write too — one new case in each per-rule fold:
+the DSL write in `body_step`'s `SDynsetImm` case, the VM write in `run_rule_step`'s
+`IDynset … (Some dreg) false` case (threaded at the RUNNING state, so the learned
+element is visible to later lookups of the SAME rule too). The data value is the
+immediate at `dreg`:
 define `imm_at (r) (dimms) := fold_left (fun acc rv => if Nat.eqb (fst rv) r then snd rv else acc) dimms []`
-(last write wins, matching `set_reg` order); `body_writes` for `SDynsetImm` uses
+(last write wins, matching `set_reg` order); `body_step` for `SDynsetImm` uses
 `imm_at datareg dimms`. Prove `load_imms`-readback: running the `IImmediateData`
 prefix leaves `dreg` holding `imm_at datareg dimms` **when** `datareg ∈ map fst dimms`
 (a fold-independence lemma: a matching key overrides the initial register value).
-Add that `existsb (fst = datareg) dimms` to `simple_body` as a well-formedness
-(true for every corpus rule). Then handle `SDynsetImm` in `run_compile_body_writes`
-and add it to `is_mut_stmt`; flip its `IDynset … (Some _) false` to a write in
+There is no well-formedness-conjunct route for that side condition (`simple_body`/
+`mut_wf` are retired; the bridge takes no such hypotheses): either prove
+`datareg ∈ map fst dimms` unconditionally over `compile_stmt` output (the compiler
+emits the data immediate itself — the `compile_vsrc` degenerate-operand pinning
+pattern), or make the lowering refuse the shape fail-loud (the `Lower.LEnumgen`
+pattern, with a discharge theorem over `lower_ruleset`). Then handle `SDynsetImm`
+in `run_step_compile_body`'s `is_mut_stmt = true` branch and add it to
+`is_mut_stmt`; flip its `IDynset … (Some _) false` to a write in
 `writes_instr`/`straight_instr`.
 **Risk.** Low–moderate; the only new lemma is fold-independence. **Validate.**
 semtest: `add @m {ip saddr : 0x1}; meta mark set ip saddr map @m; meta mark 0x1 accept`.
@@ -1221,7 +1222,7 @@ NAT is terminal, its rewrite is observed across hooks by the whole-chain trace e
 still verdict-neutral straight-line statements (`SMangle` is not an `is_mut_stmt`), so a
 later rule reading the mangled bytes sees the original.
 **Plan.** Add a `set_payload p base off len v` packet mutator (like `set_meta`),
-extend `run_rule_writes`/`body_writes` for `SMangle`/`IPayloadWrite` (the value is
+extend `body_step`/`run_rule_step` for `SMangle`/`IPayloadWrite` (the value is
 already `compile_vsrc`/`eval_vsrc`, reuse `writes_vsrc_simple`). NAT is *terminal*,
 so its rewrite is only observable by a *different* hook's chain — model it in the
 `eval_ruleset`/`run_ruleset` dispatch (carry the rewritten packet to the next base

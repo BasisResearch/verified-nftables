@@ -311,7 +311,7 @@ Proof.
   destruct (dsl_rule_step masq_rule e p) as [[v|] [e' p']] eqn:Hstep.
   - assert (Hv : v = Accept).
     { pose proof (dsl_rule_step_fst masq_rule e p) as Hf. rewrite Hstep in Hf.
-      cbn [fst] in Hf.
+      rewrite rule_step_mutfree in Hf by reflexivity. cbn [fst] in Hf.
       destruct (rule_loadable masq_rule e p && rule_applies masq_rule e p);
         [| discriminate Hf].
       assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.
@@ -389,14 +389,15 @@ Theorem masq_noaddr_drop_output : forall e p,
 Proof.
   intros e p Hpriv Hppp Horig Hnone Hempty.
   unfold eval_chain_trace. rewrite global_postrouting_rules.
-  cbn [c_rules eval_rules_trace dsl_rule_step].
-  rewrite (masq_rule_loadable_of_applies e p Hpriv Hppp).
+  cbn [c_rules eval_rules_trace].
   assert (Happ : rule_applies masq_rule e p = true)
     by (rewrite masq_rule_applies_eq, Hpriv, Hppp; reflexivity).
-  rewrite Happ. cbn [andb].
   assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.
-  rewrite Ho. cbn [terminal].
-  rewrite masq_dsl_step_id.
+  assert (Hd : dsl_rule_step masq_rule e p = (Some Accept, (e, p))).
+  { unfold dsl_rule_step. rewrite rule_step_mutfree by reflexivity.
+    rewrite (masq_rule_loadable_of_applies e p Hpriv Hppp), Happ. cbn [andb].
+    rewrite Ho. reflexivity. }
+  rewrite Hd. cbn [terminal].
   rewrite (masq_drops_noaddr e p Horig Hnone Hempty). reflexivity.
 Qed.
 
@@ -445,16 +446,22 @@ Definition masq_noaddr_cond (e : env) (p : packet) : bool :=
 Lemma trace_nat_drops_postrouting : forall e p,
   trace_nat_drops Hpostrouting (c_rules global_postrouting) e p = masq_noaddr_cond e p.
 Proof.
-  intros e p. rewrite global_postrouting_rules. cbn [trace_nat_drops dsl_rule_step].
+  intros e p. rewrite global_postrouting_rules. cbn [trace_nat_drops].
   unfold masq_noaddr_cond.
-  rewrite masq_dsl_step_id.
+  assert (Hd : dsl_rule_step masq_rule e p
+               = ((if rule_loadable masq_rule e p && rule_applies masq_rule e p
+                   then Some Accept else None), (e, p))).
+  { unfold dsl_rule_step. rewrite rule_step_mutfree by reflexivity.
+    assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.
+    rewrite Ho.
+    destruct (rule_loadable masq_rule e p && rule_applies masq_rule e p); reflexivity. }
+  rewrite Hd.
   destruct (rule_loadable masq_rule e p && rule_applies masq_rule e p) eqn:E.
-  - (* the rule fires: trace_nat_drops = nat_drops on dsl_step (= identity) *)
+  - (* the rule fires: trace_nat_drops = nat_drops on the (identity) state *)
+    cbn [terminal].
     apply Bool.andb_true_iff in E as [Hload Happ].
     rewrite masq_rule_applies_eq in Happ.
     apply Bool.andb_true_iff in Happ as [Hpriv Hppp].
-    assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.
-    rewrite Ho; cbn [terminal].
     unfold nat_drops, masq_rule; cbn [r_nat r_outcome].
     rewrite Hpriv, Hppp; cbn [andb].
     destruct (e_nat e (pkt_flow p)) eqn:En; [reflexivity|].
@@ -487,7 +494,7 @@ Proof.
   destruct (dsl_rule_step masq_rule e p) as [[v|] [e' p']] eqn:Hstep.
   - assert (Hv : v = Accept).
     { pose proof (dsl_rule_step_fst masq_rule e p) as Hf. rewrite Hstep in Hf.
-      cbn [fst] in Hf.
+      rewrite rule_step_mutfree in Hf by reflexivity. cbn [fst] in Hf.
       destruct (rule_loadable masq_rule e p && rule_applies masq_rule e p);
         [| discriminate Hf].
       assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.

@@ -67,7 +67,7 @@ Proof. reflexivity. Qed.
 Lemma masq_dsl_step_id : forall e p, dsl_step masq_rule e p = (e, p).
 Proof.
   intros e p. rewrite dsl_step_limit_free by reflexivity.
-  unfold dsl_writes, masq_rule; cbn [r_body body_writes].
+  unfold dsl_writes, body_writes, masq_rule; cbn [r_body body_step].
   destruct (eval_matchcond (MEq (FPayload PNetwork 12 2) [192;168]) e p);
     [destruct (eval_matchcond (MEq FMetaOifname if_ppp0) e p)|]; reflexivity.
 Qed.
@@ -172,7 +172,7 @@ Theorem nat_masquerade_fires_output : forall e p wan,
                 set_saddr nat_fam_ip4 p wan)).
 Proof.
   intros e p wan Hpriv Hppp Horig Hnone Hwan Hne.
-  unfold eval_chain_trace. rewrite global_postrouting_rules. cbn [c_rules eval_rules_trace dsl_rule_step].
+  unfold eval_chain_trace. rewrite global_postrouting_rules. cbn [c_rules eval_rules_trace].
   assert (Hload : rule_loadable masq_rule e p = true).
   { (* both matches load: the masked saddr load and the oifname meta load.  When the
        rule applies, [saddr_private]/[oif_ppp0] are true (each = load && body), which
@@ -185,10 +185,11 @@ Proof.
     cbn [match_loadable] in Hpl, Hol |- *. rewrite Hpl, Hol. reflexivity. }
   assert (Happ : rule_applies masq_rule e p = true)
     by (rewrite masq_rule_applies_eq, Hpriv, Hppp; reflexivity).
-  rewrite Hload, Happ. cbn [andb].
   assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.
-  rewrite Ho. cbn [terminal].
-  rewrite masq_dsl_step_id.
+  assert (Hd : dsl_rule_step masq_rule e p = (Some Accept, (e, p))).
+  { unfold dsl_rule_step. rewrite rule_step_mutfree by reflexivity.
+    rewrite Hload, Happ. cbn [andb]. rewrite Ho. reflexivity. }
+  rewrite Hd. cbn [terminal].
   rewrite (masq_no_drop Hpostrouting e p) by (rewrite Hwan; exact Hne).
   rewrite (masq_apply Hpostrouting e p Horig Hnone), Hwan. reflexivity.
 Qed.
@@ -234,9 +235,11 @@ Theorem nat_masquerade_does_not_fire : forall e p,
   /\ chain_out_env Hpostrouting global_postrouting e p = e.
 Proof.
   intros e p Happ. unfold chain_out, chain_out_env, eval_chain_trace.
-  rewrite global_postrouting_rules. cbn [c_rules eval_rules_trace dsl_rule_step].
-  rewrite Happ, Bool.andb_false_r.
-  rewrite masq_dsl_step_id. split; reflexivity.
+  rewrite global_postrouting_rules. cbn [c_rules eval_rules_trace].
+  assert (Hd : dsl_rule_step masq_rule e p = (None, (e, p))).
+  { unfold dsl_rule_step. rewrite rule_step_mutfree by reflexivity.
+    rewrite Happ, Bool.andb_false_r. reflexivity. }
+  rewrite Hd. split; reflexivity.
 Qed.
 
 (* Phrased on the security HYPOTHESES: a packet whose source is NOT private OR whose
@@ -270,7 +273,7 @@ Definition bug_postrouting : chain :=
 Lemma bug_dsl_step_id : forall e p, dsl_step bug_rule e p = (e, p).
 Proof.
   intros e p. rewrite dsl_step_limit_free by reflexivity.
-  unfold dsl_writes, bug_rule; cbn [r_body body_writes].
+  unfold dsl_writes, body_writes, bug_rule; cbn [r_body body_step].
   destruct (eval_matchcond (MEq FMetaOifname if_ppp0) e p); reflexivity.
 Qed.
 
@@ -459,7 +462,7 @@ Theorem nat_masq_confirmed_output : forall e p oa wan,
 Proof.
   intros e p oa wan Hpriv Hppp Horig Hsome.
   unfold chain_out, eval_chain_trace.
-  rewrite global_postrouting_rules. cbn [c_rules eval_rules_trace dsl_rule_step].
+  rewrite global_postrouting_rules. cbn [c_rules eval_rules_trace].
   assert (Hload : rule_loadable masq_rule e p = true).
   { unfold saddr_private, oif_ppp0, eval_matchcond in Hpriv, Hppp.
     apply Bool.andb_true_iff in Hpriv as [Hpl _].
@@ -469,10 +472,11 @@ Proof.
     cbn [match_loadable] in Hpl, Hol |- *. rewrite Hpl, Hol. reflexivity. }
   assert (Happ : rule_applies masq_rule e p = true)
     by (rewrite masq_rule_applies_eq, Hpriv, Hppp; reflexivity).
-  rewrite Hload, Happ. cbn [andb].
   assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.
-  rewrite Ho. cbn [terminal].
-  rewrite masq_dsl_step_id.
+  assert (Hd : dsl_rule_step masq_rule e p = (Some Accept, (e, p))).
+  { unfold dsl_rule_step. rewrite rule_step_mutfree by reflexivity.
+    rewrite Hload, Happ. cbn [andb]. rewrite Ho. reflexivity. }
+  rewrite Hd. cbn [terminal].
   rewrite (masq_no_drop_confirmed Hpostrouting e p _ Hsome).
   rewrite (masq_apply_confirmed_orig Hpostrouting e p oa wan Horig Hsome).
   reflexivity.
@@ -563,7 +567,7 @@ Theorem nat_masq_confirmed_reply_output : forall e p oa wan,
 Proof.
   intros e p oa wan Hpriv Hppp Hrep Hsome.
   unfold chain_out, eval_chain_trace.
-  rewrite global_postrouting_rules. cbn [c_rules eval_rules_trace dsl_rule_step].
+  rewrite global_postrouting_rules. cbn [c_rules eval_rules_trace].
   assert (Hload : rule_loadable masq_rule e p = true).
   { unfold saddr_private, oif_ppp0, eval_matchcond in Hpriv, Hppp.
     apply Bool.andb_true_iff in Hpriv as [Hpl _].
@@ -573,10 +577,11 @@ Proof.
     cbn [match_loadable] in Hpl, Hol |- *. rewrite Hpl, Hol. reflexivity. }
   assert (Happ : rule_applies masq_rule e p = true)
     by (rewrite masq_rule_applies_eq, Hpriv, Hppp; reflexivity).
-  rewrite Hload, Happ. cbn [andb].
   assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.
-  rewrite Ho. cbn [terminal].
-  rewrite masq_dsl_step_id.
+  assert (Hd : dsl_rule_step masq_rule e p = (Some Accept, (e, p))).
+  { unfold dsl_rule_step. rewrite rule_step_mutfree by reflexivity.
+    rewrite Hload, Happ. cbn [andb]. rewrite Ho. reflexivity. }
+  rewrite Hd. cbn [terminal].
   rewrite (masq_no_drop_confirmed Hpostrouting e p _ Hsome).
   rewrite (masq_apply_confirmed_reply Hpostrouting e p oa wan Hrep Hsome).
   reflexivity.
