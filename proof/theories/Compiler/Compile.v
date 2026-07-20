@@ -62,18 +62,17 @@ Definition compile_transforms_at (r : reg) (ts : list transform) : list instr :=
     bytes occupies [ceil(len/4)] slots (>=1).  The lookup then reads the
     concatenation starting at reg 1.  We reproduce this allocation exactly so the
     emitted bytecode is byte-identical to nft. *)
-(** Byte width of a meta value (only matters for slot allocation when >4, i.e.
-    the interface-name keys; everything <=4 occupies one slot regardless). *)
-Definition meta_width (k : meta_key) : nat :=
-  match k with
-  | MKiifname | MKoifname | MKbri_iifname | MKbri_oifname => 16
-  | MKibrhwaddr => 6
-  | _ => 4
-  end.
+(** Slot byte width of a meta value: the kernel register width
+    ([Syntax.meta_width], the ONE width table), padded to a full 4-byte slot —
+    a sub-word scalar still occupies one whole u32 slot in the concat layout
+    (only the >4-byte keys, the 16-byte name buffers and the 6-byte hwaddr,
+    span several slots). *)
+Definition meta_slot_width (k : meta_key) : nat :=
+  Nat.max 4 (meta_width k).
 
 Definition load_width (ld : loaddesc) : nat :=
   match ld with
-  | LMeta k            => meta_width k
+  | LMeta k            => meta_slot_width k
   | LPayload _ _ len   => len
   | LExthdr _ _ _ len _ => len
   | LFib _ res         => match res with

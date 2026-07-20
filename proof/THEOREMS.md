@@ -376,3 +376,51 @@ set-element views `SEl`/`SRange` (+ `SEl_iv`/`SRange_iv`) moved with their
 statements intact (to `Surface/Typed.v` and `Surface/Lower.v` respectively);
 `make axioms` now gates the erasure family in `elab_matchcond_correct`'s
 place.
+
+## 7. Faithful widths (W1): oracle reads are width-normalised by construction
+
+Every kernel-fixed-width packet/env oracle read — `meta`, `ct`, `rt`,
+`socket`, `osf`, `numgen random`, `symhash` — is normalised at the semantics
+boundary (`Syntax.do_load` and the VM's mirror instructions) to the exact
+byte width the kernel eval writes into the destination register:
+`Bytes.fit w d` (truncate to `w` / zero-fill, the register-store discipline
+of `nft_reg_store8/16/64` + `struct nft_regs`) applied at the kernel width
+from the cited, TOTAL tables `Syntax.meta_width` / `ct_width` / `rt_width` /
+`socket_width` / `osf_width` / `numgen_width` / `symhash_width` (each entry
+cites linux-6.18.33 eval source; cross-checked against the frontend dtype
+table by `Selector.selector_widths_agree`).  The width facts are
+DEFINITIONAL — `Bytes.fit_length`/`fit_exact`/`fit_idempotent` and the
+per-family `Syntax.read_meta_length` / `meta_load_length` / `ct_load_length` /
+`read_rt_length` / `read_socket_length` / `read_osf_length` /
+`read_numgen_length` / `read_symhash_length` (all in `make axioms`) — and no
+`packet_wf`/`env_wf` hypothesis exists anywhere.  Opaque abstractions
+(`pkt_flow`, `pkt_fibkey` beyond `Fib_Local.fibkey_wf`, `pkt_ctdir` tuple
+columns, `pkt_xfrm`, `pkt_tunnel`, `pkt_inner`, connlimit keys) are NOT
+encodings and stay width-free.
+
+Statement changes shipped with W1 (all non-headline; every headline theorem
+in §1/§4 survives verbatim):
+
+- `Syntax.meta_load_len` / `ct_load_len` (conditional on the old partial
+  `meta_fixed_len`/`ct_fixed_len` option tables) are RETIRED with their
+  tables; successors are the UNCONDITIONAL `meta_load_length` /
+  `ct_load_length` / `read_meta_length` (strictly stronger: the old lemmas
+  are the successor instantiated at the keys the old table pinned).
+- `Regression/Limit_Over.v` `mtu_packet_overspends_small_quota` /
+  `bytemode_length_is_live`: the `pkt_meta _ MKlen = …` hypotheses now pin
+  the FULL 4-byte u32 register (`[0;0;5;220]` for 1500 etc.) — the
+  kernel-possible oracle value (`skb->len` is a u32; a 1-/2-byte `meta len`
+  was a model artifact).  `quota_consumes_packet_len`'s conclusion reads
+  `read_meta p MKlen` (the normalised read the quota semantics consumes).
+- `Semantics/TypedEval.v` `tev_stuck_undecodable` is RETIRED (its premise —
+  an absent/undecodable ct zone register — is no longer a representable
+  state: every conntrack entry has a zone, default id 0); successor
+  `tev_ctzone_always_decodes` pins the read now EVALUATING (`Some false` on
+  the default zone).
+- `Optimize_Concat.concat_merge_pair` (and the K-field recogniser via
+  `no_guard_fields`) now excludes the frontend's implicit-guard meta keys
+  (`concat_guard_field`: l4proto, nfproto, iiftype, oiftype, protocol) from
+  concat tuples: with every meta key fixed-width, the recognisers would
+  otherwise absorb a hoistable guard into the tuple, diverging from `nft -o`
+  (which hoists; see `Optimize_SetGuarded_LinkLayer_Witness`).  All
+  optimizer pass theorems are unconditional as before.

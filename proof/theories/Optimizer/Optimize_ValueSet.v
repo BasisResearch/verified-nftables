@@ -617,17 +617,18 @@ Qed.
 Definition field_fixed_len (f : field) : option nat :=
   match field_load f with
   | LPayload _ _ len => Some len
-  (* A fixed-width META scalar (e.g. `meta mark`, a u32) loads at its kernel register
-     width — [meta_fixed_len] — which [do_load]/[meta_load] normalises the read to
-     ([Syntax.meta_load_len]).  This lets the value->set / vmap / concat merges fold a
-     meta-mark run just like a payload field, with the SAME membership certificate. *)
-  | LMeta k          => meta_fixed_len k
-  (* A fixed-width CONNTRACK scalar (e.g. `ct mark`, a u32) loads at its kernel
-     register width — [ct_fixed_len] — which [do_load]/[ct_load] normalises the read
-     to ([Syntax.ct_load_len]).  This lets the value->set / vmap / concat merges fold
-     a `ct mark` run just like a payload/meta field, with the SAME membership
+  (* A META scalar (e.g. `meta mark`, a u32) loads at its kernel register width —
+     [Syntax.meta_width], a TOTAL table — which [do_load]/[read_meta] normalises the
+     read to BY CONSTRUCTION ([Syntax.read_meta_length]).  This lets the value->set /
+     vmap / concat merges fold a meta-mark run just like a payload field, with the
+     SAME membership certificate. *)
+  | LMeta k          => Some (meta_width k)
+  (* A CONNTRACK scalar (e.g. `ct mark`, a u32) loads at its kernel register width —
+     [Syntax.ct_width], a TOTAL table — which [do_load]/[ct_load] normalises the read
+     to ([Syntax.ct_load_length]).  This lets the value->set / vmap / concat merges
+     fold a `ct mark` run just like a payload/meta field, with the SAME membership
      certificate, matching `nft -o`'s `ct mark { … }`. *)
-  | LCt k            => ct_fixed_len k
+  | LCt k            => Some (ct_width k)
   | _ => None
   end.
 
@@ -640,9 +641,9 @@ Proof.
   unfold field_loadable, field_value in *.
   destruct (field_load f) eqn:Efl; try discriminate.
   - (* LMeta: normalised to the fixed register width, unconditionally *)
-    cbn [do_load]. apply meta_load_len. exact Hfx.
+    injection Hfx as <-. cbn [do_load]. apply read_meta_length.
   - (* LCt: normalised to the fixed register width, unconditionally *)
-    cbn [do_load]. apply ct_load_len. exact Hfx.
+    injection Hfx as <-. cbn [do_load]. apply ct_load_length.
   - (* LPayload *)
     inversion Hfx; subst.
     cbn [do_load]. apply payload_loaded_len. exact Hld.
@@ -1542,7 +1543,7 @@ Proof. reflexivity. Qed.
 
 (* iifname "lo"/"eth0" — the 16-byte IFNAMSIZ interface-name register.  The frontend
    lowers a non-wildcard name to its 16-byte zero-padded value, [normalize_mc] rewrites
-   the [MEq] to [MCmp _ CEq], and (with [meta_fixed_len MKiifname = Some 16]) the
+   the [MEq] to [MCmp _ CEq], and (with [meta_width MKiifname = 16]) the
    value->set merge now fires — `iifname { lo, eth0 }`, matching `nft -o`. *)
 Definition ifn16 (bs : data) : data := List.firstn 16 (bs ++ List.repeat 0 16).
 Example value_merge_fires_iifname :
@@ -1585,7 +1586,7 @@ Example optimize_rules_sets_folds_skuid :
 Proof. reflexivity. Qed.
 
 (* ct mark 5/6 => set { 0x05, 0x06 } (u32, little-endian [5;0;0;0]/[6;0;0;0]).  With
-   [ct_fixed_len CKmark = Some 4] the value->set merge now FIRES on a `ct mark` run,
+   [ct_width CKmark = 4] the value->set merge now FIRES on a `ct mark` run,
    exactly as it does on `meta mark` — matching `nft -o`'s `ct mark { 5, 6 }`. *)
 Example value_merge_fires_ctmark :
   value_merge_pair (wit_meta_rule FCtMark [5;0;0;0])

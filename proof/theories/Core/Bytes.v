@@ -85,6 +85,42 @@ Proof.
   rewrite length_app, IHlen; simpl; lia.
 Qed.
 
+(** ** Width normalisation ([fit]).
+
+    A kernel register slot has a FIXED byte width: [nft_regs] is 16 x u32 words
+    (include/net/netfilter/nf_tables.h, [struct nft_regs]: [u32 data[NFT_REG32_NUM]]),
+    a store of a [len]-byte value zeroes the containing word(s) and writes the value
+    bytes at the start (nf_tables_core.h: [nft_reg_store8]/[16] do [*dreg = 0] then
+    write the low bytes; wider stores write exactly [len] bytes), and
+    [nft_validate_register_load]/[store] (net/netfilter/nf_tables_api.c) bound every
+    access to [reg + len].  [fit w d] normalises an abstract oracle read to exactly
+    that discipline: keep the first [w] bytes, zero-fill anything the value does not
+    cover.  A kernel-possible read already has exactly [w] bytes ([fit_exact] makes
+    it the identity there); [fit] closes the model against off-width oracle values
+    BY CONSTRUCTION, with no well-formedness hypothesis anywhere. *)
+Definition fit (w : nat) (d : data) : data :=
+  List.firstn w (d ++ List.repeat 0 w).
+
+(** A [fit]-normalised value has its register width, unconditionally. *)
+Lemma fit_length : forall w d, List.length (fit w d) = w.
+Proof.
+  intros w d. unfold fit.
+  rewrite List.length_firstn, List.length_app, List.repeat_length.
+  apply Nat.min_l. apply Nat.le_add_l.
+Qed.
+
+(** [fit] is the identity on data that already has the register width — the
+    kernel-faithful case. *)
+Lemma fit_exact : forall w d, List.length d = w -> fit w d = d.
+Proof.
+  intros w d Hlen. unfold fit. subst w.
+  rewrite List.firstn_app, List.firstn_all, Nat.sub_diag.
+  cbn [List.firstn]. apply List.app_nil_r.
+Qed.
+
+Lemma fit_idempotent : forall w d, fit w (fit w d) = fit w d.
+Proof. intros w d. apply fit_exact, fit_length. Qed.
+
 (** Left/right bit shift of a register value (preserving its byte width). *)
 Definition data_shift (shl : bool) (amt : nat) (d : data) : data :=
   N_to_data (length d)

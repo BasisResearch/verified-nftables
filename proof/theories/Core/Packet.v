@@ -211,7 +211,9 @@ Record env : Type := {
                                ordered most-specific-first = longest-prefix-match),
                                not an opaque oracle. *)
   e_rt   : rt_key -> data;                   (* routing-state (rt) keys, likewise
-                                                shared external routing state. *)
+                                                shared external routing state (read
+                                                via [Syntax.read_rt], width-
+                                                normalised to [Syntax.rt_width]). *)
   e_limit : limit_spec -> nat;               (* a rate limiter's REMAINING tokens —
                                                 SHARED, CONSUMING, flow-/instance-keyed
                                                 state, NOT a per-packet oracle.  A
@@ -298,7 +300,12 @@ Record env : Type := {
                                                 selecting the shared entry by tuple +
                                                 WRITE_ONCE/READ_ONCE(ct->mark).  This
                                                 state is genuinely CROSS-packet: it is
-                                                keyed by flow, not per packet. *)
+                                                keyed by flow, not per packet.  The
+                                                table carries no width; EVERY read
+                                                goes through [Syntax.ct_load], which
+                                                [fit]s the value to the key's kernel
+                                                register width ([Syntax.ct_width])
+                                                BY CONSTRUCTION. *)
   e_nat : data -> option (option data * option data * option nat * option data);
                             (* the SHARED, flow-keyed NAT-mapping table: the
                                translation tuple the kernel ESTABLISHES ONCE on the
@@ -376,8 +383,13 @@ Qed.
     option verdict * env]), so a type signature shows exactly which state flows
     where. *)
 Record packet : Type := {
-  pkt_meta : meta_key -> data;   (* kernel-computed metadata *)
-  pkt_sock : socket_key -> data; (* socket-state oracle *)
+  pkt_meta : meta_key -> data;   (* kernel-computed metadata.  The oracle carries
+                                    no width; EVERY evaluation reads it through
+                                    [Syntax.read_meta], which [fit]s the value to
+                                    the key's kernel register width
+                                    ([Syntax.meta_width]) BY CONSTRUCTION. *)
+  pkt_sock : socket_key -> data; (* socket-state oracle (read via
+                                    [Syntax.read_socket], width-normalised) *)
   pkt_eh   : exthdr_proto -> nat -> nat -> nat -> bool -> data;
                             (* exthdr: proto htype off len present?  present=true
                                reads the existence flag, false the header bytes *)

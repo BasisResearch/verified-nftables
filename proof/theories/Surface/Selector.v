@@ -366,17 +366,24 @@ Definition bitfield (kp : skeypath) : option bitfield_spec :=
     its IR field LOADS.
 
     [load_width] reads the width off the load descriptor where the IR fixes
-    one (payload/exthdr loads; meta/ct keys with a pinned register width);
-    symbolic loads (fib columns, ct tuple keys, unpinned meta/ct) have no
-    a-priori width and are skipped.  A row failing this check would mean the
-    typed layer admits values at a width the compare will never see — the
-    exact class of bug the ip6-length/KNum-2 style typos produce. *)
+    one (payload/exthdr loads; EVERY meta/ct/rt/socket key — their kernel
+    register widths are total tables, [Syntax.meta_width] & co., and
+    [do_load] normalises the read to exactly that width by construction);
+    symbolic loads (fib columns, ct tuple keys) have no single a-priori width
+    and are skipped.  A row failing this check would mean the typed layer
+    admits values at a width the compare will never see — the exact class of
+    bug the ip6-length/KNum-2 style typos produce. *)
 Definition load_width (l : loaddesc) : option nat :=
   match l with
   | LPayload _ _ len => Some len
   | LExthdr _ _ _ len _ => Some len
-  | LMeta k => meta_fixed_len k
-  | LCt k => ct_fixed_len k
+  | LMeta k => Some (meta_width k)
+  | LCt k => Some (ct_width k)
+  | LRt k => Some (rt_width k)
+  | LSocket k => Some (socket_width k)
+  | LOsf => Some osf_width
+  | LSymhash _ _ => Some symhash_width
+  | LNumgen _ => Some numgen_width
   | _ => None
   end.
 

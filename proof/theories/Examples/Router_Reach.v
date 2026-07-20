@@ -83,7 +83,7 @@ Lemma set_l4_csum_addr_flow : forall p old new,
   pkt_flow (set_l4_csum_addr p old new) = pkt_flow p.
 Proof.
   intros p old new. unfold set_l4_csum_addr.
-  destruct (l4_csum_slot (pkt_meta p MKl4proto)) as [[[coff clen] mand]|];
+  destruct (l4_csum_slot (read_meta p MKl4proto)) as [[[coff clen] mand]|];
     [|reflexivity].
   destruct (pkt_have_l4 p && Nat.leb (coff + clen) (List.length (pkt_th p)));
     [|reflexivity].

@@ -93,8 +93,9 @@ Theorem ct_direction_matches_nat_dir :
   forall e p,
     pkt_ctdir_orig p = true <-> do_load (LCt CKdirection) e p = ip_ct_dir_original.
 Proof.
-  intros e p. unfold do_load, ip_ct_dir_original. cbn.
-  destruct (pkt_ctdir_orig p); split; intro H; congruence.
+  intros e p. unfold do_load, ct_load, fit, ip_ct_dir_original. cbn.
+  destruct (pkt_ctdir_orig p); cbn; split; intro H;
+    try reflexivity; discriminate H.
 Qed.
 
 (* Dually for the reply direction. *)
@@ -102,8 +103,9 @@ Theorem ct_direction_matches_nat_dir_reply :
   forall e p,
     pkt_ctdir_orig p = false <-> do_load (LCt CKdirection) e p = ip_ct_dir_reply.
 Proof.
-  intros e p. unfold do_load, ip_ct_dir_reply. cbn.
-  destruct (pkt_ctdir_orig p); split; intro H; congruence.
+  intros e p. unfold do_load, ct_load, fit, ip_ct_dir_reply. cbn.
+  destruct (pkt_ctdir_orig p); cbn; split; intro H;
+    try reflexivity; discriminate H.
 Qed.
 
 (* Direction consistency: a packet cannot be both NAT-reply
@@ -116,8 +118,8 @@ Theorem ctdir_selector_agrees_with_nat :
     (pkt_ctdir_orig p = false -> do_load (LCt CKdirection) e p <> ip_ct_dir_original)
     /\ (pkt_ctdir_orig p = true  -> do_load (LCt CKdirection) e p <> ip_ct_dir_reply).
 Proof.
-  intros e p. unfold do_load, ip_ct_dir_original, ip_ct_dir_reply. cbn.
-  split; intro H; rewrite H; discriminate.
+  intros e p. unfold do_load, ct_load, fit, ip_ct_dir_original, ip_ct_dir_reply. cbn.
+  split; intro H; rewrite H; cbn; discriminate.
 Qed.
 
 (** ── 2. Two TRACKED packets of the SAME flow read CONSISTENT ct state. *)
@@ -150,7 +152,7 @@ Lemma flow_is_new_reads_new :
   forall e p, flow_is_new e p -> field_value FCtState e p = st_new.
 Proof.
   intros e p [Hunt [Hpres Hentry]]. unfold field_value, field_load, do_load. cbn.
-  rewrite Hunt, Hpres. exact Hentry.
+  rewrite Hunt, Hpres, Hentry. reflexivity.
 Qed.
 
 (* THE KEY SOUNDNESS FACT: a NEW-flow packet does NOT match `ct state established`.

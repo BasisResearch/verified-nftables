@@ -118,7 +118,7 @@ Proof. reflexivity. Qed.
 Lemma mark_after_set : forall e p v, List.length v = 4 ->
   field_value FMetaMark e (set_meta p MKmark v) = v.
 Proof.
-  intros e p v Hlen. unfold field_value, do_load, meta_load, meta_fixed_len,
+  intros e p v Hlen. unfold field_value, do_load, read_meta, meta_load, fit,
     set_meta, with_pkt_meta. cbn [pkt_meta].
   destruct v as [|a [|b [|c [|d [|e5 tl]]]]]; cbn in Hlen; try discriminate.
   reflexivity.
@@ -299,7 +299,7 @@ Lemma set_l4_csum_addr_meta : forall p old new k,
   pkt_meta (set_l4_csum_addr p old new) k = pkt_meta p k.
 Proof.
   intros p old new k. unfold set_l4_csum_addr.
-  destruct (l4_csum_slot (pkt_meta p MKl4proto)) as [[[coff clen] mand]|]; [|reflexivity].
+  destruct (l4_csum_slot (read_meta p MKl4proto)) as [[[coff clen] mand]|]; [|reflexivity].
   destruct (andb (pkt_have_l4 p) (Nat.leb (coff + clen) (List.length (pkt_th p)))); [|reflexivity].
   destruct (andb (negb mand) (N.eqb (data_to_N (slice (pkt_th p) coff clen)) 0)); reflexivity.
 Qed.
@@ -340,7 +340,7 @@ Lemma mark_through_dnat : forall h e p,
 Proof.
   intros h e p Horig Hnone. rewrite (pre2_apply_dnat h e p Horig Hnone).
   cbn [snd]. unfold field_value. cbn [field_load do_load].
-  f_equal. apply set_daddr_meta.
+  unfold read_meta, meta_load. f_equal. apply set_daddr_meta.
 Qed.
 
 (* pre2's dnat never NAT-drops: [nat_iface_addr_absent] only fires for
