@@ -62,6 +62,7 @@ let rec svalue (v : Ast.svalue) : string = match v with
   | Ast.SVRange (a, b) -> spf "(SVRange %s %s)" (svalue a) (svalue b)
   | Ast.SVConcat vs -> spf "(SVConcat %s)" (svalue_list vs)
   | Ast.SVSet vs -> spf "(SVSet %s)" (svalue_list vs)
+  | Ast.SVOr vs -> spf "(SVOr %s)" (svalue_list vs)
 and svalue_list (vs : Ast.svalue list) : string =
   "[" ^ S.concat "; " (L.map svalue vs) ^ "]"
 

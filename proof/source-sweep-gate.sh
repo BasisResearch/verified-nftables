@@ -32,7 +32,12 @@ cd "$(dirname "$0")"
 # `counter name`/`quota name`/`ct helper set`/`limit name`/`ct timeout set`/`ct
 # expectation set` blocks now compile from source to byte-identical
 # `[ objref type N name X ]`).
-SOURCE_SWEEP_FLOOR="${SOURCE_SWEEP_FLOOR:-1187}"
+# Raised 1187 -> 1196 when compound flag masks landed (T3 residue R2:
+# `tcp flags & (fin | syn | rst | ack) == syn | ack` — LPAREN/RPAREN lexed,
+# the pipe group carried UNRESOLVED as Ast.SVOr, symbol values + OR-fold in
+# verified Coq (Typecheck.resolve_value); 9 paren/OR blocks, e.g.
+# inet/tcp.t.payload:425-455, moved from parse-fail to byte-identical).
+SOURCE_SWEEP_FLOOR="${SOURCE_SWEEP_FLOOR:-1196}"
 
 CORPUS_DIR="${NFT_CORPUS:-/tmp/nftables-src}"
 if [ ! -d "$CORPUS_DIR/tests/py" ]; then

@@ -122,6 +122,8 @@ rule token = parse
   | ';'              { SEMI }
   | '{'              { LBRACE }
   | '}'              { RBRACE }
+  | '('              { LPAREN }
+  | ')'              { RPAREN }
   | ':'              { COLON }
   | ','              { COMMA }
   | '.'              { DOT }

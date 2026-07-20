@@ -74,7 +74,7 @@
 %token META CT IP IP6 TCP UDP TH ICMP ICMPV6 ETHER FIB OPTION EXISTS MISSING
 %token IIF OIF IIFNAME OIFNAME PKTTYPE MARK
 /* operators / punctuation */
-%token LBRACE RBRACE COLON COMMA DOT SLASH EQUALS NE EQ BANG DASH
+%token LBRACE RBRACE LPAREN RPAREN COLON COMMA DOT SLASH EQUALS NE EQ BANG DASH
 %token AMP PIPE CARET AND OR XOR ORIGINAL REPLY
 /* separators */
 %token NEWLINE SEMI
@@ -274,8 +274,12 @@ clauses:
 clause:
   | matchc                       { CMatch $1 }
   (* bitwise mask match: `<selector> and|or|xor <mask> <relop> <val>` — a
-     single (non-concatenated) selector; the mask/val are single atoms. *)
-  | keyatom binop value rhs      { CBitmatch ($1, $2, $3, $4) }
+     single (non-concatenated) selector; the mask is a single atom or a
+     parenthesized pipe-joined OR group `(f1 | f2 | ...)` (nft
+     primary_rhs_expr parentheses over an inclusive_or_rhs_expr), carried
+     UNRESOLVED as [Vor] — symbol values and the OR-fold are verified-Coq
+     work (Surface.Typecheck.resolve_value), never the parser's. *)
+  | keyatom binop maskval rhs    { CBitmatch ($1, $2, $3, $4) }
   | concat_keys VMAP vmapset     { CVmap ($1, $3) }
   | concat_keys VMAP AT          { CVmapRef ($1, $3) }   (* vmap @named_map *)
   (* objref verdict-maps: `<objkw> name <key> map { v : "obj" }` — the looked-up
@@ -294,6 +298,18 @@ binop:
   | AND {"and"} | AMP   {"and"}
   | OR  {"or"}  | PIPE  {"or"}
   | XOR {"xor"} | CARET {"xor"}
+
+(* a bitwise-mask operand: a single value, a parenthesized value, or a
+   parenthesized OR group `(f1 | f2 | ...)` *)
+maskval:
+  | value                  { $1 }
+  | LPAREN value RPAREN    { $2 }
+  | LPAREN orvals RPAREN   { Vor $2 }
+
+(* two-or-more pipe-joined values; the group stays symbolic ([Vor]) *)
+orvals:
+  | value PIPE value       { [$1; $3] }
+  | orvals PIPE value      { $1 @ [$3] }
 
 ctdir:
   | ORIGINAL { "original" }
@@ -412,6 +428,10 @@ concat_val:
 rangeval:
   | value             { $1 }
   | value DASH value  { Vrange ($1, $3) }
+  (* a bare pipe-joined OR group in a value position — `== syn | ack`
+     (inet/tcp.t:83-85) or a set element `{ syn, syn | ack }`; UNRESOLVED,
+     the OR-fold happens in verified Coq *)
+  | orvals            { Vor $1 }
 
 value:
   | INT             { Vnum $1 }
