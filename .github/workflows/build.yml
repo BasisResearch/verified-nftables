@@ -32,13 +32,13 @@ jobs:
           # install: |
           #   startGroup "Import pinned switch"
           #     opam update -y
-          #     # opam switch import ./.github/workflows/opam-switch-4.14.2 --yes
+          #     opam switch import ./.github/workflows/opam-switch-4.14.2 --yes
           #     # opam install -y coq-menhirlib
           #   endGroup
           script: |
             startGroup "Build project"
               cd proof
-              make all
+              opam exec -- make proofs
             endGroup
           # Already done by the ci-opam target
           uninstall: |
