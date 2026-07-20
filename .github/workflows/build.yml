@@ -31,7 +31,6 @@ jobs:
             endGroup
           install: |
             startGroup "Import pinned switch"
-              opam repo add rocq-released https://rocq-prover.org/opam/released || true
               opam update -y
               opam switch import ./.github/workflows/opam-switch-4.14.2 --yes
             endGroup
