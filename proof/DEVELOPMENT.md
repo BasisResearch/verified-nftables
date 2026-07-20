@@ -762,7 +762,15 @@ declared-existence + kind agreement (`objkind_declared`, `tc_objrefmap` in
 `Surface/Typecheck.v` — an undeclared or wrong-kind reference is rejected, pinned
 by `objref_{declared_accepts,undeclared_rejects,wrong_kind_rejects,...}` and the
 `tests/illtyped/objref_*.nft` suite); the lowering emits `SObjref (objkind_otype
-k) name` / `SObjrefMap` (`Surface/Lower.v`). `counter packets N bytes N` now
+k) name` / `SObjrefMap` (`Surface/Lower.v`). The verified typecheck runs on the
+SHIPPED frontend path itself (`Nft_inject.lower` calls the extracted
+`Typecheck.typecheck_ruleset` before the verified lowering), not only in the
+parse-test/sweep gates — so `nftc compile`/`optimize`/`send` loudly reject an
+ill-typed config (e.g. `counter name "undeclared"` with no declaration, or one
+of another kind) instead of silently lowering it. The corpus sweeps re-inject
+the sibling `.t` file's `!set`/`%object` declarations into their synthetic
+wrap (`parse_test.ml` `Harness.decls_for_payload`), since a bare recorded rule
+is ill-typed without the declaration context it was recorded under. `counter packets N bytes N` now
 keeps its initial values (`StCounter pkts bytes` → `SCounter pkts bytes`), no
 longer discarded. Object type numbers are the kernel's `NFT_OBJECT_*`
 (`include/linux/netfilter/nf_tables.h`), verified against live nft's payload
