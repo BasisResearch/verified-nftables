@@ -274,10 +274,31 @@ Definition head_value2 (r : rule)
     [f1],[f2] (in the SAME order), with the SAME tail [rest], the SAME end-fields,
     and the two TUPLES [(a1,b1)] / [(a2,b2)] DISTINCT (otherwise it is a duplicate,
     not a merge).  This is nft's two-differing-dimension eligibility. *)
+(** A meta field that the frontend inserts as an IMPLICIT protocol/link/transport
+    GUARD (`meta l4proto` before a `tcp`/`udp` selector; `meta nfproto` as the
+    address family; `meta iiftype`/`oiftype` as the ARPHRD_ETHER link guard of the
+    ether/vlan selectors, [Selector.dep_ether]; `meta protocol` as the in-frame
+    ethertype guard, [Selector.dep_arp] / class G).  [nft -o] never makes such a
+    guard a CONCAT component — it HOISTS it to the head (see
+    [Optimize_ConcatGuarded], the transport-guarded 2-field concat, and the
+    [Optimize_SetGuarded_LinkLayer_Witness] iiftype shape).  Every meta key is
+    fixed-width ([Syntax.meta_width] is total), so the concat recognisers would
+    otherwise greedily absorb the guard into the tuple, diverging from nft's
+    shape; the guard keys are excluded here so the guarded cases are handled by
+    the guard-hoisting merges (guard kept at head, set over the non-guard
+    fields). *)
+Definition concat_guard_field (f : field) : bool :=
+  match f with
+  | FMetaL4proto | FMetaNfproto | FMetaIiftype | FMetaOiftype
+  | FMetaProtocol => true
+  | _ => false
+  end.
+
 Definition concat_merge_pair (r1 r2 : rule)
   : option (field * field * data * data * data * data * list body_item) :=
   match head_value2 r1, head_value2 r2 with
   | Some (f1, a1, g1, b1, rest1), Some (f2, a2, g2, b2, rest2) =>
+      if concat_guard_field f1 || concat_guard_field g1 then None else
       if field_eq_dec f1 f2 then
       if field_eq_dec g1 g2 then
       if list_eq_dec body_item_eq_dec rest1 rest2 then
@@ -328,6 +349,8 @@ Proof.
   destruct b1' as [| [m1b | s1b] b1'']; try discriminate.
   destruct m1b as [ | | | | g1' op1b v1b' | | | | | | | | ]; try discriminate.
   destruct op1b; try discriminate. inversion H1; subst fa1 ua1 ga1 ub1 s1.
+  destruct (concat_guard_field f1' || concat_guard_field g1') eqn:Hgf;
+    [discriminate |].
   destruct (r_body r2) as [| [m2 | s2'] b2'] eqn:Eb2; try discriminate.
   destruct m2 as [ | | | | f2' op2 v2' | | | | | | | | ]; try discriminate.
   destruct op2; try discriminate.

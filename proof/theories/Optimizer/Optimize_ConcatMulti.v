@@ -481,17 +481,9 @@ Proof.
   - apply (IH Hrest).
 Qed.
 
-(** A meta field that the frontend inserts as an IMPLICIT protocol/transport GUARD
-    (`meta l4proto` before a `tcp`/`udp` selector; `meta nfproto` as the address
-    family).  [nft -o] never makes such a guard a CONCAT component — it HOISTS it to
-    the head (see [Optimize_ConcatGuarded], the transport-guarded 2-field concat).  Now that
-    these keys are fixed-width ([meta_fixed_len]), the plain K-field recogniser would
-    otherwise greedily absorb the guard into the tuple, diverging from nft's shape; we
-    exclude them here so the guarded case is handled by [Optimize_ConcatGuarded] exactly as
-    before (guard hoisted, disjoint 2-field concat). *)
-Definition concat_guard_field (f : field) : bool :=
-  match f with FMetaL4proto | FMetaNfproto => true | _ => false end.
-
+(** The implicit-guard meta fields ([Optimize_Concat.concat_guard_field]) are
+    excluded from K-field concat tuples too: [nft -o] hoists a frontend guard to
+    the head, never makes it a concat component. *)
 Definition no_guard_fields (ps : list (field * data)) : bool :=
   forallb (fun fa => negb (concat_guard_field (fst fa))) ps.
 

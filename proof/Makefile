@@ -193,6 +193,13 @@ validate: glue
 #                        (what `nftc compile` emits); the optimize-path
 #                        headline optimize_table_uncond_compile_correct is
 #                        stated over the same default pipeline
+#   faithful widths (W1) every meta/ct/rt/socket/osf/numgen/symhash oracle read
+#                        is width-normalised BY CONSTRUCTION to its kernel
+#                        register width (Bytes.fit at the do_load boundary;
+#                        the cited width tables Syntax.meta_width & co.) —
+#                        fit_length/fit_idempotent + the definitional
+#                        per-field width facts (read_meta_length & co.),
+#                        with NO packet_wf/env_wf hypothesis anywhere
 # Any NEW README-claimed result must be added here in the same commit.
 AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   compile_chain_mut_env_correct compile_seq_mut_correct compile_table_correct \
@@ -245,7 +252,11 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Lower_Proofs.lower_ruleset_numgen_free \
   Semantics.rule_step_mutfree \
   Setread_IntraRule.setread_accepted Setread_IntraRule.vm_setread_accepted \
-  Setread_IntraRule.dynset_feedback_accepted Setread_IntraRule.vm_dynset_feedback_accepted
+  Setread_IntraRule.dynset_feedback_accepted Setread_IntraRule.vm_dynset_feedback_accepted \
+  Bytes.fit_length Bytes.fit_idempotent Bytes.fit_exact \
+  Syntax.read_meta_length Syntax.meta_load_length Syntax.ct_load_length \
+  Syntax.read_rt_length Syntax.read_socket_length Syntax.read_osf_length \
+  Syntax.read_numgen_length Syntax.read_symhash_length
 
 axioms:
 	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optimize_PayMerge Optimize_XorFold Optimize_Linearize Optimize_Registry Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs Setread_IntraRule.\n'; \

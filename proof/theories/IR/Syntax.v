@@ -153,130 +153,267 @@ Definition all_fields : list field :=
 Definition numgen_inc_value (spec : numgen_spec) (c : nat) : data :=
   N_to_data 4 (N.of_nat (Nat.modulo c (ng_mod spec) + ng_offset spec)).
 
-(** *** Fixed-width meta selectors.
+(** *** THE KERNEL WIDTH TABLE: every meta / ct / rt / socket / osf / numgen /
+    symhash oracle read is normalised — BY CONSTRUCTION, at the semantics
+    boundary — to the exact byte width the kernel eval writes into the
+    destination register.
 
-    A `meta` register in the kernel is a fixed-width slot: e.g. `meta mark` is a
-    u32 (4 bytes, host-order) — nft_meta.c stores it with [nft_reg_store32].  The
-    abstract oracle [pkt_meta : meta_key -> data] (Packet.v) carries NO width, so a
-    raw load could in principle report any length.  [meta_fixed_len] pins the
-    kernel register width for the meta keys we treat as fixed-width scalars, and
-    [meta_load] NORMALISES the oracle read to exactly that width (zero-pad / truncate
-    to the u32 slot).  This makes [length (do_load (LMeta MKmark) p) = 4]
-    UNCONDITIONALLY — a genuine fidelity improvement (the read now has the kernel's
-    fixed slot width) and the length fact the value->set merge needs on a meta key
-    ([Optimize_ValueSet.field_fixed_len_loaded]).  Keys left [None] read raw (their
-    width is variable / unmodelled, e.g. the interface-name string keys). *)
-Definition meta_fixed_len (k : meta_key) : option nat :=
+    In the kernel every one of these selectors has a PINNED width: [struct
+    nft_regs] is 16 x u32 general registers (include/net/netfilter/
+    nf_tables.h), values are explicit-length byte arrays spanning consecutive
+    u32 words, and [nft_validate_register_load]/[store]
+    (net/netfilter/nf_tables_api.c) bound every access to [reg + len].  The
+    abstract oracles ([pkt_meta : meta_key -> data], [e_ct : data -> ct_key ->
+    data], [e_rt], [pkt_sock], [pkt_osf], [pkt_numgen], [pkt_symhash];
+    Core/Packet.v) carry NO width — they stay oracles — so every read below is
+    wrapped in [Bytes.fit] at its kernel width.  The width facts
+    ([read_meta_length] & co.) are therefore DEFINITIONAL: no [packet_wf]/
+    [env_wf] hypothesis exists anywhere in this development.
+
+    Each entry cites the eval-side WRITE in linux-6.18.33 (the width the
+    register actually receives; [nft_reg_store8]/[16] zero the containing u32
+    word and write 1/2 low bytes, [nft_reg_store64] and the memcpy cases write
+    the full value).  Cross-checked against the frontend datatype table
+    (Surface/Selector.v [sel_table] x Surface/Datatype.v [dt_bytes]) by the
+    computed check [Selector.selector_widths_agree]; the two tables agree on
+    every selector the frontend exposes.
+
+    NOT in this table (deliberately): the OPAQUE abstractions — [pkt_flow],
+    [pkt_fibkey] (beyond [Fib_Local.fibkey_wf]), [pkt_ctdir] (ct tuple columns,
+    family-dependent 4/16-byte addresses chosen at eval time, nft_ct.c
+    NFT_CT_SRC/DST), [pkt_xfrm], [pkt_tunnel], [pkt_inner], connlimit flow
+    keys.  Those are abstractions of kernel OBJECTS, not register encodings
+    (TODO.md non-negotiable).  Payload/exthdr loads already carry their width
+    in the load descriptor ([read_payload] slices exactly [len] bytes); the
+    fib result columns are read from the route table [e_routes], whose
+    per-column values [Fib_Local]'s route-table constructors build at the
+    kernel result widths. *)
+
+(** Register byte width of a `meta` read = the width nft_meta_get_eval
+    (net/netfilter/nft_meta.c; bridge keys: net/bridge/netfilter/
+    nft_meta_bridge.c) writes into the dreg. *)
+Definition meta_width (k : meta_key) : nat :=
   match k with
-  (* Fixed-width meta SCALARS at their kernel register widths (net/netfilter/nft_meta.c,
-     nft_meta_get_init): [mark]/[skuid]/[skgid] are u32 slots (nft_reg_store32, 4 bytes);
-     [l4proto]/[nfproto] are u8 slots (nft_reg_store8, 1 byte).  Pinning the width lets the
-     value->set / vmap / concat merges fold a run over these keys exactly as for [meta mark]
-     (same membership certificate [field_fixed_len_loaded]), matching `nft -o`'s
-     `meta skuid { … }` / `meta l4proto { … }` / `meta nfproto { … }` consolidation.
-     Keys left [None] read raw (variable / unmodelled width). *)
-  | MKmark => Some 4
-  | MKskuid => Some 4
-  | MKskgid => Some 4
-  | MKl4proto => Some 1
-  | MKnfproto => Some 1
-  (* More fixed-width meta SCALARS at their kernel register widths
-     (net/netfilter/nft_meta.c, nft_meta_get_eval):
-       [pkttype]  NFT_META_PKTTYPE  -> nft_reg_store8  (skb->pkt_type, u8, 1 byte);
-       [cpu]      NFT_META_CPU      -> nft_reg_store32 (smp_processor_id(), u32, 4 bytes);
-       [protocol] NFT_META_PROTOCOL -> nft_reg_store16 ((__force u16)skb->protocol,
-                                                        u16, 2 bytes).
-     Pinning the width lets the value->set / vmap / concat merges fold a run over
-     these keys exactly as for [meta mark] (same membership certificate
-     [field_fixed_len_loaded]), matching `nft -o`'s
-     `meta pkttype { host, broadcast }` / `meta cpu { … }` / `meta protocol { … }`
-     consolidation.  The compiled per-rule cmp already carries exactly this width
-     (nft_lower: KPkttype=1, KNumLe 4=cpu, KEthertype=2), so the set membership
-     coincides with the per-rule full-width compare. *)
-  | MKpkttype => Some 1
-  | MKcpu => Some 4
-  | MKprotocol => Some 2
-  (* Interface-name keys are a FIXED IFNAMSIZ=16-byte register: the kernel
-     ([net/netfilter/nft_meta.c], nft_meta_get_eval NFT_META_IIFNAME/OIFNAME) does
-     [strncpy(dest, dev->name, IFNAMSIZ)] into a 16-byte, zero-padded register slot.
-     Pinning the width to 16 makes [do_load]/[meta_load] normalise every iif/oifname
-     read to exactly this register (zero-pad a short name, truncate a longer one) —
-     a fidelity improvement that also matches how nft lowers a NON-wildcard name to a
-     full 16-byte cmp (see [Ifname_Exact]).  This is what lets the value->set merge
-     fold `iifname "lo"; iifname "eth0"` into `iifname { lo, eth0 }` soundly: on the
-     fixed-width register a full-width set membership coincides with the per-rule
-     16-byte compare.  A trailing-'*' wildcard still lowers to a SHORT prefix cmp and
-     is folded by neither (its value width < 16). *)
-  | MKiifname => Some 16
-  | MKoifname => Some 16
-  | MKbri_iifname => Some 16
-  | MKbri_oifname => Some 16
-  | _      => None
+  (* nft_meta.c:330  nft_reg_store8(dest, pkt->tprot)            — u8       *)
+  | MKl4proto => 1
+  (* nft_meta.c:325  nft_reg_store8(dest, nft_pf(pkt))           — u8       *)
+  | MKnfproto => 1
+  (* nft_meta.c:322  nft_reg_store16(dest, skb->protocol)        — u16      *)
+  | MKprotocol => 2
+  (* nft_meta.c:336  *dest = skb->mark                           — u32      *)
+  | MKmark => 4
+  (* nft_meta.c:204  *dest = dev->ifindex (nft_meta_store_ifindex) — u32    *)
+  | MKiif | MKoif => 4
+  (* nft_meta.c:217  nft_reg_store16(dest, dev->type)            — u16      *)
+  | MKiiftype | MKoiftype => 2
+  (* nft_meta.c:209  strscpy_pad(dest, dev->name, IFNAMSIZ)      — 16 bytes *)
+  | MKiifname | MKoifname => 16
+  (* nft_meta.c:319  *dest = skb->len                            — u32      *)
+  | MKlen => 4
+  (* nft_meta.c:367  nft_reg_store8(dest, skb->pkt_type)         — u8       *)
+  | MKpkttype => 1
+  (* nft_meta.c:375  *dest = raw_smp_processor_id()              — u32      *)
+  | MKcpu => 4
+  (* nft_meta.c:149/:153  *dest = from_kuid/kgid(...)            — u32      *)
+  | MKskuid | MKskgid => 4
+  (* nft_meta.c:333  *dest = skb->priority                       — u32      *)
+  | MKpriority => 4
+  (* nft_meta.c:173  *dest = sock_cgroup_classid(...) — the u32 net_cls
+     CLASSID (NFT_META_CGROUP; init pins len = sizeof(u32), :501-503).  NOT
+     the u64 cgroupv2 id: that is `socket cgroupv2` (NFT_SOCKET_CGROUPV2,
+     [socket_width] below).                                                 *)
+  | MKcgroup => 4
+  (* nft_meta.c:69   nft_reg_store8(dest, nft_meta_weekday())    — u8       *)
+  | MKday => 1
+  (* nft_meta.c:72   *dest = nft_meta_hour(...) (secs since 00:00) — u32    *)
+  | MKhour => 4
+  (* nft_meta.c:66   nft_reg_store64(dest, ktime_get_real_ns())  — u64      *)
+  | MKtime => 8
+  (* nft_meta.c:226  *dest = dev->group (nft_meta_store_ifgroup) — u32      *)
+  | MKiifgroup | MKoifgroup => 4
+  (* nft_meta.c:384  *dest = get_random_u32()                    — u32      *)
+  | MKprandom => 4
+  (* nft_meta.c:282  *dest = dst->tclassid                       — u32      *)
+  | MKrtclassid => 4
+  (* nft_meta.c:402  *dest = nft_meta_get_eval_sdif(pkt)         — u32      *)
+  | MKsdif => 4
+  (* nft_meta.c:306  nft_meta_store_ifname (strscpy_pad IFNAMSIZ) — 16 bytes *)
+  | MKsdifname => 16
+  (* nft_meta.c:388  nft_reg_store8(dest, secpath_exists(skb))   — u8       *)
+  | MKsecpath => 1
+  (* nft_meta_bridge.c:73  strscpy_pad(dest, br_dev->name, IFNAMSIZ) — 16 B *)
+  | MKbri_iifname | MKbri_oifname => 16
+  (* nft_meta_bridge.c:48  nft_reg_store16(dest, p_pvid)         — u16      *)
+  | MKbri_iifpvid => 2
+  (* nft_meta_bridge.c:59  nft_reg_store_be16(dest, htons(p_proto)) — be16  *)
+  | MKbri_iifvproto => 2
+  (* nft_meta_bridge.c:67  memcpy(dest, br_dev->dev_addr, ETH_ALEN) — 6 B   *)
+  | MKibrhwaddr => 6
+  (* nft_meta_bridge.c:147-148  NFT_META_BRI_BROUTE reads a 1-byte sreg
+     (set path, nft_reg_load8); the matching read register is the same u8.  *)
+  | MKbroute => 1
   end.
 
-(** Normalise a meta read to its fixed register width (pad with zero bytes / truncate);
-    the identity on keys whose width is unmodelled. *)
-Definition meta_load (k : meta_key) (d : data) : data :=
-  match meta_fixed_len k with
-  | Some w => List.firstn w (d ++ List.repeat 0 w)
-  | None   => d
-  end.
+(** Normalise a meta read to its kernel register width. *)
+Definition meta_load (k : meta_key) (d : data) : data := fit (meta_width k) d.
 
-Lemma meta_load_len : forall k w d,
-  meta_fixed_len k = Some w -> List.length (meta_load k d) = w.
-Proof.
-  intros k w d Hk. unfold meta_load. rewrite Hk.
-  rewrite List.length_firstn, List.length_app, List.repeat_length.
-  apply Nat.min_l. apply Nat.le_add_l.
-Qed.
+(** THE meta read: what every evaluation (DSL [do_load] and VM [IMetaLoad])
+    sees.  Its width is definitional ([read_meta_length]). *)
+Definition read_meta (p : packet) (k : meta_key) : data :=
+  meta_load k (pkt_meta p k).
 
-(** *** Fixed-width conntrack selectors.
+Lemma meta_load_length : forall k d,
+  List.length (meta_load k d) = meta_width k.
+Proof. intros k d. apply fit_length. Qed.
 
-    A `ct` register is likewise a fixed-width slot.  [ct mark] (NFT_CT_MARK) is a
-    u32: nft_ct.c's nft_ct_get_eval does [*dest = READ_ONCE(ct->mark)] into the
-    4-byte register (ct->mark is a u32).  The abstract oracle/table [e_ct] carries
-    NO width, so a raw load could report any length.  [ct_fixed_len] pins the kernel
-    register width for the ct keys we treat as fixed-width scalars, and [ct_load]
-    NORMALISES the read to exactly that width (zero-pad the high bytes / truncate to
-    the u32 slot).  This makes [length (do_load (LCt CKmark) p) = 4] UNCONDITIONALLY
-    — a genuine fidelity improvement (the read now has the kernel's fixed slot width,
-    and ct mark is host-endian little-endian so the high-order zero pad is on the
-    right, matching the frontend's 4-byte lowering, see parse_test's [mark99]) and
-    the length fact the value->set merge needs on a ct key
-    ([Optimize_ValueSet.field_fixed_len_loaded]).  Keys left [None] read raw (their
-    width is variable / a fixed byte sequence already, e.g. state/direction). *)
-Definition ct_fixed_len (k : ct_key) : option nat :=
+(** The by-construction width fact: EVERY meta read has its kernel register
+    width, on EVERY packet — no packet well-formedness anywhere. *)
+Lemma read_meta_length : forall p k,
+  List.length (read_meta p k) = meta_width k.
+Proof. intros p k. apply fit_length. Qed.
+
+(** Register byte width of a `ct` read = the width nft_ct_get_eval
+    (net/netfilter/nft_ct.c) writes into the dreg. *)
+Definition ct_width (k : ct_key) : nat :=
   match k with
-  (* [ct mark] is a u32 register (net/netfilter/nft_ct.c, nft_ct_get_eval NFT_CT_MARK:
-     [*dest = READ_ONCE(ct->mark)] into a 4-byte reg).  Pinning the width lets the
-     value->set / vmap / concat merges fold a `ct mark` run exactly as for `meta mark`
-     (same membership certificate [field_fixed_len_loaded]), matching `nft -o`'s
-     `ct mark { … }` consolidation.  Other ct keys stay [None] (state/direction are a
-     fixed 4-/1-byte sequence already; the rest are variable / unmodelled width). *)
-  | CKmark => Some 4
-  | _      => None
+  (* nft_ct.c:75   *dest = state (NF_CT_STATE_BIT bits)          — u32      *)
+  | CKstate => 4
+  (* nft_ct.c:89   *dest = ct->status                            — u32      *)
+  | CKstatus => 4
+  (* nft_ct.c:93   *dest = READ_ONCE(ct->mark)                   — u32      *)
+  | CKmark => 4
+  (* nft_ct.c:86   nft_reg_store8(dest, CTINFO2DIR(ctinfo))      — u8       *)
+  | CKdirection => 1
+  (* nft_ct.c:102  *dest = jiffies_to_msecs(nf_ct_expires(ct))   — u32 ms   *)
+  | CKexpiration => 4
+  (* nft_ct.c:174  *dest = nf_ct_get_id(ct)                      — u32      *)
+  | CKid => 4
+  (* nft_ct.c:150  memcpy(dest, &avgcnt, sizeof(u64))            — u64      *)
+  | CKavgpkt => 8
+  (* nft_ct.c:134  memcpy(dest, &count, sizeof(u64))             — u64      *)
+  | CKbytes | CKpackets => 8
+  (* nft_ct.c:113  strscpy_pad(dest, helper->name, NF_CT_HELPER_NAME_LEN);
+     NF_CT_HELPER_NAME_LEN = 16 (include/net/netfilter/nf_conntrack_helper.h:30) *)
+  | CKhelper => 16
+  (* nft_ct.c:154  nft_reg_store8(dest, nf_ct_l3num(ct))         — u8       *)
+  | CKl3proto => 1
+  (* nft_ct.c:120  memcpy(dest, labels->bits, NF_CT_LABELS_MAX_SIZE);
+     NF_CT_LABELS_MAX_SIZE = (XT_CONNLABEL_MAXBIT+1)/8 = 128/8 = 16
+     (include/net/netfilter/nf_conntrack_labels.h:14)            — 16 bytes *)
+  | CKlabel => 16
+  (* nft_ct.c:157  nft_reg_store8(dest, nf_ct_protonum(ct))      — u8       *)
+  | CKproto => 1
+  (* nft_ct.c:169  nft_reg_store16(dest, zoneid)                 — u16      *)
+  | CKzone => 2
+  (* NFT_CT_EVENTMASK is SET-only (an event-delivery mask, never read back);
+     its sreg value is the u32 mask (nft_ct.c nft_ct_set_init:
+     len = sizeof(u32)).  The read register width, were one to exist, is the
+     same u32; pinned so the table is total.                                *)
+  | CKevent => 4
   end.
 
-(** Normalise a ct read to its fixed register width (pad the high bytes with zero /
-    truncate); the identity on keys whose width is unmodelled. *)
-Definition ct_load (k : ct_key) (d : data) : data :=
-  match ct_fixed_len k with
-  | Some w => List.firstn w (d ++ List.repeat 0 w)
-  | None   => d
+(** Normalise a ct read to its kernel register width. *)
+Definition ct_load (k : ct_key) (d : data) : data := fit (ct_width k) d.
+
+Lemma ct_load_length : forall k d,
+  List.length (ct_load k d) = ct_width k.
+Proof. intros k d. apply fit_length. Qed.
+
+(** Register byte width of an `rt` read = the width nft_rt_get_eval
+    (net/netfilter/nft_rt.c) writes into the dreg. *)
+Definition rt_width (k : rt_key) : nat :=
+  match k with
+  (* nft_rt.c:69   *dest = dst->tclassid                         — u32      *)
+  | RKclassid => 4
+  (* nft_rt.c:76   *dest = rt_nexthop(...)                       — u32      *)
+  | RKnexthop4 => 4
+  (* nft_rt.c:83   memcpy(dest, rt6_nexthop(...), sizeof(struct in6_addr)) — 16 B *)
+  | RKnexthop6 => 16
+  (* nft_rt.c:88   nft_reg_store16(dest, get_tcpmss(pkt, dst))   — u16.
+     [RKmtu] is the SAME kernel key: nftables spells NFT_RT_TCPMSS `rt mtu`
+     (nftables src/rt.c rt_template "mtu"); the codec keeps both spellings.  *)
+  | RKtcpmss | RKmtu => 2
+  (* nft_rt.c:92   nft_reg_store8(dest, !!dst->xfrm)             — u8       *)
+  | RKipsec => 1
   end.
 
-Lemma ct_load_len : forall k w d,
-  ct_fixed_len k = Some w -> List.length (ct_load k d) = w.
-Proof.
-  intros k w d Hk. unfold ct_load. rewrite Hk.
-  rewrite List.length_firstn, List.length_app, List.repeat_length.
-  apply Nat.min_l. apply Nat.le_add_l.
-Qed.
+Definition rt_load (k : rt_key) (d : data) : data := fit (rt_width k) d.
+
+Lemma rt_load_length : forall k d,
+  List.length (rt_load k d) = rt_width k.
+Proof. intros k d. apply fit_length. Qed.
+
+(** THE rt read (from the routing-state oracle [e_rt]). *)
+Definition read_rt (e : env) (k : rt_key) : data := rt_load k (e_rt e k).
+
+Lemma read_rt_length : forall e k,
+  List.length (read_rt e k) = rt_width k.
+Proof. intros e k. apply fit_length. Qed.
+
+(** Register byte width of a `socket` read = the width nft_socket_eval
+    (net/netfilter/nft_socket.c) writes into the dreg. *)
+Definition socket_width (k : socket_key) : nat :=
+  match k with
+  (* nft_socket.c:129  nft_reg_store8(dest, inet_sk_transparent(sk)) — u8   *)
+  | SKtransparent => 1
+  (* nft_socket.c:133  *dest = READ_ONCE(sk->sk_mark)            — u32      *)
+  | SKmark => 4
+  (* nft_socket.c:144  nft_socket_wildcard -> nft_reg_store8     — u8       *)
+  | SKwildcard => 1
+  (* nft_socket.c:54   memcpy(dest, &cgid, sizeof(u64)) — the u64 cgroupv2
+     ID (nft_sock_get_eval_cgroupv2); contrast `meta cgroup` = u32 classid. *)
+  | SKcgroupv2 => 8
+  end.
+
+Definition socket_load (k : socket_key) (d : data) : data :=
+  fit (socket_width k) d.
+
+Lemma socket_load_length : forall k d,
+  List.length (socket_load k d) = socket_width k.
+Proof. intros k d. apply fit_length. Qed.
+
+(** THE socket read (from the packet's socket oracle [pkt_sock]). *)
+Definition read_socket (p : packet) (k : socket_key) : data :=
+  socket_load k (pkt_sock p k).
+
+Lemma read_socket_length : forall p k,
+  List.length (read_socket p k) = socket_width k.
+Proof. intros p k. apply fit_length. Qed.
+
+(** `osf name` writes a fixed 16-byte genre buffer: nft_osf.c:53/:61
+    strscpy_pad(dest, ..., NFT_OSF_MAXGENRELEN); NFT_OSF_MAXGENRELEN = 16
+    (include/uapi/linux/netfilter/nf_tables.h:11). *)
+Definition osf_width : nat := 16.
+
+Definition read_osf (p : packet) : data := fit osf_width (pkt_osf p).
+
+Lemma read_osf_length : forall p, List.length (read_osf p) = osf_width.
+Proof. intros p. apply fit_length. Qed.
+
+(** `numgen` and `symhash` both write a plain u32 dreg:
+    nft_numgen.c:42/:149  regs->data[priv->dreg] = nft_ng_inc/random_gen(priv);
+    nft_hash.c:57         regs->data[priv->dreg] = h + priv->offset. *)
+Definition numgen_width : nat := 4.
+Definition symhash_width : nat := 4.
+
+Definition read_numgen (p : packet) (spec : numgen_spec) : data :=
+  fit numgen_width (pkt_numgen p spec).
+
+Lemma read_numgen_length : forall p spec,
+  List.length (read_numgen p spec) = numgen_width.
+Proof. intros p spec. apply fit_length. Qed.
+
+Definition read_symhash (p : packet) (m o : nat) : data :=
+  fit symhash_width (pkt_symhash p m o).
+
+Lemma read_symhash_length : forall p m o,
+  List.length (read_symhash p m o) = symhash_width.
+Proof. intros p m o. apply fit_length. Qed.
 
 (** Evaluate a load against a packet. *)
 Definition do_load (ld : loaddesc) (e : env) (p : packet) : data :=
   match ld with
-  | LMeta k         => meta_load k (pkt_meta p k)
+  | LMeta k         => read_meta p k
   | LCt k           => ct_load k
       (* EVERY conntrack key is read from the SHARED, flow-keyed conntrack table
          [e_ct] at THIS packet's flow ([pkt_flow]) — NOT from a free per-packet
@@ -335,8 +472,8 @@ Definition do_load (ld : loaddesc) (e : env) (p : packet) : data :=
       | CKdirection => if pkt_ctdir_orig p then [0] else [1]
       | _ => e_ct e (pkt_flow p) k
       end)
-  | LRt k           => e_rt e k
-  | LSocket k       => pkt_sock p k
+  | LRt k           => read_rt e k
+  | LSocket k       => read_socket p k
   | LNumgen spec    =>
       (* `numgen inc` reads the SHARED, persistent counter from the env and renders
          the round-robin value [(counter mod modulus) + offset]; the increment that
@@ -346,15 +483,15 @@ Definition do_load (ld : loaddesc) (e : env) (p : packet) : data :=
          [rule_numgen_free] and the sweep is the identity there).  `numgen random`
          (ng_random = true: get_random_u32) is genuinely per-packet, so it stays the
          oracle [pkt_numgen]. *)
-      if ng_random spec then pkt_numgen p spec
+      if ng_random spec then read_numgen p spec
       else numgen_inc_value spec (e_numgen e spec)
-  | LOsf            => pkt_osf p
+  | LOsf            => read_osf p
   | LExthdr ep h o l pr => pkt_eh p ep h o l pr
   | LFib sel res    => lpm_fib (e_routes e) (pkt_fibkey p sel) res
   | LCtDir key dir  => pkt_ctdir p key dir
   | LXfrm dir sp key => pkt_xfrm p dir sp key
   | LTunnel key      => pkt_tunnel p key
-  | LSymhash m o     => pkt_symhash p m o
+  | LSymhash m o     => read_symhash p m o
   | LInner t h fl desc _ => pkt_inner p t h fl desc
   | LPayload b o l  => read_payload b o l p
   end.

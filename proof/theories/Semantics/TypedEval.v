@@ -409,19 +409,26 @@ Example tev_hostint_range_hton_miss :
   = Some false.
 Proof. vm_compute. reflexivity. Qed.
 
-(** STUCK (reachable), two distinct incoherences on the SAME packet:
-    - a width-incoherent comparison (a 2-byte port bound against the 4-byte
-      ct mark register);
-    - an undecodable stored value (the ct zone register bytes are absent —
-      the flow table holds nothing for CKzone, so the 2-byte decode fails). *)
+(** STUCK (reachable): a width-incoherent comparison (a 2-byte port bound
+    against the 4-byte ct mark register). *)
 Example tev_stuck_width_mismatch :
   eval_txm (TXRange FCtMark DTmark false (VPort 22) (VPort 80)) tev_env tev_pkt
   = None.
 Proof. vm_compute. reflexivity. Qed.
-Example tev_stuck_undecodable :
+
+(** NO LONGER STUCK: an "absent" ct zone entry.  The ct zone read is
+    width-normalised BY CONSTRUCTION ([Syntax.ct_width CKzone] = 2, the
+    kernel's nft_reg_store16 — nft_ct.c:169), so a flow-table entry that
+    stores nothing for CKzone reads as the 2-byte register [0;0] = zone id 0,
+    the kernel's DEFAULT zone (NF_CT_DEFAULT_ZONE_ID) — every conntrack entry
+    HAS a zone, so an undecodable zone register was a model artifact, not a
+    kernel state.  [(zone & 1) == 1] therefore EVALUATES (to false on the
+    default zone); before the width normalisation this read was a stuck
+    [None]. *)
+Example tev_ctzone_always_decodes :
   eval_txm (TXBitwise (FCtGen CKzone) (DThostint 2) BOand false
               (VHostInt 2 1) (VHostInt 2 1)) tev_env tev_pkt
-  = None.
+  = Some false.
 Proof. vm_compute. reflexivity. Qed.
 
 (** A byteorder-incoherent operand is stuck: a HOST-endian-encoded value used

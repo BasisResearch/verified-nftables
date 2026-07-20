@@ -194,7 +194,7 @@ Definition lim_rate (spec : limit_spec) : nat := Nat.max 1 (ls_rate spec).
 Definition lim_cost (p : packet) (spec : limit_spec) : nat :=
   let r := lim_rate spec in
   if ls_bytes spec
-  then Nat.div (lim_window spec * N.to_nat (data_to_N (pkt_meta p MKlen))) r
+  then Nat.div (lim_window spec * N.to_nat (data_to_N (read_meta p MKlen))) r
   else Nat.div (lim_window spec) r.
 
 (** The bucket capacity (tokens_max).  Packet mode: [(window/rate) * burst];
@@ -220,7 +220,7 @@ Definition lim_under (e : env) (p : packet) (spec : limit_spec) : bool :=
     the kernel's [skb->len] (nft_overquota: [consumed += skb->len]).  This is the
     same length expression that byte-mode [lim_cost] uses. *)
 Definition quota_cost (p : packet) : nat :=
-  N.to_nat (data_to_N (pkt_meta p MKlen)).
+  N.to_nat (data_to_N (read_meta p MKlen)).
 
 (** The non-inverted "under / not over quota" test.  With [e_quota] tracking the
     REMAINING bytes ([quota - consumed]), the kernel's post-add state is
@@ -1314,7 +1314,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (e : env) (p : packet) : optio
   match is with
   | [] => None
   | IMetaLoad k dst :: rest =>
-      run_rule (set_reg rf dst (meta_load k (pkt_meta p k))) rest e p
+      run_rule (set_reg rf dst (read_meta p k)) rest e p
   | ICtLoad k dst :: rest =>
       (* identical to [do_load (LCt k)]: every key reads the SHARED flow-keyed
          conntrack table [e_ct] at this packet's flow, EXCEPT that
@@ -1327,9 +1327,9 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (e : env) (p : packet) : optio
       then run_rule (set_reg rf dst (do_load (LCt k) e p)) rest e p
       else None
   | IRtLoad k dst :: rest =>
-      run_rule (set_reg rf dst (e_rt e k)) rest e p
+      run_rule (set_reg rf dst (read_rt e k)) rest e p
   | ISocketLoad k dst :: rest =>
-      run_rule (set_reg rf dst (pkt_sock p k)) rest e p
+      run_rule (set_reg rf dst (read_socket p k)) rest e p
   | INumgen spec dst :: rest =>
       (* `numgen inc` reads the SHARED counter value (= [do_load (LNumgen spec) e p],
          deterministic from [e_numgen]) into the dreg.  [run_rule] is the write-free
@@ -1342,7 +1342,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (e : env) (p : packet) : optio
          lock-step with the DSL [outcome]. *)
       run_rule (set_reg rf dst (do_load (LNumgen spec) e p)) rest e p
   | IOsf dst :: rest =>
-      run_rule (set_reg rf dst (pkt_osf p)) rest e p
+      run_rule (set_reg rf dst (read_osf p)) rest e p
   | IExthdrLoad ep h o l pr dst :: rest =>
       (* A VALUE load (pr=false) of an ABSENT extension-header / TCP-option /
          SCTP-chunk makes the kernel set NFT_BREAK (nft_exthdr_*_eval err path).
@@ -1360,7 +1360,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (e : env) (p : packet) : optio
   | ITunnelLoad key dst :: rest =>
       run_rule (set_reg rf dst (pkt_tunnel p key)) rest e p
   | ISymhash m o dst :: rest =>
-      run_rule (set_reg rf dst (pkt_symhash p m o)) rest e p
+      run_rule (set_reg rf dst (read_symhash p m o)) rest e p
   | IInnerLoad t h fl desc _ dst :: rest =>
       run_rule (set_reg rf dst (pkt_inner p t h fl desc)) rest e p
   | IPayloadLoad b o l dst :: rest =>
@@ -1651,7 +1651,7 @@ Qed.
     16 for IPv6); [csum_update_field] folds every 16-bit word of the delta into
     the slot, the RFC-1624 incremental update the kernel performs word by word. *)
 Definition set_l4_csum_addr (p : packet) (old new : data) : packet :=
-  match l4_csum_slot (pkt_meta p MKl4proto) with
+  match l4_csum_slot (read_meta p MKl4proto) with
   | Some (coff, clen, mand) =>
       if andb (pkt_have_l4 p) (Nat.leb (coff + clen) (List.length (pkt_th p)))
       then let ck0 := slice (pkt_th p) coff clen in
@@ -1674,7 +1674,7 @@ Lemma set_l4_csum_addr_nh : forall p old new,
   pkt_nh (set_l4_csum_addr p old new) = pkt_nh p.
 Proof.
   intros p old new. unfold set_l4_csum_addr.
-  destruct (l4_csum_slot (pkt_meta p MKl4proto)) as [[[coff clen] mand]|]; [|reflexivity].
+  destruct (l4_csum_slot (read_meta p MKl4proto)) as [[[coff clen] mand]|]; [|reflexivity].
   destruct (pkt_have_l4 p && Nat.leb (coff + clen) (List.length (pkt_th p)));
     [|reflexivity].
   destruct (negb mand && N.eqb (data_to_N (slice (pkt_th p) coff clen)) 0);
@@ -1688,7 +1688,7 @@ Lemma set_l4_csum_addr_th_len : forall p old new,
   List.length (pkt_th (set_l4_csum_addr p old new)) = List.length (pkt_th p).
 Proof.
   intros p old new. unfold set_l4_csum_addr.
-  destruct (l4_csum_slot (pkt_meta p MKl4proto)) as [[[coff clen] mand]|] eqn:Hslot;
+  destruct (l4_csum_slot (read_meta p MKl4proto)) as [[[coff clen] mand]|] eqn:Hslot;
     [|reflexivity].
   destruct (pkt_have_l4 p && Nat.leb (coff + clen) (List.length (pkt_th p))) eqn:Hg;
     [|reflexivity].
@@ -1828,7 +1828,7 @@ Lemma slice_set_l4_csum_addr_port : forall p old new poff plen,
   slice (pkt_th (set_l4_csum_addr p old new)) poff plen = slice (pkt_th p) poff plen.
 Proof.
   intros p old new poff plen Hle. unfold set_l4_csum_addr.
-  destruct (l4_csum_slot (pkt_meta p MKl4proto)) as [[[coff clen] mand]|] eqn:Hslot;
+  destruct (l4_csum_slot (read_meta p MKl4proto)) as [[[coff clen] mand]|] eqn:Hslot;
     [|reflexivity].
   destruct (pkt_have_l4 p && Nat.leb (coff + clen) (List.length (pkt_th p))) eqn:Hg;
     [|reflexivity].
@@ -2015,7 +2015,7 @@ Fixpoint run_rule_step (rf : regfile) (is : list instr) (e : env) (p : packet)
   : option verdict * (env * packet) :=
   match is with
   | [] => (None, (e, p))
-  | IMetaLoad k dst :: rest => run_rule_step (set_reg rf dst (meta_load k (pkt_meta p k))) rest e p
+  | IMetaLoad k dst :: rest => run_rule_step (set_reg rf dst (read_meta p k)) rest e p
   | ICtLoad k dst :: rest =>
       (* a conntrack load on a no-entry packet ([pkt_ct_present = false]) breaks the
          rule for every key except [CKstate] (NFT_BREAK): no later statement runs and
@@ -2023,14 +2023,14 @@ Fixpoint run_rule_step (rf : regfile) (is : list instr) (e : env) (p : packet)
       if load_ok (LCt k) p
       then run_rule_step (set_reg rf dst (do_load (LCt k) e p)) rest e p
       else (None, (e, p))
-  | IRtLoad k dst :: rest => run_rule_step (set_reg rf dst (e_rt e k)) rest e p
-  | ISocketLoad k dst :: rest => run_rule_step (set_reg rf dst (pkt_sock p k)) rest e p
+  | IRtLoad k dst :: rest => run_rule_step (set_reg rf dst (read_rt e k)) rest e p
+  | ISocketLoad k dst :: rest => run_rule_step (set_reg rf dst (read_socket p k)) rest e p
   | INumgen spec dst :: rest =>
       (* `numgen inc` reads the SHARED counter value; the cross-packet counter
          ADVANCE is applied by [numgen_sweep_prog] at the step boundary
          ([vm_rule_step]), keeping the per-instruction fold deterministic. *)
       run_rule_step (set_reg rf dst (do_load (LNumgen spec) e p)) rest e p
-  | IOsf dst :: rest => run_rule_step (set_reg rf dst (pkt_osf p)) rest e p
+  | IOsf dst :: rest => run_rule_step (set_reg rf dst (read_osf p)) rest e p
   | IExthdrLoad ep h o l pr dst :: rest =>
       (* a VALUE load of an absent exthdr/option breaks the rule (NFT_BREAK,
          nft_exthdr_*_eval err path); an EXISTENCE load never breaks. *)
@@ -2041,7 +2041,7 @@ Fixpoint run_rule_step (rf : regfile) (is : list instr) (e : env) (p : packet)
   | ICtDirLoad key dir dst :: rest => run_rule_step (set_reg rf dst (pkt_ctdir p key dir)) rest e p
   | IXfrmLoad dir sp key dst :: rest => run_rule_step (set_reg rf dst (pkt_xfrm p dir sp key)) rest e p
   | ITunnelLoad key dst :: rest => run_rule_step (set_reg rf dst (pkt_tunnel p key)) rest e p
-  | ISymhash m o dst :: rest => run_rule_step (set_reg rf dst (pkt_symhash p m o)) rest e p
+  | ISymhash m o dst :: rest => run_rule_step (set_reg rf dst (read_symhash p m o)) rest e p
   | IInnerLoad t h fl desc _ dst :: rest =>
       run_rule_step (set_reg rf dst (pkt_inner p t h fl desc)) rest e p
   | IPayloadLoad b o l dst :: rest =>
@@ -2709,7 +2709,7 @@ Definition nat_addrfamily (ns : nat_spec) : nat_af :=
     NFPROTO_IPV4 = 2) -> "ip".  This is what the kernel's [nft_masq_inet_eval]
     `switch (nft_pf(pkt))` dispatches on. *)
 Definition pkt_l3_family (p : packet) : nat_af :=
-  if N.eqb (data_to_N (pkt_meta p MKnfproto)) 10 then nat_fam_ip6 else nat_fam_ip4.
+  if N.eqb (data_to_N (read_meta p MKnfproto)) 10 then nat_fam_ip6 else nat_fam_ip4.
 
 (** The L3 NAT address family to USE for [p]: for a STATIC family ("ip"/"ip6", e.g.
     an `ip`/`ip6` table or an explicit-literal snat/dnat) the rule's own family; for

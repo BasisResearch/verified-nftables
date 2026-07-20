@@ -124,7 +124,7 @@ Proof. reflexivity. Qed.
 
 Theorem quota_consumes_packet_len : forall e p,
   e_quota (set_quota e p q_bytes100) q_bytes100
-    = e_quota e q_bytes100 - N.to_nat (data_to_N (pkt_meta p MKlen)).
+    = e_quota e q_bytes100 - N.to_nat (data_to_N (read_meta p MKlen)).
 Proof.
   intros e p. unfold set_quota, env_quota_upd, quota_cost;
     cbn [with_e_quota e_quota].
@@ -135,11 +135,16 @@ Qed.
    non-over `quota 100 bytes` BREAKs (does not match) on the first big packet,
    whereas the old pred-by-1 model would have passed ~100 packets. *)
 Theorem mtu_packet_overspends_small_quota : forall e p,
-  pkt_meta p MKlen = [5; 220] ->     (* 5*256 + 220 = 1500 bytes, big-endian *)
+  (* skb->len is a u32 (nft_meta.c:319 `*dest = skb->len`); the model reads it
+     at exactly 4 bytes ([read_meta]/[meta_width MKlen] = 4), so the kernel-
+     faithful oracle value is the FULL register: 1500 = [0;0;5;220] big-endian. *)
+  pkt_meta p MKlen = [0; 0; 5; 220] ->
+
   e_quota e q_bytes100 = 100 ->
   eval_matchcond_body (MQuota q_bytes100) e p = false.
 Proof.
-  intros e p Hlen Hq. cbn [eval_matchcond_body q_bytes100]. unfold quota_under, quota_cost.
+  intros e p Hlen Hq. cbn [eval_matchcond_body q_bytes100].
+  unfold quota_under, quota_cost, read_meta, meta_load.
   rewrite Hlen, Hq. reflexivity.
 Qed.
 
@@ -184,8 +189,8 @@ Definition b_lim : limit_spec :=
   {| ls_rate := 1; ls_unit := 0; ls_burst := 1; ls_bytes := true; ls_flags := 0 |}.
 
 Theorem bytemode_length_is_live : forall e p q,
-  pkt_meta p MKlen = [1] ->            (* a 1-byte packet *)
-  pkt_meta q MKlen = [3] ->            (* a 3-byte packet *)
+  pkt_meta p MKlen = [0; 0; 0; 1] ->   (* a 1-byte packet (full u32 register) *)
+  pkt_meta q MKlen = [0; 0; 0; 3] ->   (* a 3-byte packet (full u32 register) *)
   e_limit e b_lim = 2 ->
   eval_matchcond_body (MLimit b_lim) e p = true /\
   eval_matchcond_body (MLimit b_lim) e q = false.
@@ -193,10 +198,12 @@ Proof.
   intros e p q Hp Hq Hep. pose proof Hep as Heq. split.
   - cbn [eval_matchcond_body]. unfold lim_under, lim_avail, lim_cost, lim_max,
       lim_window, lim_rate, lim_unit_secs, lim_SCALE.
-    rewrite Hp, Hep. unfold b_lim; cbn [ls_rate ls_unit ls_burst ls_bytes ls_flags]. reflexivity.
+    unfold read_meta, meta_load. rewrite Hp, Hep.
+    unfold b_lim; cbn [ls_rate ls_unit ls_burst ls_bytes ls_flags]. reflexivity.
   - cbn [eval_matchcond_body]. unfold lim_under, lim_avail, lim_cost, lim_max,
       lim_window, lim_rate, lim_unit_secs, lim_SCALE.
-    rewrite Hq, Heq. unfold b_lim; cbn [ls_rate ls_unit ls_burst ls_bytes ls_flags]. reflexivity.
+    unfold read_meta, meta_load. rewrite Hq, Heq.
+    unfold b_lim; cbn [ls_rate ls_unit ls_burst ls_bytes ls_flags]. reflexivity.
 Qed.
 
 (** ** `connlimit` is a CONNECTION limiter, not a PACKET limiter.

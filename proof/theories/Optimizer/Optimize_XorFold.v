@@ -22,16 +22,17 @@
     (which nft does not fold).  Axiom-free.
 
     Scope note — the residual identity mask: nft additionally DROPS the now-trivial
-    `(reg & 0xff..ff) ^ 0` binop, emitting a bare `cmp`.  This model's registers
-    are unbounded byte strings ([pkt_meta]/[e_ct] read raw [data]), so `reg &
-    0xff..ff` is NOT provably the identity (a byte >= 256 would be truncated), and
-    dropping the mask would be UNSOUND over the packet model — it can only be
-    dropped under a byte-well-formedness hypothesis, which the unconditional
-    theorem forbids.  So the fold stops at the transfer nft's [binop_transfer]
-    performs; the mask elimination is a kernel-register-width fact this
-    over-approximating model does not carry.  (The host-endian `mark` blocks are
-    also endian-unportable in the text corpus — see DEVELOPMENT.md "The 83
-    source-divergences".) *)
+    `(reg & 0xff..ff) ^ 0` binop, emitting a bare `cmp`.  Every meta/ct/rt/socket
+    read is now WIDTH-normalised by construction ([Syntax.meta_width] & co. — the
+    kernel register width table — via [Bytes.fit] in [do_load]), so the LENGTH of
+    such a register is pinned; but a model byte is a [nat] with no 0..255 bound
+    ([Bytes.byte]), so `reg & 0xff..ff` is still NOT provably the identity (a
+    byte >= 256 would be truncated by the mask), and dropping it would be UNSOUND
+    over the byte model — a byte-RANGE fact, not a width fact.  So the fold stops
+    at the transfer nft's [binop_transfer] performs; the mask elimination awaits a
+    by-construction byte-range normalisation, the same discipline [fit] applies
+    to widths.  (The host-endian `mark` blocks are also endian-unportable in the
+    text corpus — see DEVELOPMENT.md "The 83 source-divergences".) *)
 
 From Stdlib Require Import List Bool Arith Lia.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics.
