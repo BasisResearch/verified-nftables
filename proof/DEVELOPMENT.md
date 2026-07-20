@@ -401,6 +401,8 @@ read to trust a theorem":
 | `theories/Semantics/Semantics.v` | packet→verdict semantics for *both* languages |
 | `theories/Compiler/Compile.v` | the compiler `compile_chain : chain -> program` |
 | `theories/Compiler/Correct.v` | **`compile_chain_correct`** — semantic preservation |
+| `theories/Compiler/RegsValid.v` | the kernel register-file validator over bytecode (W2): `nft_parse_register`'s index map + `nft_validate_register_load`/`store` bounds + the 16-byte `nft_data` value cap, one arm per `instr` constructor; `Lower.lower_rule` admits a rule only if its compiled image passes (`LEregalloc`) |
+| `theories/Compiler/RegsValid_Proofs.v` | **`lower_ruleset_default_regs_valid`** — every frontend-emitted program's DEFAULT-pipeline bytecode passes the kernel register validator (plus the plain-compile mirror and the paymerge/xorfold preservation lemmas) |
 | `theories/Optimizer/Optimize.v` | rule-local base optimizer pass (dedup + range-simplify + no-op-prune + DCE) + `optimize_chain_correct`; the shipped 18-stage table-level pipeline is `Optimize_Table.v`/`Optimize_Uncond.v` (see "The verified optimizer" below) |
 | `theories/Examples/Example_Ruleset.v` | worked example: `../rulesets/ruleset.nft` hand-translated to the AST + 9 axiom-free packet-property proofs (the user-facing use case; the baseline a parser should reproduce — see TODO 9) |
 | `theories/Compiler/Extract.v` | extraction to `extracted/*.ml` |

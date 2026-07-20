@@ -41,6 +41,12 @@
 From Stdlib Require Import List PeanoNat Bool NArith String Ascii.
 From Nft Require Import Bytes Packet Verdict Bytecode Syntax Nftval
   Ast Datatype Symbols Selector Typecheck Typed.
+(* Qualified (no Import): [lower_rule]'s fail-loud register-file admission
+   checks the rule's own COMPILED image against the kernel register validator
+   ([RegsValid.regs_valid] over [Compile.compile_rule]) — the frontend twin of
+   nft's evaluate-time register-allocation bound (evaluate.c rejects e.g. a
+   concatenation over NFT_MAX_EXPR_LEN_BITS = the 16-word register file). *)
+From Nft Require Compile RegsValid.
 Import ListNotations.
 Local Open Scope string_scope.
 
@@ -83,10 +89,15 @@ Inductive lerr : Type :=
 | LEvalueMap                     (* value map (non-verdict data) not lowered   *)
 | LEconcatRhs                    (* concatenated match without a set/ref rhs   *)
 | LEhook       (name : string)   (* base chain bound to an unknown netfilter hook *)
-| LEnumgen.                      (* incremental `numgen` (no source surface; the
+| LEnumgen                       (* incremental `numgen` (no source surface; the
                                     mutation strand's VM-side counter sweep has no
                                     DSL twin, so such a rule is refused instead of
                                     silently leaving the verified domain) *)
+| LEregalloc.                    (* the rule's compiled image fails the kernel
+                                    register validator (nft_validate_register_
+                                    load/store bounds, RegsValid.regs_valid) —
+                                    the register-allocation refusal nft itself
+                                    performs at evaluate/linearize time *)
 
 Definition lerr_message (e : lerr) : string :=
   match e with
@@ -124,6 +135,7 @@ Definition lerr_message (e : lerr) : string :=
   | LEconcatRhs => "concatenated match needs a set/ref rhs"
   | LEhook n => "base chain bound to an unknown netfilter hook: " ++ n
   | LEnumgen => "incremental numgen has no source surface (rule refused)"
+  | LEregalloc => "rule exceeds the kernel register file (nft_validate_register_load/store)"
   end.
 
 Inductive lres (A : Type) : Type :=
@@ -2103,8 +2115,16 @@ Definition lower_rule (oracle : string -> option nat) (fuel : nat)
   let r := {| r_body := rev (rl_body rl); r_outcome := outc; r_after := nil |} in
   (* fail-loud admission: every rule the lowering EMITS is numgen-free, which
      discharges the mutation strand's [rule_numgen_free] hypothesis for every
-     frontend program ([Lower_Proofs.lower_ruleset_numgen_free]). *)
-  if rule_numgen_free r then LOk (r, fs') else LErr LEnumgen.
+     frontend program ([Lower_Proofs.lower_ruleset_numgen_free]); and its
+     COMPILED image passes the kernel register validator
+     ([RegsValid.regs_valid], nft_validate_register_load/store), which
+     discharges the W2 register-file claim for every frontend program
+     ([RegsValid_Proofs.lower_ruleset_default_regs_valid]) — both BY
+     CONSTRUCTION of the lowering, never a hypothesis. *)
+  if rule_numgen_free r
+  then if RegsValid.regs_valid (Compile.compile_rule r)
+       then LOk (r, fs') else LErr LEregalloc
+  else LErr LEnumgen.
 
 (* ---------- chains ---------- *)
 

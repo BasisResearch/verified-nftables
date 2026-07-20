@@ -44,6 +44,7 @@ axiom-free — without reading 3000 lines of `Correct.v`.
 | intra-rule pass: bitwise-xor constant fold | `Optimize_XorFold.xorfold_chain_eval` | `Optimize_XorFold.v` | transferring a pure-xor register operand onto the compare value (`(reg & 0xff..) ^ C <op> V  →  ^ 0 <op> V^C`; nft `binop_transfer`; corpus class L) preserves `eval_chain` — **UNCONDITIONAL** (`forall c e p`): bytewise xor is involutive, no width/byte-range side condition. (Scope: the residual `& 0xff.. ^ 0` identity binop is not dropped — that needs a register-byte-width fact the unbounded-byte packet model does not carry; see the file header) |
 | pass composition | `Optimize_Registry.run_passes_correct` | `Optimize_Registry.v` | ONE generic theorem: folding **any** list of registered `opt_pass`es (each bundling its own eval-preservation proof) preserves `eval_chain`, proved once quantified over the list — the `-O p1,p2,...` CLI only parses names into the list (`resolve_passes`) and folds them (`run_passes`) |
 | typed source lowering (**`typed_erasure`**) | the `Lower_Proofs.*_erasure` family (composed: `txmatch_erasure`) | `Lower_Proofs.v` | the verified lowering of a typed source construct produces exactly the byte IR the compiler consumes, with genuine per-construct obligations — `eq_erasure`/`neq_erasure` (register decode at the value's byteorder), `prefix_erasure` (CIDR: both the byte-aligned truncated-load shortening and the full-width masked compare), `wildcard_erasure` (leading-bytes short compare), `range_erasure_be`/`range_erasure_host` (BE vs host-endian range order), `bitmask_erasure`, `bitfield_erasure` (mask+shift), `set_interval_erasure` (byte-interval = numeric membership), `concat_key_erasure` (slot-padding invertibility), `cidr_interval_agrees_prefix_expand` (one CIDR expansion, not two). Since M6 the generated sources (`*_Gen.v`) carry the **surface** ruleset (`<name>_surface : sruleset`) and define every table/chain/decl as `Lower.lower_ruleset` applied to it, kernel-reduced — **no raw byte is written by hand** and a refused construct fails the generated `<name>_lowers_ok` Example (fail-loud) |
+| register-file discipline (W2) | `RegsValid_Proofs.lower_ruleset_default_regs_valid` (plain-compile mirror: `lower_ruleset_compile_regs_valid`) | `RegsValid_Proofs.v` | EVERY frontend-emitted program passes the kernel register validator: for every ruleset `lower_ruleset` accepts, every chain's DEFAULT-pipeline bytecode satisfies `RegsValid.regs_valid_prog` — `nft_validate_register_load`/`store` (index arithmetic of `nft_parse_register`, the 20-word/80-byte `struct nft_regs` file, data words 4..19, nonzero lengths, 16-byte `nft_data` values) mirrored per register operand of every `Bytecode.instr` constructor with its per-expression kernel length. Enforced BY CONSTRUCTION: `Lower.lower_rule` admits a rule only if its compiled image validates (fail-loud `LEregalloc`), and both always-on linearization stages preserve validity from their own guards (`paymerge_rule_regs`, `xorfold_rule_regs`). No hypothesis |
 
 Scope notes (each also sits on the theorem in the source):
 
@@ -424,3 +425,37 @@ in §1/§4 survives verbatim):
   otherwise absorb a hoistable guard into the tuple, diverging from `nft -o`
   (which hoists; see `Optimize_SetGuarded_LinkLayer_Witness`).  All
   optimizer pass theorems are unconditional as before.
+
+## 8. Register-file discipline (W2): the kernel register validator, discharged
+
+`Compiler/RegsValid.v` mirrors the kernel's register admission
+(linux-6.18.33, net/netfilter/nf_tables_api.c) as a boolean over bytecode:
+`nft_reg_index` is `nft_parse_register`'s netlink-number -> 32-bit-word-index
+map (0..4 -> 4*reg, 8..23 -> reg-4, else invalid), `reg_load_ok`/`reg_store_ok`
+are `nft_validate_register_load`/`store` (word index >= 4, length >= 1,
+index*4 + len <= sizeof(struct nft_regs.data) = 80), and `imm_value_ok` is the
+`struct nft_data` value bound (1..16 bytes).  `instr_regs_ok` has ONE ARM PER
+`Bytecode.instr` CONSTRUCTOR (no catch-all), each register operand checked at
+the length the kernel's expression init validates it with (per-arm citations
+in the file; the W1 tables `meta_width`/`ct_width`/`rt_width`/`socket_width`/
+`osf_width`/`numgen_width`/`symhash_width` are reused unchanged, plus
+kernel-cited tables for fib/ct-directional/xfrm/tunnel/tproxy/fwd/nat operand
+widths).  Set-keyed operands (lookup/vmap/dynset/objref-map, map data
+registers), whose transfer length lives in the referenced SET object
+(`set->klen`/`dlen`), are checked at word granularity — lossless, because the
+loads/immediates that fill the span are store-checked at full width.
+
+Discharge (no hypothesis, the `numgen_free` pattern): `Lower.lower_rule`
+admits a rule only if `RegsValid.regs_valid (Compile.compile_rule r)` — the
+frontend twin of nft's own evaluate-time register-allocation bound — so
+`RegsValid_Proofs.lower_ruleset_compile_regs_valid` holds for every lowering;
+`paymerge_rule_regs`/`xorfold_rule_regs` show both always-on linearization
+stages preserve validity from their own guards (`seg_can_merge`'s 16-byte cap;
+`xorfold_mc`'s length-pinning guard), giving the DEFAULT-pipeline HEADLINE
+`lower_ruleset_default_regs_valid` (both in `make axioms`).  Non-vacuity is
+Compute-pinned in the file (`regs_valid_rejects_out_of_file`,
+`regs_valid_rejects_wide_immediate`).  Runtime twin: the corpus round-trip
+asserts `regs_valid` on every compiled corpus rule and fails the build on any
+violation (extracted/corpus_test.ml, `make corpus`).  Scope: the `-O`
+consolidation passes construct new rules outside the theorem; their outputs
+are covered by the runtime corpus assertion.

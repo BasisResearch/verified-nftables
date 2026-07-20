@@ -50,6 +50,7 @@
 From Stdlib Require Import List PeanoNat Bool NArith Lia String.
 From Nft Require Import Bytes Packet Verdict Bytecode Syntax Semantics Nftval
   Ast Datatype Symbols Selector Typecheck Typed Lower TypedEval.
+From Nft Require Compile RegsValid.
 Import ListNotations.
 
 (* ================================================================== *)
@@ -2084,6 +2085,9 @@ Proof.
   destruct (rule_numgen_free
               {| r_body := rev (rl_body rl); r_outcome := outc; r_after := nil |})
     eqn:E; [| discriminate H].
+  (* the W2 register-file admission sits between the numgen check and LOk *)
+  match type of H with (if ?b then _ else _) = _ =>
+    destruct b; [| discriminate H] end.
   injection H as <- _. exact E.
 Qed.
 
