@@ -22,7 +22,7 @@ jobs:
         with:
           coq_version: 9.1
           ocaml_version: 4.14-flambda
-          opam_file: .github/workflows/opam-switch-4.14.2
+          opam_file: .github/workflows/nft.opam
           before_install: |
             startGroup "Print opam config"
               opam config list; opam repo list; opam list
