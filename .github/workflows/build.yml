@@ -20,8 +20,8 @@ jobs:
       - name: Docker-Coq-Action
         uses: coq-community/docker-coq-action@v1
         with:
-          coq_version: 9.1.1
-          ocaml_version: 4.14.2
+          coq_version: 9.1
+          ocaml_version: 4.14-flambda
           before_install: |
             startGroup "Print opam config"
               opam config list; opam repo list; opam list
