@@ -1,9 +1,9 @@
 (* nftc — the verified nftables optimizer/compiler as a first-class CLI.
 
    Usage:
-     nftc compile  [FILE.nft | -]      parse -> compile_chain -> netlink text
-     nftc optimize [FILE.nft | -]      parse -> optimize_table_uncond -> compile -> netlink text
-     nftc send     [FILE.nft | -]      parse -> (optimize ->) compile -> SEND to the kernel
+     nftc compile  [FILE.nft | -]      parse -> compile_chain_default -> netlink text
+     nftc optimize [FILE.nft | -]      parse -> optimize_table_uncond -> compile_chain_default -> netlink text
+     nftc send     [FILE.nft | -]      parse -> (optimize ->) compile_chain_default -> SEND to the kernel
                                        (requires --commit; mutates kernel state; see Nl_send)
 
    `send` builds ONE atomic nfnetlink batch for the whole selected ruleset —
@@ -25,8 +25,13 @@
 
    The compile/optimize core is the EXTRACTED VERIFIED term: `optimize` bottoms
    out in [Optimize_Uncond.optimize_table_uncond] (whole-pipeline verdict
-   preservation, axiom-free) and `compile` in [Compile.compile_chain]
-   (compile_chain_correct). The parser, renderer (Codec) and sender (Nl_send) are
+   preservation, axiom-free) and EVERY final compile in
+   [Optimize_Linearize.compile_chain_default] — nft's ALWAYS-ON single-rule
+   linearization (adjacent-payload merge + xor constant fold), then
+   [Compile.compile_chain] — so the default output matches nft's default
+   netlink emission ([compile_chain_default_correct]; the optimize path's
+   composed headline [optimize_table_uncond_compile_correct] is stated over the
+   same pipeline). The parser, renderer (Codec) and sender (Nl_send) are
    untrusted glue, validated differentially against live `nft` — never the TCB. *)
 
 module L = Stdlib.List
@@ -63,9 +68,9 @@ let help () =
   print_string usage_line;
   print_string
     "\ncommands:\n\
-    \  compile   parse -> compile_chain -> netlink-style bytecode text\n\
-    \  optimize  parse -> optimize_table_uncond -> compile -> bytecode text\n\
-    \  send      parse -> (optimize ->) compile -> netlink batch to the kernel\n\
+    \  compile   parse -> linearize+compile (compile_chain_default) -> bytecode text\n\
+    \  optimize  parse -> optimize_table_uncond -> compile_chain_default -> bytecode text\n\
+    \  send      parse -> (optimize ->) compile_chain_default -> netlink batch to the kernel\n\
     \            (dry run unless --commit is given)\n\
      \noptions:\n\
     \  --table T       restrict to table T\n\
@@ -256,13 +261,18 @@ let () =
            need_chains ();
            (* `-O` on compile: `default` runs the whole-table pipeline (emitting
               its synthesised set/map declarations, byte-identical to `optimize`);
-              any other list is the pure-pass fold applied before compile. *)
+              any other list is the pure-pass fold applied before compile.
+              EVERY final compile is the verified DEFAULT pipeline
+              [Optimize_Linearize.compile_chain_default] — nft's always-on
+              payload-merge + xor-fold linearization, then compile
+              (compile_chain_default_correct); an explicit `-O paymerge` /
+              `-O xorfold` before it is an idempotent second application. *)
            (match !opt_passes with
             | Some ["default"] ->
                 L.iter
                   (fun (t, cn, c) ->
                     let (decls, c') = optimize_table c in
-                    print_string (render_chain ~table:t ~chain:cn (Compile.compile_chain c'));
+                    print_string (render_chain ~table:t ~chain:cn (Optimize_Linearize.compile_chain_default c'));
                     let ds = render_decls decls in
                     if String.length ds > 0 then
                       (print_string "  # synthesised by the verified optimizer:\n";
@@ -273,19 +283,19 @@ let () =
                   (fun (t, cn, c) ->
                     print_string
                       (render_chain ~table:t ~chain:cn
-                         (Compile.compile_chain (apply_passes names c))))
+                         (Optimize_Linearize.compile_chain_default (apply_passes names c))))
                   chains
             | None ->
                 L.iter
                   (fun (t, cn, c) ->
-                    print_string (render_chain ~table:t ~chain:cn (Compile.compile_chain c)))
+                    print_string (render_chain ~table:t ~chain:cn (Optimize_Linearize.compile_chain_default c)))
                   chains)
        | "optimize" ->
            need_chains ();
            L.iter
              (fun (t, cn, c) ->
                let (decls, c') = optimize_table c in
-               print_string (render_chain ~table:t ~chain:cn (Compile.compile_chain c'));
+               print_string (render_chain ~table:t ~chain:cn (Optimize_Linearize.compile_chain_default c'));
                let ds = render_decls decls in
                if String.length ds > 0 then
                  (print_string "  # synthesised by the verified optimizer:\n";
@@ -392,7 +402,7 @@ let () =
                                 synth_sets := !synth_sets @ d.Semantics.sd_sets;
                                 synth_vmaps := !synth_vmaps @ d.Semantics.sd_vmaps;
                                 c') in
-                        let prog = Compile.compile_chain ch' in
+                        let prog = Optimize_Linearize.compile_chain_default ch' in
                         let kf = Nl_send.set_key_fields prog in
                         L.iter
                           (fun n ->

@@ -37,6 +37,12 @@ cd "$(dirname "$0")"
 # the pipe group carried UNRESOLVED as Ast.SVOr, symbol values + OR-fold in
 # verified Coq (Typecheck.resolve_value); 9 paren/OR blocks, e.g.
 # inet/tcp.t.payload:425-455, moved from parse-fail to byte-identical).
+# HELD at 1196 when the DEFAULT pipeline landed (T3 residue: the sweep now
+# compiles through the SHIPPED Optimize_Linearize.compile_chain_default —
+# always-on paymerge + xorfold — instead of an ad-hoc harness-side paymerge;
+# same 1196 passes: the class-L xor blocks stay open on the host-endian
+# DISPLAY residual + nft's identity-binop elision, see
+# reports/default-linearization-audit.md).
 SOURCE_SWEEP_FLOOR="${SOURCE_SWEEP_FLOOR:-1196}"
 
 CORPUS_DIR="${NFT_CORPUS:-/tmp/nftables-src}"

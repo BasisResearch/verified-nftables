@@ -57,6 +57,10 @@ let chain (policy : verdict) (rules : rule list) : chain =
 
 (* ---- the verified pipeline ---- *)
 let compile : chain -> program = Compile.compile_chain
+(* the DEFAULT pipeline — nft's ALWAYS-ON single-rule linearization (adjacent-
+   payload merge + xor constant fold), then compile; what `nftc compile` emits
+   (Optimize_Linearize.compile_chain_default_correct, axiom-gated) *)
+let compile_default : chain -> program = Optimize_Linearize.compile_chain_default
 let optimize : chain -> chain = Optimize.optimize_chain
 let compile_optimized (c : chain) : program = compile (optimize c)
 

@@ -5263,9 +5263,16 @@ Proof.
   - apply seed_start_nat_map_fresh.
 Qed.
 
+(** The final compile step of the shipped `nftc optimize`/`nftc send` path is
+    the DEFAULT pipeline [Optimize_Linearize.compile_chain_default] (nft's
+    always-on payload-merge + xor-fold linearization, then [compile_chain]) —
+    so the composed headline below is stated over THAT pipeline. *)
+From Nft Require Optimize_Linearize.
+
 (** HEADLINE (optimizer axis; see proof/THEOREMS.md and theories/Compiler/Main.v) —
-    END-TO-END to the BYTECODE: compile the optimised chain, run the VM against
-    the synthesised declarations — EXACTLY the original chain's DSL verdict.
+    END-TO-END to the BYTECODE: DEFAULT-compile the optimised chain
+    (linearize + compile), run the VM against the synthesised declarations —
+    EXACTLY the original chain's DSL verdict.
 
     Scope note 1: PER CHAIN — quantified over a single chain and ALL environments
     and packets; multi-chain/hook preservation is the separate
@@ -5297,11 +5304,12 @@ Qed.
     LATER-observed writes matter is outside this theorem's certified scope. *)
 Theorem optimize_table_uncond_compile_correct : forall c base p n' d' c',
   optimize_table_uncond c = (n', d', c') ->
-  run_chain (compile_chain c') (c_policy c') (env_with_sets base d') p
+  run_chain (Optimize_Linearize.compile_chain_default c') (c_policy c')
+            (env_with_sets base d') p
   = eval_chain c (env_with_sets base empty_decls) p.
 Proof.
   intros c base p n' d' c' H.
-  rewrite (compile_chain_sets_correct c' base d' p).
+  rewrite (Optimize_Linearize.compile_chain_default_sets_correct c' base d' p).
   exact (optimize_table_uncond_correct c base p n' d' c' H).
 Qed.
 

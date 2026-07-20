@@ -46,8 +46,18 @@ val chain : verdict -> rule list -> chain
 
 (** {2 The verified pipeline} *)
 
-(** Compile a chain to control-plane bytecode (proved semantics-preserving). *)
+(** Compile a chain to control-plane bytecode (proved semantics-preserving).
+    Bare [Compile.compile_chain] — no linearization; prefer [compile_default]
+    for nft-default-identical output. *)
 val compile : chain -> program
+
+(** The DEFAULT pipeline: nft's ALWAYS-ON single-rule linearization (the
+    adjacent-payload merge + the bitwise-xor constant fold — what plain `nft`
+    performs at netlink emission, no `-o` involved), then compile.  This is
+    what `nftc compile` emits.  Proved semantics-preserving for every chain/
+    env/packet ([Optimize_Linearize.compile_chain_default_correct],
+    axiom-gated). *)
+val compile_default : chain -> program
 
 (** Verified DSL optimizer: dedup duplicate matches, simplify singleton ranges,
     drop rules shadowed by an accept/drop-all (proved verdict-preserving). *)

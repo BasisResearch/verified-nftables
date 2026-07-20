@@ -15,7 +15,7 @@
 
 From Stdlib Require Import List.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile
-  Correct Optimize Optimize_Table Optimize_Uncond.
+  Correct Optimize Optimize_Table Optimize_Uncond Optimize_Linearize.
 
 (** ** Axis 1 — the compiler, at ruleset/hook level ([compile_hook_correct]).
 
@@ -78,19 +78,37 @@ Print Assumptions main_compile_seq_mut_correct.
 
     For every input chain [c] — NO cleanliness or freshness precondition —
     running the shipped 18-stage `nft -o` consolidation pipeline
-    ([optimize_table_uncond], the term the CLI executes), then compiling the
-    optimised chain and running the VM against the synthesised set/map
-    declarations, yields exactly the DSL verdict of the ORIGINAL chain, for
-    every packet and every base environment.  Scope: PER CHAIN — the optimizer
-    is quantified over a single chain and all environments/packets;
-    multi-chain/hook preservation is axis 1's separate family, not composed
-    with the optimizer. *)
+    ([optimize_table_uncond], the term the CLI executes), then DEFAULT-
+    compiling the optimised chain ([compile_chain_default]: nft's always-on
+    payload-merge + xor-fold linearization, then [compile_chain] — the term
+    `nftc optimize`/`nftc send` emit) and running the VM against the
+    synthesised set/map declarations, yields exactly the DSL verdict of the
+    ORIGINAL chain, for every packet and every base environment.  Scope: PER
+    CHAIN — the optimizer is quantified over a single chain and all
+    environments/packets; multi-chain/hook preservation is axis 1's separate
+    family, not composed with the optimizer. *)
 Theorem main_optimize_table_uncond_compile_correct : forall c base p n' d' c',
   optimize_table_uncond c = (n', d', c') ->
-  run_chain (compile_chain c') (c_policy c') (env_with_sets base d') p
+  run_chain (compile_chain_default c') (c_policy c') (env_with_sets base d') p
   = eval_chain c (env_with_sets base empty_decls) p.
 Proof. exact optimize_table_uncond_compile_correct. Qed.
 Print Assumptions main_optimize_table_uncond_compile_correct.
+
+(** ** Axis 3b — the DEFAULT compile pipeline
+    ([Optimize_Linearize.compile_chain_default_correct]).
+
+    nft applies two single-rule rewrites UNCONDITIONALLY at netlink
+    linearization — no `nft -o` involved: the adjacent-payload-load merge
+    (class I, [Optimize_PayMerge]) and the bitwise-xor constant fold (class L,
+    [Optimize_XorFold]).  [compile_chain_default] composes them into the
+    default compile — the term `nftc compile` emits — and this headline
+    carries [compile_chain_correct] through both stages: for every chain,
+    environment and packet, the default pipeline's bytecode yields exactly the
+    source chain's DSL verdict. *)
+Theorem main_compile_chain_default_correct : forall c e p,
+  run_chain (compile_chain_default c) (c_policy c) e p = eval_chain c e p.
+Proof. exact compile_chain_default_correct. Qed.
+Print Assumptions main_compile_chain_default_correct.
 
 (* ================================================================== *)
 (** ** Ratchet corollaries: every pre-split headline claim, restated.
@@ -174,9 +192,19 @@ Corollary pre_split_optimize_table_uncond_correct : forall c base (s : pstate) n
 Proof. intros c base s n' d' c' H. exact (optimize_table_uncond_correct c base (ps_wire s) n' d' c' H). Qed.
 Print Assumptions pre_split_optimize_table_uncond_correct.
 
+(** (The pre-split-era claim compiled with PLAIN [compile_chain] — the default
+    pipeline's linearization stage did not exist yet — so the transported
+    statement keeps that form; it is re-derived from
+    [optimize_table_uncond_correct] + [compile_chain_sets_correct] now that the
+    shipped headline [optimize_table_uncond_compile_correct] is stated over
+    [compile_chain_default].) *)
 Corollary pre_split_optimize_table_uncond_compile_correct : forall c base (s : pstate) n' d' c',
   optimize_table_uncond c = (n', d', c') ->
   run_chain (compile_chain c') (c_policy c') (env_with_sets base d') (ps_wire s)
   = eval_chain c (env_with_sets base empty_decls) (ps_wire s).
-Proof. intros c base s n' d' c' H. exact (optimize_table_uncond_compile_correct c base (ps_wire s) n' d' c' H). Qed.
+Proof.
+  intros c base s n' d' c' H.
+  rewrite (compile_chain_sets_correct c' base d' (ps_wire s)).
+  exact (optimize_table_uncond_correct c base (ps_wire s) n' d' c' H).
+Qed.
 Print Assumptions pre_split_optimize_table_uncond_compile_correct.
