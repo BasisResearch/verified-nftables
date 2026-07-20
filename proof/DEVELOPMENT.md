@@ -764,9 +764,10 @@ xorfold_chain ∘ paymerge_chain` (`theories/Optimizer/Optimize_Linearize.v`):
 - The source-sweep and byteorder gates now compile through the SHIPPED
   `compile_chain_default` (no more harness-side ad-hoc pass application). The
   sweep floor HELD at 1196 under the switch — the class-L blocks stay open on
-  the host-endian DISPLAY residual and nft's identity-binop elision (above).
-  The remaining compile-from-source mismatches are classified block-by-block
-  in `reports/default-linearization-audit.md`.
+  the host-endian DISPLAY residual and nft's identity-binop elision (above) —
+  then rose to 1198 on the fib concat-selector spelling fix. The remaining 49
+  compile-from-source mismatches are classified block-by-block in
+  `reports/default-linearization-audit.md`.
 
 ### Class O — `ct id` byte order: WE are kernel-faithful, nft is not
 

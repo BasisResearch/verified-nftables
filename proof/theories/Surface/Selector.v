@@ -249,7 +249,9 @@ Fixpoint assoc_kp {A : Type} (kp : skeypath) (tbl : list (skeypath * A))
 (** ** The parametric selector families. *)
 
 (** fib result columns (`fib <sel> type/oif/oifname`); the selector key list
-    [sel] (e.g. "daddr", "daddr.iif") stays an opaque string, exactly as
+    [sel] (e.g. "daddr", "daddr . iif" — nft's netlink-debug spelling, the
+    form [Fib_Local.fibkey_wf] keys and the validate gate confirm against
+    live nft) stays an opaque string, exactly as
     [FFib] carries it. *)
 Definition sel_fib (rest : list string) : option selinfo :=
   match rest with

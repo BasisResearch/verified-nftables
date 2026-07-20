@@ -358,8 +358,12 @@ keyatom:
   | CT ctdir IP IDENT  { ["ctdir"; $2; "ip"; $4] }
   | CT ctdir IP6 IDENT { ["ctdir"; $2; "ip6"; $4] }
   (* fib (routing-table) lookup: `fib <key>[. <key>...] <result>`, e.g.
-     `fib daddr type` or a concatenated selector `fib saddr . iif oif`. *)
-  | FIB fib_sel fib_result { ["fib"; Stdlib.String.concat "." $2; $3] }
+     `fib daddr type` or a concatenated selector `fib saddr . iif oif`.
+     The concat selector joins with " . " (spaces) — nft's own netlink-debug
+     spelling, the spelling the validate gate confirms against live nft
+     (corpus_test validate_pairs) and the spelling Fib_Local.fibkey_wf keys
+     ("daddr . iif"/"saddr . iif").  A single key is unaffected. *)
+  | FIB fib_sel fib_result { ["fib"; Stdlib.String.concat " . " $2; $3] }
   | IIF           { ["iif"] }
   | OIF           { ["oif"] }
   | IIFNAME       { ["iifname"] }

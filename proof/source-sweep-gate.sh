@@ -43,7 +43,11 @@ cd "$(dirname "$0")"
 # same 1196 passes: the class-L xor blocks stay open on the host-endian
 # DISPLAY residual + nft's identity-binop elision, see
 # reports/default-linearization-audit.md).
-SOURCE_SWEEP_FLOOR="${SOURCE_SWEEP_FLOOR:-1196}"
+# Raised 1196 -> 1198 when the fib concat-selector spelling was aligned to
+# nft's netlink-debug form (`saddr . iif`, spaces — the spelling validate
+# confirms against live nft and Fib_Local.fibkey_wf keys; parser.mly join
+# was "."): inet/fib.t.payload:6/:11 moved from divergent to byte-identical.
+SOURCE_SWEEP_FLOOR="${SOURCE_SWEEP_FLOOR:-1198}"
 
 CORPUS_DIR="${NFT_CORPUS:-/tmp/nftables-src}"
 if [ ! -d "$CORPUS_DIR/tests/py" ]; then
