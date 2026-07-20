@@ -187,8 +187,9 @@ validate: glue
 #                        the ONE generic pass-composition theorem
 #                        (run_passes_correct: folding any registry pass list
 #                        preserves eval_chain)
-#   default pipeline(T3) nft's ALWAYS-ON linearization (paymerge + xorfold)
-#                        composed into the default compile —
+#   default pipeline(T3) nft's ALWAYS-ON linearization (paymerge + xorfold
+#                        + trivial-binop elision, W3) composed into the
+#                        default compile —
 #                        linearize_chain_eval + compile_chain_default_correct
 #                        (what `nftc compile` emits); the optimize-path
 #                        headline optimize_table_uncond_compile_correct is
@@ -208,12 +209,19 @@ validate: glue
 #                        fit_length/fit_idempotent + the definitional
 #                        per-field width facts (read_meta_length & co.),
 #                        with NO packet_wf/env_wf hypothesis anywhere
+#   octet regs (W3)      every such read is additionally OCTET-clamped by
+#                        construction (Bytes.octets: a register cell is a u8
+#                        lane of the u32 word array), making the all-ones/zero
+#                        bitwise the identity on a normalised read
+#                        (Syntax.do_load_bitops_id) — what lets the elide
+#                        stage delete nft's spent xor binop unconditionally
 # Any NEW README-claimed result must be added here in the same commit.
 AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   compile_chain_mut_env_correct compile_seq_mut_correct compile_table_correct \
   compile_ruleset_correct compile_hook_correct compile_seq_correct \
   optimize_table_uncond_correct optimize_table_uncond_compile_correct \
   Optimize_PayMerge.paymerge_chain_eval Optimize_XorFold.xorfold_chain_eval \
+  Optimize_Elide.elide_chain_eval \
   Optimize_Linearize.linearize_chain_eval \
   Optimize_Linearize.compile_chain_default_correct \
   Optimize_Registry.run_passes_correct \
@@ -264,6 +272,7 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Setread_IntraRule.setread_accepted Setread_IntraRule.vm_setread_accepted \
   Setread_IntraRule.dynset_feedback_accepted Setread_IntraRule.vm_dynset_feedback_accepted \
   Bytes.fit_length Bytes.fit_idempotent Bytes.fit_exact \
+  Bytes.data_bitops_fit_octets_id Syntax.do_load_bitops_id \
   Syntax.read_meta_length Syntax.meta_load_length Syntax.ct_load_length \
   Syntax.read_rt_length Syntax.read_socket_length Syntax.read_osf_length \
   Syntax.read_numgen_length Syntax.read_symhash_length

@@ -21,18 +21,19 @@
     all-ones mask so it fires on `xor` alone and never on an `and`/`or` mask
     (which nft does not fold).  Axiom-free.
 
-    Scope note — the residual identity mask: nft additionally DROPS the now-trivial
-    `(reg & 0xff..ff) ^ 0` binop, emitting a bare `cmp`.  Every meta/ct/rt/socket
-    read is now WIDTH-normalised by construction ([Syntax.meta_width] & co. — the
-    kernel register width table — via [Bytes.fit] in [do_load]), so the LENGTH of
-    such a register is pinned; but a model byte is a [nat] with no 0..255 bound
-    ([Bytes.byte]), so `reg & 0xff..ff` is still NOT provably the identity (a
-    byte >= 256 would be truncated by the mask), and dropping it would be UNSOUND
-    over the byte model — a byte-RANGE fact, not a width fact.  So the fold stops
-    at the transfer nft's [binop_transfer] performs; the mask elimination awaits a
-    by-construction byte-range normalisation, the same discipline [fit] applies
-    to widths.  (The host-endian `mark` blocks are also endian-unportable in the
-    text corpus — see DEVELOPMENT.md "The 83 source-divergences".) *)
+    Scope note — the spent binop: nft additionally DELETES the now-trivial
+    `(reg & 0xff..ff) ^ 0` (evaluate.c [binop_transfer_handle_lhs], OP_XOR:
+    the binop expression is replaced by its left operand), emitting a bare
+    `cmp`.  That deletion is the separate always-on stage
+    [Optimize_Elide.elide_chain], composed after this fold in
+    [Optimize_Linearize.linearize_chain] — sound with no side condition
+    because every meta/ct/rt/socket read is width-normalised AND
+    octet-clamped by construction ([Bytes.fit]/[Bytes.octets] in [do_load]),
+    which makes the all-ones/zero bitwise definitionally the identity on the
+    read value ([Syntax.do_load_bitops_id]).  This pass performs only the
+    transfer, [Optimize_Elide] only the deletion; their composition is nft's
+    one [binop_transfer] step — with it the corpus class-L blocks compile
+    from source byte-identically (source-sweep floor 1202). *)
 
 From Stdlib Require Import List Bool Arith Lia.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics.

@@ -47,7 +47,16 @@ cd "$(dirname "$0")"
 # nft's netlink-debug form (`saddr . iif`, spaces — the spelling validate
 # confirms against live nft and Fib_Local.fibkey_wf keys; parser.mly join
 # was "."): inet/fib.t.payload:6/:11 moved from divergent to byte-identical.
-SOURCE_SWEEP_FLOOR="${SOURCE_SWEEP_FLOOR:-1198}"
+# Raised 1198 -> 1202 when the trivial-binop elision landed (W3,
+# Optimize_Elide in the default pipeline: the spent `& 0xff.. ^ 0` binop the
+# xor fold leaves is deleted, nft's binop_transfer_handle_lhs).  The 4
+# class-L xor blocks — any/meta.t.payload:174/179, any/ct.t.payload:151/156
+# — moved from divergent to byte-identical: their remaining instruction is a
+# PLAIN host-order cmp, which renders in the goldens' recorded byte order
+# (the endian-unportable part was the deleted bitwise's mask/xor operands).
+# The same 4 blocks also entered byteorder-gate's plain-cmp scope (21 -> 25
+# blocks, all green).
+SOURCE_SWEEP_FLOOR="${SOURCE_SWEEP_FLOOR:-1202}"
 
 CORPUS_DIR="${NFT_CORPUS:-/tmp/nftables-src}"
 if [ ! -d "$CORPUS_DIR/tests/py" ]; then

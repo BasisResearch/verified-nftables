@@ -402,7 +402,7 @@ read to trust a theorem":
 | `theories/Compiler/Compile.v` | the compiler `compile_chain : chain -> program` |
 | `theories/Compiler/Correct.v` | **`compile_chain_correct`** — semantic preservation |
 | `theories/Compiler/RegsValid.v` | the kernel register-file validator over bytecode (W2): `nft_parse_register`'s index map + `nft_validate_register_load`/`store` bounds + the 16-byte `nft_data` value cap, one arm per `instr` constructor; `Lower.lower_rule` admits a rule only if its compiled image passes (`LEregalloc`) |
-| `theories/Compiler/RegsValid_Proofs.v` | **`lower_ruleset_default_regs_valid`** — every frontend-emitted program's DEFAULT-pipeline bytecode passes the kernel register validator (plus the plain-compile mirror and the paymerge/xorfold preservation lemmas) |
+| `theories/Compiler/RegsValid_Proofs.v` | **`lower_ruleset_default_regs_valid`** — every frontend-emitted program's DEFAULT-pipeline bytecode passes the kernel register validator (plus the plain-compile mirror and the paymerge/xorfold/elide preservation lemmas) |
 | `theories/Optimizer/Optimize.v` | rule-local base optimizer pass (dedup + range-simplify + no-op-prune + DCE) + `optimize_chain_correct`; the shipped 18-stage table-level pipeline is `Optimize_Table.v`/`Optimize_Uncond.v` (see "The verified optimizer" below) |
 | `theories/Examples/Example_Ruleset.v` | worked example: `../rulesets/ruleset.nft` hand-translated to the AST + 9 axiom-free packet-property proofs (the user-facing use case; the baseline a parser should reproduce — see TODO 9) |
 | `theories/Compiler/Extract.v` | extraction to `extracted/*.ml` |
@@ -595,10 +595,12 @@ territory `byteorder-gate` deliberately excludes:
     mask+xor operands): the corpus renders `0x00000bb8` where we render
     `0xb80b0000` — the display-vs-wire question `../NOTES.md` flags as *still
     to adjudicate against a real kernel* for precisely these keys;
-  - **nft constant-folds/merges we don't replicate**: `meta mark xor 0x03 ==
-    0x01` → nft folds to a plain `cmp eq 0x02` (we emit `bitwise; cmp`), and
-    the adjacent-payload merge `tcp sport 1 tcp dport 2` → one 4-byte load
-    (we emit two 2-byte loads — semantically equal, textually not);
+  - **nft constant-folds/merges we don't replicate** (both CLOSED since:
+    class I by `Optimize_PayMerge`, class L — fold AND trivial-binop
+    deletion — by `Optimize_XorFold` + `Optimize_Elide`, all default-on in
+    `compile_chain_default`): `meta mark xor 0x03 == 0x01` → a plain
+    `cmp eq 0x02`, and the adjacent-payload merge `tcp sport 1 tcp dport 2`
+    → one 4-byte load;
   - **render/lowering text differences with no adjudicated wire divergence**:
     dependency-guard synthesis in the vlan/ether/icmpv6 family contexts the
     corpus varies, `reject` default type/code rendering, `log` option
@@ -719,14 +721,20 @@ Class L ("xor constant-fold not replicated", 4 blocks) gets the companion pass
 **`Optimize_XorFold.xorfold_chain`**, which performs nft's `binop_transfer` step
 — transferring the pure-xor register operand onto the compare value
 (`(reg & 0xff..) ^ C <op> V → ^ 0 <op> V^C`), UNCONDITIONAL by xor's involutivity
-(`xorfold_chain_eval`, axiom-gated). Note that class L does NOT move the
-source-sweep floor: its blocks are `mark`-based, so they are host-endian
-**endian-unportable** in the text corpus (the same reason the whole host-order
-family cannot be text-green cross-endian, above), AND nft additionally DROPS the
-now-trivial `& 0xff.. ^ 0` binop — a register-byte-width fact this
-over-approximating packet model (unbounded `nat` bytes from `pkt_meta`/`e_ct`)
-cannot carry soundly. The pass is the maximal fold the model supports soundly;
-it is exposed as `nftc -O xorfold`.
+(`xorfold_chain_eval`, axiom-gated).  The spent `& 0xff.. ^ 0` residue is
+DELETED by the companion pass **`Optimize_Elide.elide_chain`** (nft's
+`binop_transfer_handle_lhs`, OP_XOR: the binop is replaced by its left
+operand), also UNCONDITIONAL (`elide_chain_eval`, axiom-gated): every
+meta/ct/rt/socket read is width-normalised AND octet-clamped by construction
+(`Bytes.fit`/`Bytes.octets` at the `do_load` boundary), so the all-ones/zero
+bitwise is definitionally the identity on the read value
+(`Syntax.do_load_bitops_id`) — no byte-well-formedness hypothesis anywhere.
+With the deletion the class-L blocks CLOSE byte-identically (sweep floor
+1198 -> 1202): the endian-unportable part was the deleted bitwise's
+mask/xor immediates, and the remaining plain host-order `mark` cmp renders
+in the goldens' recorded byte order — the 4 blocks also enter
+`byteorder-gate`'s plain-cmp scope (21 -> 25, all green).  The passes are
+exposed as `nftc -O xorfold` / `-O elide`.
 
 Both passes plus the pipeline's chain-level stages are entries in the extracted
 pass **registry** (`Optimize_Registry`), and the ONE generic composition theorem
@@ -741,34 +749,40 @@ order.
 
 ### Classes I + L are DEFAULT-ON: the shipped compile pipeline (T3 residue)
 
-nft performs the class-I merge and the class-L fold **unconditionally at
-netlink linearization** — no `nft -o` involved — so an opt-in `-O` pass was
-not parity: plain `nftc compile` still diverged from plain `nft`. The T3
-residue composes both into the DEFAULT pipeline,
-**`Optimize_Linearize.compile_chain_default`** = `compile_chain ∘
-xorfold_chain ∘ paymerge_chain` (`theories/Optimizer/Optimize_Linearize.v`):
+nft performs the class-I merge and the class-L fold-plus-deletion
+**unconditionally at netlink linearization** — no `nft -o` involved — so an
+opt-in `-O` pass was not parity: plain `nftc compile` still diverged from
+plain `nft`. The T3 residue (and the W3 elide stage) composes them into the
+DEFAULT pipeline, **`Optimize_Linearize.compile_chain_default`** =
+`compile_chain ∘ elide_chain ∘ xorfold_chain ∘ paymerge_chain`
+(`theories/Optimizer/Optimize_Linearize.v`):
 
 - **`nftc compile`**, **`nftc optimize`** and **`nftc send`** ALL bottom out in
   `compile_chain_default` — linearization sits at the compile boundary,
   mirroring nft (emission-time, after any `-o` consolidation), NOT inside
   `optimize_table_uncond`.
 - Composed headlines, axiom-gated: **`compile_chain_default_correct`**
-  (`compile_chain_correct` carried through both stages, for every chain/env/
+  (`compile_chain_correct` carried through the stages, for every chain/env/
   packet) and **`optimize_table_uncond_compile_correct`** — RESTATED over
   `compile_chain_default`, so the optimizer headline is about the term the CLI
   actually emits. `linearize_chain_eval` is the composed stage theorem.
   Non-vacuity is Compute-pinned in `Optimize_Linearize.v`
   (`default_pipeline_merges_payload_loads`: `tcp sport 1 tcp dport 2`
-  default-compiles to ONE 4-byte load; `default_pipeline_folds_xor`).
-- The `-O paymerge` / `-O xorfold` registry passes REMAIN (explicit use before
-  the default compile is an idempotent second application: both passes rewrite
-  only where their syntactic guard still fires).
+  default-compiles to ONE 4-byte load; `default_pipeline_folds_xor` and
+  `default_pipeline_elides_trivial_binop`: a folded xor default-compiles to a
+  bare load+cmp with NO bitwise instruction).
+- The `-O paymerge` / `-O xorfold` / `-O elide` registry passes REMAIN
+  (explicit use before the default compile is an idempotent second
+  application: each pass rewrites only where its syntactic guard still
+  fires).
 - The source-sweep and byteorder gates now compile through the SHIPPED
   `compile_chain_default` (no more harness-side ad-hoc pass application). The
-  sweep floor HELD at 1196 under the switch — the class-L blocks stay open on
-  the host-endian DISPLAY residual and nft's identity-binop elision (above) —
-  then rose to 1198 on the fib concat-selector spelling fix. The remaining 49
-  compile-from-source mismatches are classified block-by-block in
+  sweep floor HELD at 1196 under the switch, rose to 1198 on the fib
+  concat-selector spelling fix, and rose to 1202 when the W3 elide stage
+  CLOSED the 4 class-L blocks byte-identically (the deleted bitwise carried
+  the endian-unportable immediates; the residual plain host-order cmp
+  renders in the goldens' byte order). The remaining 45 compile-from-source
+  mismatches are classified block-by-block in
   `reports/default-linearization-audit.md`.
 
 ### Class O — `ct id` byte order: WE are kernel-faithful, nft is not

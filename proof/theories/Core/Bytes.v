@@ -121,6 +121,87 @@ Qed.
 Lemma fit_idempotent : forall w d, fit w (fit w d) = fit w d.
 Proof. intros w d. apply fit_exact, fit_length. Qed.
 
+(** ** Octet normalisation ([octets]).
+
+    A kernel register BYTE is an OCTET by construction: [struct nft_regs] is an
+    array of [u32] words ([u32 data[NFT_REG32_NUM]], include/net/netfilter/
+    nf_tables.h), and every eval-side store writes u8/u16/u32/u64 components or
+    memcpys a u8 buffer into it ([nft_reg_store8]/[16]/[64],
+    include/net/netfilter/nf_tables_core.h) — no register cell can hold a value
+    above 0xff.  The model byte is a [nat] ([byte] above), so an abstract
+    oracle read could otherwise carry an out-of-range "byte"; [octets] clamps
+    each byte to its low 8 bits ([b mod 256] = [Nat.land b 255], the value the
+    register cell holds; spelled [mod] because [cbn] reduces unary [mod]
+    literals where it chokes on [Nat.land]).  Composed with [fit] at every
+    fixed-width oracle read ([Syntax.meta_load] & co.), it closes the model
+    against out-of-range oracle bytes BY CONSTRUCTION — the same discipline
+    [fit] applies to widths, and with no well-formedness hypothesis
+    anywhere. *)
+Definition octet (b : byte) : byte := b mod 256.
+Definition octets (d : data) : data := List.map octet d.
+
+Lemma octets_length : forall d, List.length (octets d) = List.length d.
+Proof. intro d. apply List.length_map. Qed.
+
+(** Clamping is idempotent under a further all-ones AND: an octet-clamped byte
+    passes an [& 0xff] unchanged ([255 = Nat.ones 8], so the AND is a
+    [mod 2^8]). *)
+Lemma octet_and_255 : forall b, byte_and (octet b) 255 = octet b.
+Proof.
+  intro b. unfold byte_and, octet.
+  change 255 with (Nat.ones 8).
+  rewrite Nat.land_ones.
+  change (2 ^ 8) with 256.
+  apply Nat.mod_mod. discriminate.
+Qed.
+
+(** The all-ones/zero bitwise — [(x & 0xff..ff) ^ 0x00..00] at the value's own
+    length — is the IDENTITY on a value whose bytes all absorb an [& 0xff].
+    This is the register-file fact behind nft's trivial-binop elision
+    ([Optimize_Elide]): on an octet-clamped register value the all-ones mask
+    keeps every bit and the zero xor changes none. *)
+Lemma data_bitops_id : forall d,
+  Forall (fun b => byte_and b 255 = b) d ->
+  data_bitops d (repeat 255 (length d)) (repeat 0 (length d)) = d.
+Proof.
+  induction d as [|b d IH]; intro H; [reflexivity|].
+  inversion H as [|? ? Hb Hd]; subst.
+  cbn [length repeat data_bitops].
+  rewrite Hb. unfold byte_xor. rewrite Nat.lxor_0_r.
+  rewrite (IH Hd). reflexivity.
+Qed.
+
+Lemma Forall_firstn : forall (A : Type) (P : A -> Prop) n (l : list A),
+  Forall P l -> Forall P (firstn n l).
+Proof.
+  intros A P n. induction n as [|n IH]; intros l H; [constructor|].
+  destruct l as [|x l]; [constructor|].
+  inversion H; subst. cbn [firstn]. constructor; [assumption|]. apply IH; assumption.
+Qed.
+
+(** Every byte of a width- and octet-normalised read absorbs an [& 0xff]:
+    kept bytes are clamped, fill bytes are 0. *)
+Lemma fit_octets_clamped : forall w d,
+  Forall (fun b => byte_and b 255 = b) (fit w (octets d)).
+Proof.
+  intros w d. unfold fit. apply Forall_firstn. apply Forall_app. split.
+  - unfold octets. apply Forall_map, Forall_forall.
+    intros b _. apply octet_and_255.
+  - apply Forall_forall. intros b Hb.
+    apply repeat_spec in Hb. subst. reflexivity.
+Qed.
+
+(** The composed identity at a normalised read: the all-ones/zero bitwise at
+    the read's own register width is the identity on [fit w (octets d)] — the
+    shape of EVERY fixed-width oracle read ([Syntax.do_load]); no hypothesis. *)
+Lemma data_bitops_fit_octets_id : forall w d,
+  data_bitops (fit w (octets d)) (repeat 255 w) (repeat 0 w) = fit w (octets d).
+Proof.
+  intros w d.
+  pose proof (data_bitops_id (fit w (octets d)) (fit_octets_clamped w d)) as H.
+  rewrite fit_length in H. exact H.
+Qed.
+
 (** Left/right bit shift of a register value (preserving its byte width). *)
 Definition data_shift (shl : bool) (amt : nat) (d : data) : data :=
   N_to_data (length d)

@@ -39,12 +39,13 @@ axiom-free — without reading 3000 lines of `Correct.v`.
 | compiler, sequence form | `compile_seq_correct` | `Correct.v` | the same, lifted over a packet sequence under an **arbitrary step** `verdict -> env -> env` — a per-packet **congruence corollary** of `compile_hook_correct`, *not* a proof about ruleset-generated state (that is the next axis) |
 | mutation / cross-packet learning | `compile_seq_mut_correct` | `Correct.v` | compiled single-chain traversal threading the env each packet LEAVES (meta/ct writes, dynset learning) = DSL sequence, under `rule_numgen_free` (discharged for EVERY frontend program by `Lower_Proofs.lower_ruleset_numgen_free`) |
 | optimizer pipeline | `optimize_table_uncond_compile_correct` | `Optimize_Uncond.v` | the shipped 18-stage `nft -o` pipeline + the DEFAULT compile (`compile_chain_default`) preserves every packet's verdict against the synthesised declarations, for **any input chain** (no `rules_clean`, no freshness precondition) |
-| DEFAULT compile pipeline | `Optimize_Linearize.compile_chain_default_correct` | `Optimize_Linearize.v` | the DEFAULT pipeline `compile_chain_default = compile_chain ∘ xorfold_chain ∘ paymerge_chain` — nft's ALWAYS-ON netlink linearization (classes I + L), what plain `nftc compile`/`optimize`/`send` emit — yields exactly the source chain's DSL verdict, for every chain/env/packet; stage composition is `linearize_chain_eval`; non-vacuity Compute-pinned (`default_pipeline_merges_payload_loads`, `default_pipeline_folds_xor`) |
+| DEFAULT compile pipeline | `Optimize_Linearize.compile_chain_default_correct` | `Optimize_Linearize.v` | the DEFAULT pipeline `compile_chain_default = compile_chain ∘ elide_chain ∘ xorfold_chain ∘ paymerge_chain` — nft's ALWAYS-ON netlink linearization (classes I + L, including the trivial-binop deletion) — yields exactly the source chain's DSL verdict, for every chain/env/packet; stage composition is `linearize_chain_eval`; non-vacuity Compute-pinned (`default_pipeline_merges_payload_loads`, `default_pipeline_folds_xor` — the folded xor now compiles to a bare load+cmp, NO bitwise — and `default_pipeline_elides_trivial_binop`) |
 | intra-rule pass: adjacent-payload merge | `Optimize_PayMerge.paymerge_chain_eval` | `Optimize_PayMerge.v` | fusing two byte-contiguous full-width payload equalities in the same header into one wider load+compare (nft `payload_can_merge`; corpus class I) preserves `eval_chain` — **UNCONDITIONAL** (`forall c e p`, no hypotheses): the read and its loadability split at any interior offset for every packet |
-| intra-rule pass: bitwise-xor constant fold | `Optimize_XorFold.xorfold_chain_eval` | `Optimize_XorFold.v` | transferring a pure-xor register operand onto the compare value (`(reg & 0xff..) ^ C <op> V  →  ^ 0 <op> V^C`; nft `binop_transfer`; corpus class L) preserves `eval_chain` — **UNCONDITIONAL** (`forall c e p`): bytewise xor is involutive, no width/byte-range side condition. (Scope: the residual `& 0xff.. ^ 0` identity binop is not dropped — that needs a register-byte-width fact the unbounded-byte packet model does not carry; see the file header) |
+| intra-rule pass: bitwise-xor constant fold | `Optimize_XorFold.xorfold_chain_eval` | `Optimize_XorFold.v` | transferring a pure-xor register operand onto the compare value (`(reg & 0xff..) ^ C <op> V  →  ^ 0 <op> V^C`; nft `binop_transfer`; corpus class L) preserves `eval_chain` — **UNCONDITIONAL** (`forall c e p`): bytewise xor is involutive, no width/byte-range side condition. The spent residue is deleted by the next stage (`Optimize_Elide`) |
+| intra-rule pass: trivial-binop elision | `Optimize_Elide.elide_chain_eval` | `Optimize_Elide.v` | deleting the spent binop the xor fold leaves — `(reg & 0xff..ff) ^ 0x00` at the field's kernel register width becomes a bare compare, so no bitwise instruction reaches the wire (nft `binop_transfer_handle_lhs`, OP_XOR: the binop is replaced by its left operand; the class-L residue) — preserves `eval_chain` — **UNCONDITIONAL** (`forall c e p`): a register-normalised read is width-pinned AND octet-clamped BY CONSTRUCTION (`Bytes.fit`/`Bytes.octets` at the `do_load` boundary), so the all-ones/zero bitwise is definitionally the identity on it (`Syntax.do_load_bitops_id`) — no width, byte-range or well-formedness hypothesis |
 | pass composition | `Optimize_Registry.run_passes_correct` | `Optimize_Registry.v` | ONE generic theorem: folding **any** list of registered `opt_pass`es (each bundling its own eval-preservation proof) preserves `eval_chain`, proved once quantified over the list — the `-O p1,p2,...` CLI only parses names into the list (`resolve_passes`) and folds them (`run_passes`) |
 | typed source lowering (**`typed_erasure`**) | the `Lower_Proofs.*_erasure` family (composed: `txmatch_erasure`) | `Lower_Proofs.v` | the verified lowering of a typed source construct produces exactly the byte IR the compiler consumes, with genuine per-construct obligations — `eq_erasure`/`neq_erasure` (register decode at the value's byteorder), `prefix_erasure` (CIDR: both the byte-aligned truncated-load shortening and the full-width masked compare), `wildcard_erasure` (leading-bytes short compare), `range_erasure_be`/`range_erasure_host` (BE vs host-endian range order), `bitmask_erasure`, `bitfield_erasure` (mask+shift), `set_interval_erasure` (byte-interval = numeric membership), `concat_key_erasure` (slot-padding invertibility), `cidr_interval_agrees_prefix_expand` (one CIDR expansion, not two). Since M6 the generated sources (`*_Gen.v`) carry the **surface** ruleset (`<name>_surface : sruleset`) and define every table/chain/decl as `Lower.lower_ruleset` applied to it, kernel-reduced — **no raw byte is written by hand** and a refused construct fails the generated `<name>_lowers_ok` Example (fail-loud) |
-| register-file discipline (W2) | `RegsValid_Proofs.lower_ruleset_default_regs_valid` (plain-compile mirror: `lower_ruleset_compile_regs_valid`) | `RegsValid_Proofs.v` | EVERY frontend-emitted program passes the kernel register validator: for every ruleset `lower_ruleset` accepts, every chain's DEFAULT-pipeline bytecode satisfies `RegsValid.regs_valid_prog` — `nft_validate_register_load`/`store` (index arithmetic of `nft_parse_register`, the 20-word/80-byte `struct nft_regs` file, data words 4..19, nonzero lengths, 16-byte `nft_data` values) mirrored per register operand of every `Bytecode.instr` constructor with its per-expression kernel length. Enforced BY CONSTRUCTION: `Lower.lower_rule` admits a rule only if its compiled image validates (fail-loud `LEregalloc`), and both always-on linearization stages preserve validity from their own guards (`paymerge_rule_regs`, `xorfold_rule_regs`). No hypothesis |
+| register-file discipline (W2) | `RegsValid_Proofs.lower_ruleset_default_regs_valid` (plain-compile mirror: `lower_ruleset_compile_regs_valid`) | `RegsValid_Proofs.v` | EVERY frontend-emitted program passes the kernel register validator: for every ruleset `lower_ruleset` accepts, every chain's DEFAULT-pipeline bytecode satisfies `RegsValid.regs_valid_prog` — `nft_validate_register_load`/`store` (index arithmetic of `nft_parse_register`, the 20-word/80-byte `struct nft_regs` file, data words 4..19, nonzero lengths, 16-byte `nft_data` values) mirrored per register operand of every `Bytecode.instr` constructor with its per-expression kernel length. Enforced BY CONSTRUCTION: `Lower.lower_rule` admits a rule only if its compiled image validates (fail-loud `LEregalloc`), and all three always-on linearization stages preserve validity from their own guards (`paymerge_rule_regs`, `xorfold_rule_regs`, `elide_rule_regs` — the elision only DELETES a spent instruction). No hypothesis |
 
 Scope notes (each also sits on the theorem in the source):
 
@@ -149,8 +150,8 @@ lock-in pins: `DEVELOPMENT.md` § "Known model infidelities" +
 | `Optimize_Uncond.optimize_rules_{dnat,snat}_eval`, `optimize_rules_{valueset,dscp,intervalsethostorder,intervalset,intervalsetguarded,mixedpointrangeguarded,concat,concatguarded,setguarded,concatmulti,vmap,vmapguarded,dscpvmap}_correct_uncond` (15) | STAGE | each tagged `STAGE — composed into [optimize_table_correct_uncond_gen]` in the source |
 | `Optimize_Uncond.optimize_table_correct_uncond_gen` | SUPPORTING | the general `(n, d)`-threaded whole-pipeline form |
 | `Optimize_Uncond.optimize_table_uncond_correct` | SUPPORTING | DSL-level form of the optimizer headline |
-| `Optimize_Uncond.optimize_table_uncond_compile_correct` | **HEADLINE** (optimizer axis) | = `optimize_table_uncond_correct` + `Optimize_Linearize.compile_chain_default_sets_correct` (the DEFAULT compile: always-on paymerge + xorfold, then `compile_chain`) |
-| `Optimize_Linearize.linearize_chain_eval` | STAGE | the always-on linearization (paymerge ∘ xorfold) preserves `eval_chain`; composed into both default-pipeline headlines |
+| `Optimize_Uncond.optimize_table_uncond_compile_correct` | **HEADLINE** (optimizer axis) | = `optimize_table_uncond_correct` + `Optimize_Linearize.compile_chain_default_sets_correct` (the DEFAULT compile: always-on paymerge + xorfold + elide, then `compile_chain`) |
+| `Optimize_Linearize.linearize_chain_eval` | STAGE | the always-on linearization (elide ∘ xorfold ∘ paymerge) preserves `eval_chain`; composed into both default-pipeline headlines |
 | `Optimize_Linearize.compile_chain_default_sets_correct` (Corollary) | SUPPORTING | `compile_chain_default_correct` at `env_with_sets`; consumed by `optimize_table_uncond_compile_correct` |
 
 ## 3. The evaluator matrix
@@ -399,6 +400,20 @@ per-family `Syntax.read_meta_length` / `meta_load_length` / `ct_load_length` /
 columns, `pkt_xfrm`, `pkt_tunnel`, `pkt_inner`, connlimit keys) are NOT
 encodings and stay width-free.
 
+**Octet clamp (W3).**  The same reads are additionally OCTET-clamped by
+construction: `Bytes.octets` maps each abstract oracle byte to its low 8 bits
+before `fit` (a register cell is a u8 lane of the `u32 data[NFT_REG32_NUM]`
+word array — no register byte can exceed 0xff), so the all-ones/zero bitwise
+at the read's register width is DEFINITIONALLY the identity on the read value
+(`Bytes.data_bitops_fit_octets_id`, `Syntax.do_load_bitops_id`, both in
+`make axioms`).  This is what discharges nft's trivial-binop elision as the
+unconditional default pass `Optimize_Elide.elide_chain_eval` (see §1).
+Restatement note: `Optiplex_Mark.mark_after_set` (an example-file lemma) was
+`length v = 4 -> read-after-set = v`; its successor is the STRONGER
+hypothesis-free form `read-after-set = fit 4 (octets v)` — the old statement
+is false for an out-of-range byte the clamp now normalises, and every concrete
+use computes identically.
+
 Statement changes shipped with W1 (all non-headline; every headline theorem
 in §1/§4 survives verbatim):
 
@@ -449,9 +464,10 @@ Discharge (no hypothesis, the `numgen_free` pattern): `Lower.lower_rule`
 admits a rule only if `RegsValid.regs_valid (Compile.compile_rule r)` — the
 frontend twin of nft's own evaluate-time register-allocation bound — so
 `RegsValid_Proofs.lower_ruleset_compile_regs_valid` holds for every lowering;
-`paymerge_rule_regs`/`xorfold_rule_regs` show both always-on linearization
-stages preserve validity from their own guards (`seg_can_merge`'s 16-byte cap;
-`xorfold_mc`'s length-pinning guard), giving the DEFAULT-pipeline HEADLINE
+`paymerge_rule_regs`/`xorfold_rule_regs`/`elide_rule_regs` show all three
+always-on linearization stages preserve validity from their own guards
+(`seg_can_merge`'s 16-byte cap; `xorfold_mc`'s length-pinning guard; the
+elision only deletes the spent `IBitwise`), giving the DEFAULT-pipeline HEADLINE
 `lower_ruleset_default_regs_valid` (both in `make axioms`).  Non-vacuity is
 Compute-pinned in the file (`regs_valid_rejects_out_of_file`,
 `regs_valid_rejects_wide_immediate`).  Runtime twin: the corpus round-trip

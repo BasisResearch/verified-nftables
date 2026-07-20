@@ -166,8 +166,11 @@ Definition numgen_inc_value (spec : numgen_spec) (c : nat) : data :=
     abstract oracles ([pkt_meta : meta_key -> data], [e_ct : data -> ct_key ->
     data], [e_rt], [pkt_sock], [pkt_osf], [pkt_numgen], [pkt_symhash];
     Core/Packet.v) carry NO width — they stay oracles — so every read below is
-    wrapped in [Bytes.fit] at its kernel width.  The width facts
-    ([read_meta_length] & co.) are therefore DEFINITIONAL: no [packet_wf]/
+    wrapped in [Bytes.fit] at its kernel width, over [Bytes.octets] (each byte
+    clamped to its low 8 bits: a register cell is a u8 lane of the u32 word
+    array, so no register byte can exceed 0xff — see the [octets] header in
+    Core/Bytes.v).  The width facts ([read_meta_length] & co.) and the octet
+    facts ([do_load_bitops_id]) are therefore DEFINITIONAL: no [packet_wf]/
     [env_wf] hypothesis exists anywhere in this development.
 
     Each entry cites the eval-side WRITE in linux-6.18.33 (the width the
@@ -255,7 +258,8 @@ Definition meta_width (k : meta_key) : nat :=
   end.
 
 (** Normalise a meta read to its kernel register width. *)
-Definition meta_load (k : meta_key) (d : data) : data := fit (meta_width k) d.
+Definition meta_load (k : meta_key) (d : data) : data :=
+  fit (meta_width k) (octets d).
 
 (** THE meta read: what every evaluation (DSL [do_load] and VM [IMetaLoad])
     sees.  Its width is definitional ([read_meta_length]). *)
@@ -313,7 +317,8 @@ Definition ct_width (k : ct_key) : nat :=
   end.
 
 (** Normalise a ct read to its kernel register width. *)
-Definition ct_load (k : ct_key) (d : data) : data := fit (ct_width k) d.
+Definition ct_load (k : ct_key) (d : data) : data :=
+  fit (ct_width k) (octets d).
 
 Lemma ct_load_length : forall k d,
   List.length (ct_load k d) = ct_width k.
@@ -337,7 +342,8 @@ Definition rt_width (k : rt_key) : nat :=
   | RKipsec => 1
   end.
 
-Definition rt_load (k : rt_key) (d : data) : data := fit (rt_width k) d.
+Definition rt_load (k : rt_key) (d : data) : data :=
+  fit (rt_width k) (octets d).
 
 Lemma rt_load_length : forall k d,
   List.length (rt_load k d) = rt_width k.
@@ -366,7 +372,7 @@ Definition socket_width (k : socket_key) : nat :=
   end.
 
 Definition socket_load (k : socket_key) (d : data) : data :=
-  fit (socket_width k) d.
+  fit (socket_width k) (octets d).
 
 Lemma socket_load_length : forall k d,
   List.length (socket_load k d) = socket_width k.
@@ -385,7 +391,7 @@ Proof. intros p k. apply fit_length. Qed.
     (include/uapi/linux/netfilter/nf_tables.h:11). *)
 Definition osf_width : nat := 16.
 
-Definition read_osf (p : packet) : data := fit osf_width (pkt_osf p).
+Definition read_osf (p : packet) : data := fit osf_width (octets (pkt_osf p)).
 
 Lemma read_osf_length : forall p, List.length (read_osf p) = osf_width.
 Proof. intros p. apply fit_length. Qed.
@@ -397,14 +403,14 @@ Definition numgen_width : nat := 4.
 Definition symhash_width : nat := 4.
 
 Definition read_numgen (p : packet) (spec : numgen_spec) : data :=
-  fit numgen_width (pkt_numgen p spec).
+  fit numgen_width (octets (pkt_numgen p spec)).
 
 Lemma read_numgen_length : forall p spec,
   List.length (read_numgen p spec) = numgen_width.
 Proof. intros p spec. apply fit_length. Qed.
 
 Definition read_symhash (p : packet) (m o : nat) : data :=
-  fit symhash_width (pkt_symhash p m o).
+  fit symhash_width (octets (pkt_symhash p m o)).
 
 Lemma read_symhash_length : forall p m o,
   List.length (read_symhash p m o) = symhash_width.
@@ -499,6 +505,47 @@ Definition do_load (ld : loaddesc) (e : env) (p : packet) : data :=
 (** The value of a field, read against the shared env [e] and packet [p]. *)
 Definition field_value (f : field) (e : env) (p : packet) : data :=
   do_load (field_load f) e p.
+
+(** ** The register-normalised loads and their octet identity.
+
+    [load_octet_width ld = Some w] exactly when [do_load ld] is the width- and
+    octet-normalised register read [fit w (octets _)] — the fixed-width oracle
+    reads (meta / ct / rt / socket / osf / symhash; the kernel width tables
+    above).  [None] for the loads whose width lives elsewhere (payload/exthdr
+    descriptors, the fib route-table columns) and for the opaque abstractions
+    (ct tuple columns, xfrm/tunnel/inner) — no claim is made about those.
+    ([LNumgen] is [None] only because its non-random branch reads the rendered
+    round-robin counter, not a [fit]-normalised oracle.) *)
+Definition load_octet_width (ld : loaddesc) : option nat :=
+  match ld with
+  | LMeta k      => Some (meta_width k)
+  | LCt k        => Some (ct_width k)
+  | LRt k        => Some (rt_width k)
+  | LSocket k    => Some (socket_width k)
+  | LOsf         => Some osf_width
+  | LSymhash _ _ => Some symhash_width
+  | _            => None
+  end.
+
+(** The octet identity at the load boundary, DEFINITIONAL (no hypothesis on
+    [e]/[p]): the all-ones/zero bitwise at a normalised read's own register
+    width is the identity on the read value.  In the kernel this is trivially
+    true of every register value ([struct nft_regs] holds octets); here it
+    holds by construction of [fit]/[octets].  This is the fact that makes
+    nft's trivial-binop elision ([Optimize_Elide], evaluate.c
+    [binop_transfer_handle_lhs] OP_XOR: the spent binop is replaced by its
+    left operand) provable with no side condition. *)
+Lemma do_load_bitops_id : forall ld w e p,
+  load_octet_width ld = Some w ->
+  data_bitops (do_load ld e p) (List.repeat 255 w) (List.repeat 0 w)
+  = do_load ld e p.
+Proof.
+  intros ld w e p H.
+  destruct ld; cbn in H; try discriminate; injection H as <-;
+    cbn [do_load]; unfold read_meta, meta_load, ct_load, read_rt, rt_load,
+      read_socket, socket_load, read_osf, read_symhash;
+    apply data_bitops_fit_octets_id.
+Qed.
 
 (** Whether an extension-header / TCP-option / SCTP-chunk VALUE load finds its
     target present.  Derived from the SAME underlying existence oracle the
