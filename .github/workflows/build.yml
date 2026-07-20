@@ -1,0 +1,41 @@
+# based on the CI file from MetaRocq
+name: Certified Nftables CI
+
+on:
+  push:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Docker-Coq-Action
+        uses: coq-community/docker-coq-action@v1
+        with:
+          coq_version: 9.1
+          ocaml_version: 4.14-flambda
+          opam_file: .github/workflows/nft.opam
+          before_install: |
+            startGroup "Print opam config"
+              opam config list; opam repo list; opam list
+            endGroup
+            startGroup "Workaround permission issue"
+              sudo chown -R 1000:1000 .
+            endGroup
+          script: |
+            startGroup "Build project"
+              cd proof
+              make proofs
+            endGroup
+      - name: Revert permissions
+        # to avoid a warning at cleanup time
+        if: ${{ always() }}
+        run: sudo chown -R 1001:116 .  # <--
