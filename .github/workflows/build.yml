@@ -22,6 +22,7 @@ jobs:
         with:
           coq_version: 9.1
           ocaml_version: 4.14-flambda
+          opam_file: .github/workflows/opam-switch-4.14.2
           before_install: |
             startGroup "Print opam config"
               opam config list; opam repo list; opam list
@@ -29,20 +30,10 @@ jobs:
             startGroup "Workaround permission issue"
               sudo chown -R 1000:1000 .
             endGroup
-          # install: |
-          #   startGroup "Import pinned switch"
-          #     opam update -y
-          #     opam switch import ./.github/workflows/opam-switch-4.14.2 --yes
-          #     # opam install -y coq-menhirlib
-          #   endGroup
           script: |
             startGroup "Build project"
               cd proof
-              opam exec -- make proofs
-            endGroup
-          # Already done by the ci-opam target
-          uninstall: |
-            startGroup "Clean project"
+              make proofs
             endGroup
       - name: Revert permissions
         # to avoid a warning at cleanup time
