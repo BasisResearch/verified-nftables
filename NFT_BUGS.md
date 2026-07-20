@@ -1,27 +1,33 @@
-# Two bugs found in `nft --optimize`
+# Three bugs found in `nft --optimize`
 
 This project differentially tests its formally verified rule-consolidation
 optimizer against nftables' own `nft --optimize` (`nft -o`): every ruleset shape
 is run through both optimizers, loaded into a real kernel in an unprivileged
 netns, and — where the outputs differ — settled by packet-level data-plane
-probes, not just loadability. That process surfaced **two genuine defects in
-`nft -o`** (the userspace optimizer, `src/optimize.c`). Everything below was
-re-verified on **nftables v1.1.6** / Linux 6.18 on 2026-07-13 — and additionally
-on upstream **git HEAD** and on **v1.0.2**, the first release with `-o` (see
-"Upstream status" below); per-shape
-classification and the full battery live in
+probes, not just loadability. That process surfaced **two genuine mis-merge
+defects in `nft -o`** (the userspace optimizer, `src/optimize.c`), reported as
+Bugs 1 and 2 below. A **third** defect — an outright optimizer crash (Bug 3) —
+was found separately, by running `nft -o` over a corpus of real-world GitHub
+configs as a crash-oracle rather than through the formal differential.
+Everything below was re-verified on **nftables v1.1.6** / Linux 6.18 (Bugs 1–2
+on 2026-07-13, Bug 3 on 2026-07-15) — and Bugs 1–2 additionally on upstream
+**git HEAD** and on **v1.0.2**, the first release with `-o` (see "Upstream
+status" under each); per-shape classification and the full battery live in
 [`proof/battery_cases/`](proof/battery_cases/README.md) (run
 `bash difftest_battery.sh` from `proof/`).
 
-Both bugs share one root cause: **`nft -o` merges adjacent rules on the same
+Bugs 1 and 2 share one root cause: **`nft -o` merges adjacent rules on the same
 selector without checking that the merged form means the same thing — or can be
 represented at all.** In Bug 1 the merged form loads but matches fewer packets
 (silent verdict change). In Bug 2 the merged form is unrepresentable, nftables
-itself rejects it, and the whole transaction is discarded.
+itself rejects it, and the whole transaction is discarded. Bug 3 is unrelated to
+merging: the optimizer's statement-matrix builder `assert()`-aborts on a valid
+single rule of the form `field & $mask == value`.
 
 To be clear about blame: the nftables **core** (userspace validator and kernel
-set backends) behaves correctly in every case below. The defect is confined to
-the optimizer's rewrite step.
+set backends) behaves correctly in every case below. All three defects are
+confined to the optimizer (`src/optimize.c`) — Bugs 1 and 2 to its rewrite step,
+Bug 3 to its statement-matrix builder.
 
 ---
 
@@ -168,8 +174,22 @@ exact-value set `field { a, b }` (compiling to `lookup set`), which is strictly
 narrower. It is **not** triggered by the masked-equality form
 (`field & M == v`) — commit `447ac8a3` (1.1.2) added a *separate, sound* fold
 for that. Negated matches (`tcp flags != syn`) are **not folded** at all, so
-negation is not an additional trigger. The fields, ordered by how damaging and
-realistic the bug is on each:
+negation is not an additional trigger.
+
+**The set of vulnerable fields is closed and small.** A field has the
+any-of-bits semantics that this bug exploits iff its datatype's basetype is
+`TYPE_BITMASK` in the nftables source (`.basetype = &bitmask_type`). Grepping
+the tree, that is **exactly five** datatypes — there are no others:
+
+| datatype (`src/`) | match syntax | live trigger? |
+|---|---|---|
+| `tcp_flag` (`proto.c`) | `tcp flags syn` | **yes** — multi-flag packets (SYN+ACK, …) are routine |
+| `ct_status` (`ct.c`) | `ct status dnat` | **yes, worst** — status is *always* multi-bit |
+| `ct_label` (`ct.c`) | `ct label foo` | **yes** — labels co-occur by design (128-bit bitmap) |
+| `ct_state` (`ct.c`) | `ct state new` | no — folds, but single-bit per packet (safe by accident) |
+| `ct_event` (`ct.c`) | `ct event new` | no — not a match; kernel rejects it (`Operation not supported`), statement-only |
+
+Ordered by how damaging and realistic the bug is on each:
 
 - **`ct status` — the strongest case (realistic *and* catastrophic)** — the
   NAT-gateway example worked through above (24 packets → 0). Realistic on every
@@ -192,20 +212,42 @@ realistic the bug is on each:
     (`nft_optimize_bug1_scope/tcp_flags_failopen.sh`): original bit-test rule
     matched **2** crafted scan packets, folded exact set matched **0**.
 
+- **`ct label` — same hazard as `ct status`, by design.** Connlabels are a
+  128-bit bitmap and a connection routinely carries *several at once* (that is
+  the point of labels). `ct label foo` compiles to a 128-bit bit-test
+  (`ct load label; bitwise & 0x…01; cmp neq 0`), and `nft -o` folds
+  `ct label foo accept; ct label bar accept` into `ct label { foo, bar } accept`
+  (exact-value set) — verified against a built `nft` with a `connlabel.conf`. A
+  connection labelled both `foo` and `bar` (bitmap `0x…03`) matched both
+  original rules but is in neither set element, so the fold silently stops
+  matching it. Realistic wherever labels drive policy (e.g. a classifier chain
+  tags flows, later chains match the tags). Not data-plane-scripted here only
+  because it needs a `connlabel.conf` at a root-owned path; the compile-level
+  evidence (bit-test bytecode + the fold) is conclusive.
+
 - **`ct state` — universal but not a live trigger.** Every firewall has
   `ct state` rules, and `ct state new accept; ct state established accept` does
   fold to `ct state { established, new }`. But conntrack *state* (unlike
-  *status*) is single-bit per packet, so exact-set and bit-union coincide
-  in-kernel and the fold is correct by accident of an invariant the optimizer
-  never checks. (Our verified optimizer instead emits the sound mask-union form,
-  `ct state new,established` = `(state & 0x0a) != 0`, one masked compare — see
-  `proof/theories/Optimize_Ctmask.v` and battery case 20.)
+  *status*/*label*) is single-bit per packet, so exact-set and bit-union
+  coincide in-kernel and the fold is correct by accident of an invariant the
+  optimizer never checks. (Our verified optimizer instead emits the sound
+  mask-union form, `ct state new,established` = `(state & 0x0a) != 0`, one masked
+  compare — see `proof/theories/Optimize_Ctmask.v` and battery case 20.)
 
-**Takeaway:** the most compelling real-world trigger is **`ct status` on a NAT
-gateway** — a rule pattern real routers use, on a genuinely multi-bit field,
-where the fold silently breaks *all* matched traffic rather than a corner case.
-`tcp flags` is the cleaner textbook illustration and demonstrates both the
-fail-closed and fail-open directions.
+- **`ct event` — not a trigger.** It *looks* foldable (a `TYPE_BITMASK`
+  datatype), but `ct event` is statement-only; used as a match the kernel
+  rejects it (`Could not process rule: Operation not supported`), so no rule
+  pair to fold ever exists.
+
+**Takeaway:** three of the five `TYPE_BITMASK` fields are live triggers
+(`tcp flags`, `ct status`, `ct label`); the danger is highest on the two that
+are *routinely multi-bit* — `ct status` and `ct label` — where the exact-set
+fold matches essentially none of the real traffic, versus `tcp flags` where it
+misses specific multi-flag combinations. The most compelling real-world case is
+**`ct status` on a NAT gateway** (a rule pattern real routers use, fold breaks
+*all* matched traffic); `tcp flags` is the cleaner textbook illustration and is
+the one for which both the fail-closed and fail-open directions are
+data-plane-verified here.
 
 Reproducers for both live cases:
 [`proof/battery_cases/nft_optimize_bug1_scope/`](proof/battery_cases/nft_optimize_bug1_scope/)
@@ -302,6 +344,138 @@ atomic, so the kernel keeps whatever ruleset was loaded *before* — at boot,
 that is the empty ruleset, i.e. **fail-open**. Any valid config containing an
 overlapping first-match pair (a completely idiomatic "specific rule, then
 general rule" pattern) triggers it.
+
+---
+
+## Bug 3 — optimizer aborts (SIGABRT) on `field & $mask == value`: a single rule crashes `nft -o`
+
+**Severity: high as a robustness defect — `nft -o` calls `abort()` (exit 134,
+core dumped) on a valid, single-rule ruleset that plain `nft -f` loads without
+complaint. Not a mis-merge; an outright crash of the optimizer.**
+
+Unlike Bugs 1 and 2, this one was **not** surfaced by the formal
+differential — the verified optimizer never gets a say, because `nft -o`
+crashes before producing any output to compare against. It fell out of running
+`nft -o` over a corpus of **real-world** GitHub `.nft` configs as a
+crash-oracle: one config
+([`ms-jpq/lab`](https://github.com/ms-jpq/lab/blob/HEAD/layers/_/usr/local/opt/nftables/conf.d/1-base.nft))
+aborts the optimizer outright. It is recorded here for completeness alongside
+the two mis-merge bugs; the empirical route makes it *more* obviously realistic
+than either, not less (see "Why this one is realistic").
+
+### Minimal example (one rule, no merge involved)
+
+```nft
+define M = 0x1
+table inet t {
+  chain c {
+    mark & $M == 0x1 accept
+  }
+}
+```
+
+```console
+$ nft -c -f repro.nft         # sanity: plain check loads it fine
+$ nft -c -o -f repro.nft
+nft: src/optimize.c:529: rule_build_stmt_matrix_stmts: Assertion `k >= 0' failed.
+Aborted (core dumped)
+$ echo $?
+134
+```
+
+Replacing the `define`d mask with the literal it expands to —
+`mark & 0x1 == 0x1 accept` — makes the crash vanish. Plain `nft -f` (no `-o`)
+loads either form cleanly, so this is an **optimizer-only** abort.
+
+### Trigger — precisely characterised
+
+The crash fires iff a rule contains a **masked-equality match**
+`<field> & MASK == <value>` where **`MASK` is a `define`d variable** (not a
+literal), **and** that rule contains no statement the optimizer's collector
+already treats as *unsupported*. Both conditions are needed:
+
+| ruleset | `nft -o` |
+|---|---|
+| `mark & $M == 0x1 accept` (mask = define) | **CRASH** |
+| `mark & 0x1 == 0x1 accept` (mask = literal) | ok |
+| `mark & 0x1 == $M accept` (only the RHS is a define) | ok |
+| `mark & $M == $M` (no verdict at all) | **CRASH** |
+| `mark & $M == $M ip dscp set cs1` (a mangle stmt is present) | ok |
+
+It is field-agnostic: `mark`, `ct mark`, `ip dscp`, etc. all trigger it. A
+single rule is enough — no second rule and no merge are required. Repro and the
+full probe matrix:
+[`proof/battery_cases/nft_optimize_bug3_crash/`](proof/battery_cases/nft_optimize_bug3_crash/)
+(`MINIMAL_crash.nft` + `crash.sh`; run under
+`unshare --net --map-root-user --map-auto -- bash crash.sh`).
+
+### Root cause (`src/optimize.c`)
+
+The optimizer builds its statement matrix in two passes with **inconsistent
+notions of which statements are representable**:
+
+1. **Collect (`rule_collect_stmts` → `stmt_type_find`).** For a
+   `STMT_EXPRESSION`, the rule is admitted as a *supported* selector column
+   based only on its operator (`OP_EQ`/`OP_IMPLICIT`) and that its left operand
+   is not a concatenation. It is **not** checked that the expression can later
+   be *matched* by `__expr_cmp`. So `field & $mask == v` is recorded as
+   supported, and **no `STMT_INVALID` sentinel column is created**.
+
+2. **Populate (`rule_build_stmt_matrix_stmts` → `cmd_stmt_find_in_stmt_matrix`
+   → `__stmt_type_eq(.,.,false)` → `__expr_cmp`).** Locating each statement's
+   column re-compares the left operand `field & MASK`, an `EXPR_BINOP`, by
+   recursing into the mask operand. When the mask is a variable, `__expr_cmp`
+   has no case for it and returns `false` via its `default:` branch — so the
+   statement fails to match *even its own clone*. `cmd_stmt_find_in_stmt_matrix`
+   returns `-1`; the fallback `unsupported_in_stmt_matrix` looks for the
+   `STMT_INVALID` sentinel that pass 1 never inserted, also returns `-1`, and
+   `assert(k >= 0)` at line 529 aborts.
+
+This is exactly why a mangle statement in the same rule *suppresses* the crash:
+`ip dscp set cs1` lands in the collector's `default:` arm, is marked
+`STMT_INVALID`, and so a sentinel column exists for the fallback to find. The
+assertion is the load-bearing check; it just fails on ordinary input instead of
+catching a "can't happen".
+
+A correct optimizer would either give the masked-equality-with-variable form a
+real `__expr_cmp` case (so it matches and is optimised like the literal form) or
+classify it `STMT_INVALID` up front in pass 1 (so it is skipped, as any other
+unsupported statement is). It does neither.
+
+### Why this one is realistic
+
+The trigger is the **"mark a packet, then match the mark"** idiom with a named
+mask — `define MARK_ACCEPT = 0x…` then `mark & $MARK_ACCEPT == $MARK_ACCEPT
+accept` — which is textbook nftables and exactly what the real `ms-jpq/lab`
+config does:
+
+```nft
+define MARK_ACCEPT = 0xb00b0000
+# …
+chain noinput {
+  type filter hook input priority filter + 1
+  policy drop
+  mark & $MARK_ACCEPT == $MARK_ACCEPT accept
+  counter reject with icmpx type admin-prohibited
+}
+```
+
+Naming a bitmask with `define` and matching it back with `&…==…` is standard
+practice, so an operator running `nft -o` over a perfectly good config gets a
+core dump rather than an optimised ruleset. It fails loudly (like Bug 2), so it
+is not silently wrong — but a crash-on-valid-input in a tool people run over
+their live firewall config is a real defect.
+
+### Upstream status
+
+Reproduces on the installed **v1.1.6** and the identical code path — the
+`assert(k >= 0)` at `optimize.c:529` and the pass-1 classification that omits
+the self-comparability check — is present verbatim in **git HEAD**
+(`8d97995`, 2026-07-10). The two-pass matrix builder is original optimizer
+infrastructure, so this very likely dates back to the same 2022 series that
+introduced Bugs 1 and 2; that was **not** bisected to a first-bad commit here
+(unlike Bugs 1/2), so the exact introduction point is stated as probable, not
+confirmed. No prior public report was searched for.
 
 ---
 
@@ -466,13 +640,27 @@ $ unshare --net --map-root-user --map-auto -- bash
   `20_ctstate_mask_union.nft` is the Bug 1 `ct state` shape).
 - Full differential battery: `cd proof && bash difftest_battery.sh`.
 - Ordered-pipapo data-plane probe: `proof/battery_cases/probe_overlap_vmap.sh`.
+- Bug 3 crash + probe matrix:
+  `proof/battery_cases/nft_optimize_bug3_crash/` (`bash crash.sh`).
 
 ## How these were found
 
-The verified optimizer (`proof/theories/Optimize_*.v`, composed in
-`Optimize_Uncond.v`) must *prove* every fold verdict-preserving against the
-project's mechanized nftables semantics. Every shape where `nft -o` merged and
-our optimizer refused was investigated as a potential gap on our side; the
-shapes above are the residue where the refusal was correct — the proof
-obligation that could not be discharged corresponds exactly to the packet
-(Bug 1) or the representability condition (Bug 2) that `nft -o` gets wrong.
+**Bugs 1 and 2 — from the formal differential.** The verified optimizer
+(`proof/theories/Optimize_*.v`, composed in `Optimize_Uncond.v`) must *prove*
+every fold verdict-preserving against the project's mechanized nftables
+semantics. Every shape where `nft -o` merged and our optimizer refused was
+investigated as a potential gap on our side; Bugs 1 and 2 are the residue where
+the refusal was correct — the proof obligation that could not be discharged
+corresponds exactly to the packet (Bug 1) or the representability condition
+(Bug 2) that `nft -o` gets wrong.
+
+**Bug 3 — from a real-world crash-oracle, not the proof.** The formal
+differential could not see Bug 3, because `nft -o` aborts before emitting any
+output to compare. It was found instead by running `nft -o` over the project's
+corpus of real GitHub `.nft` configs
+([`proof/parser_corpus/github/`](proof/parser_corpus/github/)) and watching for
+non-zero exits: one config crashed the optimizer, and delta-debugging reduced it
+to the single-rule `field & $mask == value` case. It is included here because it
+is a genuine, easily-triggered `nft -o` defect on valid input, even though it
+came from differential fuzzing of the real tool rather than from a discharged
+(or undischarged) proof obligation.
