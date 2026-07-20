@@ -737,6 +737,37 @@ equalities vs `MMasked` xor), so they commute at the bytecode level; the CLI
 still applies them in the given order and the composition theorem holds for every
 order.
 
+### Classes I + L are DEFAULT-ON: the shipped compile pipeline (T3 residue)
+
+nft performs the class-I merge and the class-L fold **unconditionally at
+netlink linearization** — no `nft -o` involved — so an opt-in `-O` pass was
+not parity: plain `nftc compile` still diverged from plain `nft`. The T3
+residue composes both into the DEFAULT pipeline,
+**`Optimize_Linearize.compile_chain_default`** = `compile_chain ∘
+xorfold_chain ∘ paymerge_chain` (`theories/Optimizer/Optimize_Linearize.v`):
+
+- **`nftc compile`**, **`nftc optimize`** and **`nftc send`** ALL bottom out in
+  `compile_chain_default` — linearization sits at the compile boundary,
+  mirroring nft (emission-time, after any `-o` consolidation), NOT inside
+  `optimize_table_uncond`.
+- Composed headlines, axiom-gated: **`compile_chain_default_correct`**
+  (`compile_chain_correct` carried through both stages, for every chain/env/
+  packet) and **`optimize_table_uncond_compile_correct`** — RESTATED over
+  `compile_chain_default`, so the optimizer headline is about the term the CLI
+  actually emits. `linearize_chain_eval` is the composed stage theorem.
+  Non-vacuity is Compute-pinned in `Optimize_Linearize.v`
+  (`default_pipeline_merges_payload_loads`: `tcp sport 1 tcp dport 2`
+  default-compiles to ONE 4-byte load; `default_pipeline_folds_xor`).
+- The `-O paymerge` / `-O xorfold` registry passes REMAIN (explicit use before
+  the default compile is an idempotent second application: both passes rewrite
+  only where their syntactic guard still fires).
+- The source-sweep and byteorder gates now compile through the SHIPPED
+  `compile_chain_default` (no more harness-side ad-hoc pass application). The
+  sweep floor HELD at 1196 under the switch — the class-L blocks stay open on
+  the host-endian DISPLAY residual and nft's identity-binop elision (above).
+  The remaining compile-from-source mismatches are classified block-by-block
+  in `reports/default-linearization-audit.md`.
+
 ### Class O — `ct id` byte order: WE are kernel-faithful, nft is not
 
 The one upstream bug. `nft` declares `NFT_CT_ID` `BYTEORDER_BIG_ENDIAN`

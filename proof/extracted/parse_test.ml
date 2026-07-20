@@ -2654,8 +2654,11 @@ let byteorder_gate files =
              (match (try Some (Nft_parse.parse_string wrapped) with _ -> None) with
               | None -> incr skipped
               | Some parsed ->
+                (* the SHIPPED default pipeline (linearize + compile); on this
+                   gate's accepted shape (meta/ct/fib load + cmp/range only) the
+                   linearization stages cannot fire, so the check is unchanged *)
                 let progs = L.concat_map (fun (_f, _t, chains) ->
-                    L.concat_map (fun (_cn, c) -> Compile.compile_chain c) chains)
+                    L.concat_map (fun (_cn, c) -> Optimize_Linearize.compile_chain_default c) chains)
                     parsed.Nft_inject.p_tables in
                 (match progs with
                  | [rp] when (L.exists bc_is_he_load rp || L.exists bc_is_byteorder rp)
@@ -2925,17 +2928,21 @@ let source_sweep files =
               | Some parsed ->
                 (match
                    (try
-                      (* Enable the adjacent-payload-load merge (Optimize_PayMerge,
-                         corpus class I): nft ALWAYS performs this fusion
-                         (stmt_reduce/payload_can_merge), so the source-side
-                         bytecode is byte-identical only with the pass applied.
-                         The pass is verdict-preserving (paymerge_chain_eval) and
-                         merges exactly nft's cases; the host-endian xor fold
-                         (class L) is NOT applied here — its blocks are
-                         endian-unportable in the text corpus. *)
+                      (* The sweep compiles with the SHIPPED default pipeline
+                         (Optimize_Linearize.compile_chain_default = nft's
+                         always-on linearization — the adjacent-payload merge,
+                         corpus class I, and the xor constant fold, class L —
+                         then compile_chain): nft ALWAYS performs these
+                         rewrites at netlink emission (stmt_reduce/
+                         payload_can_merge, binop_transfer), so the source-side
+                         bytecode is byte-identical only through this pipeline.
+                         Verdict-preserving by compile_chain_default_correct.
+                         (The class-L mark blocks remain endian-unportable in
+                         the text corpus — the fold changes which BYTES diverge,
+                         not that they diverge, on a big-endian host.) *)
                       Some (L.concat_map (fun (_f, _t, chains) ->
                           L.concat_map (fun (_cn, c) ->
-                            Compile.compile_chain (Optimize_PayMerge.paymerge_chain c))
+                            Optimize_Linearize.compile_chain_default c)
                             chains)
                           parsed.Nft_inject.p_tables)
                     with _ -> None)
@@ -2946,7 +2953,13 @@ let source_sweep files =
                        L.concat_map Codec.render_rule_lines rules
                        |> L.map (fun l -> normalise_set_names (S.trim l)) in
                      let theirs = take_while starts_bracket instrs |> L.map S.trim in
-                     if ours = theirs then incr passed else incr mism))
+                     if ours = theirs then incr passed
+                     else begin
+                       incr mism;
+                       if Sys.getenv_opt "SWEEP_DEBUG" <> None then
+                         Printf.printf "MISMATCH %s | %s\n  corpus: %s\n  ours:   %s\n"
+                           _where src (S.concat " ; " theirs) (S.concat " ; " ours)
+                     end))
            | _ -> ())
       | _ -> ()) (payload_blocks_ln path))
     files;

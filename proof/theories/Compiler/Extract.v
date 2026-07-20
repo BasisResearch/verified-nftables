@@ -45,6 +45,10 @@ From Nft Require Import Optimize_ValueSet Optimize_Vmap Optimize_Concat Optimize
    the CLI's [-O p1,p2,...] parses names into a pass list and folds them
    ([resolve_passes]/[run_passes]) with no proof of its own. *)
 From Nft Require Import Optimize_PayMerge Optimize_XorFold Optimize_Registry.
+(* The DEFAULT compile pipeline (nft's always-on linearization: payload merge +
+   xor fold, then compile) — what `nftc compile` and the final compile step of
+   `nftc optimize`/`nftc send` emit ([compile_chain_default_correct]). *)
+From Nft Require Import Optimize_Linearize.
 (* The typed-layer surface (T1): the Coq surface AST, datatype/coercion
    lattice, symbol tables, selector map and typechecker.  Extracted so the
    OCaml frontend can hand its untyped tree (via the pure structural
@@ -126,6 +130,8 @@ Separate Extraction
   optimize_table_uncond
   paymerge_chain
   xorfold_chain
+  linearize_chain
+  compile_chain_default
   run_passes
   resolve_passes
   registry

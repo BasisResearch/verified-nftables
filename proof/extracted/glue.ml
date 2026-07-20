@@ -107,8 +107,12 @@ let render_program ?(hdr = "ip filter input") (prog : Bytecode.program) : string
     prog;
   Buffer.contents buf
 
+(* the SHIPPED default pipeline: nft's always-on linearization (adjacent-payload
+   merge + xor constant fold), then compile — Optimize_Linearize.
+   compile_chain_default (compile_chain_default_correct), matching what a
+   default `nft ... --debug=netlink` emits. *)
 let print_compiled ?hdr c =
-  print_string (render_program ?hdr (Compile.compile_chain c))
+  print_string (render_program ?hdr (Optimize_Linearize.compile_chain_default c))
 
 (* ---- demo ---- *)
 

@@ -30,6 +30,7 @@ theories/Optimizer/Optimize.v
 theories/Optimizer/Optimize_Normalize.v
 theories/Optimizer/Optimize_PayMerge.v
 theories/Optimizer/Optimize_XorFold.v
+theories/Optimizer/Optimize_Linearize.v
 theories/Optimizer/Optimize_ValueSet.v
 theories/Optimizer/Optimize_Vmap.v
 theories/Optimizer/Optimize_VmapGuarded.v
