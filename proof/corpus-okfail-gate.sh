@@ -42,7 +42,7 @@ cd "$(dirname "$0")"
 # selectors + empty ifname, log option mutual-exclusion, vmap interval overlap,
 # ether payload-dependency, fib key-set, icmp field inter-dependency).  See
 # DEVELOPMENT.md "T3 corpus ok/fail residual".
-CORPUS_OKFAIL_FLOOR="${CORPUS_OKFAIL_FLOOR:-1003}"
+CORPUS_OKFAIL_FLOOR="${CORPUS_OKFAIL_FLOOR:-1008}"
 CORPUS_OKFAIL_CEIL="${CORPUS_OKFAIL_CEIL:-47}"
 
 CORPUS_DIR="${NFT_CORPUS:-/tmp/nftables-src}"

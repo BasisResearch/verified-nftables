@@ -39,6 +39,10 @@ type value =
   | Vrange  of value * value       (* an inclusive range, e.g. 29811-29814 *)
   | Vconcat of value list          (* a concatenated value, e.g. 192.168.51.20 . inc-budge *)
   | Vset    of value list          (* a `define`d set value, e.g. { $a, $b } *)
+  | Vor     of value list          (* a pipe-joined OR group, `(syn|ack)` or bare
+                                      `syn | ack`; carried UNRESOLVED — the member
+                                      bits are OR-folded by the VERIFIED resolver
+                                      (Surface.Typecheck.resolve_value), never here *)
 
 type verdict =
   | SVaccept

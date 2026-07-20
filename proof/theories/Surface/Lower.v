@@ -545,16 +545,25 @@ Definition lower_bitmatch (kp : skeypath) (op : string) (mask : svalue)
           match obop with
           | None => LErr (LEbitwiseOp op)
           | Some bop =>
-              match sr_payload r with
-              | SSEvalue v =>
-                  match atom dt mask "bitwise mask", atom dt v "bitwise value"
-                  with
-                  | LOk mv, LOk vv =>
-                      LOk (deps, TXBitwise f dt bop (sr_neg r) mv vv)
-                  | LErr e, _ => LErr e
-                  | _, LErr e => LErr e
+              match sr_op r with
+              | SOpBang =>
+                  (* `<sel> & <mask> ! <v>` is an nft SYNTAX error (`!` only
+                     exists in the flagcmp form `tcp flags ! fin,rst`) —
+                     inet/tcp.t:90 pins it `;fail`; mirror tc_bitmatch. *)
+                  LErr (LEbitwiseOp "!")
+              | _ =>
+                  match sr_payload r with
+                  | SSEvalue v =>
+                      match atom dt mask "bitwise mask",
+                            atom dt v "bitwise value"
+                      with
+                      | LOk mv, LOk vv =>
+                          LOk (deps, TXBitwise f dt bop (sr_neg r) mv vv)
+                      | LErr e, _ => LErr e
+                      | _, LErr e => LErr e
+                      end
+                  | _ => LErr LEbitwiseRhs
                   end
-              | _ => LErr LEbitwiseRhs
               end
           end
       end
@@ -981,6 +990,8 @@ Fixpoint resolve_sv (fuel : nat) (defs : list (string * svalue)) (v : svalue)
           vs' <-- map_lres (resolve_sv fu defs) vs ;; LOk (SVConcat vs')
       | SVSet vs =>
           vs' <-- map_lres (resolve_sv fu defs) vs ;; LOk (SVSet vs')
+      | SVOr vs =>
+          vs' <-- map_lres (resolve_sv fu defs) vs ;; LOk (SVOr vs')
       | _ => LOk v
       end
   end.
@@ -1529,6 +1540,28 @@ Example lower_bitmatch_mark :
     (mrhs SOpEq false (SSEvalue (SVNum 1)))
   = LOk ([], TXBitwise FMetaMark DTmark BOand false
                (VHostInt 4 3) (VHostInt 4 1)).
+Proof. vm_compute. reflexivity. Qed.
+
+(** Compound flag masks: `tcp flags & (fin|syn|rst|ack) == syn | ack` — the
+    parenthesized OR mask and the bare OR compare value each arrive as an
+    UNRESOLVED [SVOr] group; the symbol lookup and the OR-fold both happen in
+    [Typecheck.resolve_value], so the lowering sees 0x17/0x12 already folded
+    (golden inet/tcp.t.payload:441-447: `bitwise reg1 = (reg1 & 0x17) ^ 0x00;
+    cmp eq reg1 0x12`, over the tcp dep). *)
+Example lower_bitmatch_tcpflags_compound :
+  lower_bitmatch ["tcp"; "flags"] "and"
+    (SVOr [SVSym "fin"; SVSym "syn"; SVSym "rst"; SVSym "ack"])
+    (mrhs SOpEq false (SSEvalue (SVOr [SVSym "syn"; SVSym "ack"])))
+  = LOk (dep_l4 "tcp", TXBitwise FTcpFlags DTtcp_flag BOand false
+                         (VInteger 1 0x17) (VInteger 1 0x12)).
+Proof. vm_compute. reflexivity. Qed.
+
+(** `tcp flags & (...) ! syn` stays an nft syntax error (inet/tcp.t:90). *)
+Example lower_bitmatch_bang_refused :
+  lower_bitmatch ["tcp"; "flags"] "and"
+    (SVOr [SVSym "fin"; SVSym "syn"; SVSym "rst"; SVSym "ack"])
+    (mrhs SOpBang true (SSEvalue (SVSym "syn")))
+  = LErr (LEbitwiseOp "!").
 Proof. vm_compute. reflexivity. Qed.
 
 (** Guard encoding: the icmp selector's two guards (nfproto THEN l4proto),

@@ -940,22 +940,31 @@ the pinned `false_accept` ceiling:*
   rule. The model loads each icmp field independently without the conflict check.
   Follow-up: model the icmp field dependency graph.
 
-*The `;ok` lines still rejected (`false_reject`, 341) are genuine unsupported-
+*The `;ok` lines still rejected (`false_reject`, 336) are genuine unsupported-
 construct model boundaries — whole feature families rather than laziness gaps in
-the supported ones. The major buckets: unsupported L4/tunnel protocols
-(`sctp`, `dccp`, `gre`/`gretap`, `geneve`, `vxlan`, `comp`, `osf`, `rt`,
-`ipsec`, `socket`, `hash`, `numgen`, `synproxy`, `rawpayload`); unsupported
-`meta` selectors (`priority`/tc-handle, `iiftype`/`oiftype`, `time`/`day`/`hour`,
-`nftrace`, `rtclassid`, `sdif`/`sdifname`, `ipsec`); relational `<`/`>`
-comparisons (parser has `==`/`!=` only — `ct expiration > …`, `ct bytes > …`,
-`meta time < …`); sub-byte bitfield set/range matches (`ip hdrlength`, `ip
-dscp`, `tcp doff` — the masked set/range lookup shape is not lowered, see the
-`tc_bitfield` note in `Surface/Typecheck.v`); payload set-statement mangling
-(`ip ttl set …`, `ip dscp set …`, `tcp flags set …`); anonymous stateful
-statements (`quota N bytes`, `ct count …`); dynamic set-add statements (`add
-@set { … }`); and `typeof`-typed sets/maps and wildcard (`*`) vmap defaults.
-Each is a named construct the typed frontend does not yet cover; none is a
-regression in a construct it does cover.*
+the supported ones. (Compound flag masks — `tcp flags & (fin | syn | rst | ack)
+== syn | ack`, the parenthesized/pipe-joined OR-group idiom, inet/tcp.t:81-85 —
+left this residual with T3 residue R2: the group is parsed structurally into
+`Ast.SVOr`, the member symbols and the OR-fold resolve in verified Coq
+(`Typecheck.resolve_value`), and the existing `CBitmatch` lowering emits nft's
+exact `bitwise (reg & m) ^ 0; cmp` shape; the `!`-after-mask form inet/tcp.t:90
+pins as `;fail` stays refused.) The major buckets: unsupported L4/tunnel
+protocols (`sctp`, `dccp`, `gre`/`gretap`, `geneve`, `vxlan`, `comp`, `osf`,
+`rt`, `ipsec`, `socket`, `hash`, `numgen`, `synproxy`, `rawpayload`);
+unsupported `meta` selectors (`priority`/tc-handle, `iiftype`/`oiftype`,
+`time`/`day`/`hour`, `nftrace`, `rtclassid`, `sdif`/`sdifname`, `ipsec`);
+relational `<`/`>` comparisons (parser has `==`/`!=` only — `ct expiration >
+…`, `ct bytes > …`, `meta time < …`); sub-byte bitfield set/range matches (`ip
+hdrlength`, `ip dscp`, `tcp doff` — the masked set/range lookup shape is not
+lowered, see the `tc_bitfield` note in `Surface/Typecheck.v`); tcp-flags
+SET-shaped forms (`tcp flags { syn, syn | ack }` brace-set membership and the
+masked set lookup `tcp flags & (…) == { … }` — the `LEtcpflagSet` /
+bitwise-set-rhs refusals; the lookup-after-bitwise shape is not lowered);
+payload set-statement mangling (`ip ttl set …`, `ip dscp set …`, `tcp flags set
+…`); anonymous stateful statements (`quota N bytes`, `ct count …`); dynamic
+set-add statements (`add @set { … }`); and `typeof`-typed sets/maps and
+wildcard (`*`) vmap defaults. Each is a named construct the typed frontend does
+not yet cover; none is a regression in a construct it does cover.*
 
 ## Trust story (TCB)
 

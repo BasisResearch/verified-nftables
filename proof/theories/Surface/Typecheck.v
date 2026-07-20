@@ -159,7 +159,7 @@ Definition resolve_sym (dt : dtype) (s : string) : option nftval :=
          end
   end.
 
-Definition resolve_value (dt : dtype) (v : svalue) : option nftval :=
+Definition resolve_atom (dt : dtype) (v : svalue) : option nftval :=
   match v with
   | SVNum n => resolve_num dt (N.of_nat n)
   | SVSym s => resolve_sym dt s
@@ -191,7 +191,64 @@ Definition resolve_value (dt : dtype) (v : svalue) : option nftval :=
                | DTether => if Nat.eqb (List.length b) 6 then Some (VEther b) else None
                | _ => None
                end
-  | _ => None      (* $var (unexpanded), prefix/range/concat/set: not atoms *)
+  | _ => None      (* $var (unexpanded), prefix/range/concat/set/or: not atoms *)
+  end.
+
+(* ------------------------------------------------------------------ *)
+(** ** Pipe-joined OR groups (`tcp flags & (syn | ack) == syn`).
+
+    nft's grammar admits `f1 | f2 | ...` wherever a constant rhs expression
+    can appear (src/parser_bison.y basic_rhs_expr -> inclusive_or_rhs_expr)
+    and CONSTANT-FOLDS the group into one value at evaluation
+    (src/evaluate.c expr_evaluate_binop on two constants).  The parser
+    carries the group UNRESOLVED ([SVOr]); the fold happens HERE, verified:
+    each member resolves at the selector's datatype through the ordinary
+    atom resolver, and the resolved values are OR-joined numerically.  The
+    join is defined ONLY for two values of the SAME integer-carrying
+    constructor at the SAME width — address / name / string values have no
+    `|`, so `iifname (a|b)` is ill-typed exactly like `iifname & 0xff`. *)
+Definition nftval_or (a b : nftval) : option nftval :=
+  match a, b with
+  | VInteger w x, VInteger w' y =>
+      if Nat.eqb w w' then Some (VInteger w (N.lor x y)) else None
+  | VHostInt w x, VHostInt w' y =>
+      if Nat.eqb w w' then Some (VHostInt w (N.lor x y)) else None
+  | VPort x,    VPort y    => Some (VPort (N.lor x y))
+  | VCtState x, VCtState y => Some (VCtState (N.lor x y))
+  | VFibType x, VFibType y => Some (VFibType (N.lor x y))
+  | _, _ => None
+  end.
+
+Fixpoint or_fold (dt : dtype) (acc : nftval) (l : list svalue)
+  : option nftval :=
+  match l with
+  | [] => Some acc
+  | v :: r =>
+      match resolve_atom dt v with
+      | Some tv => match nftval_or acc tv with
+                   | Some acc' => or_fold dt acc' r
+                   | None => None
+                   end
+      | None => None
+      end
+  end.
+
+(** An OR group resolves iff every member resolves at [dt] and the results
+    OR-join; the empty group has no meaning (the grammar produces groups of
+    two or more members). *)
+Definition resolve_or (dt : dtype) (vs : list svalue) : option nftval :=
+  match vs with
+  | [] => None
+  | v0 :: rest => match resolve_atom dt v0 with
+                  | Some a0 => or_fold dt a0 rest
+                  | None => None
+                  end
+  end.
+
+Definition resolve_value (dt : dtype) (v : svalue) : option nftval :=
+  match v with
+  | SVOr vs => resolve_or dt vs
+  | _ => resolve_atom dt v
   end.
 
 (* ------------------------------------------------------------------ *)
@@ -301,13 +358,13 @@ Theorem symbol_numeric_same_term : forall dt s n,
   dt <> DTifname -> dt <> DTifindex ->
   resolve_value dt (SVSym s) = resolve_value dt (SVNum (N.to_nat n)).
 Proof.
-  intros dt s n Hl Hif Hix. cbn [resolve_value].
+  intros dt s n Hl Hif Hix. cbn [resolve_value resolve_atom].
   rewrite N2Nat.id.
   destruct dt; try congruence; cbn [resolve_sym]; rewrite Hl; reflexivity.
 Qed.
 
-Theorem resolve_value_wf : forall dt v x,
-  resolve_value dt v = Some x ->
+Lemma resolve_atom_wf : forall dt v x,
+  resolve_atom dt v = Some x ->
   Nftval.wf x \/ exists pre, x = VIfname pre /\ (List.length pre < 16)%nat.
 Proof.
   intros dt v x H. destruct v; simpl in H.
@@ -344,6 +401,69 @@ Proof.
     destruct (Nat.eqb (List.length b) 6) eqn:Hl; [|discriminate H].
     injection H as <-. left. apply Nat.eqb_eq in Hl. exact Hl.
   - discriminate. - discriminate. - discriminate. - discriminate. - discriminate.
+  - discriminate.
+Qed.
+
+(** 256^w = 2^(8w): bridge the byte-width wf bound to a power of two. *)
+Lemma pow256_pow2 : forall w,
+  (256 ^ N.of_nat w = 2 ^ (8 * N.of_nat w))%N.
+Proof.
+  intro w. change 256%N with (2 ^ 8)%N. now rewrite <- N.pow_mul_r.
+Qed.
+
+(** OR cannot create a bit above either operand's width. *)
+Lemma lor_lt_pow2 : forall k x y,
+  (x < 2 ^ k)%N -> (y < 2 ^ k)%N -> (N.lor x y < 2 ^ k)%N.
+Proof.
+  intros k x y Hx Hy.
+  destruct x as [|px]; [now rewrite N.lor_0_l|].
+  destruct y as [|py]; [now rewrite N.lor_0_r|].
+  apply N.log2_lt_pow2.
+  - destruct (N.lor (N.pos px) (N.pos py)) eqn:E; [|lia].
+    apply N.lor_eq_0_iff in E. destruct E; discriminate.
+  - rewrite N.log2_lor. apply N.max_lub_lt;
+      apply N.log2_lt_pow2; auto; lia.
+Qed.
+
+(** The OR-join preserves width well-formedness. *)
+Lemma nftval_or_wf : forall a b c,
+  Nftval.wf a -> Nftval.wf b -> nftval_or a b = Some c -> Nftval.wf c.
+Proof.
+  intros a b c Ha Hb H.
+  destruct a; destruct b; simpl in H; try discriminate;
+    try (destruct (Nat.eqb w w0) eqn:Ew; [|discriminate];
+         apply Nat.eqb_eq in Ew; subst w0);
+    injection H as <-; cbn [Nftval.wf] in *;
+    rewrite pow256_pow2 in *; apply lor_lt_pow2; assumption.
+Qed.
+
+(** A short (wildcard) ifname never OR-joins: the fold's accumulator can only
+    leave the wf domain by never having been joined at all. *)
+Lemma or_fold_wf : forall dt l acc x,
+  Nftval.wf acc \/ (exists pre, acc = VIfname pre /\ (List.length pre < 16)%nat) ->
+  or_fold dt acc l = Some x ->
+  Nftval.wf x \/ exists pre, x = VIfname pre /\ (List.length pre < 16)%nat.
+Proof.
+  intros dt l. induction l as [|v r IH]; intros acc x Hacc H; simpl in H.
+  - injection H as <-. exact Hacc.
+  - destruct (resolve_atom dt v) as [tv|] eqn:Hv; [|discriminate].
+    destruct (nftval_or acc tv) as [acc'|] eqn:Ho; [|discriminate].
+    apply (IH acc' x); [|exact H].
+    left. destruct Hacc as [Hwf | [pre [-> _]]]; [|destruct tv; discriminate Ho].
+    destruct (resolve_atom_wf _ _ _ Hv) as [Htv | [pre [-> _]]];
+      [|destruct acc; discriminate Ho].
+    exact (nftval_or_wf _ _ _ Hwf Htv Ho).
+Qed.
+
+Theorem resolve_value_wf : forall dt v x,
+  resolve_value dt v = Some x ->
+  Nftval.wf x \/ exists pre, x = VIfname pre /\ (List.length pre < 16)%nat.
+Proof.
+  intros dt v x H. destruct v; try (eapply resolve_atom_wf; exact H).
+  (* SVOr *)
+  simpl in H. destruct vs as [|v0 rest]; [discriminate|].
+  simpl in H. destruct (resolve_atom dt v0) as [a0|] eqn:H0; [|discriminate].
+  eapply or_fold_wf; [|exact H]. eapply resolve_atom_wf; exact H0.
 Qed.
 
 (** Axiom-freedom (informational; the enforcement point is `make axioms`). *)
@@ -367,6 +487,9 @@ Fixpoint svalue_size (v : svalue) : nat :=
       S ((fix sz (l : list svalue) : nat :=
             match l with [] => 0%nat | x :: r => (svalue_size x + sz r)%nat end) vs)
   | SVSet vs =>
+      S ((fix sz (l : list svalue) : nat :=
+            match l with [] => 0%nat | x :: r => (svalue_size x + sz r)%nat end) vs)
+  | SVOr vs =>
       S ((fix sz (l : list svalue) : nat :=
             match l with [] => 0%nat | x :: r => (svalue_size x + sz r)%nat end) vs)
   | _ => 1%nat
@@ -414,6 +537,18 @@ Fixpoint expand_var (defs : defs_ctx) (fuel : nat) (v : svalue)
                                end
                    end) vs with
           | Some vs' => Some (SVSet vs')
+          | None => None
+          end
+      | SVOr vs =>
+          match (fix go (l : list svalue) : option (list svalue) :=
+                   match l with
+                   | [] => Some []
+                   | x :: r => match expand_var defs k x, go r with
+                               | Some x', Some r' => Some (x' :: r')
+                               | _, _ => None
+                               end
+                   end) vs with
+          | Some vs' => Some (SVOr vs')
           | None => None
           end
       | _ => Some v
@@ -654,6 +789,11 @@ Definition tc_bitmatch (defs : defs_ctx) (kp : skeypath) (op : string)
   | Some (_, dt, _) =>
       (match int_basetype dt with Some _ => true | None => false end)
       && (String.eqb op "and" || String.eqb op "or" || String.eqb op "xor")
+      (* `<sel> & <mask> ! <v>` is an nft SYNTAX error (`!` exists only in
+         the flagcmp form `tcp flags ! fin,rst`; parser_bison.y has no NOT
+         production after a masked expression) — inet/tcp.t:90 pins it as
+         `;fail`, so the checker refuses it like the lowering does. *)
+      && (match sr_op r with SOpBang => false | _ => true end)
       && expanded_check defs (check_atom dt) mask
       && match sr_payload r with
          | SSEvalue v => expanded_check defs (check_atom dt) v
@@ -903,6 +1043,33 @@ Example accept_mark_and_0x3 :
   typecheck_clause [] [] []
     (CBitmatch ["mark"] "and" (SVNum 3)
        (mkSrhs SOpEq false (SSEvalue (SVNum 1)))) = true.
+Proof. vm_compute. reflexivity. Qed.
+
+(** Compound flag masks: the parenthesized OR group resolves member-by-member
+    through the symbol table and OR-folds in Coq — `(syn|ack)` = 0x12 — for
+    both the mask and the compared value (inet/tcp.t:81-85). *)
+Example accept_tcpflags_compound_mask :
+  typecheck_clause [] [] []
+    (CBitmatch ["tcp"; "flags"] "and"
+       (SVOr [SVSym "fin"; SVSym "syn"; SVSym "rst"; SVSym "ack"])
+       (mkSrhs SOpEq false (SSEvalue (SVOr [SVSym "syn"; SVSym "ack"]))))
+  = true.
+Proof. vm_compute. reflexivity. Qed.
+Example or_group_resolves_folded :
+  resolve_value dt_tcp_flag (SVOr [SVSym "syn"; SVSym "ack"])
+  = Some (VInteger 1 18).
+Proof. vm_compute. reflexivity. Qed.
+(** ...but an OR group over a NAME-typed selector is refused (no integer to
+    fold), and the `!` operator after a masked expression is the nft syntax
+    error inet/tcp.t:90 pins as `;fail`. *)
+Example reject_or_group_ifname :
+  resolve_value DTifname (SVOr [SVStr "eth0"; SVStr "eth1"]) = None.
+Proof. vm_compute. reflexivity. Qed.
+Example reject_tcpflags_mask_bang :
+  typecheck_clause [] [] []
+    (CBitmatch ["tcp"; "flags"] "and"
+       (SVOr [SVSym "fin"; SVSym "syn"; SVSym "rst"; SVSym "ack"])
+       (mkSrhs SOpBang true (SSEvalue (SVSym "syn")))) = false.
 Proof. vm_compute. reflexivity. Qed.
 
 (** More rejection witnesses (each an illtyped-suite case). *)

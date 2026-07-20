@@ -123,7 +123,15 @@ Inductive svalue : Type :=
 | SVPrefix (v : svalue) (len : nat)    (* CIDR prefix, e.g. 192.168.50.0/24    *)
 | SVRange  (lo hi : svalue)            (* inclusive range, e.g. 29811-29814    *)
 | SVConcat (vs : list svalue)          (* concatenation, e.g. 1.2.3.4 . eth0   *)
-| SVSet    (vs : list svalue).         (* a `define`d set value, `{ $a, $b }`  *)
+| SVSet    (vs : list svalue)          (* a `define`d set value, `{ $a, $b }`  *)
+| SVOr     (vs : list svalue).         (* a pipe-joined OR group, `(syn|ack)` /
+                                          `syn | ack`: nft's '|' binop over
+                                          constants (parser_bison.y
+                                          basic_rhs_expr), carried UNRESOLVED —
+                                          the member bits are OR-folded in the
+                                          verified resolver
+                                          (Typecheck.resolve_value), never in
+                                          the OCaml frontend                   *)
 
 (** Smart constructor for a dotted-quad IPv4 literal: the emitter prints
     `sip4 192 168 100 0` for [SVIp4 [192;168;100;0]] so the generated Gen file

@@ -62,6 +62,7 @@ let rec value : Nft_ast.value -> Ast.svalue = function
   | Nft_ast.Vrange (a, b) -> Ast.SVRange (value a, value b)
   | Nft_ast.Vconcat vs -> Ast.SVConcat (L.map value vs)
   | Nft_ast.Vset vs -> Ast.SVSet (L.map value vs)
+  | Nft_ast.Vor vs -> Ast.SVOr (L.map value vs)
 
 let sobjkind : Nft_ast.sobjkind -> Ast.sobjkind = function
   | Nft_ast.OKcounter -> Ast.OKcounter | Nft_ast.OKquota -> Ast.OKquota
