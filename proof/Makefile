@@ -11,6 +11,13 @@
 ROCQBIN ?=
 COQMAKE  = CoqMakefile
 
+# The build/REPL tools carry legacy names under Coq (coq_makefile / coqtop) and
+# new names under the Rocq 9.x CLI (`rocq makefile` / `rocq repl`).  Prefer the
+# legacy binaries when present (a local dev switch that installs coq-core), else
+# fall back to the `rocq` CLI — the coqorg/coq:9.1 CI image ships only `rocq`.
+COQMAKEBIN := $(shell command -v coq_makefile >/dev/null 2>&1 && echo coq_makefile || echo rocq makefile)
+COQTOP     := $(shell command -v coqtop       >/dev/null 2>&1 && echo coqtop       || echo rocq repl)
+
 .PHONY: all proofs glue lib example semtest difftest corpus byteorder-gate source-sweep-gate objects-sweep-gate corpus-okfail-gate validate parse-test gen gen-check gates boundary clean cli e2e nl-send parser-corpus axioms
 
 all: proofs glue
@@ -72,7 +79,7 @@ proofs: $(COQMAKE)
 	$(MAKE) -f $(COQMAKE)
 
 $(COQMAKE): _CoqProject
-	coq_makefile -f _CoqProject -o $(COQMAKE)
+	$(COQMAKEBIN) -f _CoqProject -o $(COQMAKE)
 
 glue: proofs
 	cd extracted && dune build ./glue.exe corpus_test.exe
@@ -235,7 +242,7 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
 axioms:
 	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optimize_PayMerge Optimize_XorFold Optimize_Registry Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs Setread_IntraRule.\n'; \
 	  for t in $(AXIOM_GATE_THEOREMS); do printf 'Print Assumptions %s.\n' "$$t"; done; } \
-	| coqtop -R . Nft 2>/dev/null \
+	| $(COQTOP) -R . Nft 2>/dev/null \
 	| grep -E 'Closed under the global context|Axioms' \
 	| { fail=0; for t in $(AXIOM_GATE_THEOREMS); do \
 	      if ! read -r line; then echo "$$t: NO VERDICT (build theories first: make proofs)"; fail=1; break; fi; \
