@@ -609,7 +609,12 @@ netns packet counters where a wire question needed a behaviour test:
 `reports/discrepancy-adjudication.md` (82 rows after two harness-artefact
 corrections) and `reports/corpus-divergence-bugs.md`. The verdict: **31 real
 wire-level bugs**, **1 upstream nftables bug** (class O below), **50 benign**
-(wire-identical or provably same-packets). Every bug was a decision in the
+(wire-identical or provably same-packets). Corpus-text accounting of the fixes
+(correcting the T2A repair commit message's "all 31 leave the divergent set"):
+**26** of the 31 fixed blocks leave the divergent set — byte-identical to the
+corpus after their fixes — while **5** remain textually divergent yet
+wire-correct/packet-equal, a host-endian display residual (not bugs; see the
+per-class ledger notes below). Every bug was a decision in the
 **frontend's** source→DSL encoding — the Rocq DSL≡bytecode theorems were never
 contradicted — and the typed-layer migration ported those decisions verbatim
 into the verified Coq lowering, so the fixes are now IN the verified lowering:
@@ -768,8 +773,13 @@ expectation set` → `type 9`, ...).
 *Model boundaries (ledgered, not refusals — the reference forms all lower):*
 - A **named quota's over-limit drop** is not modelled: `quota name X` lowers to a
   verdict-neutral `SObjref` (the object accounts; the verdict effect of a
-  depleted named quota is not threaded). Anonymous inline `quota N bytes` keeps
-  its `MQuota` drop semantics. Follow-up: thread named-quota state through `env`
+  depleted named quota is not threaded). An anonymous inline `quota N bytes`
+  statement is not parsed at all: `parser.mly`'s only `QUOTA` productions are the
+  objref (`QUOTA IDENT STRING`), the declaration (`QUOTA IDENT LBRACE obj_body
+  RBRACE`), and the objref-map clause, so `quota 100 bytes` in a rule is a loud
+  parse error — consistent with the "anonymous stateful statements" entry in the
+  T3 corpus ok/fail residual below. Only the named-quota objref form lowers, and
+  it lowers verdict-neutrally. Follow-up: thread named-quota state through `env`
   like `e_quota` and give `SObjref` of a quota a `MQuota`-style verdict.
 - An **objref verdict-map's element→object bindings** (`counter name <key> map {
   443 : "cnt1" }`) are a verdict-neutral side effect not read by the semantics,
