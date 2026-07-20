@@ -993,6 +993,16 @@ let run_corpus () =
            | _ -> ())
       | `R rule ->
           let compiled = Compile.compile_rule rule in
+          (* W2 runtime gate: every compiled rule must pass the kernel
+             register validator (RegsValid mirrors nft_validate_register_
+             load/store); a violation is a real compiler bug — fail loud. *)
+          if not (RegsValid.regs_valid compiled) then begin
+            bump "REGS-INVALID";
+            if List.length !mismatches < 8 then
+              mismatches :=
+                (List.map (fun l -> String.concat " " (toks_of_line l)) block,
+                 ["<regs_valid = false>"]) :: !mismatches
+          end;
           (* field-aware, whole-rule render: host-endian (mark/iif/oif/ct-mark/
              fib-type) eq/range immediates print host-order, matching the corpus *)
           let ours = render_rule_lines compiled in
@@ -1019,8 +1029,13 @@ let run_corpus () =
   (* A mismatch means our verified compiler disagreed with upstream on a rule we
      claim to support: a real bug. Fail the build. *)
   let mm = try Hashtbl.find cats "MISMATCH" with Not_found -> 0 in
-  if mm > 0 then (Printf.printf "\nFAIL: %d mismatch(es)\n" mm; exit 1)
-  else Printf.printf "\nOK: %d/%d round-tripped, 0 mismatches\n" !pass !total
+  (* W2: any compiled rule failing the kernel register validator is equally a
+     real bug (the kernel would reject the rule at load time). *)
+  let rv = try Hashtbl.find cats "REGS-INVALID" with Not_found -> 0 in
+  if mm > 0 || rv > 0 then
+    (Printf.printf "\nFAIL: %d mismatch(es), %d regs-invalid\n" mm rv; exit 1)
+  else Printf.printf "\nOK: %d/%d round-tripped, 0 mismatches (all regs-valid)\n"
+         !pass !total
 
 let () =
   match Array.to_list Sys.argv with

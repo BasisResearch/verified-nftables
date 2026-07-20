@@ -193,6 +193,14 @@ validate: glue
 #                        (what `nftc compile` emits); the optimize-path
 #                        headline optimize_table_uncond_compile_correct is
 #                        stated over the same default pipeline
+#   register file (W2)   every frontend-emitted program passes the kernel
+#                        register validator (nft_validate_register_load/store
+#                        mirrored by RegsValid.regs_valid, per-operand kernel
+#                        lengths) — through the DEFAULT pipeline
+#                        (lower_ruleset_default_regs_valid) and the plain
+#                        compile (lower_ruleset_compile_regs_valid); enforced
+#                        BY CONSTRUCTION by Lower.lower_rule's fail-loud
+#                        LEregalloc admission, no hypothesis
 #   faithful widths (W1) every meta/ct/rt/socket/osf/numgen/symhash oracle read
 #                        is width-normalised BY CONSTRUCTION to its kernel
 #                        register width (Bytes.fit at the do_load boundary;
@@ -250,6 +258,8 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Lower_Proofs.set_interval_erasure Lower_Proofs.concat_key_erasure \
   Lower_Proofs.cidr_interval_agrees_prefix_expand \
   Lower_Proofs.lower_ruleset_numgen_free \
+  RegsValid_Proofs.lower_ruleset_default_regs_valid \
+  RegsValid_Proofs.lower_ruleset_compile_regs_valid \
   Semantics.rule_step_mutfree \
   Setread_IntraRule.setread_accepted Setread_IntraRule.vm_setread_accepted \
   Setread_IntraRule.dynset_feedback_accepted Setread_IntraRule.vm_dynset_feedback_accepted \
@@ -259,7 +269,7 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Syntax.read_numgen_length Syntax.read_symhash_length
 
 axioms:
-	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optimize_PayMerge Optimize_XorFold Optimize_Linearize Optimize_Registry Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs Setread_IntraRule.\n'; \
+	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optimize_PayMerge Optimize_XorFold Optimize_Linearize Optimize_Registry Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs RegsValid_Proofs Setread_IntraRule.\n'; \
 	  for t in $(AXIOM_GATE_THEOREMS); do printf 'Print Assumptions %s.\n' "$$t"; done; } \
 	| $(COQTOP) -R . Nft 2>/dev/null \
 	| grep -E 'Closed under the global context|Axioms' \

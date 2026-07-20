@@ -38,6 +38,10 @@ From Stdlib Require Import ExtrOcamlNatInt.
 From Stdlib Require Import ExtrOcamlNativeString.
 From Stdlib Require Import BinNat.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile Optimize Nftval.
+(* The kernel register-file validator (W2): extracted so the corpus round-trip
+   asserts [regs_valid] on every compiled rule at runtime (corpus_test.ml) —
+   the executable twin of RegsValid_Proofs.lower_ruleset_default_regs_valid. *)
+From Nft Require Import RegsValid.
 From Nft Require Import Optimize_ValueSet Optimize_Vmap Optimize_Concat Optimize_Table Optimize_Uncond.
 (* The named, composable pass system: the two intra-rule passes plus the
    chain-level pipeline stages, each bundled with its eval-preservation proof,
@@ -125,6 +129,9 @@ Extract Constant N.of_nat =>
    concrete packets (semtest.ml). *)
 Separate Extraction
   compile_chain
+  RegsValid.regs_valid
+  RegsValid.regs_valid_prog
+  RegsValid.instr_regs_ok
   optimize_chain
   optimize_table
   optimize_table_uncond

@@ -14,6 +14,7 @@ theories/Surface/Symbols.v
 theories/Surface/Selector.v
 theories/Surface/Typecheck.v
 theories/Surface/Typed.v
+theories/Compiler/RegsValid.v
 theories/Surface/Lower.v
 theories/Surface/Lower_Examples.v
 
@@ -31,6 +32,7 @@ theories/Optimizer/Optimize_Normalize.v
 theories/Optimizer/Optimize_PayMerge.v
 theories/Optimizer/Optimize_XorFold.v
 theories/Optimizer/Optimize_Linearize.v
+theories/Compiler/RegsValid_Proofs.v
 theories/Optimizer/Optimize_ValueSet.v
 theories/Optimizer/Optimize_Vmap.v
 theories/Optimizer/Optimize_VmapGuarded.v
