@@ -2687,147 +2687,16 @@ let byteorder_gate files =
     Printf.printf "OK: %d/%d host-order blocks: compile-from-source == corpus .payload\n"
       !passed !checked
 
-(* ---------- SOURCE-SWEEP: a compile-from-source TRACKED-COUNT RATCHET ----------
-   The byteorder-gate above is a red/green byte-identity gate on the narrow
-   host-order class.  This sweep is BROADER: it compiles the `# <src>` header of
-   EVERY `.t.payload` block from source, renders it, and diffs the whole rendered
-   rule against the block's recorded instructions.  The corpus goldens are
-   endian-unportable for hton'd host-endian constants (upstream nft-test.py -H
-   fails those lines on x86-64) and several benign classes render differently, so
-   a naive text sweep can never be red/green.  Instead it is a RATCHET: the pass
-   count is pinned in the Makefile as a FLOOR, and a frontend regression that
-   drops a block below the floor turns the build red — while the open
-   display/optimization classes stay visible without freezing the gate.  The
-   class B/C range fixes ADD passing blocks (their `byteorder hton` + big-endian
-   bounds now match the corpus), lifting the floor. *)
-
-(* line-numbered block splitter (blocks separated by blank lines) *)
-let payload_blocks_ln path =
-  let lines = read_lines path in
-  let flush cur startln acc =
-    match cur with [] -> acc | _ -> (startln, L.rev cur) :: acc in
-  let rec go cur startln n acc = function
-    | [] -> L.rev (flush cur startln acc)
-    | "" :: rest -> go [] 0 (n + 1) (flush cur startln acc) rest
-    | l :: rest ->
-        let st = if cur = [] then n else startln in
-        go (l :: cur) st (n + 1) acc rest in
-  go [] 0 1 [] lines
-
-(* upstream records `<file>.t.payload.<family>` per FAMILY; the `<fam> <tbl>
-   <chn>` line inside a block is not authoritative (a stale ip4 line can head an
-   inet-family recording), so the family is the filename suffix when present. *)
-let family_of_payload_path path =
-  let base = Filename.basename path in
-  match Stdlib.String.split_on_char '.' base |> L.rev with
-  | fam :: "payload" :: _ when fam <> "payload" -> Some fam
-  | _ -> None
-
-(* recordings are made in BASE chains; nft's dependency synthesis is
-   context-sensitive, so the wrap must declare the hook. *)
-let hook_line_of_chain chn =
-  match chn with
-  | "input" | "output" | "forward" | "prerouting" | "postrouting" ->
-      Printf.sprintf "type filter hook %s priority 0;" chn
-  | "ingress" | "egress" ->
-      Printf.sprintf "type filter hook %s device lo priority 0;" chn
-  | _ -> "type filter hook input priority 0;"
-
-(* __set0 / __set12 -> __set%d (the corpus placeholder) *)
-let normalise_set_names (s : string) : string =
-  let b = Buffer.create (S.length s) in
-  let n = S.length s in
-  let is_digit c = c >= '0' && c <= '9' in
-  let rec go i =
-    if i >= n then ()
-    else if i + 5 <= n && S.sub s i 5 = "__set" && i + 5 < n && is_digit (S.get s (i+5))
-    then begin
-      Buffer.add_string b "__set%d";
-      let j = ref (i + 5) in
-      while !j < n && is_digit (S.get s !j) do incr j done;
-      go !j
-    end else (Buffer.add_char b (S.get s i); go (i + 1)) in
-  go 0; Buffer.contents b
-
-let source_sweep files =
-  let attempted = ref 0 and passed = ref 0 and parsefail = ref 0 and mism = ref 0 in
-  L.iter (fun path ->
-    L.iter (fun (ln, block) ->
-      match block with
-      | hdr :: fam_line :: instrs
-        when S.length hdr > 2 && S.get hdr 0 = '#' && starts_bracket
-               (match instrs with i :: _ -> i | [] -> "") ->
-          let src = S.trim (S.sub hdr 1 (S.length hdr - 1)) in
-          (match S.split_on_char ' ' (S.trim fam_line)
-                 |> L.filter (fun s -> s <> "") with
-           | [fam; tbl; chn] ->
-             incr attempted;
-             let fam = match family_of_payload_path path with
-               | Some f -> f | None -> fam in
-             let _where = Printf.sprintf "%s:%d" path ln in
-             let wrapped =
-               Printf.sprintf "table %s %s {\n chain %s {\n  %s\n  %s\n }\n}\n"
-                 fam tbl chn (hook_line_of_chain chn) src in
-             (match (try Some (Nft_parse.parse_string wrapped) with _ -> None) with
-              | None -> incr parsefail
-              | Some parsed ->
-                (match
-                   (try
-                      (* Enable the adjacent-payload-load merge (Optimize_PayMerge,
-                         corpus class I): nft ALWAYS performs this fusion
-                         (stmt_reduce/payload_can_merge), so the source-side
-                         bytecode is byte-identical only with the pass applied.
-                         The pass is verdict-preserving (paymerge_chain_eval) and
-                         merges exactly nft's cases; the host-endian xor fold
-                         (class L) is NOT applied here — its blocks are
-                         endian-unportable in the text corpus. *)
-                      Some (L.concat_map (fun (_f, _t, chains) ->
-                          L.concat_map (fun (_cn, c) ->
-                            Compile.compile_chain (Optimize_PayMerge.paymerge_chain c))
-                            chains)
-                          parsed.Nft_inject.p_tables)
-                    with _ -> None)
-                 with
-                 | None | Some [] -> incr parsefail
-                 | Some rules ->
-                     let ours =
-                       L.concat_map Codec.render_rule_lines rules
-                       |> L.map (fun l -> normalise_set_names (S.trim l)) in
-                     let theirs = take_while starts_bracket instrs |> L.map S.trim in
-                     if ours = theirs then incr passed else incr mism))
-           | _ -> ())
-      | _ -> ()) (payload_blocks_ln path))
-    files;
-  Printf.printf
-    "SOURCE-SWEEP\tattempted=%d\tpass=%d\tparsefail=%d\tmismatch=%d\n"
-    !attempted !passed !parsefail !mism;
-  !passed
-
-(* ratchet: PASS if the byte-identical count is >= the pinned floor. *)
-let source_sweep_gate minpass files =
-  let p = source_sweep files in
-  if p < minpass then begin
-    Printf.printf
-      "SOURCE-SWEEP FAIL: pass=%d below pinned floor %d (a frontend regression dropped a block; investigate before lowering the floor)\n"
-      p minpass;
-    exit 1
-  end else
-    Printf.printf "SOURCE-SWEEP OK: pass=%d >= floor %d\n" p minpass
-
-(* ---------- OBJECTS OK/FAIL SWEEP (T3) ----------
-   Run the corpus `.t` RULE lines (the `;ok` / `;fail` reference forms) through
-   the full frontend — parse + config-op apply + typecheck + verified lowering —
-   and check the outcome against the corpus verdict.  Acceptance is BIDIRECTIONAL:
-   every `;ok` rule must be ACCEPTED (all three stages succeed); every `;fail`
-   rule must be REJECTED (parse error, or typecheck false, or a lowering lerr).
-
-   Object DECLARATION lines (`%name type ...`) populate the table's object
-   environment (the `;ok` ones only); their own `;ok`/`;fail` verdicts test deep
-   object-body validity (helper protocol modules, ct-timeout policy state names,
-   l3proto compatibility) which is kernel-module behaviour OUTSIDE this model, so
-   the sweep scopes to RULE lines and LEDGERS the declaration-validity residual
-   (DEVELOPMENT.md).  This is the tracked-count ratchet's oracle. *)
-module OSweep = struct
+(* ---------- shared corpus-sweep harness: the DECLARATION CONTEXT ----------
+   A `.t.payload` block records a RULE that was compiled in a context where the
+   sibling `.t` file's `!set` / `%object` declarations existed.  The sweeps wrap
+   the bare rule in a synthetic table, so those declarations must be
+   RE-INJECTED: the verified surface typecheck (mandatory on the shipped
+   frontend path since it moved into Nft_inject.lower) rightly rejects an
+   undeclared `@set` or named-object reference, and without the declarations the
+   wrap would be ill-typed even though the RECORDED config was valid.  These
+   helpers are shared with the objects/corpus ok-fail sweeps (OSweep below). *)
+module Harness = struct
   let starts_with s p =
     String.length s >= String.length p && String.sub s 0 (String.length p) = p
 
@@ -2899,7 +2768,9 @@ module OSweep = struct
           let kw = if L.mem ":" type_toks then "map" else "set" in
           Some (Printf.sprintf "%s %s { type %s;%s }" kw name type_str flags_clause)
 
-  (* accepted iff parse + typecheck + verified lowering all succeed *)
+  (* accepted iff parse + typecheck + verified lowering all succeed (the
+     typecheck is part of Nft_inject.lower, but it is also run explicitly so
+     this stays the harness's stated acceptance even if the plumbing moves) *)
   let accepted (text : string) : bool =
     match (try Some (Nft_parse.parse_raw text) with _ -> None) with
     | None -> false
@@ -2909,6 +2780,213 @@ module OSweep = struct
            Typecheck.typecheck_ruleset surface
            && (try ignore (Nft_inject.lower raw); true with _ -> false)
          with _ -> false)
+
+  (* the sibling `.t` of a `.t.payload[.<family>]` recording *)
+  let t_of_payload (path : string) : string option =
+    let b = Filename.basename path in
+    let n = String.length b in
+    let pat = ".t.payload" in
+    let pn = String.length pat in
+    let rec find i =
+      if i + pn > n then None
+      else if String.sub b i pn = pat then Some i
+      else find (i + 1) in
+    match find 0 with
+    | None -> None
+    | Some i -> Some (Filename.concat (Filename.dirname path)
+                        (String.sub b 0 (i + 2)))
+
+  (* the injectable declaration context of a payload file: the sibling `.t`'s
+     `;ok` `!`/`%` lines, FIRST declaration wins per name (a `.t` may re-declare
+     e.g. `!set1` with different stateful attrs), each kept only if it
+     INDIVIDUALLY parses/typechecks/lowers — an unmodelled datatype (`type
+     time`) would otherwise poison the whole wrapped table (see OSweep). *)
+  let decls_for_payload (path : string) : string list =
+    match t_of_payload path with
+    | Some tfile when Sys.file_exists tfile ->
+        let seen = Hashtbl.create 8 in
+        read_lines tfile
+        |> L.filter_map (fun l0 ->
+             let l = String.trim l0 in
+             if String.length l < 2 || not (l.[0] = '!' || l.[0] = '%') then None
+             else match split_verdict l with
+               | Some (payload, "ok") ->
+                   let payload = String.trim payload in
+                   let name =
+                     let body = String.sub payload 1 (String.length payload - 1) in
+                     (match String.index_opt body ' ' with
+                      | Some i -> String.sub body 0 i | None -> body) in
+                   if Hashtbl.mem seen name then None
+                   else
+                     let d =
+                       if starts_with payload "%" then translate_decl payload
+                       else translate_setdecl payload in
+                     (match d with
+                      | Some _ -> Hashtbl.add seen name (); d
+                      | None -> None)
+               | _ -> None)
+        |> L.filter (fun d ->
+             accepted (Printf.sprintf
+               "table ip t {\n  %s\n  chain c { type filter hook input priority 0; }\n}\n" d))
+    | _ -> []
+end
+
+(* ---------- SOURCE-SWEEP: a compile-from-source TRACKED-COUNT RATCHET ----------
+   The byteorder-gate above is a red/green byte-identity gate on the narrow
+   host-order class.  This sweep is BROADER: it compiles the `# <src>` header of
+   EVERY `.t.payload` block from source, renders it, and diffs the whole rendered
+   rule against the block's recorded instructions.  The corpus goldens are
+   endian-unportable for hton'd host-endian constants (upstream nft-test.py -H
+   fails those lines on x86-64) and several benign classes render differently, so
+   a naive text sweep can never be red/green.  Instead it is a RATCHET: the pass
+   count is pinned in the Makefile as a FLOOR, and a frontend regression that
+   drops a block below the floor turns the build red — while the open
+   display/optimization classes stay visible without freezing the gate.  The
+   class B/C range fixes ADD passing blocks (their `byteorder hton` + big-endian
+   bounds now match the corpus), lifting the floor. *)
+
+(* line-numbered block splitter (blocks separated by blank lines) *)
+let payload_blocks_ln path =
+  let lines = read_lines path in
+  let flush cur startln acc =
+    match cur with [] -> acc | _ -> (startln, L.rev cur) :: acc in
+  let rec go cur startln n acc = function
+    | [] -> L.rev (flush cur startln acc)
+    | "" :: rest -> go [] 0 (n + 1) (flush cur startln acc) rest
+    | l :: rest ->
+        let st = if cur = [] then n else startln in
+        go (l :: cur) st (n + 1) acc rest in
+  go [] 0 1 [] lines
+
+(* upstream records `<file>.t.payload.<family>` per FAMILY; the `<fam> <tbl>
+   <chn>` line inside a block is not authoritative (a stale ip4 line can head an
+   inet-family recording), so the family is the filename suffix when present. *)
+let family_of_payload_path path =
+  let base = Filename.basename path in
+  match Stdlib.String.split_on_char '.' base |> L.rev with
+  | fam :: "payload" :: _ when fam <> "payload" -> Some fam
+  | _ -> None
+
+(* recordings are made in BASE chains; nft's dependency synthesis is
+   context-sensitive, so the wrap must declare the hook. *)
+let hook_line_of_chain chn =
+  match chn with
+  | "input" | "output" | "forward" | "prerouting" | "postrouting" ->
+      Printf.sprintf "type filter hook %s priority 0;" chn
+  | "ingress" | "egress" ->
+      Printf.sprintf "type filter hook %s device lo priority 0;" chn
+  | _ -> "type filter hook input priority 0;"
+
+(* __set0 / __set12 -> __set%d (the corpus placeholder) *)
+let normalise_set_names (s : string) : string =
+  let b = Buffer.create (S.length s) in
+  let n = S.length s in
+  let is_digit c = c >= '0' && c <= '9' in
+  let rec go i =
+    if i >= n then ()
+    else if i + 5 <= n && S.sub s i 5 = "__set" && i + 5 < n && is_digit (S.get s (i+5))
+    then begin
+      Buffer.add_string b "__set%d";
+      let j = ref (i + 5) in
+      while !j < n && is_digit (S.get s !j) do incr j done;
+      go !j
+    end else (Buffer.add_char b (S.get s i); go (i + 1)) in
+  go 0; Buffer.contents b
+
+let source_sweep files =
+  let attempted = ref 0 and passed = ref 0 and parsefail = ref 0 and mism = ref 0 in
+  L.iter (fun path ->
+    (* the sibling `.t`'s declarations, so `@set` / named-object references in a
+       block typecheck the way they did in the recording context (Harness) *)
+    let decl_text =
+      match Harness.decls_for_payload path with
+      | [] -> ""
+      | ds -> " " ^ S.concat "\n " ds ^ "\n" in
+    L.iter (fun (ln, block) ->
+      match block with
+      | hdr :: fam_line :: instrs
+        when S.length hdr > 2 && S.get hdr 0 = '#' && starts_bracket
+               (match instrs with i :: _ -> i | [] -> "") ->
+          let src = S.trim (S.sub hdr 1 (S.length hdr - 1)) in
+          (match S.split_on_char ' ' (S.trim fam_line)
+                 |> L.filter (fun s -> s <> "") with
+           | [fam; tbl; chn] ->
+             incr attempted;
+             let fam = match family_of_payload_path path with
+               | Some f -> f | None -> fam in
+             let _where = Printf.sprintf "%s:%d" path ln in
+             let wrapped =
+               Printf.sprintf "table %s %s {\n%s chain %s {\n  %s\n  %s\n }\n}\n"
+                 fam tbl decl_text chn (hook_line_of_chain chn) src in
+             (match (try Some (Nft_parse.parse_string wrapped) with _ -> None) with
+              | None -> incr parsefail;
+                  if Sys.getenv_opt "SWEEP_DEBUG" <> None then
+                    Printf.printf "PARSEFAIL %s | %s\n" _where src
+              | Some parsed ->
+                (match
+                   (try
+                      (* Enable the adjacent-payload-load merge (Optimize_PayMerge,
+                         corpus class I): nft ALWAYS performs this fusion
+                         (stmt_reduce/payload_can_merge), so the source-side
+                         bytecode is byte-identical only with the pass applied.
+                         The pass is verdict-preserving (paymerge_chain_eval) and
+                         merges exactly nft's cases; the host-endian xor fold
+                         (class L) is NOT applied here — its blocks are
+                         endian-unportable in the text corpus. *)
+                      Some (L.concat_map (fun (_f, _t, chains) ->
+                          L.concat_map (fun (_cn, c) ->
+                            Compile.compile_chain (Optimize_PayMerge.paymerge_chain c))
+                            chains)
+                          parsed.Nft_inject.p_tables)
+                    with _ -> None)
+                 with
+                 | None | Some [] -> incr parsefail
+                 | Some rules ->
+                     let ours =
+                       L.concat_map Codec.render_rule_lines rules
+                       |> L.map (fun l -> normalise_set_names (S.trim l)) in
+                     let theirs = take_while starts_bracket instrs |> L.map S.trim in
+                     if ours = theirs then incr passed else incr mism))
+           | _ -> ())
+      | _ -> ()) (payload_blocks_ln path))
+    files;
+  Printf.printf
+    "SOURCE-SWEEP\tattempted=%d\tpass=%d\tparsefail=%d\tmismatch=%d\n"
+    !attempted !passed !parsefail !mism;
+  !passed
+
+(* ratchet: PASS if the byte-identical count is >= the pinned floor. *)
+let source_sweep_gate minpass files =
+  let p = source_sweep files in
+  if p < minpass then begin
+    Printf.printf
+      "SOURCE-SWEEP FAIL: pass=%d below pinned floor %d (a frontend regression dropped a block; investigate before lowering the floor)\n"
+      p minpass;
+    exit 1
+  end else
+    Printf.printf "SOURCE-SWEEP OK: pass=%d >= floor %d\n" p minpass
+
+(* ---------- OBJECTS OK/FAIL SWEEP (T3) ----------
+   Run the corpus `.t` RULE lines (the `;ok` / `;fail` reference forms) through
+   the full frontend — parse + config-op apply + typecheck + verified lowering —
+   and check the outcome against the corpus verdict.  Acceptance is BIDIRECTIONAL:
+   every `;ok` rule must be ACCEPTED (all three stages succeed); every `;fail`
+   rule must be REJECTED (parse error, or typecheck false, or a lowering lerr).
+
+   Object DECLARATION lines (`%name type ...`) populate the table's object
+   environment (the `;ok` ones only); their own `;ok`/`;fail` verdicts test deep
+   object-body validity (helper protocol modules, ct-timeout policy state names,
+   l3proto compatibility) which is kernel-module behaviour OUTSIDE this model, so
+   the sweep scopes to RULE lines and LEDGERS the declaration-validity residual
+   (DEVELOPMENT.md).  This is the tracked-count ratchet's oracle. *)
+module OSweep = struct
+  (* the `.t`-line helpers and the parse+typecheck+lower acceptance oracle are
+     shared with the source-sweep's declaration-context injection (Harness) *)
+  let starts_with = Harness.starts_with
+  let split_verdict = Harness.split_verdict
+  let translate_decl = Harness.translate_decl
+  let translate_setdecl = Harness.translate_setdecl
+  let accepted = Harness.accepted
 
   (* a rule payload that this sweep cannot faithfully judge standalone: a
      `$var` reference needs a `define` (which we skip — no variable table), and

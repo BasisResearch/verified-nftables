@@ -226,8 +226,51 @@ let build_env sets vmaps maps : Packet.env =
     e_limit = (fun _ -> 1); e_quota = (fun _ -> 1); e_connlimit = (fun _ -> []);
     e_ct = (fun _ _ -> []); e_nat = (fun _ -> None); e_numgen = (fun _ -> 0) }
 
+(* ---------- the verified surface typecheck, on the SHIPPED path ----------
+   T3 residue (claim honesty): the extracted Coq typechecker
+   (theories/Surface/Typecheck.v, [typecheck_ruleset]) used to run only in the
+   parse-test / sweep GATES, so `nftc compile` on a config whose rule said
+   `counter name "undeclared"` (no declaration, or one of the wrong kind)
+   silently lowered — an objref to a nonexistent object.  Now EVERY frontend
+   consumer of [lower] (nftc compile/optimize/send, parse_test's CLI mode,
+   semtest, e2e) runs the same verified check before the verified lowering.
+   No typing logic lives here: this function only calls the EXTRACTED
+   per-table/per-chain checkers again to NAME the failing spot for the error
+   message; accept/reject is decided by [Typecheck.typecheck_ruleset] alone. *)
+let typecheck_error (surface : Ast.sruleset) : string =
+  let defs = Typecheck.defines_of surface in
+  let where =
+    L.find_map
+      (function
+        | Ast.TopTable t when not (Typecheck.typecheck_table defs t) ->
+            let decls = Typecheck.decls_of_table t in
+            let objs = Typecheck.objs_of_table t in
+            let item =
+              L.find_map
+                (function
+                  | Ast.TChain c
+                    when not (Typecheck.typecheck_chain defs decls objs c) ->
+                      Some (", chain " ^ c.Ast.sc_name)
+                  | Ast.TSet sd when not (Typecheck.tc_setdecl defs sd) ->
+                      Some (", set " ^ sd.Ast.sd_name)
+                  | _ -> None)
+                t.Ast.st_items in
+            Some (Printf.sprintf " (table %s %s%s)" t.Ast.st_family t.Ast.st_name
+                    (match item with Some i -> i | None -> ""))
+        | _ -> None)
+      surface in
+  "ill-typed ruleset rejected by the verified surface typecheck \
+   (Surface/Typecheck.v)"
+  ^ (match where with Some w -> w | None -> "")
+  ^ ": e.g. a named-object reference (counter/quota/... name) with no \
+     declaration or a declaration of another kind, an unknown symbol, or a \
+     cross-type match"
+
 let lower (f : Nft_ast.sfile) : parsed =
-  match Lower.lower_ruleset ifindex_oracle (file f) with
+  let surface = file f in
+  if not (Typecheck.typecheck_ruleset surface) then
+    raise (Lower_error (typecheck_error surface));
+  match Lower.lower_ruleset ifindex_oracle surface with
   | Lower.LErr e -> raise (Lower_error (Lower.lerr_message e))
   | Lower.LOk lr ->
       g_typed := lr.Lower.lr_typed;
