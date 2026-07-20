@@ -6,14 +6,16 @@
     the plain compile of every rule a successful [lower_ruleset] emits BY
     CONSTRUCTION.  The DEFAULT pipeline additionally runs nft's always-on
     linearization ([Optimize_Linearize.compile_chain_default] = compile after
-    payload-merge + xor-fold); both stages PRESERVE validator success from
-    their own guards alone:
+    payload-merge + xor-fold + trivial-binop elision); all three stages
+    PRESERVE validator success from their own guards alone:
 
       - a payload merge is admitted only when the combined width is within
         NFT_REG_SIZE = 16 bytes ([seg_can_merge], nft's payload_can_merge),
         so the fused load/cmp re-validates;
       - the xor constant transfer keeps every operand length
-        ([xorfold_mc]'s guard pins |mask| = |xor| = |v|).
+        ([xorfold_mc]'s guard pins |mask| = |xor| = |v|);
+      - the trivial-binop elision only DELETES an instruction (the spent
+        [IBitwise]) from a validated sequence.
 
     HEADLINE: [lower_ruleset_default_regs_valid] — for every ruleset the
     frontend lowers, every chain's DEFAULT-pipeline bytecode passes
@@ -25,7 +27,7 @@
 
 From Stdlib Require Import String List Bool PeanoNat Lia.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Compile RegsValid
-  Optimize_PayMerge Optimize_XorFold Optimize_Linearize.
+  Optimize_PayMerge Optimize_XorFold Optimize_Elide Optimize_Linearize.
 From Nft Require Import Ast Lower.
 Import ListNotations.
 
@@ -145,6 +147,46 @@ Proof.
   rewrite regs_valid_app in H |- *.
   apply andb_true_iff in H as [H1 H2].
   rewrite (xorfold_bi_regs _ H1), (IH H2). reflexivity.
+Qed.
+
+(* ================================================================== *)
+(** ** The trivial-binop elision preserves validator success: it only ever
+    DELETES the spent [IBitwise] from a validated load/bitwise/cmp sequence
+    (the load and the cmp are carried verbatim). *)
+
+Lemma elide_mc_regs : forall m,
+  regs_valid (compile_match m) = true ->
+  regs_valid (compile_match (elide_mc m)) = true.
+Proof.
+  intros m H.
+  destruct m as [f v|f v|f n lo hi|f op mask xor v|f op v|fs n nm|f ts op v
+                |f ts n nm|f ts n lo hi|sp|sp|sp|el n nm]; try exact H.
+  cbn [elide_mc].
+  destruct (load_octet_width (field_load f)) as [w|]; [| exact H].
+  destruct (Nat.eqb (length v) w && data_eqb mask (repeat 255 w)
+            && data_eqb xor (repeat 0 w))%bool; [| exact H].
+  cbn [compile_match regs_valid forallb] in H |- *.
+  apply andb_true_iff in H as [Hload H].
+  apply andb_true_iff in H as [_ Hcmp].
+  rewrite Hload. exact Hcmp.
+Qed.
+
+Lemma elide_bi_regs : forall it,
+  regs_valid (compile_body_item it) = true ->
+  regs_valid (compile_body_item (elide_bi it)) = true.
+Proof.
+  intros [m|s] H; [apply elide_mc_regs; exact H | exact H].
+Qed.
+
+Lemma elide_body_regs : forall body,
+  regs_valid (flat_map compile_body_item body) = true ->
+  regs_valid (flat_map compile_body_item (map elide_bi body)) = true.
+Proof.
+  induction body as [|it body IH]; intros H; [exact H|].
+  cbn [map flat_map] in H |- *.
+  rewrite regs_valid_app in H |- *.
+  apply andb_true_iff in H as [H1 H2].
+  rewrite (elide_bi_regs _ H1), (IH H2). reflexivity.
 Qed.
 
 (* ================================================================== *)
@@ -294,13 +336,25 @@ Proof.
   rewrite (xorfold_body_regs _ Hb), Hrest. reflexivity.
 Qed.
 
+Lemma elide_rule_regs : forall r,
+  rule_regs_ok r = true -> rule_regs_ok (elide_rule r) = true.
+Proof.
+  intros r H. unfold rule_regs_ok in *.
+  rewrite compile_rule_split in H |- *.
+  change (compile_end (elide_rule r)) with (compile_end r).
+  change (r_after (elide_rule r)) with (r_after r).
+  rewrite elide_r_body.
+  apply andb_true_iff in H as [Hb Hrest].
+  rewrite (elide_body_regs _ Hb), Hrest. reflexivity.
+Qed.
+
 (** The always-on linearization (the DEFAULT pipeline's rewrite stage)
     preserves the validator. *)
 Lemma linearize_rule_regs : forall r,
   rule_regs_ok r = true ->
-  rule_regs_ok (xorfold_rule (paymerge_rule r)) = true.
+  rule_regs_ok (elide_rule (xorfold_rule (paymerge_rule r))) = true.
 Proof.
-  intros r H. apply xorfold_rule_regs, paymerge_rule_regs, H.
+  intros r H. apply elide_rule_regs, xorfold_rule_regs, paymerge_rule_regs, H.
 Qed.
 
 (** [lower_rule]'s fail-loud admission, read back: every emitted rule's
@@ -433,11 +487,12 @@ Qed.
 
 Lemma compile_chain_default_rules : forall c,
   compile_chain_default c
-  = map (fun r => compile_rule (xorfold_rule (paymerge_rule r))) (c_rules c).
+  = map (fun r => compile_rule (elide_rule (xorfold_rule (paymerge_rule r))))
+        (c_rules c).
 Proof.
   intros c.
   unfold compile_chain_default, linearize_chain, compile_chain.
-  cbn [xorfold_chain paymerge_chain c_rules].
+  cbn [elide_chain xorfold_chain paymerge_chain c_rules].
   rewrite !map_map. reflexivity.
 Qed.
 

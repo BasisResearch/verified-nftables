@@ -2931,15 +2931,17 @@ let source_sweep files =
                       (* The sweep compiles with the SHIPPED default pipeline
                          (Optimize_Linearize.compile_chain_default = nft's
                          always-on linearization — the adjacent-payload merge,
-                         corpus class I, and the xor constant fold, class L —
+                         corpus class I, the xor constant fold, class L, and
+                         the trivial-binop elision, the class-L residue —
                          then compile_chain): nft ALWAYS performs these
                          rewrites at netlink emission (stmt_reduce/
-                         payload_can_merge, binop_transfer), so the source-side
+                         payload_can_merge, binop_transfer +
+                         binop_transfer_handle_lhs), so the source-side
                          bytecode is byte-identical only through this pipeline.
                          Verdict-preserving by compile_chain_default_correct.
                          (The class-L mark blocks remain endian-unportable in
-                         the text corpus — the fold changes which BYTES diverge,
-                         not that they diverge, on a big-endian host.) *)
+                         the text corpus: the folded cmp immediate is a
+                         host-endian mark value, a DISPLAY residual.) *)
                       Some (L.concat_map (fun (_f, _t, chains) ->
                           L.concat_map (fun (_cn, c) ->
                             Optimize_Linearize.compile_chain_default c)

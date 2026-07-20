@@ -1,8 +1,9 @@
 (** * Optimize_Registry: a named, composable pass system with ONE generic
     composition theorem.
 
-    The two intra-rule passes ([Optimize_PayMerge.paymerge_chain],
-    [Optimize_XorFold.xorfold_chain]) plus the verdict-preserving chain-level
+    The three intra-rule passes ([Optimize_PayMerge.paymerge_chain],
+    [Optimize_XorFold.xorfold_chain], [Optimize_Elide.elide_chain]) plus the
+    verdict-preserving chain-level
     stages of the shipped pipeline ([Optimize_Normalize.normalize_chain] head
     normalisation and [Optimize.optimize_chain] the base absorb/DCE pass) are
     each an [opt_pass]: a NAMED [chain -> chain] transform BUNDLED with its
@@ -21,7 +22,8 @@
 
 From Stdlib Require Import List String Bool.
 From Nft Require Import Syntax Semantics
-     Optimize Optimize_Normalize Optimize_PayMerge Optimize_XorFold.
+     Optimize Optimize_Normalize Optimize_PayMerge Optimize_XorFold
+     Optimize_Elide.
 Import ListNotations.
 
 (** A registered optimizer pass: a name, a chain transform, and the PROOF that
@@ -48,9 +50,13 @@ Definition pass_xorfold : opt_pass :=
   {| op_name := "xorfold"; op_fn := xorfold_chain;
      op_correct := xorfold_chain_eval |}.
 
+Definition pass_elide : opt_pass :=
+  {| op_name := "elide"; op_fn := elide_chain;
+     op_correct := elide_chain_eval |}.
+
 (** The registry: every pass exposed by name to [-O]. *)
 Definition registry : list opt_pass :=
-  [pass_normalize; pass_base; pass_paymerge; pass_xorfold].
+  [pass_normalize; pass_base; pass_paymerge; pass_xorfold; pass_elide].
 
 (** Apply a pass list to a chain, LEFT TO RIGHT (the user's [-O] order). *)
 Definition run_passes (ps : list opt_pass) (c : chain) : chain :=

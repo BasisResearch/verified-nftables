@@ -16,11 +16,12 @@ that lettering: P, Q, R, S, plus the class-L residual.)
 
 ## Headline numbers
 
-| measure | before | after |
-|---|---|---|
-| source-sweep pass (of 1742 headered blocks) | 1196 | **1198** |
-| source-sweep mismatches | 51 | **49** |
-| pinned floor (`source-sweep-gate.sh`) | 1196 | **1198** |
+| measure | before | after | after W3 elision |
+|---|---|---|---|
+| source-sweep pass (of 1742 headered blocks) | 1196 | **1198** | **1202** |
+| source-sweep mismatches | 51 | **49** | **45** |
+| pinned floor (`source-sweep-gate.sh`) | 1196 | **1198** | **1202** |
+| byteorder-gate plain-cmp blocks | 21/21 | 21/21 | **25/25** |
 
 - Switching the sweep from harness-side `paymerge_chain` to the shipped
   `compile_chain_default` (which adds the always-on `xorfold_chain`) moved NO
@@ -38,20 +39,32 @@ blocks (`inet/payloadmerge.t.payload:1`, `inet/tcp.t.payload:166/173/182`,
 plain `nftc compile` now emits nft's merged single load
 (`default_pipeline_merges_payload_loads`, Compute-pinned).
 
-**Class L (xor constant fold) — the REWRITE is closed, default-on; the four
-blocks stay text-open on two stacked residuals.**  `nftc compile` now performs
-nft's `binop_transfer` by default (`default_pipeline_folds_xor`,
-Compute-pinned: the emitted bitwise xor operand is 0 and the compare value is
-`V ^ C`).  The blocks (`any/meta.t.payload:174/179`,
-`any/ct.t.payload:151/156`) still mismatch because:
-1. nft additionally DELETES the now-trivial `(reg & 0xffffffff) ^ 0x0` binop.
-   Unsound to replicate: the packet model's registers are unbounded byte
-   strings (`pkt_meta`/`e_ct` read raw data), so the all-ones mask is not
-   provably the identity; dropping it needs a byte-well-formedness hypothesis
-   the UNCONDITIONAL pass theorems forbid (pinned in `Optimize_XorFold.v`'s
-   scope note).
-2. The folded compare value is a host-endian `mark` immediate — the ledgered
-   endian-unportable display class (b) below.
+**Class L (xor constant fold) — WIRE-CLOSED, default-on (W3 adjudication);
+the four blocks stay text-open on the display residual alone.**  `nftc
+compile` performs nft's `binop_transfer` by default
+(`default_pipeline_folds_xor`, Compute-pinned) AND, since the W3
+identity-elision stage (`Optimize_Elide.elide_chain`, in
+`linearize_chain` after the fold), also nft's deletion of the spent
+`(reg & 0xffffffff) ^ 0x0` binop (`binop_transfer_handle_lhs`, OP_XOR):
+the default compile of a pure-xor match is a bare load + cmp with NO
+bitwise instruction (`default_pipeline_elides_trivial_binop`,
+Compute-pinned; live check: `nft --debug=netlink add rule ip t c meta mark
+xor 0x3 == 0x1 counter` emits `meta load mark => reg 1; cmp eq reg 1
+0x00000002` and `nftc compile` emits the same two instructions with value
+bytes `02 00 00 00`).  The former blocking reason — "the all-ones mask is
+not provably the identity over unbounded bytes" — is DISCHARGED: register
+reads are octet-clamped by construction (`Bytes.octets` composed with
+`Bytes.fit` at the `do_load` boundary), making the elision unconditional
+(`elide_chain_eval`, axiom-gated; no byte-well-formedness hypothesis).
+
+Per-block adjudication of the four blocks (`any/meta.t.payload:174/179`,
+`any/ct.t.payload:151/156`): CLOSED, byte-identical from source.  The
+endian-unportable part of these blocks was the DELETED bitwise's mask/xor
+immediates; what remains is a plain host-order cmp on `mark`/`ct mark`,
+which the renderer prints in the goldens' recorded byte order (the
+kernel-adjudicated host-order plain-cmp class).  Consequently the four
+blocks also ENTER `byteorder-gate`'s plain-cmp scope and pass it
+(21 -> 25 blocks, 0 failed).  Sweep floor raised 1198 -> 1202.
 
 ## Classification of the 49 remaining mismatches
 
@@ -79,10 +92,12 @@ source-divergences").  No wire divergence is claimed by these blocks.
 | `any/ct.t.payload:512` | `ct id` (class O: WE are kernel-faithful) |
 | `ip/ip_tcp.t.payload:8` | `meta mark set` immediate |
 
-### Class-L residual — 4 blocks (see above)
+### Class-L residual — CLOSED (0 blocks since W3)
 
-`any/meta.t.payload:174,179`, `any/ct.t.payload:151,156` — identity-binop
-elision (model-unsound to replicate) stacked on host-endian display.
+`any/meta.t.payload:174,179`, `any/ct.t.payload:151,156` are byte-identical
+from source since the W3 default `Optimize_Elide` stage (wire form verified
+against live nft; see the class-L adjudication above).  The class is kept in
+the ledger for traceability; it contributes 0 to the mismatch count.
 
 ### (a) Further baked-in default rewrites nft performs — 12 blocks, 4 new classes
 
@@ -178,5 +193,6 @@ raised accordingly.
 
 ## Coverage check
 
-27 (host-endian display) + 4 (class-L residual) + 2 (P) + 3 (Q) + 5 (R,
-incl. the S-stacked block) + 2 (P′) + 4 (log) + 2 (fib presence) = **49**. ✓
+Since W3: 27 (host-endian display) + 0 (class-L, closed) + 2 (P) + 3 (Q) +
+5 (R, incl. the S-stacked block) + 2 (P′) + 4 (log) + 2 (fib presence)
+= **45**. ✓  (Pre-W3 the class-L residual contributed 4, totalling 49.)
