@@ -75,16 +75,26 @@ Scope notes (each also sits on the theorem in the source):
 - The optimizer is certified at **two observation levels**, both unconditional:
   the VM-run/verdict headline `optimize_table_uncond_compile_correct`
   (`eval_chain`, through the DEFAULT compile) **and** the EFFECT-level headline
-  `Optimize_MutEnv.optimize_table_uncond_mut_env_correct` — the same shipped
-  pipeline related, at every hook, under the effect-observing
-  `eval_chain_mut_env h` (verdict **and** resulting environment; the packet
-  half is threaded internally by the same `rule_step` fold). A stage can no
-  longer preserve every verdict while altering a write a later hook observes.
+  `Optimize_MutEnv.optimize_table_uncond_mut_st_correct` — the same shipped
+  pipeline related, at every hook, under the FULL-STATE effect-observing
+  `eval_chain_mut_st h`: verdict **and** the resulting `(env, packet)` pair
+  the `rule_step` fold leaves, nothing dropped (the `(verdict, env)` form
+  `optimize_table_uncond_mut_env_correct` survives as a projection corollary
+  via `Semantics.eval_chain_mut_env_st`). A stage can no longer preserve every
+  verdict while altering a write a later hook observes — env writes because
+  `seq_eval_env` carries them to the next packet, packet writes (e.g. `meta
+  mark set`) because `eval_ruleset_u`'s priority dispatch hands the mutated
+  packet to the next base chain (precision pin: `Optimize_MutEnv` Part H —
+  the `[meta mark set 0x1]` chain and the empty chain are identified by the
+  env-only observable but distinguished by the full-state one). Jump scope:
+  `eval_chain_mut_st` is the flat fold (`terminal (Jump _) = false` skips the
+  callee), so for jump-BEARING chains the guarantee is about that flat
+  callee-skipping projection, not `eval_table_u`'s traversal.
   What makes the effect level compose: every pure-merge recogniser carries an
   **effect-safety guard** (`rule_mutfree`, `Optimize_ValueSet.value_merge_pair`)
   so its merges live on the write-free fold projection; the three
   effect-rewriting stages (`datamap`/`dnat`/`snat`) carry fold-level per-shape
-  certificates (`Optimize_MutEnv.eval_rules_mut_env_map_merge` /
+  certificates (`Optimize_MutEnv.eval_rules_mut_st_map_merge` /
   `_dnat_merge` / `_snat_merge`); the base pass is effect-safe by construction
   (`dedup_rule` fires only on `rule_mutfree` rules); and `seed_start` now also
   clears every **dynset write target** (`chain_seed` includes
@@ -177,10 +187,12 @@ redirect/masquerade data plane is hook-dependent).
 | `Optimize_Uncond.optimize_table_correct_uncond_gen` | SUPPORTING | the general `(n, d)`-threaded whole-pipeline form |
 | `Optimize_Uncond.optimize_table_uncond_correct` | SUPPORTING | DSL-level form of the optimizer headline |
 | `Optimize_Uncond.optimize_table_uncond_compile_correct` | **HEADLINE** (optimizer axis) | = `optimize_table_uncond_correct` + `Optimize_Linearize.compile_chain_default_sets_correct` (the DEFAULT compile: always-on paymerge + xorfold + elide, then `compile_chain`) |
-| `Optimize_MutEnv.optimize_table_mut_env_correct_uncond_gen` | SUPPORTING | the general `(n, d)`-threaded whole-pipeline EFFECT form: same `eval_chain_mut_env h` result for output and input under the deployed declarations |
-| `Optimize_MutEnv.optimize_table_uncond_mut_env_correct` | **HEADLINE** (optimizer EFFECT axis) | the shipped `optimize_table_uncond`, hypothesis-free, under the effect-observing `eval_chain_mut_env h`: verdict AND resulting env preserved at every hook/base env/packet (built on the per-stage `optimize_rules_*_mut_env` lemmas, the recogniser effect-safety guards, and the fold-level dnat/snat/datamap shape certificates) |
-| `Optimize_MutEnv.eval_rules_mut_env_{map,dnat,snat}_merge` | SUPPORTING | fold-level effect certificates for the three effect-rewriting merge shapes (verdict + (env, packet) out) |
-| `Optimize_MutEnv.optimize_rules_*_mut_env` (15) + `optimize_{chain,rules}_absorb/ctmask_mut_env` + `optimize_chain_mut_env` + `normalize_chain_mut_env` | STAGE | each stage of the pipeline preserved under `eval_rules_mut_env h`, composed into `optimize_table_mut_env_correct_uncond_gen` |
+| `Optimize_MutEnv.optimize_table_mut_st_correct_uncond_gen` | SUPPORTING | the general `(n, d)`-threaded whole-pipeline EFFECT form: same `eval_chain_mut_st h` result for output and input under the deployed declarations |
+| `Optimize_MutEnv.optimize_table_uncond_mut_st_correct` | **HEADLINE** (optimizer EFFECT axis) | the shipped `optimize_table_uncond`, hypothesis-free, under the FULL-STATE effect-observing `eval_chain_mut_st h`: verdict AND resulting `(env, packet)` preserved at every hook/base env/packet (built on the per-stage `optimize_rules_*_mut_st` lemmas, the recogniser effect-safety guards, and the fold-level dnat/snat/datamap shape certificates) |
+| `Optimize_MutEnv.optimize_table_uncond_mut_env_correct` | SUPPORTING (corollary) | the `(verdict, env)` view of the full-state headline, via the projection bridge `Semantics.eval_chain_mut_env_st` — kept for the cross-packet (`seq_eval_env`) reading |
+| `Optimize_MutEnv.eval_rules_mut_st_{map,dnat,snat}_merge` | SUPPORTING | fold-level effect certificates for the three effect-rewriting merge shapes, at the full-state evaluator (verdict + `(env, packet)` out) |
+| `Optimize_MutEnv.optimize_rules_*_mut_st` (15) + `optimize_{chain,rules}_absorb/ctmask_mut_st` + `optimize_chain_mut_st` + `normalize_chain_mut_st` | STAGE | each stage of the pipeline preserved under the full-state `eval_rules_mut_st h`, composed into `optimize_table_mut_st_correct_uncond_gen` |
+| `Optimize_MutEnv.mutst_pin_{mut_env_blind,mark_observed,distinguishes}` | PIN | precision regression: `[meta mark set 0x1]` vs `[]` are identified by `eval_chain_mut_env` (packet-blind) but MUST stay distinguished by `eval_chain_mut_st` (the exported packet carries the mark) |
 | `Optimize_Linearize.linearize_chain_eval` | STAGE | the always-on linearization (elide ∘ xorfold ∘ paymerge) preserves `eval_chain`; composed into both default-pipeline headlines |
 | `Optimize_Linearize.compile_chain_default_sets_correct` (Corollary) | SUPPORTING | `compile_chain_default_correct` at `env_with_sets`; consumed by `optimize_table_uncond_compile_correct` |
 
@@ -216,7 +228,7 @@ successor for every out-of-domain input is the unified `_u` family.)
 | `eval_rules_j`/`eval_table`/`eval_hook` (limiter-tolerant extension, Semantics.v § Projection 1b) | limiter-tolerant configs: every rule `rule_limiter_tol` = write-free OR a `rule_one_limiter` rule (match-only body whose ONE non-consume-free match is a tolerable limiter — non-inverted `limit`/`quota` or any `connlimit` — in last position, under a static terminal verdict); entry list + `chains_limiter_tol` on the chain env | VERDICT projection only (the unified run's bucket IS depleted): `eval_rules_u_limiter_tolerant`: `fst (eval_rules_u fuel cs rs e p) = eval_rules_j fuel cs rs e p`; table form `eval_table_u_limiter_tolerant`; single-base hook form `eval_hook_u_limiter_tolerant_1` — every fuel/env/packet, jumps, gotos and chain re-entries included |
 | `eval_ruleset`/`eval_hook` (VM `run_ruleset`) | write-free bases (`bases_writefree`) | `eval_ruleset_u_writefree` / `eval_hook_u_writefree` |
 | `eval_rules`/`eval_chain` (VM `run_program`/`run_chain`) | write-free **and** jump-free | `eval_rules_u_writefree` + `eval_rules_jumpfree_eq_j`; packaged as `Correct.eval_chain_writefree_jumpfree_proj` |
-| `eval_rules_mut(_env)`/`eval_chain_mut(_env)` (VM `run_program_mut(_env)`) | transfer-free rules: `rule_plain` (no realisable Jump/Goto/Return under the run's verdict maps — step-threaded: rule writes provably cannot touch `e_vmap`, `rule_step_vmap`) | `eval_rules_u_mut_proj`: verdict = `eval_rules_mut`, env = `snd ∘ eval_rules_mut_env`; table form `eval_table_u_mut_proj` |
+| `eval_rules_mut_st`/`eval_chain_mut_st` — full state — and its projections `eval_rules_mut(_env)`/`eval_chain_mut(_env)` (VM `run_program_mut(_env)`) | transfer-free rules: `rule_plain` (no realisable Jump/Goto/Return under the run's verdict maps — step-threaded: rule writes provably cannot touch `e_vmap`, `rule_step_vmap`) | `eval_rules_u_mut_st_proj`: `eval_rules_u fuel cs rs e p = eval_rules_mut_st rs e p` (whole verdict × (env, packet) triple); table form `eval_table_u_mut_st_proj`; component forms `eval_rules_u_mut_proj`/`eval_table_u_mut_proj`; in-strand bridges `eval_rules_mut_env_st` (`_env` = (fst, fst∘snd) of `_st`) and `eval_rules_mut_env_fst` |
 | `rule_applies(_walk)`/`outcome`/`rule_loadable` (per-rule bools) | write-free rule (`rule_mutfree`: no mutating statement AND no limiter match — evaluating a limiter writes its bucket) | `rule_step_mutfree` |
 | `run_rule`/`run_program` (per-rule pure VM) | `no_writes` programs (no mutating/limiter/incremental-numgen instruction) | `Correct.run_rule_step_no_writes` |
 | (`seq_eval` — RETIRED, M4: the sequence combinator over an EXTERNAL caller-supplied step; successor `seq_eval_env` below) | — | — |

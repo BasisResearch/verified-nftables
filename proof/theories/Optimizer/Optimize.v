@@ -187,7 +187,7 @@ Definition body_has_synproxy (body : list body_item) : bool :=
     [rule_mutfree] rules (no mutating statement, no consuming match, no NAT
     terminal), where the fold is state-invariant and coincides with the pure
     walk ([rule_step_mutfree]) — the effect-level pass lemma is
-    [Optimize_MutEnv.eval_rules_mut_env_map_dedup]. *)
+    [Optimize_MutEnv.eval_rules_mut_st_map_dedup]. *)
 Definition dedup_rule (r : rule) : rule :=
   if body_has_synproxy (r_body r) || body_has_notrack (r_body r)
      || negb (rule_mutfree r) then r else
