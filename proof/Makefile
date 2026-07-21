@@ -297,6 +297,12 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Optimize_Elide.elide_chain_eval \
   Optimize_Linearize.linearize_chain_eval \
   Optimize_Linearize.compile_chain_default_correct \
+  Optimize_Linearize_MutSt.paymerge_chain_mut_st \
+  Optimize_Linearize_MutSt.xorfold_chain_mut_st \
+  Optimize_Linearize_MutSt.elide_chain_mut_st \
+  Optimize_Linearize_MutSt.linearize_chain_mut_st \
+  Optimize_Linearize_MutSt.compile_chain_mut_st_correct \
+  Optimize_Linearize_MutSt.compile_chain_default_mut_st_correct \
   Optimize_Registry.run_passes_correct \
   Semantics.run_rule_outcome_eq \
   Semantics.eval_rules_j_fuel_indep Semantics.eval_table_fuel_indep \
@@ -361,7 +367,7 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Syntax.read_numgen_length Syntax.read_symhash_length
 
 axioms:
-	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optimize_MutEnv Optimize_PayMerge Optimize_XorFold Optimize_Linearize Optimize_Registry Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs RegsValid_Proofs Setread_IntraRule Setread_UnderJump Seq_Hook_Carry Reject_GuardFirst Known_Infidelities Nat_NoAddr_Drop Router_Reach Limit_SharedBucket Router_Input Router_Forward Router_Private Router_Hooks Router_Realistic Nft_Demo_Concrete.\n'; \
+	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optimize_MutEnv Optimize_PayMerge Optimize_XorFold Optimize_Linearize Optimize_Linearize_MutSt Optimize_Registry Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs RegsValid_Proofs Setread_IntraRule Setread_UnderJump Seq_Hook_Carry Reject_GuardFirst Known_Infidelities Nat_NoAddr_Drop Router_Reach Limit_SharedBucket Router_Input Router_Forward Router_Private Router_Hooks Router_Realistic Nft_Demo_Concrete.\n'; \
 	  for t in $(AXIOM_GATE_THEOREMS); do printf 'Print Assumptions %s.\n' "$$t"; done; } \
 	| $(COQTOP) -R . Nft 2>/dev/null \
 	| grep -E 'Closed under the global context|Axioms' \

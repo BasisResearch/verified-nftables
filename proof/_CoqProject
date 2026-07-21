@@ -33,6 +33,7 @@ theories/Optimizer/Optimize_PayMerge.v
 theories/Optimizer/Optimize_XorFold.v
 theories/Optimizer/Optimize_Elide.v
 theories/Optimizer/Optimize_Linearize.v
+theories/Optimizer/Optimize_Linearize_MutSt.v
 theories/Compiler/RegsValid_Proofs.v
 theories/Optimizer/Optimize_ValueSet.v
 theories/Optimizer/Optimize_Vmap.v
