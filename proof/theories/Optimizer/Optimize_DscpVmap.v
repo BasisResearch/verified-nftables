@@ -200,7 +200,7 @@ Proof.
     - rewrite Bool.andb_false_r. reflexivity. }
   assert (HmA : rule_applies (mk_vmap_rule_t f [TBitAnd mask xor] nm body) e p
                 = rule_applies_walk body e p) by reflexivity.
-  cbn [eval_rules]. rewrite HmL, HmA.
+  rewrite ?eval_rules_cons, ?eval_rules_nil. rewrite HmL, HmA.
   destruct (field_loadable f p) eqn:Hfld; cbn [andb].
   - (* f loads: merged outcome = first_match_m; the run scans the same keys *)
     rewrite Bool.andb_true_r.
@@ -222,7 +222,7 @@ Proof.
         clear HmL HmA Hmout Hvm.
         induction es as [| [v w] es IH]; cbn [map app first_match_m fst snd].
         -- reflexivity.
-        -- cbn [eval_rules].
+        -- rewrite ?eval_rules_cons, ?eval_rules_nil.
            rewrite orig_rule_m_loadable_eq, orig_rule_m_applies,
                    (orig_rule_m_outcome_clean f mask xor v body w e p Hsp Hnt
                       (Hterm v w (or_introl eq_refl))).
@@ -239,7 +239,7 @@ Proof.
       * (* body doesn't apply: merged skipped, run all skipped *)
         clear HmL HmA Hmout Hvm.
         induction es as [| [v w] es IH]; cbn [map app fst snd]; [reflexivity|].
-        cbn [eval_rules].
+        rewrite ?eval_rules_cons, ?eval_rules_nil.
         rewrite orig_rule_m_loadable_eq, orig_rule_m_applies.
         rewrite orig_rule_loadable. cbn [match_loadable].
         rewrite Hfld, HbL, Hsp. cbn [andb].
@@ -251,7 +251,7 @@ Proof.
     + (* body doesn't load: merged skipped, run all skipped *)
       clear HmL HmA Hmout Hvm.
       induction es as [| [v w] es IH]; cbn [map app fst snd]; [reflexivity|].
-      cbn [eval_rules].
+      rewrite ?eval_rules_cons, ?eval_rules_nil.
       rewrite orig_rule_m_loadable_eq, orig_rule_loadable. cbn [match_loadable].
       rewrite Hfld, HbL, Hsp. cbn [andb]. apply IH;
         [ intros v' w' Hin; apply (Hfx v' w'); right; exact Hin
@@ -262,7 +262,7 @@ Proof.
     rewrite Bool.andb_false_r. cbn [andb].
     clear HmL HmA Hvm.
     induction es as [| [v w] es IH]; cbn [map app fst snd]; [reflexivity|].
-    cbn [eval_rules].
+    rewrite ?eval_rules_cons, ?eval_rules_nil.
     rewrite orig_rule_m_loadable_eq, orig_rule_loadable. cbn [match_loadable].
     rewrite Hfld. cbn [andb]. apply IH;
       [ intros v' w' Hin; apply (Hfx v' w'); right; exact Hin

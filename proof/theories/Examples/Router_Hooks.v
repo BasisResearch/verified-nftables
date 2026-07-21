@@ -86,7 +86,10 @@ Qed.
 Lemma eval_ruleset_singleton : forall f cs b e p,
   eval_ruleset f [(cs, b)] e p =
   (if base_continues (eval_table f cs b e p) then Accept else eval_table f cs b e p).
-Proof. intros. reflexivity. Qed.
+Proof.
+  intros. rewrite eval_ruleset_cons. cbv zeta.
+  destruct (base_continues (eval_table f cs b e p)); reflexivity.
+Qed.
 
 Lemma singleton_hook_drop : forall f cs b e p,
   eval_ruleset f [(cs, b)] e p = Drop <-> eval_table f cs b e p = Drop.
@@ -272,7 +275,7 @@ Theorem postrouting_hook_unified : forall fuel e p,
     end.
 Proof.
   intros fuel e p. unfold eval_hook_u. rewrite select_postrouting.
-  cbn [eval_ruleset_u].
+  rewrite eval_ruleset_u_cons.
   destruct (eval_table_u Hpostrouting (S fuel) global_chains global_postrouting e p)
     as [v [e' p']].
   destruct (base_continues v); reflexivity.

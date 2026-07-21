@@ -130,9 +130,10 @@ Proof.
                    = (Some Accept, (e, set_untracked p))).
   { unfold rule_step. cbn [ctstate_rule r_body body_step match_consume]. rewrite Hm. reflexivity. }
   unfold eval_chain_mut, notrack_chain. cbn [c_rules c_policy].
-  cbn [eval_rules_mut].
+  rewrite ?eval_rules_mut_cons, ?eval_rules_mut_nil.
   replace (rule_step h notrack_only e p)
     with (@None verdict, (e, set_untracked p)) by reflexivity.
+  cbv beta iota. rewrite eval_rules_mut_cons.
   rewrite Hstep2. reflexivity.
 Qed.
 

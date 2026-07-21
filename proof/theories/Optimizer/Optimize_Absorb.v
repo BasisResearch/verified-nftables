@@ -286,7 +286,7 @@ Lemma eval_rules_cons_cong : forall r tl tl' e p,
   eval_rules tl e p = eval_rules tl' e p ->
   eval_rules (r :: tl) e p = eval_rules (r :: tl') e p.
 Proof.
-  intros r tl tl' e p Htl. cbn [eval_rules].
+  intros r tl tl' e p Htl. rewrite ?eval_rules_cons, ?eval_rules_nil.
   destruct (rule_loadable r e p && rule_applies r e p).
   - destruct (outcome r e p) as [v |]; [destruct (terminal v) |];
       rewrite ?Htl; reflexivity.

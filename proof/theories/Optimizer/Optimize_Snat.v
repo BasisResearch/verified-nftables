@@ -126,7 +126,7 @@ Theorem eval_rules_snat_merge : forall (f : field) (v1 v2 T1 T2 : data)
   = eval_rules (orig_snat_rule f v1 T1 :: orig_snat_rule f v2 T2 :: rest) e p.
 Proof.
   intros f v1 v2 T1 T2 mapname rest e p Hmap Hfx1 Hfx2.
-  cbn [eval_rules].
+  rewrite ?eval_rules_cons, ?eval_rules_nil.
   rewrite loadable_mk_snat, applies_mk_snat, outcome_mk_snat.
   rewrite loadable_orig_snat, applies_orig_snat, outcome_orig_snat.
   rewrite loadable_orig_snat, applies_orig_snat, outcome_orig_snat.

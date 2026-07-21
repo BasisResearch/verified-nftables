@@ -261,7 +261,7 @@ Lemma eval_rules_mut_continue : forall r rest e p,
   eval_rules_mut h (r :: rest) e p
   = (let '(e', p') := dsl_step h r e p in eval_rules_mut h rest e' p').
 Proof.
-  intros r rest e p Ho. cbn [eval_rules_mut].
+  intros r rest e p Ho. rewrite ?eval_rules_mut_cons, ?eval_rules_mut_nil.
   unfold dsl_step.
   destruct (rule_step h r e p) as [v [e' p']]. cbn [fst] in Ho. subst v.
   reflexivity.
@@ -296,7 +296,7 @@ Lemma eval_rules_continue : forall r rest e p,
   outcome r e p = None ->
   eval_rules (r :: rest) e p = eval_rules rest e p.
 Proof.
-  intros r rest e p Ho. cbn [eval_rules]. rewrite Ho.
+  intros r rest e p Ho. rewrite ?eval_rules_cons, ?eval_rules_nil. rewrite Ho.
   destruct (rule_loadable r e p && rule_applies r e p); reflexivity.
 Qed.
 
@@ -615,7 +615,7 @@ Proof.
       apply (IHrs rest ltac:(unfold ltof; cbn; lia) (S n) _ m'' dd'' rr'' e p (eq_sym Erec)).
     + remember (optimize_rules_datamap n d (r2 :: rest)) as t eqn:Erec.
       destruct t as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
-      cbn [eval_rules].
+      rewrite ?eval_rules_cons, ?eval_rules_nil.
       rewrite (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) n d m'' dd'' rr'' e p (eq_sym Erec)).
       reflexivity.
 Qed.

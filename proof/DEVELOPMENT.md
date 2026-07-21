@@ -537,9 +537,18 @@ licensed by a coincidence theorem on the sub-domain where it provably
 agrees (write-free rules for the pure jump strand,
 `Semantics.eval_rules_u_writefree`; transfer-free rules for the flat
 mutation strand, `Semantics.eval_rules_u_mut_proj`; per-rule mut-free for
-the boolean walk, `Semantics.rule_step_mutfree`).  An input outside a
+the boolean walk, `Semantics.rule_step_mutfree`, extended to notrack-bearing
+bodies by `Semantics.rule_purewalk_ok`).  An input outside a
 projection's licensed sub-domain must be evaluated on the unified
-evaluator.
+evaluator.  Since M6 the projections are also STRUCTURALLY subordinate:
+exactly one recursive rule-list traversal exists per side (`eval_rules_u`,
+`run_rules_u`); every other evaluator is a non-recursive `Definition`
+(stdlib fold / `nat_rect`) with `_nil`/`_cons` (or `_0`/`_S`) unfolding
+equations restating the historical recursion, and the flat `_mut`/`_mut_env`
+forms are projections BY DEFINITION of the one full-state fold
+(`eval_rules_mut_st` / `run_program_mut_st`).  Fuel adequacy likewise lives
+at the unified semantics (`eval_rules_u_fuel_indep`), not only at the pure
+projection.
 
 ## Differential testing against the upstream corpus
 
@@ -1368,8 +1377,7 @@ branches assigned the same numbers to different shapes:
 | dscp-masked-vmap | `ip dscp N <verdict>` runs → `ip dscp vmap { .. }` (masked key) | `Optimize_DscpVmap` (+ `Optimize_Dscp` for same-verdict) | matches `nft -o` |
 | mark-map merge | `ip daddr A meta mark set M` runs → guarded `meta mark set ip daddr map { .. }` | `Optimize_DataMap` | sound superset — `nft -o` does not fold `meta mark set` (see `Optimize_DataMap.v` §D1) |
 
-The seam theorem `optimize_preserves_rules_clean` (`Optimize_Table.v`) feeds the base
-pass's output into the stage proofs. Whole-pipeline correctness — with **no**
+Whole-pipeline correctness — with **no**
 precondition on the input chain — is `optimize_table_uncond_correct`, and its
 compiled-bytecode form `optimize_table_uncond_compile_correct` is the
 optimizer's HEADLINE theorem (both in `Optimize_Uncond.v`, axiom-free; see
@@ -1425,7 +1433,10 @@ cannot prove a false property.
    `chains_no_transfer_ranked` for jump-free environments), the verdict is
    provably fuel-independent (`eval_table_fuel_indep`,
    `Nft_Tactics.nft_*_fuel_indep`; worked instance
-   `Tutorial_Proofs.tutorial_blocks_exactly_any_fuel`). Semantics.v § "Fuel
+   `Tutorial_Proofs.tutorial_blocks_exactly_any_fuel`); the unified
+   evaluator has the same discipline for effectful configs
+   (`eval_rules_u_fuel_indep` under `chain_ranked_u`, discharged by
+   `chains_plain_ranked_u`). Semantics.v § "Fuel
    discipline for the jump strand" carries the design rationale and the
    kernel citations (load-time loop rejection; `NFT_JUMP_STACK_SIZE = 16`).
 

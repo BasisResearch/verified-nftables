@@ -134,7 +134,7 @@ Theorem eval_rules_dnat_merge : forall (f : field) (v1 v2 T1 T2 : data)
   = eval_rules (orig_dnat_rule f v1 T1 :: orig_dnat_rule f v2 T2 :: rest) e p.
 Proof.
   intros f v1 v2 T1 T2 mapname rest e p Hmap Hfx1 Hfx2.
-  cbn [eval_rules].
+  rewrite ?eval_rules_cons, ?eval_rules_nil.
   rewrite loadable_mk_dnat, applies_mk_dnat, outcome_mk_dnat.
   rewrite loadable_orig_dnat, applies_orig_dnat, outcome_orig_dnat.
   rewrite loadable_orig_dnat, applies_orig_dnat, outcome_orig_dnat.

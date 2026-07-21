@@ -204,7 +204,7 @@ Proof.
   assert (HmA : rule_applies (mk_vmap_rule f nm body) e p = rule_applies_walk body e p)
     by reflexivity.
   (* now evaluate.  Field-loadable case split drives everything. *)
-  cbn [eval_rules].
+  rewrite ?eval_rules_cons, ?eval_rules_nil.
   rewrite HmL', HmA.
   destruct (field_loadable f p) eqn:Hfld; cbn [andb].
   - (* f loads.  Build the two point-equality tests. *)
@@ -223,7 +223,7 @@ Proof.
       - intro. apply (field_fixed_len_loaded f (length v2) e p Hfx2); assumption. }
     rewrite Hmout, Bool.andb_true_r.
     (* the originals: loadable = field_loadable && body_loadable_walk = same *)
-    cbn [eval_rules].
+    rewrite ?eval_rules_cons, ?eval_rules_nil.
     rewrite !orig_rule_loadable, !orig_rule_applies, !orig_rule_outcome.
     cbn [match_loadable]. rewrite Hfld, Hsp, Hnt. cbn [andb].
     rewrite !(terminal_outcome_vmap_base _ _ Hw1), !(terminal_outcome_vmap_base _ _ Hw2).
@@ -250,7 +250,7 @@ Proof.
   - (* f does not load: merged rule not loadable (skipped); both originals have
        head match_loadable = field_loadable f = false -> not loadable, skipped. *)
     rewrite Bool.andb_false_r.
-    cbn [eval_rules].
+    rewrite ?eval_rules_cons, ?eval_rules_nil.
     rewrite !orig_rule_loadable.
     cbn [match_loadable]. rewrite Hfld. cbn [andb].
     reflexivity.
@@ -619,7 +619,7 @@ Proof.
     - rewrite Bool.andb_false_r. reflexivity. }
   assert (HmA : rule_applies (mk_vmap_rule f nm body) e p = rule_applies_walk body e p)
     by reflexivity.
-  cbn [eval_rules]. rewrite HmL, HmA.
+  rewrite ?eval_rules_cons, ?eval_rules_nil. rewrite HmL, HmA.
   destruct (field_loadable f p) eqn:Hfld; cbn [andb].
   - (* f loads: merged outcome = first_match; the run scans the same keys *)
     rewrite Bool.andb_true_r.
@@ -638,7 +638,7 @@ Proof.
         induction es as [| [v w] es IH]; cbn [map app first_match fst snd].
         -- (* empty run: first_match = None -> fall through to rest *)
            reflexivity.
-        -- cbn [eval_rules].
+        -- rewrite ?eval_rules_cons, ?eval_rules_nil.
            rewrite orig_rule_loadable, orig_rule_applies,
                    (orig_rule_outcome_clean f v body w e p Hsp Hnt
                       (Hterm v w (or_introl eq_refl))).
@@ -658,7 +658,7 @@ Proof.
       * (* body doesn't apply: merged skipped (applies false), run all skipped *)
         clear HmL HmA Hmout Hvm.
         induction es as [| [v w] es IH]; cbn [map app fst snd]; [reflexivity|].
-        cbn [eval_rules].
+        rewrite ?eval_rules_cons, ?eval_rules_nil.
         rewrite orig_rule_loadable, orig_rule_applies.
         cbn [match_loadable]. rewrite Hfld, HbL, Hsp. cbn [andb].
         rewrite HbA. rewrite Bool.andb_false_r. apply IH;
@@ -667,7 +667,7 @@ Proof.
     + (* body doesn't load: merged skipped, run all skipped *)
       clear HmL HmA Hmout Hvm.
       induction es as [| [v w] es IH]; cbn [map app fst snd]; [reflexivity|].
-      cbn [eval_rules].
+      rewrite ?eval_rules_cons, ?eval_rules_nil.
       rewrite orig_rule_loadable. cbn [match_loadable]. rewrite Hfld, HbL, Hsp.
       cbn [andb]. apply IH;
         [ intros v' w' Hin; apply (Hfx v' w'); right; exact Hin
@@ -676,7 +676,7 @@ Proof.
     rewrite Bool.andb_false_r. cbn [andb].
     clear HmL HmA Hvm.
     induction es as [| [v w] es IH]; cbn [map app fst snd]; [reflexivity|].
-    cbn [eval_rules].
+    rewrite ?eval_rules_cons, ?eval_rules_nil.
     rewrite orig_rule_loadable. cbn [match_loadable]. rewrite Hfld. cbn [andb].
     apply IH;
       [ intros v' w' Hin; apply (Hfx v' w'); right; exact Hin
