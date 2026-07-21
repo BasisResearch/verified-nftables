@@ -4,37 +4,60 @@
     semantics — a function from a packet to the verdict the base chain produces —
     so "semantics preserving" is a literal equality of these functions.
 
-    ** Evaluator matrix: which entry point covers which feature axis.
+    ** Evaluator matrix: ONE unified semantics; every other entry point is a
+    proven projection of it.
 
-    Nine DSL entry points evaluate rules.  Each covers ONE feature axis and is
-    silently pure on the others — nothing in the signatures reveals this, so it
-    is pinned here (and, with the bridging theorems for every "no" cell, in
-    proof/THEOREMS.md):
+    THE semantics of a ruleset is the UNIFIED evaluator pair
+    (§ "The unified semantics", end of this file):
 
-      entry point          | threads writes | returns env | jump/goto/return | NAT effect | multi-chain
-      ---------------------+----------------+-------------+------------------+------------+------------
-      eval_rules           | no             | no          | no (jump-free    | no         | no
-                           |                |             | domain)          |            |
-      eval_rules_mut       | yes (dsl_step) | no          | no               | no         | no
-      eval_rules_mut_env   | yes            | yes         | no               | no         | no
-      eval_rules_trace     | yes            | (packet)    | no               | yes        | no
-      eval_rules_j /       | no             | no          | yes              | no         | user chains
-        eval_table         |                |             |                  |            |
-      eval_ruleset         | no             | no          | yes              | no         | base chains
-      eval_hook            | no             | no          | yes              | no         | hook dispatch
-      seq_eval             | no (external   | threaded    | yes (used with   | no         | yes
-                           | step)          | between pkts| eval_hook)       |            |
-      seq_eval_env         | via ev (used   | threaded    | no               | no         | no
-                           | with mut_env)  | between pkts|                  |            |
+      DSL: eval_rules_u / eval_table_u / eval_ruleset_u / eval_hook_u
+      VM:  run_rules_u  / run_table_u  / run_ruleset_u
 
-    The mutation strand (eval_rules_mut / _mut_env / _trace / seq_eval_env) and
-    the jump strand (eval_rules_j / eval_table / eval_ruleset / eval_hook /
-    seq_eval) are DISJOINT: no evaluator both threads writes and follows jumps,
-    and mutation x jump/goto is not jointly verified.
+    a single fuel-bounded fold that BOTH threads every state effect — packet
+    meta/ct writes, dynset env writes, the notrack latch, limiter/quota/
+    connlimit depletion, via the per-rule single fold [dsl_rule_step] /
+    [vm_rule_step] — AND follows control flow (jump/goto/return, user-defined
+    chains, multi-chain and hook/priority dispatch), with cross-packet env
+    carry ([seq_eval_env] over [eval_hook_env_u]).  A jumped-to chain sees
+    the caller's accumulated writes, a rule inside it sees its own intra-rule
+    writes, and the callee's writes persist back into the resuming caller
+    (witness pins: Regression/Setread_UnderJump.v).  Mutation x jump/goto is
+    JOINTLY verified at this evaluator: compiler correctness is
+    [Correct.compile_table_u_correct] / [compile_ruleset_u_correct] /
+    [compile_hook_u_correct] / [compile_seq_hook_u_correct].
 
-    Within the mutation strand every evaluator consumes ONE step function per
-    side — [dsl_rule_step] (DSL) / [vm_rule_step] (VM), each returning
-    (guarded verdict, packet left) — and the _mut evaluators are the [fst]
+    Every OTHER rule-list entry point is a PROJECTION of the unified fold,
+    licensed by a coincidence theorem on the sub-domain where it PROVABLY
+    agrees — never an independent semantics for a rule to be evaluated
+    through.  An input outside an evaluator's licensed sub-domain must be run
+    on the unified evaluator (or an evaluator whose license covers it):
+
+      projection            | licensed sub-domain          | coincidence theorem
+      ----------------------+------------------------------+--------------------
+      eval_rules_j /        | write-free rules everywhere  | eval_rules_u_writefree /
+        eval_table          | ([rule_writefree]: no meta/  | eval_table_u_writefree
+                            | ct set, dynset, notrack,     |
+                            | limiter/quota/connlimit)     |
+      eval_ruleset /        | write-free bases             | eval_ruleset_u_writefree /
+        eval_hook           | ([bases_writefree])          | eval_hook_u_writefree
+      eval_rules /          | write-free + jump-free       | eval_rules_u_writefree +
+        eval_chain          |                              | Correct.eval_rules_jumpfree_eq_j
+      eval_rules_mut(_env) /| transfer-free rules          | eval_rules_u_mut_proj /
+        eval_chain_mut(_env)| ([rule_plain]: no realisable | eval_table_u_mut_proj
+                            | jump/goto/return under the   |
+                            | run's verdict maps)          |
+      eval_rules_trace      | = mut strand verdict except  | eval_rules_trace_verdict
+                            | the data-plane NAT drop      | (NAT axis; see its header)
+      rule_applies(_walk) / | mut-free rule                | rule_step_mutfree
+        outcome/rule_loadable                              |
+      run_rule/run_program  | no_writes programs           | Correct.run_rule_step_no_writes
+      run_rules_j/run_table | compiled write-free chains   | Correct.run_table_writefree_compiled
+      seq_eval              | per-packet congruence over an|
+                            | EXTERNAL step (see its header)|
+
+    Within the flat mutation strand every evaluator consumes ONE step function
+    per side — [dsl_rule_step] (DSL) / [vm_rule_step] (VM), each returning
+    (guarded verdict, state left) — and the _mut evaluators are the [fst]
     projections of the _env ones ([eval_rules_mut_env_fst] /
     [run_program_mut_env_fst]), so their compiler proofs are derived, not
     re-proved. *)
@@ -1285,8 +1308,10 @@ Definition eval_chain (c : chain) (e : env) (p : packet) : verdict :=
     fall-through ([terminal (Jump _) = false]) — i.e. it silently ignores the
     control transfer.  That is unfaithful to netfilter (nf_tables_core.c: a JUMP
     runs the target chain, resuming the caller on return; a GOTO tail-calls it; a
-    RETURN pops to the caller).  The faithful interpreter is the environment-aware
-    [eval_rules_j]/[eval_table] below.
+    RETURN pops to the caller).  The faithful interpreter is the unified
+    [eval_rules_u]/[eval_table_u] (§ "The unified semantics", end of file); on
+    write-free rules the environment-aware pure [eval_rules_j]/[eval_table]
+    below coincides with it ([eval_rules_u_writefree]).
 
     [outcome_jumpfree r p] holds exactly when the rule's realised outcome on [p]
     is NOT a control-transfer verdict; [rules_jumpfree]/[chain_jumpfree] lift it to
@@ -3215,13 +3240,21 @@ Fixpoint prog_lookup (cs : list (String.string * program)) (n : String.string) :
   | (m, prg) :: rest => if String.eqb n m then Some prg else prog_lookup rest n
   end.
 
-(** DSL semantics under a chain environment [cs] (the user-defined chains).
+(** PROJECTION evaluator under a chain environment [cs] (the user-defined
+    chains): the jump/goto/return traversal with NO state threading.
 
-    Mutation-free domain: like [eval_rules] — and unlike [eval_rules_mut] —
-    this evaluator does NOT thread [dsl_step] writes from one rule to the next;
-    it covers the jump/goto/return axis only (see the evaluator matrix in the
-    header).  A `meta mark set` inside a jump target is silently dropped here;
-    mutation x jump/goto is not jointly verified. *)
+    License: on WRITE-FREE rules everywhere ([rule_writefree] on the entry
+    list, [chains_writefree] on [cs]) this is exactly the verdict projection
+    of the unified fold, with the state provably untouched —
+    [eval_rules_u_writefree]:
+      eval_rules_u fuel cs rs e p = (eval_rules_j fuel cs rs e p, (e, p)).
+    A rule OUTSIDE that domain (a meta/ct set, dynset, notrack, or limiter)
+    must be evaluated by the unified [eval_rules_u], which threads its writes
+    through the transfer (Regression/Setread_UnderJump.v pins a config where
+    the two genuinely differ).  This Fixpoint is kept (rather than defined as
+    the [fst] projection) so the write-free strand and its fuel-discipline
+    development below stay computation-friendly; the license theorem is what
+    makes that a projection, not a second semantics. *)
 Fixpoint eval_rules_j (fuel : nat) (cs : list (String.string * chain))
                       (rs : list rule) (e : env) (p : packet) : option verdict :=
   match fuel with
@@ -3301,6 +3334,13 @@ Definition run_table (fuel : nat) (cs : list (String.string * program))
 
 (* ================================================================== *)
 (** ** Fuel discipline for the jump strand: monotonicity + adequacy.
+
+    (Scope: this whole section lives inside the PURE PROJECTION strand —
+    [eval_rules_j]/[eval_table], licensed on write-free rules by
+    [eval_rules_u_writefree] below; [eval_rules_jx] is that projection's
+    exhaustion-observable twin, tied to it by [eval_rules_jx_agree].  On the
+    write-free domain the unified evaluator inherits every fuel-independence
+    result through the license equation.)
 
     THE PROBLEM.  [eval_rules_j fuel] returns [None] BOTH on genuine
     fall-through (empty rule list, [return], goto to a missing chain) AND on
@@ -3833,8 +3873,11 @@ Qed.
     netfilter propagates a verdict across the chains at a hook.  If every base
     chain accepts, the packet is accepted.
 
-    Mutation-free domain: built on [eval_table], so — like it — no writes are
-    threaded between rules, between chains, or between base chains. *)
+    PROJECTION evaluator: built on [eval_table], so — like it — no writes are
+    threaded between rules, between chains, or between base chains; licensed
+    on write-free bases by [eval_ruleset_u_writefree] (the unified
+    [eval_ruleset_u] below threads the state a base chain leaves into the
+    next one). *)
 Definition base_continues (v : verdict) : bool :=
   match v with Accept | Continue => true | _ => false end.
 
@@ -3886,7 +3929,9 @@ Definition select_hook (rs : list hooked_chain) (h : hook_id)
       (sort_hc (filter (fun hc => hook_eqb (hc_hook hc) h) rs)).
 
 (** Full ruleset evaluation at a hook: select+order the base chains, then dispatch.
-    Mutation-free domain: inherits [eval_ruleset]'s — no writes are threaded. *)
+    PROJECTION evaluator: inherits [eval_ruleset]'s license — no writes are
+    threaded; on write-free bases it is the verdict projection of the unified
+    [eval_hook_u] ([eval_hook_u_writefree]). *)
 Definition eval_hook (fuel : nat) (rs : list hooked_chain) (h : hook_id)
                      (e : env) (p : packet) : verdict :=
   eval_ruleset fuel (select_hook rs h) e p.
@@ -3911,3 +3956,557 @@ Fixpoint seq_eval (ev : env -> packet -> verdict) (step : verdict -> env -> env)
   | [] => []
   | p :: ps => let v := ev e p in v :: seq_eval ev step (step v e) ps
   end.
+
+(* ================================================================== *)
+(** ** THE UNIFIED SEMANTICS: one effect-threading, jump-following evaluator
+    per side.
+
+    [eval_rules_u] (DSL) and [run_rules_u] (VM, below) are THE semantics of a
+    rule list under a chain environment: a single fuel-bounded fold that BOTH
+    threads every state effect — packet meta/ct writes, dynset env writes, the
+    notrack latch, limiter/quota/connlimit depletion, all via the per-rule
+    single fold [dsl_rule_step]/[vm_rule_step] — AND follows control flow
+    (jump / goto / return, user-defined chains).  The control-flow shape is
+    exactly [eval_rules_j]'s (fuel as a descent budget, a jump resumes the
+    caller on the callee's fall-through, [None] on exhaustion), but the state
+    is threaded THROUGH the transfer: the jumped-to chain starts from the
+    caller's accumulated (env, packet), each of its rules sees its own
+    intra-rule writes, and on fall-through/return the callee's accumulated
+    state carries BACK into the resuming caller.  This is the kernel shape:
+    nft_do_chain runs every expression against the one live (skb, state)
+    regardless of which chain frame the rule sits in
+    (net/netfilter/nf_tables_core.c, the jumpstack loop).
+
+    Effectful × control-flow behaviour is jointly verified at this evaluator:
+    compiler correctness is [Correct.compile_table_u_correct] /
+    [compile_ruleset_u_correct] / [compile_hook_u_correct] /
+    [compile_seq_hook_u_correct]; the witnessed behaviour (intra-rule
+    set-then-read ACCEPTS inside a jumped-to chain, caller writes visible in
+    the callee, callee writes visible after the return, dynset learning under
+    a jump) is pinned in Regression/Setread_UnderJump.v.
+
+    Every earlier rule-list evaluator in this file is a PROJECTION of this
+    fold, licensed by a coincidence theorem on the sub-domain where it
+    provably agrees (see the evaluator matrix in the file header):
+    [eval_rules_u_writefree] (the pure jump strand, on write-free rules) and
+    [eval_rules_u_mut_proj] (the flat mutation strand, on transfer-free
+    rules). *)
+
+Fixpoint eval_rules_u (fuel : nat) (cs : list (String.string * chain))
+                      (rs : list rule) (e : env) (p : packet)
+  : option verdict * (env * packet) :=
+  match fuel with
+  | O => (None, (e, p))
+  | S fuel' =>
+    match rs with
+    | [] => (None, (e, p))
+    | r :: rest =>
+      match dsl_rule_step r e p with
+      | (Some v, (e', p')) =>
+          match v with
+          | Jump n =>
+              match chain_lookup cs n with
+              | Some ch =>
+                  match eval_rules_u fuel' cs (c_rules ch) e' p' with
+                  | (Some w, s) => (Some w, s)
+                  | (None, (e'', p'')) => eval_rules_u fuel' cs rest e'' p''
+                  end
+              | None => eval_rules_u fuel' cs rest e' p'
+              end
+          | Goto n =>
+              match chain_lookup cs n with
+              | Some ch => eval_rules_u fuel' cs (c_rules ch) e' p'
+              | None    => (None, (e', p'))
+              end
+          | Return => (None, (e', p'))
+          | Continue => eval_rules_u fuel' cs rest e' p'
+          | _ => (Some v, (e', p'))
+          end
+      | (None, (e', p')) => eval_rules_u fuel' cs rest e' p'
+      end
+    end
+  end.
+
+(** Base-chain form: verdict (policy on fall-through) plus the state the
+    traversal leaves — the packet for the next hook, the env (learned dynsets,
+    depleted limiters) for the next packet. *)
+Definition eval_table_u (fuel : nat) (cs : list (String.string * chain))
+                        (base : chain) (e : env) (p : packet)
+  : verdict * (env * packet) :=
+  match eval_rules_u fuel cs (c_rules base) e p with
+  | (Some v, s) => (v, s)
+  | (None,   s) => (c_policy base, s)
+  end.
+
+(** VM twin: same traversal over compiled rule programs, per-rule state from
+    [vm_rule_step]. *)
+Fixpoint run_rules_u (fuel : nat) (cs : list (String.string * program))
+                     (prog : program) (e : env) (p : packet)
+  : option verdict * (env * packet) :=
+  match fuel with
+  | O => (None, (e, p))
+  | S fuel' =>
+    match prog with
+    | [] => (None, (e, p))
+    | rp :: rest =>
+      match vm_rule_step rp e p with
+      | (Some v, (e', p')) =>
+          match v with
+          | Jump n =>
+              match prog_lookup cs n with
+              | Some prg =>
+                  match run_rules_u fuel' cs prg e' p' with
+                  | (Some w, s) => (Some w, s)
+                  | (None, (e'', p'')) => run_rules_u fuel' cs rest e'' p''
+                  end
+              | None => run_rules_u fuel' cs rest e' p'
+              end
+          | Goto n =>
+              match prog_lookup cs n with
+              | Some prg => run_rules_u fuel' cs prg e' p'
+              | None     => (None, (e', p'))
+              end
+          | Return => (None, (e', p'))
+          | Continue => run_rules_u fuel' cs rest e' p'
+          | _ => (Some v, (e', p'))
+          end
+      | (None, (e', p')) => run_rules_u fuel' cs rest e' p'
+      end
+    end
+  end.
+
+Definition run_table_u (fuel : nat) (cs : list (String.string * program))
+                       (base : program) (policy : verdict) (e : env) (p : packet)
+  : verdict * (env * packet) :=
+  match run_rules_u fuel cs base e p with
+  | (Some v, s) => (v, s)
+  | (None,   s) => (policy, s)
+  end.
+
+(** Multi-table / multi-hook dispatch with the state THREADED between base
+    chains: a base chain that lets the packet proceed hands the NEXT base chain
+    the packet (and env) it left — a mark set in an earlier-priority chain is
+    visible to a later one, as the kernel carries it on the skb. *)
+Fixpoint eval_ruleset_u (fuel : nat)
+    (bases : list (list (String.string * chain) * chain)) (e : env) (p : packet)
+  : verdict * (env * packet) :=
+  match bases with
+  | [] => (Accept, (e, p))
+  | (cs, base) :: rest =>
+      match eval_table_u fuel cs base e p with
+      | (v, (e', p')) =>
+          if base_continues v then eval_ruleset_u fuel rest e' p' else (v, (e', p'))
+      end
+  end.
+
+Fixpoint run_ruleset_u (fuel : nat)
+    (bases : list (list (String.string * program) * (program * verdict)))
+    (e : env) (p : packet) : verdict * (env * packet) :=
+  match bases with
+  | [] => (Accept, (e, p))
+  | (cs, (base, policy)) :: rest =>
+      match run_table_u fuel cs base policy e p with
+      | (v, (e', p')) =>
+          if base_continues v then run_ruleset_u fuel rest e' p' else (v, (e', p'))
+      end
+  end.
+
+(** Hook dispatch (same selection/ordering as [eval_hook]). *)
+Definition eval_hook_u (fuel : nat) (rs : list hooked_chain) (h : hook_id)
+                       (e : env) (p : packet) : verdict * (env * packet) :=
+  eval_ruleset_u fuel (select_hook rs h) e p.
+
+(** Cross-packet env carry at a hook: the per-packet evaluator whose env output
+    [seq_eval_env] threads into the next packet — the shared set/map/limiter
+    state persists, the per-packet meta/ct fields are local to each packet
+    (exactly [eval_chain_mut_env]'s discipline, now with jumps and multi-chain
+    dispatch inside the per-packet run). *)
+Definition eval_hook_env_u (fuel : nat) (rs : list hooked_chain) (h : hook_id)
+                           (e : env) (p : packet) : verdict * env :=
+  let '(v, s) := eval_hook_u fuel rs h e p in (v, fst s).
+
+Definition run_ruleset_env_u (fuel : nat)
+    (bases : list (list (String.string * program) * (program * verdict)))
+    (e : env) (p : packet) : verdict * env :=
+  let '(v, s) := run_ruleset_u fuel bases e p in (v, fst s).
+
+(* ------------------------------------------------------------------ *)
+(** *** Projection 1: the pure jump strand, licensed on WRITE-FREE rules.
+
+    A rule is [rule_writefree] when it writes NO state at all: no mutating
+    statement anywhere ([rule_mutfree]: meta/ct set, dynset, notrack) and no
+    limiter/quota/connlimit in its body (whose bucket depletion is an env
+    write).  On such a rule the per-rule fold IS the historical
+    loadability-guarded pure verdict and leaves the state untouched
+    ([dsl_rule_step_writefree]); lifted through the traversal, the pure jump
+    strand [eval_rules_j]/[eval_table] is exactly the verdict projection of
+    the unified fold ([eval_rules_u_writefree]/[eval_table_u_writefree]) —
+    the coincidence equation that licenses it as a projection, not an
+    independent semantics.  A rule OUTSIDE this domain must be evaluated by
+    the unified fold (Regression/Setread_UnderJump.v pins a witness where the
+    two genuinely differ, and its [rule_writefree] check is [false]). *)
+
+Definition rule_writefree (r : rule) : bool :=
+  rule_mutfree r && limit_free_body (r_body r).
+
+Definition chains_writefree (cs : list (String.string * chain)) : bool :=
+  forallb (fun nc => forallb rule_writefree (c_rules (snd nc))) cs.
+
+Lemma dsl_rule_step_writefree : forall r e p,
+  rule_writefree r = true ->
+  dsl_rule_step r e p
+  = ((if rule_loadable r e p && rule_applies r e p then outcome r e p else None),
+     (e, p)).
+Proof.
+  intros r e p H. unfold rule_writefree in H.
+  apply Bool.andb_true_iff in H. destruct H as [Hmf Hlf].
+  unfold dsl_rule_step. rewrite (rule_step_mutfree r e p Hmf).
+  cbn [fst snd]. rewrite (limit_sweep_body_id _ _ _ Hlf). reflexivity.
+Qed.
+
+Lemma chains_writefree_lookup : forall cs n ch,
+  chains_writefree cs = true ->
+  chain_lookup cs n = Some ch ->
+  forallb rule_writefree (c_rules ch) = true.
+Proof.
+  intros cs n ch Hcs Hlk.
+  apply chain_lookup_in in Hlk.
+  unfold chains_writefree in Hcs.
+  eapply forallb_forall in Hcs; [| exact Hlk]. exact Hcs.
+Qed.
+
+Theorem eval_rules_u_writefree : forall fuel cs rs e p,
+  forallb rule_writefree rs = true ->
+  chains_writefree cs = true ->
+  eval_rules_u fuel cs rs e p = (eval_rules_j fuel cs rs e p, (e, p)).
+Proof.
+  induction fuel as [| f IH]; intros cs rs e p Hrs Hcs; [reflexivity|].
+  destruct rs as [| r rest]; [reflexivity|].
+  cbn [forallb] in Hrs. apply Bool.andb_true_iff in Hrs. destruct Hrs as [Hr Hrest].
+  cbn [eval_rules_u eval_rules_j].
+  rewrite (dsl_rule_step_writefree r e p Hr).
+  destruct (rule_loadable r e p && rule_applies r e p); [| now apply IH].
+  destruct (outcome r e p) as [v|]; [| now apply IH].
+  destruct v as [ | | | tc cc | lo hi bp fo | n | n | ];
+    try reflexivity; try (now apply IH).
+  - (* Jump *)
+    destruct (chain_lookup cs n) as [ch|] eqn:Hlk; [| now apply IH].
+    rewrite (IH cs (c_rules ch) e p (chains_writefree_lookup cs n ch Hcs Hlk) Hcs).
+    destruct (eval_rules_j f cs (c_rules ch) e p); [reflexivity | now apply IH].
+  - (* Goto *)
+    destruct (chain_lookup cs n) as [ch|] eqn:Hlk; [| reflexivity].
+    apply IH; [eapply chains_writefree_lookup; eauto | exact Hcs].
+Qed.
+
+Corollary eval_table_u_writefree : forall fuel cs base e p,
+  forallb rule_writefree (c_rules base) = true ->
+  chains_writefree cs = true ->
+  eval_table_u fuel cs base e p = (eval_table fuel cs base e p, (e, p)).
+Proof.
+  intros fuel cs base e p Hb Hcs. unfold eval_table_u, eval_table.
+  rewrite (eval_rules_u_writefree fuel cs (c_rules base) e p Hb Hcs).
+  destruct (eval_rules_j fuel cs (c_rules base) e p); reflexivity.
+Qed.
+
+Definition bases_writefree
+    (bases : list (list (String.string * chain) * chain)) : bool :=
+  forallb (fun cb => chains_writefree (fst cb)
+                     && forallb rule_writefree (c_rules (snd cb))) bases.
+
+Corollary eval_ruleset_u_writefree : forall fuel bases e p,
+  bases_writefree bases = true ->
+  eval_ruleset_u fuel bases e p = (eval_ruleset fuel bases e p, (e, p)).
+Proof.
+  intros fuel bases. induction bases as [| [cs base] rest IHb]; intros e p Hwf;
+    [reflexivity|].
+  cbn [bases_writefree forallb] in Hwf. apply Bool.andb_true_iff in Hwf.
+  destruct Hwf as [Hhd Hrest]. apply Bool.andb_true_iff in Hhd.
+  destruct Hhd as [Hcs Hb]. cbn [fst snd] in Hcs, Hb.
+  cbn [eval_ruleset_u eval_ruleset].
+  rewrite (eval_table_u_writefree fuel cs base e p Hb Hcs).
+  destruct (base_continues (eval_table fuel cs base e p)); [now apply IHb | reflexivity].
+Qed.
+
+Corollary eval_hook_u_writefree : forall fuel rs h e p,
+  bases_writefree (select_hook rs h) = true ->
+  eval_hook_u fuel rs h e p = (eval_hook fuel rs h e p, (e, p)).
+Proof.
+  intros fuel rs h e p Hwf. unfold eval_hook_u, eval_hook.
+  now apply eval_ruleset_u_writefree.
+Qed.
+
+(* ------------------------------------------------------------------ *)
+(** *** Projection 2: the flat mutation strand, licensed on TRANSFER-FREE
+    rules.
+
+    [eval_rules_mut]/[eval_rules_mut_env] thread the same per-rule fold but
+    follow no control transfers (a realised Jump/Goto is a fall-through,
+    a Return does not pop).  They are the projection of the unified fold on
+    rules that can realise NO transfer verdict: [rule_plain] — every static
+    verdict and every verdict-map entry (under the run's verdict maps) is
+    non-Jump/Goto/Return.  Because nothing a rule writes can change a verdict
+    map ([dsl_rule_step_vmap]: [e_vmap] is invariant under the fold — dynset
+    writes named SETS and value MAPS, not verdict maps), the hypothesis is
+    checkable once at the ENTRY env and transports itself along the run; this
+    is the step-threaded faithful-domain predicate the mutation strand
+    previously could not state. *)
+
+Definition verdict_plain (v : verdict) : bool :=
+  match v with Jump _ | Goto _ | Return => false | _ => true end.
+
+Definition rule_plain (e : env) (r : rule) : bool :=
+  match r_outcome r with
+  | OVerdict v => verdict_plain v
+  | OVmap s | OVmapNat s _ =>
+      forallb (fun ent => verdict_plain (snd ent)) (e_vmap e (vm_name s))
+  | _ => true
+  end.
+
+(** [rule_plain] reads the env ONLY through its verdict maps. *)
+Lemma rule_plain_vmap_ext : forall e e' r,
+  e_vmap e' = e_vmap e -> rule_plain e' r = rule_plain e r.
+Proof.
+  intros e e' r Hv. unfold rule_plain.
+  destruct (r_outcome r); try reflexivity; now rewrite Hv.
+Qed.
+
+(** No env write of the per-rule fold touches a verdict map: every writer
+    ([env_set_upd]/[env_map_upd]/[set_ct]/the limiter sweeps) copies [e_vmap]
+    verbatim. *)
+Lemma e_vmap_env_set_upd : forall e op n k, e_vmap (env_set_upd e op n k) = e_vmap e.
+Proof. reflexivity. Qed.
+Lemma e_vmap_env_map_upd : forall e op n k d, e_vmap (env_map_upd e op n k d) = e_vmap e.
+Proof. reflexivity. Qed.
+Lemma e_vmap_set_ct : forall e p k v, e_vmap (set_ct e p k v) = e_vmap e.
+Proof. intros. unfold set_ct. destruct (pkt_ct_present p); reflexivity. Qed.
+Lemma e_vmap_set_limit : forall e p s, e_vmap (set_limit e p s) = e_vmap e.
+Proof. reflexivity. Qed.
+Lemma e_vmap_set_quota : forall e p s, e_vmap (set_quota e p s) = e_vmap e.
+Proof. reflexivity. Qed.
+Lemma e_vmap_set_connlimit : forall e p s, e_vmap (set_connlimit e p s) = e_vmap e.
+Proof. reflexivity. Qed.
+
+Lemma body_step_vmap : forall body e p,
+  e_vmap (fst (body_res_state (body_step body e p))) = e_vmap e.
+Proof.
+  induction body as [| it body IH]; intros e p; [reflexivity|].
+  destruct it as [m | s].
+  - cbn [body_step]. destruct (eval_matchcond m e p); [apply IH | reflexivity].
+  - destruct s; cbn [body_step];
+      repeat first
+        [ match goal with
+          | |- context [match ?l with nil => _ | cons _ _ => _ end] =>
+              is_var l; destruct l; cbn [body_step]
+          end
+        | match goal with
+          | |- context [if ?b then _ else _] => destruct b
+          end ];
+      cbn [body_res_state fst];
+      rewrite ?IH; rewrite ?e_vmap_set_ct, ?e_vmap_env_set_upd, ?e_vmap_env_map_upd;
+      reflexivity.
+Qed.
+
+Lemma after_step_vmap : forall ss e p,
+  e_vmap (fst (snd (after_step ss e p))) = e_vmap e.
+Proof.
+  induction ss as [| s ss IH]; intros e p; [reflexivity|].
+  destruct s; cbn [after_step];
+    repeat first
+      [ match goal with
+        | |- context [match ?l with nil => _ | cons _ _ => _ end] =>
+            is_var l; destruct l; cbn [after_step]
+        end
+      | match goal with
+        | |- context [if ?b then _ else _] => destruct b
+        end ];
+    cbn [fst snd];
+    rewrite ?IH; rewrite ?e_vmap_set_ct, ?e_vmap_env_set_upd, ?e_vmap_env_map_upd;
+    reflexivity.
+Qed.
+
+Lemma terminal_step_vmap : forall r e p,
+  e_vmap (fst (snd (terminal_step r e p))) = e_vmap e.
+Proof.
+  intros r e p. unfold terminal_step.
+  destruct (has_effect_terminal r); [reflexivity|].
+  destruct (r_verdict r); try reflexivity. apply after_step_vmap.
+Qed.
+
+Lemma end_step_vmap : forall r e p,
+  e_vmap (fst (snd (end_step r e p))) = e_vmap e.
+Proof.
+  intros r e p. unfold end_step.
+  destruct (r_vmap r) as [vm|]; [| apply terminal_step_vmap].
+  destruct (vmap_loadable (Some vm) p); [| reflexivity]. cbv zeta.
+  destruct (vm_keyf vm) as [[f ts]|];
+    destruct (assoc_verdict _ (e_vmap e (vm_name vm)));
+    solve [reflexivity | apply terminal_step_vmap].
+Qed.
+
+Lemma rule_step_vmap : forall r e p,
+  e_vmap (fst (snd (rule_step r e p))) = e_vmap e.
+Proof.
+  intros r e p. unfold rule_step.
+  pose proof (body_step_vmap (r_body r) e p) as Hb.
+  destruct (body_step (r_body r) e p) as [e' p' | e' p' | e' p'];
+    cbn [body_res_state fst] in Hb; cbn [fst snd]; try exact Hb.
+  rewrite (end_step_vmap r e' p'). exact Hb.
+Qed.
+
+Lemma limit_sweep_body_vmap : forall body e p,
+  e_vmap (limit_sweep_body body e p) = e_vmap e.
+Proof.
+  unfold limit_sweep_body.
+  induction body as [| it body IH]; intros e p; [reflexivity|].
+  cbn [fold_left]. rewrite IH.
+  destruct it as [m | s]; [destruct m|]; reflexivity.
+Qed.
+
+Lemma dsl_rule_step_vmap : forall r e p,
+  e_vmap (fst (snd (dsl_rule_step r e p))) = e_vmap e.
+Proof.
+  intros r e p. unfold dsl_rule_step.
+  pose proof (rule_step_vmap r e p) as Hs.
+  destruct (rule_step r e p) as [v [e' p']]. cbn [fst snd] in *.
+  rewrite limit_sweep_body_vmap. exact Hs.
+Qed.
+
+(** Every verdict [after_step] itself produces is the synproxy [Drop]. *)
+Lemma after_step_verdict_drop : forall ss e p v,
+  fst (after_step ss e p) = Some v -> v = Drop.
+Proof.
+  induction ss as [| s ss IH]; intros e p v H; [discriminate H|].
+  destruct s; cbn [after_step] in H;
+    repeat first
+      [ match type of H with
+        | context [match ?l with nil => _ | cons _ _ => _ end] =>
+            is_var l; destruct l; cbn [after_step] in H
+        end
+      | match type of H with
+        | context [if ?b then _ else _] => destruct b
+        end ];
+    cbn [fst] in H;
+    solve [ eapply IH; exact H
+          | discriminate H
+          | injection H as H; congruence ].
+Qed.
+
+(** Fold-level transfer-freedom: a [rule_plain] rule's step verdict is never a
+    control transfer — at ANY state whose verdict maps agree with the env the
+    predicate was checked at. *)
+Lemma rule_step_plain : forall e r,
+  rule_plain e r = true ->
+  forall e' p v, e_vmap e' = e_vmap e ->
+  fst (rule_step r e' p) = Some v ->
+  verdict_plain v = true.
+Proof.
+  intros e r Hpl e' p v Hvm.
+  unfold rule_step.
+  pose proof (body_step_vmap (r_body r) e' p) as Hbvm.
+  destruct (body_step (r_body r) e' p) as [e2 p2 | e2 p2 | e2 p2] eqn:Hb;
+    rewrite ?Hb in Hbvm; cbn [body_res_state fst] in Hbvm; cbn [fst].
+  - intro Hstep. discriminate Hstep.
+  - intro Hstep. injection Hstep as <-. reflexivity.
+  - (* BRdone: the end runs at (e2, p2), whose verdict maps are the entry's *)
+    assert (Hvm2 : e_vmap e2 = e_vmap e) by congruence.
+    unfold rule_plain in Hpl.
+    unfold end_step, terminal_step, has_effect_terminal,
+           r_vmap, r_nat, r_tproxy, r_fwd, r_queue, r_verdict.
+    destruct (r_outcome r) as [ w | | s | s ns | ns | ts | fs | qs ] eqn:Ho;
+      cbn [fst].
+    + (* OVerdict w *)
+      destruct w; cbn;
+        try (intro Hstep; injection Hstep as <-; reflexivity);
+        try discriminate Hpl.
+      (* Continue: falls through to the after-statements *)
+      intro Hstep. apply after_step_verdict_drop in Hstep. now subst v.
+    + (* ONone *)
+      intro Hstep. apply after_step_verdict_drop in Hstep. now subst v.
+    + (* OVmap *)
+      destruct (vmap_loadable (Some s) p2); [| intro Hstep; discriminate Hstep].
+      cbv zeta. rewrite Hvm2.
+      destruct (vm_keyf s) as [[f ts]|]; cbv iota;
+        (destruct (assoc_verdict _ (e_vmap e (vm_name s))) as [w|] eqn:Ha;
+         [ intro Hstep; injection Hstep as <-;
+           apply assoc_verdict_in in Ha; destruct Ha as (lo & hi & Hin);
+           eapply forallb_forall in Hpl; [| exact Hin]; exact Hpl
+         | intro Hstep; apply after_step_verdict_drop in Hstep; now subst v ]).
+    + (* OVmapNat *)
+      destruct (vmap_loadable (Some s) p2); [| intro Hstep; discriminate Hstep].
+      cbv zeta. rewrite Hvm2.
+      destruct (vm_keyf s) as [[f ts]|]; cbv iota;
+        (destruct (assoc_verdict _ (e_vmap e (vm_name s))) as [w|] eqn:Ha;
+         [ intro Hstep; injection Hstep as <-;
+           apply assoc_verdict_in in Ha; destruct Ha as (lo & hi & Hin);
+           eapply forallb_forall in Hpl; [| exact Hin]; exact Hpl
+         | destruct (terminal_loadable r e2 p2); intro Hstep;
+           [now injection Hstep as <- | discriminate Hstep] ]).
+    + (* ONat / tproxy / fwd / queue: the terminal is Accept-or-break *)
+      destruct (terminal_loadable r e2 p2); intro Hstep;
+        [now injection Hstep as <- | discriminate Hstep].
+    + destruct (terminal_loadable r e2 p2); intro Hstep;
+        [now injection Hstep as <- | discriminate Hstep].
+    + destruct (terminal_loadable r e2 p2); intro Hstep;
+        [now injection Hstep as <- | discriminate Hstep].
+    + destruct (terminal_loadable r e2 p2); intro Hstep;
+        [now injection Hstep as <- | discriminate Hstep].
+Qed.
+
+Lemma eval_rules_u_mut_proj_aux : forall rs fuel cs e0 e p,
+  List.length rs < fuel ->
+  e_vmap e = e_vmap e0 ->
+  forallb (rule_plain e0) rs = true ->
+  fst (eval_rules_u fuel cs rs e p) = eval_rules_mut rs e p
+  /\ fst (snd (eval_rules_u fuel cs rs e p)) = snd (eval_rules_mut_env rs e p).
+Proof.
+  induction rs as [| r rest IH]; intros fuel cs e0 e p Hfuel Hvm Hpl;
+    (destruct fuel as [| f]; [exfalso; cbn in Hfuel; lia |]).
+  - cbn. auto.
+  - cbn [List.length] in Hfuel.
+    cbn [forallb] in Hpl. apply Bool.andb_true_iff in Hpl.
+    destruct Hpl as [Hr Hrest].
+    cbn [eval_rules_u eval_rules_mut eval_rules_mut_env].
+    pose proof (dsl_rule_step_vmap r e p) as Hstepvm.
+    destruct (dsl_rule_step r e p) as [[v|] [e' p']] eqn:Hstep;
+      cbn [fst snd] in Hstepvm.
+    + assert (Hplain : verdict_plain v = true).
+      { eapply (rule_step_plain e0 r Hr e p v).
+        - congruence.
+        - rewrite <- (dsl_rule_step_fst r e p). now rewrite Hstep. }
+      destruct v; try discriminate Hplain; cbn [terminal];
+        try (split; reflexivity).
+      (* Continue *)
+      apply (IH f cs e0 e' p'); [lia | congruence | exact Hrest].
+    + apply (IH f cs e0 e' p'); [lia | congruence | exact Hrest].
+Qed.
+
+(** THE mutation-strand projection: on transfer-free rules the unified fold's
+    verdict is [eval_rules_mut] and its env is [eval_rules_mut_env]'s — the
+    flat mutation strand is a projection of the unified semantics, licensed by
+    this equation (any fuel that can traverse the flat list; no chain
+    environment is consulted because no transfer is realisable). *)
+Theorem eval_rules_u_mut_proj : forall fuel cs rs e p,
+  List.length rs < fuel ->
+  forallb (rule_plain e) rs = true ->
+  fst (eval_rules_u fuel cs rs e p) = eval_rules_mut rs e p
+  /\ fst (snd (eval_rules_u fuel cs rs e p)) = snd (eval_rules_mut_env rs e p).
+Proof.
+  intros fuel cs rs e p Hfuel Hpl.
+  eapply eval_rules_u_mut_proj_aux; eauto.
+Qed.
+
+Corollary eval_table_u_mut_proj : forall fuel cs c e p,
+  List.length (c_rules c) < fuel ->
+  forallb (rule_plain e) (c_rules c) = true ->
+  fst (eval_table_u fuel cs c e p) = eval_chain_mut c e p
+  /\ fst (snd (eval_table_u fuel cs c e p)) = snd (eval_chain_mut_env c e p).
+Proof.
+  intros fuel cs c e p Hfuel Hpl.
+  destruct (eval_rules_u_mut_proj fuel cs (c_rules c) e p Hfuel Hpl) as [Hv He].
+  unfold eval_table_u, eval_chain_mut, eval_chain_mut_env.
+  rewrite <- (eval_rules_mut_env_fst (c_rules c) e p) in *.
+  destruct (eval_rules_u fuel cs (c_rules c) e p) as [[v|] s];
+    destruct (eval_rules_mut_env (c_rules c) e p) as [[w|] e'];
+    cbn [fst snd] in *; subst; try discriminate Hv;
+    try (injection Hv as <-); auto.
+Qed.

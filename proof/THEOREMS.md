@@ -81,9 +81,15 @@ Scope notes (each also sits on the theorem in the source):
   `eval_chain_mut`/`eval_rules_trace`. The full statement of the gap and the
   not-lifted rationale sit on `optimize_table_uncond_compile_correct`
   (Optimize_Uncond.v, "Scope note 2").
-- The compiler axis (jump strand) threads **no writes**; the mutation axis
-  follows **no jumps**. **Mutation × jump/goto is not jointly verified** (see
-  the evaluator matrix, §3).
+- **Mutation × jump/goto is jointly verified** at the UNIFIED evaluator
+  (`Semantics.eval_rules_u`/`run_rules_u`, compile theorems
+  `compile_table_u_correct` / `compile_ruleset_u_correct` /
+  `compile_hook_u_correct` / `compile_seq_hook_u_correct`): one
+  effect-threading, jump-following fold per side.  The historical pure jump
+  strand (`eval_rules_j`/`eval_table`/`eval_ruleset`/`eval_hook`) and the flat
+  mutation strand (`eval_rules_mut*`) survive only as **proven projections**
+  of the unified fold on their licensed sub-domains (write-free,
+  respectively transfer-free rules) — see the evaluator matrix, §3.
 - The mutation/ct axis is **parametric in flow identity**: every ct/NAT
   statement is a congruence over the opaque key `pkt_flow` (and `e_ct`/`e_nat`
   keyed by it). Nothing ties `pkt_flow` to the packet's header bytes — no
@@ -123,6 +129,13 @@ lock-in pins: `DEVELOPMENT.md` § "Known model infidelities" +
 | `compile_hook_correct` | **HEADLINE** (compiler axis) | = `compile_ruleset_correct` after pure hook selection/ordering |
 | `compile_seq_correct` | **HEADLINE** (congruence corollary — see scope note §1) | = `compile_hook_correct` + `seq_eval_ext` |
 | `run_table_fuel_indep_compiled` (Corollary) | SUPPORTING (VM mirror of the M4 fuel-adequacy result, §3) | = `compile_table_correct` (at both fuels) + `Semantics.eval_table_fuel_indep` |
+| `run_rules_u_compile` | SUPPORTING (stratum 8 induction: unified fold, rule list) | one induction over `vm_rule_step_compile_rule`, jumps included |
+| `compile_table_u_correct` | **HEADLINE** (stratum 8, unified axis: mutation × jump, one table) | from `run_rules_u_compile` |
+| `compile_ruleset_u_correct` / `compile_hook_u_correct` | **HEADLINE** (stratum 8: + multi-table / hook dispatch, state threaded between bases) | from `compile_table_u_correct` per base chain |
+| `compile_seq_hook_u_correct` | **HEADLINE** (stratum 8: + cross-packet env carry over the unified per-packet run) | = `compile_ruleset_u_correct` + `seq_eval_env_ext` |
+| `run_table_writefree_compiled` (Corollary) | SUPPORTING (VM-side projection license: pure `run_table` = `fst` of `run_table_u` on compiled write-free chains) | = `compile_table_u_correct` + `compile_table_correct` + `Semantics.eval_table_u_writefree` |
+| `eval_chain_writefree_jumpfree_proj` (Corollary) | SUPPORTING (flat pure strand license, packaged) | = `Semantics.eval_table_u_writefree` + `eval_chain_eq_table_jumpfree` |
+| `rg_jump_not_plain` / `unified_strand_jump_drops` (Examples) | DEMO (license-boundary pins beside `mut_strand_jump_pin`) | compute |
 
 ### `Optimize.v` / `Optimize_ValueSet.v` (base pass and history)
 
@@ -156,26 +169,58 @@ lock-in pins: `DEVELOPMENT.md` § "Known model infidelities" +
 
 ## 3. The evaluator matrix
 
-Nine DSL entry points (`Semantics.v`) have **disjoint** feature coverage.
-Every evaluator takes the shared mutable world as an explicit `env` argument
-(`eval : … -> env -> packet -> …`); an evaluator that "returns env" hands back
-the world it LEAVES (`… -> option verdict * env`), so the signature shows the
-state flow — but not which features an evaluator silently drops.  Rows are the
-entry points; every "no" cell names the bridging theorem that relates the
-evaluator to the one that does cover the feature, or says `no bridging
-theorem`.
+**THE semantics is the UNIFIED evaluator pair** (`Semantics.v` § "The unified
+semantics"): DSL `eval_rules_u` / `eval_table_u` / `eval_ruleset_u` /
+`eval_hook_u`, VM `run_rules_u` / `run_table_u` / `run_ruleset_u` — one
+fuel-bounded fold per side that **threads every state effect** (packet
+meta/ct writes, dynset env writes, notrack, limiter/quota/connlimit
+depletion, via the per-rule fold `dsl_rule_step`/`vm_rule_step`) **and
+follows control flow** (jump/goto/return, user chains, multi-table and
+hook/priority dispatch), returning verdict AND the `(env, packet)` the
+traversal leaves; cross-packet env carry is `seq_eval_env` over
+`eval_hook_env_u` / `run_ruleset_env_u`.  A jumped-to chain sees the caller's
+accumulated writes; the callee's writes persist into the resuming caller
+(witness pins: `Regression/Setread_UnderJump.v`).  Compile theorems: stratum
+8 in §2.
 
-| entry point | threads writes | returns env | jump/goto/return | NAT effect | multi-chain |
-|---|---|---|---|---|---|
-| `eval_rules` (+`eval_chain`) | no — *no bridging theorem* | no — *no bridging theorem* | no — bridge `eval_rules_jumpfree_eq_j` (= `eval_rules_j` on jump-free rules) | no — *no bridging theorem* | no — bridge `eval_chain_eq_table_jumpfree` (jump-free chains) |
-| `eval_rules_mut` (+`eval_chain_mut`) | **yes** (`dsl_rule_step`) | no — bridge `eval_rules_mut_env_fst` / `eval_chain_mut_env_fst` (`eval_rules_mut` = `fst` of `eval_rules_mut_env`) | no — *no bridging theorem* | no — bridge `eval_rules_trace_verdict` (trace verdict = mut verdict unless `trace_nat_drops`) | no — *no bridging theorem* |
-| `eval_rules_mut_env` (+`eval_chain_mut_env`) | **yes** | **yes** | no — *no bridging theorem* | no — *no bridging theorem* | no — *no bridging theorem* |
-| `eval_rules_trace` (+`eval_chain_trace`) | **yes** | **yes** (returns `env * packet`; `chain_out`) | no — *no bridging theorem* | **yes** (`apply_nat`, `trace_nat_drops`; known infidelity: fires on an `OVmapNat` vmap **hit** too — see the ledger) | no — *no bridging theorem* (chains composed manually via `chain_out`) |
-| `eval_rules_j` / `eval_table` | no — *no bridging theorem* | no — *no bridging theorem* | **yes** (fuel-bounded) | no — *no bridging theorem* | **user chains** (jump targets) |
-| `eval_ruleset` | no — *no bridging theorem* | no — *no bridging theorem* | **yes** (via `eval_table`) | no — *no bridging theorem* | **base chains** across tables |
-| `eval_hook` | no — *no bridging theorem* | no — *no bridging theorem* | **yes** | no — *no bridging theorem* | **hook dispatch** (priority-ordered) |
-| `seq_eval` | no — the between-packet step is external/arbitrary; *no bridging theorem* | threaded between packets (by `step`) | **yes** (instantiated with `eval_hook`) | no — *no bridging theorem* | **yes** (via `eval_hook`) |
-| `seq_eval_env` | **yes** (instantiated with `eval_chain_mut_env`) | threaded between packets (by the evaluator itself) | no — *no bridging theorem* | no — *no bridging theorem* | no — *no bridging theorem* |
+Every OTHER entry point is a **projection** of the unified fold, licensed by
+a coincidence theorem on the sub-domain where it provably agrees — never an
+independent semantics for a rule to be evaluated through.  An input outside
+a projection's licensed sub-domain must be evaluated on the unified
+evaluator.  (Strata retirement note: no evaluator was deleted in U1 — the
+historical strata keep their names, statements and theorems verbatim — but
+their *status* changed from parallel semantics to licensed projections; the
+successor for every out-of-domain input is the unified `_u` family.)
+
+| projection (DSL + VM mirror) | licensed sub-domain | coincidence equation |
+|---|---|---|
+| `eval_rules_j`/`eval_table` (VM `run_rules_j`/`run_table`) | write-free rules everywhere: `rule_writefree` (no meta/ct set, dynset, notrack, limiter/quota/connlimit) on the entry list, `chains_writefree` on the chain env | `eval_rules_u_writefree`: `eval_rules_u fuel cs rs e p = (eval_rules_j fuel cs rs e p, (e, p))`; table form `eval_table_u_writefree`; VM form `Correct.run_table_writefree_compiled` |
+| `eval_ruleset`/`eval_hook` (VM `run_ruleset`) | write-free bases (`bases_writefree`) | `eval_ruleset_u_writefree` / `eval_hook_u_writefree` |
+| `eval_rules`/`eval_chain` (VM `run_program`/`run_chain`) | write-free **and** jump-free | `eval_rules_u_writefree` + `eval_rules_jumpfree_eq_j`; packaged as `Correct.eval_chain_writefree_jumpfree_proj` |
+| `eval_rules_mut(_env)`/`eval_chain_mut(_env)` (VM `run_program_mut(_env)`) | transfer-free rules: `rule_plain` (no realisable Jump/Goto/Return under the run's verdict maps — step-threaded: rule writes provably cannot touch `e_vmap`, `dsl_rule_step_vmap`) | `eval_rules_u_mut_proj`: verdict = `eval_rules_mut`, env = `snd ∘ eval_rules_mut_env`; table form `eval_table_u_mut_proj` |
+| `eval_rules_trace` (DSL only — NAT axis) | verdict = mut strand except the data-plane NAT drop | `eval_rules_trace_verdict` (known infidelity on an `OVmapNat` vmap **hit** — see the ledger) |
+| `rule_applies(_walk)`/`outcome`/`rule_loadable` (per-rule bools) | mut-free rule | `rule_step_mutfree` |
+| `run_rule`/`run_program` (per-rule pure VM) | `no_writes` programs | `Correct.run_rule_step_no_writes` |
+| `seq_eval` | per-packet congruence over an EXTERNAL, caller-supplied step (see its header) | — |
+| `seq_eval_env` | generic in its per-packet evaluator; the unified instantiation is `eval_hook_env_u` | `compile_seq_hook_u_correct` (unified), `compile_seq_mut_correct` (flat) |
+
+**License coverage of the shipped example configs** (the `Nft_Tactics`
+surface `nft_yields` is stated over the `eval_table` projection;
+`nft_yields_unified` upgrades any statement to the unified semantics once the
+one-`reflexivity` check `nft_writefree` holds): `tutorial.nft`
+(`Tutorial_Proofs.tutorial_license`), `ruleset.nft`
+(`Ruleset_Verified.firewall_inbound_license`), and the optiplex `vmfilter`
+bridge table (`Optiplex_Antispoof.vmfilter_output_license`) are
+Compute-verified write-free, so every `eval_table` theorem about them IS a
+theorem about the unified semantics.  **Residual (designated follow-up):** the router `global` table contains ONE limiter rule
+(`inbound_private`'s `limit rate 5/second`), whose bucket depletion is an env
+write — outside `rule_writefree` — so the `Router_*` example statements are
+not yet licensed as unified-semantics statements; the follow-up is to restate
+them over `eval_table_u` (or prove a limiter-tolerant license for
+single-limiter configs).  The effectful optiplex `filter`/NAT chains were
+never evaluated through the pure strand — their proofs already use the
+effect-threading trace evaluators (`Optiplex_Mark`, `Router_NatHook`,
+`Router_Reach`).
 
 **Fuel adequacy (RESOLVED, M4 config-proof soundness)**: the jump strand is
 fuel-bounded, and `eval_table` maps fuel EXHAUSTION to the chain policy — a
@@ -199,21 +244,22 @@ second VM development — rationale on the corollary).  User surface:
 `Nft_Tactics.nft_*_fuel_indep`, CONFIG_PROOFS.md § "Choosing the fuel
 budget", worked instance `Tutorial_Proofs.tutorial_blocks_exactly_any_fuel`.
 
-**Mutation × jump/goto is not jointly verified**: no evaluator both threads
-writes and follows jumps, and no theorem relates the mutation strand
-(`eval_rules_mut*`, `eval_rules_trace`, `seq_eval_env`) to the jump strand
-(`eval_rules_j`/`eval_table`/`eval_ruleset`/`eval_hook`/`seq_eval`). A
-`meta mark set` inside a jump target is out of scope of every theorem above.
-Note the mutation theorems themselves carry **no jump-freedom hypothesis** —
-they are unconditional DSL=VM agreement facts that DO instantiate on a
-jump-bearing chain, where both sides treat the realised `Jump`/`Goto` as a
-(kernel-wrong) fall-through; the faithful domain is delimited by prose + the
-pin `Correct.mut_strand_jump_pin`, not in-theorem. Why a `chain_jumpfree`
-hypothesis was deliberately NOT added (it would shrink the agreement facts'
-domain without making any chain faithful; no jump-aware *mutating* evaluator
-exists to bridge to; `chain_jumpfree` is defined at the fixed entry state and
-would need a step-threaded redefinition): the rationale block on the mutation
-strata in `Correct.v` (before the fidelity bridge).
+**Mutation × jump/goto is jointly verified** (U1): the unified evaluator
+threads writes THROUGH control transfers on both sides, its compile theorems
+(stratum 8, §2) hold for effectful rules under jumps/multi-chain with no
+hypothesis excluding any effect or control-flow shape, and
+`Regression/Setread_UnderJump.v` Compute-pins the behaviour (`meta mark set
+0x1; meta mark 0x1; accept` ACCEPTS inside a jumped-to chain, on DSL and VM;
+caller writes visible in the callee; callee writes surviving the return;
+dynset learning across a jump).  The flat mutation theorems still carry **no
+jump-freedom hypothesis** — they are unconditional DSL=VM agreement facts
+that DO instantiate on a jump-bearing chain, where both sides treat the
+realised `Jump`/`Goto` as a fall-through; their *faithful* domain is now
+delimited **in-theorem** by the projection license `eval_rules_u_mut_proj`
+(the step-threaded `rule_plain` predicate), with the license boundary pinned
+by `Correct.mut_strand_jump_pin` / `rg_jump_not_plain` /
+`unified_strand_jump_drops` (rationale block on the mutation strata in
+`Correct.v`).
 
 The bytecode VM mirrors the DSL rows one-for-one (`run_rule(s)`,
 `run_program(_mut,_mut_env)`, `run_rules_j`/`run_table`, `run_ruleset`); each

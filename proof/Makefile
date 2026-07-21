@@ -222,8 +222,33 @@ validate: glue
 #                        the guard before any body effect runs, on both
 #                        evaluators (Reject_GuardFirst pins + the guard-last
 #                        counterfactual leak)
+#   unified semantics (U1) one effect-threading, jump-following evaluator per
+#                        side (eval_rules_u / run_rules_u): mutation x
+#                        jump/goto/return x multi-chain x hook dispatch x
+#                        cross-packet env carry, jointly compiler-preserved
+#                        (compile_{table,ruleset,hook,seq_hook}_u_correct);
+#                        the pure jump strand and the flat mutation strand
+#                        are PROVEN PROJECTIONS of it (eval_rules_u_writefree
+#                        / eval_rules_u_mut_proj), and the witnessed
+#                        set-then-read-under-jump behaviour is pinned on both
+#                        sides (Setread_UnderJump)
 # Any NEW README-claimed result must be added here in the same commit.
 AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
+  compile_table_u_correct compile_ruleset_u_correct compile_hook_u_correct \
+  compile_seq_hook_u_correct \
+  Semantics.eval_rules_u_writefree Semantics.eval_table_u_writefree \
+  Semantics.eval_ruleset_u_writefree Semantics.eval_hook_u_writefree \
+  Semantics.eval_rules_u_mut_proj Semantics.eval_table_u_mut_proj \
+  Correct.run_table_writefree_compiled Correct.eval_chain_writefree_jumpfree_proj \
+  Setread_UnderJump.setread_under_jump_accepted \
+  Setread_UnderJump.vm_setread_under_jump_accepted \
+  Setread_UnderJump.caller_write_visible_in_callee \
+  Setread_UnderJump.vm_caller_write_visible_in_callee \
+  Setread_UnderJump.callee_write_survives_return \
+  Setread_UnderJump.vm_callee_write_survives_return \
+  Setread_UnderJump.dynset_learned_under_jump \
+  Setread_UnderJump.vm_dynset_learned_under_jump \
+  Nft_Tactics.nft_yields_unified \
   compile_chain_mut_env_correct compile_seq_mut_correct compile_table_correct \
   compile_ruleset_correct compile_hook_correct compile_seq_correct \
   optimize_table_uncond_correct optimize_table_uncond_compile_correct \
@@ -290,7 +315,7 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Syntax.read_numgen_length Syntax.read_symhash_length
 
 axioms:
-	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optimize_PayMerge Optimize_XorFold Optimize_Linearize Optimize_Registry Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs RegsValid_Proofs Setread_IntraRule Reject_GuardFirst.\n'; \
+	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optimize_PayMerge Optimize_XorFold Optimize_Linearize Optimize_Registry Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs RegsValid_Proofs Setread_IntraRule Setread_UnderJump Reject_GuardFirst.\n'; \
 	  for t in $(AXIOM_GATE_THEOREMS); do printf 'Print Assumptions %s.\n' "$$t"; done; } \
 	| $(COQTOP) -R . Nft 2>/dev/null \
 	| grep -E 'Closed under the global context|Axioms' \

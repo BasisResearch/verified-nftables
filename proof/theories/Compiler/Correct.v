@@ -24,10 +24,20 @@
       7. [compile_seq_correct]           — a per-packet congruence corollary
                                            of 6 under an arbitrary external
                                            env step.
+      8. [compile_table_u_correct] / [compile_ruleset_u_correct] /
+         [compile_hook_u_correct] / [compile_seq_hook_u_correct]
+                                         — THE UNIFIED SEMANTICS (HEADLINE):
+                                           mutation x jump/goto/return x
+                                           multi-chain x hook dispatch x
+                                           cross-packet env carry, jointly, on
+                                           one effect-threading evaluator per
+                                           side ([eval_rules_u]/[run_rules_u]).
 
-    The mutation strand (2–4) and the jump strand (5–6) are verified on
-    SEPARATE evaluators; mutation x jump/goto is not jointly verified
-    (see the evaluator matrix in THEOREMS.md / Semantics.v). *)
+    Strata 1–7 are projections of stratum 8: each earlier evaluator pair is
+    licensed by a coincidence theorem on the sub-domain where it provably
+    agrees with the unified fold (the evaluator matrix in Semantics.v's
+    header / THEOREMS.md names every license).  Mutation x jump/goto is
+    JOINTLY verified at stratum 8. *)
 
 From Stdlib Require Import List NArith Bool Lia PeanoNat.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile.
@@ -3302,45 +3312,41 @@ Proof.
 Qed.
 
 (** ** Why the mutation strata (2-4) carry [rule_numgen_free] but NO
-    jump-freedom hypothesis — the faithful domain stated as prose, not
-    in-theorem.
+    jump-freedom hypothesis — the faithful domain delimited by a PROJECTION
+    theorem, not by hypotheses on the agreement facts.
 
-    Both mutation evaluators treat a realised [Jump]/[Goto] verdict as a
+    Both flat mutation evaluators treat a realised [Jump]/[Goto] verdict as a
     non-terminal fall-through ([terminal (Jump _) = false]), so
     [compile_chain_mut_correct]/[compile_seq_mut_correct] DO instantiate on a
-    jump-bearing chain — where that shared fall-through semantics is
-    kernel-wrong (the kernel runs the target chain).  The pure strand delimits
-    its faithful domain in-theorem ([eval_chain_eq_table_jumpfree], the
-    fidelity bridge below); the mutation strand deliberately does not, for
-    three reasons:
+    jump-bearing chain.  They stay hypothesis-free (beyond
+    [rule_numgen_free]) because:
 
-    (1) The mut theorems are UNCONDITIONAL (beyond [rule_numgen_free]) DSL=VM agreement
-        facts: the equation is true on jump-bearing chains too, and the
-        agreement is exactly what the optimizer/extraction consumers need
-        everywhere.  A [chain_jumpfree] hypothesis would shrink the theorems'
-        domain without making a single additional chain kernel-faithful —
-        fidelity is delimited by a BRIDGE to a faithful evaluator, not by
-        hypotheses on an agreement fact.
+    (1) The mut theorems are UNCONDITIONAL DSL=VM agreement facts: the
+        equation is true on jump-bearing chains too, and the agreement is
+        exactly what the optimizer/extraction consumers need everywhere.  A
+        domain hypothesis would shrink the theorems without making a single
+        additional chain kernel-faithful — fidelity is delimited by a BRIDGE
+        to the authoritative evaluator, not by hypotheses on an agreement
+        fact.
 
-    (2) The pure strand's [chain_jumpfree] is a hypothesis on that separate
-        bridge (to the jump-aware [eval_table]); the mutation analogue cannot
-        even be STATED, because no jump-aware MUTATING evaluator exists to
-        bridge to ("mutation × jump/goto is not jointly verified" — the
-        evaluator matrix, THEOREMS.md §3).  The missing object is the
-        evaluator, not a side condition.
+    (2) That bridge EXISTS: the jump-aware mutating evaluator is the unified
+        [eval_rules_u]/[eval_table_u] (Semantics.v § "The unified
+        semantics"), and [Semantics.eval_rules_u_mut_proj] /
+        [eval_table_u_mut_proj] prove the flat mutation strand is its
+        projection on transfer-free rules ([rule_plain]: no realisable
+        Jump/Goto/Return under the run's verdict maps — a STEP-THREADED
+        faithful-domain predicate: it is checked once at the entry env and
+        transports itself along the run because no rule write can touch a
+        verdict map, [Semantics.dsl_rule_step_vmap]).
 
-    (3) [chain_jumpfree] is evaluated at the FIXED entry env/packet
-        ([rules_jumpfree rs e p] tests [outcome r e p]); under the mutation
-        semantics later rules see a dsl_rule_step-mutated env/packet, so a
-        faithful-domain predicate for the mut strand would first need a
-        threaded redefinition — new machinery for a hypothesis that, per (1),
-        buys nothing.
-
-    The faithful domain of the mutation strand is therefore: jump-free chains
-    (as realised on the run), same as [eval_chain]'s.  [mut_strand_jump_pin]
-    below is the executable witness that a jump-bearing, numgen-free
-    chain is INSIDE the theorems but OUTSIDE the faithful domain — parallel to
-    [rg_base_not_jumpfree] on the pure strand. *)
+    A chain OUTSIDE that projection domain (one that realises a transfer) is
+    evaluated by the unified evaluator, whose compile theorem is stratum 8
+    below.  [mut_strand_jump_pin] is the executable witness of the license
+    boundary: a jump-bearing, numgen-free chain is INSIDE the agreement
+    theorems but OUTSIDE the flat strand's licensed domain — its [rule_plain]
+    check is [false] ([rg_jump_not_plain]) and the unified evaluator computes
+    the kernel verdict where the flat strand's fall-through does not
+    ([unified_strand_jump_drops]). *)
 
 (** ** Stratum 5: multi-chain semantic preservation (jump / goto / return +
     user chains).
@@ -3508,12 +3514,26 @@ Proof. reflexivity. Qed.
     same jump-bearing chain SATISFIES [rule_numgen_free] (so every mutation theorem
     instantiates on it), yet [eval_chain_mut] treats the realised [Jump] as a
     fall-through and returns the base policy [Accept] — while the kernel (and
-    the faithful [eval_table], (A) above) DROPS.  Locked in so the mut strand's
+    the unified evaluator, (F) below) DROPS.  Locked in so the flat strand's
     jump-as-fall-through can never silently be read as certified-faithful:
-    fidelity for jump-bearing chains lives ONLY in the jump strand. *)
+    a jump-bearing chain must be evaluated by the unified
+    [eval_table_u]/[run_table_u]. *)
 Example mut_strand_jump_pin : forall e p,
   forallb rule_numgen_free (c_rules rg_base) = true /\ eval_chain_mut rg_base e p = Accept.
 Proof. intros e p. split; reflexivity. Qed.
+
+(** (E) …and the license correctly EXCLUDES it: the jump rule fails
+    [rule_plain], so [Semantics.eval_table_u_mut_proj] does not certify the
+    flat result on this chain. *)
+Example rg_jump_not_plain : forall e, rule_plain e rg_jump_rule = false.
+Proof. intros e. reflexivity. Qed.
+
+(** (F) the UNIFIED evaluator runs the target chain and DROPS — kernel
+    behaviour, with the state threaded (here: unchanged, the probe rules are
+    write-free). *)
+Example unified_strand_jump_drops : forall e p,
+  fst (eval_table_u 10 rg_cs rg_base e p) = Drop.
+Proof. intros e p. reflexivity. Qed.
 Local Close Scope string_scope.
 
 (** ** Stratum 6 (HEADLINE, compiler axis): multi-table / multi-hook dispatch.
@@ -3570,6 +3590,153 @@ Proof.
   intros. apply seq_eval_ext. intros e' p. apply compile_hook_correct.
 Qed.
 
+(** ** Stratum 8 (HEADLINE, unified axis): the UNIFIED semantics is
+    compiler-preserved — mutation x jump/goto/return x multi-chain x hook
+    dispatch, jointly.
+
+    The compiled VM's unified fold reproduces the DSL's unified fold — verdict
+    AND the state (env, packet) the traversal leaves — for every fuel, every
+    chain environment, every base-chain list, and every hook: effectful rules
+    UNDER control flow are certified here, with no hypothesis excluding any
+    effect or any control-flow shape.  The ONLY hypothesis is
+    [rule_numgen_free] over the involved rules (the VM-side `numgen inc`
+    counter sweep has no DSL twin), discharged for EVERY frontend-emitted
+    program by [Lower_Proofs.lower_ruleset_numgen_free] (the lowering rejects
+    incremental numgen fail-loud, [Lower.LEnumgen]). *)
+
+Definition chains_numgen_free (cs : list (String.string * chain)) : bool :=
+  forallb (fun nc => forallb rule_numgen_free (c_rules (snd nc))) cs.
+
+Lemma chains_numgen_free_lookup : forall cs n ch,
+  chains_numgen_free cs = true ->
+  chain_lookup cs n = Some ch ->
+  forallb rule_numgen_free (c_rules ch) = true.
+Proof.
+  intros cs n ch Hcs Hlk. apply chain_lookup_in in Hlk.
+  unfold chains_numgen_free in Hcs.
+  eapply forallb_forall in Hcs; [| exact Hlk]. exact Hcs.
+Qed.
+
+Lemma run_rules_u_compile : forall fuel cs rs e p,
+  chains_numgen_free cs = true ->
+  forallb rule_numgen_free rs = true ->
+  run_rules_u fuel (compile_env cs) (map compile_rule rs) e p
+  = eval_rules_u fuel cs rs e p.
+Proof.
+  induction fuel as [| f IH]; intros cs rs e p Hcs Hrs; [reflexivity|].
+  destruct rs as [| r rest]; [reflexivity|].
+  cbn [forallb] in Hrs. apply Bool.andb_true_iff in Hrs. destruct Hrs as [Hr Hrest].
+  cbn [run_rules_u eval_rules_u map].
+  rewrite (vm_rule_step_compile_rule r e p Hr).
+  destruct (dsl_rule_step r e p) as [[v|] [e' p']]; [| now apply IH].
+  destruct v as [ | | | tc cc | lo hi bp fo | n | n | ];
+    try reflexivity; try (now apply IH).
+  - (* Jump: the callee starts from the caller's accumulated state, and the
+       caller resumes from the callee's *)
+    rewrite prog_lookup_compile_env.
+    destruct (chain_lookup cs n) as [ch|] eqn:Hlk; cbn [option_map];
+      [| now apply IH].
+    unfold compile_chain.
+    rewrite (IH cs (c_rules ch) e' p' Hcs
+               (chains_numgen_free_lookup cs n ch Hcs Hlk)).
+    destruct (eval_rules_u f cs (c_rules ch) e' p') as [[w|] [e'' p'']];
+      [reflexivity | now apply IH].
+  - (* Goto *)
+    rewrite prog_lookup_compile_env.
+    destruct (chain_lookup cs n) as [ch|] eqn:Hlk; cbn [option_map];
+      [| reflexivity].
+    unfold compile_chain.
+    apply IH; [exact Hcs | eapply chains_numgen_free_lookup; eauto].
+Qed.
+
+Theorem compile_table_u_correct : forall fuel cs base e p,
+  chains_numgen_free cs = true ->
+  forallb rule_numgen_free (c_rules base) = true ->
+  run_table_u fuel (compile_env cs) (compile_chain base) (c_policy base) e p
+  = eval_table_u fuel cs base e p.
+Proof.
+  intros fuel cs base e p Hcs Hb.
+  unfold run_table_u, eval_table_u, compile_chain.
+  rewrite run_rules_u_compile by assumption. reflexivity.
+Qed.
+
+Definition base_numgen_free
+    (cb : list (String.string * chain) * chain) : bool :=
+  chains_numgen_free (fst cb) && forallb rule_numgen_free (c_rules (snd cb)).
+
+Theorem compile_ruleset_u_correct : forall fuel bases e p,
+  forallb base_numgen_free bases = true ->
+  run_ruleset_u fuel (map compile_base bases) e p = eval_ruleset_u fuel bases e p.
+Proof.
+  intros fuel bases. induction bases as [| [cs base] rest IHb]; intros e p Hb;
+    [reflexivity|].
+  cbn [forallb] in Hb. apply Bool.andb_true_iff in Hb. destruct Hb as [Hhd Hrest].
+  unfold base_numgen_free in Hhd. apply Bool.andb_true_iff in Hhd.
+  destruct Hhd as [Hcs Hbase]. cbn [fst snd] in Hcs, Hbase.
+  cbn [map compile_base run_ruleset_u eval_ruleset_u fst snd].
+  rewrite (compile_table_u_correct fuel cs base e p Hcs Hbase).
+  destruct (eval_table_u fuel cs base e p) as [v [e' p']].
+  destruct (base_continues v); [now apply IHb | reflexivity].
+Qed.
+
+Theorem compile_hook_u_correct : forall fuel rs h e p,
+  forallb base_numgen_free (select_hook rs h) = true ->
+  run_ruleset_u fuel (map compile_base (select_hook rs h)) e p
+  = eval_hook_u fuel rs h e p.
+Proof.
+  intros fuel rs h e p Hn. unfold eval_hook_u.
+  now apply compile_ruleset_u_correct.
+Qed.
+
+(** Cross-packet env carry over the unified per-packet run: the ruleset's own
+    learning (dynset adds, limiter depletion) threads from packet to packet
+    through jumps and multi-chain dispatch, compiler-preserved. *)
+Theorem compile_seq_hook_u_correct : forall fuel rs h e packets,
+  forallb base_numgen_free (select_hook rs h) = true ->
+  seq_eval_env (run_ruleset_env_u fuel (map compile_base (select_hook rs h))) e packets
+  = seq_eval_env (eval_hook_env_u fuel rs h) e packets.
+Proof.
+  intros fuel rs h e packets Hn. apply seq_eval_env_ext. intros e' p.
+  unfold run_ruleset_env_u, eval_hook_env_u, eval_hook_u.
+  rewrite (compile_ruleset_u_correct fuel (select_hook rs h) e' p Hn).
+  reflexivity.
+Qed.
+
+(** VM-side projection license (completing the matrix): on compiled
+    write-free chains the pure [run_table] is the verdict projection of the
+    unified [run_table_u], with the state provably untouched.  (Derived
+    through the DSL bridges; the compiled programs are the only programs the
+    toolchain installs.) *)
+Corollary run_table_writefree_compiled : forall fuel cs base e p,
+  chains_numgen_free cs = true ->
+  forallb rule_numgen_free (c_rules base) = true ->
+  forallb rule_writefree (c_rules base) = true ->
+  chains_writefree cs = true ->
+  run_table_u fuel (compile_env cs) (compile_chain base) (c_policy base) e p
+  = (run_table fuel (compile_env cs) (compile_chain base) (c_policy base) e p,
+     (e, p)).
+Proof.
+  intros fuel cs base e p Hncs Hnb Hwb Hwcs.
+  rewrite (compile_table_u_correct fuel cs base e p Hncs Hnb).
+  rewrite compile_table_correct.
+  now apply eval_table_u_writefree.
+Qed.
+
+(** Flat pure strand license, packaged: write-free + jump-free chains are the
+    domain where the historical [eval_chain] is the unified verdict. *)
+Corollary eval_chain_writefree_jumpfree_proj : forall fuel cs c e p,
+  List.length (c_rules c) < fuel ->
+  forallb rule_writefree (c_rules c) = true ->
+  chains_writefree cs = true ->
+  chain_jumpfree c e p = true ->
+  eval_table_u fuel cs c e p = (eval_chain c e p, (e, p)).
+Proof.
+  intros fuel cs c e p Hlen Hwb Hwcs Hjf.
+  rewrite (eval_table_u_writefree fuel cs c e p Hwb Hwcs).
+  rewrite (eval_chain_eq_table_jumpfree fuel cs c e p Hlen Hjf).
+  reflexivity.
+Qed.
+
 (** ** Axiom-freedom audit (build-time guard; mirrors Optimize_Uncond.v).
 
     Every compiler stratum in this file must print "Closed under the global
@@ -3583,4 +3750,10 @@ Print Assumptions compile_seq_mut_correct.
 Print Assumptions compile_table_correct.
 Print Assumptions compile_ruleset_correct.
 Print Assumptions compile_hook_correct.
+Print Assumptions compile_table_u_correct.
+Print Assumptions compile_ruleset_u_correct.
+Print Assumptions compile_hook_u_correct.
+Print Assumptions compile_seq_hook_u_correct.
+Print Assumptions run_table_writefree_compiled.
+Print Assumptions eval_chain_writefree_jumpfree_proj.
 Print Assumptions compile_seq_correct.

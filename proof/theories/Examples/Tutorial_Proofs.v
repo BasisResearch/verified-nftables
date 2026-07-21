@@ -203,3 +203,11 @@ Proof. intro H. nft_unfold. vm_compute in H. discriminate. Qed.
 Goal tutorial_input denies (mk_tut 192 168 101 7) in tut_env
        under tutorial_chains budget tut_fuel.
 Proof. Fail now nft_decide. Abort.
+
+(* ================================================================== *)
+(** ** Projection license (U1): every [eval_table] statement above is a
+    statement about the UNIFIED semantics — the tutorial config is write-free,
+    so [Nft_Tactics.nft_yields_unified] applies to each of them. *)
+Example tutorial_license :
+  nft_writefree tutorial_chains tutorial_input = true.
+Proof. vm_compute. reflexivity. Qed.

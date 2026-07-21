@@ -221,6 +221,25 @@ For chains that do jump (e.g. the Router's `inbound -> inbound_world`),
 pinned per the previous section; the general lemmas take exactly those
 hypotheses.
 
+## The projection license (U1): which evaluator is your theorem about?
+
+`nft_yields`/`accepts`/`denies` are stated over `eval_table` — since U1 a
+PROJECTION of the unified, effect-threading semantics `eval_table_u`
+(Semantics.v § "The unified semantics").  Check once per config that the
+license applies:
+
+```coq
+Example my_license : nft_writefree my_chains my_chain = true.
+Proof. vm_compute. reflexivity. Qed.
+```
+
+Then `Nft_Tactics.nft_yields_unified` turns every statement in your module
+into the same statement about the unified semantics.  If the check FAILS,
+your config contains a state-writing rule (meta/ct set, dynset, notrack, or a
+limiter) — state your theorems over `fst (eval_table_u …)` instead, which
+threads those writes (through jumps too); `Regression/Setread_UnderJump.v`
+shows why the pure surface must not be used there.
+
 ---
 
 ## Tutorial: prove a ruleset blocks *exactly* one IP range
