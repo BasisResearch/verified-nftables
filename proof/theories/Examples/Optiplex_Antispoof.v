@@ -229,3 +229,13 @@ Qed.
 Print Assumptions vikunja_cannot_spoof_budget.
 Print Assumptions gentoo_cannot_spoof_hass.
 Print Assumptions budget_legitimate_allowed.
+
+(* ================================================================== *)
+(** ** Projection license (U1): the parsed vmfilter table is write-free, so
+    every [eval_table] statement in this file is a statement about the
+    UNIFIED semantics ([Semantics.eval_table_u_writefree] /
+    [Nft_Tactics.nft_yields_unified]). *)
+Example vmfilter_output_license :
+  forallb rule_writefree (c_rules vmfilter_output) = true
+  /\ chains_writefree vmfilter_chains = true.
+Proof. vm_compute. split; reflexivity. Qed.

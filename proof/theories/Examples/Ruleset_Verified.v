@@ -9,6 +9,7 @@
     the installed netlink bytecode too. *)
 
 From Stdlib Require Import List String NArith.
+From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Verdict Packet Syntax Semantics Ruleset_Gen Nftval Eval_Fw.
 Import ListNotations.
 Open Scope string_scope.
@@ -135,3 +136,14 @@ Proof.
   intros e p. unfold eval_table, fw_fuel, firewall_forward.
   cbn -[eval_rules_j]. rewrite erj_nil. reflexivity.
 Qed.
+
+(* ================================================================== *)
+(** ** Projection license (U1): the parsed firewall config is write-free, so
+    every [eval_table] statement in this file is a statement about the
+    UNIFIED semantics via [Nft_Tactics.nft_yields_unified] /
+    [Semantics.eval_table_u_writefree]. *)
+Example firewall_inbound_license :
+  forallb rule_writefree (c_rules firewall_inbound) = true
+  /\ forallb rule_writefree (c_rules firewall_forward) = true
+  /\ chains_writefree firewall_chains = true.
+Proof. vm_compute. repeat split; reflexivity. Qed.

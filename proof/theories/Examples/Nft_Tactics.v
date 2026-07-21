@@ -196,6 +196,46 @@ Lemma nft_drops_fuel_indep : forall rank cs c e p fuel fuel',
 Proof. intros. now apply nft_yields_fuel_indep with (rank := rank). Qed.
 
 (* ================================================================== *)
+(** * Projection license — the config surface, relative to the UNIFIED
+      semantics.
+
+    [nft_yields] is stated over [eval_table], which since U1 is a PROJECTION
+    of the unified evaluator [eval_table_u] (Semantics.v § "The unified
+    semantics"), licensed on write-free configs.  [nft_writefree] is the
+    one-[reflexivity] license check; when it holds, every
+    [nft_yields]/[nft_accepts]/[nft_drops] statement about the config IS a
+    statement about the unified semantics ([nft_yields_unified] below), so
+    no effectful rule is being run through the pure projection.  A config
+    with writes (meta/ct set, dynset, notrack, limiter/quota/connlimit)
+    anywhere in the evaluated table is OUTSIDE this license and must be
+    stated over [eval_table_u] directly (see
+    Regression/Setread_UnderJump.v for the divergence witness). *)
+
+Definition nft_writefree (cs : list (string * chain)) (c : chain) : bool :=
+  forallb rule_writefree (c_rules c) && chains_writefree cs.
+
+Lemma nft_yields_unified : forall fuel cs c e p v,
+  nft_writefree cs c = true ->
+  (nft_yields fuel cs c e p v <-> fst (eval_table_u fuel cs c e p) = v).
+Proof.
+  intros fuel cs c e p v H.
+  apply Bool.andb_true_iff in H. destruct H as [Hc Hcs].
+  unfold nft_yields.
+  rewrite (eval_table_u_writefree fuel cs c e p Hc Hcs).
+  cbn [fst]. reflexivity.
+Qed.
+
+Lemma nft_accepts_unified : forall fuel cs c e p,
+  nft_writefree cs c = true ->
+  (nft_accepts fuel cs c e p <-> fst (eval_table_u fuel cs c e p) = Accept).
+Proof. intros. now apply nft_yields_unified. Qed.
+
+Lemma nft_drops_unified : forall fuel cs c e p,
+  nft_writefree cs c = true ->
+  (nft_drops fuel cs c e p <-> fst (eval_table_u fuel cs c e p) = Drop).
+Proof. intros. now apply nft_yields_unified. Qed.
+
+(* ================================================================== *)
 (** * Tactics. *)
 
 (** Unfold the readable predicates so the bare statement is exposed for the
