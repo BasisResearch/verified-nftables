@@ -268,6 +268,7 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Semantics.eval_rules_u_mut_proj Semantics.eval_table_u_mut_proj \
   Semantics.eval_rules_u_mut_st_proj Semantics.eval_table_u_mut_st_proj \
   Correct.run_table_writefree_compiled Correct.eval_chain_writefree_jumpfree_proj \
+  Correct.eval_chain_writefree_jumpfree_syn_proj \
   Setread_UnderJump.setread_under_jump_accepted \
   Setread_UnderJump.vm_setread_under_jump_accepted \
   Setread_UnderJump.caller_write_visible_in_callee \
@@ -296,9 +297,10 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Optimize_Linearize.compile_chain_default_correct \
   Optimize_Registry.run_passes_correct \
   Semantics.run_rule_outcome_eq \
-  Semantics.eval_rules_jx_monotone Semantics.eval_rules_j_fuel_stable \
-  Semantics.eval_rules_jx_adequate Semantics.eval_table_fuel_indep \
+  Semantics.eval_rules_j_fuel_indep Semantics.eval_table_fuel_indep \
+  Semantics.eval_rules_u_fuel_indep Semantics.eval_table_u_fuel_indep \
   Semantics.eval_table_policy_is_fallthrough \
+  Semantics.rule_purewalk_ok \
   Correct.run_table_fuel_indep_compiled \
   Nft_Tactics.nft_yields_fuel_indep \
   Tutorial_Proofs.tutorial_blocks_exactly_any_fuel \

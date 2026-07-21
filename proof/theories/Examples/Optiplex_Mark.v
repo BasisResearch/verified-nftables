@@ -714,7 +714,7 @@ Proof.
     rewrite (streaming_prerouting_io_real e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok).
     reflexivity.
   - now apply masquerade_gated_on_mark.
-  - unfold eval_chain_mut. rewrite postrouting_rules_eq. cbn [eval_rules_mut].
+  - unfold eval_chain_mut. rewrite postrouting_rules_eq. rewrite ?eval_rules_mut_cons, ?eval_rules_mut_nil.
     rewrite (post1_rule_step Hpostrouting e' q Hmark).
     destruct (nat_drops Hpostrouting post1 e' q); [reflexivity|].
     destruct (apply_nat Hpostrouting post1 e' q) as [e2 q2]. reflexivity.

@@ -138,7 +138,7 @@ Proof.
       apply andb_true_iff in Hs3. destruct Hs3 as [Hs4 Hnat].
       apply andb_true_iff in Hs4. destruct Hs4 as [Hs5 Hvm].
       apply andb_true_iff in Hs5. destruct Hs5 as [Hm Hv].
-      cbn [eval_rules]. unfold rule_loadable, rule_applies, end_loadable, tail_loadable,
+      rewrite ?eval_rules_cons, ?eval_rules_nil. unfold rule_loadable, rule_applies, end_loadable, tail_loadable,
         terminal_loadable, outcome, outcome_core, terminal_outcome.
       destruct (r_body r) as [| it body] eqn:Eb; [| discriminate Hm].
       destruct (r_vmap r) as [vm |] eqn:Evm; [discriminate Hvm |].
@@ -151,7 +151,7 @@ Proof.
       destruct (r_verdict r) eqn:Ev; cbn in Hv |- *;
         try discriminate Hv; reflexivity.
     + (* keep r, recurse *)
-      cbn [eval_rules]. destruct (rule_loadable r e p && rule_applies r e p).
+      rewrite ?eval_rules_cons, ?eval_rules_nil. destruct (rule_loadable r e p && rule_applies r e p).
       * destruct (outcome r e p) as [v |].
         -- destruct (terminal v); [reflexivity | apply IH].
         -- apply IH.
@@ -391,7 +391,7 @@ Lemma eval_rules_map_dedup : forall rs e p,
 Proof.
   induction rs as [| r rs IH]; intros e p.
   - reflexivity.
-  - cbn [map eval_rules]. rewrite rule_applies_dedup, outcome_dedup, rule_loadable_dedup.
+  - cbn [map]. rewrite ?eval_rules_cons, ?eval_rules_nil. rewrite rule_applies_dedup, outcome_dedup, rule_loadable_dedup.
     destruct (rule_loadable r e p && rule_applies r e p).
     + destruct (outcome r e p) as [v |].
       * destruct (terminal v); [reflexivity | apply IH].
@@ -459,7 +459,7 @@ Lemma eval_rules_map_simplify : forall rs e p,
   eval_rules (map simplify_rule rs) e p = eval_rules rs e p.
 Proof.
   induction rs as [| r rs IH]; intros e p; [reflexivity |].
-  cbn [map eval_rules]. rewrite rule_applies_simplify, rule_loadable_simplify.
+  cbn [map]. rewrite ?eval_rules_cons, ?eval_rules_nil. rewrite rule_applies_simplify, rule_loadable_simplify.
   replace (outcome (simplify_rule r) e p) with (outcome r e p)
     by (unfold outcome, simplify_rule; cbn [r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after r_outcome];
         rewrite map_simplify_item_id; reflexivity).
@@ -506,7 +506,7 @@ Proof.
     apply andb_true_iff in Hn as [Hn Hvm].
     apply andb_true_iff in Hn as [Hba Hv].
     apply andb_true_iff in Hba as [Hb Hra].
-    cbn [eval_rules]. unfold rule_loadable, rule_applies, end_loadable, tail_loadable,
+    rewrite ?eval_rules_cons, ?eval_rules_nil. unfold rule_loadable, rule_applies, end_loadable, tail_loadable,
       terminal_loadable, outcome, outcome_core, terminal_outcome.
     destruct (r_body r) as [| it b] eqn:Eb; [| discriminate Hb].
     destruct (r_after r) as [| sa ra] eqn:Era; [| discriminate Hra].
@@ -519,7 +519,7 @@ Proof.
     destruct (r_queue r); [discriminate |].
     destruct (r_verdict r); cbn in Hv |- *; try discriminate Hv;
       rewrite ?Bool.andb_false_r, ?Bool.andb_true_r; reflexivity.
-  - cbn [eval_rules]. destruct (rule_loadable r e p && rule_applies r e p).
+  - rewrite ?eval_rules_cons, ?eval_rules_nil. destruct (rule_loadable r e p && rule_applies r e p).
     + destruct (outcome r e p) as [v |].
       * destruct (terminal v); [reflexivity | apply IH].
       * apply IH.

@@ -304,7 +304,7 @@ Lemma xorfold_eval_rules : forall rs e p,
   eval_rules (map xorfold_rule rs) e p = eval_rules rs e p.
 Proof.
   induction rs as [| r rs IH]; intros e p; [reflexivity|].
-  cbn [map eval_rules].
+  cbn [map]. rewrite ?eval_rules_cons, ?eval_rules_nil.
   rewrite xorfold_rule_loadable, xorfold_rule_applies, xorfold_outcome.
   destruct (rule_loadable r e p && rule_applies r e p); [| apply IH].
   destruct (outcome r e p) as [v|]; [destruct v|]; rewrite ?IH; reflexivity.

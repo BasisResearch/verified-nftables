@@ -1,9 +1,9 @@
 (** * Optimize_Table_Inv: SEAM invariants for composing the verified nft -o passes.
 
     Each individual pass theorem ([optimize_chain_valueset/vmap/concatN_correct])
-    requires its INPUT chain to be [rules_clean].  But every merge pass EMITS a
+    required its INPUT chain to be clean.  But every merge pass EMITS a
     non-clean rule (an [MConcatSet] head, or an [r_vmap] verdict-map rule), so
-    stage k's output is NOT [rules_clean] and cannot be fed to stage k+1's theorem
+    stage k's output is NOT clean and cannot be fed to stage k+1's theorem
     directly.
 
     This file builds the two ingredients that bridge the seam:
@@ -1031,18 +1031,11 @@ Proof.
   apply (optimize_rules_vmapguarded_keys_bound _ _ _ _ _ _ _ k E Hin).
 Qed.
 
-(** ** Structural facts about clean rules: their bodies are matches-only and read
-    NO set name (every clean matchcond is value/range, [mc_set_name = None]). *)
+(** (RETIRED, M6: the [rule_lookup_vmapN_ok]/[rs_vmapN_ok] predicates --
+    "clean, or a merged lookup rule" -- were dead scaffolding from the
+    clean-input era; nothing consumed them.  See THEOREMS.md § strata
+    retirements.) *)
 
-Definition rule_lookup_vmapN_ok (r : rule) : Prop :=
-  rule_clean r = true
-  \/ (head_value r = None
-      /\ body_only_matches (r_body r) = true
-      /\ rule_vmap_name r = []).
-
-Definition rs_vmapN_ok (rs : list rule) : Prop := Forall rule_lookup_vmapN_ok rs.
-
-(** A run-head rule ([head_value = Some]) under the ok-predicate is CLEAN. *)
 Lemma optimize_rules_valueset_keys_bound : forall fuel n d rs n' d' rs' k,
   optimize_rules_valueset fuel n d rs = (n', d', rs') ->
   In (setname k) (map fst (sd_sets d')) ->
@@ -1106,6 +1099,6 @@ Proof.
   - lia.
 Qed.
 
-(* 3. valueset OUTPUT is [rs_vmapN_ok]: each output rule is clean, or a merged
-      single-field [MConcatSet] lookup rule (head_value = None, matches-only body,
-      no vmap) -- the right disjunct of [rule_lookup_vmapN_ok]. *)
+(* 3. (historical note) valueset OUTPUT rules are either passed through
+      unchanged or merged single-field [MConcatSet] lookup rules
+      (head_value = None, matches-only body, no vmap). *)

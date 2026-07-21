@@ -143,7 +143,7 @@ Lemma eval_rules_agree_gen : forall rs p base d1 d2,
 Proof.
   induction rs as [| r rs IH]; intros p base d1 d2 Hag; [reflexivity|].
   pose proof (Hag r (or_introl eq_refl)) as Hda.
-  cbn [eval_rules].
+  rewrite ?eval_rules_cons, ?eval_rules_nil.
   rewrite (rule_loadable_agree_gen r p base d1 d2 Hda).
   rewrite (rule_applies_agree_gen r p base d1 d2 Hda).
   rewrite (outcome_agree_gen r p base d1 d2 Hda).
@@ -309,7 +309,7 @@ Lemma eval_rules_cons_cong : forall r X Y e1 e2 p,
   eval_rules X e1 p = eval_rules Y e2 p ->
   eval_rules (r :: X) e1 p = eval_rules (r :: Y) e2 p.
 Proof.
-  intros r X Y e1 e2 p HL HA HO HXY. cbn [eval_rules]. rewrite HL, HA, HO, HXY. reflexivity.
+  intros r X Y e1 e2 p HL HA HO HXY. rewrite ?eval_rules_cons, ?eval_rules_nil. rewrite HL, HA, HO, HXY. reflexivity.
 Qed.
 
 (** An [orig_dnat_rule] reads NO set/vmap/map name, so it AGREES across any decls. *)
@@ -847,7 +847,7 @@ Proof.
            remember (optimize_rules_valueset fuel n d (r2 :: rest)) as t eqn:Erec.
            destruct t as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules].
+           rewrite ?eval_rules_cons, ?eval_rules_nil.
            rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
            assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -958,7 +958,7 @@ Proof.
         remember (optimize_rules_valueset fuel n d (r2 :: rest)) as t eqn:Erec.
         destruct t as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules].
+        rewrite ?eval_rules_cons, ?eval_rules_nil.
         rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
         assert (Hda1 : decls_agree_rule base dd'' d r1).
         { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -1002,7 +1002,7 @@ Proof.
         -- remember (optimize_rules_dscp fuel n d (r2 :: rest)) as t eqn:Erec.
            destruct t as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules].
+           rewrite ?eval_rules_cons, ?eval_rules_nil.
            rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
            assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -1126,7 +1126,7 @@ Proof.
       * remember (optimize_rules_dscp fuel n d (r2 :: rest)) as t eqn:Erec.
         destruct t as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules].
+        rewrite ?eval_rules_cons, ?eval_rules_nil.
         rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
         assert (Hda1 : decls_agree_rule base dd'' d r1).
         { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -1167,7 +1167,7 @@ Proof.
         -- remember (optimize_rules_intervalsethostorder fuel n d (r2 :: rest)) as t eqn:Erec.
            destruct t as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules].
+           rewrite ?eval_rules_cons, ?eval_rules_nil.
            rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
            assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -1266,7 +1266,7 @@ Proof.
       * remember (optimize_rules_intervalsethostorder fuel n d (r2 :: rest)) as t eqn:Erec.
         destruct t as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules].
+        rewrite ?eval_rules_cons, ?eval_rules_nil.
         rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
         assert (Hda1 : decls_agree_rule base dd'' d r1).
         { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -1314,7 +1314,7 @@ Proof.
            remember (optimize_rules_intervalset fuel n d (r2 :: rest)) as t eqn:Erec.
            destruct t as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules].
+           rewrite ?eval_rules_cons, ?eval_rules_nil.
            rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
            assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -1415,7 +1415,7 @@ Proof.
         remember (optimize_rules_intervalset fuel n d (r2 :: rest)) as t eqn:Erec.
         destruct t as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules].
+        rewrite ?eval_rules_cons, ?eval_rules_nil.
         rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
         assert (Hda1 : decls_agree_rule base dd'' d r1).
         { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -1457,7 +1457,7 @@ Proof.
         -- remember (optimize_rules_intervalsetguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
            destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules].
+           rewrite ?eval_rules_cons, ?eval_rules_nil.
            rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
            assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -1563,7 +1563,7 @@ Proof.
       * remember (optimize_rules_intervalsetguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules].
+        rewrite ?eval_rules_cons, ?eval_rules_nil.
         rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
         assert (Hda1 : decls_agree_rule base dd'' d r1).
         { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -1604,7 +1604,7 @@ Proof.
         -- remember (optimize_rules_mixedpointrangeguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
            destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules].
+           rewrite ?eval_rules_cons, ?eval_rules_nil.
            rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
            assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -1720,7 +1720,7 @@ Proof.
       * remember (optimize_rules_mixedpointrangeguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules].
+        rewrite ?eval_rules_cons, ?eval_rules_nil.
         rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
         assert (Hda1 : decls_agree_rule base dd'' d r1).
         { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -1758,7 +1758,7 @@ Proof.
         -- remember (optimize_rules_concat fuel n d (r2 :: rest)) as tt eqn:Erec.
            destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules].
+           rewrite ?eval_rules_cons, ?eval_rules_nil.
            rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
            assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -1886,7 +1886,7 @@ Proof.
       * remember (optimize_rules_concat fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules].
+        rewrite ?eval_rules_cons, ?eval_rules_nil.
         rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
         assert (Hda1 : decls_agree_rule base dd'' d r1).
         { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -1929,7 +1929,7 @@ Proof.
         -- remember (optimize_rules_concatguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
            destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules].
+           rewrite ?eval_rules_cons, ?eval_rules_nil.
            rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
            assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -2058,7 +2058,7 @@ Proof.
       * remember (optimize_rules_concatguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules].
+        rewrite ?eval_rules_cons, ?eval_rules_nil.
         rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
         assert (Hda1 : decls_agree_rule base dd'' d r1).
         { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -2100,7 +2100,7 @@ Proof.
         -- remember (optimize_rules_setguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
            destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules].
+           rewrite ?eval_rules_cons, ?eval_rules_nil.
            rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
            assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -2213,7 +2213,7 @@ Proof.
       * remember (optimize_rules_setguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules].
+        rewrite ?eval_rules_cons, ?eval_rules_nil.
         rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
         assert (Hda1 : decls_agree_rule base dd'' d r1).
         { apply (decls_agree_rule_setseam base d dd'' r1 n).
@@ -2309,7 +2309,7 @@ Proof.
     + remember (optimize_rules_concatmulti n d (r2 :: rest)) as tt eqn:Erec.
       destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
       injection H as Hn' Hd' Hr'. subst n' d' rs'.
-      cbn [eval_rules].
+      rewrite ?eval_rules_cons, ?eval_rules_nil.
       rewrite (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) n d m'' dd'' rr'' base p
                  (eq_sym Erec) Hfresh Hrf2).
       assert (Hda1 : decls_agree_rule base dd'' d r1).
@@ -2354,7 +2354,7 @@ Proof.
         -- remember (optimize_rules_vmap fuel n d (r2 :: rest)) as tt eqn:Erec.
            destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules].
+           rewrite ?eval_rules_cons, ?eval_rules_nil.
            rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
            assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_vmapseam base d dd'' r1 n).
@@ -2371,7 +2371,7 @@ Proof.
            2:{ remember (optimize_rules_vmap fuel n d (r2 :: rest)) as tt eqn:Erec.
                destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
                injection H as Hn' Hd' Hr'. subst n' d' rs'.
-               cbn [eval_rules].
+               rewrite ?eval_rules_cons, ?eval_rules_nil.
                rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
                assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_vmapseam base d dd'' r1 n).
@@ -2466,7 +2466,7 @@ Proof.
       * remember (optimize_rules_vmap fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules].
+        rewrite ?eval_rules_cons, ?eval_rules_nil.
         rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
         assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_vmapseam base d dd'' r1 n).
@@ -2510,7 +2510,7 @@ Proof.
         -- remember (optimize_rules_vmapguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
            destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules].
+           rewrite ?eval_rules_cons, ?eval_rules_nil.
            rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
            assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_vmapseam base d dd'' r1 n).
@@ -2527,7 +2527,7 @@ Proof.
            2:{ remember (optimize_rules_vmapguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
                destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
                injection H as Hn' Hd' Hr'. subst n' d' rs'.
-               cbn [eval_rules].
+               rewrite ?eval_rules_cons, ?eval_rules_nil.
                rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
                assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_vmapseam base d dd'' r1 n).
@@ -2622,7 +2622,7 @@ Proof.
       * remember (optimize_rules_vmapguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules].
+        rewrite ?eval_rules_cons, ?eval_rules_nil.
         rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
         assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_vmapseam base d dd'' r1 n).
@@ -2735,7 +2735,7 @@ Proof.
         -- remember (optimize_rules_dscpvmap fuel n d (r2 :: rest)) as tt eqn:Erec.
            destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules].
+           rewrite ?eval_rules_cons, ?eval_rules_nil.
            rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
            assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_vmapseam base d dd'' r1 n).
@@ -2752,7 +2752,7 @@ Proof.
            2:{ remember (optimize_rules_dscpvmap fuel n d (r2 :: rest)) as tt eqn:Erec.
                destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
                injection H as Hn' Hd' Hr'. subst n' d' rs'.
-               cbn [eval_rules].
+               rewrite ?eval_rules_cons, ?eval_rules_nil.
                rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
                assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_vmapseam base d dd'' r1 n).
@@ -2851,7 +2851,7 @@ Proof.
       * remember (optimize_rules_dscpvmap fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules].
+        rewrite ?eval_rules_cons, ?eval_rules_nil.
         rewrite (IH (r2 :: rest) n d m'' dd'' rr'' base p (eq_sym Erec) Hfresh Hrf_tail).
         assert (Hda1 : decls_agree_rule base dd'' d r1).
            { apply (decls_agree_rule_vmapseam base d dd'' r1 n).

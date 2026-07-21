@@ -313,7 +313,7 @@ Lemma eval_rules_mut_st_mutfree_prefix : forall b rest e p,
 Proof.
   induction b as [| r b IH]; intros rest e p Hmf; [reflexivity|].
   cbn [forallb] in Hmf. apply Bool.andb_true_iff in Hmf as [Hr Hb].
-  cbn [app eval_rules_mut_st eval_rules].
+  cbn [app]. rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil, ?eval_rules_cons, ?eval_rules_nil.
   rewrite (rule_step_mutfree h r e p Hr).
   destruct (rule_loadable r e p && rule_applies r e p).
   - destruct (outcome r e p) as [v|].
@@ -340,7 +340,7 @@ Lemma eval_rules_mut_st_cons_cong : forall r rs1 rs2 e p,
   (forall e' p', eval_rules_mut_st h rs1 e' p' = eval_rules_mut_st h rs2 e' p') ->
   eval_rules_mut_st h (r :: rs1) e p = eval_rules_mut_st h (r :: rs2) e p.
 Proof.
-  intros r rs1 rs2 e p Htail. cbn [eval_rules_mut_st].
+  intros r rs1 rs2 e p Htail. rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
   destruct (rule_step h r e p) as [[v|] [e' p']];
     [ destruct (terminal v); [reflexivity | apply Htail] | apply Htail ].
 Qed.
@@ -487,7 +487,7 @@ Proof.
            remember (optimize_rules_valueset fuel n d (r2 :: rest)) as t eqn:Erec.
            destruct t as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules_mut_st].
+           rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
            assert (Hst : forall k, n <= k ->
                      e_set (fst (snd (rule_step h r1 e p))) (setname k)
                      = e_set e (setname k))
@@ -593,7 +593,7 @@ Proof.
         remember (optimize_rules_valueset fuel n d (r2 :: rest)) as t eqn:Erec.
         destruct t as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules_mut_st].
+        rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
         assert (Hst : forall k, n <= k ->
                   e_set (fst (snd (rule_step h r1 e p))) (setname k)
                   = e_set e (setname k))
@@ -633,7 +633,7 @@ Proof.
         -- remember (optimize_rules_dscp fuel n d (r2 :: rest)) as t eqn:Erec.
            destruct t as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules_mut_st].
+           rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
            assert (Hst : forall k, n <= k ->
                      e_set (fst (snd (rule_step h r1 e p))) (setname k)
                      = e_set e (setname k))
@@ -749,7 +749,7 @@ Proof.
       * remember (optimize_rules_dscp fuel n d (r2 :: rest)) as t eqn:Erec.
         destruct t as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules_mut_st].
+        rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
         assert (Hst : forall k, n <= k ->
                   e_set (fst (snd (rule_step h r1 e p))) (setname k)
                   = e_set e (setname k))
@@ -789,7 +789,7 @@ Proof.
         -- remember (optimize_rules_intervalset fuel n d (r2 :: rest)) as t eqn:Erec.
            destruct t as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules_mut_st].
+           rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
            assert (Hst : forall k, n <= k ->
                      e_set (fst (snd (rule_step h r1 e p))) (setname k)
                      = e_set e (setname k))
@@ -889,7 +889,7 @@ Proof.
       * remember (optimize_rules_intervalset fuel n d (r2 :: rest)) as t eqn:Erec.
         destruct t as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules_mut_st].
+        rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
         assert (Hst : forall k, n <= k ->
                   e_set (fst (snd (rule_step h r1 e p))) (setname k)
                   = e_set e (setname k))
@@ -929,7 +929,7 @@ Proof.
         -- remember (optimize_rules_intervalsethostorder fuel n d (r2 :: rest)) as t eqn:Erec.
            destruct t as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules_mut_st].
+           rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
            assert (Hst : forall k, n <= k ->
                      e_set (fst (snd (rule_step h r1 e p))) (setname k)
                      = e_set e (setname k))
@@ -1034,7 +1034,7 @@ Proof.
       * remember (optimize_rules_intervalsethostorder fuel n d (r2 :: rest)) as t eqn:Erec.
         destruct t as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules_mut_st].
+        rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
         assert (Hst : forall k, n <= k ->
                   e_set (fst (snd (rule_step h r1 e p))) (setname k)
                   = e_set e (setname k))
@@ -1101,7 +1101,7 @@ Proof.
         -- remember (optimize_rules_intervalsetguarded fuel n d (r2 :: rest)) as t eqn:Erec.
            destruct t as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules_mut_st].
+           rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
            assert (Hst : forall k, n <= k ->
                      e_set (fst (snd (rule_step h r1 e p))) (setname k)
                      = e_set e (setname k))
@@ -1216,7 +1216,7 @@ Proof.
       * remember (optimize_rules_intervalsetguarded fuel n d (r2 :: rest)) as t eqn:Erec.
         destruct t as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules_mut_st].
+        rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
         assert (Hst : forall k, n <= k ->
                   e_set (fst (snd (rule_step h r1 e p))) (setname k)
                   = e_set e (setname k))
@@ -1256,7 +1256,7 @@ Proof.
         -- remember (optimize_rules_mixedpointrangeguarded fuel n d (r2 :: rest)) as t eqn:Erec.
            destruct t as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules_mut_st].
+           rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
            assert (Hst : forall k, n <= k ->
                      e_set (fst (snd (rule_step h r1 e p))) (setname k)
                      = e_set e (setname k))
@@ -1381,7 +1381,7 @@ Proof.
       * remember (optimize_rules_mixedpointrangeguarded fuel n d (r2 :: rest)) as t eqn:Erec.
         destruct t as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules_mut_st].
+        rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
         assert (Hst : forall k, n <= k ->
                   e_set (fst (snd (rule_step h r1 e p))) (setname k)
                   = e_set e (setname k))
@@ -1451,7 +1451,7 @@ Proof.
         -- remember (optimize_rules_concat fuel n d (r2 :: rest)) as tt eqn:Erec.
            destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules_mut_st].
+           rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
            assert (Hst : forall k, n <= k ->
                      e_set (fst (snd (rule_step h r1 e p))) (setname k)
                      = e_set e (setname k))
@@ -1594,7 +1594,7 @@ Proof.
       * remember (optimize_rules_concat fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules_mut_st].
+        rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
         assert (Hst : forall k, n <= k ->
                   e_set (fst (snd (rule_step h r1 e p))) (setname k)
                   = e_set e (setname k))
@@ -1634,7 +1634,7 @@ Proof.
         -- remember (optimize_rules_concatguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
            destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules_mut_st].
+           rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
            assert (Hst : forall k, n <= k ->
                      e_set (fst (snd (rule_step h r1 e p))) (setname k)
                      = e_set e (setname k))
@@ -1785,7 +1785,7 @@ Proof.
       * remember (optimize_rules_concatguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules_mut_st].
+        rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
         assert (Hst : forall k, n <= k ->
                   e_set (fst (snd (rule_step h r1 e p))) (setname k)
                   = e_set e (setname k))
@@ -1825,7 +1825,7 @@ Proof.
         -- remember (optimize_rules_setguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
            destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules_mut_st].
+           rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
            assert (Hst : forall k, n <= k ->
                      e_set (fst (snd (rule_step h r1 e p))) (setname k)
                      = e_set e (setname k))
@@ -1939,7 +1939,7 @@ Proof.
       * remember (optimize_rules_setguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules_mut_st].
+        rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
         assert (Hst : forall k, n <= k ->
                   e_set (fst (snd (rule_step h r1 e p))) (setname k)
                   = e_set e (setname k))
@@ -2073,7 +2073,7 @@ Proof.
     + remember (optimize_rules_concatmulti n d (r2 :: rest)) as tt eqn:Erec.
       destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
       injection H as Hn' Hd' Hr'. subst n' d' rs'.
-      cbn [eval_rules_mut_st].
+      rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
       assert (Hst : forall k, n <= k ->
                 e_set (fst (snd (rule_step h r1 e p))) (setname k)
                 = e_set e (setname k))
@@ -2169,7 +2169,7 @@ Proof.
         -- remember (optimize_rules_vmap fuel n d (r2 :: rest)) as tt eqn:Erec.
            destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules_mut_st].
+           rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
            pose proof (rule_step_vmap h r1 e p) as Hst.
            destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
            ++ destruct (terminal w); [reflexivity |].
@@ -2184,7 +2184,7 @@ Proof.
            2:{ remember (optimize_rules_vmap fuel n d (r2 :: rest)) as tt eqn:Erec.
                destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
                injection H as Hn' Hd' Hr'. subst n' d' rs'.
-               cbn [eval_rules_mut_st].
+               rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
                pose proof (rule_step_vmap h r1 e p) as Hst.
                destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
                - destruct (terminal w); [reflexivity |].
@@ -2267,7 +2267,7 @@ Proof.
       * remember (optimize_rules_vmap fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules_mut_st].
+        rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
         pose proof (rule_step_vmap h r1 e p) as Hst.
         destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
         ++ destruct (terminal w); [reflexivity |].
@@ -2300,7 +2300,7 @@ Proof.
         -- remember (optimize_rules_vmapguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
            destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules_mut_st].
+           rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
            pose proof (rule_step_vmap h r1 e p) as Hst.
            destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
            ++ destruct (terminal w); [reflexivity |].
@@ -2315,7 +2315,7 @@ Proof.
            2:{ remember (optimize_rules_vmapguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
                destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
                injection H as Hn' Hd' Hr'. subst n' d' rs'.
-               cbn [eval_rules_mut_st].
+               rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
                pose proof (rule_step_vmap h r1 e p) as Hst.
                destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
                - destruct (terminal w); [reflexivity |].
@@ -2417,7 +2417,7 @@ Proof.
       * remember (optimize_rules_vmapguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules_mut_st].
+        rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
         pose proof (rule_step_vmap h r1 e p) as Hst.
         destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
         ++ destruct (terminal w); [reflexivity |].
@@ -2450,7 +2450,7 @@ Proof.
         -- remember (optimize_rules_dscpvmap fuel n d (r2 :: rest)) as tt eqn:Erec.
            destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
            injection H as Hn' Hd' Hr'. subst n' d' rs'.
-           cbn [eval_rules_mut_st].
+           rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
            pose proof (rule_step_vmap h r1 e p) as Hst.
            destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
            ++ destruct (terminal w); [reflexivity |].
@@ -2466,7 +2466,7 @@ Proof.
            2:{ remember (optimize_rules_dscpvmap fuel n d (r2 :: rest)) as tt eqn:Erec.
                destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
                injection H as Hn' Hd' Hr'. subst n' d' rs'.
-               cbn [eval_rules_mut_st].
+               rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
                pose proof (rule_step_vmap h r1 e p) as Hst.
                destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
                - destruct (terminal w); [reflexivity |].
@@ -2565,7 +2565,7 @@ Proof.
       * remember (optimize_rules_dscpvmap fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
-        cbn [eval_rules_mut_st].
+        rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
         pose proof (rule_step_vmap h r1 e p) as Hst.
         destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
         ++ destruct (terminal w); [reflexivity |].
@@ -2650,13 +2650,14 @@ Lemma eval_rules_mut_st_dnat_merge : forall h f v1 v2 T1 T2 m rest e p,
   = eval_rules_mut_st h (orig_dnat_rule f v1 T1 :: orig_dnat_rule f v2 T2 :: rest) e p.
 Proof.
   intros h f v1 v2 T1 T2 m rest e p Hmap Hfx1 Hfx2.
-  cbn [eval_rules_mut_st].
+  rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
   rewrite rule_step_mk_dnat.
   rewrite (rule_step_orig_dnat h f v1 T1 e p).
   rewrite Hmap, map_has_key_dmap2.
   destruct (field_loadable f p) eqn:Hld.
   2:{ cbn [andb].
       rewrite (eval_mcmp_point_unload f v1 e p Hld).
+      cbv beta iota. rewrite ?eval_rules_mut_st_cons.
       rewrite (rule_step_orig_dnat h f v2 T2 e p).
       rewrite (eval_mcmp_point_unload f v2 e p Hld).
       reflexivity. }
@@ -2672,6 +2673,7 @@ Proof.
     destruct (apply_nat h (orig_dnat_rule f v1 T1) e p) as [e2 p2].
     reflexivity.
   - (* first original's head fails, state unchanged *)
+    cbv beta iota. rewrite ?eval_rules_mut_st_cons.
     rewrite (rule_step_orig_dnat h f v2 T2 e p).
     rewrite (eval_mcmp_point f v2 e p Hld
                (field_fixed_len_loaded f (List.length v2) e p Hfx2 Hld)).
@@ -2723,7 +2725,7 @@ Proof.
       rewrite Hr1eq, Hr2eq.
       rewrite <- (eval_rules_mut_st_dnat_merge h f v1 v2 T1 T2 (mapname n) rest e p
                     Hlook Hfx1 Hfx2).
-      cbn [eval_rules_mut_st].
+      rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
       assert (Hst : forall nm, e_map (fst (snd (rule_step h (mk_dnat_rule f (mapname n))
                                                   e p))) nm
                     = e_map e nm).
@@ -2747,7 +2749,7 @@ Proof.
              | exact Hwf_rest ].
     + remember (optimize_rules_dnat n d (r2 :: rest)) as tt eqn:Erec.
       destruct tt as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
-      cbn [eval_rules_mut_st].
+      rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
       assert (Hst : forall k, n <= k ->
                 e_map (fst (snd (rule_step h r1 e p))) (mapname k)
                 = e_map e (mapname k))
@@ -2824,13 +2826,14 @@ Lemma eval_rules_mut_st_snat_merge : forall h f v1 v2 T1 T2 m rest e p,
   = eval_rules_mut_st h (orig_snat_rule f v1 T1 :: orig_snat_rule f v2 T2 :: rest) e p.
 Proof.
   intros h f v1 v2 T1 T2 m rest e p Hmap Hfx1 Hfx2.
-  cbn [eval_rules_mut_st].
+  rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
   rewrite rule_step_mk_snat.
   rewrite (rule_step_orig_snat h f v1 T1 e p).
   rewrite Hmap, map_has_key_dmap2.
   destruct (field_loadable f p) eqn:Hld.
   2:{ cbn [andb].
       rewrite (eval_mcmp_point_unload f v1 e p Hld).
+      cbv beta iota. rewrite ?eval_rules_mut_st_cons.
       rewrite (rule_step_orig_snat h f v2 T2 e p).
       rewrite (eval_mcmp_point_unload f v2 e p Hld).
       reflexivity. }
@@ -2844,7 +2847,8 @@ Proof.
     rewrite (apply_nat_snat_merge1 h f v1 v2 T1 T2 m e p Hmap Hv1).
     destruct (apply_nat h (orig_snat_rule f v1 T1) e p) as [e2 p2].
     reflexivity.
-  - rewrite (rule_step_orig_snat h f v2 T2 e p).
+  - cbv beta iota. rewrite ?eval_rules_mut_st_cons.
+    rewrite (rule_step_orig_snat h f v2 T2 e p).
     rewrite (eval_mcmp_point f v2 e p Hld
                (field_fixed_len_loaded f (List.length v2) e p Hfx2 Hld)).
     destruct (data_eqb (field_value f e p) v2) eqn:Hv2.
@@ -2893,7 +2897,7 @@ Proof.
       rewrite Hr1eq, Hr2eq.
       rewrite <- (eval_rules_mut_st_snat_merge h f v1 v2 T1 T2 (mapname n) rest e p
                     Hlook Hfx1 Hfx2).
-      cbn [eval_rules_mut_st].
+      rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
       assert (Hst : forall nm, e_map (fst (snd (rule_step h (mk_snat_rule f (mapname n))
                                                   e p))) nm
                     = e_map e nm).
@@ -2917,7 +2921,7 @@ Proof.
              | exact Hwf_rest ].
     + remember (optimize_rules_snat n d (r2 :: rest)) as tt eqn:Erec.
       destruct tt as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
-      cbn [eval_rules_mut_st].
+      rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
       assert (Hst : forall k, n <= k ->
                 e_map (fst (snd (rule_step h r1 e p))) (mapname k)
                 = e_map e (mapname k))
@@ -2940,7 +2944,7 @@ Lemma eval_rules_mut_st_continue : forall h r rest e p,
   eval_rules_mut_st h (r :: rest) e p
   = (let '(e', p') := dsl_step h r e p in eval_rules_mut_st h rest e' p').
 Proof.
-  intros h r rest e p Ho. cbn [eval_rules_mut_st]. unfold dsl_step.
+  intros h r rest e p Ho. rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil. unfold dsl_step.
   destruct (rule_step h r e p) as [v [e' p']]. cbn [fst snd] in Ho |- *.
   subst v. reflexivity.
 Qed.
@@ -3012,7 +3016,7 @@ Proof.
       rewrite Hr1eq, Hr2eq.
       rewrite <- (eval_rules_mut_st_map_merge h f v1 v2 M1 M2 (setname n) (mapname n) k0
                     rest e p Hpl Hlooks Hlookm Hfx1 Hfx2 Hne).
-      cbn [eval_rules_mut_st].
+      rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
       assert (Hst : forall nm, e_set (fst (snd (rule_step h
                         (mk_map_rule f (setname n) (mapname n) k0) e p))) nm
                       = e_set e nm
@@ -3041,7 +3045,7 @@ Proof.
              | exact Hwf_rest ].
     + remember (optimize_rules_datamap n d (r2 :: rest)) as tt eqn:Erec.
       destruct tt as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
-      cbn [eval_rules_mut_st].
+      rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
       assert (Hsts : forall k, n <= k ->
                 e_set (fst (snd (rule_step h r1 e p))) (setname k)
                 = e_set e (setname k))
@@ -3091,7 +3095,7 @@ Proof.
     + pose proof (eval_rules_absorb_correct r1 r2
                     (b, off, w1, w2, v1, v2, body) [] e p Eap) as Hp.
       exact Hp.
-  - cbn [eval_rules_mut_st].
+  - rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
     destruct (rule_step h r1 e p) as [[w|] [e1 p1]];
       [ destruct (terminal w); [reflexivity | apply IH] | apply IH ].
 Qed.
@@ -3123,7 +3127,7 @@ Proof.
     + cbn [forallb]. rewrite HmfM. reflexivity.
     + cbn [forallb]. rewrite Hmf1, Hmf2. reflexivity.
     + exact (eval_rules_ctmask_correct r1 r2 f m1 m2 z body [] e p Ep).
-  - cbn [eval_rules_mut_st].
+  - rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
     destruct (rule_step h r1 e p) as [[w|] [e1 p1]];
       [ destruct (terminal w); [reflexivity | apply IH] | apply IH ].
 Qed.
@@ -3145,7 +3149,7 @@ Proof.
     apply andb_true_iff in Hs3. destruct Hs3 as [Hs4 Hnat].
     apply andb_true_iff in Hs4. destruct Hs4 as [Hs5 Hvm].
     apply andb_true_iff in Hs5. destruct Hs5 as [Hm Hv].
-    cbn [eval_rules_mut_st].
+    rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
     unfold rule_step.
     destruct (r_body r) as [| it body] eqn:Eb; [| discriminate Hm].
     cbn [body_step].
@@ -3157,7 +3161,7 @@ Proof.
     destruct (r_fwd r) as [w |] eqn:Efwd; [discriminate Hfwd |].
     destruct (r_queue r) as [q |] eqn:Eq; [discriminate Hq |].
     destruct (r_verdict r) eqn:Ev; cbn in Hv |- *; try discriminate Hv; reflexivity.
-  - cbn [eval_rules_mut_st].
+  - rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
     destruct (rule_step h r e p) as [[w|] [e1 p1]];
       [ destruct (terminal w); [reflexivity | apply IH] | apply IH ].
 Qed.
@@ -3177,7 +3181,7 @@ Proof.
     apply andb_true_iff in Hn as [Hn Hvm].
     apply andb_true_iff in Hn as [Hba Hv].
     apply andb_true_iff in Hba as [Hb Hra].
-    cbn [eval_rules_mut_st].
+    rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
     unfold rule_step.
     destruct (r_body r) as [| it b] eqn:Eb; [| discriminate Hb].
     cbn [body_step].
@@ -3191,7 +3195,7 @@ Proof.
     destruct (r_verdict r) eqn:Ev; cbn in Hv |- *; try discriminate Hv.
     destruct (r_after r) as [| sa ra] eqn:Era; [| discriminate Hra].
     cbn [after_step]. reflexivity.
-  - cbn [eval_rules_mut_st].
+  - rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
     destruct (rule_step h r e p) as [[w|] [e1 p1]];
       [ destruct (terminal w); [reflexivity | apply IH] | apply IH ].
 Qed.
@@ -3268,7 +3272,7 @@ Proof.
   destruct (body_has_synproxy (r_body r) || body_has_notrack (r_body r)
             || negb (rule_mutfree r)) eqn:Hg.
   - assert (Hid : dedup_rule r = r) by (unfold dedup_rule; rewrite Hg; reflexivity).
-    rewrite Hid. cbn [eval_rules_mut_st].
+    rewrite Hid. rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
     destruct (rule_step h r e p) as [[w|] [e1 p1]];
       [ destruct (terminal w); [reflexivity | apply IH] | apply IH ].
   - assert (Hmf : rule_mutfree r = true).
@@ -3276,7 +3280,7 @@ Proof.
       rewrite !Bool.orb_true_r in Hg. discriminate Hg. }
     assert (Hmfd : rule_mutfree (dedup_rule r) = true)
       by (apply dedup_rule_mutfree; exact Hmf).
-    cbn [eval_rules_mut_st].
+    rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
     rewrite (rule_step_mutfree h r e p Hmf).
     rewrite (rule_step_mutfree h (dedup_rule r) e p Hmfd).
     rewrite rule_applies_dedup, rule_loadable_dedup, outcome_dedup.
@@ -3333,7 +3337,7 @@ Lemma eval_rules_mut_st_normalize : forall h rs e p,
   eval_rules_mut_st h (map normalize_rule rs) e p = eval_rules_mut_st h rs e p.
 Proof.
   intros h rs. induction rs as [| r rs IH]; intros e p; [reflexivity |].
-  cbn [map eval_rules_mut_st]. rewrite normalize_rule_step.
+  cbn [map]. rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil. rewrite normalize_rule_step.
   destruct (rule_step h r e p) as [[w|] [e1 p1]];
     [ destruct (terminal w); [reflexivity | apply IH] | apply IH ].
 Qed.

@@ -182,7 +182,7 @@ redirect/masquerade data plane is hook-dependent).
 | `Optimize_Dnat.eval_rules_dnat_merge`, `apply_nat_dnat_eq`, `apply_nat_dnat_merge1` (Cor.) | SUPPORTING | bare-NAT-map merge: verdict + data-plane NAT-effect preservation |
 | `Optimize_Snat.eval_rules_snat_merge`, `apply_nat_snat_eq`, `apply_nat_snat_merge1` (Cor.) | SUPPORTING | symmetric snat forms |
 | `Optimize_Normalize.normalize_chain_eval` | STAGE | verdict-preserving head normalisation run first by `optimize_table_uncond` |
-| `Optimize_Table.optimize_preserves_rules_clean` | SUPPORTING | seam lemma: the base pass preserves `rules_clean` |
+| `Optimize_Table.optimize_preserves_rules_clean` | **RETIRED** (M6 strata retirement: the whole-rule cleanliness family — the predicate, its env-irrelevance lemmas, this preservation seam, and the dead `Optimize_Table_Inv` ok-predicates — is deleted; nothing consumed it since the UNCONDITIONAL pipeline theorems landed, and its precise successor is the read-freshness generation `Optimize_Uncond.rule_set_fresh`/`rule_vmap_fresh`/`rule_nat_map_fresh`) |
 | `Optimize_Uncond.optimize_rules_{dnat,snat}_eval`, `optimize_rules_{valueset,dscp,intervalsethostorder,intervalset,intervalsetguarded,mixedpointrangeguarded,concat,concatguarded,setguarded,concatmulti,vmap,vmapguarded,dscpvmap}_correct_uncond` (15) | STAGE | each tagged `STAGE — composed into [optimize_table_correct_uncond_gen]` in the source |
 | `Optimize_Uncond.optimize_table_correct_uncond_gen` | SUPPORTING | the general `(n, d)`-threaded whole-pipeline form |
 | `Optimize_Uncond.optimize_table_uncond_correct` | SUPPORTING | DSL-level form of the optimizer headline |
@@ -217,19 +217,37 @@ Every OTHER entry point is a **projection** of the unified fold, licensed by
 a coincidence theorem on the sub-domain where it provably agrees — never an
 independent semantics for a rule to be evaluated through.  An input outside
 a projection's licensed sub-domain must be evaluated on the unified
-evaluator.  (Strata retirement note: no evaluator was deleted in U1 — the
+evaluator.  (Strata retirement note, U1: no evaluator was deleted in U1 — the
 historical strata keep their names, statements and theorems verbatim — but
 their *status* changed from parallel semantics to licensed projections; the
 successor for every out-of-domain input is the unified `_u` family.)
+
+**Evaluator consolidation (M6): exactly ONE recursive rule-list/jump
+traversal per side** — the Fixpoints `eval_rules_u` (DSL) and `run_rules_u`
+(VM).  Every other entry point is now a NON-RECURSIVE `Definition`: the pure
+strand (`eval_rules`, `run_program`) and the dispatch layers (`eval_ruleset`,
+`run_ruleset`, `eval_ruleset_u`, `run_ruleset_u`) are stdlib folds; the
+fueled pure jump strand (`eval_rules_j`, `run_rules_j`) is a `nat_rect` on
+the fuel; the flat mutation strand is ONE full-state fold per side
+(`eval_rules_mut_st` / `run_program_mut_st`, `fold_left` of
+`rule_step`/`run_rule_step` with an absorbing stopped accumulator) of which
+`eval_rules_mut(_env)` / `run_program_mut(_env)` are **projections BY
+DEFINITION** — the in-strand bridges are `reflexivity`-level, not re-proved
+inductions.  Names, statements and values are UNCHANGED: each conversion
+carries `_nil`/`_cons` (or `_0`/`_S`) unfolding equations restating the
+historical recursion verbatim, and every pre-existing theorem survives as
+stated.  (`run_program_mut_st` is new — the VM twin of `eval_rules_mut_st`,
+added so the VM projections have the same definitional source.)
 
 | projection (DSL + VM mirror) | licensed sub-domain | coincidence equation |
 |---|---|---|
 | `eval_rules_j`/`eval_table` (VM `run_rules_j`/`run_table`) | write-free rules everywhere: `rule_writefree` (no meta/ct set, dynset, notrack, limiter/quota/connlimit) on the entry list, `chains_writefree` on the chain env | `eval_rules_u_writefree`: `eval_rules_u fuel cs rs e p = (eval_rules_j fuel cs rs e p, (e, p))`; table form `eval_table_u_writefree`; VM form `Correct.run_table_writefree_compiled` |
 | `eval_rules_j`/`eval_table`/`eval_hook` (limiter-tolerant extension, Semantics.v § Projection 1b) | limiter-tolerant configs: every rule `rule_limiter_tol` = write-free OR a `rule_one_limiter` rule (match-only body whose ONE non-consume-free match is a tolerable limiter — non-inverted `limit`/`quota` or any `connlimit` — in last position, under a static terminal verdict); entry list + `chains_limiter_tol` on the chain env | VERDICT projection only (the unified run's bucket IS depleted): `eval_rules_u_limiter_tolerant`: `fst (eval_rules_u fuel cs rs e p) = eval_rules_j fuel cs rs e p`; table form `eval_table_u_limiter_tolerant`; single-base hook form `eval_hook_u_limiter_tolerant_1` — every fuel/env/packet, jumps, gotos and chain re-entries included |
 | `eval_ruleset`/`eval_hook` (VM `run_ruleset`) | write-free bases (`bases_writefree`) | `eval_ruleset_u_writefree` / `eval_hook_u_writefree` |
-| `eval_rules`/`eval_chain` (VM `run_program`/`run_chain`) | write-free **and** jump-free | `eval_rules_u_writefree` + `eval_rules_jumpfree_eq_j`; packaged as `Correct.eval_chain_writefree_jumpfree_proj` |
+| `eval_rules`/`eval_chain` (VM `run_program`/`run_chain`) | write-free **and** jump-free | `eval_rules_u_writefree` + `eval_rules_jumpfree_eq_j`; packaged as `Correct.eval_chain_writefree_jumpfree_proj`; ENTRY-STATE-FREE form (M6): the SYNTACTIC `chain_jumpfree_syn` (no (env, packet) in the hypothesis; implication `rules_jumpfree_syn_sound`/`chain_jumpfree_syn_sound`) packaged as `Correct.eval_chain_writefree_jumpfree_syn_proj` |
 | `eval_rules_mut_st`/`eval_chain_mut_st` — full state — and its projections `eval_rules_mut(_env)`/`eval_chain_mut(_env)` (VM `run_program_mut(_env)`) | transfer-free rules: `rule_plain` (no realisable Jump/Goto/Return under the run's verdict maps — step-threaded: rule writes provably cannot touch `e_vmap`, `rule_step_vmap`) | `eval_rules_u_mut_st_proj`: `eval_rules_u fuel cs rs e p = eval_rules_mut_st rs e p` (whole verdict × (env, packet) triple); table form `eval_table_u_mut_st_proj`; component forms `eval_rules_u_mut_proj`/`eval_table_u_mut_proj`; in-strand bridges `eval_rules_mut_env_st` (`_env` = (fst, fst∘snd) of `_st`) and `eval_rules_mut_env_fst` |
 | `rule_applies(_walk)`/`outcome`/`rule_loadable` (per-rule bools) | write-free rule (`rule_mutfree`: no mutating statement AND no limiter match — evaluating a limiter writes its bucket) | `rule_step_mutfree` |
+| `rule_applies_walk` alone (the body walk, NOTRACK ADMITTED — its `set_untracked` threading is the SAME transform `body_step`'s `SNotrack` case applies, not a parallel semantics) | `body_purewalk` bodies (consume-free matches, non-mutating statements, `notrack` allowed) that load (`body_loadable_walk`) | `rule_purewalk_ok` (M6): the walk = the break/no-break projection of `body_step` |
 | `run_rule`/`run_program` (per-rule pure VM) | `no_writes` programs (no mutating/limiter/incremental-numgen instruction) | `Correct.run_rule_step_no_writes` |
 | (`seq_eval` — RETIRED, M4: the sequence combinator over an EXTERNAL caller-supplied step; successor `seq_eval_env` below) | — | — |
 | `seq_eval_env` | generic in its per-packet evaluator; THE sequence semantics is its instantiation with the ruleset's own env-out `eval_hook_env_u` | `compile_seq_hook_correct` (unified), `compile_seq_mut_correct` (flat) |
@@ -270,23 +288,37 @@ The effectful optiplex `filter`/NAT chains were
 never evaluated through the pure strand — their proofs use the unified fold
 (`eval_chain_u`, `Optiplex_Mark`, `Router_NatHook`, `Router_Reach`).
 
-**Fuel adequacy (RESOLVED, M4 config-proof soundness)**: the jump strand is
-fuel-bounded, and `eval_table` maps fuel EXHAUSTION to the chain policy — a
-verdict the kernel can never produce (nft rejects jump loops at load time;
-kernel jump stack is 16 deep, `NFT_JUMP_STACK_SIZE`).  Naive fuel
-monotonicity (`eval_rules_j fuel = Some v -> eval_rules_j (S fuel) = Some v`)
-is **false** — machine-refuted by
+**Fuel adequacy (RESOLVED, M4 config-proof soundness; RESTATED, M6)**: the
+jump strand is fuel-bounded, and `eval_table` maps fuel EXHAUSTION to the
+chain policy — a verdict the kernel can never produce (nft rejects jump
+loops at load time; kernel jump stack is 16 deep, `NFT_JUMP_STACK_SIZE`).
+Naive fuel monotonicity (`eval_rules_j fuel = Some v -> eval_rules_j (S
+fuel) = Some v`) is **false** — machine-refuted by
 `Semantics.eval_rules_j_not_naively_monotone` (an under-fueled callee's
 exhaustion reads as fall-through and more fuel flips the verdict).  The
-honest results (Semantics.v § "Fuel discipline for the jump strand"):
-`eval_rules_jx` makes exhaustion observable; clean runs agree with
-`eval_rules_j` (`eval_rules_jx_agree`), are Kleene-monotone
-(`eval_rules_jx_monotone`), and are the verdict at every larger fuel
-(`eval_rules_j_fuel_stable`); above the computable
-`sufficient_fuel cs rs`, under the `chain_ranked` acyclicity witness, every
-run is clean (`eval_rules_jx_adequate`), the verdict is fuel-independent
-(`eval_table_fuel_indep`), and the policy fallback is provably genuine
-fall-through (`eval_table_policy_is_fallthrough`).  Compiled mirror:
+honest results (Semantics.v § "Fuel discipline for the jump strand"): above
+the computable `sufficient_fuel cs rs`, under the `chain_ranked` acyclicity
+witness, the verdict is fuel-independent — proved by ONE direct rank-descent
+induction (`eval_rules_j_fuel_indep_aux`: at adequate fuel, a jump's callee
+and the resumed caller are each adequately fueled, so no branch can exhaust)
+— `eval_rules_j_fuel_indep` / `eval_table_fuel_indep`, and the policy
+fallback is genuine fall-through: a `None` at adequate fuel persists at
+EVERY adequate fuel, which exhaustion (curable by more fuel) cannot
+(`eval_table_policy_is_fallthrough`).  **The unified evaluator carries the
+same discipline itself** (M6, § "Fuel discipline for the unified
+evaluator"): no effect writes the verdict maps (`rule_step_vmap` /
+`eval_rules_u_vmap`), so the `rule_step`-level rank witness `chain_ranked_u`
+— stable under every state the traversal can reach — gives
+`eval_rules_u_fuel_indep` / `eval_table_u_fuel_indep` (verdict AND state),
+with `chains_plain_ranked_u` discharging the witness by computation for
+transfer-free environments; effectful configs are inside the adequacy story,
+not carved out of it.  (STRATA RETIREMENT, M6: the exhaustion-observable
+TWIN evaluator `eval_rules_jx` — a third recursive jump traversal — and its
+Kleene layer `eval_rules_jx_agree`/`eval_rules_jx_monotone`/
+`eval_rules_jx_stable`/`eval_rules_jx_adequate`, plus the jx-witnessed
+`eval_rules_j_fuel_stable`, are DELETED; successors are the direct
+`eval_rules_j_fuel_indep(_aux)` at the pure strand and
+`eval_rules_u_fuel_indep(_aux)` at the unified semantics.)  Compiled mirror:
 `Correct.run_table_fuel_indep_compiled` (via `compile_table_correct`; no
 second VM development — rationale on the corollary).  User surface:
 `Nft_Tactics.nft_*_fuel_indep`, CONFIG_PROOFS.md § "Choosing the fuel
@@ -470,12 +502,15 @@ then outcome else None, (e, p))`) and `Correct.run_rule_step_no_writes`
   anything but `Closed under the global context`.  The list is
   - the HEADLINE set (§1) + the `Correct.v` strata + the optimizer DSL form +
     the representation ratchet `Semantics.run_rule_outcome_eq`,
-  - the M4 fuel-adequacy heads (§3): `Semantics.eval_rules_jx_monotone`,
-    `eval_rules_j_fuel_stable`, `eval_rules_jx_adequate`,
-    `eval_table_fuel_indep`, `eval_table_policy_is_fallthrough`,
+  - the fuel-adequacy heads (§3; restated M6 — jx strand retired):
+    `Semantics.eval_rules_j_fuel_indep`, `eval_table_fuel_indep`,
+    `eval_rules_u_fuel_indep`, `eval_table_u_fuel_indep`,
+    `eval_table_policy_is_fallthrough`,
     `Correct.run_table_fuel_indep_compiled`,
     `Nft_Tactics.nft_yields_fuel_indep`,
     `Tutorial_Proofs.tutorial_blocks_exactly_any_fuel` (8 theorems),
+    plus the M6 projection heads `Semantics.rule_purewalk_ok` and
+    `Correct.eval_chain_writefree_jumpfree_syn_proj`,
   - the M4 de-vacuized config heads (§5):
     `Optiplex_Antispoof.antispoof_general_any_env`,
     `Optiplex_Mark.genenv_fib_local_contradiction` + the three

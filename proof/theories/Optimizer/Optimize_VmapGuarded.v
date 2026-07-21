@@ -144,7 +144,7 @@ Proof.
   intros A g h l rest e p Hall.
   induction l as [| a l IH]; cbn [map app]; [reflexivity |].
   destruct (Hall a (or_introl eq_refl)) as [HL [HA HO]].
-  cbn [eval_rules]. rewrite HL, HA, HO.
+  rewrite ?eval_rules_cons, ?eval_rules_nil. rewrite HL, HA, HO.
   rewrite (IH (fun a Hin => Hall a (or_intror Hin))). reflexivity.
 Qed.
 

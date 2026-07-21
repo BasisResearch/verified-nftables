@@ -2760,7 +2760,7 @@ Lemma run_program_compile_chain : forall rs e p,
 Proof.
   induction rs as [| r rs IH]; intros e p.
   - reflexivity.
-  - cbn [map run_program eval_rules]. destruct (rule_loadable r e p) eqn:Hrl.
+  - cbn [map]. rewrite ?run_program_cons, ?run_program_nil, ?eval_rules_cons, ?eval_rules_nil. destruct (rule_loadable r e p) eqn:Hrl.
     + rewrite (run_rule_compile_rule r e p Hrl). cbn [andb].
       destruct (rule_applies r e p); cbn [terminal].
       * destruct (outcome r e p) as [v |].
@@ -3171,7 +3171,7 @@ Lemma run_program_mut_env_compile_chain : forall rs e p,
 Proof.
   induction rs as [| r rs IH]; intros e p Hall; [reflexivity|].
   cbn [forallb] in Hall. apply Bool.andb_true_iff in Hall. destruct Hall as [Hr Hrs].
-  cbn [map run_program_mut_env eval_rules_mut_env].
+  cbn [map]. rewrite ?run_program_mut_env_cons, ?run_program_mut_env_nil, ?eval_rules_mut_env_cons, ?eval_rules_mut_env_nil.
   rewrite (run_rule_step_compile_rule r e p Hr).
   destruct (rule_step h r e p) as [[v |] [e' p']].
   - destruct (terminal v); [reflexivity | apply IH; exact Hrs].
@@ -3292,7 +3292,8 @@ Lemma run_eval_rules_j : forall fuel cs rs e p,
 Proof.
   induction fuel as [| fuel IH]; intros cs rs e p; [reflexivity |].
   destruct rs as [| r rest]; [reflexivity |].
-  cbn [run_rules_j eval_rules_j map]. destruct (rule_loadable r e p) eqn:Hrl.
+  rewrite run_rules_j_S, eval_rules_j_S. cbn [map].
+  destruct (rule_loadable r e p) eqn:Hrl.
   2:{ rewrite (run_rule_compile_rule_break r e p Hrl). cbn [andb]. apply IH. }
   rewrite (run_rule_compile_rule r e p Hrl). cbn [andb].
   destruct (rule_applies r e p); [| apply IH].
@@ -3364,7 +3365,7 @@ Proof.
   cbn [List.length] in Hlen. apply Nat.succ_lt_mono in Hlen.
   cbn [rules_jumpfree forallb] in Hjf. apply Bool.andb_true_iff in Hjf.
   destruct Hjf as [Hr Hrest].
-  cbn [eval_rules_j eval_rules].
+  rewrite eval_rules_j_S, eval_rules_cons.
   destruct (rule_loadable r e p && rule_applies r e p); [| apply IH; assumption].
   unfold outcome_jumpfree in Hr.
   destruct (outcome r e p) as [v |]; [| apply IH; assumption].
@@ -3474,7 +3475,8 @@ Theorem compile_ruleset_correct : forall fuel bases e p,
   run_ruleset fuel (map compile_base bases) e p = eval_ruleset fuel bases e p.
 Proof.
   induction bases as [| [cs base] rest IH]; intros e p; [reflexivity|].
-  cbn [map compile_base eval_ruleset run_ruleset fst snd].
+  cbn [map]. unfold compile_base at 1. cbn [fst snd].
+  rewrite run_ruleset_cons, eval_ruleset_cons. cbv zeta.
   rewrite compile_table_correct.
   destruct (base_continues (eval_table fuel cs base e p)); [apply IH | reflexivity].
 Qed.
@@ -3580,7 +3582,8 @@ Proof.
   cbn [forallb] in Hb. apply Bool.andb_true_iff in Hb. destruct Hb as [Hhd Hrest].
   unfold base_numgen_free in Hhd. apply Bool.andb_true_iff in Hhd.
   destruct Hhd as [Hcs Hbase]. cbn [fst snd] in Hcs, Hbase.
-  cbn [map compile_base run_ruleset_u eval_ruleset_u fst snd].
+  cbn [map]. unfold compile_base at 1. cbn [fst snd].
+  rewrite run_ruleset_u_cons, eval_ruleset_u_cons.
   rewrite (compile_table_u_correct fuel cs base e p Hcs Hbase).
   destruct (eval_table_u h fuel cs base e p) as [v [e' p']].
   destruct (base_continues v); [now apply IHb | reflexivity].
@@ -3652,6 +3655,23 @@ Proof.
   reflexivity.
 Qed.
 
+(** Entry-state-free packaging (M6): the same license with the jump-freedom
+    hypothesis SYNTACTIC — [chain_jumpfree_syn] mentions no (env, packet), so
+    the license cannot be voided by the state a traversal actually reaches;
+    [chain_jumpfree_syn_sound] discharges the per-state predicate at every
+    state at once. *)
+Corollary eval_chain_writefree_jumpfree_syn_proj : forall fuel cs c e p,
+  List.length (c_rules c) < fuel ->
+  forallb rule_writefree (c_rules c) = true ->
+  chains_writefree cs = true ->
+  chain_jumpfree_syn c = true ->
+  eval_table_u h fuel cs c e p = (eval_chain c e p, (e, p)).
+Proof.
+  intros fuel cs c e p Hlen Hwb Hwcs Hsyn.
+  apply eval_chain_writefree_jumpfree_proj; auto.
+  apply chain_jumpfree_syn_sound; exact Hsyn.
+Qed.
+
 (** ** Axiom-freedom audit (build-time guard; mirrors Optimize_Uncond.v).
 
     Every compiler stratum in this file must print "Closed under the global
@@ -3689,5 +3709,6 @@ Print Assumptions compile_hook_u_correct.
 Print Assumptions compile_seq_hook_correct.
 Print Assumptions run_table_writefree_compiled.
 Print Assumptions eval_chain_writefree_jumpfree_proj.
+Print Assumptions eval_chain_writefree_jumpfree_syn_proj.
 Print Assumptions compile_nat_effect_correct.
 
