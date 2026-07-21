@@ -66,8 +66,8 @@ Proof. reflexivity. Qed.
    body is two [BMatch]es, and [body_writes] over matches returns the input. *)
 Lemma masq_dsl_step_id : forall e p, dsl_step masq_rule e p = (e, p).
 Proof.
-  intros e p. rewrite dsl_step_limit_free by reflexivity.
-  unfold dsl_writes, body_writes, masq_rule; cbn [r_body body_step].
+  intros e p. rewrite dsl_step_after_free by reflexivity.
+  unfold dsl_writes, body_writes, masq_rule; cbn [r_body body_step match_consume].
   destruct (eval_matchcond (MEq (FPayload PNetwork 12 2) [192;168]) e p);
     [destruct (eval_matchcond (MEq FMetaOifname if_ppp0) e p)|]; reflexivity.
 Qed.
@@ -186,8 +186,8 @@ Proof.
   assert (Happ : rule_applies masq_rule e p = true)
     by (rewrite masq_rule_applies_eq, Hpriv, Hppp; reflexivity).
   assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.
-  assert (Hd : dsl_rule_step masq_rule e p = (Some Accept, (e, p))).
-  { unfold dsl_rule_step. rewrite rule_step_mutfree by reflexivity.
+  assert (Hd : rule_step masq_rule e p = (Some Accept, (e, p))).
+  { rewrite rule_step_mutfree by reflexivity.
     rewrite Hload, Happ. cbn [andb]. rewrite Ho. reflexivity. }
   rewrite Hd. cbn [terminal].
   rewrite (masq_no_drop Hpostrouting e p) by (rewrite Hwan; exact Hne).
@@ -236,8 +236,8 @@ Theorem nat_masquerade_does_not_fire : forall e p,
 Proof.
   intros e p Happ. unfold chain_out, chain_out_env, eval_chain_trace.
   rewrite global_postrouting_rules. cbn [c_rules eval_rules_trace].
-  assert (Hd : dsl_rule_step masq_rule e p = (None, (e, p))).
-  { unfold dsl_rule_step. rewrite rule_step_mutfree by reflexivity.
+  assert (Hd : rule_step masq_rule e p = (None, (e, p))).
+  { rewrite rule_step_mutfree by reflexivity.
     rewrite Happ, Bool.andb_false_r. reflexivity. }
   rewrite Hd. split; reflexivity.
 Qed.
@@ -272,8 +272,8 @@ Definition bug_postrouting : chain :=
 
 Lemma bug_dsl_step_id : forall e p, dsl_step bug_rule e p = (e, p).
 Proof.
-  intros e p. rewrite dsl_step_limit_free by reflexivity.
-  unfold dsl_writes, body_writes, bug_rule; cbn [r_body body_step].
+  intros e p. rewrite dsl_step_after_free by reflexivity.
+  unfold dsl_writes, body_writes, bug_rule; cbn [r_body body_step match_consume].
   destruct (eval_matchcond (MEq FMetaOifname if_ppp0) e p); reflexivity.
 Qed.
 
@@ -473,8 +473,8 @@ Proof.
   assert (Happ : rule_applies masq_rule e p = true)
     by (rewrite masq_rule_applies_eq, Hpriv, Hppp; reflexivity).
   assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.
-  assert (Hd : dsl_rule_step masq_rule e p = (Some Accept, (e, p))).
-  { unfold dsl_rule_step. rewrite rule_step_mutfree by reflexivity.
+  assert (Hd : rule_step masq_rule e p = (Some Accept, (e, p))).
+  { rewrite rule_step_mutfree by reflexivity.
     rewrite Hload, Happ. cbn [andb]. rewrite Ho. reflexivity. }
   rewrite Hd. cbn [terminal].
   rewrite (masq_no_drop_confirmed Hpostrouting e p _ Hsome).
@@ -578,8 +578,8 @@ Proof.
   assert (Happ : rule_applies masq_rule e p = true)
     by (rewrite masq_rule_applies_eq, Hpriv, Hppp; reflexivity).
   assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.
-  assert (Hd : dsl_rule_step masq_rule e p = (Some Accept, (e, p))).
-  { unfold dsl_rule_step. rewrite rule_step_mutfree by reflexivity.
+  assert (Hd : rule_step masq_rule e p = (Some Accept, (e, p))).
+  { rewrite rule_step_mutfree by reflexivity.
     rewrite Hload, Happ. cbn [andb]. rewrite Ho. reflexivity. }
   rewrite Hd. cbn [terminal].
   rewrite (masq_no_drop_confirmed Hpostrouting e p _ Hsome).

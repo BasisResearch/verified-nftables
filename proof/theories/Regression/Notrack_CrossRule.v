@@ -123,12 +123,12 @@ Proof.
     rewrite Hu. reflexivity. }
   assert (Hstep2 : rule_step ctstate_rule e (set_untracked p)
                    = (Some Accept, (e, set_untracked p))).
-  { unfold rule_step. cbn [ctstate_rule r_body body_step]. rewrite Hm. reflexivity. }
+  { unfold rule_step. cbn [ctstate_rule r_body body_step match_consume]. rewrite Hm. reflexivity. }
   unfold eval_chain_mut, notrack_chain. cbn [c_rules c_policy].
   cbn [eval_rules_mut].
-  replace (dsl_rule_step notrack_only e p)
+  replace (rule_step notrack_only e p)
     with (@None verdict, (e, set_untracked p)) by reflexivity.
-  unfold dsl_rule_step. rewrite Hstep2. reflexivity.
+  rewrite Hstep2. reflexivity.
 Qed.
 
 (* KERNEL GUARD (the notrack-no-op refinement): on a packet that ALREADY has a

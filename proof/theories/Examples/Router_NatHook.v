@@ -308,10 +308,11 @@ Proof.
   destruct (trace_nat_drops Hpostrouting (c_rules global_postrouting) e p); [right; reflexivity|].
   left. unfold eval_chain_mut. rewrite global_postrouting_rules.
   cbn [c_rules c_policy eval_rules_mut].
-  destruct (dsl_rule_step masq_rule e p) as [[v|] [e' p']] eqn:Hstep.
+  destruct (rule_step masq_rule e p) as [[v|] [e' p']] eqn:Hstep.
   - assert (Hv : v = Accept).
-    { pose proof (dsl_rule_step_fst masq_rule e p) as Hf. rewrite Hstep in Hf.
+    { pose proof (f_equal fst Hstep) as Hf.
       rewrite rule_step_mutfree in Hf by reflexivity. cbn [fst] in Hf.
+      symmetry in Hf.
       destruct (rule_loadable masq_rule e p && rule_applies masq_rule e p);
         [| discriminate Hf].
       assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.
@@ -393,8 +394,8 @@ Proof.
   assert (Happ : rule_applies masq_rule e p = true)
     by (rewrite masq_rule_applies_eq, Hpriv, Hppp; reflexivity).
   assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.
-  assert (Hd : dsl_rule_step masq_rule e p = (Some Accept, (e, p))).
-  { unfold dsl_rule_step. rewrite rule_step_mutfree by reflexivity.
+  assert (Hd : rule_step masq_rule e p = (Some Accept, (e, p))).
+  { rewrite rule_step_mutfree by reflexivity.
     rewrite (masq_rule_loadable_of_applies e p Hpriv Hppp), Happ. cbn [andb].
     rewrite Ho. reflexivity. }
   rewrite Hd. cbn [terminal].
@@ -448,10 +449,10 @@ Lemma trace_nat_drops_postrouting : forall e p,
 Proof.
   intros e p. rewrite global_postrouting_rules. cbn [trace_nat_drops].
   unfold masq_noaddr_cond.
-  assert (Hd : dsl_rule_step masq_rule e p
+  assert (Hd : rule_step masq_rule e p
                = ((if rule_loadable masq_rule e p && rule_applies masq_rule e p
                    then Some Accept else None), (e, p))).
-  { unfold dsl_rule_step. rewrite rule_step_mutfree by reflexivity.
+  { rewrite rule_step_mutfree by reflexivity.
     assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.
     rewrite Ho.
     destruct (rule_loadable masq_rule e p && rule_applies masq_rule e p); reflexivity. }
@@ -491,10 +492,11 @@ Proof.
      (policy accept; either the rule fires terminal-Accept or falls through to policy). *)
   unfold eval_chain_mut. rewrite global_postrouting_rules.
   cbn [c_rules c_policy eval_rules_mut].
-  destruct (dsl_rule_step masq_rule e p) as [[v|] [e' p']] eqn:Hstep.
+  destruct (rule_step masq_rule e p) as [[v|] [e' p']] eqn:Hstep.
   - assert (Hv : v = Accept).
-    { pose proof (dsl_rule_step_fst masq_rule e p) as Hf. rewrite Hstep in Hf.
+    { pose proof (f_equal fst Hstep) as Hf.
       rewrite rule_step_mutfree in Hf by reflexivity. cbn [fst] in Hf.
+      symmetry in Hf.
       destruct (rule_loadable masq_rule e p && rule_applies masq_rule e p);
         [| discriminate Hf].
       assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.

@@ -369,10 +369,10 @@ Lemma pre1_streaming_step_real : forall e p,
   field_value FMetaL4proto e p = l4_tcp ->
   field_value FThDport e p = port48010 ->
   read_payload_ok PTransport 2 2 p = true ->
-  dsl_rule_step pre1 e p = (None, (e, p)).
+  rule_step pre1 e p = (None, (e, p)).
 Proof.
   intros e p Hs0 Hiif Hfib Hl4 Hdport Hok.
-  unfold dsl_rule_step, rule_step, pre1, filter_prerouting.
+  unfold rule_step, pre1, filter_prerouting.
   cbn -[field_value set_meta read_payload_ok].
   unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
     field_loadable, load_ok.
@@ -391,10 +391,10 @@ Lemma pre2_streaming_step_real : forall e p,
   field_value FMetaL4proto e p = l4_tcp ->
   field_value FThDport e p = port48010 ->
   read_payload_ok PTransport 2 2 p = true ->
-  dsl_rule_step pre2 e p = (Some Accept, (e, set_meta p MKmark mark99)).
+  rule_step pre2 e p = (Some Accept, (e, set_meta p MKmark mark99)).
 Proof.
   intros e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok.
-  unfold dsl_rule_step, rule_step, pre2, filter_prerouting.
+  unfold rule_step, pre2, filter_prerouting.
   cbn -[field_value set_meta read_payload_ok].
   unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
     field_loadable, load_ok.
@@ -603,8 +603,8 @@ Theorem masquerade_output : forall e p ifaddr,
 Proof.
   intros e p ifaddr Hfam Hmark Horig Hnone Hifa Hne.
   unfold eval_chain_trace. rewrite postrouting_rules_eq. cbn [eval_rules_trace].
-  assert (Hd : dsl_rule_step post1 e p = (Some Accept, (e, p))).
-  { unfold dsl_rule_step. rewrite rule_step_mutfree by reflexivity.
+  assert (Hd : rule_step post1 e p = (Some Accept, (e, p))).
+  { rewrite rule_step_mutfree by reflexivity.
     rewrite (masquerade_gated_on_mark e p Hmark), post1_outcome_accept.
     replace (rule_loadable post1 e p) with true by reflexivity.
     reflexivity. }
@@ -681,13 +681,13 @@ Proof.
     reflexivity.
   - now apply masquerade_gated_on_mark.
   - unfold eval_chain_mut. rewrite postrouting_rules_eq. cbn [eval_rules_mut].
-    assert (Hov : fst (dsl_rule_step post1 e' q) = Some Accept).
-    { rewrite dsl_rule_step_fst. rewrite rule_step_mutfree by reflexivity.
+    assert (Hov : fst (rule_step post1 e' q) = Some Accept).
+    { rewrite rule_step_mutfree by reflexivity.
       cbn [fst].
       rewrite (masquerade_gated_on_mark e' q Hmark).
       replace (rule_loadable post1 e' q) with true by reflexivity.
       reflexivity. }
-    destruct (dsl_rule_step post1 e' q) as [ov [e2 q2]].
+    destruct (rule_step post1 e' q) as [ov [e2 q2]].
     cbn [fst] in Hov. subst ov. reflexivity.
 Qed.
 
