@@ -36,22 +36,23 @@ Definition if_eth : data := [101;116;104;48; 0;0;0;0; 0;0;0;0; 0;0;0;0].  (* "et
 
 Definition fw_fuel : nat := 8.
 
-(** Symbolically evaluate the parsed table: unfold this module's parser-emitted
-    chain definitions, then run the shared [eval_fw_core] engine (Eval_Fw.v).
-    [erj_nil]/[erj_cons] and [Global Opaque eval_rules_j] live in Eval_Fw.v. *)
+(** Symbolically evaluate the parsed table under the canonical unified
+    evaluator: unfold this module's parser-emitted chain definitions, then run
+    the shared [eval_fw_core_u] engine (Eval_Fw.v).  [eru_nil]/[eru_cons] step
+    [eval_rules_u]. *)
 Ltac eval_fw Hpe :=
-  unfold eval_table, fw_fuel, firewall_chains,
+  unfold eval_table_u, fw_fuel, firewall_chains,
          firewall_inbound, firewall_inbound_ipv4, firewall_inbound_ipv6,
          firewall_forward;
-  eval_fw_core Hpe.
+  eval_fw_core_u Hpe.
 
 (** ** The properties (each universally quantified over the packet).
 
     NOTE — twin theorem names: [established_accepted], [invalid_dropped] and
     [loopback_accepted] also exist in [Example_Ruleset.v].  These are NOT
     duplicates: the [Example_Ruleset.v] copies are the hand-written baseline
-    (eval_table over [fw_chains]/[inbound]); the copies HERE are over the
-    parser-emitted chains ([firewall_chains]/[firewall_inbound], from
+    (the canonical evaluator over [fw_chains]/[inbound]); the copies HERE are
+    over the parser-emitted chains ([firewall_chains]/[firewall_inbound], from
     [Ruleset_Gen.v]).  A grep by name finds both — this one is the
     parser-output witness.
 
@@ -66,23 +67,23 @@ Ltac eval_fw Hpe :=
 Theorem established_accepted : forall e p,
   e = gen_env ->
   field_value FCtState e p = cts_established ->
-  eval_table fw_fuel firewall_chains firewall_inbound e p = Accept.
-Proof. intros e p Hpe Hct. eval_fw Hpe. Qed.
+  forall h, fst (eval_table_u h fw_fuel firewall_chains firewall_inbound e p) = Accept.
+Proof. intros e p Hpe Hct h. eval_fw Hpe. Qed.
 
 (* Invalid-state packets are dropped (the `invalid : drop` vmap entry). *)
 Theorem invalid_dropped : forall e p,
   e = gen_env ->
   field_value FCtState e p = cts_invalid ->
-  eval_table fw_fuel firewall_chains firewall_inbound e p = Drop.
-Proof. intros e p Hpe Hct. eval_fw Hpe. Qed.
+  forall h, fst (eval_table_u h fw_fuel firewall_chains firewall_inbound e p) = Drop.
+Proof. intros e p Hpe Hct h. eval_fw Hpe. Qed.
 
 (* Loopback traffic is accepted (new connection -> vmap misses -> iifname lo). *)
 Theorem loopback_accepted : forall e p,
   e = gen_env ->
   field_value FCtState e p = cts_new ->
   field_value FMetaIifname e p = if_lo ->
-  eval_table fw_fuel firewall_chains firewall_inbound e p = Accept.
-Proof. intros e p Hpe Hct Hiif. eval_fw Hpe. Qed.
+  forall h, fst (eval_table_u h fw_fuel firewall_chains firewall_inbound e p) = Accept.
+Proof. intros e p Hpe Hct Hiif h. eval_fw Hpe. Qed.
 
 (* SSH (TCP/22) over IPv4, new connection, real interface: accepted via the jump
    into inbound_ipv4 (empty) and the `tcp dport {22,80,443}` set. *)
@@ -94,8 +95,8 @@ Theorem ssh_accepted : forall e p,
   field_value FMetaL4proto e p = l4_tcp ->
   field_value FThDport e p = port 22 ->
   read_payload_ok PTransport 2 2 p = true ->
-  eval_table fw_fuel firewall_chains firewall_inbound e p = Accept.
-Proof. intros e p Hpe Hct Hiif Hpr Hl4 Hdp Hok. eval_fw Hpe. Qed.
+  forall h, fst (eval_table_u h fw_fuel firewall_chains firewall_inbound e p) = Accept.
+Proof. intros e p Hpe Hct Hiif Hpr Hl4 Hdp Hok h. eval_fw Hpe. Qed.
 
 (* A closed TCP port (SMTP/25), new IPv4 connection: dropped by `policy drop` —
    the security guarantee (unsolicited traffic to closed ports is denied). *)
@@ -107,8 +108,8 @@ Theorem smtp_dropped : forall e p,
   field_value FMetaL4proto e p = l4_tcp ->
   field_value FThDport e p = port 25 ->
   read_payload_ok PTransport 2 2 p = true ->
-  eval_table fw_fuel firewall_chains firewall_inbound e p = Drop.
-Proof. intros e p Hpe Hct Hiif Hpr Hl4 Hdp Hok. eval_fw Hpe. Qed.
+  forall h, fst (eval_table_u h fw_fuel firewall_chains firewall_inbound e p) = Drop.
+Proof. intros e p Hpe Hct Hiif Hpr Hl4 Hdp Hok h. eval_fw Hpe. Qed.
 
 (* IPv6 neighbour discovery is accepted via the jump into inbound_ipv6.
    In the inet table the `icmpv6 type {...}` rule carries the implicit
@@ -126,22 +127,22 @@ Theorem ipv6_nd_accepted : forall e p,
   field_value FIcmpType e p = icmp6_nd_nsol ->
   read_payload_ok PTransport 2 2 p = true ->
   read_payload_ok PTransport 0 1 p = true ->
-  eval_table fw_fuel firewall_chains firewall_inbound e p = Accept.
-Proof. intros e p Hpe Hct Hiif Hpr Hnfp Hl4 Hty Hok Hok2. eval_fw Hpe. Qed.
+  forall h, fst (eval_table_u h fw_fuel firewall_chains firewall_inbound e p) = Accept.
+Proof. intros e p Hpe Hct Hiif Hpr Hnfp Hl4 Hty Hok Hok2 h. eval_fw Hpe. Qed.
 
 (* The forward hook drops everything (no rules, policy drop). *)
 Theorem forward_drops_all : forall e p,
-  eval_table fw_fuel firewall_chains firewall_forward e p = Drop.
+  forall h, fst (eval_table_u h fw_fuel firewall_chains firewall_forward e p) = Drop.
 Proof.
-  intros e p. unfold eval_table, fw_fuel, firewall_forward.
-  cbn -[eval_rules_j]. rewrite erj_nil. reflexivity.
+  intros e p h. unfold eval_table_u, fw_fuel, firewall_forward.
+  cbn -[eval_rules_u]. rewrite eru_nil. reflexivity.
 Qed.
 
 (* ================================================================== *)
-(** ** Projection license (U1): the parsed firewall config is write-free, so
-    every [eval_table] statement in this file is a statement about the
-    UNIFIED semantics via [Nft_Tactics.nft_yields_unified] /
-    [Semantics.eval_table_u_writefree]. *)
+(** ** The parsed firewall config is write-free, so every verdict above — stated
+    over the canonical unified evaluator [eval_table_u] — coincides with the pure
+    jump strand ([Semantics.eval_table_u_writefree]); the [forall h] form records
+    that these verdicts are hook-independent. *)
 Example firewall_inbound_license :
   forallb rule_writefree (c_rules firewall_inbound) = true
   /\ forallb rule_writefree (c_rules firewall_forward) = true

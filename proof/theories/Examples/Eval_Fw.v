@@ -86,10 +86,11 @@ Ltac eval_fw_core_u Hpe :=
     | rewrite eru_cons
     | match goal with H : field_value _ _ _ = _ |- _ => rewrite H end
     | match goal with H : read_payload_ok _ _ _ _ = _ |- _ => rewrite H end
+    | match goal with H : concat_set_mem _ _ = _ |- _ => rewrite H end
     | progress unfold rule_step, end_step, terminal_step, vmap_loadable,
         eval_matchcond, eval_matchcond_body, match_loadable,
         fields_loadable, field_loadable, load_ok
-    | progress cbn -[eval_rules_u field_value read_payload_ok] ];
+    | progress cbn -[eval_rules_u field_value read_payload_ok concat_set_mem] ];
   reflexivity.
 
 (* ================================================================== *)

@@ -30,7 +30,7 @@
     a real table. *)
 
 From Stdlib Require Import List String Ascii NArith.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics Optiplex_Gen Nftval.
+From Nft Require Import Bytes Verdict Packet Syntax Semantics Optiplex_Gen Nftval Eval_Fw.
 Import ListNotations.
 Open Scope string_scope.
 
@@ -59,16 +59,43 @@ Definition Fobrname : field := FMetaGen MKbri_oifname.
 (* the output chain takes no jumps; fuel need only cover its two rules *)
 Definition vm_fuel : nat := 4.
 
-(** ** Stepping lemmas for the fuel-bounded interpreter. *)
-Lemma erj_drop_first : forall f cs r rest e p,
-  rule_loadable r e p = true -> rule_applies r e p = true -> outcome r e p = Some Drop ->
-  eval_rules_j (S f) cs (r :: rest) e p = Some Drop.
-Proof. intros f cs r rest e p Hld Hap Hout. cbn. rewrite Hld, Hap, Hout. reflexivity. Qed.
+(** ** Stepping lemmas for the fuel-bounded unified interpreter [eval_rules_u].
+    A rule whose single [rule_step] yields a terminal [Drop] (leaving the state
+    untouched — this table is write-free) decides the chain; a rule whose
+    [rule_step] yields no verdict is skipped, and the traversal continues. *)
+Lemma eru_fires_drop : forall h f cs r rest e p,
+  rule_step h r e p = (Some Drop, (e, p)) ->
+  eval_rules_u h (S f) cs (r :: rest) e p = (Some Drop, (e, p)).
+Proof. intros h f cs r rest e p Hstep. rewrite eru_cons, Hstep. reflexivity. Qed.
 
-Lemma erj_skip : forall f cs r rest e p,
-  rule_applies r e p = false ->
-  eval_rules_j (S f) cs (r :: rest) e p = eval_rules_j f cs rest e p.
-Proof. intros f cs r rest e p Hap. cbn. rewrite Hap, Bool.andb_false_r. reflexivity. Qed.
+Lemma eru_skip : forall h f cs r rest e p,
+  rule_step h r e p = (None, (e, p)) ->
+  eval_rules_u h (S f) cs (r :: rest) e p = eval_rules_u h f cs rest e p.
+Proof. intros h f cs r rest e p Hstep. rewrite eru_cons, Hstep. reflexivity. Qed.
+
+(** Reduce a [rule_step _ _ _ _ = _] goal for a match-only, terminal-verdict rule.
+    Interleave [rule_step]/[body_step] reduction with the field/payload/set-mem
+    hypothesis rewrites (so a hypothesis fires the moment its [field_value] is
+    exposed), and, when a match's condition is genuinely stuck (a symbolic field
+    the theorem does not constrain, e.g. an intervening `ether type` dependency
+    guard), CASE-SPLIT it: since [body_step] is sequential-break, EVERY branch
+    reaches the same no-verdict result (either the stuck match breaks the body, or
+    it passes and a later false match does).  Set memberships decide by
+    computation once concrete, or by the hypothesis when the key is symbolic. *)
+Ltac rstep_reduce :=
+  repeat first
+    [ reflexivity
+    | match goal with H : field_value _ _ _ = _ |- _ => rewrite H end
+    | match goal with H : read_payload_ok _ _ _ _ = _ |- _ => rewrite H end
+    | match goal with H : concat_set_mem _ _ = _ |- _ => rewrite H end
+    | match goal with H : set_mem _ _ = _ |- _ =>
+        rewrite ?concat_set_mem_single; rewrite H end
+    | progress unfold rule_step, end_step, terminal_step, vmap_loadable,
+        eval_matchcond, eval_matchcond_body, match_loadable,
+        fields_loadable, field_loadable, load_ok
+    | progress cbn -[field_value read_payload_ok concat_set_mem set_mem]
+    | vm_compute; reflexivity
+    | match goal with |- context[if ?b then _ else _] => destruct b end ].
 
 (** ** The general anti-spoofing theorem (about the PARSED chain [vmfilter_output]).
 
@@ -101,23 +128,17 @@ Theorem antispoof_general_any_env : forall e p,
      flat lexicographic [set_mem] over the concatenation. *)
   concat_set_mem [field_value FIp4Daddr e p; field_value FMetaOifname e p]
           (e_set e "vmantispoof") = false ->
-  eval_table vm_fuel vmfilter_chains vmfilter_output e p = Drop.
+  forall h, fst (eval_table_u h vm_fuel vmfilter_chains vmfilter_output e p) = Drop.
 Proof.
-  intros e p Hobr Hethip Hok Hin Hpair. unfold Fobrname in Hobr.
-  unfold eval_table, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
-  erewrite erj_drop_first; [ reflexivity | | | reflexivity ].
-  (* rule_loadable (the antispoof rule) e p = true: only the ip daddr payload load
-     can break, discharged by [Hok]. *)
-  - unfold rule_loadable, end_loadable, tail_loadable, terminal_loadable, vmap_loadable,
-      body_item_loadable, match_loadable, fields_loadable, field_loadable, load_ok.
-    cbn -[read_payload_ok]. rewrite Hok. reflexivity.
-  (* rule_applies (the antispoof rule) e p = true.  [cbn -[field_value]]
-     reduces forallb/body_matches/eval_matchcond but keeps [field_value]
-     wrapped, so the field-value and env hypotheses can rewrite them. *)
-  - unfold rule_applies, rule_applies_walk, eval_matchcond, match_loadable, eval_matchcond_body,
-      fields_loadable, field_loadable, load_ok.
-    cbn -[field_value read_payload_ok].
-    rewrite ?Hok, Hobr, Hethip, ?app_nil_r, Hin, Hpair. vm_compute. reflexivity.
+  intros e p Hobr Hethip Hok Hin Hpair h. unfold Fobrname in Hobr.
+  (* The antispoof rule's [rule_step] yields a terminal [Drop]: its body loads
+     (only the ip daddr payload load can break, discharged by [Hok]) and every
+     match fires (the field-value and set-membership hypotheses), so the walk
+     reaches the rule's terminal [drop]; the table is write-free so the state is
+     untouched.  The shared engine steps [eval_rules_u] rule-by-rule and rewrites
+     those hypotheses. *)
+  unfold eval_table_u, vm_fuel, vmfilter_output.
+  eval_fw_core_u Hobr.
 Qed.
 
 (** The pre-M4 statement, verbatim: the same property with the (inert)
@@ -132,7 +153,7 @@ Theorem antispoof_general : forall e p,
   concat_set_mem [field_value FIp4Daddr e p] (e_set e "vmaddrs") = true ->
   concat_set_mem [field_value FIp4Daddr e p; field_value FMetaOifname e p]
           (e_set e "vmantispoof") = false ->
-  eval_table vm_fuel vmfilter_chains vmfilter_output e p = Drop.
+  forall h, fst (eval_table_u h vm_fuel vmfilter_chains vmfilter_output e p) = Drop.
 Proof.
   intros e p _ Hobr Hethip Hok Hin Hpair.
   exact (antispoof_general_any_env e p Hobr Hethip Hok Hin Hpair).
@@ -164,7 +185,7 @@ Theorem vikunja_cannot_spoof_budget : forall e p,
   read_payload_ok PNetwork 16 4 p = true ->            (* a well-formed IPv4 header *)
   field_value FIp4Daddr e p = ip4 192 168 51 20 ->      (* budget's address *)
   field_value FMetaOifname e p = ifreg "inc-vikun" ->   (* vikunja's interface *)
-  eval_table vm_fuel vmfilter_chains vmfilter_output e p = Drop.
+  forall h, fst (eval_table_u h vm_fuel vmfilter_chains vmfilter_output e p) = Drop.
 Proof.
   intros e p Henv Hobr Hethip Hok Hdaddr Hoif; subst e.
   apply antispoof_general; auto.
@@ -180,7 +201,7 @@ Theorem gentoo_cannot_spoof_hass : forall e p,
   read_payload_ok PNetwork 16 4 p = true ->
   field_value FIp4Daddr e p = ip4 192 168 51 10 ->       (* hass's address *)
   field_value FMetaOifname e p = ifreg "vb-gentoo" ->    (* gentoo's interface *)
-  eval_table vm_fuel vmfilter_chains vmfilter_output e p = Drop.
+  forall h, fst (eval_table_u h vm_fuel vmfilter_chains vmfilter_output e p) = Drop.
 Proof.
   intros e p Henv Hobr Hethip Hok Hdaddr Hoif; subst e.
   apply antispoof_general; auto.
@@ -201,28 +222,22 @@ Theorem budget_legitimate_allowed : forall e p,
   read_payload_ok PNetwork 16 4 p = true ->
   field_value FIp4Daddr e p = ip4 192 168 51 20 ->
   field_value FMetaOifname e p = ifreg "inc-budge" ->    (* its OWN interface *)
-  eval_table vm_fuel vmfilter_chains vmfilter_output e p = Accept.
+  forall h, fst (eval_table_u h vm_fuel vmfilter_chains vmfilter_output e p) = Accept.
 Proof.
-  intros e p Henv Hobr Hethip Hok Hdaddr Hoif. unfold Fobrname in Hobr.
-  unfold eval_table, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
-  (* antispoof rule does not apply: the pair IS bound, so the `!=` match is false *)
-  erewrite erj_skip.
-  2:{ unfold rule_applies, rule_applies_walk, eval_matchcond, match_loadable, eval_matchcond_body,
-        fields_loadable, field_loadable, load_ok.
-      cbn -[field_value read_payload_ok].
-      rewrite ?Hok, Hobr, Hethip, ?app_nil_r, Hdaddr, Hoif, ?Henv. vm_compute. reflexivity. }
-  (* hass rule does not apply either: obrname is br.20, not br.1 *)
-  erewrite erj_skip.
-  2:{ unfold rule_applies, rule_applies_walk, eval_matchcond, match_loadable, eval_matchcond_body,
-        fields_loadable, field_loadable, load_ok.
-      cbn -[field_value read_payload_ok]. rewrite ?Hok, Hobr.
-      vm_compute. reflexivity. }
-  reflexivity.
+  intros e p Henv Hobr Hethip Hok Hdaddr Hoif h. subst e. unfold Fobrname in Hobr.
+  unfold eval_table_u, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
+  (* antispoof rule does not fire: the pair IS bound, so the `!=` match is false,
+     the body BREAKs, and [rule_step] yields no verdict (state untouched). *)
+  erewrite eru_skip by rstep_reduce.
+  (* hass rule does not fire either: obrname is br.20, not br.1 *)
+  erewrite eru_skip by rstep_reduce.
+  cbn [fst]. reflexivity.
 Qed.
 
-(** Every theorem above is about [eval_table], the specification; via
-    [compile_table_correct] (Correct.v) the same verdict holds of the compiled
-    netlink bytecode, exactly as Example_Ruleset.v shows for smtp_dropped. *)
+(** Every theorem above is about the canonical evaluator [eval_table_u], the
+    specification; via [compile_table_u_correct] (Correct.v) the same verdict
+    holds of the compiled netlink bytecode, exactly as Example_Ruleset.v shows
+    for smtp_dropped. *)
 
 (** Informational prints for the concrete corollaries (the build-failing check
     is `make axioms`, which gates all four theorems in this file). *)
@@ -231,10 +246,10 @@ Print Assumptions gentoo_cannot_spoof_hass.
 Print Assumptions budget_legitimate_allowed.
 
 (* ================================================================== *)
-(** ** Projection license (U1): the parsed vmfilter table is write-free, so
-    every [eval_table] statement in this file is a statement about the
-    UNIFIED semantics ([Semantics.eval_table_u_writefree] /
-    [Nft_Tactics.nft_yields_unified]). *)
+(** ** The parsed vmfilter table is write-free, so every verdict above — stated
+    over the canonical unified evaluator [eval_table_u] — coincides with the pure
+    jump strand ([Semantics.eval_table_u_writefree]); the [forall h] form records
+    that these verdicts are hook-independent. *)
 Example vmfilter_output_license :
   forallb rule_writefree (c_rules vmfilter_output) = true
   /\ chains_writefree vmfilter_chains = true.
