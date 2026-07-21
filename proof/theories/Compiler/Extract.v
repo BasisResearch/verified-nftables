@@ -172,7 +172,6 @@ Separate Extraction
   seq_eval_env
   eval_ruleset
   run_ruleset
-  seq_eval
   env_with_sets
   rule_numgen_free
   dsl_step dsl_writes rule_step
