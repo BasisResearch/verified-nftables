@@ -292,6 +292,7 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Optimize_MutEnv.optimize_table_uncond_mut_st_correct \
   Optimize_MutEnv.optimize_table_uncond_mut_env_correct \
   Optimize_MutEnv.eval_rules_mut_st_run_merge_abs \
+  Optimize_MutEnv.eval_rules_mut_st_run_collapse \
   Optimize_MutEnv.mutst_pin_distinguishes \
   Optimize_Linearize_MutSt.paymerge_chain_mut_st \
   Optimize_Linearize_MutSt.xorfold_chain_mut_st \

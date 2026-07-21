@@ -22,7 +22,8 @@
     `[ meta load l4proto ][ cmp eq reg1 proto ]` precedes the `[ lookup ]`), and the
     two selectors become the concat key over the N packed tuples.
 
-    Verdict-preservation reuses the family-agnostic [eval_rules_run_collapse] and the
+    Verdict-preservation reuses the family-agnostic state-fold collapse
+    [Optimize_MutEnv.eval_rules_mut_st_run_collapse] and the
     N-way concat membership certificate [concat_two_fields_certificate_N] from
     [Optimize_Concat] VERBATIM — the guard is a pure conjunctive match, transparent to
     loadability/outcome and factored out of the [existsb] by boolean algebra, so it
