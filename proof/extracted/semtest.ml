@@ -262,31 +262,38 @@ let () =
     (chain Verdict.Drop [ rule [ meq (Syntax.FFib ("saddr", Packet.FRoif)) [3] ] Verdict.Accept ])
     [ "saddr 10.1.2.3 (routed via oif 3)",  mk_pkt ~env:route_env ~fibkey:(fibkey_of [10; 1; 2; 3]) ();
       "saddr 192.168.1.1 (no route)",       mk_pkt ~env:route_env ~fibkey:(fibkey_of [192; 168; 1; 1]) () ];
-  (* (4c) STATEFUL ACCUMULATION (compile_seq_correct): a rate limiter shared
-     across a packet sequence.  `tcp limit accept` (policy drop) accepts iff the
-     limiter has tokens; each accept consumes one.  From 2 tokens, three tcp
-     packets give [accept; accept; drop] — the third sees the depleted limiter,
+  (* (4c) STATEFUL ACCUMULATION (compile_seq_hook_correct): a rate limiter
+     shared across a packet sequence.  `tcp limit rate 1/second burst 2 accept`
+     (policy drop) accepts iff the bucket covers the per-packet cost
+     (window/rate = 1 token); EVALUATING the limit match consumes it inside
+     the break-aware fold (M2).  The between-packet env is the traversal's OWN
+     env-out — seq_eval_env over the unified run; no external step function
+     models the depletion.  From a full 2-token bucket, three back-to-back tcp
+     packets give [accept; accept; drop] — the third sees the depleted bucket,
      which a per-packet oracle could not express.  VM run = DSL run, packetwise. *)
   let lim_spec : Packet.limit_spec =
-    { Packet.ls_rate = 2; ls_unit = 0; ls_burst = 0; ls_bytes = false; ls_flags = 0 } in
+    { Packet.ls_rate = 1; ls_unit = 0; ls_burst = 2; ls_bytes = false; ls_flags = 0 } in
   let lim_chain = chain Verdict.Drop [ rule [ l4_tcp; Syntax.MLimit lim_spec ] Verdict.Accept ] in
   let lim_prog = Compile.compile_chain lim_chain in
-  let step v (e : Packet.env) : Packet.env =
-    match v with
-    | Verdict.Accept -> { e with Packet.e_limit = (fun s -> (e.Packet.e_limit s) - 1) }
-    | _ -> e in
-  let ev_dsl e p = Semantics.eval_chain lim_chain e p in
-  let ev_vm  e p = Semantics.run_chain lim_prog lim_chain.Syntax.c_policy e p in
+  let hk = Semantics.Hprerouting in
+  let ev_dsl e p =
+    let (v, (e', _)) = Semantics.eval_table_u hk 10 [] lim_chain e p in (v, e') in
+  let ev_vm e p =
+    let (v, (e', _)) =
+      Semantics.run_table_u hk 10 [] lim_prog lim_chain.Syntax.c_policy e p in (v, e') in
   let pkts = [ snd (mk_pkt ~th:(th ~dport:[0; 22]) ()); snd (mk_pkt ~th:(th ~dport:[0; 22]) ());
                snd (mk_pkt ~th:(th ~dport:[0; 22]) ()) ] in
-  let dsl_seq = Semantics.seq_eval ev_dsl step (env_limit 2) pkts in
-  let vm_seq  = Semantics.seq_eval ev_vm  step (env_limit 2) pkts in
-  Printf.printf "=== rate limiter shared across 3 packets (compile_seq_correct, 2 tokens) ===\n";
+  let dsl_seq = Semantics.seq_eval_env ev_dsl (env_limit 2) pkts in
+  let vm_seq  = Semantics.seq_eval_env ev_vm  (env_limit 2) pkts in
+  let expected = [ Verdict.Accept; Verdict.Accept; Verdict.Drop ] in
+  Printf.printf "=== rate limiter shared across 3 packets (compile_seq_hook_correct, 2-token bucket) ===\n";
   Printf.printf "  DSL=[%s]  VM=[%s]  %s\n\n"
     (Stdlib.String.concat "; " (Stdlib.List.map string_of_verdict dsl_seq))
     (Stdlib.String.concat "; " (Stdlib.List.map string_of_verdict vm_seq))
-    (if dsl_seq = vm_seq then "ok" else "MISMATCH");
-  if dsl_seq <> vm_seq then incr fails;
+    (if dsl_seq = vm_seq && dsl_seq = expected then "ok"
+     else if dsl_seq <> vm_seq then "MISMATCH"
+     else "WRONG SEQUENCE (no cross-packet depletion observed)");
+  if dsl_seq <> vm_seq || dsl_seq <> expected then incr fails;
   (* (5) Phase B: in-traversal mutation.  Rule 1 sets meta mark; rule 2 matches
      it.  Under the mutation-aware semantics (eval/run_chain_mut) the second rule
      observes the write and the packet is ACCEPTED; the old verdict-only eval_chain

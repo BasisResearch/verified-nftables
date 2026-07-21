@@ -58,7 +58,7 @@ Proof.
 Qed.
 
 (* Therefore packet 2 of the SAME flow ([pkt_flow p2 = pkt_flow p1]), threaded
-   through that env the way seq_eval feeds it, reads the mark 0x1 that packet 1
+   through that env the way seq_eval_env feeds it, reads the mark 0x1 that packet 1
    set — REGARDLESS of packet 2's own per-packet ct oracle.  This is exactly the
    kernel's nf_ct_get(skb) selecting the shared entry by tuple and reading ct->mark. *)
 Theorem packet2_sees_packet1_ctmark_set :

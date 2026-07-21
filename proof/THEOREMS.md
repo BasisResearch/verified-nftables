@@ -36,7 +36,7 @@ axiom-free — without reading 3000 lines of `Correct.v`.
 | axis | HEADLINE theorem | file | what it says |
 |---|---|---|---|
 | compiler (rulesets/hooks) | `compile_hook_correct` | `Correct.v` | compiled hook dispatch (jump/goto/return, user chains, multi-table, priority order) = DSL `eval_hook`, for every fuel/ruleset/hook/packet/environment |
-| compiler, sequence form | `compile_seq_correct` | `Correct.v` | the same, lifted over a packet sequence under an **arbitrary step** `verdict -> env -> env` — a per-packet **congruence corollary** of `compile_hook_correct`, *not* a proof about ruleset-generated state (that is the next axis) |
+| sequence semantics / cross-packet carry | `compile_seq_hook_correct` | `Correct.v` | the between-packet env is **definitionally the ruleset's OWN env-out** (`seq_eval_env` over `eval_hook_env_u` / `run_ruleset_env_u`, the fst-of-state projections of the unified hook run — no external step function can be instantiated): dynset adds, limiter depletion and NAT mappings thread packet-to-packet through jumps and multi-chain/hook dispatch, compiler-preserved under `base_numgen_free` (discharged for every frontend program by `Lower_Proofs.lower_ruleset_numgen_free`); cross-packet pins `Regression/Seq_Hook_Carry.v`. Successor of the RETIRED external-step `compile_seq_correct` (strata-retirement note, §3) |
 | mutation / cross-packet learning | `compile_seq_mut_correct` | `Correct.v` | compiled single-chain traversal threading the env each packet LEAVES (meta/ct writes, dynset learning) = DSL sequence, under `rule_numgen_free` (discharged for EVERY frontend program by `Lower_Proofs.lower_ruleset_numgen_free`) |
 | optimizer pipeline | `optimize_table_uncond_compile_correct` | `Optimize_Uncond.v` | the shipped 18-stage `nft -o` pipeline + the DEFAULT compile (`compile_chain_default`) preserves every packet's verdict against the synthesised declarations, for **any input chain** (no `rules_clean`, no freshness precondition) |
 | DEFAULT compile pipeline | `Optimize_Linearize.compile_chain_default_correct` | `Optimize_Linearize.v` | the DEFAULT pipeline `compile_chain_default = compile_chain ∘ elide_chain ∘ xorfold_chain ∘ paymerge_chain` — nft's ALWAYS-ON netlink linearization (classes I + L, including the trivial-binop deletion) — yields exactly the source chain's DSL verdict, for every chain/env/packet; stage composition is `linearize_chain_eval`; non-vacuity Compute-pinned (`default_pipeline_merges_payload_loads`, `default_pipeline_folds_xor` — the folded xor now compiles to a bare load+cmp, NO bitwise — and `default_pipeline_elides_trivial_binop`) |
@@ -84,7 +84,7 @@ Scope notes (each also sits on the theorem in the source):
 - **Mutation × jump/goto is jointly verified** at the UNIFIED evaluator
   (`Semantics.eval_rules_u`/`run_rules_u`, compile theorems
   `compile_table_u_correct` / `compile_ruleset_u_correct` /
-  `compile_hook_u_correct` / `compile_seq_hook_u_correct`): one
+  `compile_hook_u_correct` / `compile_seq_hook_correct`): one
   effect-threading, jump-following fold per side.  The historical pure jump
   strand (`eval_rules_j`/`eval_table`/`eval_ruleset`/`eval_hook`) and the flat
   mutation strand (`eval_rules_mut*`) survive only as **proven projections**
@@ -132,12 +132,12 @@ redirect/masquerade data plane is hook-dependent).
 | `rg_base_not_jumpfree` (Example) | DEMO (the pin's chain is outside `eval_chain`'s faithful domain) | computes |
 | `compile_ruleset_correct` | SUPPORTING (stratum 6: + multi-table dispatch) | from `compile_table_correct` per base chain |
 | `compile_hook_correct` | **HEADLINE** (compiler axis) | = `compile_ruleset_correct` after pure hook selection/ordering |
-| `compile_seq_correct` | **HEADLINE** (congruence corollary — see scope note §1) | = `compile_hook_correct` + `seq_eval_ext` |
+| `compile_seq_correct` | **RETIRED** (M4 strata retirement, §3: the sequence congruence under an EXTERNAL caller-supplied step — deleted with `seq_eval`/`seq_eval_ext`; successor `compile_seq_hook_correct`) | — |
 | `run_table_fuel_indep_compiled` (Corollary) | SUPPORTING (VM mirror of the M4 fuel-adequacy result, §3) | = `compile_table_correct` (at both fuels) + `Semantics.eval_table_fuel_indep` |
 | `run_rules_u_compile` | SUPPORTING (stratum 8 induction: unified fold, rule list) | one induction over `run_rule_step_compile_rule`, jumps included |
 | `compile_table_u_correct` | **HEADLINE** (stratum 8, unified axis: mutation × jump, one table) | from `run_rules_u_compile` |
 | `compile_ruleset_u_correct` / `compile_hook_u_correct` | **HEADLINE** (stratum 8: + multi-table / hook dispatch, state threaded between bases) | from `compile_table_u_correct` per base chain |
-| `compile_seq_hook_u_correct` | **HEADLINE** (stratum 8: + cross-packet env carry over the unified per-packet run) | = `compile_ruleset_u_correct` + `seq_eval_env_ext` |
+| `compile_seq_hook_correct` | **HEADLINE** (stratum 8: + cross-packet env carry over the unified per-packet run — THE sequence semantics; named `compile_seq_hook_u_correct` until M4 retired the external-step stratum) | = `compile_ruleset_u_correct` + `seq_eval_env_ext` |
 | `run_table_writefree_compiled` (Corollary) | SUPPORTING (VM-side projection license: pure `run_table` = `fst` of `run_table_u` on compiled write-free chains) | = `compile_table_u_correct` + `compile_table_correct` + `Semantics.eval_table_u_writefree` |
 | `eval_chain_writefree_jumpfree_proj` (Corollary) | SUPPORTING (flat pure strand license, packaged) | = `Semantics.eval_table_u_writefree` + `eval_chain_eq_table_jumpfree` |
 | `rg_jump_not_plain` / `unified_strand_jump_drops` (Examples) | DEMO (license-boundary pins beside `mut_strand_jump_pin`) | compute |
@@ -207,8 +207,8 @@ successor for every out-of-domain input is the unified `_u` family.)
 | `eval_rules_mut(_env)`/`eval_chain_mut(_env)` (VM `run_program_mut(_env)`) | transfer-free rules: `rule_plain` (no realisable Jump/Goto/Return under the run's verdict maps — step-threaded: rule writes provably cannot touch `e_vmap`, `rule_step_vmap`) | `eval_rules_u_mut_proj`: verdict = `eval_rules_mut`, env = `snd ∘ eval_rules_mut_env`; table form `eval_table_u_mut_proj` |
 | `rule_applies(_walk)`/`outcome`/`rule_loadable` (per-rule bools) | write-free rule (`rule_mutfree`: no mutating statement AND no limiter match — evaluating a limiter writes its bucket) | `rule_step_mutfree` |
 | `run_rule`/`run_program` (per-rule pure VM) | `no_writes` programs (no mutating/limiter/incremental-numgen instruction) | `Correct.run_rule_step_no_writes` |
-| `seq_eval` | per-packet congruence over an EXTERNAL, caller-supplied step (see its header) | — |
-| `seq_eval_env` | generic in its per-packet evaluator; the unified instantiation is `eval_hook_env_u` | `compile_seq_hook_u_correct` (unified), `compile_seq_mut_correct` (flat) |
+| (`seq_eval` — RETIRED, M4: the sequence combinator over an EXTERNAL caller-supplied step; successor `seq_eval_env` below) | — | — |
+| `seq_eval_env` | generic in its per-packet evaluator; THE sequence semantics is its instantiation with the ruleset's own env-out `eval_hook_env_u` | `compile_seq_hook_correct` (unified), `compile_seq_mut_correct` (flat) |
 
 **License coverage of the shipped example configs** (the `Nft_Tactics`
 surface `nft_yields` is stated over the `eval_table` projection;
@@ -391,6 +391,29 @@ twins (`vmapmiss_*`) and VM twins (`vm_vmaphit_*`/`vm_vmapmiss_*`); the
 mut-vs-trace divergence pin `Nat_NoAddr_Drop.trace_diverges_from_mut_via_nat_drop`
 retires WITH the strand — successors `mut_agrees_nat_drop` /
 `vm_nat_drop_agrees` (the NAT drop through the compiler).
+
+**Strata retirement (M4 cross-packet carry): the external-step sequence
+stratum is retired.**  The historical `Semantics.seq_eval` — a packet-sequence
+combinator whose between-packet env update was an EXTERNAL, caller-supplied
+`step : verdict -> env -> env` — and its theorems (`Correct.seq_eval_ext`,
+`Correct.compile_seq_correct`, `Main.main_compile_seq_correct`,
+`Main.pre_split_compile_seq_correct`) are RETIRED (deleted).  Because `step`
+was universally quantified, the stratum modeled the ruleset's own cross-packet
+state evolution (dynset learning, limiter depletion, NAT mappings) by whatever
+the caller wrote — i.e. an effectful ruleset run through it had its
+between-packet effects replaced by an external guess; its theorems were
+per-packet congruences, not proofs about ruleset-generated state.  Successor:
+`seq_eval_env` instantiated with the ruleset's OWN env-out `eval_hook_env_u`
+(VM: `run_ruleset_env_u`) — the fst-of-state projections of the unified hook
+run — with compile theorem `compile_seq_hook_correct` (the former
+`compile_seq_hook_u_correct`, renamed: with the external-step stratum gone it
+is the unique sequence theorem).  The semtest sequence battery was moved off
+the external step onto the unified env-out for the same reason (the limiter
+battery's `step` hand-decremented a bucket the fold now depletes itself).
+Cross-packet pins: `Regression/Seq_Hook_Carry.v` — limiter depletion through
+a jump under hook dispatch (`seq_hook_limit_depletes` + VM twin), dynset
+learning crossing a jump, a base-chain boundary and a packet boundary
+(`seq_hook_dynset_learns` + VM twin).
 
 **Strata retirement (T1 single-fold).**  The historical TWO-fold per-rule
 split — an entry-packet verdict pass (`rule_applies`/`outcome` paired into

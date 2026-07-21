@@ -241,10 +241,21 @@ validate: glue
 #                        flipped from the retired infidelity entry 1), a
 #                        limiter before it consumes and the write survives
 #                        the break (Limit_SharedBucket positional pins)
+#   cross-packet (M4)    THE sequence semantics is seq_eval_env over the
+#                        unified hook run (eval_hook_env_u): the between-packet
+#                        env is the ruleset's OWN env-out — the external-step
+#                        seq_eval stratum is RETIRED (compile_seq_correct ->
+#                        compile_seq_hook_correct); the cross-packet carries
+#                        (limiter depletion, dynset learning, each under a
+#                        jump + hook dispatch) are pinned in Seq_Hook_Carry
 # Any NEW README-claimed result must be added here in the same commit.
 AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   compile_table_u_correct compile_ruleset_u_correct compile_hook_u_correct \
-  compile_seq_hook_u_correct \
+  compile_seq_hook_correct \
+  Seq_Hook_Carry.seq_hook_limit_depletes \
+  Seq_Hook_Carry.vm_seq_hook_limit_depletes \
+  Seq_Hook_Carry.seq_hook_dynset_learns \
+  Seq_Hook_Carry.vm_seq_hook_dynset_learns \
   Semantics.eval_rules_u_writefree Semantics.eval_table_u_writefree \
   Semantics.eval_ruleset_u_writefree Semantics.eval_hook_u_writefree \
   Semantics.eval_rules_u_limiter_tolerant Semantics.eval_table_u_limiter_tolerant \
@@ -273,7 +284,7 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Nat_NoAddr_Drop.mut_agrees_nat_drop Nat_NoAddr_Drop.vm_nat_drop_agrees \
   Router_Reach.nat_masquerade_fires Router_Reach.nat_no_leak \
   compile_chain_mut_env_correct compile_seq_mut_correct compile_table_correct \
-  compile_ruleset_correct compile_hook_correct compile_seq_correct \
+  compile_ruleset_correct compile_hook_correct \
   optimize_table_uncond_correct optimize_table_uncond_compile_correct \
   Optimize_PayMerge.paymerge_chain_eval Optimize_XorFold.xorfold_chain_eval \
   Optimize_Elide.elide_chain_eval \
@@ -342,7 +353,7 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Syntax.read_numgen_length Syntax.read_symhash_length
 
 axioms:
-	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optimize_PayMerge Optimize_XorFold Optimize_Linearize Optimize_Registry Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs RegsValid_Proofs Setread_IntraRule Setread_UnderJump Reject_GuardFirst Known_Infidelities Nat_NoAddr_Drop Router_Reach Limit_SharedBucket Router_Input Router_Forward Router_Private Router_Hooks Router_Realistic Nft_Demo_Concrete.\n'; \
+	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optimize_PayMerge Optimize_XorFold Optimize_Linearize Optimize_Registry Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs RegsValid_Proofs Setread_IntraRule Setread_UnderJump Seq_Hook_Carry Reject_GuardFirst Known_Infidelities Nat_NoAddr_Drop Router_Reach Limit_SharedBucket Router_Input Router_Forward Router_Private Router_Hooks Router_Realistic Nft_Demo_Concrete.\n'; \
 	  for t in $(AXIOM_GATE_THEOREMS); do printf 'Print Assumptions %s.\n' "$$t"; done; } \
 	| $(COQTOP) -R . Nft 2>/dev/null \
 	| grep -E 'Closed under the global context|Axioms' \

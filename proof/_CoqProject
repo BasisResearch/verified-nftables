@@ -91,6 +91,7 @@ theories/Regression/Synproxy.v
 theories/Regression/Known_Infidelities.v
 theories/Regression/Setread_IntraRule.v
 theories/Regression/Setread_UnderJump.v
+theories/Regression/Seq_Hook_Carry.v
 theories/Regression/Reject_GuardFirst.v
 
 theories/Generated/Gen_Support.v
