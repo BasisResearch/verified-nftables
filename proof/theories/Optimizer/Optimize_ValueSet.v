@@ -697,7 +697,7 @@ Definition value_merge_pair (r1 r2 : rule) : option (field * data * data * list 
      merged rule where the original run could evaluate it several times (e.g. a
      non-terminal verdict with duplicate values, or a meta-head rewritten by the
      tail) — so the effect-level pipeline theorem
-     ([Optimize_MutEnv.optimize_table_uncond_mut_env_correct]) requires the
+     ([Optimize_MutEnv.optimize_table_uncond_mut_st_correct]) requires the
      recogniser to refuse such runs.  [r2]'s mut-freedom follows from the shape
      (same tail, same end fields, pure head), see [value_merge_pair_shape]. *)
   if negb (rule_mutfree r1) then None else

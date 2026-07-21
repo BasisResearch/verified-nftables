@@ -472,13 +472,21 @@ says the *optimized* chain — and its compiled bytecode — preserves every pac
 verdict against the synthesised set/map declarations, for **any** input *chain*
 (no `rules_clean` or freshness precondition). The pipeline is additionally
 certified at the EFFECT level
-(`Optimize_MutEnv.optimize_table_uncond_mut_env_correct`): under the
-effect-observing `eval_chain_mut_env h`, the optimised chain in the deployed
-environment yields the same verdict **and** the same resulting environment as
-the input, at every hook — a stage cannot preserve verdicts while altering a
-write a later hook observes (the merge recognisers carry `rule_mutfree`
-effect-safety guards; the dnat/snat/datamap merges carry fold-level effect
-certificates). The optimizer theorem is
+(`Optimize_MutEnv.optimize_table_uncond_mut_st_correct`): under the FULL-STATE
+effect-observing `eval_chain_mut_st h`, the optimised chain in the deployed
+environment yields the same verdict **and** the same resulting `(env, packet)`
+state as the input, at every hook — a stage cannot preserve verdicts while
+altering a write a later hook observes, whether it lands in the env (dynset
+learning, limiter depletion, ct/nat stores — carried to the next packet by
+`seq_eval_env`) or in the packet (`meta mark set` et al. — handed to the next
+base chain by `eval_ruleset_u`'s priority dispatch; the packet-blindness of
+the older `(verdict, env)` observable is pinned in `Optimize_MutEnv` Part H,
+and that observable survives only as the projection corollary
+`optimize_table_uncond_mut_env_correct`). The merge recognisers carry
+`rule_mutfree` effect-safety guards; the dnat/snat/datamap merges carry
+fold-level effect certificates. Jump scope: `eval_chain_mut_st` is the flat
+fold (a `Jump` is non-terminal, the callee is not entered), so for
+jump-bearing chains the effect guarantee is about that flat projection. The optimizer theorem is
 **per-chain**: quantified over a single chain and all environments/packets;
 multi-chain/hook preservation is the separate
 `compile_ruleset_correct`/`compile_hook_correct` family, **not composed with

@@ -5179,9 +5179,10 @@ Qed.
 (** *** The fresh-counter seed: choose the start counter STRICTLY above the length
     of every name the base-optimised chain reads — AND every name it WRITES.
 
-    The dynset WRITE targets ([SDynset]'s set/map name, the one statement family
-    that mutates the shared [e_set]/[e_map] environment) are included so the
-    EFFECT-level pipeline theorem ([Optimize_MutEnv]) gets, by construction,
+    The dynset WRITE targets ([SDynset]'s set/map name, the one statement
+    family that mutates the shared [e_set]/[e_map] environment) are included
+    so the EFFECT-level pipeline theorem
+    ([Optimize_MutEnv.optimize_table_uncond_mut_st_correct]) gets, by construction,
     that no rule can clobber a minted declaration: a minted [setname]/[mapname]
     is strictly longer than every dynset target.  (The verdict-level theorems
     ignore the extra margin — the seed only grows.) *)
@@ -5332,18 +5333,22 @@ From Nft Require Optimize_Linearize.
 
     Scope note 2: this theorem is the VM-run/verdict view of the pipeline; the
     EFFECT-level composed guarantee is
-    [Optimize_MutEnv.optimize_table_uncond_mut_env_correct] — the same
-    unconditional pipeline related, at every hook, under the effect-observing
-    [eval_chain_mut_env h] (verdict AND resulting environment; the packet half
-    is threaded internally by the same [rule_step] fold).  A stage can no
-    longer alter a write a later hook observes while preserving verdicts: the
-    write effects are an observable of that theorem.  The composition is
+    [Optimize_MutEnv.optimize_table_uncond_mut_st_correct] — the same
+    unconditional pipeline related, at every hook, under the FULL-STATE
+    effect-observing [eval_chain_mut_st h]: verdict AND the resulting
+    (env, packet) pair the [rule_step] fold leaves, nothing dropped (the
+    (verdict, env) form survives as the projection corollary
+    [optimize_table_uncond_mut_env_correct]).  A stage can no longer alter a
+    write a later hook observes while preserving verdicts — env writes
+    (dynset/limiter/ct/nat) AND packet writes (meta mark et al., which
+    [eval_ruleset_u]'s priority dispatch hands to the next base chain): the
+    write effects are the observable of that theorem.  The composition is
     possible because (a) every pure-merge recogniser carries an EFFECT-SAFETY
     GUARD ([rule_mutfree], see [Optimize_ValueSet.value_merge_pair]) so its
     merges are certified by the write-free fold projection, (b) the three
     effect-rewriting stages carry fold-level per-shape certificates
-    ([Optimize_MutEnv.eval_rules_mut_env_map_merge] /
-    [eval_rules_mut_env_dnat_merge] / [eval_rules_mut_env_snat_merge], built on
+    ([Optimize_MutEnv.eval_rules_mut_st_map_merge] /
+    [eval_rules_mut_st_dnat_merge] / [eval_rules_mut_st_snat_merge], built on
     [Optimize_DataMap.dsl_step_map_merge] and [Optimize_Dnat.apply_nat_dnat_eq]
     / [Optimize_Snat.apply_nat_snat_eq]), and (c) the base pass is effect-safe
     by construction ([dce] cuts after an unconditionally-terminal EMPTY rule;

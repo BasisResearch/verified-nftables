@@ -215,9 +215,10 @@ Qed.
     SUPERSET with no `nft -o` counterpart — NOT part of the byte-fidelity claim, and
     NOT an nft bug (nft is merely conservative; the merge is verdict/state-preserving
     per [Optimize_DataMap.eval_rules_mut_map_merge], and its effect-level shape
-    certificate [Optimize_MutEnv.eval_rules_mut_env_map_merge] IS composed through
-    [optimize_table]: the pipeline-level effect guarantee is
-    [Optimize_MutEnv.optimize_table_uncond_mut_env_correct]).  [datamap] emits the HEAD-GUARDED
+    certificate [Optimize_MutEnv.eval_rules_mut_st_map_merge] — full state:
+    verdict + (env, packet) out — IS composed through [optimize_table]: the
+    pipeline-level effect guarantee is
+    [Optimize_MutEnv.optimize_table_uncond_mut_st_correct]).  [datamap] emits the HEAD-GUARDED
     form (a synthesised key set in front of the map) because our model loads a
     default on a statement value-map miss rather than NFT_BREAKing; the guard makes
     the lookup always hit, recovering exact equivalence.  Why the guard cannot just
