@@ -15,11 +15,11 @@
         residual `(reg & 0xff..ff) ^ 0` never reaches the wire) — the class-L
         residue, [Optimize_Elide].
 
-    All three passes are SELF-GUARDING and their eval-preservation theorems are
-    UNCONDITIONAL ([paymerge_chain_eval] / [xorfold_chain_eval] /
-    [elide_chain_eval]: no hypothesis on the chain, env or packet).  This file
-    composes them into [linearize_chain] and defines the DEFAULT compile
-    pipeline
+    All three passes are SELF-GUARDING and their state-preservation theorems are
+    UNCONDITIONAL ([Optimize_Linearize_MutSt.paymerge_chain_mut_st] /
+    [xorfold_chain_mut_st] / [elide_chain_mut_st]: no hypothesis on the chain,
+    env or packet).  This file composes them into [linearize_chain] and defines
+    the DEFAULT compile pipeline
 
         [compile_chain_default c = compile_chain (linearize_chain c)]
 
@@ -53,14 +53,6 @@ From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
     binop, all before linearization.) *)
 Definition linearize_chain (c : chain) : chain :=
   elide_chain (xorfold_chain (paymerge_chain c)).
-
-(** Verdict preservation, UNCONDITIONAL — the three stage theorems composed. *)
-Theorem linearize_chain_eval : forall c e p,
-  eval_chain (linearize_chain c) e p = eval_chain c e p.
-Proof.
-  intros c e p. unfold linearize_chain.
-  rewrite elide_chain_eval, xorfold_chain_eval. apply paymerge_chain_eval.
-Qed.
 
 (** All stages copy the policy verbatim. *)
 Lemma linearize_chain_policy : forall c,
@@ -136,6 +128,3 @@ Example default_pipeline_elides_trivial_binop :
   compile_chain_default linz_xor3_chain
   = [[IMetaLoad MKmark 1; ICmp CEq 1 [2;0;0;0]]].
 Proof. vm_compute. reflexivity. Qed.
-
-(** Axiom-freedom audit (build-time guard; enforcement is `make axioms`). *)
-Print Assumptions linearize_chain_eval.

@@ -24,8 +24,9 @@
     width-pinned AND octet-clamped definitionally, and the all-ones/zero
     bitwise at that width is the identity on such a value
     ([Syntax.do_load_bitops_id]) — so the masked compare and the bare compare
-    see the SAME register value.  [elide_chain_eval] is UNCONDITIONAL
-    ([forall c e p]), axiom-free.
+    see the SAME register value.  The pass's state-fold preservation
+    [Optimize_Linearize_MutSt.elide_chain_mut_st] is UNCONDITIONAL
+    ([forall h c e p]), axiom-free.
 
     Guard notes:
     - The guard is syntactic width equality [|v| = w] plus the all-ones mask
@@ -167,46 +168,6 @@ Lemma elide_r_body : forall r,
   r_body (elide_rule r) = map elide_bi (r_body r).
 Proof. reflexivity. Qed.
 
-Lemma elide_rule_loadable : forall r e p,
-  rule_loadable (elide_rule r) e p = rule_loadable r e p.
-Proof.
-  intros r e p. unfold rule_loadable. rewrite elide_r_body.
-  rewrite elide_body_loadable_walk, elide_body_synproxy_stops,
-          elide_body_thread.
-  destruct (body_synproxy_stops (r_body r) p); reflexivity.
-Qed.
-
-Lemma elide_rule_applies : forall r e p,
-  rule_applies (elide_rule r) e p = rule_applies r e p.
-Proof.
-  intros r e p. unfold rule_applies. rewrite elide_r_body.
-  apply elide_rule_applies_walk.
-Qed.
-
-Lemma elide_outcome : forall r e p,
-  outcome (elide_rule r) e p = outcome r e p.
-Proof.
-  intros r e p. unfold outcome. rewrite elide_r_body.
-  rewrite elide_body_synproxy_stops, elide_body_thread.
-  destruct (body_synproxy_stops (r_body r) p); reflexivity.
-Qed.
-
-Lemma elide_eval_rules : forall rs e p,
-  eval_rules (map elide_rule rs) e p = eval_rules rs e p.
-Proof.
-  induction rs as [| r rs IH]; intros e p; [reflexivity|].
-  cbn [map]. rewrite ?eval_rules_cons, ?eval_rules_nil.
-  rewrite elide_rule_loadable, elide_rule_applies, elide_outcome.
-  destruct (rule_loadable r e p && rule_applies r e p); [| apply IH].
-  destruct (outcome r e p) as [v|]; [destruct v|]; rewrite ?IH; reflexivity.
-Qed.
-
-Theorem elide_chain_eval : forall c e p,
-  eval_chain (elide_chain c) e p = eval_chain c e p.
-Proof.
-  intros c e p. unfold eval_chain, elide_chain. cbn [c_rules c_policy].
-  rewrite elide_eval_rules. reflexivity.
-Qed.
 
 (* ================================================================== *)
 (** ** Non-vacuity: the pass GENUINELY deletes the trivial binop.
@@ -245,6 +206,3 @@ Example elide_leaves_payload :
   elide_mc (MMasked FThDport CEq (repeat 255 2) [0;0] [0;80])
   = MMasked FThDport CEq (repeat 255 2) [0;0] [0;80].
 Proof. vm_compute. reflexivity. Qed.
-
-(** Axiom-freedom audit (build-time guard; enforcement is `make axioms`). *)
-Print Assumptions elide_chain_eval.

@@ -16,8 +16,9 @@
 
     The transfer holds for ANY register value (bytewise xor is involutive with
     no width or byte-range side condition), so the pass is SELF-GUARDING and its
-    correctness is UNCONDITIONAL: [eval_chain (xorfold_chain c) e p = eval_chain
-    c e p] for every chain, env and packet — no hypotheses.  Restricted to the
+    correctness is UNCONDITIONAL: its state-fold preservation
+    [Optimize_Linearize_MutSt.xorfold_chain_mut_st] holds for every chain, env
+    and packet — no hypotheses.  Restricted to the
     all-ones mask so it fires on `xor` alone and never on an `and`/`or` mask
     (which nft does not fold).  Axiom-free.
 
@@ -276,46 +277,6 @@ Lemma xorfold_r_body : forall r,
   r_body (xorfold_rule r) = map xorfold_bi (r_body r).
 Proof. reflexivity. Qed.
 
-Lemma xorfold_rule_loadable : forall r e p,
-  rule_loadable (xorfold_rule r) e p = rule_loadable r e p.
-Proof.
-  intros r e p. unfold rule_loadable. rewrite xorfold_r_body.
-  rewrite xorfold_body_loadable_walk, xorfold_body_synproxy_stops,
-          xorfold_body_thread.
-  destruct (body_synproxy_stops (r_body r) p); reflexivity.
-Qed.
-
-Lemma xorfold_rule_applies : forall r e p,
-  rule_applies (xorfold_rule r) e p = rule_applies r e p.
-Proof.
-  intros r e p. unfold rule_applies. rewrite xorfold_r_body.
-  apply xorfold_rule_applies_walk.
-Qed.
-
-Lemma xorfold_outcome : forall r e p,
-  outcome (xorfold_rule r) e p = outcome r e p.
-Proof.
-  intros r e p. unfold outcome. rewrite xorfold_r_body.
-  rewrite xorfold_body_synproxy_stops, xorfold_body_thread.
-  destruct (body_synproxy_stops (r_body r) p); reflexivity.
-Qed.
-
-Lemma xorfold_eval_rules : forall rs e p,
-  eval_rules (map xorfold_rule rs) e p = eval_rules rs e p.
-Proof.
-  induction rs as [| r rs IH]; intros e p; [reflexivity|].
-  cbn [map]. rewrite ?eval_rules_cons, ?eval_rules_nil.
-  rewrite xorfold_rule_loadable, xorfold_rule_applies, xorfold_outcome.
-  destruct (rule_loadable r e p && rule_applies r e p); [| apply IH].
-  destruct (outcome r e p) as [v|]; [destruct v|]; rewrite ?IH; reflexivity.
-Qed.
-
-Theorem xorfold_chain_eval : forall c e p,
-  eval_chain (xorfold_chain c) e p = eval_chain c e p.
-Proof.
-  intros c e p. unfold eval_chain, xorfold_chain. cbn [c_rules c_policy].
-  rewrite xorfold_eval_rules. reflexivity.
-Qed.
 
 (* ================================================================== *)
 (** ** Non-vacuity: the pass GENUINELY rewrites.
@@ -341,6 +302,3 @@ Example xorfold_leaves_and :
   xorfold_mc (MMasked FMetaMark CEq [3;0;0;0] [0;0;0;0] [1;0;0;0])
   = MMasked FMetaMark CEq [3;0;0;0] [0;0;0;0] [1;0;0;0].
 Proof. vm_compute. reflexivity. Qed.
-
-(** Axiom-freedom audit (build-time guard). *)
-Print Assumptions xorfold_chain_eval.

@@ -10,10 +10,12 @@
     clause) — so rewriting [MEq f v] to [MCmp f CEq v] changes no packet's verdict,
     yet exposes the head to the value->set / concat / vmap merges.
 
-    This pass ([normalize_chain]) does exactly that rewrite over every rule body and
-    is proved [eval_chain]-preserving.  [Optimize_Uncond.optimize_table_uncond] runs
-    it FIRST, so the SHIPPED optimizer consolidates real parsed rulesets (e.g. three
-    adjacent `ip saddr <a>` rules -> one `ip saddr { … }`).  Axiom-free. *)
+    This pass ([normalize_chain]) does exactly that rewrite over every rule body;
+    its state-fold preservation is [Optimize_MutEnv.normalize_chain_mut_st].
+    [Optimize_Uncond.optimize_table_uncond] runs it FIRST, so the SHIPPED optimizer
+    consolidates real parsed rulesets (e.g. three adjacent `ip saddr <a>` rules ->
+    one `ip saddr { … }`).  The [normalize_mc_*] extensional-equality lemmas here are
+    the substrate that state proof threads through.  Axiom-free. *)
 
 From Stdlib Require Import List Bool.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics.
@@ -56,115 +58,9 @@ Proof.
   rewrite normalize_mc_loadable, normalize_mc_eval. reflexivity.
 Qed.
 
-(** *** Body-scan predicates are invariant (they only read the [BStmt] structure,
-    which [normalize_bi] preserves verbatim). *)
-Lemma normalize_body_has_notrack : forall body,
-  body_has_notrack (map normalize_bi body) = body_has_notrack body.
-Proof.
-  induction body as [| it b IH]; [reflexivity|].
-  unfold body_has_notrack in *. cbn [map existsb]. rewrite IH.
-  destruct it as [m | s]; [reflexivity | destruct s; reflexivity].
-Qed.
-
-Lemma normalize_body_synproxy_stops : forall body p,
-  body_synproxy_stops (map normalize_bi body) p = body_synproxy_stops body p.
-Proof.
-  induction body as [| it b IH]; intro p; [reflexivity|].
-  unfold body_synproxy_stops in *. cbn [map existsb]. rewrite IH.
-  destruct it as [m | s]; [reflexivity | destruct s; reflexivity].
-Qed.
-
-Lemma normalize_body_thread : forall body p,
-  body_thread (map normalize_bi body) p = body_thread body p.
-Proof.
-  intros body p. unfold body_thread. rewrite normalize_body_has_notrack. reflexivity.
-Qed.
-
-(** *** Applicability / loadability walks are invariant. *)
-Lemma normalize_rule_applies_walk : forall body e p,
-  rule_applies_walk (map normalize_bi body) e p = rule_applies_walk body e p.
-Proof.
-  induction body as [| it b IH]; intros e p; [reflexivity|].
-  destruct it as [m | s]; cbn [map normalize_bi rule_applies_walk].
-  - rewrite normalize_mc_matchcond, IH. reflexivity.
-  - destruct s; cbn [rule_applies_walk]; rewrite IH; reflexivity.
-Qed.
-
-Lemma normalize_body_item_loadable : forall it p,
-  body_item_loadable (normalize_bi it) p = body_item_loadable it p.
-Proof.
-  intros [m | s] p; cbn [normalize_bi body_item_loadable].
-  - apply normalize_mc_loadable.
-  - reflexivity.
-Qed.
-
-Lemma normalize_body_loadable_walk : forall body p,
-  body_loadable_walk (map normalize_bi body) p = body_loadable_walk body p.
-Proof.
-  induction body as [| it b IH]; intro p; [reflexivity|].
-  destruct it as [m | s]; cbn [map normalize_bi body_loadable_walk body_item_loadable].
-  - rewrite normalize_mc_loadable, IH. reflexivity.
-  - destruct s; cbn [body_loadable_walk body_item_loadable stmt_loadable];
-      rewrite IH; reflexivity.
-Qed.
-
-(** [end_loadable] reads only the verdict-map / terminal end fields, which
-    [normalize_rule] copies verbatim — so it is unchanged. *)
-Lemma normalize_end_loadable : forall r e p,
-  end_loadable (normalize_rule r) e p = end_loadable r e p.
-Proof. intros r e p. reflexivity. Qed.
-
 (** [r_body (normalize_rule r)] is [map normalize_bi (r_body r)] — kept as an
-    equation so [normalize_rule] stays FOLDED (the [normalize_*] lemmas are stated
-    about [normalize_rule r], so unfolding it would un-match them). *)
+    equation so [normalize_rule] stays FOLDED (the [normalize_mc_*] lemmas are
+    stated about [normalize_rule r], so unfolding it would un-match them). *)
 Lemma normalize_r_body : forall r, r_body (normalize_rule r) = map normalize_bi (r_body r).
 Proof. reflexivity. Qed.
 
-Lemma normalize_rule_loadable : forall r e p,
-  rule_loadable (normalize_rule r) e p = rule_loadable r e p.
-Proof.
-  intros r e p. unfold rule_loadable. rewrite normalize_r_body.
-  rewrite normalize_body_loadable_walk, normalize_body_synproxy_stops, normalize_body_thread.
-  destruct (body_synproxy_stops (r_body r) p); [reflexivity|].
-  rewrite normalize_end_loadable. reflexivity.
-Qed.
-
-Lemma normalize_rule_applies : forall r e p,
-  rule_applies (normalize_rule r) e p = rule_applies r e p.
-Proof.
-  intros r e p. unfold rule_applies. rewrite normalize_r_body.
-  apply normalize_rule_applies_walk.
-Qed.
-
-(** [outcome_core] reads only [r_vmap] / [terminal_outcome] (the end fields),
-    copied verbatim by [normalize_rule]. *)
-Lemma normalize_outcome_core : forall r e p,
-  outcome_core (normalize_rule r) e p = outcome_core r e p.
-Proof. intros r e p. reflexivity. Qed.
-
-Lemma normalize_outcome : forall r e p,
-  outcome (normalize_rule r) e p = outcome r e p.
-Proof.
-  intros r e p. unfold outcome. rewrite normalize_r_body.
-  rewrite normalize_body_synproxy_stops, normalize_body_thread.
-  destruct (body_synproxy_stops (r_body r) p); [reflexivity|].
-  apply normalize_outcome_core.
-Qed.
-
-(** *** The pass preserves [eval_rules] on every rule list, hence [eval_chain]. *)
-Lemma normalize_eval_rules : forall rs e p,
-  eval_rules (map normalize_rule rs) e p = eval_rules rs e p.
-Proof.
-  induction rs as [| r rs IH]; intros e p; [reflexivity|].
-  cbn [map]. rewrite ?eval_rules_cons, ?eval_rules_nil.
-  rewrite normalize_rule_loadable, normalize_rule_applies, normalize_outcome.
-  destruct (rule_loadable r e p && rule_applies r e p); [| apply IH].
-  destruct (outcome r e p) as [v|]; [destruct v|]; rewrite ?IH; reflexivity.
-Qed.
-
-Theorem normalize_chain_eval : forall c e p,
-  eval_chain (normalize_chain c) e p = eval_chain c e p.
-Proof.
-  intros c e p. unfold eval_chain, normalize_chain. cbn [c_rules c_policy].
-  rewrite normalize_eval_rules. reflexivity.
-Qed.
