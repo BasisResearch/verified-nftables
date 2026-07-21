@@ -67,28 +67,31 @@ Proof. reflexivity. Qed.
 (** *** The fix, at the chain level: a chain whose only rule is
     `tcp dport != 22 -> Drop` ACCEPTS (the policy) a no-L4 packet — it does NOT
     drop it.  This DIRECTLY refutes the previously-provable incorrect property
-    [eval_chain [tcp dport != 22 -> Drop] frag_pkt = Drop]. *)
+    [eval_chain_mut [tcp dport != 22 -> Drop] frag_pkt = Drop]. *)
 Definition dropneq_chain : chain :=
   {| c_policy := Accept;
      c_rules := [ {| r_body := [BMatch (MNeq FThDport [0; 22])];
      r_outcome := OVerdict Drop; r_after := [] |} ] |}.
 
-Theorem chain_dropneq_short_accepts :
-  eval_chain dropneq_chain empty_env bad_pkt = Accept.
-Proof. reflexivity. Qed.
+Theorem chain_dropneq_short_accepts : forall h,
+  eval_chain_mut h dropneq_chain empty_env bad_pkt = Accept.
+Proof. intro h. vm_compute. reflexivity. Qed.
 
 (** And the OLD incorrect verdict ([Drop]) is now disprovable — the chain does not
     drop. *)
-Theorem chain_dropneq_short_not_drop :
-  eval_chain dropneq_chain empty_env bad_pkt <> Drop.
-Proof. discriminate. Qed.
+Theorem chain_dropneq_short_not_drop : forall h,
+  eval_chain_mut h dropneq_chain empty_env bad_pkt <> Drop.
+Proof. intro h. vm_compute. discriminate. Qed.
 
-(** The compiled bytecode agrees (via [compile_chain_correct]): the installed
+(** The compiled bytecode agrees (via [compile_chain_mut_correct]): the installed
     netlink program also ACCEPTS the no-L4 packet — the VM's [IPayloadLoad] breaks
     exactly as the kernel does. *)
-Theorem chain_dropneq_short_accepts_bytecode :
-  run_chain (compile_chain dropneq_chain) (c_policy dropneq_chain) empty_env bad_pkt = Accept.
-Proof. rewrite compile_chain_correct. apply chain_dropneq_short_accepts. Qed.
+Theorem chain_dropneq_short_accepts_bytecode : forall h,
+  run_chain_mut h (compile_chain dropneq_chain) (c_policy dropneq_chain) empty_env bad_pkt = Accept.
+Proof.
+  intro h. rewrite (compile_chain_mut_correct h) by (vm_compute; reflexivity).
+  exact (chain_dropneq_short_accepts h).
+Qed.
 
 (** A first-fragment-style packet (L4 present but [pkt_fragoff <> 0]) likewise
     breaks a transport read: a non-first fragment carries no usable transport
@@ -109,6 +112,6 @@ Theorem neq_dport_frag_no_match :
   eval_matchcond (MNeq FThDport [0; 22]) empty_env frag_pkt = false.
 Proof. reflexivity. Qed.
 
-Theorem chain_dropneq_frag_accepts :
-  eval_chain dropneq_chain empty_env frag_pkt = Accept.
-Proof. reflexivity. Qed.
+Theorem chain_dropneq_frag_accepts : forall h,
+  eval_chain_mut h dropneq_chain empty_env frag_pkt = Accept.
+Proof. intro h. vm_compute. reflexivity. Qed.

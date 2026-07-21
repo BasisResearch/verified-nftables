@@ -20,7 +20,7 @@
     Entry (2) — the OVmapNat vmap-HIT and the trailing NAT: the NAT
     data-plane effect is evaluated INSIDE the single per-rule fold at the
     terminal the walk actually reached, so a vmap HIT stops the rule before
-    the NAT (outcome provenance is the fold's structure); pinned by the
+    the NAT (verdict provenance is the fold's structure); pinned by the
     [vmaphit_*] / [vm_vmaphit_*] theorems below.
     Entry (1) — the limiter position: the `limit`/`quota`/`connlimit`
     consumption is evaluated AT the limiter's own body/instruction position
@@ -130,7 +130,7 @@ Proof. vm_compute. reflexivity. Qed.
 
     Model: the NAT effect is applied INSIDE the per-rule fold
     ([terminal_step] / the VM's [INat] case), which is only reached when the
-    vmap MISSES — the fold's structure IS the outcome provenance.  So a vmap
+    vmap MISSES — the fold's structure IS the verdict provenance.  So a vmap
     HIT neither rewrites the packet nor stores a flow-keyed [e_nat] mapping,
     on BOTH sides (DSL fold and compiled bytecode). *)
 

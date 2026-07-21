@@ -24,12 +24,12 @@
     entry state — or drops a callee's writes on return — flips these theorems
     and must be caught here.
 
-    The write-free projection ([eval_table]) is
-    also pinned here, on the OTHER side of its license: on this config it
-    computes a DIFFERENT verdict class (the entry-state match misses), and
-    its [rule_writefree] license check is [false] — so no projection theorem
-    certifies it there, and the unified evaluator is the only certified path
-    for this ruleset. *)
+    This config sits on the OTHER side of the write-free projection's license:
+    its [rule_writefree] license check is [false] (a `meta mark set` is a state
+    write), so the write-free coincidence theorem does not apply and the unified
+    evaluator is the only certified path for this ruleset — exactly why an
+    effect-dropping projection would compute a different verdict class here (the
+    entry-state match would miss). *)
 
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Bytecode Syntax Semantics Compile
@@ -110,15 +110,12 @@ Theorem vm_setread_wrong_under_jump_dropped :
                    (c_policy sr_base) env0 pkt_mark0) = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
-(** …and the pure jump strand is licensed on NEITHER config: it
-    evaluates the callee's match against the ENTRY packet (verdict class
-    Drop-by-policy instead of Accept), and its projection license
-    [rule_writefree] is [false] on the effectful rule — the coincidence
-    theorem [Semantics.eval_rules_u_writefree] correctly does not apply, and
-    the unified evaluator above is the only certified path for this config. *)
-Example pure_strand_misses_the_write :
-  eval_table 10 sr_cs sr_base env0 pkt_mark0 = Drop.
-Proof. vm_compute. reflexivity. Qed.
+(** …and the write-free projection is licensed on NEITHER config: its license
+    check [rule_writefree] is [false] on the effectful rule, so the coincidence
+    theorem [Semantics.eval_rules_u_writefree] correctly does not apply — an
+    effect-dropping projection would evaluate the callee's match against the
+    ENTRY packet (verdict class Drop-by-policy instead of Accept), and the
+    unified evaluator above is the only certified path for this config. *)
 Example setread_rule_not_writefree : rule_writefree setread_rule = false.
 Proof. reflexivity. Qed.
 

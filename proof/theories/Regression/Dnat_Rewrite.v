@@ -27,10 +27,6 @@ Definition dnat_chain : chain := {| c_policy := Accept; c_rules := [dnat_rule] |
 Definition chain_out (c : chain) (e : env) (p : packet) : packet :=
   snd (snd (eval_chain_u Hprerouting c e p)).
 
-(* The dnat rule's terminal outcome is Accept (verdict component unchanged). *)
-Lemma dnat_outcome_accept : forall e p, outcome dnat_rule e p = Some Accept.
-Proof. reflexivity. Qed.
-
 (* The target operand the dnat statement loads into register 1. *)
 Lemma dnat_addr_target : forall e p, nat_addr dnat_spec e p = [10;0;0;1].
 Proof. reflexivity. Qed.

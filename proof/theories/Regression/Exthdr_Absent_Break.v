@@ -89,21 +89,13 @@ Lemma maxseg_option_is_absent :
 Proof. vm_compute. reflexivity. Qed.
 
 (* KERNEL-CORRECT: an absent maxseg option BREAKs the value load -> the rule does
-   not match -> the chain ACCEPTS via its policy.  Holds via BOTH the pure
-   evaluator and the stateful (mutation) evaluator. *)
-Theorem model_accepts_like_kernel :
-  eval_chain filter_chain env0 pkt_no_maxseg = Accept.
-Proof. vm_compute. reflexivity. Qed.
-
+   not match -> the chain ACCEPTS via its policy, on the canonical stateful
+   evaluator. *)
 Theorem model_accepts_like_kernel_mut :
   eval_chain_mut h filter_chain env0 pkt_no_maxseg = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* KERNEL-CORRECT: a PRESENT maxseg option whose value matches 1460 DROPs. *)
-Theorem model_drops_when_present :
-  eval_chain filter_chain env0 pkt_with_maxseg = Drop.
-Proof. vm_compute. reflexivity. Qed.
-
 Theorem model_drops_when_present_mut :
   eval_chain_mut h filter_chain env0 pkt_with_maxseg = Drop.
 Proof. vm_compute. reflexivity. Qed.
