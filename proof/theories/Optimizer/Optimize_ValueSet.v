@@ -1,5 +1,5 @@
 (** * Optimize_ValueSet: the [nft -o] / [nft --optimize] consolidation passes,
-    proved verdict-preserving against the same [eval_chain] semantics.
+    whose state-fold correctness is proved in [Optimize_MutEnv.v].
 
     [nft --optimize] (src/optimize.c, [chain_optimize]) merges a run of ADJACENT
     rules that are identical except in the right-hand VALUE of one selector into a
@@ -54,60 +54,6 @@ From Stdlib Require Import List PeanoNat Bool Lia Wellfounded Arith.Wf_nat.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Optimize.
 Import ListNotations.
 Local Open Scope nat_scope.
-
-(** ** The abstract adjacent-rule merge.
-
-    [eval_rules_merge2]: if [r12] is loadable / applies / outcomes EXACTLY as the
-    disjunction of two adjacent rules [r1], [r2] demands, then putting [r12] in
-    place of the pair [r1; r2] does not change [eval_rules] on any packet.  The
-    three hypotheses are precisely the obligations the kernel's first-match
-    traversal imposes:
-
-      - [Hl]  both originals and the merged rule have the SAME loadability (the
-              break/NFT_BREAK path is shared — they read the same fields);
-      - [Ho]  the merged rule's outcome equals each original's (so a hit gives the
-              right verdict; for a value-merge all three coincide, for a vmap-merge
-              the per-value outcome is what the merged rule reproduces);
-      - [Ha]  the merged rule applies iff EITHER original applies (the head
-              selector is the disjunction of the two originals' selectors). *)
-Lemma eval_rules_merge2 : forall r1 r2 r12 rest e p,
-  rule_loadable r12 e p = rule_loadable r1 e p ->
-  rule_loadable r12 e p = rule_loadable r2 e p ->
-  outcome r12 e p = outcome r1 e p ->
-  outcome r12 e p = outcome r2 e p ->
-  rule_applies r12 e p = orb (rule_applies r1 e p) (rule_applies r2 e p) ->
-  eval_rules (r12 :: rest) e p = eval_rules (r1 :: r2 :: rest) e p.
-Proof.
-  intros r1 r2 r12 rest e p Hl1 Hl2 Ho1 Ho2 Ha.
-  (* normalise everything onto r1's loadability/outcome *)
-  assert (Hl2' : rule_loadable r1 e p = rule_loadable r2 e p) by (rewrite <- Hl1; exact Hl2).
-  assert (Ho2' : outcome r1 e p = outcome r2 e p) by (rewrite <- Ho1; exact Ho2).
-  rewrite ?eval_rules_cons, ?eval_rules_nil.
-  rewrite Hl1, Ho1, Ha.
-  destruct (rule_loadable r1 e p) eqn:EL.
-  - (* loadable on r1 (hence on r2 and r12) *)
-    rewrite <- Hl2'. cbn [andb].
-    destruct (rule_applies r1 e p) eqn:Ea1; cbn [orb].
-    + (* r1 applies: merged fires with outcome r1 = same as r1 *)
-      destruct (outcome r1 e p) as [v |] eqn:Eo.
-      * destruct (terminal v) eqn:Et; [reflexivity|].
-        rewrite ?eval_rules_cons, ?eval_rules_nil.
-        destruct (rule_applies r2 e p) eqn:Ea2; cbn [andb].
-        -- rewrite <- Ho2', Et. reflexivity.
-        -- reflexivity.
-      * rewrite ?eval_rules_cons, ?eval_rules_nil.
-        destruct (rule_applies r2 e p) eqn:Ea2; cbn [andb].
-        -- rewrite <- Ho2'. reflexivity.
-        -- reflexivity.
-    + (* r1 does not apply: merged applies iff r2 applies *)
-      cbn [andb]. rewrite ?eval_rules_cons, ?eval_rules_nil.
-      destruct (rule_applies r2 e p) eqn:Ea2; cbn [andb].
-      * rewrite <- Ho2'. reflexivity.
-      * reflexivity.
-  - (* not loadable: merged skipped, r1 skipped, r2 also skipped *)
-    rewrite <- Hl2'. cbn [andb].
-    reflexivity.
-Qed.
 
 (** ** From a matchcond disjunction certificate to the three merge obligations.
 
@@ -185,29 +131,6 @@ Lemma rule_applies_mk_head : forall m rest r e p,
 Proof.
   intros m rest r e p. unfold rule_applies.
   cbn [r_body rule_applies_walk]. reflexivity.
-Qed.
-
-(** The value-merge correctness on a two-rule prefix.  Given the disjunction
-    certificate ([Hml] same field loads, [Hev] value test is the [orb]) the merged
-    rule [mk_head m12 rest r1] replaces the adjacent pair and preserves the
-    verdict.  [r2] must be [mk_head m2 rest r1] — i.e. agree with [r1] on every
-    field BUT the head value — which is exactly nft's [rules_eq] eligibility. *)
-Theorem eval_rules_value_merge : forall m1 m2 m12 rest r1 rest2 e p,
-  (forall q, match_loadable m12 q = match_loadable m1 q) ->
-  (forall q, match_loadable m12 q = match_loadable m2 q) ->
-  (forall q, eval_matchcond m12 e q = orb (eval_matchcond m1 e q) (eval_matchcond m2 e q)) ->
-  eval_rules (mk_head m12 rest r1 :: rest2) e p
-    = eval_rules (mk_head m1 rest r1 :: mk_head m2 rest r1 :: rest2) e p.
-Proof.
-  intros m1 m2 m12 rest r1 rest2 e p Hml1 Hml2 Hev.
-  apply eval_rules_merge2.
-  - (* rule_loadable r12 = rule_loadable r1 *)
-    rewrite !rule_loadable_mk_head. rewrite Hml1. reflexivity.
-  - rewrite !rule_loadable_mk_head. rewrite Hml2. reflexivity.
-  - rewrite !outcome_mk_head. reflexivity.
-  - rewrite !outcome_mk_head. reflexivity.
-  - rewrite !rule_applies_mk_head. rewrite Hev.
-    rewrite Bool.andb_orb_distrib_l. reflexivity.
 Qed.
 
 (** ** A concrete, env-free disjunction certificate: contiguous single-byte ranges.
@@ -425,30 +348,6 @@ Fixpoint dedup_adj (rs : list rule) : list rule :=
   | _ => rs
   end.
 
-Lemma eval_rules_drop_dup : forall r rest e p,
-  eval_rules (r :: rest) e p = eval_rules (r :: r :: rest) e p.
-Proof.
-  intros r rest e p. apply eval_rules_merge2; try reflexivity.
-  rewrite Bool.orb_diag. reflexivity.
-Qed.
-
-Lemma eval_rules_dedup_adj : forall rs e p, eval_rules (dedup_adj rs) e p = eval_rules rs e p.
-Proof.
-  (* induction on length: both recursive calls are on the strictly shorter tail
-     [r2 :: rest] of [r1 :: r2 :: rest]. *)
-  intro rs. remember (length rs) as n eqn:Hn. revert rs Hn.
-  induction n as [n IH] using (well_founded_induction Nat.lt_wf_0); intros rs Hn e p.
-  destruct rs as [| r1 [| r2 rest]]; try reflexivity.
-  cbn [dedup_adj]. destruct (rule_eq_dec r1 r2) as [Heq | Hne].
-  - (* drop the duplicate [r2 = r1]: dedup_adj (r2::rest), then re-insert via drop_dup *)
-    rewrite (IH (length (r2 :: rest))) with (rs := r2 :: rest); try reflexivity.
-    + subst r2. apply eval_rules_drop_dup.
-    + subst n. cbn [length]. lia.
-  - rewrite ?eval_rules_cons, ?eval_rules_nil.
-    rewrite (IH (length (r2 :: rest))) with (rs := r2 :: rest); try reflexivity.
-    subst n. cbn [length]. lia.
-Qed.
-
 (** ** Guarded value-merge into a contiguous range (concrete certificate).
 
     The value-merge `f lo-mid, f (mid+1)-hi  =>  f lo-hi` is the disjunction
@@ -484,63 +383,15 @@ Proof.
   exact (range_byte_split lo mid hi x Hlm Hmh).
 Qed.
 
-(** SUPERSEDED and KNOWN-UNFAITHFUL to `nft -o`: this contiguous-range
-    certificate models `6,7 => 6-7` as a RANGE, but `nft -o` actually emits a
-    discrete SET `{ 6, 7 }`.  The faithful consolidation is the value->set pass
-    below ([optimize_rules_sets]; shipped as the [valueset] stage of
-    [Optimize_Table.optimize_table]), which emits the discrete elements.  Kept
-    as a historical certificate; used by no shipped pass.
+(** ** The combined optimizer with consolidation.
 
-    The two adjacent single-byte-range rules collapse to one, on every packet for
-    which the merged field is single-byte (the guard, as a per-packet hypothesis).
-    [rest2] is the remainder of the chain; [r1] supplies the shared verdict/end. *)
-Theorem eval_rules_range_value_merge : forall f lo mid hi rest r1 rest2 e p,
-  lo <= mid -> mid < hi ->
-  length (field_value f e p) = 1 ->
-  eval_rules (mk_head (MRange f false [lo] [hi]) rest r1 :: rest2) e p
-  = eval_rules (mk_head (MRange f false [lo] [mid]) rest r1
-                :: mk_head (MRange f false [S mid] [hi]) rest r1 :: rest2) e p.
-Proof.
-  intros f lo mid hi rest r1 rest2 e p Hlm Hmh Hlen.
-  (* the three certificate hypotheses are needed only at THIS packet p, but
-     [eval_rules_value_merge] quantifies them over all q.  We instead apply the
-     abstract [eval_rules_merge2] directly, discharging its obligations at p. *)
-  apply eval_rules_merge2.
-  - rewrite !rule_loadable_mk_head. reflexivity.
-  - rewrite !rule_loadable_mk_head. reflexivity.
-  - rewrite !outcome_mk_head. reflexivity.
-  - rewrite !outcome_mk_head. reflexivity.
-  - rewrite !rule_applies_mk_head.
-    rewrite (mrange_byte_disjunction f lo mid hi e p Hlm Hmh Hlen).
-    rewrite Bool.andb_orb_distrib_l. reflexivity.
-Qed.
-
-(** ** The combined optimizer with consolidation, and its correctness.
-
-    [optimize_chain2] runs the existing verdict-preserving pipeline
-    ([optimize_chain]: dedup/simplify/prune/dce) and then the [nft -o]
-    consecutive-duplicate-rule consolidation ([dedup_adj]).  Both stages preserve
-    [eval_chain], so the composite does too — axiom-free, by reusing
-    [optimize_chain_correct] and [eval_rules_dedup_adj]. *)
+    [optimize_chain2] runs the existing pipeline ([optimize_chain]:
+    dedup/simplify/prune/dce) and then the [nft -o] consecutive-duplicate-rule
+    consolidation ([dedup_adj]).  Its state-fold correctness is proved in
+    [Optimize_MutEnv.v]. *)
 Definition optimize_chain2 (c : chain) : chain :=
   {| c_policy := c_policy (optimize_chain c);
      c_rules  := dedup_adj (c_rules (optimize_chain c)) |}.
-
-(** SUPERSEDED: [optimize_chain2] is NOT composed into the shipped
-    [Optimize_Table.optimize_table] pipeline (whose stage list is in
-    Optimize_Table.v / DEVELOPMENT.md); it remains only as the historical
-    consecutive-duplicate pass.  Successor:
-    [Optimize_MutEnv.optimize_table_uncond_mut_st_correct]. *)
-Theorem optimize_chain2_correct : forall c e p,
-  eval_chain (optimize_chain2 c) e p = eval_chain c e p.
-Proof.
-  intros c e p. unfold eval_chain, optimize_chain2. cbn [c_rules c_policy].
-  rewrite eval_rules_dedup_adj.
-  change (match eval_rules (c_rules (optimize_chain c)) e p with
-          | Some v => v | None => c_policy (optimize_chain c) end)
-    with (eval_chain (optimize_chain c) e p).
-  apply optimize_chain_correct.
-Qed.
 
 (** ** The HEADLINE [nft -o] pass: value -> anonymous SET, as an executable
     table-level rewrite synthesising a real [__setN] declaration.
@@ -800,16 +651,6 @@ Lemma field_value_env_with_sets : forall f p base d1 d2,
   = field_value f (env_with_sets base d2) p.
 Proof. intros. unfold field_value. apply do_load_env_with_sets. Qed.
 
-Lemma eval_rules_cons_cong : forall r rest1 rest2 e p,
-  eval_rules rest1 e p = eval_rules rest2 e p ->
-  eval_rules (r :: rest1) e p = eval_rules (r :: rest2) e p.
-Proof.
-  intros r rest1 rest2 e p H. rewrite ?eval_rules_cons, ?eval_rules_nil.
-  destruct (rule_loadable r e p && rule_applies r e p); [| exact H].
-  destruct (outcome r e p) as [v |]; [| exact H].
-  destruct (terminal v); [reflexivity | exact H].
-Qed.
-
 (** ** Freshness bookkeeping: [optimize_rules_sets] only PREPENDS entries keyed by
     [setname k] with [n <= k < n'], so on an UN-minted name the augmented [sd_sets]
     agrees with the input. *)
@@ -991,7 +832,6 @@ Proof.
     apply (eval_mcmp_point_unload f v e q Hld).
 Qed.
 
-
 (** ** The executable N-WAY value->set pass.
 
     [take_value_run r1 rest] scans the MAXIMAL prefix of [rest] of rules that each
@@ -1065,7 +905,6 @@ Definition optimize_chain_valueset (n : nat) (d : set_decls) (c : chain)
   : nat * set_decls * chain :=
   let '(n', d', rs') := optimize_rules_valueset (length (c_rules c)) n d (c_rules c) in
   (n', d', {| c_policy := c_policy c; c_rules := rs' |}).
-
 
 (** [value_merge_pair] returns [r1]'s field/value/body in slots 1/2/4 (the differing
     slot 3 is [r2]'s value), so when [head_value r1 = Some (f,v1,body)] the result is
@@ -1201,18 +1040,6 @@ Proof.
   destruct m as [ | | | | f' op v' | | | | | | | | ]; try discriminate.
   destruct op; try discriminate. inversion H; subst f' v' b.
   unfold mk_head. rewrite <- Eb. destruct r1; reflexivity.
-Qed.
-
-(** Congruence of [eval_rules] under a shared prefix. *)
-Lemma eval_rules_app_cong : forall pre t1 t2 e p,
-  eval_rules t1 e p = eval_rules t2 e p ->
-  eval_rules (pre ++ t1) e p = eval_rules (pre ++ t2) e p.
-Proof.
-  induction pre as [| r pre IH]; intros t1 t2 e p H; [exact H|].
-  cbn [app]. rewrite ?eval_rules_cons, ?eval_rules_nil.
-  destruct (rule_loadable r e p && rule_applies r e p); [| apply IH; exact H].
-  destruct (outcome r e p) as [v |]; [| apply IH; exact H].
-  destruct (terminal v); [reflexivity | apply IH; exact H].
 Qed.
 
 (** The merged head [MConcatSet [f] false name] and the canonical point heads

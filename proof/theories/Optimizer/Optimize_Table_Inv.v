@@ -95,7 +95,6 @@ Qed.
 Definition body_only_matches (b : list body_item) : bool :=
   forallb (fun it => match it with BMatch _ => true | BStmt _ => false end) b.
 
-(** On a matches-only body, [rule_applies_walk = forallb eval_matchcond]. *)
 Definition rule_vmap_name (r : rule) : list string :=
   match r_vmap r with Some vm => [vm_name vm] | None => [] end.
 

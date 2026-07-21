@@ -240,43 +240,15 @@ Proof.
   destruct it as [m | s]; [reflexivity | destruct s; reflexivity].
 Qed.
 
-Lemma xorfold_body_synproxy_stops : forall body p,
-  body_synproxy_stops (map xorfold_bi body) p = body_synproxy_stops body p.
-Proof.
-  induction body as [| it b IH]; intro p; [reflexivity|].
-  unfold body_synproxy_stops in *. cbn [map existsb]. rewrite IH.
-  destruct it as [m | s]; [reflexivity | destruct s; reflexivity].
-Qed.
-
 Lemma xorfold_body_thread : forall body p,
   body_thread (map xorfold_bi body) p = body_thread body p.
 Proof.
   intros body p. unfold body_thread. rewrite xorfold_body_has_notrack. reflexivity.
 Qed.
 
-Lemma xorfold_rule_applies_walk : forall body e p,
-  rule_applies_walk (map xorfold_bi body) e p = rule_applies_walk body e p.
-Proof.
-  induction body as [| it b IH]; intros e p; [reflexivity|].
-  destruct it as [m | s]; cbn [map xorfold_bi rule_applies_walk].
-  - rewrite xorfold_mc_matchcond, IH. reflexivity.
-  - destruct s; cbn [rule_applies_walk]; rewrite IH; reflexivity.
-Qed.
-
-Lemma xorfold_body_loadable_walk : forall body p,
-  body_loadable_walk (map xorfold_bi body) p = body_loadable_walk body p.
-Proof.
-  induction body as [| it b IH]; intro p; [reflexivity|].
-  destruct it as [m | s]; cbn [map xorfold_bi body_loadable_walk body_item_loadable].
-  - rewrite xorfold_mc_loadable, IH. reflexivity.
-  - destruct s; cbn [body_loadable_walk body_item_loadable stmt_loadable];
-      rewrite IH; reflexivity.
-Qed.
-
 Lemma xorfold_r_body : forall r,
   r_body (xorfold_rule r) = map xorfold_bi (r_body r).
 Proof. reflexivity. Qed.
-
 
 (* ================================================================== *)
 (** ** Non-vacuity: the pass GENUINELY rewrites.

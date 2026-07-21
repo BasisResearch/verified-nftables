@@ -195,23 +195,6 @@ Qed.
 
 (** ** Loadability / outcome / applies of the guarded shells. *)
 
-Lemma orig_ruleGs_loadable_indep : forall f gm v v' body r1 e p,
-  rule_loadable (orig_ruleGs f gm v body r1) e p
-  = rule_loadable (orig_ruleGs f gm v' body r1) e p.
-Proof.
-  intros. unfold orig_ruleGs. rewrite !rule_loadable_mk_head.
-  rewrite !synproxy_stops_bmatch, !body_thread_bmatch.
-  cbn [body_loadable_walk body_item_loadable match_loadable]. reflexivity.
-Qed.
-
-Lemma orig_ruleGs_outcome_indep : forall f gm v v' body r1 e p,
-  outcome (orig_ruleGs f gm v body r1) e p
-  = outcome (orig_ruleGs f gm v' body r1) e p.
-Proof.
-  intros. unfold orig_ruleGs. rewrite !outcome_mk_head.
-  rewrite !synproxy_stops_bmatch, !body_thread_bmatch. reflexivity.
-Qed.
-
 Lemma orig_ruleGs_applies : forall f gm v body r1 e p,
   rule_applies (orig_ruleGs f gm v body r1) e p
   = andb (eval_matchcond gm e p)

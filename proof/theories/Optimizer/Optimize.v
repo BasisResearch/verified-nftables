@@ -1,8 +1,8 @@
 (** * Optimize: verified rewrites on the declarative DSL.
 
     Four semantics-preserving optimizations (the kind a firewall-minimizer such as
-    diekmann's Iptables_Semantics performs), proved correct against the *same*
-    [eval_chain] semantics used for the compiler:
+    diekmann's Iptables_Semantics performs), whose state-fold correctness is proved
+    in [Optimize_MutEnv.v]:
 
       1. [dedup_rule] — remove duplicate match conditions within a rule (a
          conjunction is idempotent), shrinking the emitted bytecode.
@@ -11,7 +11,7 @@
          equality test (a [range] expression becomes a single [cmp]).
 
       3. [prune_noops] — delete rules that have no matches, no statements, and a
-         [Continue] outcome (they never affect any verdict).
+         [Continue] verdict (they never affect any verdict).
 
       4. [dce] — dead-rule elimination: once a rule matches every packet and is
          terminal (no match conditions, verdict Accept/Drop), all later rules are
@@ -124,39 +124,6 @@ Fixpoint dce (rs : list rule) : list rule :=
   | [] => []
   | r :: rest => if shadows r then [r] else r :: dce rest
   end.
-
-Lemma eval_rules_dce : forall rs e p, eval_rules (dce rs) e p = eval_rules rs e p.
-Proof.
-  induction rs as [| r rs IH]; intros e p.
-  - reflexivity.
-  - cbn [dce]. destruct (shadows r) eqn:Hs.
-    + (* r shadows the rest: matches all, terminal verdict, no vmap/nat/tproxy *)
-      unfold shadows in Hs.
-      apply andb_true_iff in Hs. destruct Hs as [Hs1 Hq].
-      apply andb_true_iff in Hs1. destruct Hs1 as [Hs2 Hfwd].
-      apply andb_true_iff in Hs2. destruct Hs2 as [Hs3 Htp].
-      apply andb_true_iff in Hs3. destruct Hs3 as [Hs4 Hnat].
-      apply andb_true_iff in Hs4. destruct Hs4 as [Hs5 Hvm].
-      apply andb_true_iff in Hs5. destruct Hs5 as [Hm Hv].
-      rewrite ?eval_rules_cons, ?eval_rules_nil. unfold rule_loadable, rule_applies, end_loadable, tail_loadable,
-        terminal_loadable, outcome, outcome_core, terminal_outcome.
-      destruct (r_body r) as [| it body] eqn:Eb; [| discriminate Hm].
-      destruct (r_vmap r) as [vm |] eqn:Evm; [discriminate Hvm |].
-      destruct (r_nat r) as [n |] eqn:Enat; [discriminate Hnat |].
-      destruct (r_tproxy r) as [t |] eqn:Etp; [discriminate Htp |].
-      destruct (r_fwd r) as [w |] eqn:Efwd; [discriminate Hfwd |].
-      destruct (r_queue r) as [q |] eqn:Eq; [discriminate Hq |].
-      cbn [body_loadable_walk body_synproxy_stops existsb rule_applies_walk
-           forallb body_matches flat_map stmts_after_outcome].
-      destruct (r_verdict r) eqn:Ev; cbn in Hv |- *;
-        try discriminate Hv; reflexivity.
-    + (* keep r, recurse *)
-      rewrite ?eval_rules_cons, ?eval_rules_nil. destruct (rule_loadable r e p && rule_applies r e p).
-      * destruct (outcome r e p) as [v |].
-        -- destruct (terminal v); [reflexivity | apply IH].
-        -- apply IH.
-      * apply IH.
-Qed.
 
 (** ** Optimization 2: intra-rule match deduplication. *)
 
@@ -386,19 +353,6 @@ Proof.
     symmetry. apply body_loadable_split.
 Qed.
 
-Lemma eval_rules_map_dedup : forall rs e p,
-  eval_rules (map dedup_rule rs) e p = eval_rules rs e p.
-Proof.
-  induction rs as [| r rs IH]; intros e p.
-  - reflexivity.
-  - cbn [map]. rewrite ?eval_rules_cons, ?eval_rules_nil. rewrite rule_applies_dedup, outcome_dedup, rule_loadable_dedup.
-    destruct (rule_loadable r e p && rule_applies r e p).
-    + destruct (outcome r e p) as [v |].
-      * destruct (terminal v); [reflexivity | apply IH].
-      * apply IH.
-    + apply IH.
-Qed.
-
 (** ** Optimization 3: singleton-range simplification (now disabled).
 
     A singleton range [lo <= x <= lo] would be an equality test — but since
@@ -435,41 +389,6 @@ Proof. intros [m | s]; reflexivity. Qed.
 Lemma map_simplify_item_id : forall b, map simplify_item b = b.
 Proof. induction b as [| it b IH]; [reflexivity|]. cbn [map]. rewrite simplify_item_id, IH. reflexivity. Qed.
 
-Lemma rule_applies_simplify : forall r e p,
-  rule_applies (simplify_rule r) e p = rule_applies r e p.
-Proof.
-  intros r e p. unfold rule_applies, simplify_rule. cbn [r_body].
-  rewrite map_simplify_item_id. reflexivity.
-Qed.
-
-Lemma rule_loadable_simplify : forall r e p,
-  rule_loadable (simplify_rule r) e p = rule_loadable r e p.
-Proof.
-  intros r e p. unfold rule_loadable, simplify_rule. cbn [r_body].
-  rewrite map_simplify_item_id.
-  replace (end_loadable {| r_body := r_body r;
-     r_outcome := r_outcome r; r_after := r_after r |} e p)
-    with (end_loadable r e p)
-    by (unfold end_loadable, tail_loadable, terminal_loadable, vmap_loadable,
-        terminal_outcome; reflexivity).
-  reflexivity.
-Qed.
-
-Lemma eval_rules_map_simplify : forall rs e p,
-  eval_rules (map simplify_rule rs) e p = eval_rules rs e p.
-Proof.
-  induction rs as [| r rs IH]; intros e p; [reflexivity |].
-  cbn [map]. rewrite ?eval_rules_cons, ?eval_rules_nil. rewrite rule_applies_simplify, rule_loadable_simplify.
-  replace (outcome (simplify_rule r) e p) with (outcome r e p)
-    by (unfold outcome, simplify_rule; cbn [r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after r_outcome];
-        rewrite map_simplify_item_id; reflexivity).
-  destruct (rule_loadable r e p && rule_applies r e p).
-  - destruct (outcome r e p) as [v |].
-    + destruct (terminal v); [reflexivity | apply IH].
-    + apply IH.
-  - apply IH.
-Qed.
-
 (** ** Optimization 4: no-op rule removal.
 
     A rule with no matches, no statements, a [Continue] verdict, and no
@@ -491,58 +410,9 @@ Definition is_noop (r : rule) : bool :=
 Definition prune_noops (rs : list rule) : list rule :=
   filter (fun r => negb (is_noop r)) rs.
 
-Lemma eval_rules_prune_noops : forall rs e p,
-  eval_rules (prune_noops rs) e p = eval_rules rs e p.
-Proof.
-  induction rs as [| r rs IH]; intros e p; [reflexivity |].
-  unfold prune_noops in *. cbn [filter]. destruct (is_noop r) eqn:Hn; cbn [negb].
-  - (* r is a no-op: it falls through, so dropping it preserves the result *)
-    rewrite IH. symmetry.
-    unfold is_noop in Hn.
-    apply andb_true_iff in Hn as [Hn Hq].
-    apply andb_true_iff in Hn as [Hn Hfwd].
-    apply andb_true_iff in Hn as [Hn Htp].
-    apply andb_true_iff in Hn as [Hn Hnat].
-    apply andb_true_iff in Hn as [Hn Hvm].
-    apply andb_true_iff in Hn as [Hba Hv].
-    apply andb_true_iff in Hba as [Hb Hra].
-    rewrite ?eval_rules_cons, ?eval_rules_nil. unfold rule_loadable, rule_applies, end_loadable, tail_loadable,
-      terminal_loadable, outcome, outcome_core, terminal_outcome.
-    destruct (r_body r) as [| it b] eqn:Eb; [| discriminate Hb].
-    destruct (r_after r) as [| sa ra] eqn:Era; [| discriminate Hra].
-    cbn [body_loadable_walk body_synproxy_stops existsb rule_applies_walk
-         body_matches flat_map forallb stmts_after_outcome].
-    destruct (r_vmap r); [discriminate |].
-    destruct (r_nat r); [discriminate |].
-    destruct (r_tproxy r); [discriminate |].
-    destruct (r_fwd r); [discriminate |].
-    destruct (r_queue r); [discriminate |].
-    destruct (r_verdict r); cbn in Hv |- *; try discriminate Hv;
-      rewrite ?Bool.andb_false_r, ?Bool.andb_true_r; reflexivity.
-  - rewrite ?eval_rules_cons, ?eval_rules_nil. destruct (rule_loadable r e p && rule_applies r e p).
-    + destruct (outcome r e p) as [v |].
-      * destruct (terminal v); [reflexivity | apply IH].
-      * apply IH.
-    + apply IH.
-Qed.
-
 (** ** The combined pass and its correctness. *)
 
 Definition optimize_chain (c : chain) : chain :=
   {| c_policy := c_policy c;
      c_rules  := dce (prune_noops (map (fun r => simplify_rule (dedup_rule r)) (c_rules c))) |}.
 
-(** SUPERSEDED (as a standalone result) by
-    [Optimize_MutEnv.optimize_table_uncond_mut_st_correct]: the shipped optimizer is
-    the 18-stage [Optimize_Table.optimize_table] pipeline, whose unconditional
-    end-to-end theorem subsumes this one.  [optimize_chain] itself survives as
-    the pipeline's base stage, and this theorem is reused there as that stage's
-    correctness lemma. *)
-Theorem optimize_chain_correct : forall c e p,
-  eval_chain (optimize_chain c) e p = eval_chain c e p.
-Proof.
-  intros c e p. unfold eval_chain, optimize_chain. cbn [c_rules c_policy].
-  rewrite eval_rules_dce, eval_rules_prune_noops.
-  rewrite <- (map_map dedup_rule simplify_rule).
-  rewrite eval_rules_map_simplify, eval_rules_map_dedup. reflexivity.
-Qed.

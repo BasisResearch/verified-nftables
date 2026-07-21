@@ -130,53 +130,6 @@ Proof.
     rewrite !synproxy_stops_bmatch, !body_thread_bmatch. reflexivity.
 Qed.
 
-(** eval_rules only reads a rule through [rule_loadable]/[rule_applies]/[outcome],
-    so pointwise agreement of those over a mapped run (with a shared suffix)
-    transfers to [eval_rules]. *)
-Lemma eval_rules_map_cong :
-  forall (A : Type) (g h : A -> rule) (l : list A) (rest : list rule) (e : env) (p : packet),
-  (forall a, In a l ->
-     rule_loadable (g a) e p = rule_loadable (h a) e p /\
-     rule_applies (g a) e p = rule_applies (h a) e p /\
-     outcome (g a) e p = outcome (h a) e p) ->
-  eval_rules (map g l ++ rest) e p = eval_rules (map h l ++ rest) e p.
-Proof.
-  intros A g h l rest e p Hall.
-  induction l as [| a l IH]; cbn [map app]; [reflexivity |].
-  destruct (Hall a (or_introl eq_refl)) as [HL [HA HO]].
-  rewrite ?eval_rules_cons, ?eval_rules_nil. rewrite HL, HA, HO.
-  rewrite (IH (fun a Hin => Hall a (or_intror Hin))). reflexivity.
-Qed.
-
-(** *** The guarded N-way verdict-map collapse, verdict-preserving.
-
-    A run [map (fun '(v,w) => orig_ruleGv f gm v body w) es] of guarded same-field,
-    DIFFERENT-verdict rules whose merged vmap [nm] carries the N point entries
-    [map vmap_pt es] collapses to ONE [merged_ruleGv].  Proved by reducing to the
-    unguarded [eval_rules_vmap_mergeN] on body [BMatch gm :: body] and applying the
-    per-rule SWAP equivalence to each original. *)
-Lemma eval_rules_vmap_mergeNg : forall f gm nm es body rest e p,
-  e_vmap e nm = map vmap_pt es ->
-  (forall v w, In (v, w) es -> field_fixed_len f = Some (length v)) ->
-  (forall v w, In (v, w) es -> terminal w = true) ->
-  body_synproxy_stops body p = false ->
-  body_has_notrack body = false ->
-  eval_rules (merged_ruleGv f gm nm body :: rest) e p
-  = eval_rules (map (fun vw => orig_ruleGv f gm (fst vw) body (snd vw)) es ++ rest) e p.
-Proof.
-  intros f gm nm es body rest e p Hvm Hfx Hterm Hsp Hnt.
-  unfold merged_ruleGv.
-  rewrite (eval_rules_vmap_mergeN f nm es (BMatch gm :: body) rest e p Hvm Hfx Hterm
-             ltac:(rewrite synproxy_stops_bmatch; exact Hsp)
-             ltac:(rewrite has_notrack_bmatch; exact Hnt)).
-  symmetry.
-  apply (eval_rules_map_cong _
-           (fun vw => orig_ruleGv f gm (fst vw) body (snd vw))
-           (fun vw => orig_rule f (fst vw) (BMatch gm :: body) (snd vw))
-           es rest e p).
-  intros [v w] _. apply (orig_ruleGv_eq_swap f gm v body w e p).
-Qed.
-
 (** ** Recognise a guarded vmap-merge run pair (mirrors [Optimize_Vmap.vmap_run_pair]
     with the shared l4proto GUARD, as in [Optimize_SetGuarded.value_mergeGs_pair]). *)
 

@@ -211,51 +211,6 @@ Lemma body_thread_bmatch : forall m body p,
   body_thread (BMatch m :: body) p = body_thread body p.
 Proof. intros. unfold body_thread. rewrite has_notrack_bmatch. reflexivity. Qed.
 
-(** *** The two-field concat merge on a two-rule prefix.
-
-    Given the disjunction certificate (the merged head is the [orb] of the two
-    per-row conjunctions [f1=a_i AND f2=b_i]) and that BOTH fields load the same
-    width as their matched values, the merged rule replaces the adjacent pair and
-    preserves [eval_rules] on every packet.  This is the two-field analogue of
-    [eval_rules_value_merge] / [eval_rules_range_value_merge], discharged through the
-    abstract [eval_rules_merge2]. *)
-Theorem eval_rules_concat_merge2 : forall f1 f2 a1 b1 a2 b2 name body r1 rest e p,
-  eval_matchcond (MConcatSet [f1; f2] false name) e p
-    = orb (andb (eval_matchcond (MCmp f1 CEq a1) e p) (eval_matchcond (MCmp f2 CEq b1) e p))
-          (andb (eval_matchcond (MCmp f1 CEq a2) e p) (eval_matchcond (MCmp f2 CEq b2) e p)) ->
-  match_loadable (MConcatSet [f1; f2] false name) p
-    = match_loadable (MCmp f1 CEq a1) p && match_loadable (MCmp f2 CEq b1) p ->
-  match_loadable (MConcatSet [f1; f2] false name) p
-    = match_loadable (MCmp f1 CEq a2) p && match_loadable (MCmp f2 CEq b2) p ->
-  eval_rules (merged_rule2 f1 f2 name body r1 :: rest) e p
-  = eval_rules (orig_rule2 f1 f2 a1 b1 body r1
-                :: orig_rule2 f1 f2 a2 b2 body r1 :: rest) e p.
-Proof.
-  intros f1 f2 a1 b1 a2 b2 name body r1 rest e p Hcert Hl1 Hl2.
-  unfold merged_rule2, orig_rule2.
-  apply eval_rules_merge2.
-  - (* loadable merged = loadable orig1 *)
-    rewrite !rule_loadable_mk_head.
-    rewrite synproxy_stops_bmatch, body_thread_bmatch.
-    cbn [body_loadable_walk body_item_loadable].
-    rewrite Hl1. cbn [match_loadable].
-    rewrite <- !Bool.andb_assoc. reflexivity.
-  - rewrite !rule_loadable_mk_head.
-    rewrite synproxy_stops_bmatch, body_thread_bmatch.
-    cbn [body_loadable_walk body_item_loadable].
-    rewrite Hl2. cbn [match_loadable].
-    rewrite <- !Bool.andb_assoc. reflexivity.
-  - rewrite !outcome_mk_head.
-    rewrite synproxy_stops_bmatch, body_thread_bmatch. reflexivity.
-  - rewrite !outcome_mk_head.
-    rewrite synproxy_stops_bmatch, body_thread_bmatch. reflexivity.
-  - rewrite !rule_applies_mk_head. rewrite Hcert.
-    cbn [rule_applies_walk].
-    (* (c1 || c2) && W  vs  (m1a && (m2b && W)) || (m1a' && (m2b' && W)) *)
-    rewrite Bool.andb_orb_distrib_l.
-    rewrite !Bool.andb_assoc. reflexivity.
-Qed.
-
 (** ** Fresh-name minting for the concat set (same unary scheme as the value->set
     pass; reuses [setname] / [setname_inj] from [Optimize_ValueSet]). *)
 
@@ -496,7 +451,6 @@ Qed.
     (freshness + injectivity); [concat_two_fields_certificate] turns it into the [orb]
     of the two per-row conjunctions; [eval_rules_concat_merge2] collapses the pair;
     the clean tail is env-irrelevant. *)
-(** *** The CHAIN-level entry (the [eval_chain] specialisation). *)
 (** * N-WAY concatenation-set merge: fold a whole RUN of two-selector-differing rules
       into ONE concat set with N tuples (matching nft -o).
 
@@ -639,26 +593,6 @@ Lemma optimize_rules_concat_consSS : forall fuel n d r1 r2 rest,
       (n'', d'', r1 :: rest')
   end.
 Proof. reflexivity. Qed.
-
-(** orig_rule2's loadability / outcome are INDEPENDENT of the two head values (the
-    head [MCmp]s contribute only their field loadability, which is value-free), and
-    its [rule_applies] is the per-row two-field conjunction times the body walk. *)
-Lemma orig_rule2_loadable_indep : forall f1 f2 a b a' b' body r1 e p,
-  rule_loadable (orig_rule2 f1 f2 a b body r1) e p
-  = rule_loadable (orig_rule2 f1 f2 a' b' body r1) e p.
-Proof.
-  intros. unfold orig_rule2. rewrite !rule_loadable_mk_head.
-  rewrite !synproxy_stops_bmatch, !body_thread_bmatch.
-  cbn [body_loadable_walk body_item_loadable match_loadable]. reflexivity.
-Qed.
-
-Lemma orig_rule2_outcome_indep : forall f1 f2 a b a' b' body r1 e p,
-  outcome (orig_rule2 f1 f2 a b body r1) e p
-  = outcome (orig_rule2 f1 f2 a' b' body r1) e p.
-Proof.
-  intros. unfold orig_rule2. rewrite !outcome_mk_head.
-  rewrite !synproxy_stops_bmatch, !body_thread_bmatch. reflexivity.
-Qed.
 
 Lemma orig_rule2_applies : forall f1 f2 a b body r1 e p,
   rule_applies (orig_rule2 f1 f2 a b body r1) e p

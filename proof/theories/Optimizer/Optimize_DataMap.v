@@ -8,14 +8,14 @@
         ip saddr B meta mark set M2   =>      meta mark set ip saddr map { A:M1, B:M2 }
 
     Unlike the value→set / concat / vmap merges (which consolidate the VERDICT and
-    are checked against the verdict-only [eval_chain]), a data-map merge changes the
-    packet's META state (the `mark`), which [eval_chain] cannot observe.  So the
-    soundness here is stated over the DSL STATE-threading semantics [eval_rules_mut h]
-    / [dsl_step] (which thread each rule's [body_writes] meta effect), NOT
-    [eval_chain].  This is the non-vacuous content: the map yields exactly the right
+    are checked against a verdict-only semantics), a data-map merge changes the
+    packet's META state (the `mark`), which a verdict-only semantics cannot observe.
+    So the soundness here is stated over the DSL STATE-threading semantics
+    [eval_rules_mut h] / [dsl_step] (which thread each rule's [body_writes] meta
+    effect).  This is the non-vacuous content: the map yields exactly the right
     mark.  The verdict side is trivial (all rules are verdict-neutral [Continue], so
-    they fall through for ANY environment), hence composing the pass preserves
-    [eval_chain] unconditionally.
+    they fall through for ANY environment), hence composing the pass preserves the
+    verdict semantics unconditionally.
 
     *** FIDELITY NOTE — relationship to `nft -o`'s output (read this).
 
@@ -118,7 +118,6 @@ Proof.
   unfold do_load, read_payload, set_meta, with_pkt_meta.
   destruct b; reflexivity.
 Qed.
-
 
 Lemma field_loadable_set_meta : forall (f : field) (p : packet) (k : meta_key) (v : data),
   is_payload_load f = true ->
@@ -232,16 +231,6 @@ Proof.
     unfold dsl_writes. rewrite Horig2. reflexivity.
 Qed.
 
-(** Both rules are verdict-neutral ([Continue] with no side-effect terminal and no
-    trailing statements), so their [outcome] is [None] — each just threads its
-    [dsl_step] write to the next rule. *)
-Lemma outcome_orig_map_none : forall f v M k e p,
-  outcome (orig_map_rule f v M k) e p = None.
-Proof. reflexivity. Qed.
-Lemma outcome_mk_map_none : forall f setname mapname k e p,
-  outcome (mk_map_rule f setname mapname k) e p = None.
-Proof. reflexivity. Qed.
-
 Lemma step_orig_map_none : forall f v M k e p,
   fst (rule_step h (orig_map_rule f v M k) e p) = None.
 Proof.
@@ -287,28 +276,6 @@ Proof.
   rewrite (dsl_step_map_merge f v1 v2 M1 M2 setname mapname k e p Hpl Hset Hmap Hfx1 Hfx2 Hne).
   destruct (dsl_step h (orig_map_rule f v1 M1 k) e p) as [e1 p1].
   rewrite (eval_rules_mut_continue _ rest e1 p1 (step_orig_map_none f v2 M2 k e1 p1)).
-  reflexivity.
-Qed.
-
-(** *** The VERDICT correctness is trivial (both sides fall through for ANY env), so
-    composing this pass preserves [eval_rules] / [eval_chain] unconditionally. *)
-Lemma eval_rules_continue : forall r rest e p,
-  outcome r e p = None ->
-  eval_rules (r :: rest) e p = eval_rules rest e p.
-Proof.
-  intros r rest e p Ho. rewrite ?eval_rules_cons, ?eval_rules_nil. rewrite Ho.
-  destruct (rule_loadable r e p && rule_applies r e p); reflexivity.
-Qed.
-
-Theorem eval_rules_map_merge : forall (f : field) (v1 v2 M1 M2 : data)
-    (setname mapname : string) (k : meta_key) (rest : list rule) (e : env) (p : packet),
-  eval_rules (mk_map_rule f setname mapname k :: rest) e p
-  = eval_rules (orig_map_rule f v1 M1 k :: orig_map_rule f v2 M2 k :: rest) e p.
-Proof.
-  intros.
-  rewrite (eval_rules_continue _ rest e p (outcome_mk_map_none f setname mapname k e p)).
-  rewrite (eval_rules_continue _ _ e p (outcome_orig_map_none f v1 M1 k e p)).
-  rewrite (eval_rules_continue _ rest e p (outcome_orig_map_none f v2 M2 k e p)).
   reflexivity.
 Qed.
 
@@ -585,42 +552,6 @@ Lemma optimize_rules_datamap_cons2 : forall n d r1 r2 rest,
   end.
 Proof. reflexivity. Qed.
 
-(** *** VERDICT correctness — ENV-INDEPENDENT (no decls / freshness hypothesis): the
-    merged [Continue] rules fall through for any environment, so the rewrite never
-    changes a verdict.  This is what composes into the state-fold consolidation
-    correctness [Optimize_MutEnv.optimize_table_uncond_mut_st_correct]. *)
-Theorem optimize_rules_datamap_eval : forall rs n d n' d' rs' e p,
-  optimize_rules_datamap n d rs = (n', d', rs') ->
-  eval_rules rs' e p = eval_rules rs e p.
-Proof.
-  induction rs as [rs IHrs] using (induction_ltof1 _ (@List.length rule)).
-  intros n d n' d' rs' e p H.
-  destruct rs as [| r1 [| r2 rest]].
-  - cbn in H. inversion H; subst; reflexivity.
-  - cbn in H. inversion H; subst; reflexivity.
-  - rewrite optimize_rules_datamap_cons2 in H.
-    destruct (map_merge_pair r1 r2) as [[[[[[f v1] v2] M1] M2] k]|] eqn:Em.
-    + cbv zeta in H.
-      destruct (map_merge_pair_shape r1 r2 f v1 v2 M1 M2 k Em) as [Hr1 [Hr2 _]].
-      remember (optimize_rules_datamap (S n)
-                  {| sd_sets := (setname n, map2_set v1 v2) :: sd_sets d;
-                     sd_vmaps := sd_vmaps d;
-                     sd_maps := (mapname n, map2_map v1 v2 M1 M2) :: sd_maps d |} rest)
-        as t eqn:Erec.
-      destruct t as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
-      (* merged :: rr''  collapses to orig1 :: orig2 :: rr'' (verdict, any env) *)
-      rewrite (eval_rules_map_merge f v1 v2 M1 M2 (setname n) (mapname n) k rr'' e p).
-      rewrite Hr1, Hr2.   (* RHS r1 -> orig1, r2 -> orig2 *)
-      (* strip the two Continue originals from both sides *)
-      rewrite !(eval_rules_continue _ _ e p (outcome_orig_map_none _ _ _ _ _ _)).
-      apply (IHrs rest ltac:(unfold ltof; cbn; lia) (S n) _ m'' dd'' rr'' e p (eq_sym Erec)).
-    + remember (optimize_rules_datamap n d (r2 :: rest)) as t eqn:Erec.
-      destruct t as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
-      rewrite ?eval_rules_cons, ?eval_rules_nil.
-      rewrite (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) n d m'' dd'' rr'' e p (eq_sym Erec)).
-      reflexivity.
-Qed.
-
 (** *** Decls seam bookkeeping (mirrors concatmulti; datamap adds a [setname] to [sd_sets]
     and a [mapname] to [sd_maps], leaving [sd_vmaps] fixed). *)
 Lemma optimize_rules_datamap_mono : forall rs n d n' d' rs',
@@ -783,7 +714,5 @@ Qed.
 (** Axiom-freedom guards. *)
 Print Assumptions dsl_step_map_merge.
 Print Assumptions eval_rules_mut_map_merge.
-Print Assumptions eval_rules_map_merge.
-Print Assumptions optimize_rules_datamap_eval.
 
 End AtHook.

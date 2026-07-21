@@ -134,61 +134,6 @@ Proof.
   split; [exact Els2 | exact Efn].
 Qed.
 
-(** *** The abstract single-rule ABSORPTION step: dropping [r1] before [r2] is
-    verdict-preserving whenever [r1] and [r2] have the SAME realised outcome and
-    every firing of [r1] is also a firing of [r2] (so nothing that [r1] would have
-    decided is lost — [r2], reached at [r1]'s old slot, decides it identically). *)
-Lemma eval_rules_absorb_pair : forall r1 r2 rest e p,
-  outcome r1 e p = outcome r2 e p ->
-  (rule_loadable r1 e p && rule_applies r1 e p = true ->
-   rule_loadable r2 e p && rule_applies r2 e p = true) ->
-  eval_rules (r2 :: rest) e p = eval_rules (r1 :: r2 :: rest) e p.
-Proof.
-  intros r1 r2 rest e p Ho Hfire.
-  transitivity
-    (if rule_loadable r1 e p && rule_applies r1 e p
-     then match outcome r1 e p with
-          | Some v => if terminal v then Some v else eval_rules (r2 :: rest) e p
-          | None => eval_rules (r2 :: rest) e p end
-     else eval_rules (r2 :: rest) e p).
-  2:{ reflexivity. }
-  destruct (rule_loadable r1 e p && rule_applies r1 e p) eqn:E1.
-  - specialize (Hfire eq_refl).
-    destruct (outcome r1 e p) as [v |] eqn:Eo.
-    + destruct (terminal v) eqn:Et; [| reflexivity].
-      assert (Ho2 : outcome r2 e p = Some v) by (symmetry; exact Ho).
-      change (eval_rules (r2 :: rest) e p) with
-        (if rule_loadable r2 e p && rule_applies r2 e p
-         then match outcome r2 e p with
-              | Some w => if terminal w then Some w else eval_rules rest e p
-              | None => eval_rules rest e p end
-         else eval_rules rest e p).
-      rewrite Hfire, Ho2, Et. reflexivity.
-    + reflexivity.
-  - reflexivity.
-Qed.
-
-(** *** Head-level obligation discharge for two [mk_head] shells over a COMMON base
-    rule: when [m1] loadable/matching implies [m2] loadable/matching, dropping the
-    [m1] shell before the [m2] shell preserves every verdict. *)
-Lemma eval_rules_absorb_mk : forall m1 m2 body rbase rest e p,
-  (match_loadable m1 p = true -> match_loadable m2 p = true) ->
-  (eval_matchcond m1 e p = true -> eval_matchcond m2 e p = true) ->
-  eval_rules (mk_head m2 body rbase :: rest) e p
-    = eval_rules (mk_head m1 body rbase :: mk_head m2 body rbase :: rest) e p.
-Proof.
-  intros m1 m2 body rbase rest e p Pload Peval.
-  apply eval_rules_absorb_pair.
-  - rewrite !outcome_mk_head. reflexivity.
-  - intro Hf.
-    rewrite rule_loadable_mk_head, rule_applies_mk_head in Hf.
-    rewrite !rule_loadable_mk_head, !rule_applies_mk_head.
-    apply andb_true_iff in Hf as [HL HA].
-    apply andb_true_iff in HL as [Hml1 Hrest].
-    apply andb_true_iff in HA as [Hev1 Hwalk].
-    rewrite (Pload Hml1), Hrest, (Peval Hev1), Hwalk. reflexivity.
-Qed.
-
 (** *** The two concrete certificates: prefix subsumption on [read_payload]. *)
 Lemma read_payload_ok_mono : forall b off w2 w1 p,
   w2 <= w1 -> read_payload_ok b off w1 p = true -> read_payload_ok b off w2 p = true.
@@ -217,37 +162,6 @@ Qed.
 Lemma read_payload_slice : forall b off len p,
   read_payload b off len p = slice (base_bytes b p) off len.
 Proof. intros b off len p. destruct b; reflexivity. Qed.
-
-(** *** The absorption-pair correctness: an eligible pair may drop its FIRST rule. *)
-Lemma eval_rules_absorb_correct : forall r1 r2 tup rest e p,
-  absorb_pair r1 r2 = Some tup ->
-  eval_rules (r2 :: rest) e p = eval_rules (r1 :: r2 :: rest) e p.
-Proof.
-  intros r1 r2 [[[[[[b off] w1] w2] v1] v2] body] rest e p H.
-  destruct (absorb_pair_facts r1 r2 b off w1 w2 v1 v2 body H)
-    as [Hr1 [Hr2 [Hle [Hlv1 [Hlv2 Hfn]]]]].
-  (* rewrite both rules to their common-base [mk_head] shells *)
-  set (m1 := MCmp (FPayload b off w1) CEq v1) in *.
-  set (m2 := MCmp (FPayload b off w2) CEq v2) in *.
-  rewrite Hr1. rewrite Hr2.
-  apply eval_rules_absorb_mk.
-  - (* match_loadable m1 -> match_loadable m2 *)
-    unfold m1, m2. cbn [match_loadable field_loadable field_load load_ok].
-    apply read_payload_ok_mono. exact Hle.
-  - (* eval_matchcond m1 -> eval_matchcond m2 *)
-    unfold eval_matchcond, m1, m2, eval_matchcond_body.
-    cbn [match_loadable field_loadable field_load load_ok].
-    intro Hm1. apply andb_true_iff in Hm1 as [Hl1 Hb1].
-    apply andb_true_iff. split.
-    + apply (read_payload_ok_mono b off w2 w1 p Hle Hl1).
-    + (* value test on the shorter compare *)
-      cbn [eval_cmp field_value field_load do_load] in Hb1 |- *.
-      rewrite read_payload_slice in Hb1. rewrite read_payload_slice.
-      apply data_eqb_true_iff in Hb1. apply data_eqb_true_iff.
-      rewrite Hlv1 in Hb1. rewrite firstn_len_slice in Hb1.
-      rewrite Hlv2. rewrite firstn_len_slice.
-      rewrite (slice_prefix (base_bytes b p) off w2 w1 Hle), Hb1. exact Hfn.
-Qed.
 
 (** *** The executable fuel-driven pass: sweep adjacent pairs, DROP the subsumed
     first rule and retry, else keep and advance. *)
@@ -281,32 +195,6 @@ Proof.
         specialize (IH (r2 :: rest) x Hx). right; exact IH.
 Qed.
 
-(** Cons congruence for [eval_rules] under a tail that is verdict-equal. *)
-Lemma eval_rules_cons_cong : forall r tl tl' e p,
-  eval_rules tl e p = eval_rules tl' e p ->
-  eval_rules (r :: tl) e p = eval_rules (r :: tl') e p.
-Proof.
-  intros r tl tl' e p Htl. rewrite ?eval_rules_cons, ?eval_rules_nil.
-  destruct (rule_loadable r e p && rule_applies r e p).
-  - destruct (outcome r e p) as [v |]; [destruct (terminal v) |];
-      rewrite ?Htl; reflexivity.
-  - exact Htl.
-Qed.
-
-(** *** Verdict-preservation of the whole pass. *)
-Lemma optimize_rules_absorb_eval : forall fuel rs e p,
-  eval_rules (optimize_rules_absorb fuel rs) e p = eval_rules rs e p.
-Proof.
-  induction fuel as [| fuel IH]; intros rs e p.
-  - reflexivity.
-  - destruct rs as [| r1 [| r2 rest]].
-    + reflexivity.
-    + reflexivity.
-    + cbn [optimize_rules_absorb]. destruct (absorb_pair r1 r2) eqn:Eap.
-      * rewrite IH. apply (eval_rules_absorb_correct r1 r2 _ rest e p Eap).
-      * apply eval_rules_cons_cong. apply IH.
-Qed.
-
 (** *** Chain wrapper (counter and declarations pass through UNCHANGED). *)
 Definition absorb_chain (c : chain) : chain :=
   {| c_policy := c_policy c;
@@ -319,13 +207,6 @@ Definition optimize_chain_absorb (n : nat) (d : set_decls) (c : chain)
 Lemma optimize_chain_absorb_eq : forall n d c,
   optimize_chain_absorb n d c = (n, d, absorb_chain c).
 Proof. reflexivity. Qed.
-
-Lemma absorb_chain_eval : forall c e p,
-  eval_chain (absorb_chain c) e p = eval_chain c e p.
-Proof.
-  intros c e p. unfold eval_chain, absorb_chain. cbn [c_rules c_policy].
-  rewrite optimize_rules_absorb_eval. reflexivity.
-Qed.
 
 Lemma absorb_chain_rules_incl : forall c,
   incl (c_rules (absorb_chain c)) (c_rules c).

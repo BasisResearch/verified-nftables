@@ -3,7 +3,7 @@
 
     [Optimize_Linearize] certifies nft's always-on single-rule linearization
     (payload merge, xor fold, trivial-binop elision) and the DEFAULT compile
-    pipeline [compile_chain_default] against the write-blind [eval_chain] —
+    pipeline [compile_chain_default] against the write-blind verdict semantics —
     verdicts only.  This file lifts that guarantee to the FULL-STATE
     effect-observing chain semantics [eval_chain_mut_st h] (the single per-rule
     fold [rule_step]: packet meta/ct writes, dynset env writes, the notrack
@@ -187,7 +187,7 @@ Proof.
 Qed.
 
 (* ================================================================== *)
-(** ** [end_step] depends only on the outcome and the post-outcome statements.
+(** ** [end_step] depends only on [r_outcome] and the post-terminal statements.
 
     Every terminal accessor ([r_vmap]/[r_nat]/[r_tproxy]/[r_fwd]/[r_queue]/
     [r_verdict]) is a function of [r_outcome], and [after_step] reads [r_after];
@@ -208,7 +208,7 @@ Proof.
 Qed.
 
 (** A per-rule step is preserved when the body threads identically and the
-    outcome / post-outcome statements are untouched — the shape of every
+    [r_outcome] / post-terminal statements are untouched — the shape of every
     linearization pass. *)
 Lemma rule_step_body_cong : forall h r1 r2 e p,
   (forall e' p', body_step (r_body r1) e' p' = body_step (r_body r2) e' p') ->
@@ -512,8 +512,8 @@ Qed.
     [Optimize_MutEnv.optimize_table_uncond_mut_st_correct] (the pipeline
     preserves the source chain's state fold at every hook).
 
-    Both sides run under [env_with_sets base d'].  The pure verdict-only headline
-    reads the SOURCE at [empty_decls] because [eval_chain] discards the env; the
+    Both sides run under [env_with_sets base d'].  A verdict-only chain semantics
+    would read the SOURCE at [empty_decls] because it discards the env; the
     state fold RETURNS the threaded env, so the synthesised declarations [d'] the
     compiled side needs to resolve its set/map lookups are part of the observable
     and must appear on both sides for the returned (env, packet) pairs to match —

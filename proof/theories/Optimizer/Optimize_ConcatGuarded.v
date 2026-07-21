@@ -192,23 +192,6 @@ Qed.
 
 (** ** Loadability / outcome / applies of the guarded shells. *)
 
-Lemma orig_rule2g_loadable_indep : forall f1 f2 gm a b a' b' body r1 e p,
-  rule_loadable (orig_rule2g f1 f2 gm a b body r1) e p
-  = rule_loadable (orig_rule2g f1 f2 gm a' b' body r1) e p.
-Proof.
-  intros. unfold orig_rule2g. rewrite !rule_loadable_mk_head.
-  rewrite !synproxy_stops_bmatch, !body_thread_bmatch.
-  cbn [body_loadable_walk body_item_loadable match_loadable]. reflexivity.
-Qed.
-
-Lemma orig_rule2g_outcome_indep : forall f1 f2 gm a b a' b' body r1 e p,
-  outcome (orig_rule2g f1 f2 gm a b body r1) e p
-  = outcome (orig_rule2g f1 f2 gm a' b' body r1) e p.
-Proof.
-  intros. unfold orig_rule2g. rewrite !outcome_mk_head.
-  rewrite !synproxy_stops_bmatch, !body_thread_bmatch. reflexivity.
-Qed.
-
 Lemma orig_rule2g_applies : forall f1 f2 gm a b body r1 e p,
   rule_applies (orig_rule2g f1 f2 gm a b body r1) e p
   = andb (andb (andb (eval_matchcond (MCmp f1 CEq a) e p) (eval_matchcond gm e p))

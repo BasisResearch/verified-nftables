@@ -36,9 +36,9 @@ From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
     [optimize_table] runs the base dedup/DCE pass, then the N-way value->set
     merge, the two-selector->concat merge, and finally the value+verdict->vmap
     merge, threading the fresh-name counter and [set_decls] accumulator across the
-    table semantics.  Its whole-pipeline correctness — preserving [eval_chain] over
-    the synthesised declarations, UNCONDITIONALLY — is proved in [Optimize_Uncond.v];
-    this file provides the composition seam lemmas it builds on.
+    table semantics.  Its whole-pipeline correctness — preserving the state fold
+    over the synthesised declarations, UNCONDITIONALLY — is proved in
+    [Optimize_MutEnv.v]; this file provides the composition seam lemmas it builds on.
 
     The seam between passes is the crux: each pass runs on the PREVIOUS pass's output,
     which is no longer [rules_clean] (it carries merged [MConcatSet] lookup rules).
