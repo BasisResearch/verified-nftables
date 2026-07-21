@@ -1,7 +1,7 @@
 (** * Optimize_MutEnv: EFFECT-LEVEL correctness of the whole [nft -o] pipeline.
 
     [Optimize_Uncond] certifies the composed 18-stage optimizer against the
-    write-blind [eval_chain] — verdicts only.  This file lifts that composed,
+    write-blind pure chain view — verdicts only.  This file lifts that composed,
     hypothesis-free guarantee to the FULL-STATE effect-observing chain
     semantics [eval_chain_mut_st h] (the single per-rule fold [rule_step]:
     packet meta/ct writes, dynset env writes, the notrack latch,
@@ -337,40 +337,61 @@ Proof.
     [destruct (terminal w); [reflexivity | exact Htl] | exact Htl].
 Qed.
 
-(** A WRITE-FREE prefix evaluates purely: the fold walks it without changing
-    state, producing exactly the pure [eval_rules] verdict; on fall-through the
-    tail continues from the ORIGINAL state.  This is what lets the existing
-    verdict-level run-merge lemmas certify a guarded merge at the effect level. *)
+(** A WRITE-FREE prefix's state fold walks the block leaving [(e, p)] fixed: it
+    produces the block's own first-match verdict [fst (eval_rules_mut_st h b e p)]
+    (a terminal-verdict early exit at the same pinned state), and on fall-through
+    the tail continues from the ORIGINAL state.  This is what lets a guarded merge
+    proved on the block itself be lifted to the whole run — entirely over the state
+    fold, no pure-verdict detour. *)
 Lemma eval_rules_mut_st_mutfree_prefix : forall b rest e p,
   forallb rule_mutfree b = true ->
   eval_rules_mut_st h (b ++ rest) e p
-  = match eval_rules b e p with
+  = match fst (eval_rules_mut_st h b e p) with
     | Some v => (Some v, (e, p))
     | None => eval_rules_mut_st h rest e p
     end.
 Proof.
   induction b as [| r b IH]; intros rest e p Hmf; [reflexivity|].
   cbn [forallb] in Hmf. apply Bool.andb_true_iff in Hmf as [Hr Hb].
-  cbn [app]. rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil, ?eval_rules_cons, ?eval_rules_nil.
-  rewrite (rule_step_mutfree h r e p Hr).
-  destruct (rule_loadable r e p && rule_applies r e p).
-  - destruct (outcome r e p) as [v|].
-    + destruct (terminal v); [reflexivity | apply IH; exact Hb].
-    + apply IH; exact Hb.
+  cbn [app].
+  rewrite (eval_rules_mut_st_mutfree_cons r (b ++ rest) e p Hr).
+  rewrite (eval_rules_mut_st_mutfree_cons r b e p Hr).
+  destruct (fst (rule_step h r e p)) as [v|].
+  - destruct (terminal v); [reflexivity | apply IH; exact Hb].
   - apply IH; exact Hb.
 Qed.
 
-(** Replace one write-free block by a verdict-equivalent write-free block. *)
+(** Replace one write-free block by a state-fold-verdict-equivalent write-free
+    block: the state fold leaves both blocks' state at [(e, p)], so agreement of
+    their first-match verdicts transfers the whole run. *)
 Lemma eval_rules_mut_st_mutfree_block : forall b1 b2 rest e p,
   forallb rule_mutfree b1 = true ->
   forallb rule_mutfree b2 = true ->
-  eval_rules b1 e p = eval_rules b2 e p ->
+  fst (eval_rules_mut_st h b1 e p) = fst (eval_rules_mut_st h b2 e p) ->
   eval_rules_mut_st h (b1 ++ rest) e p = eval_rules_mut_st h (b2 ++ rest) e p.
 Proof.
   intros b1 b2 rest e p H1 H2 Heq.
   rewrite (eval_rules_mut_st_mutfree_prefix b1 rest e p H1).
   rewrite (eval_rules_mut_st_mutfree_prefix b2 rest e p H2).
   rewrite Heq. reflexivity.
+Qed.
+
+(** Dropping a mut-free head [r1] that is SUBSUMED by the next rule [r2] (every
+    terminal firing of [r1] is a terminal firing of [r2], at the SAME verdict)
+    leaves the state fold unchanged: on the pinned state [r2], reached at [r1]'s
+    old slot, decides identically anything [r1] would have. *)
+Lemma eval_rules_mut_st_absorb_pair : forall r1 r2 rest e p,
+  rule_mutfree r1 = true ->
+  rule_mutfree r2 = true ->
+  (forall v, fst (rule_step h r1 e p) = Some v -> fst (rule_step h r2 e p) = Some v) ->
+  eval_rules_mut_st h (r1 :: r2 :: rest) e p = eval_rules_mut_st h (r2 :: rest) e p.
+Proof.
+  intros r1 r2 rest e p Hmf1 Hmf2 Hsub.
+  rewrite (eval_rules_mut_st_mutfree_cons r1 (r2 :: rest) e p Hmf1).
+  destruct (fst (rule_step h r1 e p)) as [v|] eqn:E1; [| reflexivity].
+  destruct (terminal v) eqn:Et; [| reflexivity].
+  rewrite (eval_rules_mut_st_mutfree_cons r2 rest e p Hmf2).
+  rewrite (Hsub v eq_refl), Et. reflexivity.
 Qed.
 
 (** Stepping one shared head rule on both sides. *)
@@ -525,87 +546,86 @@ Proof.
   reflexivity.
 Qed.
 
-(** A write-free run's state fold carries EXACTLY the pure [eval_rules] verdict in
-    its first component: the fold walks the whole block leaving [(e, p)] fixed, so
-    the [(verdict, state)] pair's verdict is the pure one.  The projection that
-    lets a mut-free merge be certified at the state level and read back as an
-    [eval_rules] equality. *)
-Lemma eval_rules_mutfree_fst : forall b e p,
-  forallb rule_mutfree b = true ->
-  fst (eval_rules_mut_st h b e p) = eval_rules b e p.
-Proof.
-  intros b e p Hmf.
-  pose proof (eval_rules_mut_st_mutfree_prefix b [] e p Hmf) as Hp.
-  rewrite app_nil_r in Hp. rewrite eval_rules_mut_st_nil in Hp.
-  rewrite Hp. destruct (eval_rules b e p); reflexivity.
-Qed.
-
 (** *** The family-agnostic N-way run collapse over the state fold.
 
-    The rule-list-level collapse over the STATE-THREADING fold [eval_rules_mut_st].
-    A nonempty run [rs] of write-free rules that all share the SAME loadability [LL]
-    and the SAME outcome [O] on [p] collapses to the ONE merged write-free rule [rm]
-    whose loadability is [LL] and whose [rule_applies] realises the [existsb] of the
-    run's applicabilities.  The conclusion is over the FULL observable of the fold —
-    verdict AND resulting (env, packet).
+    A nonempty run [map mk xs] of write-free shells, each stepping (on the pinned
+    state [(e, p)]) to the guarded verdict [if LL && mc x then O else None] — a
+    SHARED loadability [LL] and fired verdict [O], differing only in the per-shell
+    firing bit [mc x] — collapses to the ONE merged shell [rm] whose own step fires
+    exactly the run's disjunction [if LL && existsb mc xs then O else None].  The
+    conclusion is over the FULL observable of the fold — verdict AND resulting
+    (env, packet).
 
-    The [rule_mutfree] hypotheses on the run and the merged rule are load-bearing:
-    on the state fold a rule that does NOT fire can still advance the env at its
-    position, so an unconstrained collapse would not preserve the threaded state.
-    Under mut-freeness [rule_step_mutfree] pins every step to leave the state at
-    [(e, p)]; the threaded state is then constant across the whole run, and the
-    first-match/break argument runs directly over the fold's (verdict, state) pair.
-    This is the substrate the value->set / concat-set N-way passes are certified on
-    (via [eval_rules_st_collapse_pure], which reads the collapse back as an
-    [eval_rules] equality for the mut-free run). *)
+    Everything is phrased over [rule_step]/[eval_rules_mut_st]: the per-shell
+    firing shape [mc], the shared [LL]/[O] and the merged shell's disjunction are
+    supplied by the caller (each read off the shell's own [rule_step] under
+    [rule_step_mutfree] via the pass's structural certificates).  The [rule_mutfree]
+    hypotheses are load-bearing: on the state fold a shell that does NOT fire can
+    still advance the env at its position, so an unconstrained collapse would not
+    preserve the threaded state.  Under mut-freeness [rule_step_mutfree_state] pins
+    every step to leave the state at [(e, p)]; the threaded state is then constant
+    across the whole run, and the first-match/break argument runs directly over the
+    fold's (verdict, state) pair.  This is the substrate the value->set / concat-set
+    N-way passes are certified on. *)
 Lemma eval_rules_mut_st_run_collapse :
-  forall (rs : list rule) (LL : bool) (O : option verdict) rm rest e p,
-  rs <> [] ->
-  forallb rule_mutfree rs = true ->
+  forall {A : Type} (xs : list A) (mk : A -> rule) (mc : A -> bool)
+         (LL : bool) (O : option verdict) rm rest e p,
+  xs <> [] ->
+  forallb rule_mutfree (map mk xs) = true ->
   rule_mutfree rm = true ->
-  (forall r, In r rs -> rule_loadable r e p = LL) ->
-  (forall r, In r rs -> outcome r e p = O) ->
-  rule_loadable rm e p = LL ->
-  outcome rm e p = O ->
-  rule_applies rm e p = existsb (fun r => rule_applies r e p) rs ->
+  (forall x, In x xs ->
+     fst (rule_step h (mk x) e p) = (if LL && mc x then O else None)) ->
+  fst (rule_step h rm e p) = (if LL && existsb mc xs then O else None) ->
   eval_rules_mut_st h (rm :: rest) e p
-  = eval_rules_mut_st h (rs ++ rest) e p.
+  = eval_rules_mut_st h (map mk xs ++ rest) e p.
 Proof.
-  intros rs LL O rm rest e p Hne Hmfrs Hmfrm HL HO Hrl Hro Hra.
-  (* Each mut-free rule steps in the pure guarded [if]-shape, state pinned to
-     [(e, p)] — the fold's [(verdict, state)] pair recast into [eval_rules]'s
-     [rule_loadable && rule_applies] / [outcome] branch. *)
-  assert (Hstep : forall r tl, rule_mutfree r = true ->
-            eval_rules_mut_st h (r :: tl) e p
-            = if rule_loadable r e p && rule_applies r e p
-              then match outcome r e p with
+  intros A xs mk mc LL O rm rest e p Hne HmfRun Hmfrm Hx Hrm.
+  assert (HmfEach : forall x, In x xs -> rule_mutfree (mk x) = true).
+  { intros x Hin. rewrite forallb_forall in HmfRun.
+    exact (HmfRun (mk x) (in_map mk xs x Hin)). }
+  (* Each mut-free shell steps in the guarded [if]-shape (its firing bit [mc x],
+     the shared [LL]/[O]), state pinned to [(e, p)] — the fold's (verdict, state)
+     pair for one shell, read off its own [rule_step] via [Hx]. *)
+  assert (Hstep : forall x tl, In x xs ->
+            eval_rules_mut_st h (mk x :: tl) e p
+            = if LL && mc x
+              then match O with
                    | Some w => if terminal w then (Some w, (e, p))
                                else eval_rules_mut_st h tl e p
                    | None => eval_rules_mut_st h tl e p
                    end
               else eval_rules_mut_st h tl e p).
-  { intros r tl Hr. rewrite eval_rules_mut_st_cons, (rule_step_mutfree h r e p Hr).
-    destruct (rule_loadable r e p && rule_applies r e p); reflexivity. }
-  assert (HmfEach : forall r, In r rs -> rule_mutfree r = true).
-  { intros r Hr. rewrite forallb_forall in Hmfrs. exact (Hmfrs r Hr). }
-  (* Characterise the whole run [rs ++ rest] by first-match induction on [rs],
-     with the threaded state pinned at [(e, p)] throughout. *)
+  { intros x tl Hin.
+    rewrite (eval_rules_mut_st_mutfree_cons (mk x) tl e p (HmfEach x Hin)).
+    rewrite (Hx x Hin). destruct (LL && mc x); reflexivity. }
+  (* The merged shell's own single step, same shape with the run's disjunction. *)
+  assert (Hstepm : eval_rules_mut_st h (rm :: rest) e p
+            = if LL && existsb mc xs
+              then match O with
+                   | Some w => if terminal w then (Some w, (e, p))
+                               else eval_rules_mut_st h rest e p
+                   | None => eval_rules_mut_st h rest e p
+                   end
+              else eval_rules_mut_st h rest e p).
+  { rewrite (eval_rules_mut_st_mutfree_cons rm rest e p Hmfrm).
+    rewrite Hrm. destruct (LL && existsb mc xs); reflexivity. }
+  (* Characterise the whole run [map mk xs ++ rest] by first-match induction. *)
   assert (Hrun :
-    eval_rules_mut_st h (rs ++ rest) e p
-    = if LL && existsb (fun r => rule_applies r e p) rs then
+    eval_rules_mut_st h (map mk xs ++ rest) e p
+    = if LL && existsb mc xs then
         match O with
         | Some v => if terminal v then (Some v, (e, p))
                     else eval_rules_mut_st h rest e p
         | None => eval_rules_mut_st h rest e p
         end
       else eval_rules_mut_st h rest e p).
-  { clear Hrl Hro Hra Hmfrm Hmfrs.
+  { clear Hrm Hmfrm HmfRun Hstepm.
     assert (Hterm : (match O with Some v => terminal v | None => false end) = false
                     \/ (exists v, O = Some v /\ terminal v = true)).
     { destruct O as [v |]; [destruct (terminal v) eqn:Et;
         [right; eauto | left; reflexivity] | left; reflexivity]. }
     destruct Hterm as [Hnt | [v [EO Ev]]].
-    - (* non-terminal / None outcome: the whole run falls through to [rest] *)
+    - (* non-terminal / None fired verdict: the whole run falls through to [rest] *)
       assert (Htarget :
         match O with
         | Some w => if terminal w then (Some w, (e, p)) else eval_rules_mut_st h rest e p
@@ -615,60 +635,87 @@ Proof.
           [exfalso; clear -Hnt Etw; cbn in Hnt; congruence | reflexivity] | reflexivity]. }
       transitivity (eval_rules_mut_st h rest e p).
       2:{ rewrite Htarget. destruct (LL && _); reflexivity. }
-      clear Hne Hnt. revert HL HO HmfEach.
-      induction rs as [| r rs IH]; intros HL HO HmfEach; [reflexivity|].
-      cbn [app]. rewrite (Hstep r _ (HmfEach r (or_introl eq_refl))).
-      rewrite (HL r (or_introl eq_refl)), (HO r (or_introl eq_refl)).
-      rewrite (IH (fun r' Hr' => HL r' (or_intror Hr'))
-                  (fun r' Hr' => HO r' (or_intror Hr'))
-                  (fun r' Hr' => HmfEach r' (or_intror Hr'))).
-      destruct (LL && rule_applies r e p); [rewrite Htarget; reflexivity | reflexivity].
+      clear Hne Hnt. revert Hx HmfEach Hstep.
+      induction xs as [| x xs IH]; intros Hx HmfEach Hstep; [reflexivity|].
+      cbn [map app]. rewrite (Hstep x _ (or_introl eq_refl)).
+      rewrite (IH (fun x' Hx' => Hx x' (or_intror Hx'))
+                  (fun x' Hx' => HmfEach x' (or_intror Hx'))
+                  (fun x' tl Hx' => Hstep x' tl (or_intror Hx'))).
+      destruct (LL && mc x); [rewrite Htarget; reflexivity | reflexivity].
     - (* terminal [Some v]: first-match position matters *)
-      rewrite EO. clear Hne. revert HL HO HmfEach.
-      induction rs as [| r rs IH]; intros HL HO HmfEach.
-      + cbn [app existsb]. rewrite Bool.andb_false_r. reflexivity.
-      + cbn [app]. rewrite (Hstep r _ (HmfEach r (or_introl eq_refl))).
-        rewrite (HL r (or_introl eq_refl)), (HO r (or_introl eq_refl)).
-        rewrite (IH (fun r' Hr' => HL r' (or_intror Hr'))
-                    (fun r' Hr' => HO r' (or_intror Hr'))
-                    (fun r' Hr' => HmfEach r' (or_intror Hr'))).
+      rewrite EO. clear Hne. revert Hx HmfEach Hstep.
+      induction xs as [| x xs IH]; intros Hx HmfEach Hstep.
+      + cbn [map app existsb]. rewrite Bool.andb_false_r. reflexivity.
+      + cbn [map app]. rewrite (Hstep x _ (or_introl eq_refl)).
+        rewrite (IH (fun x' Hx' => Hx x' (or_intror Hx'))
+                    (fun x' Hx' => HmfEach x' (or_intror Hx'))
+                    (fun x' tl Hx' => Hstep x' tl (or_intror Hx'))).
         cbn [existsb]. rewrite EO, Ev.
         destruct LL; cbn [andb]; [| reflexivity].
-        destruct (rule_applies r e p); cbn [orb]; reflexivity. }
-  rewrite (Hstep rm rest Hmfrm), Hrl, Hro, Hra, Hrun. reflexivity.
-Qed.
-
-(** The mut-free N-way collapse, read back as an [eval_rules] equality: the merged
-    rule and the run of write-free rules (sharing loadability [LL] and outcome [O])
-    evaluate identically under the pure verdict, derived from the state-fold
-    certificate [eval_rules_mut_st_run_collapse] via [eval_rules_mutfree_fst].  This
-    is the substrate the value->set / concat-set per-pass merge proofs use in place
-    of a standalone pure induction. *)
-Lemma eval_rules_st_collapse_pure :
-  forall (rs : list rule) (LL : bool) (O : option verdict) rm e p,
-  rs <> [] ->
-  (forall r, In r rs -> rule_loadable r e p = LL) ->
-  (forall r, In r rs -> outcome r e p = O) ->
-  rule_loadable rm e p = LL ->
-  outcome rm e p = O ->
-  rule_applies rm e p = existsb (fun r => rule_applies r e p) rs ->
-  forallb rule_mutfree rs = true ->
-  rule_mutfree rm = true ->
-  eval_rules [rm] e p = eval_rules rs e p.
-Proof.
-  intros rs LL O rm e p Hne HL HO Hrl Hro Hra Hmfrs Hmfrm.
-  assert (Hmf1 : forallb rule_mutfree [rm] = true)
-    by (cbn [forallb]; rewrite Hmfrm; reflexivity).
-  rewrite <- (eval_rules_mutfree_fst [rm] e p Hmf1).
-  rewrite <- (eval_rules_mutfree_fst rs e p Hmfrs).
-  f_equal.
-  change [rm] with (rm :: []).
-  rewrite <- (app_nil_r rs).
-  exact (eval_rules_mut_st_run_collapse rs LL O rm [] e p
-           Hne Hmfrs Hmfrm HL HO Hrl Hro Hra).
+        destruct (mc x); cbn [orb]; reflexivity. }
+  rewrite Hstepm, Hrun. reflexivity.
 Qed.
 
 End WithHook.
+
+(** Pull the per-shell firing bit [c] to the outside of a shell's guard so the
+    shared loadability/applicability factor [a && b] reads as the collapse's [LL].
+    [reflexivity] on the reassociated form unifies [LL] and the per-shell [mc]
+    against the [rule_step_mutfree] shape at each merge site. *)
+Lemma andb_swap_mid : forall a b c, a && (c && b) = (a && b) && c.
+Proof. intros [] [] []; reflexivity. Qed.
+
+(** The guarded shells carry a SHARED head guard [g] as well: pull the per-shell
+    firing bit [c] out from under both [g] and the shared applicability [w]. *)
+Lemma andb_pull3 : forall a g c w, a && (g && (c && w)) = (a && g && w) && c.
+Proof. intros [] [] [] []; reflexivity. Qed.
+
+(** The two-selector guarded shell nests the guard [g] between the two per-shell
+    selectors; renormalise it to the [g && (c && w)] shape [andb_pull3] consumes. *)
+Lemma andb_reassoc_g2 : forall c1 g c2 w, (c1 && g) && c2 && w = g && ((c1 && c2) && w).
+Proof. intros [] [] [] []; reflexivity. Qed.
+
+(** Push a mut-free rule's loadable/applicable guard [C] outside the fold's
+    verdict [match]: the shape a per-rule [rule_step_mutfree] rewrite lands the
+    fold in, restated as the pure-strand [if]-guarded cons the merge inductions
+    read.  [T] is the tail's fold, [ep] the pinned state. *)
+Lemma match_if_push :
+  forall (C : bool) (O : option verdict)
+         (T : option verdict * (env * packet)) (ep : env * packet),
+  match (if C then O else None) with
+  | Some w => if terminal w then (Some w, ep) else T
+  | None => T
+  end
+  = if C then match O with
+              | Some w => if terminal w then (Some w, ep) else T
+              | None => T
+              end
+         else T.
+Proof. intros [] O T ep; reflexivity. Qed.
+
+(** Replace a run [map mk1 l] by [map mk2 l] rule-for-rule when every shell steps
+    to the SAME fold verdict on the pinned state (all mut-free): the state fold is
+    determined position-by-position by each shell's [fst (rule_step ...)]. *)
+Lemma eval_rules_mut_st_map_cong :
+  forall (h : hook_id) {A : Type} (mk1 mk2 : A -> rule) l rest e p,
+  (forall x, In x l -> rule_mutfree (mk1 x) = true) ->
+  (forall x, In x l -> rule_mutfree (mk2 x) = true) ->
+  (forall x, In x l -> fst (rule_step h (mk1 x) e p) = fst (rule_step h (mk2 x) e p)) ->
+  eval_rules_mut_st h (map mk1 l ++ rest) e p
+  = eval_rules_mut_st h (map mk2 l ++ rest) e p.
+Proof.
+  intros h A mk1 mk2 l rest e p.
+  induction l as [| x l IH]; intros H1 H2 Hst; [reflexivity|].
+  cbn [map app].
+  rewrite (eval_rules_mut_st_mutfree_cons h (mk1 x) _ e p (H1 x (or_introl eq_refl))).
+  rewrite (eval_rules_mut_st_mutfree_cons h (mk2 x) _ e p (H2 x (or_introl eq_refl))).
+  rewrite (Hst x (or_introl eq_refl)).
+  assert (IHtl : eval_rules_mut_st h (map mk1 l ++ rest) e p
+                 = eval_rules_mut_st h (map mk2 l ++ rest) e p).
+  { apply IH; intros y Hy; [apply H1 | apply H2 | apply Hst]; right; exact Hy. }
+  destruct (fst (rule_step h (mk2 x) e p)) as [w|];
+    [ destruct (terminal w); [reflexivity | exact IHtl] | exact IHtl ].
+Qed.
 
 (** [rule_mutfree] transfer along [mk_head] shells: mut-freedom is the tail
     body + after + natfree conjunction, with the head contributing only its
@@ -1497,20 +1544,26 @@ Proof.
                   rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
                   exact (proj2 Hwf_tail).
            ++ refine (eval_rules_mut_st_run_collapse h
-                        (map (fun iv0 => orig_ruleGr f gm (fst iv0) (snd iv0) body r1) ivsAll)
+                        ivsAll
+                        (fun iv0 => orig_ruleGr f gm (fst iv0) (snd iv0) body r1)
+                        (fun iv0 => eval_matchcond (MRange f false (fst iv0) (snd iv0)) e p)
                         _ _ (merged_ruleGs f gm (setname n) body r1) rest' e p
-                        _ HmfR HmfMh _ _ eq_refl eq_refl _).
+                        _ HmfR HmfMh _ _).
               --- subst ivsAll. cbn [map]. discriminate.
-              --- intros r Hr. apply in_map_iff in Hr as [iv0 [Hiv _]]. subst r.
-                  symmetry. apply merged_ruleGs_loadable_eq_origr.
-              --- intros r Hr. apply in_map_iff in Hr as [iv0 [Hiv _]]. subst r.
-                  symmetry. apply merged_ruleGs_outcome_eq_origr.
-              --- rewrite merged_ruleGs_applies. rewrite Hcert.
-                  rewrite existsb_map_eq.
-                  rewrite (existsb_ext _ _ _ ivsAll
-                             (fun iv0 (_ : In iv0 ivsAll) =>
-                                orig_ruleGr_applies f gm (fst iv0) (snd iv0) body r1 e p)).
-                  symmetry. apply existsb_guardhead_factor.
+              --- intros iv0 Hin.
+                  assert (Hmfiv : rule_mutfree
+                            (orig_ruleGr f gm (fst iv0) (snd iv0) body r1) = true).
+                  { rewrite forallb_forall in HmfR.
+                    exact (HmfR _ (in_map (fun iv1 => orig_ruleGr f gm (fst iv1) (snd iv1) body r1)
+                                     ivsAll iv0 Hin)). }
+                  rewrite (rule_step_mutfree h _ e p Hmfiv). cbn [fst].
+                  rewrite <- (merged_ruleGs_loadable_eq_origr f gm (setname n)
+                               (fst iv0) (snd iv0) body r1 e p).
+                  rewrite <- (merged_ruleGs_outcome_eq_origr f gm (setname n)
+                               (fst iv0) (snd iv0) body r1 e p).
+                  rewrite orig_ruleGr_applies, andb_pull3. reflexivity.
+              --- rewrite (rule_step_mutfree h _ e p HmfMh). cbn [fst].
+                  rewrite merged_ruleGs_applies, Hcert, andb_pull3. reflexivity.
       * remember (optimize_rules_intervalsetguarded fuel n d (r2 :: rest)) as t eqn:Erec.
         destruct t as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
@@ -1648,25 +1701,29 @@ Proof.
                   rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
                   exact (proj2 Hwf_tail).
            ++ refine (eval_rules_mut_st_run_collapse h
-                        (map (fun e0 => orig_ruleGm f gm e0 body r1) esAll)
+                        esAll
+                        (fun e0 => orig_ruleGm f gm e0 body r1)
+                        (fun e0 => eval_matchcond (melem_mc f e0) e p)
                         _ _ (merged_ruleGs f gm (setname n) body r1) rest' e p
-                        _ HmfR HmfMh _ _ eq_refl eq_refl _).
+                        _ HmfR HmfMh _ _).
               --- subst esAll. cbn [map]. discriminate.
-              --- intros r Hr. apply in_map_iff in Hr as [e0 [He0 _]]. subst r.
-                  symmetry. apply merged_ruleGs_loadable_eq_origm.
-              --- intros r Hr. apply in_map_iff in Hr as [e0 [He0 _]]. subst r.
-                  symmetry. apply merged_ruleGs_outcome_eq_origm.
-              --- rewrite merged_ruleGs_applies. rewrite Hcert. rewrite existsb_map_eq.
+              --- intros e0 Hin.
+                  assert (Hmfe : rule_mutfree (orig_ruleGm f gm e0 body r1) = true).
+                  { rewrite forallb_forall in HmfR.
+                    exact (HmfR _ (in_map (fun e1 => orig_ruleGm f gm e1 body r1)
+                                     esAll e0 Hin)). }
+                  rewrite (rule_step_mutfree h _ e p Hmfe). cbn [fst].
+                  rewrite <- (merged_ruleGs_loadable_eq_origm f gm (setname n) e0 body r1 e p).
+                  rewrite <- (merged_ruleGs_outcome_eq_origm f gm (setname n) e0 body r1 e p).
+                  rewrite orig_ruleGm_applies, andb_pull3. reflexivity.
+              --- rewrite (rule_step_mutfree h _ e p HmfMh). cbn [fst].
+                  rewrite merged_ruleGs_applies, Hcert, existsb_map_eq.
                   rewrite (existsb_ext _
                              (fun e0 => eval_matchcond
                                           (MRange f false (fst (melem_iv e0)) (snd (melem_iv e0))) e p)
                              (fun e0 => eval_matchcond (melem_mc f e0) e p) esAll
                              (fun e0 He0 => eq_sym (eval_melem_mrange f e0 e p (Hok_all e0 He0)))).
-                  symmetry. rewrite existsb_map_eq.
-                  rewrite (existsb_ext _ _ _ esAll
-                             (fun e0 (_ : In e0 esAll) =>
-                                orig_ruleGm_applies f gm e0 body r1 e p)).
-                  apply existsb_guardhead_factor.
+                  rewrite andb_pull3. reflexivity.
       * remember (optimize_rules_mixedpointrangeguarded fuel n d (r2 :: rest)) as t eqn:Erec.
         destruct t as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
@@ -1854,22 +1911,27 @@ Proof.
                   rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
                   exact (proj2 Hwf_tail).
            ++ refine (eval_rules_mut_st_run_collapse h
-                        (map (fun ab => orig_rule2 f1 f2 (fst ab) (snd ab) body r1) tuples)
+                        tuples
+                        (fun ab => orig_rule2 f1 f2 (fst ab) (snd ab) body r1)
+                        (fun ab => eval_matchcond (MCmp f1 CEq (fst ab)) e p
+                                   && eval_matchcond (MCmp f2 CEq (snd ab)) e p)
                         _ _ (merged_rule2 f1 f2 (setname n) body r1) rest' e p
-                        _ HmfR HmfMh _ _ eq_refl eq_refl _).
+                        _ HmfR HmfMh _ _).
               --- subst tuples. cbn [map]. discriminate.
-              --- intros r Hr. apply in_map_iff in Hr as [ab [Hab _]]. subst r.
-                  symmetry. apply merged_rule2_loadable_eq_orig.
-              --- intros r Hr. apply in_map_iff in Hr as [ab [Hab _]]. subst r.
-                  symmetry. apply merged_rule2_outcome_eq_orig.
-              --- rewrite merged_rule2_applies. rewrite Hcert.
-                  rewrite existsb_map_eq.
-                  transitivity (existsb (fun ab =>
-                      andb (andb (eval_matchcond (MCmp f1 CEq (fst ab)) e p)
-                                 (eval_matchcond (MCmp f2 CEq (snd ab)) e p))
-                           (rule_applies_walk body e p)) tuples);
-                    [ rewrite existsb_andb_const; reflexivity
-                    | apply existsb_ext; intros ab _; symmetry; apply orig_rule2_applies ].
+              --- intros ab Hin.
+                  assert (Hmfab : rule_mutfree
+                            (orig_rule2 f1 f2 (fst ab) (snd ab) body r1) = true).
+                  { rewrite forallb_forall in HmfR.
+                    exact (HmfR _ (in_map (fun ab0 => orig_rule2 f1 f2 (fst ab0) (snd ab0) body r1)
+                                     tuples ab Hin)). }
+                  rewrite (rule_step_mutfree h _ e p Hmfab). cbn [fst].
+                  rewrite <- (merged_rule2_loadable_eq_orig f1 f2 (setname n)
+                               (fst ab) (snd ab) body r1 e p).
+                  rewrite <- (merged_rule2_outcome_eq_orig f1 f2 (setname n)
+                               (fst ab) (snd ab) body r1 e p).
+                  rewrite orig_rule2_applies, andb_swap_mid. reflexivity.
+              --- rewrite (rule_step_mutfree h _ e p HmfMh). cbn [fst].
+                  rewrite merged_rule2_applies, Hcert, andb_swap_mid. reflexivity.
       * remember (optimize_rules_concat fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
@@ -2033,23 +2095,27 @@ Proof.
                   rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
                   exact (proj2 Hwf_tail).
            ++ refine (eval_rules_mut_st_run_collapse h
-                        (map (fun ab => orig_rule2g f1 f2 gm (fst ab) (snd ab) body r1) tuples)
+                        tuples
+                        (fun ab => orig_rule2g f1 f2 gm (fst ab) (snd ab) body r1)
+                        (fun ab => eval_matchcond (MCmp f1 CEq (fst ab)) e p
+                                   && eval_matchcond (MCmp f2 CEq (snd ab)) e p)
                         _ _ (merged_rule2g f1 f2 gm (setname n) body r1) rest' e p
-                        _ HmfR HmfMh _ _ eq_refl eq_refl _).
+                        _ HmfR HmfMh _ _).
               --- subst tuples. cbn [map]. discriminate.
-              --- intros r Hr. apply in_map_iff in Hr as [ab [Hab _]]. subst r.
-                  symmetry. apply merged_rule2g_loadable_eq_orig.
-              --- intros r Hr. apply in_map_iff in Hr as [ab [Hab _]]. subst r.
-                  symmetry. apply merged_rule2g_outcome_eq_orig.
-              --- rewrite merged_rule2g_applies. rewrite Hcert.
-                  rewrite existsb_map_eq.
-                  transitivity (existsb (fun ab =>
-                      andb (andb (andb (eval_matchcond (MCmp f1 CEq (fst ab)) e p)
-                                       (eval_matchcond gm e p))
-                                 (eval_matchcond (MCmp f2 CEq (snd ab)) e p))
-                           (rule_applies_walk body e p)) tuples);
-                    [ rewrite existsb_guard_factor; rewrite Bool.andb_assoc; reflexivity
-                    | apply existsb_ext; intros ab _; symmetry; apply orig_rule2g_applies ].
+              --- intros ab Hin.
+                  assert (Hmfab : rule_mutfree
+                            (orig_rule2g f1 f2 gm (fst ab) (snd ab) body r1) = true).
+                  { rewrite forallb_forall in HmfR.
+                    exact (HmfR _ (in_map (fun ab0 => orig_rule2g f1 f2 gm (fst ab0) (snd ab0) body r1)
+                                     tuples ab Hin)). }
+                  rewrite (rule_step_mutfree h _ e p Hmfab). cbn [fst].
+                  rewrite <- (merged_rule2g_loadable_eq_orig f1 f2 gm (setname n)
+                               (fst ab) (snd ab) body r1 e p).
+                  rewrite <- (merged_rule2g_outcome_eq_orig f1 f2 gm (setname n)
+                               (fst ab) (snd ab) body r1 e p).
+                  rewrite orig_rule2g_applies, andb_reassoc_g2, andb_pull3. reflexivity.
+              --- rewrite (rule_step_mutfree h _ e p HmfMh). cbn [fst].
+                  rewrite merged_rule2g_applies, Hcert, andb_pull3. reflexivity.
       * remember (optimize_rules_concatguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
@@ -2182,19 +2248,23 @@ Proof.
                   rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
                   exact (proj2 Hwf_tail).
            ++ refine (eval_rules_mut_st_run_collapse h
-                        (map (fun v => orig_ruleGs f gm v body r1) vals)
+                        vals
+                        (fun v => orig_ruleGs f gm v body r1)
+                        (fun v => eval_matchcond (MCmp f CEq v) e p)
                         _ _ (merged_ruleGs f gm (setname n) body r1) rest' e p
-                        _ HmfR HmfMh _ _ eq_refl eq_refl _).
+                        _ HmfR HmfMh _ _).
               --- subst vals. cbn [map]. discriminate.
-              --- intros r Hr. apply in_map_iff in Hr as [v [Hv _]]. subst r.
-                  symmetry. apply merged_ruleGs_loadable_eq_orig.
-              --- intros r Hr. apply in_map_iff in Hr as [v [Hv _]]. subst r.
-                  symmetry. apply merged_ruleGs_outcome_eq_orig.
-              --- rewrite merged_ruleGs_applies. rewrite Hcert.
-                  rewrite existsb_map_eq.
-                  rewrite (existsb_ext _ _ _ vals
-                             (fun v (_ : In v vals) => orig_ruleGs_applies f gm v body r1 e p)).
-                  symmetry. apply existsb_guardhead_factor.
+              --- intros v Hin.
+                  assert (Hmfv : rule_mutfree (orig_ruleGs f gm v body r1) = true).
+                  { rewrite forallb_forall in HmfR.
+                    exact (HmfR _ (in_map (fun v0 => orig_ruleGs f gm v0 body r1)
+                                     vals v Hin)). }
+                  rewrite (rule_step_mutfree h _ e p Hmfv). cbn [fst].
+                  rewrite <- (merged_ruleGs_loadable_eq_orig f gm (setname n) v body r1 e p).
+                  rewrite <- (merged_ruleGs_outcome_eq_orig f gm (setname n) v body r1 e p).
+                  rewrite orig_ruleGs_applies, andb_pull3. reflexivity.
+              --- rewrite (rule_step_mutfree h _ e p HmfMh). cbn [fst].
+                  rewrite merged_ruleGs_applies, Hcert, andb_pull3. reflexivity.
       * remember (optimize_rules_setguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
@@ -2250,55 +2320,45 @@ Proof.
   auto.
 Qed.
 
-(** The K-field concat merge, read back as a pure [eval_rules] equality from the
-    state-fold collapse [eval_rules_st_collapse_pure].  The merged [MConcatSet]
-    rule replaces the whole write-free run of per-row shells; the [MConcatSet]
+(** The K-field concat merge over the state fold: the merged [MConcatSet] rule
+    replaces the whole write-free run of per-row shells (sharing loadability and
+    fired verdict, differing only in their per-row key match).  The [MConcatSet]
     membership certificate [concat_fields_certificate_N] supplies the [existsb]
-    over the run's applicabilities. *)
-Lemma eval_rules_concat_mergeK : forall (h : hook_id) fields rows name body r1 e p,
+    the collapse's merged-shell disjunction consumes. *)
+Lemma eval_rules_concat_mergeK : forall (h : hook_id) fields rows name body r1 rest e p,
   fields <> [] -> rows <> [] ->
   e_set e name = map pack_row rows ->
   (forall row, In row rows ->
      Forall2 (fun f a => field_fixed_len f = Some (Datatypes.length a)) fields row) ->
   forallb rule_mutfree (map (fun row => orig_ruleK fields row body r1) rows) = true ->
   rule_mutfree (merged_ruleK fields name body r1) = true ->
-  eval_rules [merged_ruleK fields name body r1] e p
-  = eval_rules (map (fun row => orig_ruleK fields row body r1) rows) e p.
+  eval_rules_mut_st h (merged_ruleK fields name body r1 :: rest) e p
+  = eval_rules_mut_st h (map (fun row => orig_ruleK fields row body r1) rows ++ rest) e p.
 Proof.
-  intros h fields rows name body r1 e p Hfne Hrne Hset Hwf Hmfrun Hmfm.
+  intros h fields rows name body r1 rest e p Hfne Hrne Hset Hwf Hmfrun Hmfm.
   assert (Hlenrow : forall row, In row rows ->
                     Datatypes.length fields = Datatypes.length row)
     by (intros row Hin; apply (Forall2_length (Hwf row Hin))).
-  set (LL := fields_loadable fields p &&
-             (body_loadable_walk body p &&
-              (if body_synproxy_stops body p then true
-               else end_loadable r1 e (body_thread body p)))).
-  set (O := if body_synproxy_stops body p then Some Drop
-            else outcome_core r1 e (body_thread body p)).
-  apply (eval_rules_st_collapse_pure h
-           (map (fun row => orig_ruleK fields row body r1) rows) LL O
-           (merged_ruleK fields name body r1) e p).
-  - intro Hc. apply map_eq_nil in Hc. contradiction.
-  - intros r Hin. apply in_map_iff in Hin as [row [Heq Hin]]. subst r.
-    unfold LL. apply (orig_ruleK_loadable fields row body r1 e p (Hlenrow row Hin)).
-  - intros r Hin. apply in_map_iff in Hin as [row [Heq Hin]]. subst r.
-    unfold O. apply orig_ruleK_outcome.
-  - unfold LL. apply merged_ruleK_loadable.
-  - unfold O. apply merged_ruleK_outcome.
-  - unfold merged_ruleK. rewrite rule_applies_mk_head.
-    rewrite (concat_fields_certificate_N fields rows name e p Hfne Hset Hwf).
-    rewrite (existsb_map_local _ _ (fun r => rule_applies r e p)
-                               (fun row => orig_ruleK fields row body r1) rows).
-    symmetry.
-    rewrite (existsb_ext _
-               (fun row => rule_applies (orig_ruleK fields row body r1) e p)
-               (fun row => forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) e p)
-                                   (combine fields row) && rule_applies_walk body e p)
-               rows
-               (fun row _ => orig_ruleK_applies fields row body r1 e p)).
-    apply existsb_andb_const.
-  - exact Hmfrun.
-  - exact Hmfm.
+  refine (eval_rules_mut_st_run_collapse h
+            rows
+            (fun row => orig_ruleK fields row body r1)
+            (fun row => forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) e p)
+                                (combine fields row))
+            _ _ (merged_ruleK fields name body r1) rest e p
+            Hrne Hmfrun Hmfm _ _).
+  - intros row Hin.
+    assert (Hmfrow : rule_mutfree (orig_ruleK fields row body r1) = true).
+    { rewrite forallb_forall in Hmfrun.
+      exact (Hmfrun _ (in_map (fun row0 => orig_ruleK fields row0 body r1) rows row Hin)). }
+    rewrite (rule_step_mutfree h _ e p Hmfrow). cbn [fst].
+    rewrite (orig_ruleK_loadable fields row body r1 e p (Hlenrow row Hin)).
+    rewrite (orig_ruleK_outcome fields row body r1 e p).
+    rewrite orig_ruleK_applies, andb_swap_mid. reflexivity.
+  - rewrite (rule_step_mutfree h _ e p Hmfm). cbn [fst].
+    rewrite merged_ruleK_loadable, merged_ruleK_outcome.
+    unfold merged_ruleK at 1. rewrite rule_applies_mk_head.
+    rewrite (concat_fields_certificate_N fields rows name e p Hfne Hset Hwf), andb_swap_mid.
+    reflexivity.
 Qed.
 
 (** *** concatmulti (K>=3-field pairwise concat merge). *)
@@ -2356,34 +2416,28 @@ Proof.
         rewrite (rule_mutfree_orig_ruleK_intro fields row2 body r1
                    Hbody_mf Hafter_mf Hnat_mf).
         reflexivity. }
-      assert (Hpure : eval_rules [merged_ruleK fields (setname n) body r1] e p
-                      = eval_rules [r1; r2] e p).
-      { pose proof (eval_rules_concat_mergeK h fields [row1; row2] (setname n) body r1 e p
-                      Hfne ltac:(discriminate) Hlook
-                      ltac:(intros row Hin; destruct Hin as [<-|[<-|[]]]; assumption)
-                      ltac:(cbn [map]; rewrite <- Hr1eq, <- Hr2eq; exact HmfR)
-                      (proj1 (forallb_forall rule_mutfree
-                                [merged_ruleK fields (setname n) body r1]) HmfM
-                                (merged_ruleK fields (setname n) body r1) (or_introl eq_refl)))
-          as Hk.
-        cbn [map] in Hk. rewrite <- Hr1eq, <- Hr2eq in Hk. exact Hk. }
-      change (merged_ruleK fields (setname n) body r1 :: rr'')
-        with ([merged_ruleK fields (setname n) body r1] ++ rr'').
-      change (r1 :: r2 :: rest) with ([r1; r2] ++ rest).
-      rewrite (eval_rules_mut_st_mutfree_prefix h _ rr'' e p HmfM).
-      rewrite (eval_rules_mut_st_mutfree_prefix h _ rest e p HmfR).
-      rewrite Hpure.
-      destruct (eval_rules [r1; r2] e p) as [w|]; [reflexivity |].
-      apply (IHrs rest ltac:(unfold ltof; cbn; lia) (S n) dn m'' dd'' rr'' base e p
-               (eq_sym Erec)).
-      * intros k Hk Hin. subst dn; cbn [sd_sets map fst] in Hin.
-        destruct Hin as [Heq | Hin];
-          [ apply setname_inj in Heq; lia
-          | apply (Hfresh k); [lia | exact Hin] ].
-      * intros k Hk Hk'. apply Hmint; lia.
-      * eapply Forall_impl;
-          [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr]
-          | exact Hwf_rest ].
+      assert (HmfMh : rule_mutfree (merged_ruleK fields (setname n) body r1) = true).
+      { exact (proj1 (forallb_forall rule_mutfree
+                 [merged_ruleK fields (setname n) body r1]) HmfM
+                 (merged_ruleK fields (setname n) body r1) (or_introl eq_refl)). }
+      transitivity (eval_rules_mut_st h
+                      (merged_ruleK fields (setname n) body r1 :: rest) e p).
+      * apply (eval_rules_mut_st_mutfree_cons_cong h _ rr'' rest e p HmfMh).
+        apply (IHrs rest ltac:(unfold ltof; cbn; lia) (S n) dn m'' dd'' rr'' base e p
+                 (eq_sym Erec)).
+        -- intros k Hk Hin. subst dn; cbn [sd_sets map fst] in Hin.
+           destruct Hin as [Heq | Hin];
+             [ apply setname_inj in Heq; lia
+             | apply (Hfresh k); [lia | exact Hin] ].
+        -- intros k Hk Hk'. apply Hmint; lia.
+        -- eapply Forall_impl;
+             [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr]
+             | exact Hwf_rest ].
+      * rewrite (eval_rules_concat_mergeK h fields [row1; row2] (setname n) body r1 rest e p
+                   Hfne ltac:(discriminate) Hlook
+                   ltac:(intros row Hin; destruct Hin as [<-|[<-|[]]]; assumption)
+                   ltac:(cbn [map]; rewrite <- Hr1eq, <- Hr2eq; exact HmfR) HmfMh).
+        cbn [map]. rewrite <- Hr1eq, <- Hr2eq. reflexivity.
     + remember (optimize_rules_concatmulti n d (r2 :: rest)) as tt eqn:Erec.
       destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
       injection H as Hn' Hd' Hr'. subst n' d' rs'.
@@ -2456,6 +2510,141 @@ Proof.
     + destruct (optimize_rules_vmap fuel n d (r2 :: rest))
         as [[m'' dd''] rr''] eqn:Erec.
       cbv zeta in H. inversion H; subst. exact (IH _ _ _ _ _ _ Erec).
+Qed.
+
+(** The merged vmap rule's step, read off the fold's own [body_step]/[end_step]
+    (no pure-strand detour): the body walk decides whether the rule is reached, and
+    on a completed walk the vmap-keyed [end_step] returns the point map's
+    [first_match] (or nothing when the key field does not load).  On a mut-free
+    synproxy-free body the walk is [BRdone e p] or [BRbreak e p]. *)
+Lemma fst_step_vmap_merged : forall (h : hook_id) f nm es body e p,
+  e_vmap e nm = map vmap_pt es ->
+  (forall v w, In (v, w) es -> field_fixed_len f = Some (Datatypes.length v)) ->
+  body_has_synproxy body = false ->
+  forallb body_item_mutfree body = true ->
+  fst (rule_step h (mk_vmap_rule f nm body) e p)
+  = match body_step body e p with
+    | BRdone _ _ => if field_loadable f p then first_match f e p es else None
+    | _ => None
+    end.
+Proof.
+  intros h f nm es body e p Hvm Hfx Hns Hbody_mf.
+  pose proof (body_has_synproxy_false_stops body p Hns) as Hsp.
+  unfold rule_step, mk_vmap_rule. cbn [r_body].
+  pose proof (body_step_mutfree body e p Hbody_mf) as HBS. rewrite Hsp in HBS.
+  destruct (body_step body e p) as [eb pb | eb pb | eb pb] eqn:EBS; cbn [fst].
+  - reflexivity.
+  -     match type of HBS with (_ = (if ?C then _ else _)) => destruct C end; discriminate HBS.
+  -     match type of HBS with (_ = (if ?C then _ else _)) => destruct C end;
+      [| discriminate HBS].
+    injection HBS as Heb Hpb. subst eb pb.
+    unfold end_step. cbn [r_vmap vm_keyf vm_name vm_fields r_outcome].
+    cbn [vmap_loadable vm_keyf].
+    destruct (field_loadable f p) eqn:Hfld; cbn [fst]; [| reflexivity].
+    cbn [apply_transforms fold_left]. rewrite Hvm.
+    rewrite (assoc_verdict_points es f e p
+               ltac:(intros v w Hin Hld;
+                     apply (field_fixed_len_loaded f (Datatypes.length v) e p
+                              (Hfx v w Hin) Hld)) Hfld).
+    destruct (first_match f e p es) eqn:Efm; cbn [fst]; [reflexivity |].
+    unfold terminal_step.
+    cbn [has_effect_terminal r_nat r_tproxy r_fwd r_queue r_verdict r_after r_outcome].
+    reflexivity.
+Qed.
+
+(** Each original vmap shell's step: the head [MCmp f CEq v] gates the SAME body
+    walk, which on completion yields the terminal verdict [w]. *)
+Lemma fst_step_vmap_orig : forall (h : hook_id) f v body w e p,
+  body_has_synproxy body = false ->
+  forallb body_item_mutfree body = true ->
+  terminal w = true ->
+  fst (rule_step h (orig_rule f v body w) e p)
+  = if eval_matchcond (MCmp f CEq v) e p
+    then match body_step body e p with BRdone _ _ => Some w | _ => None end
+    else None.
+Proof.
+  intros h f v body w e p Hns Hbody_mf Hw.
+  pose proof (body_has_synproxy_false_stops body p Hns) as Hsp.
+  unfold rule_step, orig_rule, mk_head. cbn [r_body].
+  cbn [body_step].
+  rewrite (match_consume_free_id (MCmp f CEq v) e p eq_refl).
+  destruct (eval_matchcond (MCmp f CEq v) e p) eqn:Ev; [| reflexivity].
+  pose proof (body_step_mutfree body e p Hbody_mf) as HBS. rewrite Hsp in HBS.
+  destruct (body_step body e p) as [eb pb | eb pb | eb pb] eqn:EBS; cbn [fst].
+  - reflexivity.
+  -     match type of HBS with (_ = (if ?C then _ else _)) => destruct C end; discriminate HBS.
+  -     match type of HBS with (_ = (if ?C then _ else _)) => destruct C end;
+      [| discriminate HBS].
+    injection HBS as Heb Hpb. subst eb pb.
+    unfold end_step, mk_vmap_base. cbn [r_vmap r_outcome].
+    unfold terminal_step.
+    cbn [has_effect_terminal r_nat r_tproxy r_fwd r_queue r_verdict r_after r_outcome].
+    destruct w; cbn [terminal] in Hw; try discriminate Hw; reflexivity.
+Qed.
+
+(** The N-way vmap collapse over the STATE fold: a run of same-field, same-body
+    shells with DISTINCT terminal verdicts and keys — whose merged vmap [nm]
+    carries the N point entries — collapses to ONE [mk_vmap_rule].  Because the
+    per-entry verdicts DIFFER this is not a shared-[O] merge; it is the vmap's own
+    first-match scan, replayed rule-by-rule over the pinned state (the state fold
+    and the vmap lookup scan the same keys in the same order).  All shells are
+    mut-free, so the state stays at [(e, p)]. *)
+Lemma eval_rules_mut_st_vmap_mergeN : forall (h : hook_id) f nm es body rest e p,
+  e_vmap e nm = map vmap_pt es ->
+  (forall v w, In (v, w) es -> field_fixed_len f = Some (Datatypes.length v)) ->
+  (forall v w, In (v, w) es -> terminal w = true) ->
+  body_has_synproxy body = false ->
+  body_has_notrack body = false ->
+  forallb body_item_mutfree body = true ->
+  eval_rules_mut_st h (mk_vmap_rule f nm body :: rest) e p
+  = eval_rules_mut_st h (map (fun vw => orig_rule f (fst vw) body (snd vw)) es ++ rest) e p.
+Proof.
+  intros h f nm es body rest e p Hvm Hfx Hterm Hns Hnt Hbody_mf.
+  assert (Hmfo : forall v w, rule_mutfree (orig_rule f v body w) = true)
+    by (intros; apply rule_mutfree_orig_rule_intro; exact Hbody_mf).
+  rewrite (eval_rules_mut_st_mutfree_cons h (mk_vmap_rule f nm body) rest e p
+             (rule_mutfree_mk_vmap_rule f nm body Hbody_mf)).
+  rewrite (fst_step_vmap_merged h f nm es body e p Hvm Hfx Hns Hbody_mf). clear Hvm Hnt.
+  destruct (body_step body e p) as [eb pb | eb pb | eb pb] eqn:EBS.
+  1,2: (* body walk BREAKs / STEALs: the merged step is [None], and every shell
+          (its head gates the SAME broken walk) also steps to [None] — so both the
+          merged rule and the run fall through to [rest]. *)
+      revert Hfx Hterm;
+      induction es as [| [v w] es IH]; intros Hfx Hterm; cbn [map app];
+        [reflexivity |];
+      rewrite (eval_rules_mut_st_mutfree_cons h (orig_rule f v body w) _ e p (Hmfo v w)),
+              (fst_step_vmap_orig h f v body w e p Hns Hbody_mf (Hterm v w (or_introl eq_refl))),
+              EBS;
+      destruct (eval_matchcond (MCmp f CEq v) e p);
+        (apply IH; [ intros v' w' Hin; apply (Hfx v' w'); right; exact Hin
+                   | intros v' w' Hin; apply (Hterm v' w'); right; exact Hin ]).
+  - (* body walk completes: the merged rule's step is the vmap key scan
+       ([first_match]); the run scans the SAME keys in the same order. *)
+    destruct (field_loadable f p) eqn:Hfld.
+    + revert Hfx Hterm.
+      induction es as [| [v w] es IH]; intros Hfx Hterm;
+        cbn [map app first_match]; [reflexivity |].
+      rewrite (eval_rules_mut_st_mutfree_cons h (orig_rule f v body w) _ e p (Hmfo v w)),
+              (fst_step_vmap_orig h f v body w e p Hns Hbody_mf
+                 (Hterm v w (or_introl eq_refl))), EBS.
+      assert (Hm : eval_matchcond (MCmp f CEq v) e p = eval_cmp CEq (field_value f e p) v).
+      { unfold eval_matchcond, eval_matchcond_body. cbn [match_loadable].
+        rewrite Hfld. reflexivity. }
+      rewrite Hm.
+      destruct (eval_cmp CEq (field_value f e p) v) eqn:Ev.
+      * rewrite (Hterm v w (or_introl eq_refl)). reflexivity.
+      * apply IH; [ intros v' w' Hin; apply (Hfx v' w'); right; exact Hin
+                  | intros v' w' Hin; apply (Hterm v' w'); right; exact Hin ].
+    + revert Hfx Hterm.
+      induction es as [| [v w] es IH]; intros Hfx Hterm; cbn [map app]; [reflexivity |].
+      rewrite (eval_rules_mut_st_mutfree_cons h (orig_rule f v body w) _ e p (Hmfo v w)),
+              (fst_step_vmap_orig h f v body w e p Hns Hbody_mf
+                 (Hterm v w (or_introl eq_refl))), EBS.
+      assert (Hm : eval_matchcond (MCmp f CEq v) e p = false).
+      { unfold eval_matchcond. cbn [match_loadable]. rewrite Hfld. reflexivity. }
+      rewrite Hm.
+      apply IH; [ intros v' w' Hin; apply (Hfx v' w'); right; exact Hin
+                | intros v' w' Hin; apply (Hterm v' w'); right; exact Hin ].
 Qed.
 
 (** *** vmap (value+verdict run -> verdict map).  The minted namespace is
@@ -2541,43 +2730,27 @@ Proof.
                          m'' dd'' rr'' (vmapname n) _ (eq_sym Erec)).
              - subst dn; cbn [sd_vmaps assoc_str]. rewrite String.eqb_refl. reflexivity.
              - intros k Hk Heq. apply vmapname_inj in Heq. lia. }
-           assert (Hpure : eval_rules [mk_vmap_rule f (vmapname n) body] e p
-                           = eval_rules
-                               (map (fun vw => orig_rule f (fst vw) body (snd vw))
-                                  entries) e p).
-           { pose proof (eval_rules_vmap_mergeN f (vmapname n) entries body [] e p
-                           Hlook
-                           ltac:(intros v w Hin; subst entries;
-                                 destruct Hin as [Hvw | Hin];
-                                 [ inversion Hvw; subst; exact HwK1 | apply (HwK v w Hin) ])
-                           ltac:(intros v w Hin; subst entries;
-                                 destruct Hin as [Hvw | Hin];
-                                 [ inversion Hvw; subst; exact HwT1 | apply (HwT v w Hin) ])
-                           (body_has_synproxy_false_stops body p Hns) Hnt) as Hk.
-             rewrite app_nil_r in Hk. exact Hk. }
-           assert (HmfM : forallb rule_mutfree [mk_vmap_rule f (vmapname n) body] = true).
-           { cbn [forallb]. rewrite (rule_mutfree_mk_vmap_rule f (vmapname n) body Hbody_mf).
-             reflexivity. }
-           assert (HmfR : forallb rule_mutfree
-                     (map (fun vw => orig_rule f (fst vw) body (snd vw)) entries) = true).
-           { apply forallb_forall. intros x Hx.
-             apply in_map_iff in Hx as [vw [Hvw _]]. subst x.
-             apply rule_mutfree_orig_rule_intro. exact Hbody_mf. }
-           change (mk_vmap_rule f (vmapname n) body :: rr'')
-             with ([mk_vmap_rule f (vmapname n) body] ++ rr'').
+           assert (Hmfm : rule_mutfree (mk_vmap_rule f (vmapname n) body) = true)
+             by (apply rule_mutfree_mk_vmap_rule; exact Hbody_mf).
            rewrite Hrun_eq.
-           rewrite (eval_rules_mut_st_mutfree_prefix h _ rr'' e p HmfM).
-           rewrite (eval_rules_mut_st_mutfree_prefix h _ rest' e p HmfR).
-           rewrite Hpure.
-           destruct (eval_rules
-                       (map (fun vw => orig_rule f (fst vw) body (snd vw)) entries) e p)
-             as [w|]; [reflexivity |].
-           apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
-           ++ intros k Hk Hin. subst dn; cbn [sd_vmaps map fst] in Hin.
-              destruct Hin as [Heq | Hin];
-                [ apply vmapname_inj in Heq; lia
-                | apply (Hfresh k); [lia | exact Hin] ].
-           ++ intros k Hk Hk'. apply Hmint; lia.
+           transitivity (eval_rules_mut_st h
+                           (mk_vmap_rule f (vmapname n) body :: rest') e p).
+           ++ apply (eval_rules_mut_st_mutfree_cons_cong h _ rr'' rest' e p Hmfm).
+              apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
+              --- intros k Hk Hin. subst dn; cbn [sd_vmaps map fst] in Hin.
+                  destruct Hin as [Heq | Hin];
+                    [ apply vmapname_inj in Heq; lia
+                    | apply (Hfresh k); [lia | exact Hin] ].
+              --- intros k Hk Hk'. apply Hmint; lia.
+           ++ apply (eval_rules_mut_st_vmap_mergeN h f (vmapname n) entries body rest' e p
+                       Hlook
+                       ltac:(intros v w Hin; subst entries;
+                             destruct Hin as [Hvw | Hin];
+                             [ inversion Hvw; subst; exact HwK1 | apply (HwK v w Hin) ])
+                       ltac:(intros v w Hin; subst entries;
+                             destruct Hin as [Hvw | Hin];
+                             [ inversion Hvw; subst; exact HwT1 | apply (HwT v w Hin) ])
+                       Hns Hnt Hbody_mf).
       * remember (optimize_rules_vmap fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
@@ -2589,6 +2762,53 @@ Proof.
            intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
         ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
            intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
+Qed.
+
+(** The guarded N-way vmap collapse over the state fold: identical to the plain
+    one but with a SHARED head guard [gm].  A guarded shell is the plain shell over
+    the guard-prepended body [BMatch gm :: body] ([orig_ruleGv_eq_swap] at the
+    step level), so the guarded merge is the plain merge on that body, its run
+    swapped rule-for-rule via [eval_rules_mut_st_map_cong]. *)
+Lemma eval_rules_mut_st_vmap_mergeNg : forall (h : hook_id) f gm nm es body rest e p,
+  e_vmap e nm = map vmap_pt es ->
+  (forall v w, In (v, w) es -> field_fixed_len f = Some (Datatypes.length v)) ->
+  (forall v w, In (v, w) es -> terminal w = true) ->
+  body_has_synproxy body = false ->
+  body_has_notrack body = false ->
+  match_consumefree gm = true ->
+  forallb body_item_mutfree body = true ->
+  eval_rules_mut_st h (merged_ruleGv f gm nm body :: rest) e p
+  = eval_rules_mut_st h (map (fun vw => orig_ruleGv f gm (fst vw) body (snd vw)) es ++ rest) e p.
+Proof.
+  intros h f gm nm es body rest e p Hvm Hfx Hterm Hns Hnt Hgm Hbody_mf.
+  assert (HbodyG : forallb body_item_mutfree (BMatch gm :: body) = true)
+    by (cbn [forallb body_item_mutfree]; rewrite Hgm; exact Hbody_mf).
+  assert (HmfGv : forall v w, rule_mutfree (orig_ruleGv f gm v body w) = true).
+  { intros v w. unfold orig_ruleGv, orig_ruleGs.
+    apply rule_mutfree_mk_head_intro;
+      [ exact Hgm
+      | rewrite forallb_bim_cons_bmatch; cbn [match_consumefree]; exact Hbody_mf
+      | reflexivity | reflexivity ]. }
+  assert (HmfSw : forall v w, rule_mutfree (orig_rule f v (BMatch gm :: body) w) = true)
+    by (intros; apply rule_mutfree_orig_rule_intro; exact HbodyG).
+  unfold merged_ruleGv.
+  rewrite (eval_rules_mut_st_map_cong h
+             (fun vw => orig_ruleGv f gm (fst vw) body (snd vw))
+             (fun vw => orig_rule f (fst vw) (BMatch gm :: body) (snd vw))
+             es rest e p
+             (fun vw _ => HmfGv (fst vw) (snd vw))
+             (fun vw _ => HmfSw (fst vw) (snd vw))).
+  - apply (eval_rules_mut_st_vmap_mergeN h f nm es (BMatch gm :: body) rest e p Hvm Hfx Hterm
+             ltac:(unfold body_has_synproxy; cbn [existsb]; exact Hns)
+             ltac:(unfold body_has_notrack; cbn [existsb]; exact Hnt)
+             HbodyG).
+  - intros vw _.
+    destruct (orig_ruleGv_eq_swap f gm (fst vw) body (snd vw) e p) as [HL [HA HO]].
+    rewrite (rule_step_mutfree h (orig_ruleGv f gm (fst vw) body (snd vw)) e p
+               (HmfGv (fst vw) (snd vw))).
+    rewrite (rule_step_mutfree h (orig_rule f (fst vw) (BMatch gm :: body) (snd vw)) e p
+               (HmfSw (fst vw) (snd vw))).
+    cbn [fst]. rewrite HL, HA, HO. reflexivity.
 Qed.
 
 (** *** vmapguarded (guarded value+verdict run -> verdict map). *)
@@ -2682,52 +2902,28 @@ Proof.
                          m'' dd'' rr'' (vmapname n) _ (eq_sym Erec)).
              - subst dn; cbn [sd_vmaps assoc_str]. rewrite String.eqb_refl. reflexivity.
              - intros k Hk Heq. apply vmapname_inj in Heq. lia. }
-           assert (Hpure : eval_rules [merged_ruleGv f gm (vmapname n) body] e p
-                           = eval_rules
-                               (map (fun vw => orig_ruleGv f gm (fst vw) body (snd vw))
-                                  entries) e p).
-           { pose proof (eval_rules_vmap_mergeNg f gm (vmapname n) entries body [] e p
-                           Hlook
-                           ltac:(intros v w Hin; subst entries;
-                                 destruct Hin as [Hvw | Hin];
-                                 [ inversion Hvw; subst; exact HwK1 | apply (HwK v w Hin) ])
-                           ltac:(intros v w Hin; subst entries;
-                                 destruct Hin as [Hvw | Hin];
-                                 [ inversion Hvw; subst; exact HwT1 | apply (HwT v w Hin) ])
-                           (body_has_synproxy_false_stops body p Hns) Hnt) as Hk.
-             rewrite app_nil_r in Hk. exact Hk. }
-           assert (HmfM : forallb rule_mutfree [merged_ruleGv f gm (vmapname n) body] = true).
-           { cbn [forallb]. unfold merged_ruleGv.
-             rewrite (rule_mutfree_mk_vmap_rule f (vmapname n) (BMatch gm :: body)
-                        ltac:(rewrite forallb_bim_cons_bmatch; rewrite Hgm_cf;
-                              exact Hbody_mf)).
-             reflexivity. }
-           assert (HmfR : forallb rule_mutfree
-                     (map (fun vw => orig_ruleGv f gm (fst vw) body (snd vw)) entries)
-                     = true).
-           { apply forallb_forall. intros x Hx.
-             apply in_map_iff in Hx as [vw [Hvw _]]. subst x.
-             unfold orig_ruleGv, orig_ruleGs.
-             apply rule_mutfree_mk_head_intro;
-               [ exact Hgm_cf
-               | rewrite forallb_bim_cons_bmatch; cbn [match_consumefree];
-                 exact Hbody_mf
-               | reflexivity | reflexivity ]. }
-           change (merged_ruleGv f gm (vmapname n) body :: rr'')
-             with ([merged_ruleGv f gm (vmapname n) body] ++ rr'').
+           assert (Hmfm : rule_mutfree (merged_ruleGv f gm (vmapname n) body) = true).
+           { unfold merged_ruleGv. apply rule_mutfree_mk_vmap_rule.
+             rewrite forallb_bim_cons_bmatch, Hgm_cf. exact Hbody_mf. }
            rewrite Hrun_eq.
-           rewrite (eval_rules_mut_st_mutfree_prefix h _ rr'' e p HmfM).
-           rewrite (eval_rules_mut_st_mutfree_prefix h _ rest' e p HmfR).
-           rewrite Hpure.
-           destruct (eval_rules
-                       (map (fun vw => orig_ruleGv f gm (fst vw) body (snd vw)) entries)
-                       e p) as [w|]; [reflexivity |].
-           apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
-           ++ intros k Hk Hin. subst dn; cbn [sd_vmaps map fst] in Hin.
-              destruct Hin as [Heq | Hin];
-                [ apply vmapname_inj in Heq; lia
-                | apply (Hfresh k); [lia | exact Hin] ].
-           ++ intros k Hk Hk'. apply Hmint; lia.
+           transitivity (eval_rules_mut_st h
+                           (merged_ruleGv f gm (vmapname n) body :: rest') e p).
+           ++ apply (eval_rules_mut_st_mutfree_cons_cong h _ rr'' rest' e p Hmfm).
+              apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
+              --- intros k Hk Hin. subst dn; cbn [sd_vmaps map fst] in Hin.
+                  destruct Hin as [Heq | Hin];
+                    [ apply vmapname_inj in Heq; lia
+                    | apply (Hfresh k); [lia | exact Hin] ].
+              --- intros k Hk Hk'. apply Hmint; lia.
+           ++ apply (eval_rules_mut_st_vmap_mergeNg h f gm (vmapname n) entries body rest' e p
+                       Hlook
+                       ltac:(intros v w Hin; subst entries;
+                             destruct Hin as [Hvw | Hin];
+                             [ inversion Hvw; subst; exact HwK1 | apply (HwK v w Hin) ])
+                       ltac:(intros v w Hin; subst entries;
+                             destruct Hin as [Hvw | Hin];
+                             [ inversion Hvw; subst; exact HwT1 | apply (HwT v w Hin) ])
+                       Hns Hnt Hgm_cf Hbody_mf).
       * remember (optimize_rules_vmapguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
@@ -2739,6 +2935,146 @@ Proof.
            intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
         ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
            intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
+Qed.
+
+(** The masked merged rule's step (via [body_step]/[end_step]): the transform-keyed
+    [end_step] returns the point map's [first_match_m] on a completed walk. *)
+Lemma fst_step_dscpv_merged : forall (h : hook_id) f mask xor nm es body e p,
+  e_vmap e nm = map vmap_pt es ->
+  (forall v w, In (v, w) es -> field_fixed_len f = Some (Datatypes.length v)) ->
+  (forall v w, In (v, w) es -> Datatypes.length mask = Datatypes.length v) ->
+  (forall v w, In (v, w) es -> Datatypes.length xor = Datatypes.length v) ->
+  body_has_synproxy body = false ->
+  forallb body_item_mutfree body = true ->
+  fst (rule_step h (mk_vmap_rule_t f [TBitAnd mask xor] nm body) e p)
+  = match body_step body e p with
+    | BRdone _ _ => if field_loadable f p then first_match_m f mask xor e p es else None
+    | _ => None
+    end.
+Proof.
+  intros h f mask xor nm es body e p Hvm Hfx Hmw Hxw Hns Hbody_mf.
+  pose proof (body_has_synproxy_false_stops body p Hns) as Hsp.
+  unfold rule_step, mk_vmap_rule_t. cbn [r_body].
+  pose proof (body_step_mutfree body e p Hbody_mf) as HBS. rewrite Hsp in HBS.
+  destruct (body_step body e p) as [eb pb | eb pb | eb pb] eqn:EBS; cbn [fst].
+  - reflexivity.
+  - match type of HBS with (_ = (if ?C then _ else _)) => destruct C end; discriminate HBS.
+  - match type of HBS with (_ = (if ?C then _ else _)) => destruct C end;
+      [| discriminate HBS].
+    injection HBS as Heb Hpb. subst eb pb.
+    unfold end_step. cbn [r_vmap vm_keyf vm_name vm_fields r_outcome].
+    cbn [vmap_loadable vm_keyf].
+    destruct (field_loadable f p) eqn:Hfld; cbn [fst]; [| reflexivity].
+    cbn [apply_transforms fold_left apply_transform]. rewrite Hvm.
+    rewrite (assoc_verdict_points_m es f mask xor e p
+               ltac:(intros v w Hin Hld;
+                     apply (dscpv_key_width f mask xor v e p
+                              (Hfx v w Hin) (Hmw v w Hin) (Hxw v w Hin) Hld)) Hfld).
+    destruct (first_match_m f mask xor e p es) eqn:Efm; cbn [fst]; [reflexivity |].
+    unfold terminal_step.
+    cbn [has_effect_terminal r_nat r_tproxy r_fwd r_queue r_verdict r_after r_outcome].
+    reflexivity.
+Qed.
+
+(** Each masked original shell's step: its [MMasked] head gates the SAME body walk,
+    which on completion yields the terminal verdict [w]. *)
+Lemma fst_step_dscpv_orig : forall (h : hook_id) f mask xor v body w e p,
+  body_has_synproxy body = false ->
+  forallb body_item_mutfree body = true ->
+  terminal w = true ->
+  fst (rule_step h (orig_rule_m f mask xor v body w) e p)
+  = if eval_matchcond (MMasked f CEq mask xor v) e p
+    then match body_step body e p with BRdone _ _ => Some w | _ => None end
+    else None.
+Proof.
+  intros h f mask xor v body w e p Hns Hbody_mf Hw.
+  pose proof (body_has_synproxy_false_stops body p Hns) as Hsp.
+  unfold rule_step, orig_rule_m, mk_head. cbn [r_body].
+  cbn [body_step].
+  rewrite (match_consume_free_id (MMasked f CEq mask xor v) e p eq_refl).
+  destruct (eval_matchcond (MMasked f CEq mask xor v) e p) eqn:Ev; [| reflexivity].
+  pose proof (body_step_mutfree body e p Hbody_mf) as HBS. rewrite Hsp in HBS.
+  destruct (body_step body e p) as [eb pb | eb pb | eb pb] eqn:EBS; cbn [fst].
+  - reflexivity.
+  - match type of HBS with (_ = (if ?C then _ else _)) => destruct C end; discriminate HBS.
+  - match type of HBS with (_ = (if ?C then _ else _)) => destruct C end;
+      [| discriminate HBS].
+    injection HBS as Heb Hpb. subst eb pb.
+    unfold end_step, mk_vmap_base. cbn [r_vmap r_outcome].
+    unfold terminal_step.
+    cbn [has_effect_terminal r_nat r_tproxy r_fwd r_queue r_verdict r_after r_outcome].
+    destruct w; cbn [terminal] in Hw; try discriminate Hw; reflexivity.
+Qed.
+
+(** The masked N-way vmap collapse over the state fold: like the plain vmap merge
+    but the merged rule's key is [field & mask ^ xor] (a [TBitAnd] transform) and
+    each shell matches [MMasked f CEq mask xor v].  The transformed-key lookup scan
+    ([first_match_m]) is replayed rule-by-rule over the pinned state. *)
+Lemma eval_rules_mut_st_dscpv_mergeN : forall (h : hook_id) f mask xor nm es body rest e p,
+  e_vmap e nm = map vmap_pt es ->
+  (forall v w, In (v, w) es -> field_fixed_len f = Some (Datatypes.length v)) ->
+  (forall v w, In (v, w) es -> Datatypes.length mask = Datatypes.length v) ->
+  (forall v w, In (v, w) es -> Datatypes.length xor = Datatypes.length v) ->
+  (forall v w, In (v, w) es -> terminal w = true) ->
+  body_has_synproxy body = false ->
+  body_has_notrack body = false ->
+  forallb body_item_mutfree body = true ->
+  eval_rules_mut_st h (mk_vmap_rule_t f [TBitAnd mask xor] nm body :: rest) e p
+  = eval_rules_mut_st h
+      (map (fun vw => orig_rule_m f mask xor (fst vw) body (snd vw)) es ++ rest) e p.
+Proof.
+  intros h f mask xor nm es body rest e p Hvm Hfx Hmw Hxw Hterm Hns Hnt Hbody_mf.
+  assert (Hmfo : forall v w, rule_mutfree (orig_rule_m f mask xor v body w) = true).
+  { intros. unfold orig_rule_m. apply rule_mutfree_mk_head_intro;
+      [ reflexivity | exact Hbody_mf | reflexivity | reflexivity ]. }
+  assert (Hmfm : rule_mutfree (mk_vmap_rule_t f [TBitAnd mask xor] nm body) = true).
+  { unfold rule_mutfree, mk_vmap_rule_t, rule_natfree, r_nat.
+    cbn [r_body r_after r_outcome forallb]. rewrite Hbody_mf. reflexivity. }
+  rewrite (eval_rules_mut_st_mutfree_cons h
+             (mk_vmap_rule_t f [TBitAnd mask xor] nm body) rest e p Hmfm).
+  rewrite (fst_step_dscpv_merged h f mask xor nm es body e p Hvm Hfx Hmw Hxw Hns Hbody_mf).
+  clear Hvm Hnt.
+  destruct (body_step body e p) as [eb pb | eb pb | eb pb] eqn:EBS.
+  1,2: revert Hfx Hmw Hxw Hterm;
+      induction es as [| [v w] es IH]; intros Hfx Hmw Hxw Hterm; cbn [map app];
+        [reflexivity |];
+      rewrite (eval_rules_mut_st_mutfree_cons h (orig_rule_m f mask xor v body w) _ e p
+                 (Hmfo v w)),
+              (fst_step_dscpv_orig h f mask xor v body w e p Hns Hbody_mf
+                 (Hterm v w (or_introl eq_refl))), EBS;
+      destruct (eval_matchcond (MMasked f CEq mask xor v) e p);
+        (apply IH; [ intros v' w' Hin; apply (Hfx v' w'); right; exact Hin
+                   | intros v' w' Hin; apply (Hmw v' w'); right; exact Hin
+                   | intros v' w' Hin; apply (Hxw v' w'); right; exact Hin
+                   | intros v' w' Hin; apply (Hterm v' w'); right; exact Hin ]).
+  - destruct (field_loadable f p) eqn:Hfld.
+    + revert Hfx Hmw Hxw Hterm.
+      induction es as [| [v w] es IH]; intros Hfx Hmw Hxw Hterm;
+        cbn [map app first_match_m]; [reflexivity |].
+      rewrite (eval_rules_mut_st_mutfree_cons h (orig_rule_m f mask xor v body w) _ e p
+                 (Hmfo v w)),
+              (fst_step_dscpv_orig h f mask xor v body w e p Hns Hbody_mf
+                 (Hterm v w (or_introl eq_refl))), EBS.
+      destruct (eval_matchcond (MMasked f CEq mask xor v) e p) eqn:Ev.
+      * rewrite (Hterm v w (or_introl eq_refl)). reflexivity.
+      * apply IH; [ intros v' w' Hin; apply (Hfx v' w'); right; exact Hin
+                  | intros v' w' Hin; apply (Hmw v' w'); right; exact Hin
+                  | intros v' w' Hin; apply (Hxw v' w'); right; exact Hin
+                  | intros v' w' Hin; apply (Hterm v' w'); right; exact Hin ].
+    + revert Hfx Hmw Hxw Hterm.
+      induction es as [| [v w] es IH]; intros Hfx Hmw Hxw Hterm; cbn [map app];
+        [reflexivity |].
+      rewrite (eval_rules_mut_st_mutfree_cons h (orig_rule_m f mask xor v body w) _ e p
+                 (Hmfo v w)),
+              (fst_step_dscpv_orig h f mask xor v body w e p Hns Hbody_mf
+                 (Hterm v w (or_introl eq_refl))), EBS.
+      assert (Hm : eval_matchcond (MMasked f CEq mask xor v) e p = false).
+      { unfold eval_matchcond. cbn [match_loadable]. rewrite Hfld. reflexivity. }
+      rewrite Hm.
+      apply IH; [ intros v' w' Hin; apply (Hfx v' w'); right; exact Hin
+                | intros v' w' Hin; apply (Hmw v' w'); right; exact Hin
+                | intros v' w' Hin; apply (Hxw v' w'); right; exact Hin
+                | intros v' w' Hin; apply (Hterm v' w'); right; exact Hin ].
 Qed.
 
 (** *** dscpvmap (masked value+verdict run -> transformed verdict map). *)
@@ -2825,57 +3161,35 @@ Proof.
                          m'' dd'' rr'' (vmapname n) _ (eq_sym Erec)).
              - subst dn; cbn [sd_vmaps assoc_str]. rewrite String.eqb_refl. reflexivity.
              - intros k Hk Heq. apply vmapname_inj in Heq. lia. }
-           assert (Hpure : eval_rules
-                             [mk_vmap_rule_t f [TBitAnd mask xor] (vmapname n) body] e p
-                           = eval_rules
-                               (map (fun vw => orig_rule_m f mask xor (fst vw) body (snd vw))
-                                  entries) e p).
-           { pose proof (eval_rules_dscpv_mergeN f mask xor (vmapname n) entries body [] e p
-                           Hlook
-                           ltac:(intros v w Hin; subst entries;
-                                 destruct Hin as [Hvw | Hin];
-                                 [ inversion Hvw; subst; exact HwK1 | apply (HwK v w Hin) ])
-                           ltac:(intros v w Hin; subst entries;
-                                 destruct Hin as [Hvw | Hin];
-                                 [ inversion Hvw; subst; exact HwM1 | apply (HwM v w Hin) ])
-                           ltac:(intros v w Hin; subst entries;
-                                 destruct Hin as [Hvw | Hin];
-                                 [ inversion Hvw; subst; exact HwX1 | apply (HwX v w Hin) ])
-                           ltac:(intros v w Hin; subst entries;
-                                 destruct Hin as [Hvw | Hin];
-                                 [ inversion Hvw; subst; exact HwT1 | apply (HwT v w Hin) ])
-                           (body_has_synproxy_false_stops body p Hns) Hnt) as Hk.
-             rewrite app_nil_r in Hk. exact Hk. }
-           assert (HmfM : forallb rule_mutfree
-                     [mk_vmap_rule_t f [TBitAnd mask xor] (vmapname n) body] = true).
-           { cbn [forallb].
-             assert (Hm : rule_mutfree (mk_vmap_rule_t f [TBitAnd mask xor]
+           assert (Hmfm : rule_mutfree (mk_vmap_rule_t f [TBitAnd mask xor]
                                           (vmapname n) body) = true).
-             { unfold rule_mutfree, mk_vmap_rule_t, rule_natfree, r_nat.
-               cbn [r_body r_after r_outcome forallb]. rewrite Hbody_mf. reflexivity. }
-             rewrite Hm. reflexivity. }
-           assert (HmfR : forallb rule_mutfree
-                     (map (fun vw => orig_rule_m f mask xor (fst vw) body (snd vw))
-                        entries) = true).
-           { apply forallb_forall. intros x Hx.
-             apply in_map_iff in Hx as [vw [Hvw _]]. subst x. unfold orig_rule_m.
-             apply rule_mutfree_mk_head_intro;
-               [ reflexivity | exact Hbody_mf | reflexivity | reflexivity ]. }
-           change (mk_vmap_rule_t f [TBitAnd mask xor] (vmapname n) body :: rr'')
-             with ([mk_vmap_rule_t f [TBitAnd mask xor] (vmapname n) body] ++ rr'').
+           { unfold rule_mutfree, mk_vmap_rule_t, rule_natfree, r_nat.
+             cbn [r_body r_after r_outcome forallb]. rewrite Hbody_mf. reflexivity. }
            rewrite Hrun_eq.
-           rewrite (eval_rules_mut_st_mutfree_prefix h _ rr'' e p HmfM).
-           rewrite (eval_rules_mut_st_mutfree_prefix h _ rest' e p HmfR).
-           rewrite Hpure.
-           destruct (eval_rules
-                       (map (fun vw => orig_rule_m f mask xor (fst vw) body (snd vw))
-                          entries) e p) as [w|]; [reflexivity |].
-           apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
-           ++ intros k Hk Hin. subst dn; cbn [sd_vmaps map fst] in Hin.
-              destruct Hin as [Heq | Hin];
-                [ apply vmapname_inj in Heq; lia
-                | apply (Hfresh k); [lia | exact Hin] ].
-           ++ intros k Hk Hk'. apply Hmint; lia.
+           transitivity (eval_rules_mut_st h
+                           (mk_vmap_rule_t f [TBitAnd mask xor] (vmapname n) body :: rest') e p).
+           ++ apply (eval_rules_mut_st_mutfree_cons_cong h _ rr'' rest' e p Hmfm).
+              apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
+              --- intros k Hk Hin. subst dn; cbn [sd_vmaps map fst] in Hin.
+                  destruct Hin as [Heq | Hin];
+                    [ apply vmapname_inj in Heq; lia
+                    | apply (Hfresh k); [lia | exact Hin] ].
+              --- intros k Hk Hk'. apply Hmint; lia.
+           ++ apply (eval_rules_mut_st_dscpv_mergeN h f mask xor (vmapname n) entries body
+                       rest' e p Hlook
+                       ltac:(intros v w Hin; subst entries;
+                             destruct Hin as [Hvw | Hin];
+                             [ inversion Hvw; subst; exact HwK1 | apply (HwK v w Hin) ])
+                       ltac:(intros v w Hin; subst entries;
+                             destruct Hin as [Hvw | Hin];
+                             [ inversion Hvw; subst; exact HwM1 | apply (HwM v w Hin) ])
+                       ltac:(intros v w Hin; subst entries;
+                             destruct Hin as [Hvw | Hin];
+                             [ inversion Hvw; subst; exact HwX1 | apply (HwX v w Hin) ])
+                       ltac:(intros v w Hin; subst entries;
+                             destruct Hin as [Hvw | Hin];
+                             [ inversion Hvw; subst; exact HwT1 | apply (HwT v w Hin) ])
+                       Hns Hnt Hbody_mf).
       * remember (optimize_rules_dscpvmap fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
@@ -3382,6 +3696,35 @@ Proof.
         -- intros k Hk Hk'. rewrite (Hstm k Hk). apply Hmintm; assumption.
 Qed.
 
+(** Two [mk_head] shells over a COMMON base rule collapse under head subsumption:
+    when [m1] loadable/matching implies [m2] loadable/matching, dropping the [m1]
+    shell before the [m2] shell preserves the state fold.  Every terminal firing of
+    the [m1] shell is a firing of the [m2] shell at the SAME verdict (the shells
+    share body / end, so their fired verdict is head-independent), so
+    [eval_rules_mut_st_absorb_pair]'s subsumption holds. *)
+Lemma eval_rules_mut_st_absorb_mk : forall (h : hook_id) m1 m2 body rbase rest e p,
+  rule_mutfree (mk_head m1 body rbase) = true ->
+  rule_mutfree (mk_head m2 body rbase) = true ->
+  (match_loadable m1 p = true -> match_loadable m2 p = true) ->
+  (eval_matchcond m1 e p = true -> eval_matchcond m2 e p = true) ->
+  eval_rules_mut_st h (mk_head m1 body rbase :: mk_head m2 body rbase :: rest) e p
+  = eval_rules_mut_st h (mk_head m2 body rbase :: rest) e p.
+Proof.
+  intros h m1 m2 body rbase rest e p Hmf1 Hmf2 Pload Peval.
+  apply (eval_rules_mut_st_absorb_pair h (mk_head m1 body rbase)
+           (mk_head m2 body rbase) rest e p Hmf1 Hmf2).
+  intros v Hfire.
+  rewrite (rule_step_mutfree h (mk_head m1 body rbase) e p Hmf1) in Hfire.
+  rewrite (rule_step_mutfree h (mk_head m2 body rbase) e p Hmf2).
+  cbn [fst] in Hfire |- *.
+  rewrite rule_loadable_mk_head, rule_applies_mk_head, outcome_mk_head in Hfire.
+  rewrite rule_loadable_mk_head, rule_applies_mk_head, outcome_mk_head.
+  destruct (match_loadable m1 p); cbn [andb] in Hfire; [| discriminate Hfire].
+  destruct (eval_matchcond m1 e p); cbn [andb] in Hfire.
+  - rewrite (Pload eq_refl), (Peval eq_refl). cbn [andb]. exact Hfire.
+  - rewrite Bool.andb_false_r in Hfire. discriminate Hfire.
+Qed.
+
 (** *** absorb (prefix-subsumed rule deletion) — effect-level. *)
 Theorem optimize_rules_absorb_mut_st : forall h fuel rs e p,
   eval_rules_mut_st h (optimize_rules_absorb fuel rs) e p
@@ -3396,19 +3739,28 @@ Proof.
     assert (Hmf1 : rule_mutfree r1 = true) by (exact (absorb_pair_mutfree r1 r2 _ Eap)).
     destruct tup as [[[[[[b off] w1] w2] v1] v2] body].
     destruct (absorb_pair_facts r1 r2 b off w1 w2 v1 v2 body Eap)
-      as [Hr1 [Hr2 _]].
-    assert (Hmf1' : rule_mutfree (mk_head (MCmp (FPayload b off w1) CEq v1) body r1) = true)
+      as [Hr1 [Hr2 [Hle [Hlv1 [Hlv2 Hfn]]]]].
+    set (m1 := MCmp (FPayload b off w1) CEq v1) in *.
+    set (m2 := MCmp (FPayload b off w2) CEq v2) in *.
+    assert (Hmf1' : rule_mutfree (mk_head m1 body r1) = true)
       by (rewrite <- Hr1; exact Hmf1).
-    assert (Hmf2 : rule_mutfree r2 = true).
-    { rewrite Hr2.
-      exact (rule_mutfree_mk_head_swap (MCmp (FPayload b off w1) CEq v1)
-               (MCmp (FPayload b off w2) CEq v2) body r1 eq_refl Hmf1'). }
-    apply (eval_rules_mut_st_mutfree_block h [r2] [r1; r2] rest e p).
-    + cbn [forallb]. rewrite Hmf2. reflexivity.
-    + cbn [forallb]. rewrite Hmf1, Hmf2. reflexivity.
-    + pose proof (eval_rules_absorb_correct r1 r2
-                    (b, off, w1, w2, v1, v2, body) [] e p Eap) as Hp.
-      exact Hp.
+    assert (Hmf2' : rule_mutfree (mk_head m2 body r1) = true)
+      by (exact (rule_mutfree_mk_head_swap m1 m2 body r1 eq_refl Hmf1')).
+    rewrite Hr1, Hr2. symmetry.
+    apply (eval_rules_mut_st_absorb_mk h m1 m2 body r1 rest e p Hmf1' Hmf2').
+    + unfold m1, m2. cbn [match_loadable field_loadable field_load load_ok].
+      apply read_payload_ok_mono. exact Hle.
+    + unfold eval_matchcond, m1, m2, eval_matchcond_body.
+      cbn [match_loadable field_loadable field_load load_ok].
+      intro Hm1. apply andb_true_iff in Hm1 as [Hl1 Hb1].
+      apply andb_true_iff. split.
+      * apply (read_payload_ok_mono b off w2 w1 p Hle Hl1).
+      * cbn [eval_cmp field_value field_load do_load] in Hb1 |- *.
+        rewrite read_payload_slice in Hb1. rewrite read_payload_slice.
+        apply data_eqb_true_iff in Hb1. apply data_eqb_true_iff.
+        rewrite Hlv1 in Hb1. rewrite firstn_len_slice in Hb1.
+        rewrite Hlv2. rewrite firstn_len_slice.
+        rewrite (slice_prefix (base_bytes b p) off w2 w1 Hle), Hb1. exact Hfn.
   - rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
     destruct (rule_step h r1 e p) as [[w|] [e1 p1]];
       [ destruct (terminal w); [reflexivity | apply IH] | apply IH ].
@@ -3425,22 +3777,34 @@ Proof.
   destruct (ctmask_pair r1 r2) as [[[[[f m1] m2] z] body] |] eqn:Ep.
   - rewrite (IH (ctmask_merged f m1 m2 z body r1 :: rest) e p).
     assert (Hmf1 : rule_mutfree r1 = true) by (exact (ctmask_pair_mutfree r1 r2 _ Ep)).
-    destruct (ctmask_pair_facts r1 r2 f m1 m2 z body Ep) as [Hr1 [Hr2 _]].
+    destruct (ctmask_pair_facts r1 r2 f m1 m2 z body Ep) as [Hr1 [Hr2 [Hl1 [Hl2 Hz]]]].
     assert (Hmf1' : rule_mutfree (mk_head (MMasked f CNe m1 z z) body r1) = true)
       by (rewrite <- Hr1; exact Hmf1).
-    assert (Hmf2 : rule_mutfree r2 = true).
-    { rewrite Hr2.
-      exact (rule_mutfree_mk_head_swap (MMasked f CNe m1 z z)
-               (MMasked f CNe m2 z z) body r1 eq_refl Hmf1'). }
-    assert (HmfM : rule_mutfree (ctmask_merged f m1 m2 z body r1) = true).
-    { unfold ctmask_merged.
-      exact (rule_mutfree_mk_head_swap (MMasked f CNe m1 z z)
-               (MMasked f CNe (data_or m1 m2) z z) body r1 eq_refl Hmf1'). }
-    apply (eval_rules_mut_st_mutfree_block h [ctmask_merged f m1 m2 z body r1]
-             [r1; r2] rest e p).
-    + cbn [forallb]. rewrite HmfM. reflexivity.
-    + cbn [forallb]. rewrite Hmf1, Hmf2. reflexivity.
-    + exact (eval_rules_ctmask_correct r1 r2 f m1 m2 z body [] e p Ep).
+    assert (Hmfg : forall m, rule_mutfree (mk_head (MMasked f CNe m z z) body r1) = true)
+      by (intro m; exact (rule_mutfree_mk_head_swap (MMasked f CNe m1 z z)
+             (MMasked f CNe m z z) body r1 eq_refl Hmf1')).
+    assert (Hrun_eq : r1 :: r2 :: rest
+              = map (fun m => mk_head (MMasked f CNe m z z) body r1) [m1; m2] ++ rest).
+    { cbn [map app]. f_equal; [exact Hr1 | f_equal; exact Hr2]. }
+    rewrite Hrun_eq. unfold ctmask_merged.
+    refine (eval_rules_mut_st_run_collapse h [m1; m2]
+              (fun m => mk_head (MMasked f CNe m z z) body r1)
+              (fun m => eval_matchcond (MMasked f CNe m z z) e p)
+              _ _ (mk_head (MMasked f CNe (data_or m1 m2) z z) body r1) rest e p
+              ltac:(discriminate) _ (Hmfg (data_or m1 m2)) _ _).
+    + cbn [map forallb]. rewrite !Hmfg. reflexivity.
+    + intros m Hin.
+      rewrite (rule_step_mutfree h (mk_head (MMasked f CNe m z z) body r1) e p (Hmfg m)).
+      cbn [fst].
+      rewrite rule_loadable_mk_head, rule_applies_mk_head, outcome_mk_head.
+      cbn [match_loadable]. rewrite andb_swap_mid. reflexivity.
+    + rewrite (rule_step_mutfree h
+                 (mk_head (MMasked f CNe (data_or m1 m2) z z) body r1) e p
+                 (Hmfg (data_or m1 m2))).
+      cbn [fst].
+      rewrite rule_loadable_mk_head, rule_applies_mk_head, outcome_mk_head.
+      rewrite (mmasked_ctmask_disjunction f m1 m2 z e p Hl1 Hl2 Hz).
+      cbn [existsb match_loadable]. rewrite Bool.orb_false_r, andb_swap_mid. reflexivity.
   - rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
     destruct (rule_step h r1 e p) as [[w|] [e1 p1]];
       [ destruct (terminal w); [reflexivity | apply IH] | apply IH ].
