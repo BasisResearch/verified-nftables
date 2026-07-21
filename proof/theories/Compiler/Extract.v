@@ -159,8 +159,16 @@ Separate Extraction
   run_chain_mut
   eval_chain_mut_env
   run_chain_mut_env
-  eval_chain_trace
+  eval_chain_u
   chain_out
+  chain_out_env
+  eval_table_u
+  run_table_u
+  eval_ruleset_u
+  run_ruleset_u
+  eval_hook_u
+  apply_nat
+  nat_drops
   seq_eval_env
   eval_ruleset
   run_ruleset

@@ -46,6 +46,11 @@ From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile
 Import ListNotations.
 Local Open Scope string_scope.
 
+(* Pins below hold at EVERY netfilter hook [h] (no rule here carries a NAT
+   terminal, so the hook is inert); the section generalizes each statement. *)
+Section AtHook.
+Context (h : hook_id).
+
 Definition oracle0 : string -> option nat := fun _ => None.
 Definition fs_init : fstate := mkFstate ls0 nil nil.
 Definition dummy_rule : rule :=
@@ -111,14 +116,14 @@ Definition p_tcp : packet := mkpkt [6].
 (** DSL: the non-TCP packet BREAKs on the head guard — no verdict, and the
     body's mark write never ran. *)
 Example udp_guard_breaks_before_mark_write :
-  (let '(v, (_, p')) := rule_step rule_mark env0 p_udp in
+  (let '(v, (_, p')) := rule_step h rule_mark env0 p_udp in
    (v, pkt_meta p' MKmark))
   = (None, []).
 Proof. vm_compute. reflexivity. Qed.
 
 (** DSL: the TCP packet passes the guard, takes the write AND the Reject. *)
 Example tcp_mark_written_and_rejected :
-  (let '(v, (_, p')) := rule_step rule_mark env0 p_tcp in
+  (let '(v, (_, p')) := rule_step h rule_mark env0 p_tcp in
    (v, pkt_meta p' MKmark))
   = (Some (Reject 1 0), [1; 0; 0; 0]).
 Proof. vm_compute. reflexivity. Qed.
@@ -128,13 +133,13 @@ Proof. vm_compute. reflexivity. Qed.
 Definition prog_mark : rule_prog := Compile.compile_rule rule_mark.
 
 Example vm_udp_guard_breaks_before_mark_write :
-  (let '(v, (_, p')) := run_rule_step empty_rf prog_mark env0 p_udp in
+  (let '(v, (_, p')) := run_rule_step h empty_rf prog_mark env0 p_udp in
    (v, pkt_meta p' MKmark))
   = (None, []).
 Proof. vm_compute. reflexivity. Qed.
 
 Example vm_tcp_mark_written_and_rejected :
-  (let '(v, (_, p')) := run_rule_step empty_rf prog_mark env0 p_tcp in
+  (let '(v, (_, p')) := run_rule_step h empty_rf prog_mark env0 p_tcp in
    (v, pkt_meta p' MKmark))
   = (Some (Reject 1 0), [1; 0; 0; 0]).
 Proof. vm_compute. reflexivity. Qed.
@@ -152,7 +157,9 @@ Definition rule_mark_guard_last : rule :=
      r_outcome := OVerdict (Reject 1 0); r_after := nil |}.
 
 Example guard_last_leaks_the_write :
-  (let '(v, (_, p')) := rule_step rule_mark_guard_last env0 p_udp in
+  (let '(v, (_, p')) := rule_step h rule_mark_guard_last env0 p_udp in
    (v, pkt_meta p' MKmark))
   = (None, [1; 0; 0; 0]).
 Proof. vm_compute. reflexivity. Qed.
+
+End AtHook.

@@ -304,8 +304,8 @@ let () =
   ] in
   let mprog = Compile.compile_chain mut_chain in
   Stdlib.List.iter (fun (name, (e, p)) ->
-    let dsl_mut   = Semantics.eval_chain_mut mut_chain e p in
-    let vm_mut    = Semantics.run_chain_mut  mprog mut_chain.Syntax.c_policy e p in
+    let dsl_mut   = Semantics.eval_chain_mut Semantics.Hprerouting mut_chain e p in
+    let vm_mut    = Semantics.run_chain_mut Semantics.Hprerouting mprog mut_chain.Syntax.c_policy e p in
     let dsl_nomut = Semantics.eval_chain mut_chain e p in
     let ok = dsl_mut = vm_mut in
     Printf.printf "  %-22s mut: DSL=%-7s VM=%-7s | verdict-only DSL=%-7s %s\n"
@@ -333,8 +333,8 @@ let () =
   ] in
   let dprog = Compile.compile_chain dyn_chain in
   Stdlib.List.iter (fun (name, (e, p)) ->
-    let dsl_mut   = Semantics.eval_chain_mut dyn_chain e p in
-    let vm_mut    = Semantics.run_chain_mut  dprog dyn_chain.Syntax.c_policy e p in
+    let dsl_mut   = Semantics.eval_chain_mut Semantics.Hprerouting dyn_chain e p in
+    let vm_mut    = Semantics.run_chain_mut Semantics.Hprerouting dprog dyn_chain.Syntax.c_policy e p in
     let dsl_nomut = Semantics.eval_chain dyn_chain e p in
     let ok = dsl_mut = vm_mut in
     Printf.printf "  %-26s mut: DSL=%-7s VM=%-7s | verdict-only DSL=%-7s %s\n"
@@ -356,8 +356,8 @@ let () =
   ] in
   let mdprog = Compile.compile_chain mapdyn_chain in
   Stdlib.List.iter (fun (name, (e, p)) ->
-    let dsl_mut   = Semantics.eval_chain_mut mapdyn_chain e p in
-    let vm_mut    = Semantics.run_chain_mut  mdprog mapdyn_chain.Syntax.c_policy e p in
+    let dsl_mut   = Semantics.eval_chain_mut Semantics.Hprerouting mapdyn_chain e p in
+    let vm_mut    = Semantics.run_chain_mut Semantics.Hprerouting mdprog mapdyn_chain.Syntax.c_policy e p in
     let dsl_nomut = Semantics.eval_chain mapdyn_chain e p in
     let ok = dsl_mut = vm_mut in
     Printf.printf "  %-26s mut: DSL=%-7s VM=%-7s | verdict-only DSL=%-7s %s\n"
@@ -383,9 +383,9 @@ let () =
   let one   = snd (mk_pkt ~nh:(nh ~saddr:[10;0;0;1] ~daddr:[8;8;8;8]) ()) in
   let pkts  = [ one; one ] in    (* two packets from the same source *)
   let dsl_seq = Semantics.seq_eval_env
-    (fun e p -> Semantics.eval_chain_mut_env seen_chain e p) empty_env pkts in
+    (fun e p -> Semantics.eval_chain_mut_env Semantics.Hprerouting seen_chain e p) empty_env pkts in
   let vm_seq  = Semantics.seq_eval_env
-    (fun e p -> Semantics.run_chain_mut_env sprog spol e p) empty_env pkts in
+    (fun e p -> Semantics.run_chain_mut_env Semantics.Hprerouting sprog spol e p) empty_env pkts in
   let pp s = "[" ^ Stdlib.String.concat "; " (Stdlib.List.map string_of_verdict s) ^ "]" in
   let ok = dsl_seq = vm_seq in
   Printf.printf "  same source x2          DSL=%-18s VM=%-18s %s\n"
@@ -796,9 +796,9 @@ let () =
   Stdlib.List.iter (fun (name, saddr) ->
     let (e, p) = mk_pkt ~env:menv ~nh:(nh ~saddr ~daddr:[8;8;8;8]) () in
     (* the merged rule's mark write vs the two originals composed *)
-    let (_, p_merged) = Semantics.dsl_step merged e p in
-    let p_orig   = (let (e1, p1) = Semantics.dsl_step orig1 e p in
-                    snd (Semantics.dsl_step orig2 e1 p1)) in
+    let (_, p_merged) = Semantics.dsl_step Semantics.Hprerouting merged e p in
+    let p_orig   = (let (e1, p1) = Semantics.dsl_step Semantics.Hprerouting orig1 e p in
+                    snd (Semantics.dsl_step Semantics.Hprerouting orig2 e1 p1)) in
     let mark_merged = p_merged.Packet.pkt_meta Packet.MKmark in
     let mark_orig   = p_orig.Packet.pkt_meta Packet.MKmark in
     let ok = mark_merged = mark_orig in

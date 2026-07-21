@@ -78,7 +78,7 @@ Scope notes (each also sits on the theorem in the source):
   certificates (`Optimize_DataMap.eval_rules_mut_map_merge`,
   `Optimize_Dnat.apply_nat_dnat_eq`, snat forms) are **per-merge-shape lemmas,
   not composed through `optimize_table`** — no theorem lifts the pipeline to
-  `eval_chain_mut`/`eval_rules_trace`. The full statement of the gap and the
+  the effect-threading `eval_chain_mut`. The full statement of the gap and the
   not-lifted rationale sit on `optimize_table_uncond_compile_correct`
   (Optimize_Uncond.v, "Scope note 2").
 - **Mutation × jump/goto is jointly verified** at the UNIFIED evaluator
@@ -100,15 +100,18 @@ Scope notes (each also sits on the theorem in the source):
   key would merge their ct marks). Rationale + designated fix: the `pkt_flow`
   comment in `Core/Packet.v`; honest-gaps entry in `DEVELOPMENT.md`.
 
-Known-gaps note: one **confirmed model-vs-kernel divergence** (`OVmapNat`
-vmap-hit trace NAT + spurious `e_nat` store) holds **inside** the theorems
-above — DSL and VM agree on it, so no compile theorem is weakened, but the
-*model* is not kernel-exact there.  (The historical limiter-sweep-past-a-
-failing-match and intra-rule set-then-read entries are REPAIRED — limiter
-consumption is now position-exact in the break-aware fold, and the pins
-flipped to positive witnesses.)  Ledger with kernel citations, repros, and
-`vm_compute` lock-in pins: `DEVELOPMENT.md` § "Known model infidelities" +
-`theories/Regression/Known_Infidelities.v`.
+Known-gaps note: the known-infidelity ledger is EMPTY — all three historical
+confirmed divergences are REPAIRED and pinned positively
+(`theories/Regression/Known_Infidelities.v`): the limiter sweep past a failing
+match and the intra-rule set-then-read (position-exact in the break-aware
+fold), and — M3 — the `OVmapNat` vmap-hit trace NAT + spurious `e_nat` store:
+the NAT data-plane effect (packet rewrite, flow-keyed `e_nat` establish/reuse,
+no-usable-address NF_DROP) now lives INSIDE the single per-rule fold at the
+NAT terminal, so a vmap HIT structurally never runs it (outcome provenance),
+on BOTH sides — certified by `compile_nat_effect_correct` and the
+traversal-level `_u` compile theorems, at every netfilter hook `h` (the fold
+and every effect-threading evaluator now carry the hook, because the
+redirect/masquerade data plane is hook-dependent).
 
 ## 2. Classification of every `Theorem`/`Corollary` in `Correct.v` and `Optimize*.v`
 
@@ -202,7 +205,6 @@ successor for every out-of-domain input is the unified `_u` family.)
 | `eval_ruleset`/`eval_hook` (VM `run_ruleset`) | write-free bases (`bases_writefree`) | `eval_ruleset_u_writefree` / `eval_hook_u_writefree` |
 | `eval_rules`/`eval_chain` (VM `run_program`/`run_chain`) | write-free **and** jump-free | `eval_rules_u_writefree` + `eval_rules_jumpfree_eq_j`; packaged as `Correct.eval_chain_writefree_jumpfree_proj` |
 | `eval_rules_mut(_env)`/`eval_chain_mut(_env)` (VM `run_program_mut(_env)`) | transfer-free rules: `rule_plain` (no realisable Jump/Goto/Return under the run's verdict maps — step-threaded: rule writes provably cannot touch `e_vmap`, `rule_step_vmap`) | `eval_rules_u_mut_proj`: verdict = `eval_rules_mut`, env = `snd ∘ eval_rules_mut_env`; table form `eval_table_u_mut_proj` |
-| `eval_rules_trace` (DSL only — NAT axis) | verdict = mut strand except the data-plane NAT drop | `eval_rules_trace_verdict` (known infidelity on an `OVmapNat` vmap **hit** — see the ledger) |
 | `rule_applies(_walk)`/`outcome`/`rule_loadable` (per-rule bools) | write-free rule (`rule_mutfree`: no mutating statement AND no limiter match — evaluating a limiter writes its bucket) | `rule_step_mutfree` |
 | `run_rule`/`run_program` (per-rule pure VM) | `no_writes` programs (no mutating/limiter/incremental-numgen instruction) | `Correct.run_rule_step_no_writes` |
 | `seq_eval` | per-packet congruence over an EXTERNAL, caller-supplied step (see its header) | — |
@@ -226,13 +228,23 @@ the unified semantics — per-file license instances
 `Router_Input.inbound_licensed` / `Router_Input.router_rules_licensed` /
 `Router_Forward.forward_licensed` (+ the `bug_*` mutation-kill envs) /
 `Router_Private.private_rules_licensed` /
-`Router_Hooks.input_hook_licensed`/`forward_hook_licensed`/`postrouting_hook_licensed`
+`Router_Hooks.input_hook_licensed`/`forward_hook_licensed`
 (+ the swapped-registration bug) / `Router_Realistic.*_licensed_real` /
 `Nft_Demo_Concrete.demo_dns_accepted_unified`/`demo_smtp_denied_unified`,
-all axiom-gated.  The effectful optiplex `filter`/NAT chains were
-never evaluated through the pure strand — their proofs already use the
-effect-threading trace evaluators (`Optiplex_Mark`, `Router_NatHook`,
-`Router_Reach`).
+all axiom-gated.  **Since M3 a NAT-terminal rule is a WRITE** (packet rewrite
++ `e_nat` store + possible NF_DROP inside the fold), so a chain environment
+CONTAINING the masquerade chain is genuinely outside every pure-strand
+license (an env whose vmap jumps into it diverges: pure Accept vs kernel
+Drop on an address-less interface); the router licenses are therefore stated
+over the NAT-free chain restriction `Router_Input.global_tol_chains` /
+`Router_Hooks.global_tol_hooks`, the historical `postrouting_hook_licensed`
+(the masquerade hook as a pure projection) is RETIRED — successor: the
+unified statements `Router_Hooks.postrouting_hook_unified` +
+`Router_NatHook.postrouting_hook_verdict_trichotomy` — and the demo cruxes
+are recomputed against `eval_table_u` at EVERY hook over the FULL chain env.
+The effectful optiplex `filter`/NAT chains were
+never evaluated through the pure strand — their proofs use the unified fold
+(`eval_chain_u`, `Optiplex_Mark`, `Router_NatHook`, `Router_Reach`).
 
 **Fuel adequacy (RESOLVED, M4 config-proof soundness)**: the jump strand is
 fuel-bounded, and `eval_table` maps fuel EXHAUSTION to the chain policy — a
@@ -278,9 +290,11 @@ The bytecode VM mirrors the DSL rows one-for-one (`run_rule(s)`,
 compile theorem in §2 equates one DSL row with its VM mirror.  The VM mirror of
 the `fst` bridge is `run_program_mut_env_fst` / `run_chain_mut_env_fst`.
 
-Every mutation/trace evaluator consumes the per-rule STEP function directly —
-ONE left-to-right fold per rule, `Semantics.rule_step` (DSL) /
-`Semantics.run_rule_step empty_rf` (bytecode) — modelling exactly the
+Every mutation evaluator consumes the per-rule STEP function directly —
+ONE left-to-right fold per rule, `Semantics.rule_step h` (DSL) /
+`Semantics.run_rule_step h empty_rf` (bytecode), evaluated AT a netfilter
+hook `h` (Semantics § Section AtHook; the terminal NAT data plane is
+hook-dependent) — modelling exactly the
 kernel's expression walk (nf_tables_core.c `nft_rule_dp_for_each_expr`):
 every expression (match, statement operand, verdict-map key, limiter check)
 sees the writes — packet-local meta/ct sets AND dynset env writes AND the
@@ -291,13 +305,21 @@ expressions BEFORE it in the SAME rule; a failing match or breaking load
 stops the walk KEEPING the earlier writes (so a limiter AFTER the break is
 never evaluated and never consumes); a statement after a terminal verdict
 never runs; the post-outcome (`r_after`) statements run (writes included)
-only on a `Continue` fall-through.  On the VM side only, the fold also
+only on a `Continue` fall-through.  A dnat/snat/masquerade/redirect terminal
+performs its DATA-PLANE effect in the fold at the position the walk reached
+it: the kernel NAT core's no-usable-address NF_DROP (`nat_drops`), else the
+flow-keyed tuple establish/reuse + packet rewrite (`apply_nat`), then
+terminal Accept — a vmap HIT stops the rule before the terminal, so it never
+runs the NAT (outcome provenance; positive pins
+`Known_Infidelities.vmaphit_*`/`vm_vmaphit_*`).  On the VM side only, the fold also
 advances the `numgen inc` counter at its `INumgen` instruction (the DSL
 deliberately has no numgen surface; the lowering rejects it fail-loud).
 
 The DSL/VM agreement obligation is the one per-rule equation
 `run_rule_step_compile_rule : rule_numgen_free r = true ->
-run_rule_step empty_rf (compile_rule r) e p = rule_step r e p` (`Correct.v`;
+run_rule_step h empty_rf (compile_rule r) e p = rule_step h r e p` (`Correct.v`;
+restated under its NAT-effect name as the headline
+`compile_nat_effect_correct`;
 degenerate zero-field operands included — `Compile.compile_vsrc` pins their
 source register).  `rule_numgen_free` (IR/Syntax.v) is the strand's ONLY
 hypothesis, and it is discharged by THEOREM over every frontend-emitted
@@ -334,6 +356,41 @@ consume.  Pins flipped: `Known_Infidelities.gate_limit_undrained` /
 the position-exactness twins
 `Limit_SharedBucket.limit_before_failing_match_consumed` /
 `vm_limit_before_failing_match_consumed`.
+
+**Strata retirement (M3 NAT-effect-in-fold): the trace strand is retired.**
+The historical NAT side
+strand — `Semantics.eval_rules_trace` / `eval_chain_trace` /
+`trace_nat_drops` and their verdict bridges (`eval_rules_trace_verdict`,
+`eval_chain_trace_verdict(_no_drop)`) — is RETIRED (deleted).  It was the
+ONLY evaluator that performed the NAT data plane, dispatched OUT-OF-BAND on
+the `r_nat` projection at any terminal verdict — the source of
+known-infidelity entry 2 (a vmap HIT still ran the trailing NAT and stored a
+spurious `e_nat` mapping) — and it had no VM twin and no compile theorem.
+Successor: the single fold itself.  `terminal_step` (DSL) and the VM's
+`INat` instruction case perform the NAT effect — `nat_drops` (the
+no-usable-address NF_DROP) else `apply_nat` (flow-keyed tuple
+establish/reuse + L3/L4 rewrite) — AT the terminal the walk actually
+reached, so the vmap-hit provenance is structural; both folds and every
+evaluator built on them now take the netfilter hook `h` (Section AtHook),
+because the redirect/masquerade data plane is hook-dependent.  The
+DSL and VM sides share the effect CORE verbatim (`apply_nat_c`/
+`nat_drops_c`; the VM feeds the `INat` register operands, bridged by
+`Correct.step_extra_inat`/`step_inat_terminal`), and the compile theorem the
+strand never had is `compile_nat_effect_correct` (+ the `_u` traversal
+family, which now certifies the NAT data plane under jumps/multi-chain/hook
+dispatch).  `chain_out`/`chain_out_env` survive re-based on the unified fold
+(`eval_chain_u`).  The model's DSL port coverage was extended in the same
+move (kernel-faithfully): a masq/redir primary operand IS its port
+(`nat_portonly`, `nat_port_val`), so the VM proto-min register discipline
+and the DSL agree shape-for-shape; a port living in a concat-map value slot
+(`NXmap_port`/`NXmap_full`) is skipped identically on both sides (unmodeled
+feature, DEVELOPMENT.md).  Pins flipped: `Known_Infidelities`'s
+`vmaphit_daddr_rewritten` (now `= [1;2;3;4]`, unrewritten) and
+`vmaphit_stores_nat_mapping` (now `= None`), with vmap-MISS non-vacuity
+twins (`vmapmiss_*`) and VM twins (`vm_vmaphit_*`/`vm_vmapmiss_*`); the
+mut-vs-trace divergence pin `Nat_NoAddr_Drop.trace_diverges_from_mut_via_nat_drop`
+retires WITH the strand — successors `mut_agrees_nat_drop` /
+`vm_nat_drop_agrees` (the NAT drop through the compiler).
 
 **Strata retirement (T1 single-fold).**  The historical TWO-fold per-rule
 split — an entry-packet verdict pass (`rule_applies`/`outcome` paired into

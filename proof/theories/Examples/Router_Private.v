@@ -475,12 +475,13 @@ Definition bug_inbound_private : chain :=
 
 (* The chain env with ONLY inbound_private swapped (global_inbound itself unchanged,
    so every prior Router_Input theorem still holds verbatim). *)
+(* NAT-free like [Router_Input.global_tol_chains]: the masquerade chain is
+   outside every pure-strand license since M3. *)
 Definition bug_priv_chains : list (string * chain) :=
   [("inbound_world", global_inbound_world);
    ("inbound_private", bug_inbound_private);
    ("inbound", global_inbound);
-   ("forward", global_forward);
-   ("postrouting", global_postrouting)].
+   ("forward", global_forward)].
 
 (* Under the bug, the SAME unlisted smtp packet is ACCEPTED — the LAN-open hole. *)
 Theorem bug_lan_smtp_accepted :
@@ -530,8 +531,9 @@ Proof. repeat split; try (vm_compute; reflexivity). Qed.
     could not ride the write-free license.  They are licensed by the
     LIMITER-TOLERANT projection instead ([r_icmp] is a [rule_one_limiter]
     rule: non-inverted limiter, last body position, terminal `accept`):
-    - every [eval_table … global_chains global_inbound …] theorem above is
-      a unified-semantics statement by [Router_Input.inbound_licensed];
+    - the inbound filter table (over the NAT-free chain env
+      [Router_Input.global_tol_chains]) is a unified-semantics statement
+      by [Router_Input.inbound_licensed];
     - the sub-chain lemma [inbound_private_eval] (an [eval_rules_j]
       statement over [r_icmp; r_svc] itself) is licensed by
       [private_rules_licensed] below;
@@ -539,17 +541,17 @@ Proof. repeat split; try (vm_compute; reflexivity). Qed.
     So the limiter rule is never modelled by an unlicensed pure
     evaluator — the pure strand is a PROVEN verdict projection here. *)
 
-Theorem private_rules_licensed : forall fuel e p,
-  eval_rules_j fuel global_chains (c_rules global_inbound_private) e p
-  = fst (eval_rules_u fuel global_chains (c_rules global_inbound_private) e p).
+Theorem private_rules_licensed : forall h fuel e p,
+  eval_rules_j fuel global_tol_chains (c_rules global_inbound_private) e p
+  = fst (eval_rules_u h fuel global_tol_chains (c_rules global_inbound_private) e p).
 Proof.
-  intros fuel e p. apply router_rules_licensed. vm_compute. reflexivity.
+  intros h fuel e p. apply router_rules_licensed. vm_compute. reflexivity.
 Qed.
 
-Theorem bug_priv_chains_licensed : forall fuel e p,
+Theorem bug_priv_chains_licensed : forall h fuel e p,
   eval_table fuel bug_priv_chains global_inbound e p
-  = fst (eval_table_u fuel bug_priv_chains global_inbound e p).
+  = fst (eval_table_u h fuel bug_priv_chains global_inbound e p).
 Proof.
-  intros fuel e p. symmetry.
+  intros h fuel e p. symmetry.
   apply eval_table_u_limiter_tolerant; vm_compute; reflexivity.
 Qed.

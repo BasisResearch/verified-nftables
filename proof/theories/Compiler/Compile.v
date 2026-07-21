@@ -315,11 +315,9 @@ Definition optlen {A} (o : option A) : nat := match o with Some _ => 1 | None =>
     reg 1, else reg 1 (a port-only NAT). *)
 Definition nat_sec0 (n : nat_spec) : nat := if nat_addr_present n then 2 else 1.
 
-(** [masq]/[redir] never translate an address: any operand (map/field/immediate)
-    they carry is the PORT, loaded into register 1.  For these the operand reg is
-    [proto_min], not [addr_min]. *)
-Definition nat_portonly (n : nat_spec) : bool :=
-  orb (natop_eqb (nat_kind n) nat_masq_kind) (natop_eqb (nat_kind n) nat_redir_kind).
+(** [masq]/[redir] never translate an address ([Syntax.nat_portonly]): any
+    operand (map/field/immediate) they carry is the PORT, loaded into register
+    1.  For these the operand reg is [proto_min], not [addr_min]. *)
 
 Definition nat_amin_reg (n : nat_spec) : option nat :=
   if nat_portonly n then None

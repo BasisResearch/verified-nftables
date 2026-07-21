@@ -79,9 +79,9 @@ let mk_pkt ~env ?ct ?(protocol = []) ?(l4proto = []) ?(nfproto = [])
    (eval : ... -> env -> packet -> ...); these helpers apply one to a pair. *)
 let ev_mc m (e, p) = Semantics.eval_matchcond m e p
 let ev_chain c (e, p) = Semantics.eval_chain c e p
-let ev_chain_mut c (e, p) = Semantics.eval_chain_mut c e p
-let ev_chain_mut_env c (e, p) = Semantics.eval_chain_mut_env c e p
-let ev_chain_trace h c (e, p) = Semantics.eval_chain_trace h c e p
+let ev_chain_mut c (e, p) = Semantics.eval_chain_mut Semantics.Hprerouting c e p
+let ev_chain_mut_env c (e, p) = Semantics.eval_chain_mut_env Semantics.Hprerouting c e p
+let ev_chain_u h c (e, p) = Semantics.eval_chain_u h c e p
 let ev_table fuel cs c (e, p) = Semantics.eval_table fuel cs c e p
 let run_chain_vm prog pol (e, p) = Semantics.run_chain prog pol e p
 let rule_applies_on r (e, p) = Semantics.rule_applies r e p
@@ -340,7 +340,7 @@ let check_optiplex_antispoof () =
 
 (* ---------- (E) optiplex.nft firewall mark vs Optiplex_Mark.v ----------
    Parse optiplex.nft and run a packet through WHOLE chains (extracted
-   eval_chain_trace / eval_chain_mut), watching the mark the packet carries
+   eval_chain_u / eval_chain_mut), watching the mark the packet carries
    before and after each chain — the end-to-end traversal the proofs establish. *)
 
 let mark99 = [153;0;0;0]   (* 0x99 host-endian (little-endian), matching the LE meta/ct mark encoding *)
@@ -384,7 +384,7 @@ let check_optiplex_mark () =
   let p_in = mk_pkt_dport ~env ~dport:[187;138] in   (* dport 48010 *)
   Printf.printf "    packet in:  mark=%s\n" (let m = mark_of p_in in if m=[] then "(unset)" else show m);
   (* traverse the WHOLE prerouting chain; observe the verdict AND the packet out *)
-  let (v_pre, p_out) = ev_chain_trace Semantics.Hprerouting prerouting p_in in
+  let (v_pre, p_out) = ev_chain_u Semantics.Hprerouting prerouting p_in in
   Printf.printf "    prerouting: verdict=%s, packet out mark=%s\n"
     (verdict_str v_pre) (show (mark_of p_out));
   check "prerouting accepts" (v_pre = Verdict.Accept);
@@ -408,14 +408,14 @@ let check_optiplex_mark () =
         pkt_nh = Stdlib.List.init 20 (fun _ -> 0) })
       (mk_pkt ~env:env_if ()) in                           (* saddr starts 0.0.0.0 *)
   let saddr_in  = fv Syntax.FIp4Saddr p_masq in
-  let (_, p_masq_out) = ev_chain_trace Semantics.Hpostrouting postrouting p_masq in
+  let (_, p_masq_out) = ev_chain_u Semantics.Hpostrouting postrouting p_masq in
   let saddr_out = fv Syntax.FIp4Saddr p_masq_out in
   Printf.printf "    masquerade: ip saddr  %s -> %s  (eth0's IP)\n"
     (show saddr_in) (show saddr_out);
   check "masquerade rewrites saddr to exit-iface IP" (data_eq saddr_out eth0_ip);
   (* contrast: an RDP/3389 packet is marked at rule 1; an unmarked packet at
      postrouting does NOT masquerade *)
-  let (_, p_rdp_out) = ev_chain_trace Semantics.Hprerouting prerouting (mk_pkt_dport ~env ~dport:[13;61]) in
+  let (_, p_rdp_out) = ev_chain_u Semantics.Hprerouting prerouting (mk_pkt_dport ~env ~dport:[13;61]) in
   check "RDP/3389 also marked 0x99" (data_eq (mark_of p_rdp_out) mark99);
   check "unmarked packet not masqueraded"
     (rule_applies_on post1 (mk_pkt ~env ()) = false);
@@ -443,7 +443,7 @@ let check_dnat_rewrite () =
   let nh = [0x45;0;0;0; 0;0;0;0; 64;6;0;0; 1;2;3;4; 192;168;0;9] in
   let p_in = wire (fun p -> { p with Packet.pkt_nh = nh }) (mk_pkt ~env ()) in
   let daddr_in = fv Syntax.FIp4Daddr p_in in
-  let (v, p_out) = ev_chain_trace Semantics.Hprerouting prerouting p_in in
+  let (v, p_out) = ev_chain_u Semantics.Hprerouting prerouting p_in in
   let daddr_out = fv Syntax.FIp4Daddr p_out in
   Printf.printf "    dnat: ip daddr  %s -> %s  (target 10.0.0.1)\n"
     (show daddr_in) (show daddr_out);
@@ -486,7 +486,7 @@ let check_dnat_rewrite () =
   let th = [0;0; 0;80; 0;0;0;0] in
   let p_in2 = wire (fun p -> { p with Packet.pkt_nh = nh; pkt_th = th }) (mk_pkt ~env:env_p ()) in
   let dport_in = Packet.read_payload Packet.PTransport 2 2 (snd p_in2) in
-  let (_, p_out2) = ev_chain_trace Semantics.Hprerouting pre_p p_in2 in
+  let (_, p_out2) = ev_chain_u Semantics.Hprerouting pre_p p_in2 in
   let dport_out = Packet.read_payload Packet.PTransport 2 2 (snd p_out2) in
   Printf.printf "    dnat:port: th dport  %s -> %s  (target :8080 = 0x1f90)\n"
     (show dport_in) (show dport_out);
@@ -523,7 +523,7 @@ let check_dnat_rewrite () =
   let th_po = [0;0; 0;25; 0;0;0;0] in
   let p_in3 = wire (fun p -> { p with Packet.pkt_nh = nh; pkt_th = th_po }) (mk_pkt ~env:env_po ()) in
   let daddr_in3 = fv Syntax.FIp4Daddr p_in3 in
-  let (_, p_out3) = ev_chain_trace Semantics.Hprerouting pre_po p_in3 in
+  let (_, p_out3) = ev_chain_u Semantics.Hprerouting pre_po p_in3 in
   let daddr_out3 = fv Syntax.FIp4Daddr p_out3 in
   let dport_out3 = Packet.read_payload Packet.PTransport 2 2 (snd p_out3) in
   Printf.printf "    dnat :80: ip daddr  %s -> %s (preserved); th dport -> %s (= 0x0050)\n"
@@ -560,7 +560,7 @@ let check_dnat_rewrite () =
   let f1 = wire (fun p -> { p with Packet.pkt_nh = mk_nh [1;1;1;1];
              pkt_have_l4 = false }) (mk_pkt ~env ~flow:flow0 ()) in
   let (_, f1_out) =
-    ev_chain_trace Semantics.Hprerouting dnat_saddr_chain f1 in
+    ev_chain_u Semantics.Hprerouting dnat_saddr_chain f1 in
   let d1 = fv Syntax.FIp4Daddr f1_out in
   check "dnat to ip saddr: packet 1 dnat's dst to its own saddr (1.1.1.1)"
     (data_eq d1 [1;1;1;1]);
@@ -573,7 +573,7 @@ let check_dnat_rewrite () =
   let f2 = wire (fun p -> { p with Packet.pkt_nh = mk_nh [2;2;2;2]; pkt_have_l4 = false })
              (mk_pkt ~env:(fst f1_out) ~flow:flow0 ()) in
   let (_, f2_out) =
-    ev_chain_trace Semantics.Hprerouting dnat_saddr_chain f2 in
+    ev_chain_u Semantics.Hprerouting dnat_saddr_chain f2 in
   let d2 = fv Syntax.FIp4Daddr f2_out in
   Printf.printf "    dnat-to-saddr flow: pkt1 dst=%s  pkt2 dst=%s (same stored mapping)\n"
     (show d1) (show d2);
@@ -585,7 +585,7 @@ let check_dnat_rewrite () =
   let g = wire (fun p -> { p with Packet.pkt_nh = mk_nh [2;2;2;2]; pkt_have_l4 = false })
             (mk_pkt ~env:(fst f1_out) ~flow:[8;8] ()) in
   let (_, g_out) =
-    ev_chain_trace Semantics.Hprerouting dnat_saddr_chain g in
+    ev_chain_u Semantics.Hprerouting dnat_saddr_chain g in
   check "a DIFFERENT flow establishes its own mapping (dnat dst = its own saddr 2.2.2.2)"
     (data_eq (fv Syntax.FIp4Daddr g_out) [2;2;2;2]);
   (* REPLY-DIRECTION un-NAT: a fixed `dnat to 8.8.8.8` establishes the
@@ -607,7 +607,7 @@ let check_dnat_rewrite () =
   let fwd_in = wire (fun p -> { p with Packet.pkt_nh = mk_nh [1;1;1;1]; pkt_have_l4 = false })
                  (mk_pkt ~env ~flow:rflow ()) in
   let (_, fwd_out) =
-    ev_chain_trace Semantics.Hprerouting dnat88_chain fwd_in in
+    ev_chain_u Semantics.Hprerouting dnat88_chain fwd_in in
   check "reply-dir: forward packet dnat's dst 9.9.9.9 -> 8.8.8.8"
     (data_eq (fv Syntax.FIp4Daddr fwd_out) [8;8;8;8]);
   (* reply packet, threaded through the env the forward packet established *)
@@ -619,7 +619,7 @@ let check_dnat_rewrite () =
   let rep_in = wire (fun p -> { p with Packet.pkt_nh =
                  [0x45;0;0;20; 0;0;0;0; 64;6;0;0] @ [8;8;8;8] @ [1;1;1;1] }) rep_in in
   let (_, rep_out) =
-    ev_chain_trace Semantics.Hprerouting dnat88_chain rep_in in
+    ev_chain_u Semantics.Hprerouting dnat88_chain rep_in in
   check "reply-dir: reply SOURCE un-DNAT'd 8.8.8.8 -> 9.9.9.9 (inverse manip)"
     (data_eq (fv Syntax.FIp4Saddr rep_out) [9;9;9;9]);
   check "reply-dir: reply DESTINATION left untouched (1.1.1.1)"
@@ -645,7 +645,7 @@ let check_dnat_rewrite () =
                 pkt_th = mk_th [17;92] [0;80]; pkt_have_l4 = false })
                 (mk_pkt ~env ~flow:pflow ()) in
   let (_, pf_out) =
-    ev_chain_trace Semantics.Hprerouting dnat_port_chain pf_in in
+    ev_chain_u Semantics.Hprerouting dnat_port_chain pf_in in
   check "reply-dir port: forward packet dnat's DEST port 80 -> 8080"
     (data_eq (Packet.slice (snd pf_out).Packet.pkt_th 2 2) [31;144]);
   (* reply: server 8.8.8.8:8080 -> client; sport = 8080 ([31;144]) *)
@@ -654,7 +654,7 @@ let check_dnat_rewrite () =
                 pkt_ctdir_orig = false })
                 (mk_pkt ~env:(fst pf_out) ~flow:pflow ()) in
   let (_, pr_out) =
-    ev_chain_trace Semantics.Hprerouting dnat_port_chain pr_in in
+    ev_chain_u Semantics.Hprerouting dnat_port_chain pr_in in
   check "reply-dir port: reply SOURCE port un-DNAT'd 8080 -> 80 (inverse manip)"
     (data_eq (Packet.slice (snd pr_out).Packet.pkt_th 0 2) [0;80]);
   check "reply-dir port: reply SOURCE port no longer stuck at dnat target 8080"
@@ -753,7 +753,7 @@ let check_ip6_nat () =
                          e_ifaddrs6 = (fun _ -> ifaddrs_of if6) } in
   let p6 = wire (fun p -> { p with Packet.pkt_nh = nh }) (mk_pkt ~env:env6 ()) in
   let src6_in = fv Syntax.FIp6Saddr p6 in
-  let (_, p6_out) = ev_chain_trace Semantics.Hpostrouting post6 p6 in
+  let (_, p6_out) = ev_chain_u Semantics.Hpostrouting post6 p6 in
   let src6_out = fv Syntax.FIp6Saddr p6_out in
   Printf.printf "    ip6 masquerade: ip6 saddr  %s -> %s  (exit iface's IPv6)\n"
     (show src6_in) (show src6_out);
@@ -797,7 +797,7 @@ let check_ip6_nat () =
   (* (a) IPv6 packet (nfproto = NFPROTO_IPV6 = 10): full 16-byte IPv6 rewrite. *)
   let p_inet6 = wire (fun p -> { p with Packet.pkt_nh = nh }) (mk_pkt ~env:env_inet ~nfproto:[10] ()) in
   let s6_in  = fv Syntax.FIp6Saddr p_inet6 in
-  let (_, p_inet6_out) = ev_chain_trace Semantics.Hpostrouting post_inet p_inet6 in
+  let (_, p_inet6_out) = ev_chain_u Semantics.Hpostrouting post_inet p_inet6 in
   let s6_out = fv Syntax.FIp6Saddr p_inet6_out in
   Printf.printf "    inet masquerade, IPv6 pkt: ip6 saddr %s -> %s\n" (show s6_in) (show s6_out);
   check "inet masquerade on an IPv6 packet rewrites the FULL 16-byte IPv6 source to e_ifaddr6"
@@ -809,7 +809,7 @@ let check_ip6_nat () =
   (* (b) IPv4 packet (nfproto = NFPROTO_IPV4 = 2) through the SAME rule: 4-byte slot. *)
   let nh4 = [0x45;0;0;0; 0;0;0;0; 64;6;0;0; 1;2;3;4; 192;168;0;9] in
   let p_inet4 = wire (fun p -> { p with Packet.pkt_nh = nh4 }) (mk_pkt ~env:env_inet ~nfproto:[2] ()) in
-  let (_, p_inet4_out) = ev_chain_trace Semantics.Hpostrouting post_inet p_inet4 in
+  let (_, p_inet4_out) = ev_chain_u Semantics.Hpostrouting post_inet p_inet4 in
   let s4_out = fv Syntax.FIp4Daddr p_inet4_out in
   ignore s4_out;
   check "inet masquerade on an IPv4 packet rewrites the 4-byte IPv4 source to e_ifaddr"
@@ -819,7 +819,7 @@ let check_ip6_nat () =
   let env_noip4 = { env_inet with Packet.e_ifaddrs = (fun _ -> []);
                                   e_ifaddrs6 = (fun _ -> ifaddrs_of inet_if6) } in
   let p_noip4 = wire (fun p -> { p with Packet.pkt_nh = nh }) (mk_pkt ~env:env_noip4 ~nfproto:[10] ()) in
-  let (v_noip4, p_noip4_out) = ev_chain_trace Semantics.Hpostrouting post_inet p_noip4 in
+  let (v_noip4, p_noip4_out) = ev_chain_u Semantics.Hpostrouting post_inet p_noip4 in
   check "inet masquerade: no-IPv4-addr iface does NOT drop an IPv6 packet (kernel masqs via IPv6)"
     (v_noip4 <> Verdict.Drop);
   check "inet masquerade: that IPv6 packet IS masqueraded to the IPv6 addr"
@@ -886,19 +886,19 @@ let check_redir_hook () =
   let redir_chain : Syntax.chain =
     { Syntax.c_policy = Verdict.Drop;
       c_rules = [ mk_rule (mk_spec Syntax.nat_fam_ip4) ] } in
-  let (vr_pre, pr_pre) = ev_chain_trace Semantics.Hprerouting redir_chain p_noaddr in
+  let (vr_pre, pr_pre) = ev_chain_u Semantics.Hprerouting redir_chain p_noaddr in
   check "prerouting redirect with NO inbound address DROPS (kernel NF_DROP)"
     (vr_pre = Verdict.Drop);
   check "the dropped redirect packet is left UNREWRITTEN (no empty-address splice)"
     (data_eq (fv Syntax.FIp4Daddr pr_pre)
              (fv Syntax.FIp4Daddr p_noaddr));
-  (* but the verified CONTROL-PLANE (mut) verdict is unaffected: the drop is a
-     data-plane-only refinement, so eval_chain_mut still Accepts. *)
-  check "control-plane eval_chain_mut still ACCEPTS the redirect (data-plane-only drop)"
-    (ev_chain_mut redir_chain p_noaddr = Verdict.Accept);
+  (* since M3 there is NO separate data-plane strand: the mutation-strand
+     verdict consumes the same single fold, so it carries the same NF_DROP. *)
+  check "mut strand agrees: eval_chain_mut DROPS the no-address redirect (single fold)"
+    (ev_chain_mut redir_chain p_noaddr = Verdict.Drop);
   (* output-hook redirect targets loopback, so it NEVER drops even with no address *)
   check "output-hook redirect with no address still ACCEPTS (loopback target)"
-    (fst (ev_chain_trace Semantics.Houtput redir_chain p_noaddr) = Verdict.Accept);
+    (fst (ev_chain_u Semantics.Houtput redir_chain p_noaddr) = Verdict.Accept);
   (* masquerade likewise drops at postrouting when the exit interface has no address *)
   let masq_spec =
     { Syntax.nat_addr_imm = None; nat_field = None; nat_map = None; nat_src = None;
@@ -908,13 +908,13 @@ let check_redir_hook () =
     { Syntax.c_policy = Verdict.Drop;
       c_rules = [ mk_rule masq_spec ] } in
   check "postrouting masquerade with NO exit address DROPS (kernel NF_DROP)"
-    (fst (ev_chain_trace Semantics.Hpostrouting masq_chain p_noaddr) = Verdict.Drop);
+    (fst (ev_chain_u Semantics.Hpostrouting masq_chain p_noaddr) = Verdict.Drop);
   (* with the address restored, both accept again *)
   let env_addr = { env with Packet.e_ifaddrs = (fun _ -> ifaddrs_of [203;0;113;5]) } in
   let p_addr = (env_addr, snd p_noaddr) in
   check "redirect/masquerade ACCEPT once the interface has an address"
-    (fst (ev_chain_trace Semantics.Hprerouting redir_chain p_addr) = Verdict.Accept
-     && fst (ev_chain_trace Semantics.Hpostrouting masq_chain p_addr) = Verdict.Accept);
+    (fst (ev_chain_u Semantics.Hprerouting redir_chain p_addr) = Verdict.Accept
+     && fst (ev_chain_u Semantics.Hpostrouting masq_chain p_addr) = Verdict.Accept);
   Printf.printf "\n"
 
 (* (H) iif/oif NUMERIC INTERFACE-INDEX lowering.  iif/oif read the numeric

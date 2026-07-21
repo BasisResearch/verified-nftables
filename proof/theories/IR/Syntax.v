@@ -839,6 +839,13 @@ Definition nat_snat_kind  : nat_op := NKsnat.
 Definition nat_dnat_kind  : nat_op := NKdnat.
 Definition nat_redir_kind : nat_op := NKredir.
 
+(** masq/redir never translate an ADDRESS: any primary operand they carry
+    (value source / map / field / immediate) is their PORT — the compiler
+    loads it into the proto-min register ([Compile.nat_pmin_reg]) and the
+    semantics reads it as the port value ([Semantics.nat_port_val]). *)
+Definition nat_portonly (n : nat_spec) : bool :=
+  orb (natop_eqb (nat_kind n) nat_masq_kind) (natop_eqb (nat_kind n) nat_redir_kind).
+
 (** The [nat_family] values, branched on by [Semantics.apply_nat] to pick the
     address geometry: [NFip4] = the 32-bit IPv4 slot, [NFip6] = the 128-bit IPv6
     slot (the kernel chooses 32 vs 128 bits by family — [nat_addrlen],
@@ -866,12 +873,12 @@ Inductive outcome : Type :=
                                NAT (`… vmap {…} redirect`): the kernel runs the
                                statements in order, so a map miss reaches the
                                trailing NAT statement.  The miss-only
-                               reachability holds in the VERDICT semantics
-                               ([Semantics.outcome]/[end_loadable]/[run_rule]);
-                               the TRACE evaluator's NAT effect is keyed on
-                               [r_nat] and unfaithfully fires on a HIT too — a
-                               KNOWN INFIDELITY (see [Semantics.eval_rules_trace]
-                               and DEVELOPMENT.md § "Known model infidelities") *)
+                               reachability is structural in the single fold
+                               ([Semantics.end_step] runs the terminal — and
+                               with it the NAT data-plane effect — only on a
+                               map MISS; a HIT stops the rule first: outcome
+                               provenance, pinned positively in
+                               Regression/Known_Infidelities.v [vmaphit_*]) *)
 | ONat    (s : nat_spec)    (* snat/dnat/masquerade/redirect (terminal) *)
 | OTproxy (s : tproxy_spec) (* transparent proxy (terminal) *)
 | OFwd    (s : fwd_spec)    (* forward to a device (terminal) *)

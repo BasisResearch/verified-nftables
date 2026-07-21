@@ -214,25 +214,25 @@ Proof. intros. now apply nft_yields_fuel_indep with (rank := rank). Qed.
 Definition nft_writefree (cs : list (string * chain)) (c : chain) : bool :=
   forallb rule_writefree (c_rules c) && chains_writefree cs.
 
-Lemma nft_yields_unified : forall fuel cs c e p v,
+Lemma nft_yields_unified : forall h fuel cs c e p v,
   nft_writefree cs c = true ->
-  (nft_yields fuel cs c e p v <-> fst (eval_table_u fuel cs c e p) = v).
+  (nft_yields fuel cs c e p v <-> fst (eval_table_u h fuel cs c e p) = v).
 Proof.
-  intros fuel cs c e p v H.
+  intros h fuel cs c e p v H.
   apply Bool.andb_true_iff in H. destruct H as [Hc Hcs].
   unfold nft_yields.
-  rewrite (eval_table_u_writefree fuel cs c e p Hc Hcs).
+  rewrite (eval_table_u_writefree h fuel cs c e p Hc Hcs).
   cbn [fst]. reflexivity.
 Qed.
 
-Lemma nft_accepts_unified : forall fuel cs c e p,
+Lemma nft_accepts_unified : forall h fuel cs c e p,
   nft_writefree cs c = true ->
-  (nft_accepts fuel cs c e p <-> fst (eval_table_u fuel cs c e p) = Accept).
+  (nft_accepts fuel cs c e p <-> fst (eval_table_u h fuel cs c e p) = Accept).
 Proof. intros. now apply nft_yields_unified. Qed.
 
-Lemma nft_drops_unified : forall fuel cs c e p,
+Lemma nft_drops_unified : forall h fuel cs c e p,
   nft_writefree cs c = true ->
-  (nft_drops fuel cs c e p <-> fst (eval_table_u fuel cs c e p) = Drop).
+  (nft_drops fuel cs c e p <-> fst (eval_table_u h fuel cs c e p) = Drop).
 Proof. intros. now apply nft_yields_unified. Qed.
 
 (* ================================================================== *)

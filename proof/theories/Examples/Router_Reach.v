@@ -6,9 +6,10 @@
                             ip saddr 192.168.0.0/16 oifname ppp0 masquerade }
 
     A *verdict-only* property about [global_postrouting] is VACUOUS: masquerade is a
-    terminal-Accept whose only effect lives in the PACKET component of the trace
-    evaluator ([apply_nat] / [masq_saddr] / [store_nat_mapping], surfaced through
-    [eval_chain_trace] / [chain_out]); the chain's policy is `accept`, so a verdict
+    terminal-Accept whose effect lives in the PACKET/env components of the single
+    fold ([apply_nat] / [masq_saddr] / [store_nat_mapping], applied at the NAT
+    terminal inside [rule_step] and surfaced through
+    [eval_chain_u] / [chain_out]); the chain's policy is `accept`, so a verdict
     property pins down NOTHING about the source rewrite — it holds identically whether
     masquerade fires correctly, never fires, or is mutated to source-NAT every packet.
 
@@ -62,15 +63,9 @@ Definition masq_rule : rule :=
 Lemma global_postrouting_rules : global_postrouting.(c_rules) = [masq_rule].
 Proof. reflexivity. Qed.
 
-(* The rule's body has no limiters / writes, so [dsl_step] is the identity: the
-   body is two [BMatch]es, and [body_writes] over matches returns the input. *)
-Lemma masq_dsl_step_id : forall e p, dsl_step masq_rule e p = (e, p).
-Proof.
-  intros e p. rewrite dsl_step_after_free by reflexivity.
-  unfold dsl_writes, body_writes, masq_rule; cbn [r_body body_step match_consume].
-  destruct (eval_matchcond (MEq (FPayload PNetwork 12 2) [192;168]) e p);
-    [destruct (eval_matchcond (MEq FMetaOifname if_ppp0) e p)|]; reflexivity.
-Qed.
+(* (The historical [masq_dsl_step_id] — "the rule's step is the identity" — is
+   RETIRED: since M3 the step of a NAT rule IS its data-plane effect
+   ([masq_rule_step] below), which is the whole point of this file.) *)
 
 (* The body-thread leaves the packet alone (no notrack in the body). *)
 Lemma masq_body_thread_id : forall p, body_thread (r_body masq_rule) p = p.
@@ -117,6 +112,47 @@ Proof.
   cbn [rule_applies_walk]. now rewrite Bool.andb_true_r.
 Qed.
 
+(* The single fold on the masq rule: the two matches walk (no writes), and the
+   NAT terminal — reached only when both pass — performs the data-plane effect:
+   NF_DROP when the exit interface has no usable address, else Accept +
+   [apply_nat].  This is THE step every evaluator consumes (no side strand). *)
+Lemma masq_body_step : forall e p,
+  body_step (r_body masq_rule) e p
+  = if saddr_private e p && oif_ppp0 e p then BRdone e p else BRbreak e p.
+Proof.
+  intros e p. unfold masq_rule, saddr_private, oif_ppp0;
+    cbn [r_body body_step match_consume].
+  destruct (eval_matchcond (MEq (FPayload PNetwork 12 2) [192;168]) e p);
+    [destruct (eval_matchcond (MEq FMetaOifname if_ppp0) e p)|]; reflexivity.
+Qed.
+
+Lemma masq_rule_step : forall h e p,
+  rule_step h masq_rule e p
+  = if saddr_private e p && oif_ppp0 e p
+    then (if nat_drops h masq_rule e p then (Some Drop, (e, p))
+          else (Some Accept, apply_nat h masq_rule e p))
+    else (None, (e, p)).
+Proof.
+  intros h e p. unfold rule_step. rewrite masq_body_step.
+  destruct (saddr_private e p && oif_ppp0 e p); reflexivity.
+Qed.
+
+(* Chain form: [eval_chain_u] of the parser's postrouting chain IS the step. *)
+Lemma masq_chain_u : forall h e p,
+  eval_chain_u h global_postrouting e p
+  = if saddr_private e p && oif_ppp0 e p
+    then (if nat_drops h masq_rule e p then (Drop, (e, p))
+          else (Accept, apply_nat h masq_rule e p))
+    else (Accept, (e, p)).
+Proof.
+  intros h e p. unfold eval_chain_u, eval_table_u.
+  rewrite global_postrouting_rules. cbn [List.length eval_rules_u].
+  rewrite masq_rule_step.
+  destruct (saddr_private e p && oif_ppp0 e p); [|reflexivity].
+  destruct (nat_drops h masq_rule e p); [reflexivity|].
+  destruct (apply_nat h masq_rule e p); reflexivity.
+Qed.
+
 (* ------------------------------------------------------------ *)
 (** *** Half (a): the masquerade FIRES — the source is rewritten to the exit
        interface address, and the mapping is stored. *)
@@ -137,8 +173,10 @@ Proof.
   cbn -[set_saddr store_nat_mapping e_nat pkt_flow e_ifaddr field_value
         slice pkt_nh masq_saddr nat_operand_addr apply_nat_tuple nat_orig_addr].
   rewrite Hnone.
-  unfold apply_nat_tuple, nat_orig_addr, nat_is_src, nat_addrfamily_pkt, nat_addrfamily,
-    nat_operand_addr, masq_saddr.
+  unfold apply_nat_tuple, apply_nat_tuple_c, nat_orig_addr, nat_orig_addr_c,
+    nat_is_src, nat_kind_src, nat_addrfamily_pkt, nat_af_pkt, nat_af_norm,
+    nat_addrfamily, nat_operand_addr, nat_new_addr, nat_opnd, masq_saddr,
+    nat_port_num, nat_port_val, nat_orig_port, nat_orig_port_c, nat_portonly.
   cbn -[set_saddr store_nat_mapping e_ifaddr field_value slice pkt_nh]. rewrite ?Horig.
   reflexivity.
 Qed.
@@ -149,7 +187,7 @@ Lemma masq_no_drop : forall h e p,
   e_ifaddr e (field_value FMetaOifname e p) <> [] ->
   nat_drops h masq_rule e p = false.
 Proof.
-  intros h e p Hwan. unfold nat_drops, masq_rule.
+  intros h e p Hwan. unfold nat_drops, nat_drops_c, masq_rule.
   destruct (e_nat e (pkt_flow p)); [reflexivity|].
   unfold nat_iface_addr_absent, masq_spec; cbn [nat_kind r_nat r_outcome].
   unfold nat_addrfamily_pkt, nat_addrfamily, masq_saddr; cbn -[e_ifaddr field_value].
@@ -166,30 +204,13 @@ Theorem nat_masquerade_fires_output : forall e p wan,
   e_nat e (pkt_flow p) = None ->
   e_ifaddr e (field_value FMetaOifname e p) = wan ->
   wan <> [] ->
-  eval_chain_trace Hpostrouting global_postrouting e p
+  eval_chain_u Hpostrouting global_postrouting e p
     = (Accept, (store_nat_mapping e p
                   (Some (slice (pkt_nh p) 12 4), Some wan, None, None),
                 set_saddr nat_fam_ip4 p wan)).
 Proof.
   intros e p wan Hpriv Hppp Horig Hnone Hwan Hne.
-  unfold eval_chain_trace. rewrite global_postrouting_rules. cbn [c_rules eval_rules_trace].
-  assert (Hload : rule_loadable masq_rule e p = true).
-  { (* both matches load: the masked saddr load and the oifname meta load.  When the
-       rule applies, [saddr_private]/[oif_ppp0] are true (each = load && body), which
-       supply the loads; the end part is unconditionally loadable (NAT, vmap None). *)
-    unfold saddr_private, oif_ppp0, eval_matchcond in Hpriv, Hppp.
-    apply Bool.andb_true_iff in Hpriv as [Hpl _].
-    apply Bool.andb_true_iff in Hppp as [Hol _].
-    unfold rule_loadable, masq_rule; cbn [r_body body_loadable_walk
-      body_synproxy_stops existsb body_item_loadable body_thread body_has_notrack].
-    cbn [match_loadable] in Hpl, Hol |- *. rewrite Hpl, Hol. reflexivity. }
-  assert (Happ : rule_applies masq_rule e p = true)
-    by (rewrite masq_rule_applies_eq, Hpriv, Hppp; reflexivity).
-  assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.
-  assert (Hd : rule_step masq_rule e p = (Some Accept, (e, p))).
-  { rewrite rule_step_mutfree by reflexivity.
-    rewrite Hload, Happ. cbn [andb]. rewrite Ho. reflexivity. }
-  rewrite Hd. cbn [terminal].
+  rewrite masq_chain_u, Hpriv, Hppp. cbn [andb].
   rewrite (masq_no_drop Hpostrouting e p) by (rewrite Hwan; exact Hne).
   rewrite (masq_apply Hpostrouting e p Horig Hnone), Hwan. reflexivity.
 Qed.
@@ -234,12 +255,9 @@ Theorem nat_masquerade_does_not_fire : forall e p,
   chain_out Hpostrouting global_postrouting e p = p
   /\ chain_out_env Hpostrouting global_postrouting e p = e.
 Proof.
-  intros e p Happ. unfold chain_out, chain_out_env, eval_chain_trace.
-  rewrite global_postrouting_rules. cbn [c_rules eval_rules_trace].
-  assert (Hd : rule_step masq_rule e p = (None, (e, p))).
-  { rewrite rule_step_mutfree by reflexivity.
-    rewrite Happ, Bool.andb_false_r. reflexivity. }
-  rewrite Hd. split; reflexivity.
+  intros e p Happ. rewrite masq_rule_applies_eq in Happ.
+  unfold chain_out, chain_out_env.
+  rewrite masq_chain_u, Happ. split; reflexivity.
 Qed.
 
 (* Phrased on the security HYPOTHESES: a packet whose source is NOT private OR whose
@@ -270,12 +288,6 @@ Definition bug_rule : rule :=
 Definition bug_postrouting : chain :=
   {| c_policy := Accept; c_rules := [bug_rule] |}.
 
-Lemma bug_dsl_step_id : forall e p, dsl_step bug_rule e p = (e, p).
-Proof.
-  intros e p. rewrite dsl_step_after_free by reflexivity.
-  unfold dsl_writes, body_writes, bug_rule; cbn [r_body body_step match_consume].
-  destruct (eval_matchcond (MEq FMetaOifname if_ppp0) e p); reflexivity.
-Qed.
 
 Lemma bug_apply : forall h e p,
   pkt_ctdir_orig p = true ->
@@ -290,8 +302,10 @@ Proof.
   cbn -[set_saddr store_nat_mapping e_nat pkt_flow e_ifaddr field_value
         slice pkt_nh].
   rewrite Hnone.
-  unfold apply_nat_tuple, nat_orig_addr, nat_is_src, nat_addrfamily_pkt, nat_addrfamily,
-    nat_operand_addr, masq_saddr.
+  unfold apply_nat_tuple, apply_nat_tuple_c, nat_orig_addr, nat_orig_addr_c,
+    nat_is_src, nat_kind_src, nat_addrfamily_pkt, nat_af_pkt, nat_af_norm,
+    nat_addrfamily, nat_operand_addr, nat_new_addr, nat_opnd, masq_saddr,
+    nat_port_num, nat_port_val, nat_orig_port, nat_orig_port_c, nat_portonly.
   cbn -[set_saddr store_nat_mapping e_ifaddr field_value slice pkt_nh]. rewrite ?Horig.
   reflexivity.
 Qed.
@@ -343,7 +357,7 @@ Qed.
 (* For the BUGGY chain, the SAME witness has its source REWRITTEN to the WAN address
    (the leak): half (b) is FALSE for [bug_postrouting]. *)
 Theorem bug_breaks_no_fire :
-  saddr4 (snd (snd (eval_chain_trace Hpostrouting bug_postrouting env_bug pkt_pub))) = wan_addr.
+  saddr4 (snd (snd (eval_chain_u Hpostrouting bug_postrouting env_bug pkt_pub))) = wan_addr.
 Proof. vm_compute. reflexivity. Qed.
 
 (* Hence the data-plane property DISCRIMINATES the bug: the correct chain leaves the
@@ -352,7 +366,7 @@ Proof. vm_compute. reflexivity. Qed.
    verdict-only property (both chains accept) cannot make. *)
 Theorem property_discriminates_bug :
   saddr4 (chain_out Hpostrouting global_postrouting env_bug pkt_pub)
-  <> saddr4 (snd (snd (eval_chain_trace Hpostrouting bug_postrouting env_bug pkt_pub))).
+  <> saddr4 (snd (snd (eval_chain_u Hpostrouting bug_postrouting env_bug pkt_pub))).
 Proof.
   rewrite correct_keeps_public_source, bug_breaks_no_fire. discriminate.
 Qed.
@@ -437,7 +451,8 @@ Proof.
   intros h e p oa wan Horig Hsome. unfold apply_nat, masq_rule, masq_spec.
   cbn -[set_saddr e_nat pkt_flow apply_nat_tuple].
   rewrite Hsome.
-  unfold apply_nat_tuple, nat_is_src, nat_addrfamily_pkt, nat_addrfamily.
+  unfold apply_nat_tuple, apply_nat_tuple_c, nat_is_src, nat_kind_src,
+    nat_addrfamily_pkt, nat_af_pkt, nat_af_norm, nat_addrfamily.
   cbn -[set_saddr]. rewrite Horig. cbn [apply_nat_port_val]. reflexivity.
 Qed.
 
@@ -447,7 +462,7 @@ Lemma masq_no_drop_confirmed : forall h e p m,
   e_nat e (pkt_flow p) = Some m ->
   nat_drops h masq_rule e p = false.
 Proof.
-  intros h e p m Hsome. unfold nat_drops, masq_rule; cbn [r_nat r_outcome].
+  intros h e p m Hsome. unfold nat_drops, nat_drops_c, masq_rule; cbn [r_nat r_outcome].
   rewrite Hsome. reflexivity.
 Qed.
 
@@ -461,22 +476,8 @@ Theorem nat_masq_confirmed_output : forall e p oa wan,
   chain_out Hpostrouting global_postrouting e p = set_saddr nat_fam_ip4 p wan.
 Proof.
   intros e p oa wan Hpriv Hppp Horig Hsome.
-  unfold chain_out, eval_chain_trace.
-  rewrite global_postrouting_rules. cbn [c_rules eval_rules_trace].
-  assert (Hload : rule_loadable masq_rule e p = true).
-  { unfold saddr_private, oif_ppp0, eval_matchcond in Hpriv, Hppp.
-    apply Bool.andb_true_iff in Hpriv as [Hpl _].
-    apply Bool.andb_true_iff in Hppp as [Hol _].
-    unfold rule_loadable, masq_rule; cbn [r_body body_loadable_walk
-      body_synproxy_stops existsb body_item_loadable body_thread body_has_notrack].
-    cbn [match_loadable] in Hpl, Hol |- *. rewrite Hpl, Hol. reflexivity. }
-  assert (Happ : rule_applies masq_rule e p = true)
-    by (rewrite masq_rule_applies_eq, Hpriv, Hppp; reflexivity).
-  assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.
-  assert (Hd : rule_step masq_rule e p = (Some Accept, (e, p))).
-  { rewrite rule_step_mutfree by reflexivity.
-    rewrite Hload, Happ. cbn [andb]. rewrite Ho. reflexivity. }
-  rewrite Hd. cbn [terminal].
+  unfold chain_out.
+  rewrite masq_chain_u, Hpriv, Hppp. cbn [andb].
   rewrite (masq_no_drop_confirmed Hpostrouting e p _ Hsome).
   rewrite (masq_apply_confirmed_orig Hpostrouting e p oa wan Horig Hsome).
   reflexivity.
@@ -553,7 +554,8 @@ Proof.
   intros h e p oa wan Hrep Hsome. unfold apply_nat, masq_rule, masq_spec.
   cbn -[set_daddr e_nat pkt_flow apply_nat_tuple].
   rewrite Hsome.
-  unfold apply_nat_tuple, nat_is_src, nat_addrfamily_pkt, nat_addrfamily.
+  unfold apply_nat_tuple, apply_nat_tuple_c, nat_is_src, nat_kind_src,
+    nat_addrfamily_pkt, nat_af_pkt, nat_af_norm, nat_addrfamily.
   cbn -[set_daddr]. rewrite Hrep. reflexivity.
 Qed.
 
@@ -566,22 +568,8 @@ Theorem nat_masq_confirmed_reply_output : forall e p oa wan,
   chain_out Hpostrouting global_postrouting e p = set_daddr nat_fam_ip4 p oa.
 Proof.
   intros e p oa wan Hpriv Hppp Hrep Hsome.
-  unfold chain_out, eval_chain_trace.
-  rewrite global_postrouting_rules. cbn [c_rules eval_rules_trace].
-  assert (Hload : rule_loadable masq_rule e p = true).
-  { unfold saddr_private, oif_ppp0, eval_matchcond in Hpriv, Hppp.
-    apply Bool.andb_true_iff in Hpriv as [Hpl _].
-    apply Bool.andb_true_iff in Hppp as [Hol _].
-    unfold rule_loadable, masq_rule; cbn [r_body body_loadable_walk
-      body_synproxy_stops existsb body_item_loadable body_thread body_has_notrack].
-    cbn [match_loadable] in Hpl, Hol |- *. rewrite Hpl, Hol. reflexivity. }
-  assert (Happ : rule_applies masq_rule e p = true)
-    by (rewrite masq_rule_applies_eq, Hpriv, Hppp; reflexivity).
-  assert (Ho : outcome masq_rule e p = Some Accept) by reflexivity.
-  assert (Hd : rule_step masq_rule e p = (Some Accept, (e, p))).
-  { rewrite rule_step_mutfree by reflexivity.
-    rewrite Hload, Happ. cbn [andb]. rewrite Ho. reflexivity. }
-  rewrite Hd. cbn [terminal].
+  unfold chain_out.
+  rewrite masq_chain_u, Hpriv, Hppp. cbn [andb].
   rewrite (masq_no_drop_confirmed Hpostrouting e p _ Hsome).
   rewrite (masq_apply_confirmed_reply Hpostrouting e p oa wan Hrep Hsome).
   reflexivity.

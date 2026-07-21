@@ -13,10 +13,18 @@
     (../adversarial.md), not to a documentation milestone; until then this file
     keeps the divergent behaviour checked instead of merely described.
 
-    One open entry:
-      (2) OVmapNat vmap-HIT trace NAT  — [vmaphit_*] theorems below.
+    No open entries remain: every historical divergence below is REPAIRED and
+    pinned POSITIVELY (kernel value), so a regression that re-introduces one
+    flips a pin and fails the build.
 
-    (Historical entry (1) — the whole-body limiter sweep — is REPAIRED: the
+    (Historical entry (2) — the OVmapNat vmap-HIT running the trailing NAT —
+    is REPAIRED by M3: the NAT data-plane effect is evaluated INSIDE the
+    single per-rule fold at the terminal the walk actually reached, so a vmap
+    HIT stops the rule before the NAT (outcome provenance is the fold's
+    structure) — and the side trace evaluator that dispatched NAT out-of-band
+    ([eval_rules_trace]) is RETIRED (THEOREMS.md § strata retirements).  Its
+    positive successors are the [vmaphit_*] / [vm_vmaphit_*] pins below.
+    Historical entry (1) — the whole-body limiter sweep — is REPAIRED: the
     `limit`/`quota`/`connlimit` consumption is evaluated AT the limiter's own
     body/instruction position inside the break-aware fold, so a limiter after
     a failing match consumes nothing, exactly the kernel NFT_BREAK order.
@@ -90,7 +98,7 @@ Lemma gate_match_fails :
   eval_matchcond (MEq FMetaMark [0;0;0;1]) env_lim pkt_nomatch = false.
 Proof. vm_compute. reflexivity. Qed.
 
-Definition gate_res : verdict * env := eval_chain_mut_env gate_chain env_lim pkt_nomatch.
+Definition gate_res : verdict * env := eval_chain_mut_env Hprerouting gate_chain env_lim pkt_nomatch.
 
 (* The verdict is the policy (rule does not apply) — same as the kernel. *)
 Lemma gate_verdict_policy : fst gate_res = Drop.
@@ -103,7 +111,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 (* The compiled VM agrees with the DSL (and with the kernel). *)
 Definition vm_gate_res : verdict * env :=
-  run_chain_mut_env (compile_chain gate_chain) Drop env_lim pkt_nomatch.
+  run_chain_mut_env Hprerouting (compile_chain gate_chain) Drop env_lim pkt_nomatch.
 
 Theorem vm_gate_limit_undrained : e_limit (snd vm_gate_res) lim1 = 1.
 Proof. vm_compute. reflexivity. Qed.
@@ -114,27 +122,23 @@ Proof. vm_compute. reflexivity. Qed.
    ([limit_before_failing_match_consumed] / [vm_limit_before_failing_match_consumed]). *)
 
 (* ------------------------------------------------------------------------ *)
-(** ** (2) KNOWN INFIDELITY — a vmap HIT on an [OVmapNat] rule still runs the
-    trailing NAT in the trace evaluator.
+(** ** (2) REPAIRED — a vmap HIT on an [OVmapNat] rule does NOT run the
+    trailing NAT.
 
     Kernel: `tcp dport vmap { ... } dnat to ...` runs its expressions in order;
     a vmap HIT writes a non-CONTINUE verdict register and the rule's remaining
     expressions — the trailing nft_nat — never evaluate (nf_tables_core.c
-    nft_do_chain per-expr verdict break).  The repo's own verdict/loadability
-    semantics agree ([Semantics.end_loadable]: "vmap HIT: terminal/r_after
-    unreachable"; [run_rule]'s [IVmap] hit returns before the [INat]).
+    nft_do_chain per-expr verdict break).
 
-    Model ([eval_rules_trace], Semantics.v): on ANY terminal verdict of a rule
-    it dispatches [nat_drops]/[apply_nat] on [r_nat r] — and [r_nat] projects
-    the NAT out of [OVmapNat] whether the verdict came from the vmap HIT or the
-    NAT terminal.  So a vmap HIT on an [OVmapNat] rule still (a) rewrites the
-    packet and (b) STORES a flow-keyed [e_nat] mapping ([store_nat_mapping]) —
-    a flow-visible side effect the kernel does not perform (later same-flow
-    packets are translated by the stored tuple).
-
-    PINNED (model behaviour; a fidelity fix MUST flip [vmaphit_daddr_rewritten]
-    to "= [1;2;3;4]" and [vmaphit_stores_nat_mapping] to "= None", and update
-    the ledger). *)
+    Model (repaired, M3): the NAT effect is applied INSIDE the per-rule fold
+    ([terminal_step] / the VM's [INat] case), which is only reached when the
+    vmap MISSES — the fold's structure IS the outcome provenance.  So a vmap
+    HIT neither rewrites the packet nor stores a flow-keyed [e_nat] mapping,
+    on BOTH sides (DSL fold and compiled bytecode).  The retired side
+    evaluator [eval_rules_trace], which dispatched NAT out-of-band on
+    [r_nat] at any terminal verdict, was the ONLY place the divergence
+    lived; its successor is the unified fold (THEOREMS.md § strata
+    retirements). *)
 
 Definition vmnat_spec : nat_spec :=
   {| nat_addr_imm := Some [10;0;0;1]; nat_field := None; nat_map := None; nat_src := None;
@@ -167,21 +171,61 @@ Definition pkt_hit : packet :=
         ip4_hdr [0;0;0;0;0;0;0;0] [7;7].
 
 Definition vmaphit_res : option verdict * (env * packet) :=
-  eval_rules_trace Hprerouting (c_rules vmaphit_chain) env_vmap pkt_hit.
+  rule_step Hprerouting vmaphit_rule env_vmap pkt_hit.
 
 (* The verdict IS the vmap-hit verdict (kernel and model agree on it). *)
 Lemma vmaphit_verdict : fst vmaphit_res = Some Accept.
 Proof. vm_compute. reflexivity. Qed.
 
-(* THE DIVERGENCE (data plane): the destination was rewritten to the dnat
-   target even though the vmap HIT — the kernel leaves it at [1;2;3;4]. *)
+(* POSITIVE (kernel value): on the vmap HIT the destination is NOT rewritten —
+   it stays [1;2;3;4]; the trailing dnat never evaluated. *)
 Theorem vmaphit_daddr_rewritten :
-  field_value FIp4Daddr env_vmap (snd (snd vmaphit_res)) = [10;0;0;1].
+  field_value FIp4Daddr env_vmap (snd (snd vmaphit_res)) = [1;2;3;4].
 Proof. vm_compute. reflexivity. Qed.
 
-(* THE DIVERGENCE (flow state): a NAT mapping was STORED for the flow — the
-   kernel's nf_nat_setup_info never ran, so no conntrack NAT tuple exists. *)
+(* POSITIVE (kernel value): NO flow-keyed NAT mapping is stored on a vmap HIT —
+   the kernel's nf_nat_setup_info never ran, and neither does the model's
+   [apply_nat]/[store_nat_mapping]: e_nat stays None.
+   = None *)
 Theorem vmaphit_stores_nat_mapping :
-  e_nat (fst (snd vmaphit_res)) [7;7]
+  e_nat (fst (snd vmaphit_res)) [7;7] = None.
+Proof. vm_compute. reflexivity. Qed.
+
+(* The MISS side (provenance non-vacuity): a packet whose mark misses the vmap
+   falls through to the NAT terminal, which rewrites AND stores the mapping —
+   the effect is in the fold, not deleted. *)
+Definition pkt_miss : packet :=
+  mkpkt (fun k => if meta_eqb k MKmark then [0;0;0;2] else [])
+        ip4_hdr [0;0;0;0;0;0;0;0] [7;7].
+Definition vmapmiss_res : option verdict * (env * packet) :=
+  rule_step Hprerouting vmaphit_rule env_vmap pkt_miss.
+Theorem vmapmiss_daddr_rewritten :
+  field_value FIp4Daddr env_vmap (snd (snd vmapmiss_res)) = [10;0;0;1].
+Proof. vm_compute. reflexivity. Qed.
+Theorem vmapmiss_stores_nat_mapping :
+  e_nat (fst (snd vmapmiss_res)) [7;7]
+  = Some (Some [1;2;3;4], Some [10;0;0;1], None, None).
+Proof. vm_compute. reflexivity. Qed.
+
+(* VM twins: the COMPILED rule behaves identically — the IVmap hit returns
+   before the INat instruction; the miss reaches INat, which performs the
+   data-plane effect from the register file. *)
+Definition vm_vmaphit_res : option verdict * (env * packet) :=
+  run_rule_step Hprerouting empty_rf (compile_rule vmaphit_rule) env_vmap pkt_hit.
+Theorem vm_vmaphit_verdict : fst vm_vmaphit_res = Some Accept.
+Proof. vm_compute. reflexivity. Qed.
+Theorem vm_vmaphit_daddr_preserved :
+  field_value FIp4Daddr env_vmap (snd (snd vm_vmaphit_res)) = [1;2;3;4].
+Proof. vm_compute. reflexivity. Qed.
+Theorem vm_vmaphit_no_mapping :
+  e_nat (fst (snd vm_vmaphit_res)) [7;7] = None.
+Proof. vm_compute. reflexivity. Qed.
+Definition vm_vmapmiss_res : option verdict * (env * packet) :=
+  run_rule_step Hprerouting empty_rf (compile_rule vmaphit_rule) env_vmap pkt_miss.
+Theorem vm_vmapmiss_daddr_rewritten :
+  field_value FIp4Daddr env_vmap (snd (snd vm_vmapmiss_res)) = [10;0;0;1].
+Proof. vm_compute. reflexivity. Qed.
+Theorem vm_vmapmiss_stores_mapping :
+  e_nat (fst (snd vm_vmapmiss_res)) [7;7]
   = Some (Some [1;2;3;4], Some [10;0;0;1], None, None).
 Proof. vm_compute. reflexivity. Qed.

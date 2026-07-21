@@ -37,6 +37,11 @@ From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Bytecode Syntax Semantics.
 Import ListNotations.
 
+(* Pins below hold at EVERY netfilter hook [h] (no rule here carries a NAT
+   terminal, so the hook is inert); the section generalizes each statement. *)
+Section AtHook.
+Context (h : hook_id).
+
 Definition untracked_bytes : data := [0;0;0;64].
 
 Definition m_untracked : matchcond :=
@@ -83,7 +88,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 (* The stateful threading evaluator agrees. *)
 Theorem model_accepts_like_kernel_eval_chain_mut :
-  eval_chain_mut intra_chain env0 pkt_noentry = Accept.
+  eval_chain_mut h intra_chain env0 pkt_noentry = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* KERNEL GUARD: on a packet that ALREADY has a conntrack ENTRY
@@ -121,3 +126,5 @@ Proof. vm_compute. reflexivity. Qed.
 Theorem model_drops_entry_present_packet :
   eval_chain intra_chain env_est pkt_est = Drop.
 Proof. vm_compute. reflexivity. Qed.
+
+End AtHook.

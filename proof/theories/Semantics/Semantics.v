@@ -13,12 +13,18 @@
       DSL: eval_rules_u / eval_table_u / eval_ruleset_u / eval_hook_u
       VM:  run_rules_u  / run_table_u  / run_ruleset_u
 
-    a single fuel-bounded fold that BOTH threads every state effect — packet
+    a single fuel-bounded fold, evaluated AT a netfilter hook [h] (§ Section
+    AtHook), that BOTH threads every state effect — packet
     meta/ct writes, dynset env writes, the notrack latch, limiter/quota/
-    connlimit consumption and the VM `numgen inc` counter advance (each applied
+    connlimit consumption, the VM `numgen inc` counter advance, AND the
+    data-plane NAT effect of a dnat/snat/masquerade/redirect terminal (the
+    packet rewrite + the flow-keyed [e_nat] tuple store/reuse and the
+    no-usable-address NF_DROP, applied AT the terminal the walk actually
+    reached — a vmap HIT never runs it: outcome provenance is the fold's
+    structure) — each effect applied
     AT its body/instruction position inside the break-aware per-rule fold
     [rule_step] / [run_rule_step], so a limiter after a failing match is NOT
-    consumed — kernel NFT_BREAK order) — AND follows control flow
+    consumed — kernel NFT_BREAK order — AND follows control flow
     (jump/goto/return, user-defined
     chains, multi-chain and hook/priority dispatch), with cross-packet env
     carry ([seq_eval_env] over [eval_hook_env_u]).  A jumped-to chain sees
@@ -55,10 +61,9 @@
         eval_chain_mut(_env)| ([rule_plain]: no realisable | eval_table_u_mut_proj
                             | jump/goto/return under the   |
                             | run's verdict maps)          |
-      eval_rules_trace      | = mut strand verdict except  | eval_rules_trace_verdict
-                            | the data-plane NAT drop      | (NAT axis; see its header)
       rule_applies(_walk) / | write-free rule (no mut stmt,| rule_step_mutfree
-        outcome/rule_loadable  no limiter match)           |
+        outcome/rule_loadable  no limiter match, no NAT    |
+                            | terminal)                    |
       run_rule/run_program  | no_writes programs (no mut/  | Correct.run_rule_step_no_writes
                             | limiter/inc-numgen instr)    |
       run_rules_j/run_table | compiled write-free chains   | Correct.run_table_writefree_compiled
@@ -1950,6 +1955,511 @@ Definition env_map_upd (e : env) (op : dynset_op) (name : String.string) (key da
        else e_map e n).
 
 
+(** The target ADDRESS operand of a NAT statement — the value the kernel loads
+    into [NFTNL_EXPR_NAT_REG_ADDR_MIN] (register 1) and applies as the new
+    source/destination address.  This mirrors exactly the register-1 operand the
+    compiler emits ([compile_terminal]) and the loadability discipline
+    ([terminal_loadable]): an explicit value source ([nat_src]), else a named-map
+    lookup ([nat_map]), else a (transformed) packet field ([nat_field]), else the
+    immediate destined for register 1 ([nat_addr_imm]). *)
+Definition nat_addr (ns : nat_spec) (e : env) (p : packet) : data :=
+  match nat_src ns with
+  | Some vs => eval_vsrc vs e p
+  | None =>
+  match nat_map ns with
+  | Some (fields, ts, name) =>
+      map_lookup_data (nat_map_key fields ts e p) (e_map e name)
+  | None =>
+  match nat_field ns with
+  | Some (f, ts) => apply_transforms ts (field_value f e p)
+  | None => match nat_addr_imm ns with Some v => v | None => [] end
+  end end end.
+
+(** The data-plane effect of a terminal NAT rule on the packet, dispatched on
+    [nat_kind]:
+    - "masq": source-NAT the IPv4 source to the EXIT interface's address
+      ([e_ifaddr] keyed by the output-interface name) — masquerade.
+    - "snat": source-NAT the IPv4 source to the target operand ([nat_addr]).
+    - "dnat": destination-NAT the IPv4 destination to the target operand —
+      the kernel's [NF_NAT_MANIP_DST] from [NFTNL_EXPR_NAT_REG_ADDR_MIN].
+    - "redir": destination-NAT the IPv4 destination to the INBOUND interface's
+      local address (redirect = DNAT to the box itself).
+    The address geometry is FAMILY-DEPENDENT ([nat_family]): "ip" rewrites the
+    32-bit IPv4 slot, "ip6" the 128-bit IPv6 slot (the kernel picks 32 vs 128
+    bits by family — [nat_addrlen], netlink_linearize.c:1237).  masq/redir carry
+    [nat_family] = "" (their family is implicit in the chain); [nat_addrfamily]
+    normalises "" to "ip" so the legacy IPv4 behaviour is preserved while "ip6"
+    is honoured.  Only the address rewrite is modelled; the protocol-PORT range
+    ([nat_extra]) is a separate obligation.  An unrecognised kind
+    leaves the packet unchanged. *)
+Definition nat_af_norm (f : nat_af) : nat_af :=
+  if nataf_eqb f nat_fam_ip6 then nat_fam_ip6
+  else if nataf_eqb f nat_fam_inet then nat_fam_inet
+  else nat_fam_ip4.
+Definition nat_addrfamily (ns : nat_spec) : nat_af := nat_af_norm (nat_family ns).
+
+(** The PACKET's L3 protocol family — exactly the bit [nft_pf(pkt)] encodes — read
+    from the [meta nfproto] byte: NFPROTO_IPV6 = 10 -> "ip6", everything else (incl.
+    NFPROTO_IPV4 = 2) -> "ip".  This is what the kernel's [nft_masq_inet_eval]
+    `switch (nft_pf(pkt))` dispatches on. *)
+Definition pkt_l3_family (p : packet) : nat_af :=
+  if N.eqb (data_to_N (read_meta p MKnfproto)) 10 then nat_fam_ip6 else nat_fam_ip4.
+
+(** The L3 NAT address family to USE for [p]: for a STATIC family ("ip"/"ip6", e.g.
+    an `ip`/`ip6` table or an explicit-literal snat/dnat) the rule's own family; for
+    the RUNTIME-DISPATCHED [nat_fam_inet] (an inet-table masquerade/redirect/snat-by-
+    iface, which sees both protocols) the PACKET's L3 family ([pkt_l3_family]).  This
+    is the precise model of the kernel's runtime `switch (nft_pf(pkt))`: an IPv6
+    packet through an inet-table masquerade gets the 16-byte IPv6 geometry + IPv6
+    interface address, an IPv4 packet the 4-byte IPv4 geometry — instead of a single
+    statically-pinned family that corrupts the other protocol. *)
+Definition nat_af_pkt (f : nat_af) (p : packet) : nat_af :=
+  if nataf_eqb (nat_af_norm f) nat_fam_inet then pkt_l3_family p
+  else nat_af_norm f.
+Definition nat_addrfamily_pkt (ns : nat_spec) (p : packet) : nat_af :=
+  nat_af_pkt (nat_family ns) p.
+
+(** The netfilter hook a base chain is attached to.  This is the SAME [hook_id]
+    used by the hook-registration metadata below ([hooked_chain]); it is named
+    here because the data-plane NAT effect ([apply_nat]) is hook-dependent — the
+    kernel core branches on [hooknum] (e.g. [nf_nat_redirect_ipv4]). *)
+Inductive hook_id : Type :=
+| Hprerouting | Hinput | Hforward | Houtput | Hpostrouting | Hingress.
+Definition hook_eqb (a b : hook_id) : bool :=
+  match a, b with
+  | Hprerouting, Hprerouting | Hinput, Hinput | Hforward, Hforward
+  | Houtput, Houtput | Hpostrouting, Hpostrouting | Hingress, Hingress => true
+  | _, _ => false
+  end.
+
+(** The loopback destination the kernel forces for an OUTPUT-hooked `redirect`
+    ("local packets: make them go to loopback", [nf_nat_redirect_ipv4] /
+    [nf_nat_redirect_ipv6]): IPv4 = INADDR_LOOPBACK = 127.0.0.1, IPv6 = ::1. *)
+Definition loopback_ip4 : data := [127; 0; 0; 1].
+Definition loopback_ip6 : data := [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1].
+Definition loopback_addr (family : nat_af) : data :=
+  if nataf_eqb family nat_fam_ip6 then loopback_ip6 else loopback_ip4.
+
+(** The destination a `redirect` rewrites to, which is HOOK-DEPENDENT exactly as
+    the kernel core [nf_nat_redirect_ipv4]/[nf_nat_redirect_ipv6] (branch on
+    [hooknum]): at [Houtput] (NF_INET_LOCAL_OUT) local packets are forced to the
+    loopback address (127.0.0.1 / ::1); otherwise (PRE_ROUTING) the new
+    destination is the inbound interface's primary address.  [nft_redir_validate]
+    permits only these two hooks. *)
+Definition redir_daddr (h : hook_id) (fam : nat_af) (e : env) (p : packet) : data :=
+  match h with
+  | Houtput => loopback_addr fam
+  | _ => e_ifaddr e (field_value FMetaIifname e p)
+  end.
+
+(** The SOURCE address a `masquerade` rewrites to: the exit interface's primary
+    address, chosen by family exactly as the kernel dispatches masquerade BY FAMILY
+    (nft_masq.c:113-121 branches NFPROTO_IPV4 -> nf_nat_masquerade_ipv4 vs
+    NFPROTO_IPV6 -> nf_nat_masquerade_ipv6).  An IPv4 masquerade writes the 4-byte
+    [e_ifaddr]; an IPv6 masquerade writes the 16-byte [e_ifaddr6] (the kernel
+    computes it via ipv6_dev_get_saddr — a DIFFERENT, 128-bit value, not the IPv4
+    address).  Keyed by the exit-interface name ([FMetaOifname]). *)
+Definition masq_saddr (fam : nat_af) (e : env) (p : packet) : data :=
+  if nataf_eqb fam nat_fam_ip6
+  then e_ifaddr6 e (field_value FMetaOifname e p)
+  else e_ifaddr  e (field_value FMetaOifname e p).
+
+(** The L4 port the kernel writes is [min_proto.all] of the NAT range, loaded as a
+    big-endian 16-bit value from the proto-min register ([nft_nat_setup_proto],
+    nft_nat.c:57-60).  In the model the operand is [nat_port_num]; encode it as the
+    2-byte big-endian port the transport header carries. *)
+Definition nat_port_bytes (pmin : nat) : data := N_to_data 2 (N.of_nat pmin).
+
+(** Apply the L4 PORT half of a NAT effect, mirroring the kernel
+    [nft_nat_setup_proto]: the port rewrite happens ONLY when the proto-min
+    register is set (`if (priv->sreg_proto_min)`, nft_nat.c:120) — in the model,
+    when [nat_port_num ns = Some pmin].  A SOURCE NAT (snat/masquerade) rewrites the
+    L4 SOURCE port ([set_sport]); a DESTINATION NAT (dnat/redirect) the L4
+    DESTINATION port ([set_dport]) — exactly the [NF_NAT_MANIP_{SRC,DST}] split of
+    [tcp_manip_pkt] (nf_nat_proto.c).  Address-only NAT ([nat_port_num] = None) leaves
+    the port byte-for-byte unchanged. *)
+(** REGISTER-FREE: the port is the VALUE [lo] (a 2-byte port operand), never
+    [nat_port_bytes] of a register index — the two must not be conflated (a
+    register index is compile-time bookkeeping, [Compile.nat_pmin_reg]).
+    A concat-map port ([NXmap_port]) is a runtime map value, not statically modelled. *)
+Definition apply_nat_port (is_src : bool) (ns : nat_spec) (p : packet) : packet :=
+  match nat_extra ns with
+  | NXimm _ (Some lo) _ => if is_src then set_sport p lo else set_dport p lo
+  | _ => p
+  end.
+
+(** Whether the NAT spec carries an L3 ADDRESS operand — i.e. whether the kernel
+    sets [priv->sreg_addr_min] (NFTNL_EXPR_NAT_REG_ADDR_MIN).  The address rewrite
+    in [nft_nat_eval] is gated EXACTLY on this register being present
+    (`if (priv->sreg_addr_min)`, nft_nat.c:114) and is INDEPENDENT of the proto
+    (port) register (`if (priv->sreg_proto_min)`, nft_nat.c:120).  A PORT-ONLY NAT
+    (`dnat to :80`, `snat to :1024`) sets only the proto register, so the kernel
+    rewrites ONLY the L4 port and leaves the L3 destination/source address
+    byte-for-byte UNCHANGED.  An address operand is present iff [nat_addr] has a
+    source: an explicit value source ([nat_src]), a named-map lookup ([nat_map]),
+    a packet field ([nat_field]), or a register-1 immediate ([nat_addr_imm]). *)
+Definition nat_has_addr (ns : nat_spec) : bool :=
+  match nat_src ns, nat_map ns, nat_field ns with
+  | None, None, None => match nat_addr_imm ns with Some _ => true | None => false end
+  | _, _, _ => true
+  end.
+
+(** The data-plane NAT effect of a terminal rule at hook [h].  Only [redir] is
+    hook-dependent (see [redir_daddr]); masq/snat/dnat are hook-invariant.  Each
+    kind first performs its L3 address rewrite ([set_saddr]/[set_daddr]) — but ONLY
+    when an address operand is present ([nat_has_addr], the kernel's
+    `if (priv->sreg_addr_min)` guard, nft_nat.c:114); a port-only snat/dnat
+    therefore preserves the L3 address — and then, when a port operand is present
+    ([nat_port_num] = Some), the L4 port rewrite ([apply_nat_port], the independent
+    `if (priv->sreg_proto_min)` guard, nft_nat.c:120).  masquerade always derives
+    its source address from the exit interface and redirect from the inbound
+    interface / loopback, so both always carry an (implicit) address operand and
+    their address rewrite is unconditional, matching [nft_masq]/[nft_redir] which
+    always set up the address.  The kernel applies both the addr and the proto
+    range in a single [nf_nat_setup_info]. *)
+(** Whether a NAT kind is a SOURCE NAT ([NF_NAT_MANIP_SRC]: snat/masquerade — the
+    L3 SOURCE address + L4 SOURCE port are rewritten) versus a DESTINATION NAT
+    ([NF_NAT_MANIP_DST]: dnat/redirect).  This is fixed by the rule's [nat_kind],
+    independent of the flow. *)
+Definition nat_kind_src (k : nat_op) : bool :=
+  natop_eqb k nat_masq_kind || natop_eqb k nat_snat_kind.
+Definition nat_is_src (ns : nat_spec) : bool := nat_kind_src (nat_kind ns).
+
+(** The L3 ADDRESS the operand evaluates to, i.e. the value the kernel loads into
+    [NAT_REG_ADDR_MIN] on the unconfirmed packet to build the new tuple — or [None]
+    when the spec carries no address operand (a port-only snat/dnat, the kernel's
+    `if (priv->sreg_addr_min)` guard being false, nft_nat.c:114).  masquerade derives
+    its source from the exit interface, redirect from the inbound interface/loopback,
+    so both always carry an (implicit) address.  This is the ONLY part of the NAT
+    effect that re-reads the current packet, so it is exactly what must be FROZEN at
+    the flow's first packet. *)
+(** The core form, shared VERBATIM by the DSL and the VM: the kind [k] and raw
+    family [fam0] come from the rule spec / the [INat] instruction; the
+    snat/dnat address OPERAND [opnd] is the only side-specific input — the DSL
+    evaluates the spec's operand ([nat_addr], when [nat_has_addr]), the VM
+    reads the [INat] addr-min register.  masquerade/redirect derive their
+    address from the interface state, identically on both sides. *)
+Definition nat_new_addr (h : hook_id) (k : nat_op) (fampkt : nat_af)
+                        (opnd : option data) (e : env) (p : packet) : option data :=
+  if natop_eqb k nat_masq_kind
+  then Some (masq_saddr fampkt e p)
+  else if natop_eqb k nat_redir_kind
+  then Some (redir_daddr h fampkt e p)
+  else if natop_eqb k nat_snat_kind || natop_eqb k nat_dnat_kind
+  then opnd
+  else None.
+
+(** The DSL's L3 ADDRESS operand: the evaluated spec operand when one is
+    present ([nat_has_addr], the kernel's `if (priv->sreg_addr_min)` guard) —
+    except for masq/redir ([nat_portonly]), whose operand is their PORT
+    ([nat_port_val]) and whose address always comes from the interface state.
+    This is exactly the addr-min REGISTER discipline ([Compile.nat_amin_reg]),
+    so the VM's [option_map rf amin] matches it shape for shape. *)
+Definition nat_opnd (ns : nat_spec) (e : env) (p : packet) : option data :=
+  if nat_portonly ns then None
+  else if nat_has_addr ns then Some (nat_addr ns e p) else None.
+
+Definition nat_operand_addr (h : hook_id) (ns : nat_spec) (e : env) (p : packet)
+  : option data :=
+  nat_new_addr h (nat_kind ns) (nat_addrfamily_pkt ns p) (nat_opnd ns e p) e p.
+
+(** Apply a (possibly absent) L4 PORT translation [port_opt] to packet [p],
+    rewriting the SOURCE port for a source NAT or the DESTINATION port for a
+    destination NAT — the value-level analogue of [apply_nat_port] that takes the
+    stored port directly instead of re-reading [nat_port_num]. *)
+Definition apply_nat_port_val (is_src : bool) (port_opt : option nat) (p : packet) : packet :=
+  match port_opt with
+  | Some pmin =>
+      if is_src then set_sport p (nat_port_bytes pmin)
+                else set_dport p (nat_port_bytes pmin)
+  | None => p
+  end.
+
+(** Apply an ESTABLISHED translation [(orig_addr_opt, new_addr_opt, port_opt)] to
+    packet [p] for a NAT of kind [ns], in the conntrack DIRECTION-AWARE way the
+    kernel's [nf_nat_packet]/[nf_nat_manip_pkt] does (net/netfilter/nf_nat_core.c):
+
+    - ORIGINAL direction ([pkt_ctdir_orig p = true]): apply the manip FORWARD.
+      Rewrite the L3 address of the manip slot (SOURCE for a source NAT, DESTINATION
+      for a destination NAT) to [new_addr_opt], then the L4 port of that slot to
+      [port_opt].  This is the translation the rule established on packet 1, reused
+      verbatim on every later confirmed ORIGINAL-direction packet (it never re-reads
+      the rule operand).
+
+    - REPLY direction ([pkt_ctdir_orig p = false]): apply the INVERSE manip.  The
+      kernel inverts the manip target for reply packets
+      (`if (dir == IP_CT_DIR_REPLY) statusbit ^= IPS_NAT_MASK`), so a source NAT
+      un-rewrites the reply's DESTINATION and a destination NAT un-rewrites the
+      reply's SOURCE — restoring the ORIGINAL (pre-NAT) address [orig_addr_opt] that
+      the peer originally addressed.  (A dnat's reply has its SOURCE = the dnat target
+      un-DNAT'd back to [orig_addr]; its DESTINATION is left untouched.)  The L4 PORT
+      is ALSO un-rewritten on reply when a port operand was present: the kernel's
+      [nf_nat_manip_pkt(REPLY)] inverts the maniptype and writes the reply tuple's
+      port into the OPPOSITE slot ([tcp_manip_pkt]/[__udp_manip_pkt]:
+      `*portptr = newport`, nf_nat_proto.c), so a dnat reply has its SOURCE port
+      restored to the connection's original (pre-DNAT) destination port, and an snat
+      reply has its DESTINATION port restored to the original source port.  The
+      stored [orig_port_opt] is exactly that original port; it is [None] when the
+      forward NAT carried no port operand (then the reply leaves the port unchanged,
+      matching the kernel's `if (priv->sreg_proto_min)` guard being false). *)
+Definition apply_nat_tuple_c (is_src : bool) (fam : nat_af) (p : packet)
+                             (m : option data * option data * option nat * option data) : packet :=
+  let '(orig_addr_opt, new_addr_opt, port_opt, orig_port_opt) := m in
+  if pkt_ctdir_orig p then
+    (* forward (original direction): rewrite the manip slot to the NAT target *)
+    let p1 := match new_addr_opt with
+              | Some a => if is_src then set_saddr fam p a else set_daddr fam p a
+              | None => p
+              end in
+    apply_nat_port_val is_src port_opt p1
+  else
+    (* reply direction: un-NAT the OPPOSITE slot back to the original address AND,
+       when a port operand was present, restore that slot's PORT to the original.
+       The maniptype is inverted exactly as nf_nat_manip_pkt(REPLY): a SOURCE NAT
+       un-rewrites the reply's DESTINATION (addr + port), a DESTINATION NAT the
+       reply's SOURCE. *)
+    let p1 := match orig_addr_opt with
+              | Some o => if is_src then set_daddr fam p o else set_saddr fam p o
+              | None => p
+              end in
+    match orig_port_opt with
+    | Some op => if is_src then set_dport p1 op else set_sport p1 op
+    | None => p1
+    end.
+
+Definition apply_nat_tuple (ns : nat_spec) (p : packet)
+                           (m : option data * option data * option nat * option data) : packet :=
+  apply_nat_tuple_c (nat_is_src ns) (nat_addrfamily_pkt ns p) p m.
+
+(** STORE the flow-keyed NAT mapping [m] at [p]'s flow into the shared env
+    ([env_nat_upd]) — exactly where the kernel writes it into the conntrack
+    entry.  A pure env update: the packet is untouched (the address rewrite is
+    the separate [apply_nat_tuple]). *)
+Definition store_nat_mapping (e : env) (p : packet)
+    (m : option data * option data * option nat * option data) : env :=
+  env_nat_upd e (pkt_flow p) m.
+
+(** The data-plane NAT effect of a terminal rule at hook [h], now FLOW-STATEFUL,
+    mirroring [nf_nat_setup_info]/[nft_nat_eval]:
+
+    - On the FIRST (unconfirmed) packet of a flow ([e_nat (pkt_flow p) = None]) the
+      kernel computes the new tuple from the rule operand (get_unique_tuple,
+      nf_nat_core.c:796), STORES it in the conntrack entry (nf_conntrack_alter_reply,
+      :803), and applies the rewrite.  The model mirrors this: it evaluates
+      [nat_operand_addr]/[nat_port_num] from the CURRENT packet, applies the tuple
+      ([apply_nat_tuple]) AND stores it into the shared, flow-keyed [e_nat]
+      ([store_nat_mapping]).
+
+    - On every LATER (confirmed) packet of the SAME flow ([e_nat (pkt_flow p) =
+      Some m]) the kernel returns NF_ACCEPT from nf_nat_setup_info WITHOUT
+      recomputing (nf_nat_core.c:778-780), and the rewrite comes from the STORED
+      tuple [m] (nf_nat_manip_pkt).  The model mirrors this: it applies [m] verbatim
+      ([apply_nat_tuple]) and does NOT re-read the operand — so two same-flow packets
+      with different saddrs both get the translation chosen on packet 1.
+
+    This is the exact analogue of the flow-keyed conntrack-mark state [e_ct], for
+    the NAT tuple.  The verdict side is untouched (NAT is terminal-Accept), so
+    [compile_chain_correct] is unaffected. *)
+
+(** The ORIGINAL (pre-NAT) address of the slot a NAT of kind [ns] rewrites — read
+    from the CURRENT packet before any rewrite: the SOURCE slot for a source NAT
+    ([nat_is_src]: snat/masquerade), the DESTINATION slot for a destination NAT
+    (dnat/redirect).  This is the address the kernel records as the OTHER tuple of
+    the conntrack entry (nf_conntrack_alter_reply), so a reply-direction packet can
+    be un-NAT'd back to it (the reply's opposite slot is restored to this value). *)
+Definition nat_orig_addr_c (is_src : bool) (fam : nat_af) (p : packet) : data :=
+  let '(off, len) := if is_src then saddr_slot fam else daddr_slot fam in
+  slice (pkt_nh p) off len.
+Definition nat_orig_addr (ns : nat_spec) (p : packet) : data :=
+  nat_orig_addr_c (nat_is_src ns) (nat_addrfamily_pkt ns p) p.
+
+(** The ORIGINAL (pre-NAT) L4 PORT of the slot a NAT of kind [ns] rewrites — read
+    from the CURRENT packet's transport header before any rewrite: the SOURCE port
+    (transport bytes 0..1) for a source NAT ([nat_is_src]: snat/masquerade), the
+    DESTINATION port (bytes 2..3) for a destination NAT (dnat/redirect).  Stored
+    ONLY when a port operand is present ([nat_port_num ns = Some _], the kernel's
+    `if (priv->sreg_proto_min)` guard, nft_nat.c:120) — otherwise [None], so the
+    reply leaves the port byte-for-byte unchanged.  This is the port half of the
+    reply tuple the kernel records (nf_conntrack_alter_reply), un-rewritten onto
+    the OPPOSITE slot of a reply-direction packet (mirroring nf_nat_manip_pkt's
+    inverted maniptype). *)
+(** The port operand as a NUMBER, for the flow tuple (register-free; the source
+    carries the port as a 2-byte VALUE in [nat_extra], decoded here). *)
+(** masq/redir never translate an ADDRESS: any primary operand they carry
+    (value source / map / field / immediate) is their PORT — nft loads it into
+    the proto-min register ([Compile.nat_portonly] mirrors this at register
+    allocation).  A dnat/snat port is the [NXimm] port-min immediate.  A port
+    living in a concat-MAP value slot ([NXmap_port]/[NXmap_full]) is NOT
+    statically modelled (the model VM delivers map values whole in the lookup
+    dreg and leaves the value-slot registers 9+ unwritten): both semantics
+    skip it identically — an unmodeled-feature gap (DEVELOPMENT.md), not a
+    divergence. *)
+Definition nat_port_val (ns : nat_spec) (e : env) (p : packet) : option data :=
+  match nat_extra ns with
+  | NXimm _ (Some lo) _ => Some lo
+  | NXmap_port | NXmap_full => None
+  | _ => if nat_portonly ns && nat_has_addr ns
+         then Some (nat_addr ns e p)   (* masq/redir `to :port`: the operand IS the port *)
+         else None
+  end.
+Definition nat_port_num (ns : nat_spec) (e : env) (p : packet) : option nat :=
+  match nat_port_val ns e p with
+  | Some lo => Some (N.to_nat (data_to_N lo))
+  | None => None
+  end.
+Definition nat_orig_port_c (is_src : bool) (port : option nat) (p : packet) : option data :=
+  match port with
+  | Some _ =>
+      if is_src
+      then Some (slice (pkt_th p) 0 2)   (* source NAT: original SOURCE port *)
+      else Some (slice (pkt_th p) 2 2)   (* dest   NAT: original DEST   port *)
+  | None => None
+  end.
+Definition nat_orig_port (ns : nat_spec) (e : env) (p : packet) : option data :=
+  nat_orig_port_c (nat_is_src ns) (nat_port_num ns e p) p.
+(** The core effect, shared VERBATIM by both sides (the DSL supplies the
+    evaluated spec operands, the VM the [INat] register contents). *)
+Definition apply_nat_c (h : hook_id) (k : nat_op) (fam0 : nat_af)
+                       (opnd : option data) (port : option nat)
+                       (e : env) (p : packet) : env * packet :=
+  let fam := nat_af_pkt fam0 p in
+  let is_src := nat_kind_src k in
+  match e_nat e (pkt_flow p) with
+  | Some m =>
+      (* confirmed flow: reuse the stored tuple (direction-aware), do NOT re-read
+         the operand *)
+      (e, apply_nat_tuple_c is_src fam p m)
+  | None =>
+      (* No mapping established yet.  The kernel establishes the NAT tuple only on
+         the connection's ORIGINAL-direction packet (nf_nat_setup_info runs on the
+         unconfirmed, original-direction skb).  A reply-direction packet with no
+         established mapping is NOT translated. *)
+      if pkt_ctdir_orig p then
+        (* first packet of the flow (original direction): capture the original
+           address, compute the tuple, apply it FORWARD, and STORE it *)
+        let m := (Some (nat_orig_addr_c is_src fam p), nat_new_addr h k fam opnd e p,
+                  port, nat_orig_port_c is_src port p) in
+        (store_nat_mapping e p m, apply_nat_tuple_c is_src fam p m)
+      else
+        (e, p)
+  end.
+
+Definition apply_nat (h : hook_id) (r : rule) (e : env) (p : packet) : env * packet :=
+  match r_nat r with
+  | Some ns =>
+      match e_nat e (pkt_flow p) with
+      | Some m =>
+          (* confirmed flow: reuse the stored tuple (direction-aware), do NOT re-read
+             the operand *)
+          (e, apply_nat_tuple ns p m)
+      | None =>
+          if pkt_ctdir_orig p then
+            (* first packet of the flow (original direction): capture the original
+               address, compute the tuple, apply it FORWARD, and STORE it *)
+            let m := (Some (nat_orig_addr ns p), nat_operand_addr h ns e p,
+                      nat_port_num ns e p, nat_orig_port ns e p) in
+            (store_nat_mapping e p m, apply_nat_tuple ns p m)
+          else
+            (e, p)
+      end
+  | None => (e, p)
+  end.
+
+(** [apply_nat] IS the shared core at the spec's operands — the equation the
+    compiler bridge uses to meet the VM's register-fed [apply_nat_c]
+    ([Correct.step_inat_terminal]). *)
+Lemma apply_nat_eq_c : forall h r e p,
+  apply_nat h r e p
+  = match r_nat r with
+    | Some ns => apply_nat_c h (nat_kind ns) (nat_family ns) (nat_opnd ns e p)
+                             (nat_port_num ns e p) e p
+    | None => (e, p)
+    end.
+Proof.
+  intros h r e p. unfold apply_nat, apply_nat_c. cbv zeta.
+  destruct (r_nat r) as [ns|]; [|reflexivity].
+  destruct (e_nat e (pkt_flow p)) as [m|]; [reflexivity|].
+  destruct (pkt_ctdir_orig p); reflexivity.
+Qed.
+
+(** The kernel's NAT CORE DROPS a packet when the interface it must take an
+    address FROM has no usable address — a data-plane drop computed by
+    [nat_drops_c] and consumed by BOTH sides of the single fold:
+    [terminal_step] (DSL) and the [INat] instruction case (VM), so it is
+    compiler-certified ([Correct.compile_nat_effect_correct]).  Two cases
+    mirror the kernel exactly:
+
+    - [redirect] (nf_nat_redirect_ipv4/ipv6): at the OUTPUT hook the new destination
+      is always the loopback address (`newdst.ip = htonl(INADDR_LOOPBACK)`), so it
+      NEVER drops there.  At PRE_ROUTING the new destination is the inbound device's
+      primary address; if that is empty (`if (!newdst.ip) return NF_DROP;`,
+      nf_nat_redirect.c:71-74) the packet is DROPPED.
+
+    - [masquerade] (nf_nat_masquerade_ipv4/ipv6): the new source is the exit
+      interface's selected address (inet_select_addr / ipv6_dev_get_saddr); if that
+      is empty (`if (!newsrc) { ...; return NF_DROP; }`, nf_nat_masquerade.c:54-58;
+      the IPv6 path likewise `return NF_DROP` on nat_ipv6_dev_get_saddr<0,
+      nf_nat_masquerade.c:254-256) the packet is DROPPED.
+
+    Like the kernel, this only fires when the NAT tuple is COMPUTED — i.e. on the
+    FIRST (unconfirmed) ORIGINAL-direction packet of the flow ([apply_nat]'s
+    [e_nat ... = None] && [pkt_ctdir_orig] branch).  On a confirmed/reply packet the
+    stored tuple is reused with no recompute (nf_nat_setup_info returns NF_ACCEPT
+    early, nf_nat_core.c:778-780), so no drop.  Address-carrying snat/dnat never hit
+    this path (their operand is an explicit value/map/field, not an interface
+    address), so [nat_drops] is false for them. *)
+Definition nat_iface_addr_absent (h : hook_id) (k : nat_op) (fam0 : nat_af)
+                                 (e : env) (p : packet) : bool :=
+  if natop_eqb k nat_masq_kind
+  then match masq_saddr (nat_af_pkt fam0 p) e p with [] => true | _ => false end
+  else if natop_eqb k nat_redir_kind
+  then match h with
+       | Houtput => false   (* loopback: never empty, never drops *)
+       | _ => match redir_daddr h (nat_af_pkt fam0 p) e p with [] => true | _ => false end
+       end
+  else false.
+
+(** The core drop test, shared verbatim by both sides — it reads only the
+    kind/family (both carried by the [INat] instruction), the shared flow
+    state and the packet. *)
+Definition nat_drops_c (h : hook_id) (k : nat_op) (fam0 : nat_af)
+                       (e : env) (p : packet) : bool :=
+  match e_nat e (pkt_flow p) with
+  | Some _ => false            (* confirmed flow: reuse stored tuple, no recompute *)
+  | None => pkt_ctdir_orig p && nat_iface_addr_absent h k fam0 e p
+  end.
+
+Definition nat_drops (h : hook_id) (r : rule) (e : env) (p : packet) : bool :=
+  match r_nat r with
+  | Some ns => nat_drops_c h (nat_kind ns) (nat_family ns) e p
+  | None => false
+  end.
+
+(** The VM's port operand at an [INat]: the proto-min REGISTER content, as a
+    port number — present exactly when the register is one of the per-rule
+    scratch registers 1..8 this rule's own loads populate.  A proto register
+    pointing at a concat-map value SLOT (register 9+, [Compile.reg_of_slot])
+    carries no statically-modelled value — the model VM delivers map values
+    whole in the lookup dreg — so, like the DSL ([nat_port_val]), the port
+    half of a map value is skipped (unmodeled feature, not a divergence). *)
+Definition vm_nat_port (rf : regfile) (pmin : option nat) : option nat :=
+  match pmin with
+  | Some r => if Nat.ltb r 9 then Some (N.to_nat (data_to_N (rf r))) else None
+  | None => None
+  end.
+
+(* ------------------------------------------------------------------ *)
+(** ** Evaluation at a netfilter hook.
+
+    Everything from here on evaluates AT a given netfilter hook [h] — the
+    kernel passes the hook number in the packet state ([nft_pktinfo]),
+    and the data-plane NAT effect of a terminal rule is hook-dependent
+    ([redir_daddr], [nat_drops_core]).  [h] threads through BOTH per-rule
+    folds ([rule_step]/[run_rule_step]) and every evaluator built on them;
+    definitions in this section that do not mention [h] stay hook-free. *)
+Section AtHook.
+Context (h : hook_id).
+
 (** ** ONE left-to-right fold per rule — the kernel's expression walk.
 
     nf_tables_core.c [nft_do_chain] runs a rule's expressions ONCE, left to
@@ -2054,7 +2564,17 @@ Fixpoint run_rule_step (rf : regfile) (is : list instr) (e : env) (p : packet)
       then run_rule_step (set_reg rf dreg (map_lookup_data (List.concat (map rf keys))
                                                            (e_map e name))) rest e p
       else (None, (e, p))
-  | INat _ _ _ _ _ _ _ :: _ => (Some Accept, (e, p))   (* terminal *)
+  | INat k fam amin _ pmin _ _ :: _ =>
+      (* terminal NAT: the data-plane effect happens HERE, at the instruction —
+         which by construction is only reached when no earlier expression broke
+         the rule and no [IVmap] hit delivered a verdict (outcome PROVENANCE is
+         the fold's structure).  The kernel core first refuses a masquerade /
+         redirect whose interface has no usable address (NF_DROP,
+         [nat_drops_c]); otherwise it establishes/reuses the flow's NAT tuple
+         and rewrites the packet ([apply_nat_c]), then the rule accepts. *)
+      if nat_drops_c h k fam e p then (Some Drop, (e, p))
+      else (Some Accept,
+            apply_nat_c h k fam (option_map rf amin) (vm_nat_port rf pmin) e p)
   | ITproxy _ _ _ :: _ => (Some Accept, (e, p))        (* terminal redirect *)
   | IFwd _ _ _ :: _ => (Some Accept, (e, p))           (* terminal forward *)
   | IQueueSreg _ _ _ :: _ => (Some Accept, (e, p))     (* terminal queue *)
@@ -2239,7 +2759,20 @@ Definition has_effect_terminal (r : rule) : bool :=
 Definition terminal_step (r : rule) (e : env) (p : packet)
   : option verdict * (env * packet) :=
   if has_effect_terminal r
-  then ((if terminal_loadable r e p then Some Accept else None), (e, p))
+  then if terminal_loadable r e p
+       then (* The NAT data-plane effect happens HERE — at the terminal the walk
+               actually reached, so a vmap HIT (handled in [end_step] before
+               this) never runs it: outcome PROVENANCE is the fold's structure,
+               exactly the kernel's per-expression verdict break.  The kernel
+               core first refuses a masquerade/redirect whose interface has no
+               usable address (NF_DROP, [nat_drops]); otherwise it establishes/
+               reuses the flow's NAT tuple, rewrites the packet ([apply_nat])
+               and the rule accepts.  tproxy/fwd/queue have [r_nat] = None:
+               their hand-off is a modelled-as-Accept side effect, state
+               untouched. *)
+            if nat_drops h r e p then (Some Drop, (e, p))
+            else (Some Accept, apply_nat h r e p)
+       else (None, (e, p))
   else match r_verdict r with
        | Continue => after_step (r_after r) e p
        | v => (Some v, (e, p))
@@ -2294,7 +2827,7 @@ Definition dsl_writes (r : rule) (e : env) (p : packet) : env * packet :=
     meta/ct/env writes AND the consumption of every `limit`/`quota`/
     `connlimit` (and, VM-only, `numgen inc` counter advance) it EVALUATED,
     each applied at its own position inside the break-aware fold.  Every
-    mutation/trace evaluator below consumes ONLY the step functions, so the
+    mutation evaluator below consumes ONLY the step functions, so the
     verdict/effect composition is written here and nowhere else.  The
     compiler-correctness bridge is one equation, on numgen-free rules (every
     frontend-emitted rule; [Lower_Proofs.lower_ruleset_numgen_free]):
@@ -2302,12 +2835,12 @@ Definition dsl_writes (r : rule) (e : env) (p : packet) : env * packet :=
     ([Correct.run_rule_step_compile_rule]).
 
     (The historical [dsl_rule_step]/[vm_rule_step] boundary wrappers — the
-    fold plus an unconditional whole-body limiter/numgen sweep, the
-    over-consumption KNOWN INFIDELITY — are RETIRED: with the consumption
+    fold plus an unconditional whole-body limiter/numgen sweep, the historical
+    over-consumption divergence — are RETIRED: with the consumption
     in-fold they equal the folds; see THEOREMS.md § strata retirements.) *)
 
-(** The state half of a rule's step (writes + limiter consumption) — the
-    named notion the trace evaluator and the optimizer's effect certificates
+(** The state half of a rule's step (writes + limiter consumption + the NAT
+    data plane) — the named notion the optimizer's effect certificates
     consume. *)
 Definition dsl_step (r : rule) (e : env) (p : packet) : env * packet :=
   snd (rule_step r e p).
@@ -2338,28 +2871,30 @@ Qed.
     verdict predicates ([rule_step_mutfree] below). *)
 Definition body_item_mutfree (it : body_item) : bool :=
   match it with BStmt s => negb (is_mut_stmt s) | BMatch m => match_consumefree m end.
+(** A NAT terminal WRITES state (the packet rewrite + the flow-keyed [e_nat]
+    store), so a rule that carries one is NOT mut-free — the pure strand's
+    loadability-guarded Accept is only the projection of the fold on rules
+    without it.  tproxy/fwd/queue terminals remain state-free. *)
+Definition rule_natfree (r : rule) : bool :=
+  match r_nat r with None => true | Some _ => false end.
 Definition rule_mutfree (r : rule) : bool :=
   forallb body_item_mutfree (r_body r)
-  && forallb (fun s => negb (is_mut_stmt s)) (r_after r).
+  && forallb (fun s => negb (is_mut_stmt s)) (r_after r)
+  && rule_natfree r.
 
 (** On a mut-free rule the fold's terminal/end agree with the historical
     loadability-guarded [terminal_outcome]/[outcome_core] at the SAME state. *)
 Lemma terminal_step_mutfree : forall r e p,
+  rule_natfree r = true ->
   forallb (fun s => negb (is_mut_stmt s)) (r_after r) = true ->
   terminal_step r e p
   = ((if tail_loadable r e p then terminal_outcome r p else None), (e, p)).
 Proof.
-  intros r e p Hmf.
+  intros r e p Hnat Hmf.
+  unfold rule_natfree in Hnat.
   unfold terminal_step, has_effect_terminal, tail_loadable, terminal_loadable,
-         terminal_outcome.
-  destruct (r_nat r) as [n|].
-  { destruct (nat_src n) as [vs|].
-    - destruct (vsrc_loadable vs p); reflexivity.
-    - destruct (nat_map n) as [[[fields ts] name]|].
-      + destruct (fields_loadable fields p
-                  && map_has_key (nat_map_key fields ts e p) (e_map e name)); reflexivity.
-      + destruct (nat_field n) as [[f ts]|];
-          [destruct (field_loadable f p); reflexivity | reflexivity]. }
+         terminal_outcome, nat_drops, apply_nat.
+  destruct (r_nat r) as [n|]; [discriminate Hnat|].
   destruct (r_tproxy r) as [t|]; [reflexivity|].
   destruct (r_fwd r) as [w|];
     [destruct (vsrc_loadable (fwd_dev w) p); reflexivity|].
@@ -2373,22 +2908,23 @@ Proof.
 Qed.
 
 Lemma end_step_mutfree : forall r e p,
+  rule_natfree r = true ->
   forallb (fun s => negb (is_mut_stmt s)) (r_after r) = true ->
   end_step r e p
   = ((if end_loadable r e p then outcome_core r e p else None), (e, p)).
 Proof.
-  intros r e p Hmf. unfold end_step, end_loadable, outcome_core.
-  destruct (r_vmap r) as [vm|]; [| apply terminal_step_mutfree; exact Hmf].
+  intros r e p Hnat Hmf. unfold end_step, end_loadable, outcome_core.
+  destruct (r_vmap r) as [vm|]; [| apply terminal_step_mutfree; assumption].
   destruct (vmap_loadable (Some vm) p) eqn:Hvl; [| reflexivity].
   cbv zeta.
   destruct (vm_keyf vm) as [[f ts]|]; cbv iota.
   - destruct (assoc_verdict (apply_transforms ts (field_value f e p))
                             (e_vmap e (vm_name vm))); [reflexivity|].
-    rewrite (terminal_step_mutfree r e p Hmf). reflexivity.
+    rewrite (terminal_step_mutfree r e p Hnat Hmf). reflexivity.
   - destruct (assoc_verdict
                 (List.concat (map (fun f => field_value f e p) (vm_fields vm)))
                 (e_vmap e (vm_name vm))); [reflexivity|].
-    rewrite (terminal_step_mutfree r e p Hmf). reflexivity.
+    rewrite (terminal_step_mutfree r e p Hnat Hmf). reflexivity.
 Qed.
 
 (** On a mut-free body the fold's walk agrees with the historical three
@@ -2440,6 +2976,7 @@ Theorem rule_step_mutfree : forall r e p,
      (e, p)).
 Proof.
   intros r e p Hmf. unfold rule_mutfree in Hmf.
+  apply Bool.andb_true_iff in Hmf. destruct Hmf as [Hmf Hnat].
   apply Bool.andb_true_iff in Hmf. destruct Hmf as [Hbody Hafter].
   assert (Hnt : body_has_notrack (r_body r) = false).
   { unfold body_has_notrack. apply Bool.not_true_is_false. intro Hex.
@@ -2458,7 +2995,7 @@ Proof.
       [reflexivity | destruct (end_loadable r e p); reflexivity]. }
   destruct (body_synproxy_stops (r_body r) p) eqn:Hst.
   - reflexivity.
-  - cbn [andb]. rewrite (end_step_mutfree r e p Hafter).
+  - cbn [andb]. rewrite (end_step_mutfree r e p Hnat Hafter).
     rewrite Bool.andb_true_r.
     destruct (end_loadable r e p); reflexivity.
 Qed.
@@ -2474,13 +3011,14 @@ Proof.
 Qed.
 
 Lemma rule_step_state_after_free : forall r e p,
+  rule_natfree r = true ->
   forallb (fun s => negb (is_mut_stmt s)) (r_after r) = true ->
   snd (rule_step r e p) = dsl_writes r e p.
 Proof.
-  intros r e p Hmf. unfold rule_step, dsl_writes, body_writes.
+  intros r e p Hnat Hmf. unfold rule_step, dsl_writes, body_writes.
   destruct (body_step (r_body r) e p) as [e' p' | e' p' | e' p'] eqn:Hb;
     cbn [body_res_state]; try reflexivity.
-  rewrite (end_step_mutfree r e' p' Hmf).
+  rewrite (end_step_mutfree r e' p' Hnat Hmf).
   destruct (end_loadable r e' p'); reflexivity.
 Qed.
 
@@ -2490,9 +3028,10 @@ Qed.
     [dsl_step_limit_free], whose extra limit-freedom hypothesis existed only
     to cancel the boundary sweep). *)
 Lemma dsl_step_after_free : forall r e p,
+  rule_natfree r = true ->
   forallb (fun s => negb (is_mut_stmt s)) (r_after r) = true ->
   dsl_step r e p = dsl_writes r e p.
-Proof. intros r e p Hmf. exact (rule_step_state_after_free r e p Hmf). Qed.
+Proof. intros r e p Hnat Hmf. exact (rule_step_state_after_free r e p Hnat Hmf). Qed.
 
 (** Mutation-aware rule-list evaluation: every non-terminal rule threads its
     writes to the rest, so a later rule observes an earlier `set` (the write
@@ -2615,531 +3154,6 @@ Proof.
   destruct (run_program_mut_env prog e p) as [[v|] e']; reflexivity.
 Qed.
 
-(** ** Whole-chain packet trace.
-
-    [eval_rules_mut] already threads the *mutated* packet from each rule to the
-    next (a `meta`/`ct` `set` or dynset is visible downstream); it just returns the
-    verdict.  To follow a packet ACROSS chains/hooks (e.g. a mark set in the
-    prerouting chain that the postrouting chain reads — the kernel carries it on
-    the skb) we also need the packet the chain LEAVES, not only its env.
-    [eval_rules_trace]/[eval_chain_trace] mirror the mutation evaluators exactly
-    but return [(verdict, final packet)]: every rule contributes [dsl_step],
-    matched or not, and a terminal verdict still records the writes its body made
-    before the verdict.  [eval_chain_trace_verdict] proves the verdict component is
-    identical to the verified [eval_chain_mut], so this only EXPOSES the packet the
-    mutation semantics was already threading — it adds no new behaviour. *)
-(** The target ADDRESS operand of a NAT statement — the value the kernel loads
-    into [NFTNL_EXPR_NAT_REG_ADDR_MIN] (register 1) and applies as the new
-    source/destination address.  This mirrors exactly the register-1 operand the
-    compiler emits ([compile_terminal]) and the loadability discipline
-    ([terminal_loadable]): an explicit value source ([nat_src]), else a named-map
-    lookup ([nat_map]), else a (transformed) packet field ([nat_field]), else the
-    immediate destined for register 1 ([nat_addr_imm]). *)
-Definition nat_addr (ns : nat_spec) (e : env) (p : packet) : data :=
-  match nat_src ns with
-  | Some vs => eval_vsrc vs e p
-  | None =>
-  match nat_map ns with
-  | Some (fields, ts, name) =>
-      map_lookup_data (nat_map_key fields ts e p) (e_map e name)
-  | None =>
-  match nat_field ns with
-  | Some (f, ts) => apply_transforms ts (field_value f e p)
-  | None => match nat_addr_imm ns with Some v => v | None => [] end
-  end end end.
-
-(** The data-plane effect of a terminal NAT rule on the packet, dispatched on
-    [nat_kind]:
-    - "masq": source-NAT the IPv4 source to the EXIT interface's address
-      ([e_ifaddr] keyed by the output-interface name) — masquerade.
-    - "snat": source-NAT the IPv4 source to the target operand ([nat_addr]).
-    - "dnat": destination-NAT the IPv4 destination to the target operand —
-      the kernel's [NF_NAT_MANIP_DST] from [NFTNL_EXPR_NAT_REG_ADDR_MIN].
-    - "redir": destination-NAT the IPv4 destination to the INBOUND interface's
-      local address (redirect = DNAT to the box itself).
-    The address geometry is FAMILY-DEPENDENT ([nat_family]): "ip" rewrites the
-    32-bit IPv4 slot, "ip6" the 128-bit IPv6 slot (the kernel picks 32 vs 128
-    bits by family — [nat_addrlen], netlink_linearize.c:1237).  masq/redir carry
-    [nat_family] = "" (their family is implicit in the chain); [nat_addrfamily]
-    normalises "" to "ip" so the legacy IPv4 behaviour is preserved while "ip6"
-    is honoured.  Only the address rewrite is modelled; the protocol-PORT range
-    ([nat_extra]) is a separate obligation.  An unrecognised kind
-    leaves the packet unchanged. *)
-Definition nat_addrfamily (ns : nat_spec) : nat_af :=
-  if nataf_eqb (nat_family ns) nat_fam_ip6 then nat_fam_ip6
-  else if nataf_eqb (nat_family ns) nat_fam_inet then nat_fam_inet
-  else nat_fam_ip4.
-
-(** The PACKET's L3 protocol family — exactly the bit [nft_pf(pkt)] encodes — read
-    from the [meta nfproto] byte: NFPROTO_IPV6 = 10 -> "ip6", everything else (incl.
-    NFPROTO_IPV4 = 2) -> "ip".  This is what the kernel's [nft_masq_inet_eval]
-    `switch (nft_pf(pkt))` dispatches on. *)
-Definition pkt_l3_family (p : packet) : nat_af :=
-  if N.eqb (data_to_N (read_meta p MKnfproto)) 10 then nat_fam_ip6 else nat_fam_ip4.
-
-(** The L3 NAT address family to USE for [p]: for a STATIC family ("ip"/"ip6", e.g.
-    an `ip`/`ip6` table or an explicit-literal snat/dnat) the rule's own family; for
-    the RUNTIME-DISPATCHED [nat_fam_inet] (an inet-table masquerade/redirect/snat-by-
-    iface, which sees both protocols) the PACKET's L3 family ([pkt_l3_family]).  This
-    is the precise model of the kernel's runtime `switch (nft_pf(pkt))`: an IPv6
-    packet through an inet-table masquerade gets the 16-byte IPv6 geometry + IPv6
-    interface address, an IPv4 packet the 4-byte IPv4 geometry — instead of a single
-    statically-pinned family that corrupts the other protocol. *)
-Definition nat_addrfamily_pkt (ns : nat_spec) (p : packet) : nat_af :=
-  if nataf_eqb (nat_addrfamily ns) nat_fam_inet then pkt_l3_family p
-  else nat_addrfamily ns.
-
-(** The netfilter hook a base chain is attached to.  This is the SAME [hook_id]
-    used by the hook-registration metadata below ([hooked_chain]); it is named
-    here because the data-plane NAT effect ([apply_nat]) is hook-dependent — the
-    kernel core branches on [hooknum] (e.g. [nf_nat_redirect_ipv4]). *)
-Inductive hook_id : Type :=
-| Hprerouting | Hinput | Hforward | Houtput | Hpostrouting | Hingress.
-Definition hook_eqb (a b : hook_id) : bool :=
-  match a, b with
-  | Hprerouting, Hprerouting | Hinput, Hinput | Hforward, Hforward
-  | Houtput, Houtput | Hpostrouting, Hpostrouting | Hingress, Hingress => true
-  | _, _ => false
-  end.
-
-(** The loopback destination the kernel forces for an OUTPUT-hooked `redirect`
-    ("local packets: make them go to loopback", [nf_nat_redirect_ipv4] /
-    [nf_nat_redirect_ipv6]): IPv4 = INADDR_LOOPBACK = 127.0.0.1, IPv6 = ::1. *)
-Definition loopback_ip4 : data := [127; 0; 0; 1].
-Definition loopback_ip6 : data := [0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;1].
-Definition loopback_addr (family : nat_af) : data :=
-  if nataf_eqb family nat_fam_ip6 then loopback_ip6 else loopback_ip4.
-
-(** The destination a `redirect` rewrites to, which is HOOK-DEPENDENT exactly as
-    the kernel core [nf_nat_redirect_ipv4]/[nf_nat_redirect_ipv6] (branch on
-    [hooknum]): at [Houtput] (NF_INET_LOCAL_OUT) local packets are forced to the
-    loopback address (127.0.0.1 / ::1); otherwise (PRE_ROUTING) the new
-    destination is the inbound interface's primary address.  [nft_redir_validate]
-    permits only these two hooks. *)
-Definition redir_daddr (h : hook_id) (fam : nat_af) (e : env) (p : packet) : data :=
-  match h with
-  | Houtput => loopback_addr fam
-  | _ => e_ifaddr e (field_value FMetaIifname e p)
-  end.
-
-(** The SOURCE address a `masquerade` rewrites to: the exit interface's primary
-    address, chosen by family exactly as the kernel dispatches masquerade BY FAMILY
-    (nft_masq.c:113-121 branches NFPROTO_IPV4 -> nf_nat_masquerade_ipv4 vs
-    NFPROTO_IPV6 -> nf_nat_masquerade_ipv6).  An IPv4 masquerade writes the 4-byte
-    [e_ifaddr]; an IPv6 masquerade writes the 16-byte [e_ifaddr6] (the kernel
-    computes it via ipv6_dev_get_saddr — a DIFFERENT, 128-bit value, not the IPv4
-    address).  Keyed by the exit-interface name ([FMetaOifname]). *)
-Definition masq_saddr (fam : nat_af) (e : env) (p : packet) : data :=
-  if nataf_eqb fam nat_fam_ip6
-  then e_ifaddr6 e (field_value FMetaOifname e p)
-  else e_ifaddr  e (field_value FMetaOifname e p).
-
-(** The L4 port the kernel writes is [min_proto.all] of the NAT range, loaded as a
-    big-endian 16-bit value from the proto-min register ([nft_nat_setup_proto],
-    nft_nat.c:57-60).  In the model the operand is [nat_port_num]; encode it as the
-    2-byte big-endian port the transport header carries. *)
-Definition nat_port_bytes (pmin : nat) : data := N_to_data 2 (N.of_nat pmin).
-
-(** Apply the L4 PORT half of a NAT effect, mirroring the kernel
-    [nft_nat_setup_proto]: the port rewrite happens ONLY when the proto-min
-    register is set (`if (priv->sreg_proto_min)`, nft_nat.c:120) — in the model,
-    when [nat_port_num ns = Some pmin].  A SOURCE NAT (snat/masquerade) rewrites the
-    L4 SOURCE port ([set_sport]); a DESTINATION NAT (dnat/redirect) the L4
-    DESTINATION port ([set_dport]) — exactly the [NF_NAT_MANIP_{SRC,DST}] split of
-    [tcp_manip_pkt] (nf_nat_proto.c).  Address-only NAT ([nat_port_num] = None) leaves
-    the port byte-for-byte unchanged. *)
-(** REGISTER-FREE: the port is the VALUE [lo] (a 2-byte port operand), never
-    [nat_port_bytes] of a register index — the two must not be conflated (a
-    register index is compile-time bookkeeping, [Compile.nat_pmin_reg]).
-    A concat-map port ([NXmap_port]) is a runtime map value, not statically modelled. *)
-Definition apply_nat_port (is_src : bool) (ns : nat_spec) (p : packet) : packet :=
-  match nat_extra ns with
-  | NXimm _ (Some lo) _ => if is_src then set_sport p lo else set_dport p lo
-  | _ => p
-  end.
-
-(** Whether the NAT spec carries an L3 ADDRESS operand — i.e. whether the kernel
-    sets [priv->sreg_addr_min] (NFTNL_EXPR_NAT_REG_ADDR_MIN).  The address rewrite
-    in [nft_nat_eval] is gated EXACTLY on this register being present
-    (`if (priv->sreg_addr_min)`, nft_nat.c:114) and is INDEPENDENT of the proto
-    (port) register (`if (priv->sreg_proto_min)`, nft_nat.c:120).  A PORT-ONLY NAT
-    (`dnat to :80`, `snat to :1024`) sets only the proto register, so the kernel
-    rewrites ONLY the L4 port and leaves the L3 destination/source address
-    byte-for-byte UNCHANGED.  An address operand is present iff [nat_addr] has a
-    source: an explicit value source ([nat_src]), a named-map lookup ([nat_map]),
-    a packet field ([nat_field]), or a register-1 immediate ([nat_addr_imm]). *)
-Definition nat_has_addr (ns : nat_spec) : bool :=
-  match nat_src ns, nat_map ns, nat_field ns with
-  | None, None, None => match nat_addr_imm ns with Some _ => true | None => false end
-  | _, _, _ => true
-  end.
-
-(** The data-plane NAT effect of a terminal rule at hook [h].  Only [redir] is
-    hook-dependent (see [redir_daddr]); masq/snat/dnat are hook-invariant.  Each
-    kind first performs its L3 address rewrite ([set_saddr]/[set_daddr]) — but ONLY
-    when an address operand is present ([nat_has_addr], the kernel's
-    `if (priv->sreg_addr_min)` guard, nft_nat.c:114); a port-only snat/dnat
-    therefore preserves the L3 address — and then, when a port operand is present
-    ([nat_port_num] = Some), the L4 port rewrite ([apply_nat_port], the independent
-    `if (priv->sreg_proto_min)` guard, nft_nat.c:120).  masquerade always derives
-    its source address from the exit interface and redirect from the inbound
-    interface / loopback, so both always carry an (implicit) address operand and
-    their address rewrite is unconditional, matching [nft_masq]/[nft_redir] which
-    always set up the address.  The kernel applies both the addr and the proto
-    range in a single [nf_nat_setup_info]. *)
-(** Whether a NAT kind is a SOURCE NAT ([NF_NAT_MANIP_SRC]: snat/masquerade — the
-    L3 SOURCE address + L4 SOURCE port are rewritten) versus a DESTINATION NAT
-    ([NF_NAT_MANIP_DST]: dnat/redirect).  This is fixed by the rule's [nat_kind],
-    independent of the flow. *)
-Definition nat_is_src (ns : nat_spec) : bool :=
-  natop_eqb (nat_kind ns) nat_masq_kind || natop_eqb (nat_kind ns) nat_snat_kind.
-
-(** The L3 ADDRESS the operand evaluates to, i.e. the value the kernel loads into
-    [NAT_REG_ADDR_MIN] on the unconfirmed packet to build the new tuple — or [None]
-    when the spec carries no address operand (a port-only snat/dnat, the kernel's
-    `if (priv->sreg_addr_min)` guard being false, nft_nat.c:114).  masquerade derives
-    its source from the exit interface, redirect from the inbound interface/loopback,
-    so both always carry an (implicit) address.  This is the ONLY part of the NAT
-    effect that re-reads the current packet, so it is exactly what must be FROZEN at
-    the flow's first packet. *)
-Definition nat_operand_addr (h : hook_id) (ns : nat_spec) (e : env) (p : packet)
-  : option data :=
-  if natop_eqb (nat_kind ns) nat_masq_kind
-  then Some (masq_saddr (nat_addrfamily_pkt ns p) e p)
-  else if natop_eqb (nat_kind ns) nat_redir_kind
-  then Some (redir_daddr h (nat_addrfamily_pkt ns p) e p)
-  else if natop_eqb (nat_kind ns) nat_snat_kind
-       || natop_eqb (nat_kind ns) nat_dnat_kind
-  then if nat_has_addr ns then Some (nat_addr ns e p) else None
-  else None.
-
-(** Apply a (possibly absent) L4 PORT translation [port_opt] to packet [p],
-    rewriting the SOURCE port for a source NAT or the DESTINATION port for a
-    destination NAT — the value-level analogue of [apply_nat_port] that takes the
-    stored port directly instead of re-reading [nat_port_num]. *)
-Definition apply_nat_port_val (is_src : bool) (port_opt : option nat) (p : packet) : packet :=
-  match port_opt with
-  | Some pmin =>
-      if is_src then set_sport p (nat_port_bytes pmin)
-                else set_dport p (nat_port_bytes pmin)
-  | None => p
-  end.
-
-(** Apply an ESTABLISHED translation [(orig_addr_opt, new_addr_opt, port_opt)] to
-    packet [p] for a NAT of kind [ns], in the conntrack DIRECTION-AWARE way the
-    kernel's [nf_nat_packet]/[nf_nat_manip_pkt] does (net/netfilter/nf_nat_core.c):
-
-    - ORIGINAL direction ([pkt_ctdir_orig p = true]): apply the manip FORWARD.
-      Rewrite the L3 address of the manip slot (SOURCE for a source NAT, DESTINATION
-      for a destination NAT) to [new_addr_opt], then the L4 port of that slot to
-      [port_opt].  This is the translation the rule established on packet 1, reused
-      verbatim on every later confirmed ORIGINAL-direction packet (it never re-reads
-      the rule operand).
-
-    - REPLY direction ([pkt_ctdir_orig p = false]): apply the INVERSE manip.  The
-      kernel inverts the manip target for reply packets
-      (`if (dir == IP_CT_DIR_REPLY) statusbit ^= IPS_NAT_MASK`), so a source NAT
-      un-rewrites the reply's DESTINATION and a destination NAT un-rewrites the
-      reply's SOURCE — restoring the ORIGINAL (pre-NAT) address [orig_addr_opt] that
-      the peer originally addressed.  (A dnat's reply has its SOURCE = the dnat target
-      un-DNAT'd back to [orig_addr]; its DESTINATION is left untouched.)  The L4 PORT
-      is ALSO un-rewritten on reply when a port operand was present: the kernel's
-      [nf_nat_manip_pkt(REPLY)] inverts the maniptype and writes the reply tuple's
-      port into the OPPOSITE slot ([tcp_manip_pkt]/[__udp_manip_pkt]:
-      `*portptr = newport`, nf_nat_proto.c), so a dnat reply has its SOURCE port
-      restored to the connection's original (pre-DNAT) destination port, and an snat
-      reply has its DESTINATION port restored to the original source port.  The
-      stored [orig_port_opt] is exactly that original port; it is [None] when the
-      forward NAT carried no port operand (then the reply leaves the port unchanged,
-      matching the kernel's `if (priv->sreg_proto_min)` guard being false). *)
-Definition apply_nat_tuple (ns : nat_spec) (p : packet)
-                           (m : option data * option data * option nat * option data) : packet :=
-  let fam := nat_addrfamily_pkt ns p in
-  let is_src := nat_is_src ns in
-  let '(orig_addr_opt, new_addr_opt, port_opt, orig_port_opt) := m in
-  if pkt_ctdir_orig p then
-    (* forward (original direction): rewrite the manip slot to the NAT target *)
-    let p1 := match new_addr_opt with
-              | Some a => if is_src then set_saddr fam p a else set_daddr fam p a
-              | None => p
-              end in
-    apply_nat_port_val is_src port_opt p1
-  else
-    (* reply direction: un-NAT the OPPOSITE slot back to the original address AND,
-       when a port operand was present, restore that slot's PORT to the original.
-       The maniptype is inverted exactly as nf_nat_manip_pkt(REPLY): a SOURCE NAT
-       un-rewrites the reply's DESTINATION (addr + port), a DESTINATION NAT the
-       reply's SOURCE. *)
-    let p1 := match orig_addr_opt with
-              | Some o => if is_src then set_daddr fam p o else set_saddr fam p o
-              | None => p
-              end in
-    match orig_port_opt with
-    | Some op => if is_src then set_dport p1 op else set_sport p1 op
-    | None => p1
-    end.
-
-(** STORE the flow-keyed NAT mapping [m] at [p]'s flow into the shared env
-    ([env_nat_upd]) — exactly where the kernel writes it into the conntrack
-    entry.  A pure env update: the packet is untouched (the address rewrite is
-    the separate [apply_nat_tuple]). *)
-Definition store_nat_mapping (e : env) (p : packet)
-    (m : option data * option data * option nat * option data) : env :=
-  env_nat_upd e (pkt_flow p) m.
-
-(** The data-plane NAT effect of a terminal rule at hook [h], now FLOW-STATEFUL,
-    mirroring [nf_nat_setup_info]/[nft_nat_eval]:
-
-    - On the FIRST (unconfirmed) packet of a flow ([e_nat (pkt_flow p) = None]) the
-      kernel computes the new tuple from the rule operand (get_unique_tuple,
-      nf_nat_core.c:796), STORES it in the conntrack entry (nf_conntrack_alter_reply,
-      :803), and applies the rewrite.  The model mirrors this: it evaluates
-      [nat_operand_addr]/[nat_port_num] from the CURRENT packet, applies the tuple
-      ([apply_nat_tuple]) AND stores it into the shared, flow-keyed [e_nat]
-      ([store_nat_mapping]).
-
-    - On every LATER (confirmed) packet of the SAME flow ([e_nat (pkt_flow p) =
-      Some m]) the kernel returns NF_ACCEPT from nf_nat_setup_info WITHOUT
-      recomputing (nf_nat_core.c:778-780), and the rewrite comes from the STORED
-      tuple [m] (nf_nat_manip_pkt).  The model mirrors this: it applies [m] verbatim
-      ([apply_nat_tuple]) and does NOT re-read the operand — so two same-flow packets
-      with different saddrs both get the translation chosen on packet 1.
-
-    This is the exact analogue of the flow-keyed conntrack-mark state [e_ct], for
-    the NAT tuple.  The verdict side is untouched (NAT is terminal-Accept), so
-    [compile_chain_correct] is unaffected. *)
-
-(** The ORIGINAL (pre-NAT) address of the slot a NAT of kind [ns] rewrites — read
-    from the CURRENT packet before any rewrite: the SOURCE slot for a source NAT
-    ([nat_is_src]: snat/masquerade), the DESTINATION slot for a destination NAT
-    (dnat/redirect).  This is the address the kernel records as the OTHER tuple of
-    the conntrack entry (nf_conntrack_alter_reply), so a reply-direction packet can
-    be un-NAT'd back to it (the reply's opposite slot is restored to this value). *)
-Definition nat_orig_addr (ns : nat_spec) (p : packet) : data :=
-  let fam := nat_addrfamily_pkt ns p in
-  let '(off, len) := if nat_is_src ns then saddr_slot fam else daddr_slot fam in
-  slice (pkt_nh p) off len.
-
-(** The ORIGINAL (pre-NAT) L4 PORT of the slot a NAT of kind [ns] rewrites — read
-    from the CURRENT packet's transport header before any rewrite: the SOURCE port
-    (transport bytes 0..1) for a source NAT ([nat_is_src]: snat/masquerade), the
-    DESTINATION port (bytes 2..3) for a destination NAT (dnat/redirect).  Stored
-    ONLY when a port operand is present ([nat_port_num ns = Some _], the kernel's
-    `if (priv->sreg_proto_min)` guard, nft_nat.c:120) — otherwise [None], so the
-    reply leaves the port byte-for-byte unchanged.  This is the port half of the
-    reply tuple the kernel records (nf_conntrack_alter_reply), un-rewritten onto
-    the OPPOSITE slot of a reply-direction packet (mirroring nf_nat_manip_pkt's
-    inverted maniptype). *)
-(** The port operand as a NUMBER, for the flow tuple (register-free; the source
-    carries the port as a 2-byte VALUE in [nat_extra], decoded here). *)
-Definition nat_port_num (ns : nat_spec) : option nat :=
-  match nat_extra ns with
-  | NXimm _ (Some lo) _ => Some (N.to_nat (data_to_N lo))
-  | _ => None
-  end.
-Definition nat_orig_port (ns : nat_spec) (p : packet) : option data :=
-  match nat_port_num ns with
-  | Some _ =>
-      if nat_is_src ns
-      then Some (slice (pkt_th p) 0 2)   (* source NAT: original SOURCE port *)
-      else Some (slice (pkt_th p) 2 2)   (* dest   NAT: original DEST   port *)
-  | None => None
-  end.
-Definition apply_nat (h : hook_id) (r : rule) (e : env) (p : packet) : env * packet :=
-  match r_nat r with
-  | Some ns =>
-      match e_nat e (pkt_flow p) with
-      | Some m =>
-          (* confirmed flow: reuse the stored tuple (direction-aware), do NOT re-read
-             the operand *)
-          (e, apply_nat_tuple ns p m)
-      | None =>
-          (* No mapping established yet.  The kernel establishes the NAT tuple only on
-             the connection's ORIGINAL-direction packet (nf_nat_setup_info runs on the
-             unconfirmed, original-direction skb).  A reply-direction packet with no
-             established mapping is NOT translated. *)
-          if pkt_ctdir_orig p then
-            (* first packet of the flow (original direction): capture the original
-               address, compute the tuple, apply it FORWARD, and STORE it *)
-            let m := (Some (nat_orig_addr ns p), nat_operand_addr h ns e p, nat_port_num ns,
-                      nat_orig_port ns p) in
-            (store_nat_mapping e p m, apply_nat_tuple ns p m)
-          else
-            (e, p)
-      end
-  | None => (e, p)
-  end.
-
-(** The kernel's NAT CORE DROPS a packet when the interface it must take an
-    address FROM has no usable address — a data-plane drop that has NO control-plane
-    (compiler) analogue, so it lives only in the trace evaluator.  Two cases mirror
-    the kernel exactly:
-
-    - [redirect] (nf_nat_redirect_ipv4/ipv6): at the OUTPUT hook the new destination
-      is always the loopback address (`newdst.ip = htonl(INADDR_LOOPBACK)`), so it
-      NEVER drops there.  At PRE_ROUTING the new destination is the inbound device's
-      primary address; if that is empty (`if (!newdst.ip) return NF_DROP;`,
-      nf_nat_redirect.c:71-74) the packet is DROPPED.
-
-    - [masquerade] (nf_nat_masquerade_ipv4/ipv6): the new source is the exit
-      interface's selected address (inet_select_addr / ipv6_dev_get_saddr); if that
-      is empty (`if (!newsrc) { ...; return NF_DROP; }`, nf_nat_masquerade.c:54-58;
-      the IPv6 path likewise `return NF_DROP` on nat_ipv6_dev_get_saddr<0,
-      nf_nat_masquerade.c:254-256) the packet is DROPPED.
-
-    Like the kernel, this only fires when the NAT tuple is COMPUTED — i.e. on the
-    FIRST (unconfirmed) ORIGINAL-direction packet of the flow ([apply_nat]'s
-    [e_nat ... = None] && [pkt_ctdir_orig] branch).  On a confirmed/reply packet the
-    stored tuple is reused with no recompute (nf_nat_setup_info returns NF_ACCEPT
-    early, nf_nat_core.c:778-780), so no drop.  Address-carrying snat/dnat never hit
-    this path (their operand is an explicit value/map/field, not an interface
-    address), so [nat_drops] is false for them. *)
-Definition nat_iface_addr_absent (h : hook_id) (ns : nat_spec) (e : env) (p : packet) : bool :=
-  if natop_eqb (nat_kind ns) nat_masq_kind
-  then match masq_saddr (nat_addrfamily_pkt ns p) e p with [] => true | _ => false end
-  else if natop_eqb (nat_kind ns) nat_redir_kind
-  then match h with
-       | Houtput => false   (* loopback: never empty, never drops *)
-       | _ => match redir_daddr h (nat_addrfamily_pkt ns p) e p with [] => true | _ => false end
-       end
-  else false.
-
-Definition nat_drops (h : hook_id) (r : rule) (e : env) (p : packet) : bool :=
-  match r_nat r with
-  | Some ns =>
-      match e_nat e (pkt_flow p) with
-      | Some _ => false                                  (* confirmed flow: reuse stored tuple, no recompute *)
-      | None => pkt_ctdir_orig p && nat_iface_addr_absent h ns e p
-      end
-  | None => false
-  end.
-
-(** [eval_rules_trace]/[eval_chain_trace] take the netfilter hook [h] the base
-    chain is attached to, because the data-plane NAT effect at a terminal verdict
-    ([apply_nat]) is hook-dependent (an OUTPUT-hooked `redirect` rewrites the
-    destination to loopback, not the inbound-interface address), and because the NAT
-    core can DROP a packet whose interface has no usable address ([nat_drops]).
-
-    ⚠ KNOWN INFIDELITY (open; DEVELOPMENT.md § "Known model infidelities",
-    pinned in Regression/Known_Infidelities.v [vmaphit_daddr_rewritten] /
-    [vmaphit_stores_nat_mapping]): the NAT dispatch below keys on [r_nat r],
-    which projects the NAT out of an [OVmapNat] rule (`… vmap {…} dnat/redirect
-    …`) REGARDLESS of whether the terminal verdict came from the vmap HIT or
-    from the NAT terminal the miss falls through to.  In the kernel a vmap hit
-    writes a non-CONTINUE verdict register and the rule's remaining expressions
-    never evaluate (nf_tables_core.c per-expression verdict check) — the repo's
-    own verdict/loadability semantics agree ([end_loadable]: "vmap HIT:
-    terminal/r_after unreachable").  So on a vmap HIT this evaluator both
-    rewrites the packet AND spuriously stores a flow-keyed [e_nat] mapping
-    ([store_nat_mapping]) that later same-flow packets then reuse.  There is no
-    guard because [rule_step] returns only the verdict, not WHICH outcome
-    arm produced it; the faithful fix (thread outcome provenance, or dispatch
-    the trace NAT on [r_outcome] + the hit/miss test) is a semantics change
-    owned by the adversarial-audit track.  Rules with [ONat] (the corpus/
-    ruleset-common shape) are unaffected — their only terminal IS the NAT. *)
-Fixpoint eval_rules_trace (h : hook_id) (rs : list rule) (e : env) (p : packet)
-  : option verdict * (env * packet) :=
-  match rs with
-  | [] => (None, (e, p))
-  | r :: rest =>
-      match rule_step r e p with
-      | (Some v, (e', p')) =>
-          if terminal v then
-            (* The NAT core DROPS (returns NF_DROP, overriding the rule's stated
-               verdict) when the interface it must take an address from has no
-               usable address ([nat_drops]); the drop happens BEFORE the address is
-               spliced, so the packet is left unrewritten.  Otherwise the rule's
-               verdict stands and the NAT rewrite is applied.  (For an [OVmapNat]
-               rule this arm ALSO fires on a vmap HIT, where the kernel's NAT never
-               evaluates — the KNOWN INFIDELITY documented on this evaluator's
-               header.) *)
-            if nat_drops h r e' p' then (Some Drop, (e', p'))
-            else (Some v, apply_nat h r e' p')
-          else eval_rules_trace h rest e' p'
-      | (None, (e', p')) => eval_rules_trace h rest e' p'
-      end
-  end.
-
-Definition eval_chain_trace (h : hook_id) (c : chain) (e : env) (p : packet)
-  : verdict * (env * packet) :=
-  match eval_rules_trace h (c_rules c) e p with
-  | (Some v, s) => (v, s) | (None, s) => (c_policy c, s) end.
-
-(** When does the trace traversal reach a NAT-drop?  This Fixpoint mirrors
-    [eval_rules_trace] step-for-step and is [true] exactly when the rule that
-    delivers the terminal verdict is a [nat_drops] rule — i.e. when the data-plane
-    NAT core overrides the verdict to [Drop].  It is the precise hypothesis under
-    which the trace verdict equals the (control-plane) [eval_rules_mut] verdict. *)
-Fixpoint trace_nat_drops (h : hook_id) (rs : list rule) (e : env) (p : packet) : bool :=
-  match rs with
-  | [] => false
-  | r :: rest =>
-      match rule_step r e p with
-      | (Some v, (e', p')) => if terminal v then nat_drops h r e' p'
-                              else trace_nat_drops h rest e' p'
-      | (None,   (e', p')) => trace_nat_drops h rest e' p'
-      end
-  end.
-
-(** The trace verdict equals the verified [eval_rules_mut] verdict EXCEPT when the
-    data-plane NAT core fires a drop ([trace_nat_drops]); in that case the trace
-    verdict is [Some Drop], faithfully overriding the rule's stated verdict exactly
-    as the kernel's NF_DROP overrides the rule outcome.  This replaces the old
-    UNCONDITIONAL equality, which is now genuinely false in the model: the kernel
-    DROPS a redirect/masquerade whose interface has no usable address even though
-    the rule's stated verdict is Accept. *)
-Lemma eval_rules_trace_verdict : forall h rs e p,
-  fst (eval_rules_trace h rs e p)
-    = (if trace_nat_drops h rs e p then Some Drop else eval_rules_mut rs e p).
-Proof.
-  induction rs as [|r rest IH]; intros e p; [reflexivity|].
-  cbn [eval_rules_trace trace_nat_drops eval_rules_mut].
-  destruct (rule_step r e p) as [[v|] [e' p']].
-  - destruct (terminal v).
-    + destruct (nat_drops h r e' p'); [reflexivity|].
-      destruct (apply_nat h r e' p'); reflexivity.
-    + apply IH.
-  - apply IH.
-Qed.
-
-(** Specialisation: when no NAT-drop fires, the trace verdict is exactly the
-    verified [eval_rules_mut] verdict — the original (now conditional) equality. *)
-Corollary eval_rules_trace_verdict_no_drop : forall h rs e p,
-  trace_nat_drops h rs e p = false ->
-  fst (eval_rules_trace h rs e p) = eval_rules_mut rs e p.
-Proof.
-  intros h rs e p Hnd. rewrite eval_rules_trace_verdict, Hnd. reflexivity.
-Qed.
-
-Lemma eval_chain_trace_verdict : forall h c e p,
-  fst (eval_chain_trace h c e p)
-    = (if trace_nat_drops h (c_rules c) e p then Drop else eval_chain_mut c e p).
-Proof.
-  intros h c e p. unfold eval_chain_trace, eval_chain_mut.
-  pose proof (eval_rules_trace_verdict h (c_rules c) e p) as Hv.
-  destruct (eval_rules_trace h (c_rules c) e p) as [[v|] s];
-    simpl in Hv;
-    destruct (trace_nat_drops h (c_rules c) e p).
-  - inversion Hv; reflexivity.
-  - rewrite <- Hv; reflexivity.
-  - discriminate Hv.
-  - destruct (eval_rules_mut (c_rules c) e p); [discriminate Hv | reflexivity].
-Qed.
-
-Corollary eval_chain_trace_verdict_no_drop : forall h c e p,
-  trace_nat_drops h (c_rules c) e p = false ->
-  fst (eval_chain_trace h c e p) = eval_chain_mut c e p.
-Proof.
-  intros h c e p Hnd. rewrite eval_chain_trace_verdict, Hnd. reflexivity.
-Qed.
-
-(** Run a whole chain on a packet and return the packet it leaves (the
-    [eval_chain_trace] packet component) — the input to the next chain/hook —
-    and, symmetrically, the env it leaves. *)
-Definition chain_out (h : hook_id) (c : chain) (e : env) (p : packet) : packet :=
-  snd (snd (eval_chain_trace h c e p)).
-Definition chain_out_env (h : hook_id) (c : chain) (e : env) (p : packet) : env :=
-  fst (snd (eval_chain_trace h c e p)).
 
 (** A packet sequence threaded through a shared, learning environment: each packet
     is evaluated against the current [e], and the env it LEAVES (learned sets/maps)
@@ -4024,6 +4038,20 @@ Definition run_table_u (fuel : nat) (cs : list (String.string * program))
   | (None,   s) => (policy, s)
   end.
 
+(** The state a single (jump-free) chain LEAVES — the packet handed to the next
+    chain/hook and the env (learned dynsets, established NAT tuples, depleted
+    limiters) for the next packet.  Successor of the RETIRED trace strand
+    ([eval_rules_trace]/[eval_chain_trace]/[chain_out], THEOREMS.md § strata
+    retirements): the packet/env/NAT threading is the unified fold's own state
+    half, not a side evaluator's. *)
+Definition eval_chain_u (c : chain) (e : env) (p : packet)
+  : verdict * (env * packet) :=
+  eval_table_u (S (List.length (c_rules c))) [] c e p.
+Definition chain_out (c : chain) (e : env) (p : packet) : packet :=
+  snd (snd (eval_chain_u c e p)).
+Definition chain_out_env (c : chain) (e : env) (p : packet) : env :=
+  fst (snd (eval_chain_u c e p)).
+
 (** Multi-table / multi-hook dispatch with the state THREADED between base
     chains: a base chain that lets the packet proceed hands the NEXT base chain
     the packet (and env) it left — a mark set in an earlier-priority chain is
@@ -4053,7 +4081,7 @@ Fixpoint run_ruleset_u (fuel : nat)
   end.
 
 (** Hook dispatch (same selection/ordering as [eval_hook]). *)
-Definition eval_hook_u (fuel : nat) (rs : list hooked_chain) (h : hook_id)
+Definition eval_hook_u (fuel : nat) (rs : list hooked_chain)
                        (e : env) (p : packet) : verdict * (env * packet) :=
   eval_ruleset_u fuel (select_hook rs h) e p.
 
@@ -4062,9 +4090,9 @@ Definition eval_hook_u (fuel : nat) (rs : list hooked_chain) (h : hook_id)
     state persists, the per-packet meta/ct fields are local to each packet
     (exactly [eval_chain_mut_env]'s discipline, now with jumps and multi-chain
     dispatch inside the per-packet run). *)
-Definition eval_hook_env_u (fuel : nat) (rs : list hooked_chain) (h : hook_id)
+Definition eval_hook_env_u (fuel : nat) (rs : list hooked_chain)
                            (e : env) (p : packet) : verdict * env :=
-  let '(v, s) := eval_hook_u fuel rs h e p in (v, fst s).
+  let '(v, s) := eval_hook_u fuel rs e p in (v, fst s).
 
 Definition run_ruleset_env_u (fuel : nat)
     (bases : list (list (String.string * program) * (program * verdict)))
@@ -4163,11 +4191,11 @@ Proof.
   destruct (base_continues (eval_table fuel cs base e p)); [now apply IHb | reflexivity].
 Qed.
 
-Corollary eval_hook_u_writefree : forall fuel rs h e p,
+Corollary eval_hook_u_writefree : forall fuel rs e p,
   bases_writefree (select_hook rs h) = true ->
-  eval_hook_u fuel rs h e p = (eval_hook fuel rs h e p, (e, p)).
+  eval_hook_u fuel rs e p = (eval_hook fuel rs h e p, (e, p)).
 Proof.
-  intros fuel rs h e p Hwf. unfold eval_hook_u, eval_hook.
+  intros fuel rs e p Hwf. unfold eval_hook_u, eval_hook.
   now apply eval_ruleset_u_writefree.
 Qed.
 
@@ -4336,6 +4364,7 @@ Lemma rule_applies_upd_limits : forall r e lf qf cf p,
   rule_applies r (env_upd_limits e lf qf cf) p = rule_applies r e p.
 Proof.
   intros r e lf qf cf p H. unfold rule_mutfree in H.
+  apply Bool.andb_true_iff in H. destruct H as [H _].
   apply Bool.andb_true_iff in H. destruct H as [Hb _].
   apply rule_applies_walk_upd_limits. exact Hb.
 Qed.
@@ -4870,13 +4899,13 @@ Qed.
 (** Hook form for a hook with ONE registered base chain (the common case; a
     multi-base hook would additionally thread a fired limiter's depletion
     from one base into the next, where the pure strand cannot follow). *)
-Corollary eval_hook_u_limiter_tolerant_1 : forall fuel rs h cs base e p,
+Corollary eval_hook_u_limiter_tolerant_1 : forall fuel rs cs base e p,
   select_hook rs h = [(cs, base)] ->
   forallb rule_limiter_tol (c_rules base) = true ->
   chains_limiter_tol cs = true ->
-  fst (eval_hook_u fuel rs h e p) = eval_hook fuel rs h e p.
+  fst (eval_hook_u fuel rs e p) = eval_hook fuel rs h e p.
 Proof.
-  intros fuel rs h cs base e p Hsel Hb Hcs.
+  intros fuel rs cs base e p Hsel Hb Hcs.
   unfold eval_hook_u, eval_hook. rewrite Hsel.
   cbn [eval_ruleset_u eval_ruleset].
   pose proof (eval_table_u_limiter_tolerant fuel cs base e p Hb Hcs) as Hv.
@@ -4978,12 +5007,26 @@ Proof.
     reflexivity.
 Qed.
 
+(** The NAT effect never touches the verdict-map environment: its env write is
+    the flow-keyed [e_nat] store only. *)
+Lemma e_vmap_apply_nat_c : forall h' k fam opnd port e p,
+  e_vmap (fst (apply_nat_c h' k fam opnd port e p)) = e_vmap e.
+Proof.
+  intros h' k fam opnd port e p. unfold apply_nat_c. cbv zeta.
+  destruct (e_nat e (pkt_flow p)); [reflexivity|].
+  destruct (pkt_ctdir_orig p); reflexivity.
+Qed.
+
 Lemma terminal_step_vmap : forall r e p,
   e_vmap (fst (snd (terminal_step r e p))) = e_vmap e.
 Proof.
   intros r e p. unfold terminal_step.
-  destruct (has_effect_terminal r); [reflexivity|].
-  destruct (r_verdict r); try reflexivity. apply after_step_vmap.
+  destruct (has_effect_terminal r).
+  - destruct (terminal_loadable r e p); [|reflexivity].
+    destruct (nat_drops h r e p); [reflexivity|].
+    cbn [fst snd]. unfold apply_nat.
+    destruct (r_nat r) as [ns|]; [apply e_vmap_apply_nat_c | reflexivity].
+  - destruct (r_verdict r); try reflexivity. apply after_step_vmap.
 Qed.
 
 Lemma end_step_vmap : forall r e p,
@@ -5075,17 +5118,23 @@ Proof.
          [ intro Hstep; injection Hstep as <-;
            apply assoc_verdict_in in Ha; destruct Ha as (lo & hi & Hin);
            eapply forallb_forall in Hpl; [| exact Hin]; exact Hpl
-         | destruct (terminal_loadable r e2 p2); intro Hstep;
-           [now injection Hstep as <- | discriminate Hstep] ]).
-    + (* ONat / tproxy / fwd / queue: the terminal is Accept-or-break *)
-      destruct (terminal_loadable r e2 p2); intro Hstep;
-        [now injection Hstep as <- | discriminate Hstep].
-    + destruct (terminal_loadable r e2 p2); intro Hstep;
-        [now injection Hstep as <- | discriminate Hstep].
-    + destruct (terminal_loadable r e2 p2); intro Hstep;
-        [now injection Hstep as <- | discriminate Hstep].
-    + destruct (terminal_loadable r e2 p2); intro Hstep;
-        [now injection Hstep as <- | discriminate Hstep].
+         | destruct (terminal_loadable r e2 p2);
+           [destruct (nat_drops h r e2 p2)|]; intro Hstep;
+           [now injection Hstep as <- | now injection Hstep as <-
+            | discriminate Hstep] ]).
+    + (* ONat / tproxy / fwd / queue: the terminal is Accept-or-NAT-Drop-or-break *)
+      destruct (terminal_loadable r e2 p2);
+        [destruct (nat_drops h r e2 p2)|]; intro Hstep;
+        [now injection Hstep as <- | now injection Hstep as <- | discriminate Hstep].
+    + destruct (terminal_loadable r e2 p2);
+        [destruct (nat_drops h r e2 p2)|]; intro Hstep;
+        [now injection Hstep as <- | now injection Hstep as <- | discriminate Hstep].
+    + destruct (terminal_loadable r e2 p2);
+        [destruct (nat_drops h r e2 p2)|]; intro Hstep;
+        [now injection Hstep as <- | now injection Hstep as <- | discriminate Hstep].
+    + destruct (terminal_loadable r e2 p2);
+        [destruct (nat_drops h r e2 p2)|]; intro Hstep;
+        [now injection Hstep as <- | now injection Hstep as <- | discriminate Hstep].
 Qed.
 
 Lemma eval_rules_u_mut_proj_aux : forall rs fuel cs e0 e p,
@@ -5146,3 +5195,8 @@ Proof.
     cbn [fst snd] in *; subst; try discriminate Hv;
     try (injection Hv as <-); auto.
 Qed.
+
+
+End AtHook.
+
+Arguments body_writes !body e p /.

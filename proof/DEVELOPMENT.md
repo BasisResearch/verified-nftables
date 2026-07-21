@@ -266,14 +266,18 @@ The gap-closing program was tracked as C→A→B→D. Status as of 2026-06:
   **field-data map-`dynset`** (`add @m {key : field}`) are threaded across rules so
   a later lookup sees the learned element/entry (`compile_chain_mut_correct`); the
   learned env also persists ACROSS packets (`compile_seq_mut_correct`).
-  **NAT address/port rewrite is now modelled** by the 2026-06 audit — flow-stateful
+  **NAT address/port rewrite is now modelled** — flow-stateful
   mapping in `e_nat`, L3+L4 checksum updates, reply-direction un-NAT, NF_DROP on
-  no-usable-address — observed across hooks by the whole-chain trace evaluator
-  (`eval_chain_trace`). **STILL OPEN:** payload-mangle (`SMangle`) and IMMEDIATE-data
+  no-usable-address — and since M3 it is an effect OF THE SINGLE FOLD
+  (`terminal_step` / the VM `INat` case, hook-threaded, compile theorem
+  `compile_nat_effect_correct`; the side trace evaluator is retired).
+  Unmodeled feature within that model: a NAT port living in a concat-map
+  VALUE slot (`NXmap_port`/`NXmap_full`) is skipped IDENTICALLY on both
+  sides (DSL and VM agree, the compile theorem stays exact; the frontend
+  never emits these shapes — see `Semantics.v` `nat_opnd`/`vm_nat_port`).
+  **STILL OPEN:** payload-mangle (`SMangle`) and IMMEDIATE-data
   dynsets are threaded only as state-*neutral* (their own writes are not yet visible
-  to later rules); and ONE *confirmed divergence inside the modelled features*
-  (`OVmapNat` vmap-hit trace NAT) is ledgered in **"Known model
-  infidelities"** below.  The other two historical divergences are REPAIRED:
+  to later rules).  All three historical divergences are REPAIRED:
   intra-rule set-then-read by the T1 single-fold rule semantics (positive
   pins in `Regression/Setread_IntraRule.v`), and the limiter over-consumption
   by the M2 in-fold consumption (a limiter after a failing match is never
@@ -310,22 +314,16 @@ kernel-executed packet differentials) and `make validate` (28/28) rather than th
 corpus round-trip. Additionally, one **confirmed model-vs-kernel divergence inside
 modelled features** is known and deliberately left open — the ledger below.
 
-## Known model infidelities (open, confirmed)
+## Known model infidelities (ledger EMPTY — all repaired)
 
-Unlike the ⛔ items above (features not yet modelled), these are behaviours the
-model **does** exhibit that are **confirmed wrong against linux-6.18.33** — found
-by re-interrogating the semantics after the 2026-06 audit converged (so
-`../adversarial.md`'s "red satisfied" is scoped by this list). They are
-documented and **pinned** rather than fixed here because each repair is a
-*semantics change* (it moves verdicts/effects), which belongs to the
-adversarial-semantics-audit track with its own red-verification loop — not to a
-documentation/legibility milestone. Every entry is locked in by a `vm_compute`
-theorem in [`theories/Regression/Known_Infidelities.v`](theories/Regression/Known_Infidelities.v)
-that pins the **model's divergent behaviour**: a future fidelity fix MUST flip
-that pin (it becomes unprovable) and update this ledger, so the divergence can
-be neither forgotten nor silently half-fixed. The DSL and the VM **agree** on
-the one open entry (the compiler theorems are honest); the divergence is
-model-vs-kernel.
+Unlike the ⛔ items above (features not yet modelled), the entries here were
+behaviours the model **did** exhibit that were **confirmed wrong against
+linux-6.18.33** — found by re-interrogating the semantics after the 2026-06
+audit converged (so `../adversarial.md`'s "red satisfied" is scoped by this
+list).  ALL THREE historical entries are now REPAIRED; each repair's
+kernel-faithful behaviour is locked in by POSITIVE `vm_compute` pins in
+[`theories/Regression/Known_Infidelities.v`](theories/Regression/Known_Infidelities.v)
+(a regression re-introducing a divergence flips a pin and fails the build).
 
 **(repaired) 1. Limiter consumption is position-exact in the fold.**  The
 historical first entry — an unconditional whole-body sweep draining every
@@ -345,27 +343,30 @@ Pins flipped to positive witnesses: `Known_Infidelities.gate_limit_undrained`
 reached limiter's write survives a later break); the consume-and-differ
 cross-packet behaviour remains pinned in `Limit_SharedBucket.v`.
 
-**2. A vmap HIT on an `OVmapNat` rule still runs the trailing NAT in the trace
-evaluator (including a spurious flow-state write).**
-- *Kernel*: `… vmap {…} dnat/redirect …` — a vmap hit writes a non-CONTINUE
-  verdict register and the rule's remaining expressions never evaluate
-  (nf_tables_core.c per-expression verdict check); the trailing NAT runs only
-  on a map **miss**. The repo's own verdict/loadability semantics agree
-  (`Semantics.end_loadable`: "vmap HIT: terminal/r_after unreachable").
-- *Model*: `eval_rules_trace` (`Semantics.v`) dispatches `nat_drops`/`apply_nat`
-  on `r_nat r`, which projects the NAT out of `OVmapNat` **regardless of which
-  outcome arm produced the terminal verdict** — so on a vmap HIT it still
-  rewrites the packet **and stores a flow-keyed `e_nat` mapping**
-  (`store_nat_mapping`) that later same-flow packets then reuse.
-- *Repro*: a `meta mark vmap { 0x1 : accept } dnat to 10.0.0.1` rule on a
-  mark-0x1 packet: trace verdict Accept (correct) but daddr rewritten to
-  10.0.0.1 and `e_nat` populated (kernel: packet untouched, no NAT tuple).
-- *Pin*: `Known_Infidelities.vmaphit_daddr_rewritten` /
-  `vmaphit_stores_nat_mapping`.
-- *Why open*: `rule_step` returns only the verdict, not which outcome arm
-  produced it; the fix threads outcome provenance (or re-tests the hit) through
-  the trace evaluator — a semantics change (audit track). Plain `ONat` rules
-  (the corpus/ruleset-common shape) are unaffected.
+**(repaired, M3) 2. The NAT data plane is an effect of the single fold, with
+outcome provenance — a vmap HIT never runs the trailing NAT.**
+The historical second entry — the side trace evaluator (`eval_rules_trace`)
+dispatching `nat_drops`/`apply_nat` out-of-band on the `r_nat` projection at
+ANY terminal verdict, so a `… vmap {…} dnat …` vmap **hit** still rewrote the
+packet and stored a spurious flow-keyed `e_nat` mapping (the kernel's
+per-expression verdict check stops the rule at the hit; the NAT runs only on
+a **miss**) — is FIXED by deleting the strand: the NAT effect (the
+no-usable-address NF_DROP `nat_drops`, else the flow-keyed tuple
+establish/reuse + L3/L4 rewrite `apply_nat`) is evaluated INSIDE
+`terminal_step` / the VM `INat` instruction case, which the fold reaches only
+when no earlier expression broke the rule and no vmap hit delivered a
+verdict — provenance is the fold's structure, on BOTH sides, at every
+netfilter hook (the folds and evaluators now carry `h`; redirect/masquerade
+are hook-dependent).  The compile theorem the trace strand never had is
+`Correct.compile_nat_effect_correct` (+ the `_u` traversal family — the
+dnat/snat/masquerade/redirect data plane is certified under jumps,
+multi-chain and hook dispatch).  Pins flipped to positive witnesses:
+`Known_Infidelities.vmaphit_daddr_rewritten` (= the UNrewritten daddr) /
+`vmaphit_stores_nat_mapping` (= None), with miss-side non-vacuity twins
+(`vmapmiss_*`) and VM twins (`vm_vmaphit_*` / `vm_vmapmiss_*`); the NAT
+NF_DROP is now the verdict of THE semantics (both strands and the compiled
+bytecode): `Nat_NoAddr_Drop.mut_agrees_nat_drop` / `vm_nat_drop_agrees`.
+Retirement note: `THEOREMS.md` § "Strata retirement (M3 NAT-effect-in-fold)".
 
 **(repaired) 3. Intra-rule set-then-read.**  The historical third entry — the
 one-rule `meta mark set 0x1 meta mark 0x1 accept` dropping where the kernel
@@ -380,9 +381,8 @@ inside a jumped-to chain, caller/callee writes cross the transfer in both
 directions, on DSL and VM — `Regression/Setread_UnderJump.v`.
 
 Cross-references: `THEOREMS.md` §1 scope notes and §3 (evaluator matrix);
-`../adversarial.md` "Outcome" (scoping note). The in-source ⚠ KNOWN INFIDELITY
-markers sit on `eval_rules_trace` in `Semantics.v` and on `OVmapNat` in
-`IR/Syntax.v`.
+`../adversarial.md` "Outcome" (scoping note).  No ⚠ KNOWN INFIDELITY marker
+remains in the sources (the ledger is empty).
 
 ## What exists
 
@@ -513,7 +513,7 @@ user chains, multi-table/hook dispatch), with cross-packet env carry
 (`seq_eval_env` over `eval_hook_env_u`).  **Mutation × jump/goto is jointly
 verified** there (witness pins: `Regression/Setread_UnderJump.v`).  Every
 other entry point — `eval_rules`/`eval_chain`, `eval_rules_mut(_env)`,
-`eval_rules_trace`, `eval_rules_j`/`eval_table`, `eval_ruleset`,
+`eval_rules_j`/`eval_table`, `eval_ruleset`,
 `eval_hook`, and the VM mirrors — is a PROJECTION of the unified fold,
 licensed by a coincidence theorem on the sub-domain where it provably
 agrees (write-free rules for the pure jump strand,
@@ -1641,12 +1641,16 @@ in `run_step_compile_body`'s `is_mut_stmt = true` branch and add it to
 semtest: `add @m {ip saddr : 0x1}; meta mark set ip saddr map @m; meta mark 0x1 accept`.
 
 ### TODO 3 — Payload-mangle visible to later rules  🔶 NAT done, payload-mangle open
-**NAT: DONE (2026-06 audit).** NAT address/port rewrite is now modelled — flow-stateful
+**NAT: DONE (2026-06 audit; in-fold + compiled since M3).** NAT address/port rewrite is
+modelled — flow-stateful
 mapping in `e_nat`, L3 (IPv4 header) + L4 (TCP/UDP) checksum updates, zero-UDP-csum
 untouched (RFC 768), reply-direction un-NAT of address *and* port, `NF_DROP` on a
-no-usable-address interface, ip6-family geometry, inet-table runtime L3 dispatch. Because
-NAT is terminal, its rewrite is observed across hooks by the whole-chain trace evaluator
-`eval_chain_trace` (see `Optiplex_Mark.v`'s `streaming_flow_whole_ruleset_real`).
+no-usable-address interface, ip6-family geometry, inet-table runtime L3 dispatch —
+and it is an effect of the SINGLE per-rule fold (`terminal_step` / the VM `INat`
+instruction, hook-threaded), compiler-certified (`compile_nat_effect_correct`, the
+`_u` traversal family).  Its rewrite is observed across hooks by the unified
+whole-chain evaluator `eval_chain_u` (see `Optiplex_Mark.v`'s
+`streaming_flow_whole_ruleset_real`).
 **STILL OPEN — payload-mangle.** `payload set` (mangle), `ip dscp set`, ttl/hoplimit are
 still verdict-neutral straight-line statements (`SMangle` is not an `is_mut_stmt`), so a
 later rule reading the mangled bytes sees the original.
@@ -1878,13 +1882,13 @@ kernel-checked result — same trust story as the renderer).
     br.20.
   - `Optiplex_Mark.v` — the **firewall mark (0x99)** machinery, end-to-end.  A
     game-streaming packet (dport 48010) is run through the WHOLE prerouting chain
-    by `eval_chain_trace` (a packet-returning whole-chain evaluator added to
-    `Semantics.v`, proven verdict-identical to the verified `eval_chain_mut` by
-    `eval_chain_trace_verdict`): it flows PAST rule 1 (the 3389 rule, which does
+    by `eval_chain_u` (the unified fold's chain form — since M3 there is no
+    separate trace strand; the NAT data plane is the fold's own): it flows
+    PAST rule 1 (the 3389 rule, which does
     not match — `pre1_streaming_noop_real`) and is matched by rule 2, which BOTH marks
     the packet (the body) AND destination-NATs it (the terminal `dnat ip to
     $windows` = 192.168.51.186).  The headline `streaming_prerouting_io_real`
-    characterises **what comes out**: `eval_chain_trace filter_prerouting p =
+    characterises **what comes out**: `eval_chain_u filter_prerouting p =
     (Accept, apply_nat … pre2 (set_meta p MKmark 0x99))` — the marked packet with
     the terminal dnat applied; `pre2_apply_dnat` shows the dnat rewrites the
     destination address to the windows box, and `streaming_prerouting_mark_real` shows

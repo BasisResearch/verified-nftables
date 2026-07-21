@@ -25,7 +25,7 @@
     (possibly empty) address and returns the rule's terminal verdict verbatim makes
     them unprovable. *)
 From Stdlib Require Import List String NArith.
-From Nft Require Import Bytes Packet Verdict Syntax Semantics.
+From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile.
 Import ListNotations.
 
 (* ---- redirect; accept at PREROUTING ---- *)
@@ -88,20 +88,20 @@ Definition pkt_withaddr : packet := mk_pkt.
 
 (* redirect at PREROUTING over an address-less interface DROPS. *)
 Theorem redirect_no_inbound_address_drops :
-  eval_chain_trace Hprerouting redir_chain env_noaddr pkt_noaddr
+  eval_chain_u Hprerouting redir_chain env_noaddr pkt_noaddr
   = (Drop, (env_noaddr, pkt_noaddr)).
 Proof. vm_compute. reflexivity. Qed.
 
 (* masquerade at POSTROUTING over an address-less interface DROPS. *)
 Theorem masquerade_no_exit_address_drops :
-  eval_chain_trace Hpostrouting masq_chain env_noaddr pkt_noaddr
+  eval_chain_u Hpostrouting masq_chain env_noaddr pkt_noaddr
   = (Drop, (env_noaddr, pkt_noaddr)).
 Proof. vm_compute. reflexivity. Qed.
 
 (* and the packet is left UNREWRITTEN — no corrupt empty address spliced into the
    destination slot (the drop happens before the address is applied). *)
 Theorem redirect_drop_leaves_packet_unrewritten :
-  snd (eval_chain_trace Hprerouting redir_chain env_noaddr pkt_noaddr) = (env_noaddr, pkt_noaddr).
+  snd (eval_chain_u Hprerouting redir_chain env_noaddr pkt_noaddr) = (env_noaddr, pkt_noaddr).
 Proof. vm_compute. reflexivity. Qed.
 
 (** ** The kernel's NON-drop cases stay Accept. *)
@@ -109,30 +109,33 @@ Proof. vm_compute. reflexivity. Qed.
 (* redirect at the OUTPUT hook always targets the loopback address, so it never
    drops even with an address-less interface (nf_nat_redirect_ipv4 LOCAL_OUT). *)
 Theorem redirect_output_loopback_accepts :
-  fst (eval_chain_trace Houtput redir_chain env_noaddr pkt_noaddr) = Accept.
+  fst (eval_chain_u Houtput redir_chain env_noaddr pkt_noaddr) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* with an interface that HAS an address, redirect/masquerade accept (and rewrite). *)
 Theorem redirect_with_address_accepts :
-  fst (eval_chain_trace Hprerouting redir_chain env_withaddr pkt_withaddr) = Accept.
+  fst (eval_chain_u Hprerouting redir_chain env_withaddr pkt_withaddr) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem masquerade_with_address_accepts :
-  fst (eval_chain_trace Hpostrouting masq_chain env_withaddr pkt_withaddr) = Accept.
+  fst (eval_chain_u Hpostrouting masq_chain env_withaddr pkt_withaddr) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
-(* The control-plane (compiler / [eval_chain_mut]) verdict is UNAFFECTED: the NAT
-   drop is a pure DATA-PLANE refinement living only in the trace, so the verified
-   mut verdict (what [compile_chain_correct] is about) still says Accept — the NAT
-   drop is visible only at the trace layer. *)
-Theorem mut_unaffected_still_accepts :
-  eval_chain_mut redir_chain env_noaddr pkt_noaddr = Accept
-  /\ eval_chain_mut masq_chain env_noaddr pkt_noaddr = Accept.
+(* Since M3 the NAT drop is part of THE (single) semantics: the mutation strand
+   consumes the same per-rule fold, so ITS verdict is the same Drop — there is no
+   separate "trace layer" whose data plane could diverge from the verified verdict
+   (strata retirement: THEOREMS.md; the historical [eval_rules_trace] divergence
+   pin [trace_diverges_from_mut_via_nat_drop] is retired WITH the strand). *)
+Theorem mut_agrees_nat_drop :
+  eval_chain_mut Hprerouting redir_chain env_noaddr pkt_noaddr = Drop
+  /\ eval_chain_mut Hpostrouting masq_chain env_noaddr pkt_noaddr = Drop.
 Proof. split; vm_compute; reflexivity. Qed.
 
-(* And the trace/mut verdicts genuinely DIFFER on this packet, tracked exactly
-   by [trace_nat_drops] (the conditional in [eval_chain_trace_verdict]). *)
-Theorem trace_diverges_from_mut_via_nat_drop :
-  trace_nat_drops Hprerouting (c_rules redir_chain) env_noaddr pkt_noaddr = true
-  /\ fst (eval_chain_trace Hprerouting redir_chain env_noaddr pkt_noaddr) <> eval_chain_mut redir_chain env_noaddr pkt_noaddr.
-Proof. split; [reflexivity | vm_compute; discriminate]. Qed.
+(* VM twin: the COMPILED redirect/masquerade drops identically — the NAT drop is
+   certified through the compiler, not a DSL-only annotation. *)
+Theorem vm_nat_drop_agrees :
+  run_chain_mut Hprerouting (compile_chain redir_chain) (c_policy redir_chain)
+    env_noaddr pkt_noaddr = Drop
+  /\ run_chain_mut Hpostrouting (compile_chain masq_chain) (c_policy masq_chain)
+       env_noaddr pkt_noaddr = Drop.
+Proof. split; vm_compute; reflexivity. Qed.

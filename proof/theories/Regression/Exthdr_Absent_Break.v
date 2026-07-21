@@ -20,6 +20,11 @@ From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.
 Import ListNotations.
 
+(* Pins below hold at EVERY netfilter hook [h] (no rule here carries a NAT
+   terminal, so the hook is inert); the section generalizes each statement. *)
+Section AtHook.
+Context (h : hook_id).
+
 (* `tcp option maxseg size 1460` : a VALUE load of the maxseg option (htype=2),
    offset 2, length 2.  present=false => read the option's data bytes.
    1460 = 0x05B4 big-endian = [5;180]. *)
@@ -91,7 +96,7 @@ Theorem model_accepts_like_kernel :
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem model_accepts_like_kernel_mut :
-  eval_chain_mut filter_chain env0 pkt_no_maxseg = Accept.
+  eval_chain_mut h filter_chain env0 pkt_no_maxseg = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* KERNEL-CORRECT: a PRESENT maxseg option whose value matches 1460 DROPs. *)
@@ -100,7 +105,7 @@ Theorem model_drops_when_present :
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem model_drops_when_present_mut :
-  eval_chain_mut filter_chain env0 pkt_with_maxseg = Drop.
+  eval_chain_mut h filter_chain env0 pkt_with_maxseg = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 (* An EXISTENCE check (present=true) is always loadable even when absent — the
@@ -108,3 +113,5 @@ Proof. vm_compute. reflexivity. Qed.
 Lemma exthdr_existence_always_loadable :
   field_loadable (FExthdr EPtcpopt 2 0 0 true) pkt_no_maxseg = true.
 Proof. vm_compute. reflexivity. Qed.
+
+End AtHook.

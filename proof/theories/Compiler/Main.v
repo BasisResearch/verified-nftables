@@ -29,23 +29,36 @@ From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile
     the (env, packet) the traversal leaves.  Effectful rules under control
     flow are certified HERE; every other evaluator axis below is a proven
     projection of this one on its licensed sub-domain (the evaluator matrix
-    in Semantics.v's header / THEOREMS.md).  The only hypothesis is
+    in Semantics.v's header / THEOREMS.md).  Since M3 the state carried
+    includes the NAT data plane: the dnat/snat/masquerade/redirect packet
+    rewrite, the flow-keyed [e_nat] tuple establish/reuse and the
+    no-usable-address NF_DROP, all evaluated AT the NAT terminal inside the
+    per-rule fold (outcome provenance: a vmap hit never runs it) — see
+    [compile_nat_effect_correct].  The only hypothesis is
     numgen-freedom, discharged for every frontend-emitted program by
     [Lower_Proofs.lower_ruleset_numgen_free]. *)
-Theorem main_compile_hook_u_correct : forall fuel rs h e p,
+Theorem main_compile_hook_u_correct : forall h fuel rs e p,
   forallb base_numgen_free (select_hook rs h) = true ->
-  run_ruleset_u fuel (map compile_base (select_hook rs h)) e p
-  = eval_hook_u fuel rs h e p.
+  run_ruleset_u h fuel (map compile_base (select_hook rs h)) e p
+  = eval_hook_u h fuel rs e p.
 Proof. exact compile_hook_u_correct. Qed.
 Print Assumptions main_compile_hook_u_correct.
+
+(** NAT data-plane axis (M3): the per-rule bridge under its NAT-effect name —
+    the compiled fold performs the identical NAT effect, at every hook. *)
+Theorem main_compile_nat_effect_correct : forall h r e p,
+  rule_numgen_free r = true ->
+  run_rule_step h empty_rf (compile_rule r) e p = rule_step h r e p.
+Proof. exact compile_nat_effect_correct. Qed.
+Print Assumptions main_compile_nat_effect_correct.
 
 (** Cross-packet form: the ruleset's own learning (dynset adds, limiter
     depletion) threads packet-to-packet through jumps and multi-chain
     dispatch, compiler-preserved. *)
-Theorem main_compile_seq_hook_u_correct : forall fuel rs h e packets,
+Theorem main_compile_seq_hook_u_correct : forall h fuel rs e packets,
   forallb base_numgen_free (select_hook rs h) = true ->
-  seq_eval_env (run_ruleset_env_u fuel (map compile_base (select_hook rs h))) e packets
-  = seq_eval_env (eval_hook_env_u fuel rs h) e packets.
+  seq_eval_env (run_ruleset_env_u h fuel (map compile_base (select_hook rs h))) e packets
+  = seq_eval_env (eval_hook_env_u h fuel rs) e packets.
 Proof. exact compile_seq_hook_u_correct. Qed.
 Print Assumptions main_compile_seq_hook_u_correct.
 
@@ -103,10 +116,10 @@ Print Assumptions main_compile_seq_correct.
     of axis 0 ([Semantics.eval_table_u_mut_proj] licenses it on [rule_plain]
     chains; a chain that realises a jump/goto/return is evaluated by axis 0's
     unified evaluator). *)
-Theorem main_compile_seq_mut_correct : forall c e packets,
+Theorem main_compile_seq_mut_correct : forall h c e packets,
   forallb rule_numgen_free (c_rules c) = true ->
-  seq_eval_env (fun e' p => run_chain_mut_env (compile_chain c) (c_policy c) e' p) e packets
-  = seq_eval_env (fun e' p => eval_chain_mut_env c e' p) e packets.
+  seq_eval_env (fun e' p => run_chain_mut_env h (compile_chain c) (c_policy c) e' p) e packets
+  = seq_eval_env (fun e' p => eval_chain_mut_env h c e' p) e packets.
 Proof. exact compile_seq_mut_correct. Qed.
 Print Assumptions main_compile_seq_mut_correct.
 
@@ -167,30 +180,30 @@ Corollary pre_split_compile_chain_correct : forall c (s : pstate),
 Proof. intros c s. apply compile_chain_correct. Qed.
 Print Assumptions pre_split_compile_chain_correct.
 
-Corollary pre_split_compile_chain_mut_correct : forall c (s : pstate),
+Corollary pre_split_compile_chain_mut_correct : forall h c (s : pstate),
   forallb rule_numgen_free (c_rules c) = true ->
-  run_chain_mut (compile_chain c) (c_policy c) (ps_env s) (ps_wire s)
-  = eval_chain_mut c (ps_env s) (ps_wire s).
-Proof. intros c s H. apply compile_chain_mut_correct. exact H. Qed.
+  run_chain_mut h (compile_chain c) (c_policy c) (ps_env s) (ps_wire s)
+  = eval_chain_mut h c (ps_env s) (ps_wire s).
+Proof. intros h c s H. apply compile_chain_mut_correct. exact H. Qed.
 Print Assumptions pre_split_compile_chain_mut_correct.
 
-Corollary pre_split_compile_chain_mut_env_correct : forall c (s : pstate),
+Corollary pre_split_compile_chain_mut_env_correct : forall h c (s : pstate),
   forallb rule_numgen_free (c_rules c) = true ->
-  run_chain_mut_env (compile_chain c) (c_policy c) (ps_env s) (ps_wire s)
-  = eval_chain_mut_env c (ps_env s) (ps_wire s).
-Proof. intros c s H. apply compile_chain_mut_env_correct. exact H. Qed.
+  run_chain_mut_env h (compile_chain c) (c_policy c) (ps_env s) (ps_wire s)
+  = eval_chain_mut_env h c (ps_env s) (ps_wire s).
+Proof. intros h c s H. apply compile_chain_mut_env_correct. exact H. Qed.
 Print Assumptions pre_split_compile_chain_mut_env_correct.
 
 (** Pre-split [compile_seq_mut_correct] ran each traversal on
     [set_env p e'] — the sequence packet's WIRE under the THREADED env [e'] —
     so the transported claim quantifies over pre-split packets ([pstate]s) and
     evaluates their wire halves under the threaded env. *)
-Corollary pre_split_compile_seq_mut_correct : forall c e (packets : list pstate),
+Corollary pre_split_compile_seq_mut_correct : forall h c e (packets : list pstate),
   forallb rule_numgen_free (c_rules c) = true ->
-  seq_eval_env (fun e' s => run_chain_mut_env (compile_chain c) (c_policy c) e' s)
+  seq_eval_env (fun e' s => run_chain_mut_env h (compile_chain c) (c_policy c) e' s)
                e (map ps_wire packets)
-  = seq_eval_env (fun e' s => eval_chain_mut_env c e' s) e (map ps_wire packets).
-Proof. intros c e packets H. apply compile_seq_mut_correct. exact H. Qed.
+  = seq_eval_env (fun e' s => eval_chain_mut_env h c e' s) e (map ps_wire packets).
+Proof. intros h c e packets H. apply compile_seq_mut_correct. exact H. Qed.
 Print Assumptions pre_split_compile_seq_mut_correct.
 
 Corollary pre_split_compile_table_correct : forall fuel cs base (s : pstate),

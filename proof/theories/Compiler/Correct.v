@@ -81,11 +81,11 @@ Proof.
   - rewrite Hl. reflexivity.
 Qed.
 
-Lemma compile_load_break_step : forall f dst rf rest e p,
+Lemma compile_load_break_step : forall h f dst rf rest e p,
   field_loadable f p = false ->
-  run_rule_step rf (compile_load (field_load f) dst :: rest) e p = (None, (e, p)).
+  run_rule_step h rf (compile_load (field_load f) dst :: rest) e p = (None, (e, p)).
 Proof.
-  intros f dst rf rest e p Hl. unfold field_loadable, load_ok in Hl.
+  intros h f dst rf rest e p Hl. unfold field_loadable, load_ok in Hl.
   unfold compile_load. destruct (field_load f) eqn:E; cbn [run_rule_step] in *; try discriminate Hl.
   - (* LCt: VM guard load_ok is false, so the rule breaks (packet unchanged) *)
     unfold load_ok. rewrite Hl. reflexivity.
@@ -638,12 +638,19 @@ Proof.
   cbn [eval_vsrc]. rewrite H1, set_reg_same. reflexivity.
 Qed.
 
+(* ------------------------------------------------------------------ *)
+(** Everything below evaluates at a netfilter hook [h] (Semantics § Section
+    AtHook): the per-rule folds and every effect-threading evaluator carry the
+    hook, because the terminal NAT data-plane effect is hook-dependent. *)
+Section AtHook.
+Context (h : hook_id).
+
 (** ** Phase B: mutation-correctness scaffolding.
 
     [run_rule_step] is packet-neutral on any instruction list containing no
     [IMetaSet]/[ICtSet]: a rule that does not set meta/ct mutates nothing, so the
     mutation-aware run threads the packet unchanged.  Hence on the whole verified
-    fragment without meta/ct set, [run_program_mut] coincides with [run_program]
+    fragment without meta/ct set, [run_program_mut h] coincides with [run_program]
     and the mutation semantics conservatively extends [compile_chain_correct]. *)
 Definition writes_instr (i : instr) : bool :=
   match i with
@@ -652,6 +659,8 @@ Definition writes_instr (i : instr) : bool :=
   (* the limiter family writes its shared bucket on every evaluation, and an
      incremental numgen advances its shared counter — both in-fold env writes *)
   | ILimit _ | IQuota _ | IConnlimit _ => true
+  (* a terminal NAT rewrites the packet and stores the flow's [e_nat] tuple *)
+  | INat _ _ _ _ _ _ _ => true
   | INumgen spec _ => negb (ng_random spec)
   | _ => false end.
 Definition no_writes (is : list instr) : bool :=
@@ -659,7 +668,7 @@ Definition no_writes (is : list instr) : bool :=
 
 Lemma run_rule_step_no_writes : forall is rf e p,
   no_writes is = true ->
-  run_rule_step rf is e p = (run_rule rf is e p, (e, p)).
+  run_rule_step h rf is e p = (run_rule rf is e p, (e, p)).
 Proof.
   induction is as [| i is IH]; intros rf e p Hno; [reflexivity|].
   cbn [no_writes forallb] in Hno. apply Bool.andb_true_iff in Hno. destruct Hno as [Hi Hno].
@@ -705,8 +714,8 @@ Qed.
 Lemma compile_load_step : forall f dst rf rest e p,
   field_ngfree f = true ->
   field_loadable f p = true ->
-  run_rule_step rf (compile_load (field_load f) dst :: rest) e p =
-  run_rule_step (set_reg rf dst (field_value f e p)) rest e p.
+  run_rule_step h rf (compile_load (field_load f) dst :: rest) e p =
+  run_rule_step h (set_reg rf dst (field_value f e p)) rest e p.
 Proof.
   intros f dst rf rest e p Hng Hl.
   (* an ngfree field's numgen load is `numgen random`, whose in-fold counter
@@ -725,7 +734,7 @@ Qed.
 Lemma run_load_fields_step : forall pairs rf tail e p,
   forallb (fun fr => field_ngfree (fst fr)) pairs = true ->
   forallb (fun fr => field_loadable (fst fr) p) pairs = true ->
-  run_rule_step rf (load_fields pairs ++ tail) e p = run_rule_step (write_fields rf pairs e p) tail e p.
+  run_rule_step h rf (load_fields pairs ++ tail) e p = run_rule_step h (write_fields rf pairs e p) tail e p.
 Proof.
   induction pairs as [| [f r] rest IH]; intros rf tail e p Hng Hl.
   - reflexivity.
@@ -739,7 +748,7 @@ Qed.
 Lemma run_load_fields_step_break : forall pairs rf tail e p,
   forallb (fun fr => field_ngfree (fst fr)) pairs = true ->
   forallb (fun fr => field_loadable (fst fr) p) pairs = false ->
-  run_rule_step rf (load_fields pairs ++ tail) e p = (None, (e, p)).
+  run_rule_step h rf (load_fields pairs ++ tail) e p = (None, (e, p)).
 Proof.
   induction pairs as [| [f r] rest IH]; intros rf tail e p Hng Hl; [discriminate Hl|].
   cbn [forallb fst] in Hng, Hl.
@@ -754,14 +763,14 @@ Proof.
 Qed.
 
 Lemma run_compile_transform_step : forall t rf rest e p,
-  run_rule_step rf (compile_transform t :: rest) e p
-  = run_rule_step (set_reg rf 1 (apply_transform t (rf 1))) rest e p.
+  run_rule_step h rf (compile_transform t :: rest) e p
+  = run_rule_step h (set_reg rf 1 (apply_transform t (rf 1))) rest e p.
 Proof. intros t rf rest e p. destruct t; reflexivity. Qed.
 
 Lemma run_transforms_prefix_step : forall ts rf rest e p,
   exists rf', rf' 1 = apply_transforms ts (rf 1)
     /\ (forall r, r <> 1 -> rf' r = rf r)
-    /\ run_rule_step rf (compile_transforms ts ++ rest) e p = run_rule_step rf' rest e p.
+    /\ run_rule_step h rf (compile_transforms ts ++ rest) e p = run_rule_step h rf' rest e p.
 Proof.
   induction ts as [| t ts IH]; intros rf rest e p.
   - exists rf. repeat split; reflexivity.
@@ -775,7 +784,7 @@ Qed.
 Lemma run_transforms_at_prefix_step : forall ts r rf rest e p,
   exists rf', rf' r = apply_transforms ts (rf r)
     /\ (forall r0, r0 <> r -> rf' r0 = rf r0)
-    /\ run_rule_step rf (compile_transforms_at r ts ++ rest) e p = run_rule_step rf' rest e p.
+    /\ run_rule_step h rf (compile_transforms_at r ts ++ rest) e p = run_rule_step h rf' rest e p.
 Proof.
   induction ts as [| t ts IH]; intros r rf rest e p.
   - exists rf. cbn [compile_transforms_at map app]. repeat split; reflexivity.
@@ -795,7 +804,7 @@ Lemma run_load_fields_t_step : forall elems slot rf tail e p,
     map rf' (map snd (alloc_regs slot (map fst elems)))
       = map (fun fe => apply_transforms (snd fe) (field_value (fst fe) e p)) elems
     /\ (forall r0, ~ In r0 (map snd (alloc_regs slot (map fst elems))) -> rf' r0 = rf r0)
-    /\ run_rule_step rf (load_fields_t slot elems ++ tail) e p = run_rule_step rf' tail e p.
+    /\ run_rule_step h rf (load_fields_t slot elems ++ tail) e p = run_rule_step h rf' tail e p.
 Proof.
   induction elems as [| [f ts] rest IH]; intros slot rf tail e p Hng Hl.
   - exists rf. cbn [load_fields_t map alloc_regs app]. repeat split; reflexivity.
@@ -824,7 +833,7 @@ Qed.
 Lemma run_load_fields_t_step_break : forall elems slot rf tail e p,
   forallb (fun fe => field_ngfree (fst fe)) elems = true ->
   forallb (fun fe => field_loadable (fst fe) p) elems = false ->
-  run_rule_step rf (load_fields_t slot elems ++ tail) e p = (None, (e, p)).
+  run_rule_step h rf (load_fields_t slot elems ++ tail) e p = (None, (e, p)).
 Proof.
   induction elems as [| [f ts] rest IH]; intros slot rf tail e p Hng Hl; [discriminate Hl|].
   cbn [forallb fst] in Hng, Hl.
@@ -849,11 +858,11 @@ Lemma run_or_chain_step : forall srcs rf tail e p,
   forallb (fun fe => field_ngfree (fst fe)) srcs = true ->
   forallb (fun fe => field_loadable (fst fe) p) srcs = true ->
   exists rf',
-    run_rule_step rf
+    run_rule_step h rf
       (flat_map (fun fe =>
          compile_load (field_load (fst fe)) 2 :: compile_transforms_at 2 (snd fe)
          ++ [IBitwiseOr 1 1 2]) srcs ++ tail) e p
-    = run_rule_step rf' tail e p
+    = run_rule_step h rf' tail e p
     /\ rf' 1 = fold_left
                  (fun acc fe => data_or acc (apply_transforms (snd fe) (field_value (fst fe) e p)))
                  srcs (rf 1).
@@ -880,7 +889,7 @@ Qed.
 Lemma run_or_chain_step_break : forall srcs rf tail e p,
   forallb (fun fe => field_ngfree (fst fe)) srcs = true ->
   forallb (fun fe => field_loadable (fst fe) p) srcs = false ->
-  run_rule_step rf
+  run_rule_step h rf
     (flat_map (fun fe =>
        compile_load (field_load (fst fe)) 2 :: compile_transforms_at 2 (snd fe)
        ++ [IBitwiseOr 1 1 2]) srcs ++ tail) e p = (None, (e, p)).
@@ -918,7 +927,7 @@ Qed.
 Lemma run_vsrc_step : forall vs rf rest e p,
   vsrc_ngfree vs = true ->
   vsrc_loadable vs p = true ->
-  exists rf', run_rule_step rf (compile_vsrc vs ++ rest) e p = run_rule_step rf' rest e p
+  exists rf', run_rule_step h rf (compile_vsrc vs ++ rest) e p = run_rule_step h rf' rest e p
               /\ rf' 1 = eval_vsrc vs e p.
 Proof.
   intros vs rf rest e p Hng Hld.
@@ -1031,7 +1040,7 @@ Qed.
 Lemma run_vsrc_step_break : forall vs rf rest e p,
   vsrc_ngfree vs = true ->
   vsrc_loadable vs p = false ->
-  run_rule_step rf (compile_vsrc vs ++ rest) e p = (None, (e, p)).
+  run_rule_step h rf (compile_vsrc vs ++ rest) e p = (None, (e, p)).
 Proof.
   destruct vs as [v | f ts | fields ts nm | hf hl hs hm ho
                  | osrcs ofinal | telems tname
@@ -1079,8 +1088,8 @@ Qed.
     Mirrors the per-match cases of [run_compile_matches_const]. *)
 Lemma step_match_one : forall m X e p (R : env -> option verdict * (env * packet)),
   match_ngfree m = true ->
-  (forall rf e', run_rule_step rf X e' p = R e') ->
-  forall rf, run_rule_step rf (compile_match m ++ X) e p
+  (forall rf e', run_rule_step h rf X e' p = R e') ->
+  forall rf, run_rule_step h rf (compile_match m ++ X) e p
              = if eval_matchcond m e p then R (match_consume m e p)
                else (None, (match_consume m e p, p)).
 Proof.
@@ -1577,7 +1586,7 @@ Lemma run_rule_step_straight : forall pre rf rest e p,
   straight pre = true ->
   numgen_free_prog pre = true ->
   loads_ok pre p = true ->
-  exists rf', run_rule_step rf (pre ++ rest) e p = run_rule_step rf' rest e p.
+  exists rf', run_rule_step h rf (pre ++ rest) e p = run_rule_step h rf' rest e p.
 Proof.
   induction pre as [| i pre IH]; intros rf rest e p Hs Hn Hlo; [exists rf; reflexivity|].
   cbn [straight forallb] in Hs. apply Bool.andb_true_iff in Hs. destruct Hs as [Hi Hpre].
@@ -1640,7 +1649,7 @@ Lemma run_stmt_step_neutral : forall s rf rest e p,
   stmt_ngfree s = true ->
   is_mut_stmt s = false -> is_synproxy_stmt s = false ->
   stmt_loadable s p = true ->
-  exists rf', run_rule_step rf (compile_stmt s ++ rest) e p = run_rule_step rf' rest e p.
+  exists rf', run_rule_step h rf (compile_stmt s ++ rest) e p = run_rule_step h rf' rest e p.
 Proof.
   intros s rf rest e p Hng Hm Hsp Hl. apply run_rule_step_straight.
   - apply straight_compile_stmt; [exact Hm | exact Hsp].
@@ -1693,8 +1702,8 @@ Qed.
 Lemma run_dynset_set_step : forall op name keyfs rf rest e p,
   forallb field_ngfree keyfs = true ->
   fields_loadable keyfs p = true ->
-  run_rule_step rf (compile_stmt (SDynset op name keyfs []) ++ rest) e p
-  = run_rule_step (write_fields rf (alloc_regs 0 keyfs) e p) rest
+  run_rule_step h rf (compile_stmt (SDynset op name keyfs []) ++ rest) e p
+  = run_rule_step h (write_fields rf (alloc_regs 0 keyfs) e p) rest
       (env_set_upd e op name (List.concat (map (fun f => field_value f e p) keyfs))) p.
 Proof.
   intros op name keyfs rf rest e p Hng Hl. rewrite compile_dynset_set, <- app_assoc.
@@ -1787,8 +1796,8 @@ Qed.
 Lemma run_dynset_map_step : forall op name keyfs d ds rf rest e p,
   forallb field_ngfree (keyfs ++ d :: ds) = true ->
   fields_loadable (keyfs ++ d :: ds) p = true ->
-  run_rule_step rf (compile_stmt (SDynset op name keyfs (d :: ds)) ++ rest) e p
-  = run_rule_step (write_fields rf (alloc_regs 0 (keyfs ++ d :: ds)) e p) rest
+  run_rule_step h rf (compile_stmt (SDynset op name keyfs (d :: ds)) ++ rest) e p
+  = run_rule_step h (write_fields rf (alloc_regs 0 (keyfs ++ d :: ds)) e p) rest
       (env_map_upd e op name
          (List.concat (map (fun f => field_value f e p) keyfs)) (field_value d e p)) p.
 Proof.
@@ -1804,7 +1813,7 @@ Qed.
 Lemma run_stmt_step_break : forall s rf rest e p,
   stmt_ngfree s = true ->
   stmt_loadable s p = false ->
-  run_rule_step rf (compile_stmt s ++ rest) e p = (None, (e, p)).
+  run_rule_step h rf (compile_stmt s ++ rest) e p = (None, (e, p)).
 Proof.
   destruct s; intros rf rest e p Hng Hl;
     cbn [stmt_ngfree] in Hng; cbn [stmt_loadable] in Hl; try discriminate Hl;
@@ -1842,9 +1851,9 @@ Qed.
 Lemma run_step_compile_body : forall body tail
     (res : env -> packet -> option verdict * (env * packet)),
   forallb body_item_ngfree body = true ->
-  (forall rf e p, run_rule_step rf tail e p = res e p) ->
+  (forall rf e p, run_rule_step h rf tail e p = res e p) ->
   forall rf e p,
-    run_rule_step rf (flat_map compile_body_item body ++ tail) e p
+    run_rule_step h rf (flat_map compile_body_item body ++ tail) e p
     = match body_step body e p with
       | BRbreak e' p' => (None, (e', p'))
       | BRstop e' p'  => (Some Drop, (e', p'))
@@ -2792,24 +2801,99 @@ Proof. intros. apply compile_chain_correct. Qed.
 
 (** Operand immediates thread under the step (register writes only). *)
 Lemma run_imms_step : forall imms rf tail e p,
-  exists rf', run_rule_step rf (map (fun rv => IImmediateData (fst rv) (snd rv)) imms ++ tail) e p
-            = run_rule_step rf' tail e p.
+  exists rf', run_rule_step h rf (map (fun rv => IImmediateData (fst rv) (snd rv)) imms ++ tail) e p
+            = run_rule_step h rf' tail e p.
 Proof.
   induction imms as [| [r v] rest IH]; intros rf tail e p.
   - exists rf. reflexivity.
   - cbn [map fst snd app run_rule_step]. apply IH.
 Qed.
 
-(** The secondary-operand immediates ([compile_nat_extra]), then the terminal
-    [INat] accepts keeping the state. *)
-Lemma step_extra_inat : forall n tail rf k fam amin amax pmin pmax fl e p,
-  run_rule_step rf (compile_nat_extra n ++ INat k fam amin amax pmin pmax fl :: tail) e p
-  = (Some Accept, (e, p)).
+(** [nat_addr_present] (the compiler's register-allocation test) IS the
+    semantics' address-operand presence [nat_has_addr]. *)
+Lemma nat_addr_present_has : forall n, nat_addr_present n = nat_has_addr n.
 Proof.
-  intros. unfold compile_nat_extra. destruct (nat_extra n) as [| am pm px | | | ];
-    try (cbn [app run_rule_step]; reflexivity).
-  destruct am as [v|]; destruct pm as [v2|]; destruct px as [v3|];
-    cbn [app run_rule_step]; reflexivity.
+  intro n. unfold nat_addr_present, nat_has_addr.
+  destruct (nat_src n); [reflexivity|].
+  destruct (nat_map n) as [[[? ?] ?]|]; [reflexivity|].
+  destruct (nat_field n) as [[? ?]|]; reflexivity.
+Qed.
+
+(** The secondary-operand immediates ([compile_nat_extra]), then the terminal
+    [INat] — which now performs the data-plane NAT effect from the register
+    file it reached: the addr-min register (entry register 1, untouched by the
+    secondary immediates when an address operand is present), the proto-min
+    register (the port immediate, or the port-only operand in register 1), the
+    kind/family carried by the instruction.  Stated against the CORE effect
+    with the register values made explicit. *)
+Lemma step_extra_inat : forall n tail rf e p,
+  run_rule_step h rf
+    (compile_nat_extra n
+       ++ INat (nat_kind n) (nat_family n) (nat_amin_reg n) (nat_amax_reg n)
+               (nat_pmin_reg n) (nat_pmax_reg n) (nat_flags n) :: tail) e p
+  = (if nat_drops_c h (nat_kind n) (nat_family n) e p
+     then (Some Drop, (e, p))
+     else (Some Accept,
+           apply_nat_c h (nat_kind n) (nat_family n)
+             (if nat_portonly n then None
+              else if nat_addr_present n then Some (rf 1) else None)
+             (match nat_extra n with
+              | NXimm _ (Some pm) _ => Some (N.to_nat (data_to_N pm))
+              | NXmap_port | NXmap_full => None
+              | _ => if nat_portonly n && nat_addr_present n
+                     then Some (N.to_nat (data_to_N (rf 1))) else None
+              end) e p)).
+Proof.
+  intros n tail rf e p.
+  unfold compile_nat_extra, nat_amin_reg, nat_pmin_reg, nat_amax_reg,
+         nat_pmax_reg, nat_sec0.
+  destruct (nat_extra n) as [| am pm px | | | ] eqn:Hex;
+    destruct (nat_portonly n) eqn:Hpo;
+    destruct (nat_addr_present n) eqn:Hap;
+    try (destruct am as [va|]; destruct pm as [vp|]; destruct px as [vx|]);
+    cbn [app run_rule_step optlen map fst snd];
+    unfold vm_nat_port, option_map, set_reg; cbn [Nat.eqb Nat.ltb Nat.leb];
+    reflexivity.
+Qed.
+
+(** The compiled NAT terminal realises the fold's terminal NAT effect, GIVEN
+    the operand register discipline: whenever an address operand is present,
+    entry register 1 holds its evaluated value ([nat_addr]). *)
+Lemma step_inat_terminal : forall n (r : rule) tail rf e p,
+  r_nat r = Some n ->
+  (nat_addr_present n = true -> rf 1 = nat_addr n e p) ->
+  run_rule_step h rf
+    (compile_nat_extra n
+       ++ INat (nat_kind n) (nat_family n) (nat_amin_reg n) (nat_amax_reg n)
+               (nat_pmin_reg n) (nat_pmax_reg n) (nat_flags n) :: tail) e p
+  = (if nat_drops h r e p then (Some Drop, (e, p))
+     else (Some Accept, apply_nat h r e p)).
+Proof.
+  intros n r tail rf e p Hrn Hr1.
+  rewrite step_extra_inat.
+  unfold nat_drops. rewrite apply_nat_eq_c. rewrite Hrn.
+  pose proof (nat_addr_present_has n) as Hah.
+  assert (Ho : (if nat_portonly n then None
+                else if nat_addr_present n then Some (rf 1) else None)
+               = nat_opnd n e p).
+  { unfold nat_opnd.
+    destruct (nat_portonly n); [reflexivity|].
+    rewrite Hah. destruct (nat_has_addr n) eqn:Hap.
+    - rewrite (Hr1 Hah); reflexivity.
+    - reflexivity. }
+  assert (Hp : (match nat_extra n with
+                | NXimm _ (Some pm) _ => Some (N.to_nat (data_to_N pm))
+                | NXmap_port | NXmap_full => None
+                | _ => if nat_portonly n && nat_addr_present n
+                       then Some (N.to_nat (data_to_N (rf 1))) else None
+                end) = nat_port_num n e p).
+  { unfold nat_port_num, nat_port_val. rewrite Hah.
+    destruct (nat_extra n) as [| am pm px | | | ]; try reflexivity;
+      try (destruct pm as [vp|]; [reflexivity|]);
+      destruct (nat_portonly n && nat_has_addr n) eqn:Hpa; try reflexivity;
+      apply Bool.andb_true_iff in Hpa; destruct Hpa as [_ Hap];
+      rewrite <- Hah in Hap; rewrite (Hr1 Hap); reflexivity. }
+  rewrite Ho, Hp. reflexivity.
 Qed.
 
 Lemma after_step_nonset : forall s ss e p,
@@ -2826,7 +2910,7 @@ Qed.
     SYN-proxy stop is terminal Drop). *)
 Lemma step_compile_after : forall ss rf e p,
   forallb stmt_ngfree ss = true ->
-  run_rule_step rf (flat_map compile_stmt ss) e p = after_step ss e p.
+  run_rule_step h rf (flat_map compile_stmt ss) e p = after_step ss e p.
 Proof.
   induction ss as [| s ss IH]; intros rf e p Hnga; [reflexivity|].
   cbn [forallb] in Hnga. apply Bool.andb_true_iff in Hnga.
@@ -2888,8 +2972,8 @@ Qed.
 Lemma step_compile_terminal : forall r rf e p,
   terminal_ngfree r = true ->
   forallb stmt_ngfree (r_after r) = true ->
-  run_rule_step rf (compile_terminal r ++ flat_map compile_stmt (r_after r)) e p
-  = terminal_step r e p.
+  run_rule_step h rf (compile_terminal r ++ flat_map compile_stmt (r_after r)) e p
+  = terminal_step h r e p.
 Proof.
   intros r rf e p Htng Hnga.
   unfold terminal_ngfree in Htng.
@@ -2902,8 +2986,9 @@ Proof.
                     (compile_nat_extra n
                        ++ [INat (nat_kind n) (nat_family n) (nat_amin_reg n) (nat_amax_reg n)
                              (nat_pmin_reg n) (nat_pmax_reg n) (nat_flags n)]
-                       ++ flat_map compile_stmt (r_after r)) e p Htng Hvl) as [rf' [Hr _]].
-        rewrite Hr. cbn [app]. rewrite step_extra_inat. reflexivity.
+                       ++ flat_map compile_stmt (r_after r)) e p Htng Hvl) as [rf' [Hr Hv1]].
+        rewrite Hr. cbn [app]. apply step_inat_terminal; [exact En|].
+        intros _. rewrite Hv1. unfold nat_addr. rewrite Ens. reflexivity.
       + rewrite run_vsrc_step_break by (exact Htng || exact Hvl). reflexivity.
     - destruct (nat_map n) as [[[fields ts] name]|] eqn:Enm; cbv beta iota in Htng.
       + destruct (fields_loadable fields p) eqn:Hfl.
@@ -2922,7 +3007,9 @@ Proof.
           rewrite Hr. cbn [app run_rule_step].
           rewrite (run_transforms_key fields ts rf e p rf' Hv1 Hfr).
           destruct (map_has_key (nat_map_key fields ts e p) (e_map e name)); cbn [andb].
-          -- rewrite step_extra_inat. reflexivity.
+          -- apply step_inat_terminal; [exact En|].
+             intros _. rewrite set_reg_same. unfold nat_addr.
+             rewrite Ens, Enm. reflexivity.
           -- reflexivity.
         * rewrite <- !app_assoc.
           rewrite run_load_fields_step_break;
@@ -2938,12 +3025,18 @@ Proof.
                          (compile_nat_extra n
                             ++ INat (nat_kind n) (nat_family n) (nat_amin_reg n) (nat_amax_reg n)
                                   (nat_pmin_reg n) (nat_pmax_reg n) (nat_flags n)
-                            :: flat_map compile_stmt (r_after r)) e p) as [rf' [_ [_ Hr]]].
-             rewrite Hr. cbn [app]. rewrite step_extra_inat. reflexivity.
+                            :: flat_map compile_stmt (r_after r)) e p) as [rf' [Hv1 [_ Hr]]].
+             rewrite Hr. cbn [app]. apply step_inat_terminal; [exact En|].
+             intros _. rewrite Hv1, set_reg_same. unfold nat_addr.
+             rewrite Ens, Enm, Enf. reflexivity.
           -- cbn [app]. rewrite compile_load_break_step by exact Hf. reflexivity.
-        * destruct (nat_addr_imm n) as [v|].
-          -- cbn [app run_rule_step]. rewrite step_extra_inat. reflexivity.
-          -- cbn [app]. rewrite step_extra_inat. reflexivity. }
+        * destruct (nat_addr_imm n) as [v|] eqn:Eni.
+          -- cbn [app run_rule_step]. apply step_inat_terminal; [exact En|].
+             intros _. rewrite set_reg_same. unfold nat_addr.
+             rewrite Ens, Enm, Enf, Eni. reflexivity.
+          -- cbn [app]. apply step_inat_terminal; [exact En|].
+             intro Hap. exfalso. unfold nat_addr_present in Hap.
+             rewrite Ens, Enm, Enf, Eni in Hap. discriminate Hap. }
   destruct (r_tproxy r) as [t|] eqn:Et; cbv beta iota in Htng.
   { rewrite <- !app_assoc.
     destruct (tp_portmap t) as [[[m o] name]|].
@@ -2952,11 +3045,13 @@ Proof.
                   ([ISymhash m o (tp_pbase t); ILookupVal [tp_pbase t] name (tp_pbase t)]
                      ++ [ITproxy (tp_family t) (tp_areg t) (tp_preg t)]
                      ++ flat_map compile_stmt (r_after r)) e p) as [rf' Hr].
-      rewrite Hr. cbn [app run_rule_step]. reflexivity.
+      rewrite Hr. cbn [app run_rule_step].
+      unfold nat_drops, apply_nat. rewrite En. reflexivity.
     - edestruct (run_imms_step (tp_imm_loads t) rf
                   ([ITproxy (tp_family t) (tp_areg t) (tp_preg t)]
                      ++ flat_map compile_stmt (r_after r)) e p) as [rf' Hr].
-      rewrite Hr. cbn [app run_rule_step]. reflexivity. }
+      rewrite Hr. cbn [app run_rule_step].
+      unfold nat_drops, apply_nat. rewrite En. reflexivity. }
   destruct (r_fwd r) as [w|] eqn:Ew; cbv beta iota in Htng.
   { rewrite <- !app_assoc.
     destruct (vsrc_loadable (fwd_dev w) p) eqn:Hd.
@@ -2967,7 +3062,8 @@ Proof.
                            (match fwd_addr w with
                             | Some _ => Some (nfproto_of_family (fwd_family w)) | None => None end)]
                      ++ flat_map compile_stmt (r_after r)) e p Htng Hd) as [rf' [Hr _]].
-      rewrite Hr. destruct (fwd_addr w) as [a|]; cbn [app run_rule_step]; reflexivity.
+      rewrite Hr. destruct (fwd_addr w) as [a|]; cbn [app run_rule_step];
+        unfold nat_drops, apply_nat; rewrite En; reflexivity.
     - rewrite run_vsrc_step_break by (exact Htng || exact Hd). reflexivity. }
   destruct (r_queue r) as [q|] eqn:Eq; cbv beta iota in Htng.
   { rewrite <- app_assoc.
@@ -2975,7 +3071,8 @@ Proof.
     - edestruct (run_vsrc_step (q_num q) rf
                   ([IQueueSreg 1 (q_bypass q) (q_fanout q)]
                      ++ flat_map compile_stmt (r_after r)) e p Htng Hq) as [rf' [Hr _]].
-      rewrite Hr. cbn [app run_rule_step]. reflexivity.
+      rewrite Hr. cbn [app run_rule_step].
+      unfold nat_drops, apply_nat. rewrite En. reflexivity.
     - rewrite run_vsrc_step_break by (exact Htng || exact Hq). reflexivity. }
   destruct (r_verdict r); cbn [verdict_tail app run_rule_step];
     try reflexivity.
@@ -2989,8 +3086,8 @@ Lemma step_compile_end : forall r rf e p,
   vmap_ngfree (r_vmap r) = true ->
   terminal_ngfree r = true ->
   forallb stmt_ngfree (r_after r) = true ->
-  run_rule_step rf (compile_end r ++ flat_map compile_stmt (r_after r)) e p
-  = end_step r e p.
+  run_rule_step h rf (compile_end r ++ flat_map compile_stmt (r_after r)) e p
+  = end_step h r e p.
 Proof.
   intros r rf e p Hvng Htng Hnga. unfold compile_end, compile_vmap, end_step, vmap_loadable.
   unfold vmap_ngfree in Hvng.
@@ -3045,7 +3142,7 @@ Qed.
     that equation.) *)
 Lemma run_rule_step_compile_rule : forall r e p,
   rule_numgen_free r = true ->
-  run_rule_step empty_rf (compile_rule r) e p = rule_step r e p.
+  run_rule_step h empty_rf (compile_rule r) e p = rule_step h r e p.
 Proof.
   intros r e p Hnf. unfold rule_numgen_free in Hnf.
   apply Bool.andb_true_iff in Hnf. destruct Hnf as [Hnf Hnga].
@@ -3054,7 +3151,7 @@ Proof.
   unfold compile_rule, rule_step.
   rewrite (run_step_compile_body (r_body r)
              (compile_end r ++ flat_map compile_stmt (r_after r))
-             (end_step r) Hngb
+             (end_step h r) Hngb
              (fun rf e' p' => step_compile_end r rf e' p' Hvng Htng Hnga) empty_rf e p).
   reflexivity.
 Qed.
@@ -3067,20 +3164,20 @@ Qed.
     the [fst] projection of this, derived below — not a second induction. *)
 Lemma run_program_mut_env_compile_chain : forall rs e p,
   forallb rule_numgen_free rs = true ->
-  run_program_mut_env (map compile_rule rs) e p = eval_rules_mut_env rs e p.
+  run_program_mut_env h (map compile_rule rs) e p = eval_rules_mut_env h rs e p.
 Proof.
   induction rs as [| r rs IH]; intros e p Hall; [reflexivity|].
   cbn [forallb] in Hall. apply Bool.andb_true_iff in Hall. destruct Hall as [Hr Hrs].
   cbn [map run_program_mut_env eval_rules_mut_env].
   rewrite (run_rule_step_compile_rule r e p Hr).
-  destruct (rule_step r e p) as [[v |] [e' p']].
+  destruct (rule_step h r e p) as [[v |] [e' p']].
   - destruct (terminal v); [reflexivity | apply IH; exact Hrs].
   - apply IH; exact Hrs.
 Qed.
 
 Theorem compile_chain_mut_env_correct : forall c e p,
   forallb rule_numgen_free (c_rules c) = true ->
-  run_chain_mut_env (compile_chain c) (c_policy c) e p = eval_chain_mut_env c e p.
+  run_chain_mut_env h (compile_chain c) (c_policy c) e p = eval_chain_mut_env h c e p.
 Proof.
   intros c e p Hall. unfold run_chain_mut_env, eval_chain_mut_env, compile_chain.
   rewrite run_program_mut_env_compile_chain by exact Hall. reflexivity.
@@ -3091,7 +3188,7 @@ Qed.
     duplicated induction. *)
 Lemma run_program_mut_compile_chain : forall rs e p,
   forallb rule_numgen_free rs = true ->
-  run_program_mut (map compile_rule rs) e p = eval_rules_mut rs e p.
+  run_program_mut h (map compile_rule rs) e p = eval_rules_mut h rs e p.
 Proof.
   intros rs e p Hall.
   rewrite <- run_program_mut_env_fst, <- eval_rules_mut_env_fst.
@@ -3100,7 +3197,7 @@ Qed.
 
 Theorem compile_chain_mut_correct : forall c e p,
   forallb rule_numgen_free (c_rules c) = true ->
-  run_chain_mut (compile_chain c) (c_policy c) e p = eval_chain_mut c e p.
+  run_chain_mut h (compile_chain c) (c_policy c) e p = eval_chain_mut h c e p.
 Proof.
   intros c e p Hall. unfold run_chain_mut, eval_chain_mut, compile_chain.
   rewrite run_program_mut_compile_chain by exact Hall. reflexivity.
@@ -3124,11 +3221,11 @@ Qed.
     earlier packet is visible to a `lookup @s` on a later one, end-to-end and
     compiler-preserved — the cross-packet half of the dynamic-set feedback loop.
     Unlike [compile_seq_correct] below, the env evolution here is generated by
-    the ruleset itself ([eval_chain_mut_env]), not by an arbitrary step. *)
+    the ruleset itself ([eval_chain_mut_env h]), not by an arbitrary step. *)
 Theorem compile_seq_mut_correct : forall c e packets,
   forallb rule_numgen_free (c_rules c) = true ->
-  seq_eval_env (run_chain_mut_env (compile_chain c) (c_policy c)) e packets
-  = seq_eval_env (eval_chain_mut_env c) e packets.
+  seq_eval_env (run_chain_mut_env h (compile_chain c) (c_policy c)) e packets
+  = seq_eval_env (eval_chain_mut_env h c) e packets.
 Proof.
   intros c e packets Hall. apply seq_eval_env_ext. intros e' p.
   apply compile_chain_mut_env_correct. exact Hall.
@@ -3153,7 +3250,7 @@ Qed.
         fact.
 
     (2) That bridge EXISTS: the jump-aware mutating evaluator is the unified
-        [eval_rules_u]/[eval_table_u] (Semantics.v § "The unified
+        [eval_rules_u h]/[eval_table_u h] (Semantics.v § "The unified
         semantics"), and [Semantics.eval_rules_u_mut_proj] /
         [eval_table_u_mut_proj] prove the flat mutation strand is its
         projection on transfer-free rules ([rule_plain]: no realisable
@@ -3335,14 +3432,14 @@ Proof. reflexivity. Qed.
 (** (D) the MUTATION-strand analogue of (C) — the pin referenced by the
     "why no jump-freedom hypothesis" note on the mutation strata above.  The
     same jump-bearing chain SATISFIES [rule_numgen_free] (so every mutation theorem
-    instantiates on it), yet [eval_chain_mut] treats the realised [Jump] as a
+    instantiates on it), yet [eval_chain_mut h] treats the realised [Jump] as a
     fall-through and returns the base policy [Accept] — while the kernel (and
     the unified evaluator, (F) below) DROPS.  Locked in so the flat strand's
     jump-as-fall-through can never silently be read as certified-faithful:
     a jump-bearing chain must be evaluated by the unified
-    [eval_table_u]/[run_table_u]. *)
+    [eval_table_u h]/[run_table_u h]. *)
 Example mut_strand_jump_pin : forall e p,
-  forallb rule_numgen_free (c_rules rg_base) = true /\ eval_chain_mut rg_base e p = Accept.
+  forallb rule_numgen_free (c_rules rg_base) = true /\ eval_chain_mut h rg_base e p = Accept.
 Proof. intros e p. split; reflexivity. Qed.
 
 (** (E) …and the license correctly EXCLUDES it: the jump rule fails
@@ -3355,7 +3452,7 @@ Proof. intros e. reflexivity. Qed.
     behaviour, with the state threaded (here: unchanged, the probe rules are
     write-free). *)
 Example unified_strand_jump_drops : forall e p,
-  fst (eval_table_u 10 rg_cs rg_base e p) = Drop.
+  fst (eval_table_u h 10 rg_cs rg_base e p) = Drop.
 Proof. intros e p. reflexivity. Qed.
 Local Close Scope string_scope.
 
@@ -3382,10 +3479,10 @@ Qed.
     and the netfilter dispatch over the compiled bases reproduces the DSL
     [eval_hook] — a corollary of [compile_ruleset_correct] (selection/ordering is
     a pure list operation applied identically on both sides). *)
-Theorem compile_hook_correct : forall fuel rs h e p,
-  run_ruleset fuel (map compile_base (select_hook rs h)) e p = eval_hook fuel rs h e p.
+Theorem compile_hook_correct : forall fuel rs hk e p,
+  run_ruleset fuel (map compile_base (select_hook rs hk)) e p = eval_hook fuel rs hk e p.
 Proof.
-  intros fuel rs h e p. unfold eval_hook. apply compile_ruleset_correct.
+  intros fuel rs hk e p. unfold eval_hook. apply compile_ruleset_correct.
 Qed.
 
 (** [seq_eval] is congruent in the per-packet evaluator: pointwise-equal
@@ -3406,9 +3503,9 @@ Qed.
     ruleset's own state accumulation is preserved.  For the env evolution
     generated by the ruleset itself (dynset learning threaded packet-to-packet)
     see [compile_seq_mut_correct] above. *)
-Theorem compile_seq_correct : forall fuel rs h step e packets,
-  seq_eval (run_ruleset fuel (map compile_base (select_hook rs h))) step e packets
-  = seq_eval (eval_hook fuel rs h) step e packets.
+Theorem compile_seq_correct : forall fuel rs hk step e packets,
+  seq_eval (run_ruleset fuel (map compile_base (select_hook rs hk))) step e packets
+  = seq_eval (eval_hook fuel rs hk) step e packets.
 Proof.
   intros. apply seq_eval_ext. intros e' p. apply compile_hook_correct.
 Qed.
@@ -3443,15 +3540,15 @@ Qed.
 Lemma run_rules_u_compile : forall fuel cs rs e p,
   chains_numgen_free cs = true ->
   forallb rule_numgen_free rs = true ->
-  run_rules_u fuel (compile_env cs) (map compile_rule rs) e p
-  = eval_rules_u fuel cs rs e p.
+  run_rules_u h fuel (compile_env cs) (map compile_rule rs) e p
+  = eval_rules_u h fuel cs rs e p.
 Proof.
   induction fuel as [| f IH]; intros cs rs e p Hcs Hrs; [reflexivity|].
   destruct rs as [| r rest]; [reflexivity|].
   cbn [forallb] in Hrs. apply Bool.andb_true_iff in Hrs. destruct Hrs as [Hr Hrest].
   cbn [run_rules_u eval_rules_u map].
   rewrite (run_rule_step_compile_rule r e p Hr).
-  destruct (rule_step r e p) as [[v|] [e' p']]; [| now apply IH].
+  destruct (rule_step h r e p) as [[v|] [e' p']]; [| now apply IH].
   destruct v as [ | | | tc cc | lo hi bp fo | n | n | ];
     try reflexivity; try (now apply IH).
   - (* Jump: the callee starts from the caller's accumulated state, and the
@@ -3462,7 +3559,7 @@ Proof.
     unfold compile_chain.
     rewrite (IH cs (c_rules ch) e' p' Hcs
                (chains_numgen_free_lookup cs n ch Hcs Hlk)).
-    destruct (eval_rules_u f cs (c_rules ch) e' p') as [[w|] [e'' p'']];
+    destruct (eval_rules_u h f cs (c_rules ch) e' p') as [[w|] [e'' p'']];
       [reflexivity | now apply IH].
   - (* Goto *)
     rewrite prog_lookup_compile_env.
@@ -3475,8 +3572,8 @@ Qed.
 Theorem compile_table_u_correct : forall fuel cs base e p,
   chains_numgen_free cs = true ->
   forallb rule_numgen_free (c_rules base) = true ->
-  run_table_u fuel (compile_env cs) (compile_chain base) (c_policy base) e p
-  = eval_table_u fuel cs base e p.
+  run_table_u h fuel (compile_env cs) (compile_chain base) (c_policy base) e p
+  = eval_table_u h fuel cs base e p.
 Proof.
   intros fuel cs base e p Hcs Hb.
   unfold run_table_u, eval_table_u, compile_chain.
@@ -3489,7 +3586,7 @@ Definition base_numgen_free
 
 Theorem compile_ruleset_u_correct : forall fuel bases e p,
   forallb base_numgen_free bases = true ->
-  run_ruleset_u fuel (map compile_base bases) e p = eval_ruleset_u fuel bases e p.
+  run_ruleset_u h fuel (map compile_base bases) e p = eval_ruleset_u h fuel bases e p.
 Proof.
   intros fuel bases. induction bases as [| [cs base] rest IHb]; intros e p Hb;
     [reflexivity|].
@@ -3498,28 +3595,28 @@ Proof.
   destruct Hhd as [Hcs Hbase]. cbn [fst snd] in Hcs, Hbase.
   cbn [map compile_base run_ruleset_u eval_ruleset_u fst snd].
   rewrite (compile_table_u_correct fuel cs base e p Hcs Hbase).
-  destruct (eval_table_u fuel cs base e p) as [v [e' p']].
+  destruct (eval_table_u h fuel cs base e p) as [v [e' p']].
   destruct (base_continues v); [now apply IHb | reflexivity].
 Qed.
 
-Theorem compile_hook_u_correct : forall fuel rs h e p,
+Theorem compile_hook_u_correct : forall fuel rs e p,
   forallb base_numgen_free (select_hook rs h) = true ->
-  run_ruleset_u fuel (map compile_base (select_hook rs h)) e p
-  = eval_hook_u fuel rs h e p.
+  run_ruleset_u h fuel (map compile_base (select_hook rs h)) e p
+  = eval_hook_u h fuel rs e p.
 Proof.
-  intros fuel rs h e p Hn. unfold eval_hook_u.
+  intros fuel rs e p Hn. unfold eval_hook_u.
   now apply compile_ruleset_u_correct.
 Qed.
 
 (** Cross-packet env carry over the unified per-packet run: the ruleset's own
     learning (dynset adds, limiter depletion) threads from packet to packet
     through jumps and multi-chain dispatch, compiler-preserved. *)
-Theorem compile_seq_hook_u_correct : forall fuel rs h e packets,
+Theorem compile_seq_hook_u_correct : forall fuel rs e packets,
   forallb base_numgen_free (select_hook rs h) = true ->
-  seq_eval_env (run_ruleset_env_u fuel (map compile_base (select_hook rs h))) e packets
-  = seq_eval_env (eval_hook_env_u fuel rs h) e packets.
+  seq_eval_env (run_ruleset_env_u h fuel (map compile_base (select_hook rs h))) e packets
+  = seq_eval_env (eval_hook_env_u h fuel rs) e packets.
 Proof.
-  intros fuel rs h e packets Hn. apply seq_eval_env_ext. intros e' p.
+  intros fuel rs e packets Hn. apply seq_eval_env_ext. intros e' p.
   unfold run_ruleset_env_u, eval_hook_env_u, eval_hook_u.
   rewrite (compile_ruleset_u_correct fuel (select_hook rs h) e' p Hn).
   reflexivity.
@@ -3527,7 +3624,7 @@ Qed.
 
 (** VM-side projection license (completing the matrix): on compiled
     write-free chains the pure [run_table] is the verdict projection of the
-    unified [run_table_u], with the state provably untouched.  (Derived
+    unified [run_table_u h], with the state provably untouched.  (Derived
     through the DSL bridges; the compiled programs are the only programs the
     toolchain installs.) *)
 Corollary run_table_writefree_compiled : forall fuel cs base e p,
@@ -3535,7 +3632,7 @@ Corollary run_table_writefree_compiled : forall fuel cs base e p,
   forallb rule_numgen_free (c_rules base) = true ->
   forallb rule_writefree (c_rules base) = true ->
   chains_writefree cs = true ->
-  run_table_u fuel (compile_env cs) (compile_chain base) (c_policy base) e p
+  run_table_u h fuel (compile_env cs) (compile_chain base) (c_policy base) e p
   = (run_table fuel (compile_env cs) (compile_chain base) (c_policy base) e p,
      (e, p)).
 Proof.
@@ -3552,10 +3649,10 @@ Corollary eval_chain_writefree_jumpfree_proj : forall fuel cs c e p,
   forallb rule_writefree (c_rules c) = true ->
   chains_writefree cs = true ->
   chain_jumpfree c e p = true ->
-  eval_table_u fuel cs c e p = (eval_chain c e p, (e, p)).
+  eval_table_u h fuel cs c e p = (eval_chain c e p, (e, p)).
 Proof.
   intros fuel cs c e p Hlen Hwb Hwcs Hjf.
-  rewrite (eval_table_u_writefree fuel cs c e p Hwb Hwcs).
+  rewrite (eval_table_u_writefree h fuel cs c e p Hwb Hwcs).
   rewrite (eval_chain_eq_table_jumpfree fuel cs c e p Hlen Hjf).
   reflexivity.
 Qed.
@@ -3566,6 +3663,24 @@ Qed.
     context"; an introduced axiom / admitted proof would surface in the build log
     here and fail `make axioms` (which re-checks the THEOREMS.md HEADLINE set
     from the compiled .vo files). *)
+End AtHook.
+
+(** HEADLINE (NAT data-plane axis): the data plane of dnat / snat /
+    masquerade / redirect — the L3/L4 packet rewrite, the flow-keyed [e_nat]
+    tuple establish/reuse ([apply_nat]) and the no-usable-address NF_DROP
+    ([nat_drops]) — is compiler-preserved INSIDE the single per-rule fold, at
+    every netfilter hook, with outcome PROVENANCE: the effect runs exactly
+    when the NAT terminal delivers the verdict (a vmap HIT stops the rule
+    before it — Regression/Known_Infidelities.v [vmaphit_*] positive pins).
+    This is the per-rule bridge [run_rule_step_compile_rule] restated under
+    its NAT-effect name; the traversal-level statements are
+    [compile_table_u_correct] / [compile_ruleset_u_correct] etc., whose
+    per-rule step this equation is. *)
+Theorem compile_nat_effect_correct : forall h r e p,
+  rule_numgen_free r = true ->
+  run_rule_step h empty_rf (compile_rule r) e p = rule_step h r e p.
+Proof. intros h r e p Hn. apply run_rule_step_compile_rule; exact Hn. Qed.
+
 Print Assumptions compile_chain_correct.
 Print Assumptions compile_chain_mut_correct.
 Print Assumptions compile_chain_mut_env_correct.
@@ -3580,3 +3695,5 @@ Print Assumptions compile_seq_hook_u_correct.
 Print Assumptions run_table_writefree_compiled.
 Print Assumptions eval_chain_writefree_jumpfree_proj.
 Print Assumptions compile_seq_correct.
+Print Assumptions compile_nat_effect_correct.
+

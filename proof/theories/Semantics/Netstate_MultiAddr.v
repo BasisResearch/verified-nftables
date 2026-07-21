@@ -186,7 +186,7 @@ Print Assumptions masq_drop_iff_no_eligible_addr.
 Theorem nat_iface_addr_absent_masq_iff : forall h ns e p,
   nat_kind ns = nat_masq_kind ->
   ifaddrs_wf (masq_ifaddrs (nat_addrfamily_pkt ns p) e p) ->
-  ( nat_iface_addr_absent h ns e p = true
+  ( nat_iface_addr_absent h (nat_kind ns) (nat_family ns) e p = true
     <-> (forall ia, In ia (masq_ifaddrs (nat_addrfamily_pkt ns p) e p) ->
                     ifa_eligible scope_universe ia = false) ).
 Proof.

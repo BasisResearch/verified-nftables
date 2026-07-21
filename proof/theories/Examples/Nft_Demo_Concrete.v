@@ -74,12 +74,16 @@ Proof. Fail now nft_decide. Abort.
     the two concrete cruxes are re-stated over [eval_table_u] here so the
     demo layer carries its own unified-semantics witnesses. *)
 
-Theorem demo_dns_accepted_unified :
-  fst (eval_table_u in_fuel global_chains global_inbound env_lan pkt_lan_dns)
+(* Stated over the FULL parser chain env (incl. the effectful masquerade
+   chain) and at EVERY hook: at these concrete env/packets the traversal
+   never reaches a NAT rule, so the unified verdict is hook-independent and
+   computes outright. *)
+Theorem demo_dns_accepted_unified : forall h,
+  fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_dns)
   = Accept.
-Proof. rewrite <- inbound_licensed. exact demo_dns_accepted. Qed.
+Proof. intro h. vm_compute. reflexivity. Qed.
 
-Theorem demo_smtp_denied_unified :
-  fst (eval_table_u in_fuel global_chains global_inbound env_lan pkt_lan_smtp)
+Theorem demo_smtp_denied_unified : forall h,
+  fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_smtp)
   = Drop.
-Proof. rewrite <- inbound_licensed. exact demo_smtp_denied. Qed.
+Proof. intro h. vm_compute. reflexivity. Qed.

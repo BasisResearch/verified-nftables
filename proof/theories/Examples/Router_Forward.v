@@ -46,7 +46,7 @@
     [forward_accept_iff_real]; cite those. *)
 
 From Stdlib Require Import List String NArith.
-From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen Nftval Eval_Fw.
+From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen Nftval Eval_Fw Router_Input.
 Import ListNotations.
 Open Scope string_scope.
 
@@ -385,27 +385,31 @@ Proof. rewrite pkt_world_dropped, bug_world_accepted. discriminate. Qed.
 (* ============================================================ *)
 (** ** UNIFIED-SEMANTICS LICENSE (Semantics.v § "Projection 1b").
 
-    The `global` chain env is not write-free (`inbound_private`'s
-    `limit rate 5/second` is an env write), but it IS limiter-tolerant
-    ([Semantics.chains_limiter_tol]), so every [eval_table] statement in
-    this file is the proven VERDICT projection of the unified
-    effect-threading semantics ([Semantics.eval_table_u_limiter_tolerant])
-    at every fuel, env and packet — see the license header in
-    [Router_Input] § "UNIFIED-SEMANTICS LICENSE". *)
+    The NAT-free chain env [Router_Input.global_tol_chains] is not
+    write-free (`inbound_private`'s `limit rate 5/second` is an env write),
+    but it IS limiter-tolerant ([Semantics.chains_limiter_tol]), so the
+    forward-table statements are the proven VERDICT projection of the
+    unified effect-threading semantics
+    ([Semantics.eval_table_u_limiter_tolerant]) at every hook, fuel, env
+    and packet — see the license header in [Router_Input]
+    § "UNIFIED-SEMANTICS LICENSE" (which also explains why the masquerade
+    chain is OUTSIDE every pure-strand license since M3). *)
 
-Theorem forward_licensed : forall fuel e p,
-  eval_table fuel global_chains global_forward e p
-  = fst (eval_table_u fuel global_chains global_forward e p).
+Theorem forward_licensed : forall h fuel e p,
+  eval_table fuel global_tol_chains global_forward e p
+  = fst (eval_table_u h fuel global_tol_chains global_forward e p).
 Proof.
-  intros fuel e p. symmetry.
-  apply eval_table_u_limiter_tolerant; vm_compute; reflexivity.
+  intros h fuel e p. symmetry.
+  apply eval_table_u_limiter_tolerant;
+    [vm_compute; reflexivity | exact global_chains_limiter_tol].
 Qed.
 
 (** The mutation-kill base chain is licensed under the same chain env. *)
-Theorem bug_forward_licensed : forall fuel e p,
-  eval_table fuel global_chains bug_forward e p
-  = fst (eval_table_u fuel global_chains bug_forward e p).
+Theorem bug_forward_licensed : forall h fuel e p,
+  eval_table fuel global_tol_chains bug_forward e p
+  = fst (eval_table_u h fuel global_tol_chains bug_forward e p).
 Proof.
-  intros fuel e p. symmetry.
-  apply eval_table_u_limiter_tolerant; vm_compute; reflexivity.
+  intros h fuel e p. symmetry.
+  apply eval_table_u_limiter_tolerant;
+    [vm_compute; reflexivity | exact global_chains_limiter_tol].
 Qed.
