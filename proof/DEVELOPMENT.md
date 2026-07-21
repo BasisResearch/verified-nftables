@@ -634,18 +634,20 @@ into the verified Coq lowering, so the fixes are now IN the verified lowering:
 - **D (`exthdr`/`tcpopt` `!= exists|missing` polarity, 2 blocks + 1 corpus-invisible
   twin) — FIXED.** `Lower.lower_presence` threads the surface `!=` (regression
   pins `lower_exthdr_neq_exists`, `lower_tcpopt_neq_exists`).
-- **E (`reject with tcp reset` missing `meta l4proto 6`, 3 blocks) — FIXED
-  (packet-identical, wire-order divergent).** `reject_dep` adds `DepL4 6` for
-  `tcp reset` (packet-proven: the RST no longer fires on non-TCP). One residual
-  divergence, ledgered here: nft hoists the reject's L4 dependency to the FRONT
-  of the rule (`meta l4proto 6; meta mark N; reject`), whereas this pipeline
-  emits the reject's guard where the reject statement sits (`meta mark N; meta
-  l4proto 6; reject`). The two are packet-EQUIVALENT (both guards are pure
-  conjuncts that must all hold before the reject fires; kernel readback confirms
-  the ICMP-passes / TCP-RST behaviour matches nft) but NOT wire-identical. Making
-  it byte-identical means hoisting statement dependencies to rule scope — a
-  rule-assembly reordering left to a dedicated milestone rather than rushed under
-  this commit's ratchet.
+- **E (`reject with tcp reset` missing `meta l4proto 6`, 3 blocks) — FIXED;
+  placement FIXED in W4 (class Q).** `reject_dep` adds `DepL4 6` for
+  `tcp reset` (packet-proven: the RST no longer fires on non-TCP), and since
+  W4 the guard lands at the RULE HEAD (`Lower.ensure_dep_head` /
+  `rl_push_head`), byte-identical to nft's emission (evaluate.c
+  stmt_reject_gen_dependency list_add's the dep at the beginning: "Otherwise
+  we'd log things that won't be rejected").  NOTE the interim ledger claim
+  that the two placements were "packet-EQUIVALENT" was WRONG for stateful
+  bodies: matches are pure conjuncts, but a counter/log/mark-write BETWEEN
+  the two positions runs under guard-last and does not under guard-first
+  (the kernel evaluates in instruction order and BREAKs at the first failing
+  cmp).  Regression/Reject_GuardFirst.v pins guard-before-effects on both
+  evaluators (a non-TCP packet leaves the body's mark write unexecuted) and
+  pins the counterfactual leak of the old order.
 - **F (`ether type`/vlan missing the `meta iiftype == ether` guard, 4 blocks) —
   FIXED.** `Selector` attaches `dep_ether` to `ether type` and the vlan
   bitfields (a no-op in bridge, real in inet/netdev).

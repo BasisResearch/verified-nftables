@@ -1172,17 +1172,58 @@ Definition icmpx_reject_code (name : string) : option nat :=
   else if String.eqb name "admin-prohibited" then Some 3
   else None.
 
+(** The L3 family a rule's guard/dedup set has PINNED — the lowering-time
+    mirror of nft's proto context (pctx->protocol[PROTO_BASE_NETWORK_HDR]):
+    an explicit or synthesised `meta nfproto` (inet), or any spelling of the
+    network-pinning ethertype match — `meta protocol` (skb->protocol), an
+    explicit `ether type`, or the in-frame `payload @ link+12/+16` guard the
+    L2 families use ([layer_class] — the same interchangeable-spelling set) —
+    with the IPv4/IPv6 value.  Returns the NFPROTO number (2/10), [None] when
+    no network family is pinned (or a non-ip ethertype, e.g. the 0x8100 vlan
+    tag, is).  Consumed by the bare-reject concretization (corpus class R). *)
+Definition dep_nfproto_pin (p : field * data) : option nat :=
+  let '(f, key) := p in
+  match f with
+  | FMetaNfproto =>
+      if data_eqb key [2] then Some 2
+      else if data_eqb key [10] then Some 10 else None
+  | FMetaProtocol | FEtherType | FPayload PLink 12 2 | FPayload PLink 16 2 =>
+      if data_eqb key [0x08; 0x00] then Some 2
+      else if data_eqb key [0x86; 0xdd] then Some 10 else None
+  | _ => None
+  end.
+
+Fixpoint deps_pinned_nfproto (deps : list (field * data)) : option nat :=
+  match deps with
+  | nil => None
+  | d :: rest =>
+      match dep_nfproto_pin d with
+      | Some f => Some f
+      | None => deps_pinned_nfproto rest
+      end
+  end.
+
 (** The reject (type, code) for a chain of [family], mirroring evaluate.c
-    stmt_reject_default: a BARE reject is family-defaulted (ip icmp
-    port-unreach (0,3); ip6 icmpv6 port-unreach (0,4); L2/dual icmpx
-    port-unreach (2,1)); `tcp reset` is (1,0). *)
-Definition reject_type_code (family : string) (opts : string)
-  : lres (nat * nat) :=
+    stmt_evaluate_reject_default: a BARE reject is family-defaulted (ip icmp
+    port-unreach (0,3); ip6 icmpv6 port-unreach (0,4)); in the multi-L3
+    families (inet/bridge/netdev) it is the abstract icmpx port-unreach (2,1)
+    ONLY while no network family is in scope — once the rule pins one
+    (pctx->protocol[PROTO_BASE_NETWORK_HDR].desc != NULL: `meta nfproto
+    ipv4`, `ether type ip`, or a network match's synthesised guard), nft
+    CONCRETIZES the bare reject to that family's icmp/icmpv6 port-unreach
+    (corpus class R; [pinned] is the rule's [deps_pinned_nfproto]).  `tcp
+    reset` is (1,0). *)
+Definition reject_type_code (family : string) (pinned : option nat)
+    (opts : string) : lres (nat * nat) :=
   match reject_words opts with
   | nil =>
       if String.eqb family "ip" then LOk (0, 3)
       else if String.eqb family "ip6" then LOk (0, 4)
-      else LOk (2, 1)
+      else match pinned with
+           | Some 2 => LOk (0, 3)
+           | Some 10 => LOk (0, 4)
+           | _ => LOk (2, 1)
+           end
   | w1 :: rest =>
       if String.eqb w1 "tcp" then
         match rest with
@@ -1211,7 +1252,10 @@ Definition reject_type_code (family : string) (opts : string)
     nft_reject_eval), so nft prepends the TCP guard (evaluate.c
     stmt_reject_gen_dependency -> NFT_META_L4PROTO) to keep a TCP-RST reject
     from firing on non-TCP packets; our historical frontend dropped it
-    (reports/corpus-divergence-bugs class E, packet-proven). *)
+    (reports/corpus-divergence-bugs class E, packet-proven).  Placement: these
+    deps are consumed by [ensure_dep_head] — at the RULE HEAD, before any
+    stateful body item (corpus class Q), matching nft's list_add — not by the
+    in-place [ensure_dep] the match deps use. *)
 Definition reject_dep (opts : string) : list depspec :=
   match reject_words opts with
   | w1 :: _ =>
@@ -1505,6 +1549,33 @@ Proof. reflexivity. Qed.
 Example reject_dep_bare : reject_dep "" = [].
 Proof. reflexivity. Qed.
 
+(** Class R regression: a BARE reject in a multi-L3 family stays the abstract
+    icmpx port-unreach (2,1) only while NO network family is pinned; once the
+    rule pins one it concretizes to that family's port-unreach — and an
+    EXPLICIT `reject with icmpx ...` never concretizes (evaluate.c
+    stmt_evaluate_reject_default vs the ICMPX break in
+    stmt_evaluate_reject_inet_family). *)
+Example reject_bare_inet_unpinned : reject_type_code "inet" None "" = LOk (2, 1).
+Proof. reflexivity. Qed.
+Example reject_bare_inet_pinned_v4 : reject_type_code "inet" (Some 2) "" = LOk (0, 3).
+Proof. reflexivity. Qed.
+Example reject_bare_inet_pinned_v6 : reject_type_code "inet" (Some 10) "" = LOk (0, 4).
+Proof. reflexivity. Qed.
+Example reject_icmpx_explicit_stays_abstract :
+  reject_type_code "inet" (Some 2) "icmpx port-unreachable" = LOk (2, 1).
+Proof. vm_compute. reflexivity. Qed.
+(** All three interchangeable network-pin spellings pin; the vlan TAG
+    ethertype (0x8100) does not. *)
+Example deps_pin_spellings :
+  map deps_pinned_nfproto
+    [ [(FMetaNfproto, [2])];
+      [(FEtherType, [0x08; 0x00])];
+      [(FPayload PLink 16 2, [0x86; 0xdd])];
+      [(FEtherType, [0x81; 0x00])];
+      [] ]
+  = [Some 2; Some 2; Some 10; None; None].
+Proof. vm_compute. reflexivity. Qed.
+
 (** Class N regression: `ct label set 127` sets BIT 127 of the 128-bit bitmap
     and serialises it host-endian (src/ct.c mpz_export_data BYTEORDER_HOST_ENDIAN)
     — so bit 127 lands in byte 15 (register bytes `00..00 0x80`), NOT the literal
@@ -1784,6 +1855,17 @@ Definition rl_with_vmap (m : option vmap_spec) (rl : rloc) : rloc :=
   mkRloc (rl_body rl) (rl_deps rl) (rl_verdict rl) m (rl_nat rl) (rl_tproxy rl).
 Definition rl_push (bi : body_item) (rl : rloc) : rloc :=
   mkRloc (bi :: rl_body rl) (rl_deps rl) (rl_verdict rl) (rl_vmap rl) (rl_nat rl) (rl_tproxy rl).
+(** Place a body item FIRST in the final rule ([rl_body] accumulates reversed,
+    so appending at its tail puts the item at the head of [rev (rl_body rl)]).
+    Used only for the reject dependency guard: nft's evaluator adds every
+    other synthesised dependency next to the expression that needs it, but the
+    reject guard is list_add'ed at the RULE HEAD (src/evaluate.c
+    stmt_reject_gen_dependency — "Unlike payload deps this adds the dependency
+    at the beginning […] Otherwise we'd log things that won't be rejected"):
+    the guard must fire BEFORE any stateful body item (log/counter/limit), so
+    a packet the reject cannot handle leaves them untouched. *)
+Definition rl_push_head (bi : body_item) (rl : rloc) : rloc :=
+  mkRloc (rl_body rl ++ [bi]) (rl_deps rl) (rl_verdict rl) (rl_vmap rl) (rl_nat rl) (rl_tproxy rl).
 Definition rl_set_deps (d : list (field * data)) (rl : rloc) : rloc :=
   mkRloc (rl_body rl) d (rl_verdict rl) (rl_vmap rl) (rl_nat rl) (rl_tproxy rl).
 
@@ -1814,7 +1896,13 @@ Definition layer_class (f : field) : list field :=
   | _ => [f]
   end.
 
-Definition push_guard (da : dep_action) (rl : rloc) (fs : fstate) : rloc * fstate :=
+(** [push] decides WHERE a non-deduped guard lands in the rule body:
+    [rl_push] (next to the match that needs it — nft's payload_gen_dependency
+    placement) for every match-synthesised dependency, [rl_push_head] (rule
+    head) for the reject dependency.  Dedup is placement-independent: the
+    guard set [rl_deps] is positionless. *)
+Definition push_guard_via (push : body_item -> rloc -> rloc)
+    (da : dep_action) (rl : rloc) (fs : fstate) : rloc * fstate :=
   match da with
   | DAnone => (rl, fs)
   | DAguard layer f key tm =>
@@ -1823,8 +1911,11 @@ Definition push_guard (da : dep_action) (rl : rloc) (fs : fstate) : rloc * fstat
         else existsb (fun p => andb (gfield_eqb (fst p) f) (data_eqb (snd p) key)) (rl_deps rl) in
       if dup then (rl, fs)
       else let '(mc, fs') := fs_reg_dep fs tm in
-           (rl_push (BMatch mc) (rl_set_deps ((f, key) :: rl_deps rl) rl), fs')
+           (push (BMatch mc) (rl_set_deps ((f, key) :: rl_deps rl) rl), fs')
   end.
+
+Definition push_guard : dep_action -> rloc -> fstate -> rloc * fstate :=
+  push_guard_via rl_push.
 
 (** A vlan tag (`ether type == 0x8100`, whether from the `vlan` selector's
     [DepEther] guard or an explicit `ether type vlan` discharged into the dedup
@@ -1835,17 +1926,35 @@ Definition rloc_vlan (rl : rloc) : bool :=
                          (data_eqb (snd p) (N_to_data 2 0x8100)))
           (rl_deps rl).
 
-Fixpoint ensure_dep (family : string) (ds : list depspec) (rl : rloc) (fs : fstate)
+Fixpoint ensure_dep_via (push : body_item -> rloc -> rloc)
+    (family : string) (ds : list depspec) (rl : rloc) (fs : fstate)
   : lres (rloc * fstate) :=
   match ds with
   | nil => LOk (rl, fs)
   | d :: rest =>
       match dep_guard family (rloc_vlan rl) d with
       | LErr e => LErr e
-      | LOk da => let '(rl', fs') := push_guard da rl fs in
-                  ensure_dep family rest rl' fs'
+      | LOk da => let '(rl', fs') := push_guard_via push da rl fs in
+                  ensure_dep_via push family rest rl' fs'
       end
   end.
+
+(** Match-synthesised dependencies sit immediately before the match that needs
+    them (nft's payload_gen_dependency appends the dep statement in place). *)
+Definition ensure_dep : string -> list depspec -> rloc -> fstate -> lres (rloc * fstate) :=
+  ensure_dep_via rl_push.
+
+(** The REJECT dependency lands at the RULE HEAD (corpus class Q): nft's
+    stmt_reject_gen_dependency list_add's the synthesised guard at the
+    beginning of the rule's statement list — `log … reject with tcp reset`
+    becomes `meta l4proto tcp log … reject with tcp reset` ("Otherwise we'd
+    log things that won't be rejected") — so a non-TCP packet BREAKs on the
+    guard before any counter/log/limit in the body runs.  The guard is still
+    computed in the FULL rule context at the reject's position (vlan shift,
+    dedup against guards or explicit matches already present), exactly as
+    nft evaluates the reject statement last and only then prepends. *)
+Definition ensure_dep_head : string -> list depspec -> rloc -> fstate -> lres (rloc * fstate) :=
+  ensure_dep_via rl_push_head.
 
 (* ---------- selector helpers ---------- *)
 
@@ -1993,9 +2102,9 @@ Definition lower_clause (oracle : string -> option nat) (fuel : nat)
     (cl : sclause) (rl : rloc) (fs : fstate) : lres (rloc * fstate) :=
   match cl with
   | CVerdict (SVreject opts) =>
-      p <-- ensure_dep family (reject_dep opts) rl fs ;;
+      p <-- ensure_dep_head family (reject_dep opts) rl fs ;;
       let '(rl1, fs1) := p in
-      tc <-- reject_type_code family opts ;;
+      tc <-- reject_type_code family (deps_pinned_nfproto (rl_deps rl1)) opts ;;
       let '(rt, rc) := tc in
       LOk (rl_with_verdict (Reject rt rc) rl1, fs1)
   | CVerdict v => LOk (rl_with_verdict (lower_sverdict v) rl, fs)
