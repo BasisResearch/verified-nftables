@@ -121,11 +121,9 @@ Theorem masquerade_with_address_accepts :
   fst (eval_chain_u Hpostrouting masq_chain env_withaddr pkt_withaddr) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
-(* Since M3 the NAT drop is part of THE (single) semantics: the mutation strand
-   consumes the same per-rule fold, so ITS verdict is the same Drop — there is no
-   separate "trace layer" whose data plane could diverge from the verified verdict
-   (strata retirement: THEOREMS.md; the historical [eval_rules_trace] divergence
-   pin [trace_diverges_from_mut_via_nat_drop] is retired WITH the strand). *)
+(* The NAT drop is part of THE (single) semantics: the mutation strand consumes
+   the same per-rule fold, so its verdict is the same Drop — there is no separate
+   data-plane layer that could diverge from the verified verdict. *)
 Theorem mut_agrees_nat_drop :
   eval_chain_mut Hprerouting redir_chain env_noaddr pkt_noaddr = Drop
   /\ eval_chain_mut Hpostrouting masq_chain env_noaddr pkt_noaddr = Drop.

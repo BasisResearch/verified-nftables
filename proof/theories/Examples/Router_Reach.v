@@ -63,9 +63,8 @@ Definition masq_rule : rule :=
 Lemma global_postrouting_rules : global_postrouting.(c_rules) = [masq_rule].
 Proof. reflexivity. Qed.
 
-(* (The historical [masq_dsl_step_id] — "the rule's step is the identity" — is
-   RETIRED: since M3 the step of a NAT rule IS its data-plane effect
-   ([masq_rule_step] below), which is the whole point of this file.) *)
+(* A NAT rule's step IS its data-plane effect ([masq_rule_step] below), which
+   is the whole point of this file. *)
 
 (* The body-thread leaves the packet alone (no notrack in the body). *)
 Lemma masq_body_thread_id : forall p, body_thread (r_body masq_rule) p = p.

@@ -17,22 +17,20 @@
     pinned POSITIVELY (kernel value), so a regression that re-introduces one
     flips a pin and fails the build.
 
-    (Historical entry (2) — the OVmapNat vmap-HIT running the trailing NAT —
-    is REPAIRED by M3: the NAT data-plane effect is evaluated INSIDE the
-    single per-rule fold at the terminal the walk actually reached, so a vmap
-    HIT stops the rule before the NAT (outcome provenance is the fold's
-    structure) — and the side trace evaluator that dispatched NAT out-of-band
-    ([eval_rules_trace]) is RETIRED (THEOREMS.md § strata retirements).  Its
-    positive successors are the [vmaphit_*] / [vm_vmaphit_*] pins below.
-    Historical entry (1) — the whole-body limiter sweep — is REPAIRED: the
-    `limit`/`quota`/`connlimit` consumption is evaluated AT the limiter's own
-    body/instruction position inside the break-aware fold, so a limiter after
-    a failing match consumes nothing, exactly the kernel NFT_BREAK order.
-    Its positive successor pins are the [gate_*] theorems below.
-    Historical entry (3) — intra-rule set-then-read — is REPAIRED: the
-    single-fold rule semantics runs every expression against the running
-    state, so `meta mark set 0x1 meta mark 0x1 accept` now ACCEPTS on both
-    sides.  Its positive successors live in Regression/Setread_IntraRule.v.) *)
+    Entry (2) — the OVmapNat vmap-HIT and the trailing NAT: the NAT
+    data-plane effect is evaluated INSIDE the single per-rule fold at the
+    terminal the walk actually reached, so a vmap HIT stops the rule before
+    the NAT (outcome provenance is the fold's structure); pinned by the
+    [vmaphit_*] / [vm_vmaphit_*] theorems below.
+    Entry (1) — the limiter position: the `limit`/`quota`/`connlimit`
+    consumption is evaluated AT the limiter's own body/instruction position
+    inside the break-aware fold, so a limiter after a failing match consumes
+    nothing, exactly the kernel NFT_BREAK order; pinned by the [gate_*]
+    theorems below.
+    Entry (3) — intra-rule set-then-read: the single-fold rule semantics runs
+    every expression against the running state, so
+    `meta mark set 0x1 meta mark 0x1 accept` ACCEPTS on both sides; pinned in
+    Regression/Setread_IntraRule.v.) *)
 
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Bytecode Syntax Semantics Compile.
@@ -130,15 +128,11 @@ Proof. vm_compute. reflexivity. Qed.
     expressions — the trailing nft_nat — never evaluate (nf_tables_core.c
     nft_do_chain per-expr verdict break).
 
-    Model (repaired, M3): the NAT effect is applied INSIDE the per-rule fold
+    Model: the NAT effect is applied INSIDE the per-rule fold
     ([terminal_step] / the VM's [INat] case), which is only reached when the
     vmap MISSES — the fold's structure IS the outcome provenance.  So a vmap
     HIT neither rewrites the packet nor stores a flow-keyed [e_nat] mapping,
-    on BOTH sides (DSL fold and compiled bytecode).  The retired side
-    evaluator [eval_rules_trace], which dispatched NAT out-of-band on
-    [r_nat] at any terminal verdict, was the ONLY place the divergence
-    lived; its successor is the unified fold (THEOREMS.md § strata
-    retirements). *)
+    on BOTH sides (DSL fold and compiled bytecode). *)
 
 Definition vmnat_spec : nat_spec :=
   {| nat_addr_imm := Some [10;0;0;1]; nat_field := None; nat_map := None; nat_src := None;

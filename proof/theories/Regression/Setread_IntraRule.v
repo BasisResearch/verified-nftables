@@ -8,11 +8,9 @@
     models exactly that walk, so both idioms now ACCEPT — on the DSL and on
     the compiled VM.
 
-    These pins are the POSITIVE successors of the retired known-infidelity
-    entry "intra-rule set-then-read" (the historical two-fold verdict/write
-    split evaluated every match against the packet the rule ENTERED with, so
-    the one-rule form dropped; the two-fold split is deleted, and with it the
-    infidelity).  A future change that reintroduces an entry-packet verdict
+    These pins characterise intra-rule set-then-read: the single fold runs
+    every match against the RUNNING state, so the one-rule idiom accepts (the
+    kernel value).  A future change that reintroduces an entry-packet verdict
     pass flips these theorems and must be caught here. *)
 
 From Stdlib Require Import List String NArith.

@@ -21,12 +21,6 @@
                                            hook dispatch (HEADLINE, compiler
                                            axis: the top of the jump-aware
                                            strand).
-      7. (RETIRED: [compile_seq_correct] — the sequence congruence under an
-                                           arbitrary external env step; its
-                                           successor is stratum 8's
-                                           [compile_seq_hook_correct], where
-                                           the between-packet env is the
-                                           ruleset's OWN env-out.)
       8. [compile_table_u_correct] / [compile_ruleset_u_correct] /
          [compile_hook_u_correct] / [compile_seq_hook_correct]
                                          — THE UNIFIED SEMANTICS (HEADLINE):
@@ -36,7 +30,7 @@
                                            one effect-threading evaluator per
                                            side ([eval_rules_u]/[run_rules_u]).
 
-    Strata 1–7 are projections of stratum 8: each earlier evaluator pair is
+    Strata 1–6 are projections of stratum 8: each earlier evaluator pair is
     licensed by a coincidence theorem on the sub-domain where it provably
     agrees with the unified fold (the evaluator matrix in Semantics.v's
     header / THEOREMS.md names every license).  Mutation x jump/goto is
@@ -3140,9 +3134,7 @@ Qed.
     the VM's in-fold `numgen inc` counter advance has no DSL twin — the
     lowering rejects incremental numgen fail-loud ([Lower.LEnumgen]), so
     [Lower_Proofs.lower_ruleset_numgen_free] discharges it for every
-    frontend-emitted program.  (The historical [vm_rule_step_compile_rule]
-    boundary-sweep bridge is RETIRED: with the consumption in-fold, this IS
-    that equation.) *)
+    frontend-emitted program. *)
 Lemma run_rule_step_compile_rule : forall r e p,
   rule_numgen_free r = true ->
   run_rule_step h empty_rf (compile_rule r) e p = rule_step h r e p.
@@ -3491,14 +3483,6 @@ Proof.
   intros fuel rs hk e p. unfold eval_hook. apply compile_ruleset_correct.
 Qed.
 
-(** (RETIRED STRATUM: the historical [compile_seq_correct] lifted the hook
-    theorem over a packet sequence whose between-packet env update was an
-    EXTERNAL, caller-supplied [step] — the ruleset's own cross-packet learning
-    was whatever the caller chose to model.  Its successor is
-    [compile_seq_hook_correct] below, where the between-packet env is
-    definitionally the ruleset's own env-out; see THEOREMS.md's
-    strata-retirement notes.) *)
-
 (** ** Stratum 8 (HEADLINE, unified axis): the UNIFIED semantics is
     compiler-preserved — mutation x jump/goto/return x multi-chain x hook
     dispatch, jointly.
@@ -3599,8 +3583,7 @@ Proof.
 Qed.
 
 (** Cross-packet env carry over the unified per-packet run (HEADLINE, the
-    sequence form of stratum 8; known as [compile_seq_hook_u_correct] until
-    the external-step sequence stratum was retired): the between-packet env is
+    sequence form of stratum 8): the between-packet env is
     definitionally the ruleset's OWN env-out ([eval_hook_env_u] /
     [run_ruleset_env_u] — the [fst]-of-state projections of the unified hook
     run), so the ruleset's own learning (dynset adds, limiter depletion, NAT

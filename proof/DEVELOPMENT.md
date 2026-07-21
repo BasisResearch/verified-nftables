@@ -273,7 +273,7 @@ The gap-closing program was tracked as C→A→B→D. Status as of 2026-06:
   mapping in `e_nat`, L3+L4 checksum updates, reply-direction un-NAT, NF_DROP on
   no-usable-address — and since M3 it is an effect OF THE SINGLE FOLD
   (`terminal_step` / the VM `INat` case, hook-threaded, compile theorem
-  `compile_nat_effect_correct`; the side trace evaluator is retired).
+  `compile_nat_effect_correct`).
   Unmodeled feature within that model: a NAT port living in a concat-map
   VALUE slot (`NXmap_port`/`NXmap_full`) is skipped IDENTICALLY on both
   sides (DSL and VM agree, the compile theorem stays exact; the frontend
@@ -335,9 +335,8 @@ match (the kernel `NFT_BREAK`s before `nft_limit_eval` ever runs, consuming
 NO token) — is FIXED: the consumption (and, VM-only, the `numgen inc` counter
 advance) is evaluated AT the limiter's own body/instruction position INSIDE
 the break-aware folds (`body_step`'s `match_consume` / `run_rule_step`'s
-`ILimit`/`IQuota`/`IConnlimit`/`INumgen` cases); the boundary sweeps and the
-`dsl_rule_step`/`vm_rule_step` wrappers that carried them are retired
-(`THEOREMS.md` § strata retirements).  A limiter after a failing match now
+`ILimit`/`IQuota`/`IConnlimit`/`INumgen` cases), so the folds need no separate
+whole-body sweep.  A limiter after a failing match
 consumes nothing; a reached limiter still writes its bucket on BOTH the pass
 and the exhausted branch (kernel `nft_limit_eval` stores `tokens` on both).
 Pins flipped to positive witnesses: `Known_Infidelities.gate_limit_undrained`
@@ -360,7 +359,7 @@ establish/reuse + L3/L4 rewrite `apply_nat`) is evaluated INSIDE
 when no earlier expression broke the rule and no vmap hit delivered a
 verdict — provenance is the fold's structure, on BOTH sides, at every
 netfilter hook (the folds and evaluators now carry `h`; redirect/masquerade
-are hook-dependent).  The compile theorem the trace strand never had is
+are hook-dependent).  The NAT data plane's compile theorem is
 `Correct.compile_nat_effect_correct` (+ the `_u` traversal family — the
 dnat/snat/masquerade/redirect data plane is certified under jumps,
 multi-chain and hook dispatch).  Pins flipped to positive witnesses:
@@ -369,12 +368,10 @@ multi-chain and hook dispatch).  Pins flipped to positive witnesses:
 (`vmapmiss_*`) and VM twins (`vm_vmaphit_*` / `vm_vmapmiss_*`); the NAT
 NF_DROP is now the verdict of THE semantics (both strands and the compiled
 bytecode): `Nat_NoAddr_Drop.mut_agrees_nat_drop` / `vm_nat_drop_agrees`.
-Retirement note: `THEOREMS.md` § "Strata retirement (M3 NAT-effect-in-fold)".
 
-**(repaired) 3. Intra-rule set-then-read.**  The historical third entry — the
-one-rule `meta mark set 0x1 meta mark 0x1 accept` dropping where the kernel
-accepts, an artefact of the retired two-fold verdict/write split — is FIXED by
-the T1 single-fold rule semantics (`rule_step`/`run_rule_step` run every
+**(repaired) 3. Intra-rule set-then-read.**  The one-rule
+`meta mark set 0x1 meta mark 0x1 accept` accepts (matching the kernel) under
+the single-fold rule semantics (`rule_step`/`run_rule_step` run every
 expression against the running state).  Its pins flipped from divergence locks
 to POSITIVE witnesses: `Regression/Setread_IntraRule.v`
 (`setread_accepted`/`vm_setread_accepted`, the intra-rule dynset-feedback
@@ -514,7 +511,7 @@ lemmas in `Optimize_Uncond.v`), all likewise axiom-free — re-check any with
 | `compile_ruleset_correct` | multi-table/multi-hook dispatch with netfilter verdict combination |
 | `compile_hook_correct` | hook → priority-ordered base-chain selection |
 | `compile_seq_mut_correct` | **cross-packet learning** (flat single-chain form): dynset-learned env threaded between packets, so an earlier packet's `add @s` is seen by a later packet's `lookup @s` |
-| `compile_table_u_correct` / `compile_ruleset_u_correct` / `compile_hook_u_correct` / `compile_seq_hook_correct` | **THE UNIFIED SEMANTICS** (stratum 8): mutation × jump/goto/return × multi-chain × hook dispatch × cross-packet env carry, jointly — one effect-threading, jump-following evaluator per side (`eval_rules_u`/`run_rules_u`), verdict AND left state preserved; the sequence form's between-packet env is the ruleset's OWN env-out (`seq_eval_env` over `eval_hook_env_u` — the external-step `compile_seq_correct` stratum is RETIRED, THEOREMS.md §3) |
+| `compile_table_u_correct` / `compile_ruleset_u_correct` / `compile_hook_u_correct` / `compile_seq_hook_correct` | **THE UNIFIED SEMANTICS** (stratum 8): mutation × jump/goto/return × multi-chain × hook dispatch × cross-packet env carry, jointly — one effect-threading, jump-following evaluator per side (`eval_rules_u`/`run_rules_u`), verdict AND left state preserved; the sequence form's between-packet env is the ruleset's OWN env-out (`seq_eval_env` over `eval_hook_env_u`) |
 
 Re-check anytime with `Print Assumptions <name>` (or `make axioms`) — every
 one must print "Closed under the global context".
@@ -1620,8 +1617,7 @@ abstracted away.
    and `e_ct : flow_key -> ct_key -> data` to `env`; add `pkt_flowkey : flow_key`
    to `packet` (packet-determined, like `pkt_fibkey`).
 2. `Syntax.do_load`: `LCt k => e_ct e (pkt_flowkey p) k`. Mirror in the VM
-   `ICtLoad` case in `Semantics.run_rule` AND `run_rule_writes` (a since-retired
-   evaluator; its successor is `run_rule_step`).
+   `ICtLoad` case in `Semantics.run_rule` and `run_rule_step`.
 3. Replace `set_ct` (packet mutator) with an `env`-level `env_ct_upd e flow k v`
    (threaded through the `env` half of the evaluators' state).
    `ICtSet`/`SCtSet` then mutate `env` (like the dynset), so a `ct mark set` is
@@ -1657,8 +1653,8 @@ define `imm_at (r) (dimms) := fold_left (fun acc rv => if Nat.eqb (fst rv) r the
 `imm_at datareg dimms`. Prove `load_imms`-readback: running the `IImmediateData`
 prefix leaves `dreg` holding `imm_at datareg dimms` **when** `datareg ∈ map fst dimms`
 (a fold-independence lemma: a matching key overrides the initial register value).
-There is no well-formedness-conjunct route for that side condition (`simple_body`/
-`mut_wf` are retired; the bridge takes no such hypotheses): either prove
+There is no well-formedness-conjunct route for that side condition (the bridge
+takes no such hypotheses): either prove
 `datareg ∈ map fst dimms` unconditionally over `compile_stmt` output (the compiler
 emits the data immediate itself — the `compile_vsrc` degenerate-operand pinning
 pattern), or make the lowering refuse the shape fail-loud (the `Lower.LEnumgen`
@@ -1822,8 +1818,7 @@ in `theories/Optimizer/Optimize_ValueSet.v` (all axiom-free, `Print Assumptions`
 
 NOT yet ported (honest gaps): the value→set / vmap / concat passes on
 *variable-width* selectors (guarded out, since a prefix `MCmp` is not full-width
-set membership there). The earlier "sets can't be synthesised by a chain pass"
-claim was **wrong** and is now retired: anonymous sets, verdict maps, AND
+set membership there). Anonymous sets, verdict maps, AND
 concatenation sets ARE named objects, and the table-level `set_decls` rewrite
 synthesises them with no new constructor. All three headline `nft -o` merge
 families (value→set, value+verdict→vmap, two-selector→concat-set) are now ported
@@ -1865,9 +1860,7 @@ reach FAILS LOUD as an explicit `lerr` constructor — never a silent OCaml byte
 fallback. The four scalar shapes (typed **eq / neq / CIDR-prefix /
 ifname-wildcard**, first-class `Typed.txmatch` constructors) route through the
 VERIFIED `Typed.elab_tx` / `Typed.prefix_expand`
-(`Lower_Proofs.eq/neq/prefix/wildcard_erasure`; the retired legacy module
-`IR/Elab.v` and its definitional `elab_matchcond_correct` are documented in
-THEOREMS.md § "Strata retirement").
+(`Lower_Proofs.eq/neq/prefix/wildcard_erasure`).
 
 **The residue in `nft_inject.ml` is not value→byte logic** — it is (a) the
 single host-dependent `ifindex` oracle (`nametoindex "lo" → 1`; see the ledger

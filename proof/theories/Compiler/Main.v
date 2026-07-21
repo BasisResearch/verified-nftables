@@ -83,14 +83,6 @@ Theorem main_compile_hook_correct : forall fuel rs h e p,
 Proof. exact compile_hook_correct. Qed.
 Print Assumptions main_compile_hook_correct.
 
-(** (Axis 1's historical sequence form, [compile_seq_correct], is RETIRED:
-    it lifted the hook theorem over a packet sequence whose between-packet env
-    was an ARBITRARY, caller-supplied [step : verdict -> env -> env] — an
-    external model of the ruleset's own state evolution.  Its successor is
-    axis 0's [main_compile_seq_hook_correct] above, where the between-packet
-    env is the ruleset's own env-out.  See THEOREMS.md's strata-retirement
-    notes.) *)
-
 (** ** Axis 2 — mutation and cross-packet learning ([compile_seq_mut_correct]).
 
     For a single chain [c] whose rules are numgen-free ([rule_numgen_free] —
@@ -219,12 +211,6 @@ Corollary pre_split_compile_hook_correct : forall fuel rs h (s : pstate),
   = eval_hook fuel rs h (ps_env s) (ps_wire s).
 Proof. intros fuel rs h s. apply compile_hook_correct. Qed.
 Print Assumptions pre_split_compile_hook_correct.
-
-(** (The pre-split-era sequence transport, [pre_split_compile_seq_correct],
-    is RETIRED with its underlying stratum [compile_seq_correct]: its
-    statement mentioned the external-step [seq_eval], which no longer exists.
-    The sequence claim over pre-split packets is the wire-half instantiation
-    of [main_compile_seq_hook_correct].) *)
 
 (** Pre-split [optimize_table_uncond_correct] evaluated
     [set_env p (env_with_sets base d')] — the packet's wire under the

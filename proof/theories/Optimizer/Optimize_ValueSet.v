@@ -783,14 +783,8 @@ Proof.
   - reflexivity.
 Qed.
 
-(** (RETIRED, M6: the blunt whole-rule "clean" predicate family -- a rule
-    reads NO named set/vmap/map at all -- and its env-irrelevance lemmas were
-    deleted.  They duplicated, bluntly, what the read-freshness generation
-    ([Optimize_Uncond.rule_set_fresh] and friends) states precisely, and the
-    unconditional pipeline theorems stopped consuming them when
-    [Optimize_Uncond] removed the clean-input hypotheses.  See THEOREMS.md
-    § strata retirements.  The two env-with-sets congruence lemmas below are
-    generic and remain in use.) *)
+(** The two env-with-sets congruence lemmas below are generic and used across
+    the value->set passes. *)
 
 Lemma do_load_env_with_sets : forall ld p base d1 d2,
   do_load ld (env_with_sets base d1) p
