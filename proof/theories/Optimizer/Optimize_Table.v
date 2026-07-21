@@ -8,11 +8,13 @@
     UNCONDITIONAL correctness proofs build on.
 
     The whole-pipeline correctness of [optimize_table] is proved — with NO
-    [rules_clean] and NO freshness precondition on the input — in [Optimize_Uncond.v]
-    ([optimize_table_correct_uncond_gen], [optimize_table_uncond_correct],
-    [optimize_table_uncond_compile_correct]).  That UNCONDITIONAL optimizer
-    ([optimize_table_uncond]) is what [Extract.v] extracts and what the [glue.ml]
-    CLI invokes, so the shipped tool RUNS the verified term. *)
+    [rules_clean] and NO freshness precondition on the input — over the state fold
+    in [Optimize_MutEnv.v] ([optimize_table_uncond_mut_st_correct]) and composed
+    to the bytecode in
+    [Optimize_Linearize_MutSt.optimize_table_uncond_compile_mut_st_correct].  That
+    UNCONDITIONAL optimizer ([optimize_table_uncond], defined in [Optimize_Uncond.v])
+    is what [Extract.v] extracts and what the [glue.ml] CLI invokes, so the shipped
+    tool RUNS the verified term. *)
 
 From Stdlib Require Import List.
 From Stdlib Require Import Bool.
@@ -89,16 +91,18 @@ Definition optimize_table (n : nat) (d : set_decls) (c : chain)
   let '(nDv, dDv, cDv) := optimize_chain_dscpvmap nVg dVg cVg in
   optimize_chain_vmap nDv dDv cDv.
 
-(** ** Correctness of [optimize_table] lives in [Optimize_Uncond.v], where it is
-    proved UNCONDITIONALLY — with NO [rules_clean] and NO caller-supplied freshness
-    side-condition on the input chain:
+(** ** Correctness of [optimize_table] is proved UNCONDITIONALLY over the state
+    fold — with NO [rules_clean] and NO caller-supplied freshness side-condition on
+    the input chain:
 
-      [optimize_table_correct_uncond_gen] : general (n,d) form, freshness obligations
-        only (which a clean input would also satisfy — [rules_clean] is subsumed);
-      [optimize_table_uncond_correct] / [optimize_table_uncond_compile_correct] :
-        the fresh-table entry [optimize_table_uncond c], with NO hypothesis on [c].
+      [Optimize_MutEnv.optimize_table_mut_st_correct_uncond_gen] : general (n,d)
+        form, freshness obligations only (which a clean input would also satisfy —
+        [rules_clean] is subsumed);
+      [Optimize_MutEnv.optimize_table_uncond_mut_st_correct] /
+      [Optimize_Linearize_MutSt.optimize_table_uncond_compile_mut_st_correct] :
+        the fresh-table entry [optimize_table_uncond c], with NO hypothesis on [c]
+        beyond numgen-freedom.
 
     The freshness is discharged internally by seeding the fresh-name counter past
-    every name the input declares/reads (see [seed_start]).  The earlier
-    clean-input-only theorems were removed as strictly redundant. *)
+    every name the input declares/reads (see [seed_start], [Optimize_Uncond.v]). *)
 

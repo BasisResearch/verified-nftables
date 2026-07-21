@@ -530,7 +530,7 @@ Definition optimize_chain2 (c : chain) : chain :=
     [Optimize_Table.optimize_table] pipeline (whose stage list is in
     Optimize_Table.v / DEVELOPMENT.md); it remains only as the historical
     consecutive-duplicate pass.  Successor:
-    [Optimize_Uncond.optimize_table_uncond_correct]. *)
+    [Optimize_MutEnv.optimize_table_uncond_mut_st_correct]. *)
 Theorem optimize_chain2_correct : forall c e p,
   eval_chain (optimize_chain2 c) e p = eval_chain c e p.
 Proof.
@@ -1058,96 +1058,6 @@ Proof.
   rewrite Hrun. reflexivity.
 Qed.
 
-Lemma eval_rules_run_merge_abs :
-  forall (ms : list matchcond) (ML : packet -> bool) body r1 m12 rest e p,
-  ms <> [] ->
-  (forall m, In m ms -> match_loadable m p = ML p) ->
-  match_loadable m12 p = ML p ->
-  eval_matchcond m12 e p = existsb (fun m => eval_matchcond m e p) ms ->
-  eval_rules (mk_head m12 body r1 :: rest) e p
-  = eval_rules (map (fun m => mk_head m body r1) ms ++ rest) e p.
-Proof.
-  intros ms ML body r1 m12 rest e p Hne HmlAll Hml Hev.
-  (* Abbreviations for the shared loadability path, applies-walk, outcome. *)
-  set (L := body_loadable_walk body p &&
-            (if body_synproxy_stops body p then true
-             else end_loadable r1 e (body_thread body p))).
-  set (A := rule_applies_walk body e p).
-  set (O := if body_synproxy_stops body p then Some Drop
-            else outcome_core r1 e (body_thread body p)).
-  (* Each [mk_head m body r1] has loadable = match_loadable m p && L,
-     applies = eval_matchcond m e p && A, outcome = O. *)
-  assert (Hload : forall m, rule_loadable (mk_head m body r1) e p
-                            = match_loadable m p && L).
-  { intro m. rewrite rule_loadable_mk_head. reflexivity. }
-  assert (Happ : forall m, rule_applies (mk_head m body r1) e p
-                           = eval_matchcond m e p && A).
-  { intro m. rewrite rule_applies_mk_head. reflexivity. }
-  assert (Hout : forall m, outcome (mk_head m body r1) e p = O).
-  { intro m. rewrite outcome_mk_head. reflexivity. }
-  (* The merged single rule: *)
-  rewrite ?eval_rules_cons, ?eval_rules_nil. rewrite (Hload m12), (Happ m12), (Hout m12).
-  rewrite Hml, Hev.
-  (* Now the RHS: the run. We characterise eval_rules (run ++ rest) e p by induction
-     on ms, exposing that ML and L and A and O are shared across the run. *)
-  (* Generalise: prove eval_rules (run ++ rest) e p depends only on existsb. *)
-  assert (Hrun :
-    eval_rules (map (fun m => mk_head m body r1) ms ++ rest) e p
-    = if ((ML p && L) && (existsb (fun m => eval_matchcond m e p) ms && A)) then
-        match O with
-        | Some v => if terminal v then Some v else eval_rules rest e p
-        | None => eval_rules rest e p
-        end
-      else eval_rules rest e p).
-  { clear Hev Hml m12.
-    (* CASE on the common outcome O: if it is non-terminal (or None), the run NEVER
-       terminates, so the WHOLE [run ++ rest] reduces to [eval_rules rest e p] (and so
-       does the target's [match O] branch, on either side of the [if]).  Only a
-       TERMINAL [Some v] makes first-match position matter. *)
-    assert (Hterm : (match O with
-                     | Some v => terminal v
-                     | None => false
-                     end) = false \/
-                    (exists v, O = Some v /\ terminal v = true)).
-    { destruct O as [v |]; [destruct (terminal v) eqn:Et; [right; eauto | left; reflexivity]
-                          | left; reflexivity]. }
-    destruct Hterm as [Hnt | [v [EO Ev]]].
-    - (* non-terminal / None: both sides are eval_rules rest e p *)
-      assert (Htarget :
-        match O with
-        | Some w => if terminal w then Some w else eval_rules rest e p
-        | None => eval_rules rest e p
-        end = eval_rules rest e p).
-      { clearbody O. destruct O as [w |]; [ destruct (terminal w) eqn:Etw;
-          [ exfalso; clear -Hnt Etw; cbn in Hnt; congruence | reflexivity ]
-          | reflexivity ]. }
-      transitivity (eval_rules rest e p).
-      2:{ rewrite Htarget. destruct ((ML p && L) && _); reflexivity. }
-      (* LHS: induct, every rule falls through to eval_rules rest e p *)
-      clear Hne Hnt. revert HmlAll. induction ms as [| m ms IH]; intro HmlAll.
-      + reflexivity.
-      + cbn [map app]. rewrite ?eval_rules_cons, ?eval_rules_nil.
-        rewrite (Hload m), (Happ m), (Hout m).
-        rewrite (IH (fun mm Hmm => HmlAll mm (or_intror Hmm))).
-        destruct (match_loadable m p && L && (eval_matchcond m e p && A));
-          [ rewrite Htarget; reflexivity | reflexivity ].
-    - (* terminal Some v: first-match position matters *)
-      rewrite EO. clear Hne. revert HmlAll. induction ms as [| m ms IH]; intro HmlAll.
-      + (* empty: existsb [] = false, both sides eval_rules rest e p *)
-        cbn [map app existsb]. rewrite ?eval_rules_cons, ?eval_rules_nil. rewrite Bool.andb_false_r. reflexivity.
-      + cbn [map app]. rewrite ?eval_rules_cons, ?eval_rules_nil.
-        rewrite (Hload m), (Happ m), (Hout m).
-        rewrite (HmlAll m (or_introl eq_refl)). cbn [existsb].
-        rewrite (IH (fun mm Hmm => HmlAll mm (or_intror Hmm))).
-        rewrite EO, Ev.
-        (* boolean case split: ML p && L, A, eval_matchcond m e p, existsb ms *)
-        destruct (ML p && L); cbn [andb]; [| reflexivity].
-        destruct A; [| rewrite !Bool.andb_false_r; reflexivity ].
-        rewrite !Bool.andb_true_r.
-        destruct (eval_matchcond m e p); cbn [orb andb]; reflexivity. }
-  rewrite Hrun. reflexivity.
-Qed.
-
 (** ** The executable N-WAY value->set pass.
 
     [take_value_run r1 rest] scans the MAXIMAL prefix of [rest] of rules that each
@@ -1399,8 +1309,9 @@ Qed.
     A whole adjacent RUN of >= 2 value-merge-eligible rules folds into ONE rule whose
     `__setN` resolves to its N point elements (freshness + [optimize_..._assoc_stable]);
     [concat_set_existsb] turns the merged head into the [existsb] disjunction of the N
-    point matches; [eval_rules_run_merge_abs] collapses the whole run; the clean
-    leftover tail is env-irrelevant.  This matches [nft -o]'s consolidation of an
+    point matches; the state-fold run-merge substrate
+    [Optimize_MutEnv.eval_rules_mut_st_run_merge_abs] collapses the whole run; the
+    clean leftover tail is env-irrelevant.  This matches [nft -o]'s consolidation of an
     N-rule run into a single N-element anonymous set. *)
 
 (** *** Chain-level N-WAY value->set: verdict-preserving end-to-end, axiom-free. *)

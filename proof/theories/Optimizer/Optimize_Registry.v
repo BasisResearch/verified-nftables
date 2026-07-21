@@ -18,7 +18,7 @@
     [Optimize_Uncond.optimize_table_uncond], whose correctness changes the
     environment with the synthesised declarations) is NOT a pure [chain -> chain]
     pass and is handled by the CLI's existing table path — see
-    [Optimize_Uncond.optimize_table_uncond_correct].  Axiom-free. *)
+    [Optimize_MutEnv.optimize_table_uncond_mut_st_correct].  Axiom-free. *)
 
 From Stdlib Require Import List String Bool.
 From Nft Require Import Syntax Semantics

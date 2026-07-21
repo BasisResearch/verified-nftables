@@ -288,7 +288,6 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Router_Reach.nat_masquerade_fires Router_Reach.nat_no_leak \
   compile_chain_mut_env_correct compile_seq_mut_correct compile_table_correct \
   compile_ruleset_correct compile_hook_correct \
-  optimize_table_uncond_correct optimize_table_uncond_compile_correct \
   Optimize_Linearize_MutSt.optimize_table_uncond_compile_mut_st_correct \
   Optimize_MutEnv.optimize_table_uncond_mut_st_correct \
   Optimize_MutEnv.optimize_table_uncond_mut_env_correct \
@@ -297,7 +296,6 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Optimize_PayMerge.paymerge_chain_eval Optimize_XorFold.xorfold_chain_eval \
   Optimize_Elide.elide_chain_eval \
   Optimize_Linearize.linearize_chain_eval \
-  Optimize_Linearize.compile_chain_default_correct \
   Optimize_Linearize_MutSt.paymerge_chain_mut_st \
   Optimize_Linearize_MutSt.xorfold_chain_mut_st \
   Optimize_Linearize_MutSt.elide_chain_mut_st \

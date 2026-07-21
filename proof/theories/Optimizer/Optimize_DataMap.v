@@ -587,7 +587,8 @@ Proof. reflexivity. Qed.
 
 (** *** VERDICT correctness — ENV-INDEPENDENT (no decls / freshness hypothesis): the
     merged [Continue] rules fall through for any environment, so the rewrite never
-    changes a verdict.  This is what composes into [optimize_table_uncond_correct]. *)
+    changes a verdict.  This is what composes into the state-fold consolidation
+    correctness [Optimize_MutEnv.optimize_table_uncond_mut_st_correct]. *)
 Theorem optimize_rules_datamap_eval : forall rs n d n' d' rs' e p,
   optimize_rules_datamap n d rs = (n', d', rs') ->
   eval_rules rs' e p = eval_rules rs e p.
