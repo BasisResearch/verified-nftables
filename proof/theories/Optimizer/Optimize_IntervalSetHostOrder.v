@@ -145,6 +145,8 @@ Qed.
     host-order interval shape. *)
 Definition ivsett_merge_pair (r1 r2 : rule)
   : option (field * list transform * (data * data) * (data * data) * list body_item) :=
+  (* EFFECT-SAFETY GUARD — see [Optimize_ValueSet.value_merge_pair]. *)
+  if negb (rule_mutfree r1) then None else
   match head_ivsett r1, head_ivsett r2 with
   | Some (f1, ts1, lo1, hi1, rest1), Some (f2, ts2, lo2, hi2, rest2) =>
       if field_eq_dec f1 f2 then
@@ -158,6 +160,14 @@ Definition ivsett_merge_pair (r1 r2 : rule)
   | _, _ => None
   end.
 
+(** The guard, extracted: a fired pair certifies its canonical rule write-free. *)
+Lemma ivsett_merge_pair_mutfree : forall r1 r2 x,
+  ivsett_merge_pair r1 r2 = Some x -> rule_mutfree r1 = true.
+Proof.
+  intros r1 r2 x H. unfold ivsett_merge_pair in H.
+  destruct (rule_mutfree r1); [reflexivity | discriminate H].
+Qed.
+
 Lemma ivsett_merge_pair_with_head : forall r1 r2 f ts lo1 hi1 body f' ts' iv1 iv2 body',
   head_ivsett r1 = Some (f, ts, lo1, hi1, body) ->
   ivsett_merge_pair r1 r2 = Some (f', ts', iv1, iv2, body') ->
@@ -165,7 +175,9 @@ Lemma ivsett_merge_pair_with_head : forall r1 r2 f ts lo1 hi1 body f' ts' iv1 iv
   r2 = mk_head (MRangeT f ts false (fst iv2) (snd iv2)) body r1.
 Proof.
   intros r1 r2 f ts lo1 hi1 body f' ts' iv1 iv2 body' Hhd Hvm.
-  unfold ivsett_merge_pair in Hvm. rewrite Hhd in Hvm.
+  unfold ivsett_merge_pair in Hvm.
+  destruct (negb (rule_mutfree r1)); [discriminate Hvm |].
+  rewrite Hhd in Hvm.
   destruct (head_ivsett r2) as [[[[[f2 ts2] lo2] hi2] rest2] |] eqn:H2; [| discriminate].
   destruct (field_eq_dec f f2) as [Ef |]; [| discriminate]. subst f2.
   destruct (list_eq_dec transform_eq_dec ts ts2) as [Ets |]; [| discriminate]. subst ts2.

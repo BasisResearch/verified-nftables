@@ -296,6 +296,8 @@ Definition concat_guard_field (f : field) : bool :=
 
 Definition concat_merge_pair (r1 r2 : rule)
   : option (field * field * data * data * data * data * list body_item) :=
+  (* EFFECT-SAFETY GUARD — see [Optimize_ValueSet.value_merge_pair]. *)
+  if negb (rule_mutfree r1) then None else
   match head_value2 r1, head_value2 r2 with
   | Some (f1, a1, g1, b1, rest1), Some (f2, a2, g2, b2, rest2) =>
       if concat_guard_field f1 || concat_guard_field g1 then None else
@@ -330,6 +332,14 @@ Definition concat_merge_pair (r1 r2 : rule)
   | _, _ => None
   end.
 
+(** The guard, extracted: a fired pair certifies its canonical rule write-free. *)
+Lemma concat_merge_pair_mutfree : forall r1 r2 x,
+  concat_merge_pair r1 r2 = Some x -> rule_mutfree r1 = true.
+Proof.
+  intros r1 r2 x H. unfold concat_merge_pair in H.
+  destruct (rule_mutfree r1); [reflexivity | discriminate H].
+Qed.
+
 (** When a concat-merge fires, the two input rules are EXACTLY the [orig_rule2]
     shells over the same two fixed-width fields. *)
 Lemma concat_merge_pair_shape : forall r1 r2 f1 f2 a1 b1 a2 b2 body,
@@ -340,6 +350,7 @@ Lemma concat_merge_pair_shape : forall r1 r2 f1 f2 a1 b1 a2 b2 body,
   field_fixed_len f2 = Some (length b1) /\ field_fixed_len f2 = Some (length b2).
 Proof.
   intros r1 r2 f1 f2 a1 b1 a2 b2 body H. unfold concat_merge_pair in H.
+  destruct (negb (rule_mutfree r1)); [discriminate |].
   destruct (head_value2 r1) as [[[[[fa1 ua1] ga1] ub1] s1] |] eqn:H1; [| discriminate].
   destruct (head_value2 r2) as [[[[[fa2 ua2] ga2] ub2] s2] |] eqn:H2; [| discriminate].
   unfold head_value2 in H1, H2.

@@ -97,7 +97,8 @@ Lemma dedup_rule_clean : forall r,
   rule_clean r = true -> rule_clean (dedup_rule r) = true.
 Proof.
   intros r Hc. unfold dedup_rule.
-  destruct (body_has_synproxy (r_body r) || body_has_notrack (r_body r)) eqn:Eg.
+  destruct (body_has_synproxy (r_body r) || body_has_notrack (r_body r)
+            || negb (rule_mutfree r)) eqn:Eg.
   - exact Hc.
   - (* the new body is [map BMatch (nodup ... (body_matches ...)) ++ map BStmt (body_stmts ...)];
        the statement part is empty for a clean rule, and the match part stays clean. *)
@@ -213,10 +214,10 @@ Qed.
     does NOT merge `meta mark set` rules at all, so [datamap] is a LABELLED SOUND
     SUPERSET with no `nft -o` counterpart — NOT part of the byte-fidelity claim, and
     NOT an nft bug (nft is merely conservative; the merge is verdict/state-preserving
-    PER-MERGE-SHAPE per [Optimize_DataMap.eval_rules_mut_map_merge] — a lemma about
-    the two-rule shape, NOT composed through [optimize_table]: the pipeline-level
-    theorem is verdict-only over [eval_chain]; see the scope note on
-    [Optimize_Uncond.optimize_table_uncond_compile_correct]).  [datamap] emits the HEAD-GUARDED
+    per [Optimize_DataMap.eval_rules_mut_map_merge], and its effect-level shape
+    certificate [Optimize_MutEnv.eval_rules_mut_env_map_merge] IS composed through
+    [optimize_table]: the pipeline-level effect guarantee is
+    [Optimize_MutEnv.optimize_table_uncond_mut_env_correct]).  [datamap] emits the HEAD-GUARDED
     form (a synthesised key set in front of the map) because our model loads a
     default on a statement value-map miss rather than NFT_BREAKing; the guard makes
     the lookup always hit, recovering exact equivalence.  Why the guard cannot just

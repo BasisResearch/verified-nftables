@@ -74,6 +74,11 @@ Qed.
     Then a packet matching [r1] matches [r2], so [r1] is redundant given [r2]. *)
 Definition absorb_pair (r1 r2 : rule)
   : option (pbase * nat * nat * nat * data * data * list body_item) :=
+  (* EFFECT-SAFETY GUARD — see [Optimize_ValueSet.value_merge_pair].  Deleting
+     the absorbed rule [r1] is only EFFECT-preserving when [r1] writes nothing
+     (its body could otherwise run — and write — on a packet the surviving
+     [r2] then re-matches). *)
+  if negb (rule_mutfree r1) then None else
   match head_pfx r1, head_pfx r2 with
   | Some (b1, off1, w1, v1, rest1), Some (b2, off2, w2, v2, rest2) =>
       if pbase_eq_dec b1 b2 then
@@ -90,6 +95,14 @@ Definition absorb_pair (r1 r2 : rule)
   | _, _ => None
   end.
 
+(** The guard, extracted: a fired pair certifies the absorbed rule write-free. *)
+Lemma absorb_pair_mutfree : forall r1 r2 x,
+  absorb_pair r1 r2 = Some x -> rule_mutfree r1 = true.
+Proof.
+  intros r1 r2 x H. unfold absorb_pair in H.
+  destruct (rule_mutfree r1); [reflexivity | discriminate H].
+Qed.
+
 Lemma absorb_pair_facts : forall r1 r2 b off w1 w2 v1 v2 body,
   absorb_pair r1 r2 = Some (b, off, w1, w2, v1, v2, body) ->
   r1 = mk_head (MCmp (FPayload b off w1) CEq v1) body r1 /\
@@ -97,6 +110,7 @@ Lemma absorb_pair_facts : forall r1 r2 b off w1 w2 v1 v2 body,
   w2 <= w1 /\ length v1 = w1 /\ length v2 = w2 /\ firstn w2 v1 = v2.
 Proof.
   intros r1 r2 b off w1 w2 v1 v2 body H. unfold absorb_pair in H.
+  destruct (negb (rule_mutfree r1)); [discriminate |].
   destruct (head_pfx r1) as [[[[[b1 off1] u1] s1] rest1] |] eqn:H1; [| discriminate].
   destruct (head_pfx r2) as [[[[[b2 off2] u2] s2] rest2] |] eqn:H2; [| discriminate].
   destruct (pbase_eq_dec b1 b2) as [Eb |]; [| discriminate]. subst b2.

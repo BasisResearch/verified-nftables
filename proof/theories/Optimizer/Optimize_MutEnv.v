@@ -1,0 +1,5018 @@
+(** * Optimize_MutEnv: EFFECT-LEVEL correctness of the whole [nft -o] pipeline.
+
+    [Optimize_Uncond] certifies the composed 18-stage optimizer against the
+    write-blind [eval_chain] — verdicts only.  This file lifts that composed,
+    hypothesis-free guarantee to the EFFECT-OBSERVING chain semantics
+    [eval_chain_mut_env h] (the single per-rule fold [rule_step]: packet meta/ct
+    writes, dynset env writes, the notrack latch, limiter/quota/connlimit
+    consumption, and the NAT data plane, each at its own body position):
+
+      [optimize_table_uncond_mut_env_correct] :
+        optimize_table_uncond c = (n', d', c') ->
+        eval_chain_mut_env h c' (env_with_sets base d') p
+        = eval_chain_mut_env h c (env_with_sets base d') p
+
+    — the optimised chain, run in the deployed environment (the synthesised
+    declarations [d'] present), yields for EVERY packet the SAME verdict AND the
+    SAME resulting environment as the original chain in that same environment.
+    The threaded packet state is internal to the same fold ([rule_step] threads
+    (env, packet) through every rule; the chain exports the env, packet fields
+    being per-packet local — see Semantics § Stateful accumulation).  No
+    hypothesis on [c]: a stage can no longer preserve every verdict while
+    altering a write a later hook observes.
+
+    HOW the proof is structured:
+
+    - The 12 pure-merge stages (valueset, concatmulti, concat, concatguarded,
+      setguarded, intervalset, intervalsethostorder, dscp, intervalsetguarded,
+      mixedpointrangeguarded, vmapguarded, dscpvmap, vmap) carry an
+      EFFECT-SAFETY GUARD in their pair recognisers ([rule_mutfree r1], see
+      [Optimize_ValueSet.value_merge_pair]): a merged run is WRITE-FREE, so the
+      fold is state-invariant across it ([rule_step_mutfree]) and the existing
+      pure run-merge lemmas supply the verdicts
+      ([eval_rules_mut_env_mutfree_prefix] below).
+    - The three EFFECT-REWRITING stages keep their exact-shape recognisers and
+      get per-shape effect certificates threaded through the fold:
+      [datamap] ([Optimize_DataMap.dsl_step_map_merge] + the new payload-key
+      guard), [dnat]/[snat] (the M3 NAT-in-fold semantics +
+      [apply_nat_dnat_eq]/[apply_nat_snat_eq]).
+    - The base pass ([Optimize.optimize_chain]) is effect-safe by construction:
+      [dce] cuts after an unconditionally-terminal EMPTY rule (nothing after it
+      ever runs), [prune_noops] deletes rules whose step is the identity, and
+      [dedup_rule] now fires only on [rule_mutfree] rules.
+    - PASSED-THROUGH rules are evaluated by the SAME [rule_step] on both sides
+      under the SAME env, so (unlike the verdict-level proofs) no env-agreement
+      seam machinery is needed; what IS needed is that the threaded env keeps
+      the minted set/map declarations intact — dynset writes must miss every
+      minted name.  [rule_dynset_fresh] (write-target freshness) mirrors the
+      read-freshness discipline and is discharged BY CONSTRUCTION at the entry
+      point: [Optimize_Uncond.chain_seed] includes the dynset target names, so
+      [seed_start] mints past them. *)
+
+From Stdlib Require Import List.
+From Stdlib Require Import Bool.
+From Stdlib Require Import Arith.
+From Stdlib Require Import Lia.
+From Stdlib Require Import String.
+Import ListNotations.
+From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
+  Compile Correct Optimize Optimize_ValueSet Optimize_Vmap Optimize_VmapGuarded
+  Optimize_Concat Optimize_ConcatMulti Optimize_ConcatGuarded Optimize_SetGuarded
+  Optimize_IntervalSet Optimize_IntervalSetGuarded Optimize_MixedPointRangeGuarded
+  Optimize_Absorb Optimize_CtMask Optimize_Dscp Optimize_DscpVmap
+  Optimize_IntervalSetHostOrder Optimize_DataMap Optimize_Dnat Optimize_Snat
+  Optimize_Table_Inv Optimize_Table Optimize_Normalize Optimize_Uncond.
+
+Local Open Scope nat_scope.
+
+(** ** Part A: dynset WRITE-target names and env-component stability.
+
+    The per-rule fold writes the shared set/map environment through exactly one
+    statement family: [SDynset] ([env_set_upd] on [e_set] for a pure set,
+    [env_map_upd] on [e_map] for a map).  Every other writer touches other env
+    components ([e_limit]/[e_quota]/[e_connlimit]/[e_ct]/[e_nat]) or the packet.
+    So a rule's step preserves [e_set]/[e_map] at every name OUTSIDE its dynset
+    targets, and [e_vmap] everywhere ([Semantics.rule_step_vmap]). *)
+
+(** [stmt_dynset_names]/[body_dynset_names]/[rule_dynset_names] and the
+    write-target freshness predicate [rule_dynset_fresh] live in
+    [Optimize_Uncond] (next to [chain_seed], which now includes them).
+
+    Writer micro-lemmas: which env components each write helper touches. *)
+Lemma e_set_match_consume : forall m e p, e_set (match_consume m e p) = e_set e.
+Proof. intros m e p; destruct m; reflexivity. Qed.
+Lemma e_map_match_consume : forall m e p, e_map (match_consume m e p) = e_map e.
+Proof. intros m e p; destruct m; reflexivity. Qed.
+
+Lemma e_set_set_ct : forall e p k v, e_set (set_ct e p k v) = e_set e.
+Proof. intros; unfold set_ct; destruct (pkt_ct_present p); reflexivity. Qed.
+Lemma e_map_set_ct : forall e p k v, e_map (set_ct e p k v) = e_map e.
+Proof. intros; unfold set_ct; destruct (pkt_ct_present p); reflexivity. Qed.
+
+Lemma e_set_env_set_upd_other : forall e op n k nm,
+  nm <> n -> e_set (env_set_upd e op n k) nm = e_set e nm.
+Proof.
+  intros e op n k nm Hne. unfold env_set_upd, with_e_set. cbn [e_set].
+  rewrite (proj2 (String.eqb_neq nm n) Hne). reflexivity.
+Qed.
+Lemma e_map_env_set_upd : forall e op n k, e_map (env_set_upd e op n k) = e_map e.
+Proof. reflexivity. Qed.
+Lemma e_set_env_map_upd : forall e op n k d, e_set (env_map_upd e op n k d) = e_set e.
+Proof. reflexivity. Qed.
+Lemma e_map_env_map_upd_other : forall e op n k d nm,
+  nm <> n -> e_map (env_map_upd e op n k d) nm = e_map e nm.
+Proof.
+  intros e op n k d nm Hne. unfold env_map_upd, with_e_map. cbn [e_map].
+  rewrite (proj2 (String.eqb_neq nm n) Hne). reflexivity.
+Qed.
+
+Lemma e_set_apply_nat : forall h' r e p,
+  e_set (fst (apply_nat h' r e p)) = e_set e.
+Proof.
+  intros h' r e p. unfold apply_nat.
+  destruct (r_nat r) as [ns|]; [| reflexivity].
+  destruct (e_nat e (pkt_flow p)); [reflexivity|].
+  destruct (pkt_ctdir_orig p); cbv zeta; reflexivity.
+Qed.
+Lemma e_map_apply_nat : forall h' r e p,
+  e_map (fst (apply_nat h' r e p)) = e_map e.
+Proof.
+  intros h' r e p. unfold apply_nat.
+  destruct (r_nat r) as [ns|]; [| reflexivity].
+  destruct (e_nat e (pkt_flow p)); [reflexivity|].
+  destruct (pkt_ctdir_orig p); cbv zeta; reflexivity.
+Qed.
+
+(** The body fold preserves [e_set]/[e_map] at every non-target name. *)
+Lemma body_step_sm_stable : forall body e p nm,
+  ~ In nm (body_dynset_names body) ->
+  e_set (fst (body_res_state (body_step body e p))) nm = e_set e nm
+  /\ e_map (fst (body_res_state (body_step body e p))) nm = e_map e nm.
+Proof.
+  induction body as [| it body IH]; intros e p nm Hnm; [split; reflexivity|].
+  destruct it as [m | s].
+  - cbn [body_step].
+    destruct (eval_matchcond m e p).
+    + destruct (IH (match_consume m e p) p nm Hnm) as [Hs Hm].
+      rewrite Hs, Hm, e_set_match_consume, e_map_match_consume. split; reflexivity.
+    + cbn [body_res_state fst].
+      rewrite e_set_match_consume, e_map_match_consume. split; reflexivity.
+  - assert (Hrest : ~ In nm (body_dynset_names body)).
+    { intro Hin. apply Hnm. unfold body_dynset_names in *. cbn [flat_map].
+      apply in_or_app; right; exact Hin. }
+    assert (Hhd : ~ In nm (stmt_dynset_names s)).
+    { intro Hin. apply Hnm. unfold body_dynset_names. cbn [flat_map].
+      apply in_or_app; left; exact Hin. }
+    destruct s; cbn [body_step];
+      try (destruct (stmt_loadable _ p);
+           [ apply (IH e p nm Hrest) | cbn [body_res_state fst]; split; reflexivity ]).
+    + (* SNotrack *) apply (IH e (set_untracked p) nm Hrest).
+    + (* SMetaSet *) destruct (vsrc_loadable _ p);
+        [ apply (IH e _ nm Hrest) | cbn [body_res_state fst]; split; reflexivity ].
+    + (* SCtSet *) destruct (vsrc_loadable vs p).
+      * destruct (IH (set_ct e p k (eval_vsrc vs e p)) p nm Hrest) as [Hs Hm].
+        rewrite Hs, Hm, e_set_set_ct, e_map_set_ct. split; reflexivity.
+      * cbn [body_res_state fst]; split; reflexivity.
+    + (* SSynproxy *) destruct (synproxy_loadable p).
+      * destruct (synproxy_stops p);
+          [ cbn [body_res_state fst]; split; reflexivity | apply (IH e p nm Hrest) ].
+      * cbn [body_res_state fst]; split; reflexivity.
+    + (* SDynset *) cbn [stmt_dynset_names] in Hhd.
+      assert (Hne : nm <> name) by (intro; subst; apply Hhd; left; reflexivity).
+      destruct dataf as [| d ds].
+      * (* pure set: env_set_upd *)
+        destruct (fields_loadable keyfs p).
+        -- destruct (IH (env_set_upd e op name
+                           (List.concat (map (fun f => field_value f e p) keyfs)))
+                       p nm Hrest) as [Hs Hm].
+           rewrite Hs, Hm, (e_set_env_set_upd_other e op name _ nm Hne),
+                   e_map_env_set_upd.
+           split; reflexivity.
+        -- cbn [body_res_state fst]; split; reflexivity.
+      * (* map: env_map_upd *)
+        destruct (fields_loadable (keyfs ++ d :: ds) p).
+        -- destruct (IH (env_map_upd e op name
+                           (List.concat (map (fun f => field_value f e p) keyfs))
+                           (field_value d e p))
+                       p nm Hrest) as [Hs Hm].
+           rewrite Hs, Hm, e_set_env_map_upd,
+                   (e_map_env_map_upd_other e op name _ _ nm Hne).
+           split; reflexivity.
+        -- cbn [body_res_state fst]; split; reflexivity.
+Qed.
+
+Lemma after_step_sm_stable : forall ss e p nm,
+  ~ In nm (flat_map stmt_dynset_names ss) ->
+  e_set (fst (snd (after_step ss e p))) nm = e_set e nm
+  /\ e_map (fst (snd (after_step ss e p))) nm = e_map e nm.
+Proof.
+  induction ss as [| s ss IH]; intros e p nm Hnm; [split; reflexivity|].
+  assert (Hrest : ~ In nm (flat_map stmt_dynset_names ss)).
+  { intro Hin. apply Hnm. cbn [flat_map]. apply in_or_app; right; exact Hin. }
+  assert (Hhd : ~ In nm (stmt_dynset_names s)).
+  { intro Hin. apply Hnm. cbn [flat_map]. apply in_or_app; left; exact Hin. }
+  destruct s; cbn [after_step];
+    try (destruct (stmt_loadable _ p);
+         [ apply (IH e p nm Hrest) | cbn [fst snd]; split; reflexivity ]).
+  - (* SNotrack *) apply (IH e (set_untracked p) nm Hrest).
+  - (* SMetaSet *) destruct (vsrc_loadable _ p);
+      [ apply (IH e _ nm Hrest) | cbn [fst snd]; split; reflexivity ].
+  - (* SCtSet *) destruct (vsrc_loadable vs p).
+    + destruct (IH (set_ct e p k (eval_vsrc vs e p)) p nm Hrest) as [Hs Hm].
+      rewrite Hs, Hm, e_set_set_ct, e_map_set_ct. split; reflexivity.
+    + cbn [fst snd]; split; reflexivity.
+  - (* SSynproxy *) destruct (synproxy_loadable p).
+    + destruct (synproxy_stops p);
+        [ cbn [fst snd]; split; reflexivity | apply (IH e p nm Hrest) ].
+    + cbn [fst snd]; split; reflexivity.
+  - (* SDynset *) cbn [stmt_dynset_names] in Hhd.
+    assert (Hne : nm <> name) by (intro; subst; apply Hhd; left; reflexivity).
+    destruct dataf as [| d ds].
+    + destruct (fields_loadable keyfs p).
+      * destruct (IH (env_set_upd e op name
+                        (List.concat (map (fun f => field_value f e p) keyfs)))
+                     p nm Hrest) as [Hs Hm].
+        rewrite Hs, Hm, (e_set_env_set_upd_other e op name _ nm Hne),
+                e_map_env_set_upd.
+        split; reflexivity.
+      * cbn [fst snd]; split; reflexivity.
+    + destruct (fields_loadable (keyfs ++ d :: ds) p).
+      * destruct (IH (env_map_upd e op name
+                        (List.concat (map (fun f => field_value f e p) keyfs))
+                        (field_value d e p))
+                     p nm Hrest) as [Hs Hm].
+        rewrite Hs, Hm, e_set_env_map_upd,
+                (e_map_env_map_upd_other e op name _ _ nm Hne).
+        split; reflexivity.
+      * cbn [fst snd]; split; reflexivity.
+Qed.
+
+Section WithHook.
+Context (h : hook_id).
+
+Lemma terminal_step_sm_stable : forall r e p nm,
+  ~ In nm (flat_map stmt_dynset_names (r_after r)) ->
+  e_set (fst (snd (terminal_step h r e p))) nm = e_set e nm
+  /\ e_map (fst (snd (terminal_step h r e p))) nm = e_map e nm.
+Proof.
+  intros r e p nm Hnm. unfold terminal_step.
+  destruct (has_effect_terminal r).
+  - destruct (terminal_loadable r e p); [| split; reflexivity].
+    destruct (nat_drops h r e p); [split; reflexivity|].
+    cbn [fst snd].
+    split; [rewrite e_set_apply_nat | rewrite e_map_apply_nat]; reflexivity.
+  - destruct (r_verdict r); try (split; reflexivity).
+    apply (after_step_sm_stable (r_after r) e p nm Hnm).
+Qed.
+
+Lemma end_step_sm_stable : forall r e p nm,
+  ~ In nm (flat_map stmt_dynset_names (r_after r)) ->
+  e_set (fst (snd (end_step h r e p))) nm = e_set e nm
+  /\ e_map (fst (snd (end_step h r e p))) nm = e_map e nm.
+Proof.
+  intros r e p nm Hnm. unfold end_step.
+  destruct (r_vmap r) as [vm|]; [| apply terminal_step_sm_stable; exact Hnm].
+  destruct (vmap_loadable (Some vm) p); [| split; reflexivity]. cbv zeta.
+  destruct (vm_keyf vm) as [[f ts]|];
+    destruct (assoc_verdict _ (e_vmap e (vm_name vm)));
+    solve [ split; reflexivity | apply terminal_step_sm_stable; exact Hnm ].
+Qed.
+
+(** THE stability fact: a rule's step preserves [e_set]/[e_map] at every name
+    outside its dynset write targets. *)
+Lemma rule_step_sm_stable : forall r e p nm,
+  ~ In nm (rule_dynset_names r) ->
+  e_set (fst (snd (rule_step h r e p))) nm = e_set e nm
+  /\ e_map (fst (snd (rule_step h r e p))) nm = e_map e nm.
+Proof.
+  intros r e p nm Hnm. unfold rule_dynset_names in Hnm.
+  assert (Hbody : ~ In nm (body_dynset_names (r_body r)))
+    by (intro Hin; apply Hnm; apply in_or_app; left; exact Hin).
+  assert (Hafter : ~ In nm (flat_map stmt_dynset_names (r_after r)))
+    by (intro Hin; apply Hnm; apply in_or_app; right; exact Hin).
+  unfold rule_step.
+  pose proof (body_step_sm_stable (r_body r) e p nm Hbody) as [Hbs Hbm].
+  destruct (body_step (r_body r) e p) as [e' p' | e' p' | e' p'] eqn:Hb;
+    cbn [body_res_state fst] in Hbs, Hbm; cbn [fst snd].
+  - split; assumption.
+  - split; assumption.
+  - destruct (end_step_sm_stable r e' p' nm Hafter) as [Hes Hem].
+    split; [rewrite Hes; exact Hbs | rewrite Hem; exact Hbm].
+Qed.
+
+(** ** Part B: generic effect-level list lemmas. *)
+
+(** A WRITE-FREE prefix evaluates purely: the fold walks it without changing
+    state, producing exactly the pure [eval_rules] verdict; on fall-through the
+    tail continues from the ORIGINAL state.  This is what lets the existing
+    verdict-level run-merge lemmas certify a guarded merge at the effect level. *)
+Lemma eval_rules_mut_env_mutfree_prefix : forall b rest e p,
+  forallb rule_mutfree b = true ->
+  eval_rules_mut_env h (b ++ rest) e p
+  = match eval_rules b e p with
+    | Some v => (Some v, e)
+    | None => eval_rules_mut_env h rest e p
+    end.
+Proof.
+  induction b as [| r b IH]; intros rest e p Hmf; [reflexivity|].
+  cbn [forallb] in Hmf. apply Bool.andb_true_iff in Hmf as [Hr Hb].
+  cbn [app eval_rules_mut_env eval_rules].
+  rewrite (rule_step_mutfree h r e p Hr).
+  destruct (rule_loadable r e p && rule_applies r e p).
+  - destruct (outcome r e p) as [v|].
+    + destruct (terminal v); [reflexivity | apply IH; exact Hb].
+    + apply IH; exact Hb.
+  - apply IH; exact Hb.
+Qed.
+
+(** Replace one write-free block by a verdict-equivalent write-free block. *)
+Lemma eval_rules_mut_env_mutfree_block : forall b1 b2 rest e p,
+  forallb rule_mutfree b1 = true ->
+  forallb rule_mutfree b2 = true ->
+  eval_rules b1 e p = eval_rules b2 e p ->
+  eval_rules_mut_env h (b1 ++ rest) e p = eval_rules_mut_env h (b2 ++ rest) e p.
+Proof.
+  intros b1 b2 rest e p H1 H2 Heq.
+  rewrite (eval_rules_mut_env_mutfree_prefix b1 rest e p H1).
+  rewrite (eval_rules_mut_env_mutfree_prefix b2 rest e p H2).
+  rewrite Heq. reflexivity.
+Qed.
+
+(** Stepping one shared head rule on both sides. *)
+Lemma eval_rules_mut_env_cons_cong : forall r rs1 rs2 e p,
+  (forall e' p', eval_rules_mut_env h rs1 e' p' = eval_rules_mut_env h rs2 e' p') ->
+  eval_rules_mut_env h (r :: rs1) e p = eval_rules_mut_env h (r :: rs2) e p.
+Proof.
+  intros r rs1 rs2 e p Htail. cbn [eval_rules_mut_env].
+  destruct (rule_step h r e p) as [[v|] [e' p']];
+    [ destruct (terminal v); [reflexivity | apply Htail] | apply Htail ].
+Qed.
+
+End WithHook.
+
+(** [rule_mutfree] transfer along [mk_head] shells: mut-freedom is the tail
+    body + after + natfree conjunction, with the head contributing only its
+    [match_consumefree]. *)
+Lemma rule_mutfree_mk_head : forall m body r,
+  rule_mutfree (mk_head m body r)
+  = match_consumefree m
+    && (forallb body_item_mutfree body
+        && forallb (fun s => negb (is_mut_stmt s)) (r_after r)
+        && rule_natfree r).
+Proof.
+  intros m body r. unfold rule_mutfree, mk_head, rule_natfree, r_nat.
+  cbn [r_body r_after r_outcome forallb body_item_mutfree].
+  rewrite <- !Bool.andb_assoc. reflexivity.
+Qed.
+
+(** Swap the head of a mut-free shell for any consumption-free match. *)
+Lemma rule_mutfree_mk_head_swap : forall m m' body r,
+  match_consumefree m' = true ->
+  rule_mutfree (mk_head m body r) = true ->
+  rule_mutfree (mk_head m' body r) = true.
+Proof.
+  intros m m' body r Hm' H.
+  rewrite rule_mutfree_mk_head in H |- *.
+  apply Bool.andb_true_iff in H as [_ Htail].
+  rewrite Hm'. cbn [andb]. exact Htail.
+Qed.
+
+(** A write-free rule has NO dynset target at all. *)
+Lemma mutfree_body_dynset_nil : forall body,
+  forallb body_item_mutfree body = true -> body_dynset_names body = [].
+Proof.
+  induction body as [| it body IH]; intro H; [reflexivity|].
+  cbn [forallb] in H. apply Bool.andb_true_iff in H as [Hit Hrest].
+  destruct it as [m | s]; unfold body_dynset_names in *; cbn [flat_map].
+  - apply IH; exact Hrest.
+  - destruct s; cbn [body_item_mutfree is_mut_stmt negb] in Hit; try discriminate Hit;
+      cbn [stmt_dynset_names app]; apply IH; exact Hrest.
+Qed.
+
+Lemma mutfree_after_dynset_nil : forall ss,
+  forallb (fun s => negb (is_mut_stmt s)) ss = true ->
+  flat_map stmt_dynset_names ss = [].
+Proof.
+  induction ss as [| s ss IH]; intro H; [reflexivity|].
+  cbn [forallb] in H. apply Bool.andb_true_iff in H as [Hs Hrest].
+  destruct s; cbn [is_mut_stmt negb] in Hs; try discriminate Hs;
+    cbn [flat_map stmt_dynset_names app]; apply IH; exact Hrest.
+Qed.
+
+Lemma rule_mutfree_dynset_nil : forall r,
+  rule_mutfree r = true -> rule_dynset_names r = [].
+Proof.
+  intros r H. unfold rule_mutfree in H.
+  apply Bool.andb_true_iff in H as [H _].
+  apply Bool.andb_true_iff in H as [Hbody Hafter].
+  unfold rule_dynset_names.
+  rewrite (mutfree_body_dynset_nil _ Hbody), (mutfree_after_dynset_nil _ Hafter).
+  reflexivity.
+Qed.
+
+(** ** Part C: write-target freshness ([Optimize_Uncond.rule_dynset_fresh],
+    the dynset analogue of [rule_set_fresh]): a rule whose dynset targets avoid
+    every minted [setname]/[mapname] at-or-above [n] cannot clobber a minted
+    declaration; threaded through the fold via [rule_step_sm_stable] it keeps
+    the minted lookups intact at every intermediate env. *)
+
+Lemma rule_mutfree_dynset_fresh : forall n r,
+  rule_mutfree r = true -> rule_dynset_fresh n r.
+Proof.
+  intros n r H k Hk. rewrite (rule_mutfree_dynset_nil r H).
+  split; intros [].
+Qed.
+
+(** Stability of the two minted-name lookups across one rule step. *)
+Lemma rule_step_setname_stable : forall h r e p k n,
+  rule_dynset_fresh n r -> n <= k ->
+  e_set (fst (snd (rule_step h r e p))) (setname k) = e_set e (setname k).
+Proof.
+  intros h r e p k n Hf Hk.
+  destruct (Hf k Hk) as [Hs _].
+  exact (proj1 (rule_step_sm_stable h r e p (setname k) Hs)).
+Qed.
+
+Lemma rule_step_mapname_stable : forall h r e p k n,
+  rule_dynset_fresh n r -> n <= k ->
+  e_map (fst (snd (rule_step h r e p))) (mapname k) = e_map e (mapname k).
+Proof.
+  intros h r e p k n Hf Hk.
+  destruct (Hf k Hk) as [_ Hm].
+  exact (proj2 (rule_step_sm_stable h r e p (mapname k) Hm)).
+Qed.
+
+(** All canonical shells over a shared write-free tail are write-free. *)
+Lemma forallb_mutfree_shells : forall (A : Type) (g : A -> matchcond) l body r m0,
+  (forall a : A, match_consumefree (g a) = true) ->
+  rule_mutfree (mk_head m0 body r) = true ->
+  forallb rule_mutfree (map (fun a => mk_head (g a) body r) l) = true.
+Proof.
+  intros A g l body r m0 Hg Hmf. apply forallb_forall.
+  intros x Hx. apply in_map_iff in Hx as [a [Ha _]]. subst x.
+  exact (rule_mutfree_mk_head_swap m0 (g a) body r (Hg a) Hmf).
+Qed.
+
+(** ** Part D: per-stage EFFECT-level correctness.
+
+    Each stage lemma states: under the SAME environment [e] — constrained only
+    to resolve the stage's own minted names as the output declarations do
+    ([Hmint], pointwise, so it survives threading) — the output rules and the
+    input rules produce the SAME (verdict, env) under the effect-observing fold.
+    Unlike the verdict-level [_correct_uncond] family, both sides run under ONE
+    env, so no cross-decl agreement machinery is needed; the write-target
+    freshness [Forall (rule_dynset_fresh n)] keeps [Hmint] true at every
+    intermediate env. *)
+
+(** *** valueset. *)
+Theorem optimize_rules_valueset_mut_env : forall h fuel rs n d n' d' rs' base e p,
+  optimize_rules_valueset fuel n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) rs ->
+  eval_rules_mut_env h rs' e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' base e p H Hfresh Hmint Hwf.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest]].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_valueset_consSS in H.
+      inversion Hwf as [| ? ? Hwf1 Hwf_tail]; subst.
+      destruct (head_value r1) as [[[f v1] body] |] eqn:Ehd.
+      * destruct (take_value_run r1 (r2 :: rest)) as [vs rest'] eqn:Erun.
+        destruct (take_value_run_shape r1 f v1 body (r2 :: rest) vs rest' Ehd Erun)
+          as [Hsplit Hwidth].
+        destruct vs as [| v vs'].
+        -- (* no eligible neighbour: keep r1, recurse at the stepped state *)
+           remember (optimize_rules_valueset fuel n d (r2 :: rest)) as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           cbn [eval_rules_mut_env].
+           assert (Hst : forall k, n <= k ->
+                     e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                     = e_set e (setname k))
+             by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+           destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+           ++ destruct (terminal w); [reflexivity |].
+              apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+           ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        -- (* RUN of >= 2 rules: the guarded (write-free) merge *)
+           cbv zeta in H.
+           remember (optimize_rules_valueset fuel (S n)
+                       {| sd_sets := (setname n, map (fun w => (w,w)) (v1 :: v :: vs'))
+                                     :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as t eqn:Erec.
+           destruct t as [[m'' dd'']rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           set (vals := v1 :: v :: vs') in *.
+           set (dn := {| sd_sets := (setname n, map (fun w => (w,w)) vals) :: sd_sets d;
+                         sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) in *.
+           pose proof (optimize_rules_valueset_mono fuel (S n) dn rest' m'' dd'' rr''
+                         (eq_sym Erec)) as Hmono.
+           (* the fired first pair certifies r1 (hence every shell) write-free *)
+           assert (Hmf1 : rule_mutfree r1 = true).
+           { pose proof Erun as Erun2. cbn in Erun2.
+             destruct (value_merge_pair r1 r2) as [[[[fa va] v2] bd]|] eqn:Evm.
+             - exact (value_merge_pair_mutfree r1 r2 _ Evm).
+             - inversion Erun2. }
+           assert (Hr1shell : r1 = mk_head (MCmp f CEq v1) body r1)
+             by (apply head_value_canon; exact Ehd).
+           assert (Hmf1' : rule_mutfree (mk_head (MCmp f CEq v1) body r1) = true)
+             by (rewrite <- Hr1shell; exact Hmf1).
+           assert (Hrun_eq : r1 :: r2 :: rest
+                   = map (fun w => mk_head (MCmp f CEq w) body r1) vals ++ rest').
+           { subst vals. cbn [map app]. f_equal; [exact Hr1shell | exact Hsplit]. }
+           (* the CURRENT env resolves the minted set to its point elements *)
+           assert (Hlook : e_set e (setname n) = map (fun w => (w,w)) vals).
+           { rewrite (Hmint n (le_n n) ltac:(lia)).
+             rewrite e_set_declared.
+             erewrite (optimize_rules_valueset_assoc_stable fuel (S n) dn rest'
+                         m'' dd'' rr'' (setname n) _ (eq_sym Erec)).
+             - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
+             - intros k Hk Heq. apply setname_inj in Heq. lia. }
+           assert (Hcert : eval_matchcond (MConcatSet [f] false (setname n)) e p
+                   = existsb (fun w => eval_matchcond (MCmp f CEq w) e p) vals).
+           { apply (concat_set_existsb f vals (setname n) e p).
+             - exact Hlook.
+             - intros w Hw Hld.
+               assert (Hfxw : field_fixed_len f = Some (Datatypes.length w)).
+               { subst vals. destruct Hw as [Hw | Hw].
+                 - subst w. apply (take_value_run_head_width r1 f v1 body r2 rest
+                                     (v :: vs') rest' Ehd Erun). discriminate.
+                 - apply (Hwidth w Hw). }
+               apply (field_fixed_len_loaded f (Datatypes.length w) e p Hfxw Hld). }
+           assert (Hpure : eval_rules
+                             [mk_head (MConcatSet [f] false (setname n)) body r1] e p
+                           = eval_rules
+                               (map (fun w => mk_head (MCmp f CEq w) body r1) vals) e p).
+           { pose proof (eval_rules_run_merge_abs
+                           (map (fun w => MCmp f CEq w) vals)
+                           (fun q => fields_loadable [f] q) body r1
+                           (MConcatSet [f] false (setname n)) [] e p) as Habs.
+             rewrite app_nil_r in Habs. rewrite List.map_map in Habs.
+             apply Habs.
+             - subst vals. cbn [map]. discriminate.
+             - intros m Hm. apply (match_loadable_run f vals p m Hm).
+             - apply match_loadable_mconcat1.
+             - rewrite Hcert. rewrite existsb_map_eq. reflexivity. }
+           assert (HmfM : forallb rule_mutfree
+                     [mk_head (MConcatSet [f] false (setname n)) body r1] = true).
+           { cbn [forallb].
+             rewrite (rule_mutfree_mk_head_swap (MCmp f CEq v1)
+                        (MConcatSet [f] false (setname n)) body r1 eq_refl Hmf1').
+             reflexivity. }
+           assert (HmfR : forallb rule_mutfree
+                     (map (fun w => mk_head (MCmp f CEq w) body r1) vals) = true).
+           { apply (forallb_mutfree_shells data (fun w => MCmp f CEq w) vals body r1
+                      (MCmp f CEq v1)); [intro; reflexivity | exact Hmf1']. }
+           change (mk_head (MConcatSet [f] false (setname n)) body r1 :: rr'')
+             with ([mk_head (MConcatSet [f] false (setname n)) body r1] ++ rr'').
+           rewrite Hrun_eq.
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rr'' e p HmfM).
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rest' e p HmfR).
+           rewrite Hpure.
+           destruct (eval_rules
+                       (map (fun w => mk_head (MCmp f CEq w) body r1) vals) e p) as [w|];
+             [reflexivity |].
+           apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
+           ++ intros k Hk Hin. subst dn; cbn [sd_sets map fst] in Hin.
+              destruct Hin as [Heq | Hin];
+                [ apply setname_inj in Heq; lia
+                | apply (Hfresh k); [lia | exact Hin] ].
+           ++ intros k Hk Hk'. apply Hmint; lia.
+           ++ eapply Forall_impl;
+                [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr] |].
+              rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
+              exact (proj2 Hwf_tail).
+      * (* unrecognised head: keep r1, recurse at the stepped state *)
+        remember (optimize_rules_valueset fuel n d (r2 :: rest)) as t eqn:Erec.
+        destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        cbn [eval_rules_mut_env].
+        assert (Hst : forall k, n <= k ->
+                  e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                  = e_set e (setname k))
+          by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+        destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+        ++ destruct (terminal w); [reflexivity |].
+           apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+Qed.
+
+(** *** dscp (masked-value -> transformed-set). *)
+Theorem optimize_rules_dscp_mut_env : forall h fuel rs n d n' d' rs' base e p,
+  optimize_rules_dscp fuel n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) rs ->
+  eval_rules_mut_env h rs' e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' base e p H Hfresh Hmint Hwf.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest]].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_dscp_consSS in H.
+      inversion Hwf as [| ? ? Hwf1 Hwf_tail]; subst.
+      destruct (head_dscp r1) as [[[[[f mask] xor] v1] body] |] eqn:Ehd.
+      * destruct (take_dscp_run r1 (r2 :: rest)) as [vs rest'] eqn:Erun.
+        destruct (take_dscp_run_shape r1 f mask xor v1 body (r2 :: rest) vs rest' Ehd Erun)
+          as [Hsplit Hwidth].
+        destruct vs as [| v vs'].
+        -- remember (optimize_rules_dscp fuel n d (r2 :: rest)) as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           cbn [eval_rules_mut_env].
+           assert (Hst : forall k, n <= k ->
+                     e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                     = e_set e (setname k))
+             by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+           destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+           ++ destruct (terminal w); [reflexivity |].
+              apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+           ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        -- cbv zeta in H.
+           remember (optimize_rules_dscp fuel (S n)
+                       {| sd_sets := (setname n, map (fun w => (w,w)) (v1 :: v :: vs'))
+                                     :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           set (vals := v1 :: v :: vs') in *.
+           set (dn := {| sd_sets := (setname n, map (fun w => (w,w)) vals) :: sd_sets d;
+                         sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) in *.
+           pose proof (optimize_rules_dscp_mono fuel (S n) dn rest' m'' dd'' rr''
+                         (eq_sym Erec)) as Hmono.
+           assert (Hmf1 : rule_mutfree r1 = true).
+           { pose proof Erun as Erun2. cbn in Erun2.
+             destruct (dscp_merge_pair r1 r2) as [[[[[[fa ma] xa] va] v2] bd]|] eqn:Evm.
+             - exact (dscp_merge_pair_mutfree r1 r2 _ Evm).
+             - inversion Erun2. }
+           assert (Hr1shell : r1 = mk_head (MMasked f CEq mask xor v1) body r1)
+             by (apply head_dscp_canon; exact Ehd).
+           assert (Hmf1' : rule_mutfree (mk_head (MMasked f CEq mask xor v1) body r1) = true)
+             by (rewrite <- Hr1shell; exact Hmf1).
+           assert (Hrun_eq : r1 :: r2 :: rest
+                   = map (fun w => mk_head (MMasked f CEq mask xor w) body r1) vals ++ rest').
+           { subst vals. cbn [map app]. f_equal; [exact Hr1shell | exact Hsplit]. }
+           assert (Hlook : e_set e (setname n) = map (fun w => (w,w)) vals).
+           { rewrite (Hmint n (le_n n) ltac:(lia)).
+             rewrite e_set_declared.
+             erewrite (optimize_rules_dscp_assoc_stable fuel (S n) dn rest'
+                         m'' dd'' rr'' (setname n) _ (eq_sym Erec)).
+             - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
+             - intros k Hk Heq. apply setname_inj in Heq. lia. }
+           assert (Hfx1 : field_fixed_len f = Some (Datatypes.length v1))
+             by (apply (take_dscp_run_head_width r1 f mask xor v1 body r2 rest
+                          (v :: vs') rest' Ehd Erun); discriminate).
+           assert (Hmxw : Datatypes.length mask = Datatypes.length v1
+                          /\ Datatypes.length xor = Datatypes.length v1)
+             by (apply (take_dscp_run_head_widths r1 f mask xor v1 body r2 rest
+                          (v :: vs') rest' Ehd Erun); discriminate).
+           destruct Hmxw as [Hlmask Hlxor].
+           assert (Hallw : forall w, In w vals -> field_fixed_len f = Some (Datatypes.length w)).
+           { subst vals. intros w [Hw | Hw]; [ subst w; exact Hfx1 | apply (Hwidth w Hw) ]. }
+           assert (Hcert : eval_matchcond (MSetT f [TBitAnd mask xor] false (setname n)) e p
+                   = existsb (fun w => eval_matchcond (MMasked f CEq mask xor w) e p) vals).
+           { apply (mmasked_set_existsb f mask xor vals (setname n) e p).
+             - exact Hlook.
+             - intros w Hw Hld.
+               assert (Hfxw : field_fixed_len f = Some (Datatypes.length w)) by (apply (Hallw w Hw)).
+               assert (Hfl : Datatypes.length (field_value f e p) = Datatypes.length w)
+                 by (apply (field_fixed_len_loaded f (Datatypes.length w) e p Hfxw Hld)).
+               assert (Hww1 : Datatypes.length w = Datatypes.length v1)
+                 by (assert (Some (Datatypes.length w) = Some (Datatypes.length v1)) as Hs
+                       by (rewrite <- Hfxw; exact Hfx1); injection Hs; auto).
+               rewrite (data_bitops_length_eq (field_value f e p) mask xor).
+               + exact Hfl.
+               + lia.
+               + lia. }
+           assert (Hpure : eval_rules
+                             [mk_head (MSetT f [TBitAnd mask xor] false (setname n)) body r1] e p
+                           = eval_rules
+                               (map (fun w => mk_head (MMasked f CEq mask xor w) body r1) vals) e p).
+           { pose proof (eval_rules_run_merge_abs
+                           (map (fun w => MMasked f CEq mask xor w) vals)
+                           (fun q => field_loadable f q) body r1
+                           (MSetT f [TBitAnd mask xor] false (setname n)) [] e p) as Habs.
+             rewrite app_nil_r in Habs. rewrite List.map_map in Habs.
+             apply Habs.
+             - subst vals. cbn [map]. discriminate.
+             - intros m Hm. apply (match_loadable_dscp_run f mask xor vals p m Hm).
+             - apply match_loadable_msett_bitand.
+             - rewrite Hcert. rewrite existsb_map_eq. reflexivity. }
+           assert (HmfM : forallb rule_mutfree
+                     [mk_head (MSetT f [TBitAnd mask xor] false (setname n)) body r1] = true).
+           { cbn [forallb].
+             rewrite (rule_mutfree_mk_head_swap (MMasked f CEq mask xor v1)
+                        (MSetT f [TBitAnd mask xor] false (setname n)) body r1 eq_refl Hmf1').
+             reflexivity. }
+           assert (HmfR : forallb rule_mutfree
+                     (map (fun w => mk_head (MMasked f CEq mask xor w) body r1) vals) = true).
+           { apply (forallb_mutfree_shells data (fun w => MMasked f CEq mask xor w) vals body r1
+                      (MMasked f CEq mask xor v1)); [intro; reflexivity | exact Hmf1']. }
+           change (mk_head (MSetT f [TBitAnd mask xor] false (setname n)) body r1 :: rr'')
+             with ([mk_head (MSetT f [TBitAnd mask xor] false (setname n)) body r1] ++ rr'').
+           rewrite Hrun_eq.
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rr'' e p HmfM).
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rest' e p HmfR).
+           rewrite Hpure.
+           destruct (eval_rules
+                       (map (fun w => mk_head (MMasked f CEq mask xor w) body r1) vals) e p)
+             as [w|]; [reflexivity |].
+           apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
+           ++ intros k Hk Hin. subst dn; cbn [sd_sets map fst] in Hin.
+              destruct Hin as [Heq | Hin];
+                [ apply setname_inj in Heq; lia
+                | apply (Hfresh k); [lia | exact Hin] ].
+           ++ intros k Hk Hk'. apply Hmint; lia.
+           ++ eapply Forall_impl;
+                [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr] |].
+              rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
+              exact (proj2 Hwf_tail).
+      * remember (optimize_rules_dscp fuel n d (r2 :: rest)) as t eqn:Erec.
+        destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        cbn [eval_rules_mut_env].
+        assert (Hst : forall k, n <= k ->
+                  e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                  = e_set e (setname k))
+          by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+        destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+        ++ destruct (terminal w); [reflexivity |].
+           apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+Qed.
+
+(** *** intervalset (range-run -> interval set). *)
+Theorem optimize_rules_intervalset_mut_env : forall h fuel rs n d n' d' rs' base e p,
+  optimize_rules_intervalset fuel n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) rs ->
+  eval_rules_mut_env h rs' e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' base e p H Hfresh Hmint Hwf.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest]].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_intervalset_consSS in H.
+      inversion Hwf as [| ? ? Hwf1 Hwf_tail]; subst.
+      destruct (head_range r1) as [[[[f lo1] hi1] body] |] eqn:Ehd.
+      * destruct (take_range_run r1 (r2 :: rest)) as [ivs rest'] eqn:Erun.
+        pose proof (take_range_run_shape r1 f lo1 hi1 body (r2 :: rest) ivs rest' Ehd Erun)
+          as Hsplit.
+        destruct ivs as [| iv ivs'].
+        -- remember (optimize_rules_intervalset fuel n d (r2 :: rest)) as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           cbn [eval_rules_mut_env].
+           assert (Hst : forall k, n <= k ->
+                     e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                     = e_set e (setname k))
+             by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+           destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+           ++ destruct (terminal w); [reflexivity |].
+              apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+           ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        -- cbv zeta in H.
+           remember (optimize_rules_intervalset fuel (S n)
+                       {| sd_sets := (setname n, (lo1, hi1) :: iv :: ivs') :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           set (ivsAll := (lo1, hi1) :: iv :: ivs') in *.
+           set (dn := {| sd_sets := (setname n, ivsAll) :: sd_sets d;
+                         sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) in *.
+           pose proof (optimize_rules_intervalset_mono fuel (S n) dn rest' m'' dd'' rr''
+                         (eq_sym Erec)) as Hmono.
+           assert (Hmf1 : rule_mutfree r1 = true).
+           { pose proof Erun as Erun2. cbn in Erun2.
+             destruct (range_merge_pair r1 r2) as [[[[fa iva] ivb] bd]|] eqn:Evm.
+             - exact (range_merge_pair_mutfree r1 r2 _ Evm).
+             - inversion Erun2. }
+           assert (Hr1shell : r1 = mk_head (MRange f false lo1 hi1) body r1)
+             by (apply head_range_canon; exact Ehd).
+           assert (Hmf1' : rule_mutfree (mk_head (MRange f false lo1 hi1) body r1) = true)
+             by (rewrite <- Hr1shell; exact Hmf1).
+           assert (Hrun_eq : r1 :: r2 :: rest
+                   = map (fun iv0 => mk_head (MRange f false (fst iv0) (snd iv0)) body r1)
+                       ivsAll ++ rest').
+           { subst ivsAll. cbn [map app fst snd]. f_equal; [exact Hr1shell | exact Hsplit]. }
+           assert (Hlook : e_set e (setname n) = ivsAll).
+           { rewrite (Hmint n (le_n n) ltac:(lia)).
+             rewrite e_set_declared.
+             erewrite (optimize_rules_intervalset_assoc_stable fuel (S n) dn rest'
+                         m'' dd'' rr'' (setname n) _ (eq_sym Erec)).
+             - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
+             - intros k Hk Heq. apply setname_inj in Heq. lia. }
+           assert (Hcert : eval_matchcond (MConcatSet [f] false (setname n)) e p
+                   = existsb (fun iv0 =>
+                                eval_matchcond (MRange f false (fst iv0) (snd iv0)) e p)
+                       ivsAll).
+           { apply (concat_set_ivs_existsb f ivsAll (setname n) e p). exact Hlook. }
+           assert (Hpure : eval_rules
+                             [mk_head (MConcatSet [f] false (setname n)) body r1] e p
+                           = eval_rules
+                               (map (fun iv0 =>
+                                       mk_head (MRange f false (fst iv0) (snd iv0)) body r1)
+                                  ivsAll) e p).
+           { pose proof (eval_rules_run_merge_abs
+                           (map (fun iv0 => MRange f false (fst iv0) (snd iv0)) ivsAll)
+                           (fun q => fields_loadable [f] q) body r1
+                           (MConcatSet [f] false (setname n)) [] e p) as Habs.
+             rewrite app_nil_r in Habs. rewrite List.map_map in Habs.
+             apply Habs.
+             - subst ivsAll. cbn [map]. discriminate.
+             - intros m Hm. apply (match_loadable_range_run f ivsAll p m Hm).
+             - apply match_loadable_mconcat1.
+             - rewrite Hcert. rewrite existsb_map_eq. reflexivity. }
+           assert (HmfM : forallb rule_mutfree
+                     [mk_head (MConcatSet [f] false (setname n)) body r1] = true).
+           { cbn [forallb].
+             rewrite (rule_mutfree_mk_head_swap (MRange f false lo1 hi1)
+                        (MConcatSet [f] false (setname n)) body r1 eq_refl Hmf1').
+             reflexivity. }
+           assert (HmfR : forallb rule_mutfree
+                     (map (fun iv0 => mk_head (MRange f false (fst iv0) (snd iv0)) body r1)
+                        ivsAll) = true).
+           { apply (forallb_mutfree_shells (data * data)
+                      (fun iv0 => MRange f false (fst iv0) (snd iv0)) ivsAll body r1
+                      (MRange f false lo1 hi1)); [intro; reflexivity | exact Hmf1']. }
+           change (mk_head (MConcatSet [f] false (setname n)) body r1 :: rr'')
+             with ([mk_head (MConcatSet [f] false (setname n)) body r1] ++ rr'').
+           rewrite Hrun_eq.
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rr'' e p HmfM).
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rest' e p HmfR).
+           rewrite Hpure.
+           destruct (eval_rules
+                       (map (fun iv0 => mk_head (MRange f false (fst iv0) (snd iv0)) body r1)
+                          ivsAll) e p) as [w|]; [reflexivity |].
+           apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
+           ++ intros k Hk Hin. subst dn; cbn [sd_sets map fst] in Hin.
+              destruct Hin as [Heq | Hin];
+                [ apply setname_inj in Heq; lia
+                | apply (Hfresh k); [lia | exact Hin] ].
+           ++ intros k Hk Hk'. apply Hmint; lia.
+           ++ eapply Forall_impl;
+                [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr] |].
+              rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
+              exact (proj2 Hwf_tail).
+      * remember (optimize_rules_intervalset fuel n d (r2 :: rest)) as t eqn:Erec.
+        destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        cbn [eval_rules_mut_env].
+        assert (Hst : forall k, n <= k ->
+                  e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                  = e_set e (setname k))
+          by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+        destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+        ++ destruct (terminal w); [reflexivity |].
+           apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+Qed.
+
+(** *** intervalsethostorder (transformed-range-run -> host-order interval set). *)
+Theorem optimize_rules_intervalsethostorder_mut_env : forall h fuel rs n d n' d' rs' base e p,
+  optimize_rules_intervalsethostorder fuel n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) rs ->
+  eval_rules_mut_env h rs' e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' base e p H Hfresh Hmint Hwf.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest]].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_intervalsethostorder_consSS in H.
+      inversion Hwf as [| ? ? Hwf1 Hwf_tail]; subst.
+      destruct (head_ivsett r1) as [[[[[f ts] lo1] hi1] body] |] eqn:Ehd.
+      * destruct (take_ivsett_run r1 (r2 :: rest)) as [ivs rest'] eqn:Erun.
+        pose proof (take_ivsett_run_shape r1 f ts lo1 hi1 body (r2 :: rest) ivs rest'
+                      Ehd Erun) as Hsplit.
+        destruct ivs as [| iv ivs'].
+        -- remember (optimize_rules_intervalsethostorder fuel n d (r2 :: rest)) as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           cbn [eval_rules_mut_env].
+           assert (Hst : forall k, n <= k ->
+                     e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                     = e_set e (setname k))
+             by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+           destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+           ++ destruct (terminal w); [reflexivity |].
+              apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+           ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        -- cbv zeta in H.
+           remember (optimize_rules_intervalsethostorder fuel (S n)
+                       {| sd_sets := (setname n, (lo1, hi1) :: iv :: ivs') :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           set (ivsAll := (lo1, hi1) :: iv :: ivs') in *.
+           set (dn := {| sd_sets := (setname n, ivsAll) :: sd_sets d;
+                         sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) in *.
+           pose proof (optimize_rules_intervalsethostorder_mono fuel (S n) dn rest'
+                         m'' dd'' rr'' (eq_sym Erec)) as Hmono.
+           assert (Hmf1 : rule_mutfree r1 = true).
+           { pose proof Erun as Erun2. unfold take_ivsett_run in Erun2.
+             rewrite Ehd in Erun2.
+             destruct (take_ivsett_run_raw r1 (r2 :: rest)) as [ivs0 rest0] eqn:Eraw.
+             destruct (all_disjoint ((lo1, hi1) :: ivs0)); [| inversion Erun2].
+             inversion Erun2; subst ivs0 rest0.
+             cbn in Eraw.
+             destruct (ivsett_merge_pair r1 r2) as [[[[[fa tsa] iva] ivb] bd]|] eqn:Evm.
+             - exact (ivsett_merge_pair_mutfree r1 r2 _ Evm).
+             - inversion Eraw. }
+           assert (Hr1shell : r1 = mk_head (MRangeT f ts false lo1 hi1) body r1)
+             by (apply head_ivsett_canon; exact Ehd).
+           assert (Hmf1' : rule_mutfree (mk_head (MRangeT f ts false lo1 hi1) body r1) = true)
+             by (rewrite <- Hr1shell; exact Hmf1).
+           assert (Hrun_eq : r1 :: r2 :: rest
+                   = map (fun iv0 => mk_head (MRangeT f ts false (fst iv0) (snd iv0)) body r1)
+                       ivsAll ++ rest').
+           { subst ivsAll. cbn [map app fst snd]. f_equal; [exact Hr1shell | exact Hsplit]. }
+           assert (Hlook : e_set e (setname n) = ivsAll).
+           { rewrite (Hmint n (le_n n) ltac:(lia)).
+             rewrite e_set_declared.
+             erewrite (optimize_rules_intervalsethostorder_assoc_stable fuel (S n) dn rest'
+                         m'' dd'' rr'' (setname n) _ (eq_sym Erec)).
+             - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
+             - intros k Hk Heq. apply setname_inj in Heq. lia. }
+           assert (Hcert : eval_matchcond (MSetT f ts false (setname n)) e p
+                   = existsb (fun iv0 =>
+                                eval_matchcond (MRangeT f ts false (fst iv0) (snd iv0)) e p)
+                       ivsAll).
+           { apply (msett_ivs_existsb f ts ivsAll (setname n) e p). exact Hlook. }
+           assert (Hpure : eval_rules
+                             [mk_head (MSetT f ts false (setname n)) body r1] e p
+                           = eval_rules
+                               (map (fun iv0 =>
+                                       mk_head (MRangeT f ts false (fst iv0) (snd iv0)) body r1)
+                                  ivsAll) e p).
+           { pose proof (eval_rules_run_merge_abs
+                           (map (fun iv0 => MRangeT f ts false (fst iv0) (snd iv0)) ivsAll)
+                           (fun q => field_loadable f q) body r1
+                           (MSetT f ts false (setname n)) [] e p) as Habs.
+             rewrite app_nil_r in Habs. rewrite List.map_map in Habs.
+             apply Habs.
+             - subst ivsAll. cbn [map]. discriminate.
+             - intros m Hm. apply (match_loadable_ranget_run f ts ivsAll p m Hm).
+             - apply match_loadable_msett.
+             - rewrite Hcert. rewrite existsb_map_eq. reflexivity. }
+           assert (HmfM : forallb rule_mutfree
+                     [mk_head (MSetT f ts false (setname n)) body r1] = true).
+           { cbn [forallb].
+             rewrite (rule_mutfree_mk_head_swap (MRangeT f ts false lo1 hi1)
+                        (MSetT f ts false (setname n)) body r1 eq_refl Hmf1').
+             reflexivity. }
+           assert (HmfR : forallb rule_mutfree
+                     (map (fun iv0 => mk_head (MRangeT f ts false (fst iv0) (snd iv0)) body r1)
+                        ivsAll) = true).
+           { apply (forallb_mutfree_shells (data * data)
+                      (fun iv0 => MRangeT f ts false (fst iv0) (snd iv0)) ivsAll body r1
+                      (MRangeT f ts false lo1 hi1)); [intro; reflexivity | exact Hmf1']. }
+           change (mk_head (MSetT f ts false (setname n)) body r1 :: rr'')
+             with ([mk_head (MSetT f ts false (setname n)) body r1] ++ rr'').
+           rewrite Hrun_eq.
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rr'' e p HmfM).
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rest' e p HmfR).
+           rewrite Hpure.
+           destruct (eval_rules
+                       (map (fun iv0 => mk_head (MRangeT f ts false (fst iv0) (snd iv0)) body r1)
+                          ivsAll) e p) as [w|]; [reflexivity |].
+           apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
+           ++ intros k Hk Hin. subst dn; cbn [sd_sets map fst] in Hin.
+              destruct Hin as [Heq | Hin];
+                [ apply setname_inj in Heq; lia
+                | apply (Hfresh k); [lia | exact Hin] ].
+           ++ intros k Hk Hk'. apply Hmint; lia.
+           ++ eapply Forall_impl;
+                [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr] |].
+              rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
+              exact (proj2 Hwf_tail).
+      * remember (optimize_rules_intervalsethostorder fuel n d (r2 :: rest)) as t eqn:Erec.
+        destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        cbn [eval_rules_mut_env].
+        assert (Hst : forall k, n <= k ->
+                  e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                  = e_set e (setname k))
+          by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+        destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+        ++ destruct (terminal w); [reflexivity |].
+           apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+Qed.
+
+(** Two-level shells (guarded families): swap the INNER head of a
+    [mk_head gm (BMatch m :: body) r] shell for any consumption-free match. *)
+Lemma rule_mutfree_mk_head2_swap : forall gm m m' body r,
+  match_consumefree m' = true ->
+  rule_mutfree (mk_head gm (BMatch m :: body) r) = true ->
+  rule_mutfree (mk_head gm (BMatch m' :: body) r) = true.
+Proof.
+  intros gm m m' body r Hm' H.
+  rewrite rule_mutfree_mk_head in H |- *.
+  cbn [forallb body_item_mutfree] in H |- *.
+  apply Bool.andb_true_iff in H as [Hgm Htl].
+  apply Bool.andb_true_iff in Htl as [Htl Hnat].
+  apply Bool.andb_true_iff in Htl as [Htl Hafter].
+  apply Bool.andb_true_iff in Htl as [_ Hbody].
+  rewrite Hgm, Hm', Hbody, Hafter, Hnat. reflexivity.
+Qed.
+
+Lemma forallb_mutfree_shells2 : forall (A : Type) (g : A -> matchcond) gm l body r m0,
+  (forall a : A, match_consumefree (g a) = true) ->
+  rule_mutfree (mk_head gm (BMatch m0 :: body) r) = true ->
+  forallb rule_mutfree (map (fun a => mk_head gm (BMatch (g a) :: body) r) l) = true.
+Proof.
+  intros A g gm l body r m0 Hg Hmf. apply forallb_forall.
+  intros x Hx. apply in_map_iff in Hx as [a [Ha _]]. subst x.
+  exact (rule_mutfree_mk_head2_swap gm m0 (g a) body r (Hg a) Hmf).
+Qed.
+
+(** *** intervalsetguarded (guarded range-run -> interval set). *)
+Theorem optimize_rules_intervalsetguarded_mut_env : forall h fuel rs n d n' d' rs' base e p,
+  optimize_rules_intervalsetguarded fuel n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) rs ->
+  eval_rules_mut_env h rs' e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' base e p H Hfresh Hmint Hwf.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest]].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_intervalsetguarded_consSS in H.
+      inversion Hwf as [| ? ? Hwf1 Hwf_tail]; subst.
+      destruct (head_rangeGr r1) as [[[[[gm f] lo1] hi1] body] |] eqn:Ehd.
+      * destruct (take_rangeg_run r1 (r2 :: rest)) as [ivs rest'] eqn:Erun.
+        pose proof (take_rangeg_run_shape r1 gm f lo1 hi1 body (r2 :: rest) ivs rest'
+                      Ehd Erun) as Hsplit.
+        destruct ivs as [| iv ivs'].
+        -- remember (optimize_rules_intervalsetguarded fuel n d (r2 :: rest)) as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           cbn [eval_rules_mut_env].
+           assert (Hst : forall k, n <= k ->
+                     e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                     = e_set e (setname k))
+             by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+           destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+           ++ destruct (terminal w); [reflexivity |].
+              apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+           ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        -- cbv zeta in H.
+           remember (optimize_rules_intervalsetguarded fuel (S n)
+                       {| sd_sets := (setname n, (lo1, hi1) :: iv :: ivs') :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           set (ivsAll := (lo1, hi1) :: iv :: ivs') in *.
+           set (dn := {| sd_sets := (setname n, ivsAll) :: sd_sets d;
+                         sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) in *.
+           pose proof (optimize_rules_intervalsetguarded_mono fuel (S n) dn rest'
+                         m'' dd'' rr'' (eq_sym Erec)) as Hmono.
+           assert (Hmf1 : rule_mutfree r1 = true).
+           { pose proof Erun as Erun2. unfold take_rangeg_run in Erun2.
+             rewrite Ehd in Erun2.
+             destruct (take_rangeg_run_raw r1 (r2 :: rest)) as [ivs0 rest0] eqn:Eraw.
+             destruct (all_disjoint ((lo1, hi1) :: ivs0)); [| inversion Erun2].
+             inversion Erun2; subst ivs0 rest0.
+             cbn in Eraw.
+             destruct (range_mergeGr_pair r1 r2) as [[[[[gma fa] iva] ivb] bd]|] eqn:Evm.
+             - exact (range_mergeGr_pair_mutfree r1 r2 _ Evm).
+             - inversion Eraw. }
+           assert (Hr1shell : r1 = orig_ruleGr f gm lo1 hi1 body r1)
+             by (apply head_rangeGr_canon; exact Ehd).
+           assert (Hmf1' : rule_mutfree (orig_ruleGr f gm lo1 hi1 body r1) = true)
+             by (rewrite <- Hr1shell; exact Hmf1).
+           assert (Hrun_eq : r1 :: r2 :: rest
+                   = map (fun iv0 => orig_ruleGr f gm (fst iv0) (snd iv0) body r1) ivsAll
+                     ++ rest').
+           { subst ivsAll. cbn [map app fst snd]. f_equal; [exact Hr1shell | exact Hsplit]. }
+           assert (Hlook : e_set e (setname n) = ivsAll).
+           { rewrite (Hmint n (le_n n) ltac:(lia)).
+             rewrite e_set_declared.
+             erewrite (optimize_rules_intervalsetguarded_assoc_stable fuel (S n) dn rest'
+                         m'' dd'' rr'' (setname n) _ (eq_sym Erec)).
+             - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
+             - intros k Hk Heq. apply setname_inj in Heq. lia. }
+           assert (Hcert : eval_matchcond (MConcatSet [f] false (setname n)) e p
+                   = existsb (fun iv0 =>
+                                eval_matchcond (MRange f false (fst iv0) (snd iv0)) e p)
+                       ivsAll).
+           { apply (concat_set_ivs_existsb f ivsAll (setname n) e p). exact Hlook. }
+           assert (Hpure : eval_rules [merged_ruleGs f gm (setname n) body r1] e p
+                           = eval_rules
+                               (map (fun iv0 => orig_ruleGr f gm (fst iv0) (snd iv0) body r1)
+                                  ivsAll) e p).
+           { pose proof (eval_rules_run_collapse
+                           (map (fun iv0 => orig_ruleGr f gm (fst iv0) (snd iv0) body r1) ivsAll)
+                           (rule_loadable (merged_ruleGs f gm (setname n) body r1) e p)
+                           (outcome (merged_ruleGs f gm (setname n) body r1) e p)
+                           (merged_ruleGs f gm (setname n) body r1) [] e p) as Habs.
+             rewrite app_nil_r in Habs.
+             apply Habs.
+             - subst ivsAll. cbn [map]. discriminate.
+             - intros r Hr. apply in_map_iff in Hr as [iv0 [Hiv _]]. subst r.
+               symmetry. apply merged_ruleGs_loadable_eq_origr.
+             - intros r Hr. apply in_map_iff in Hr as [iv0 [Hiv _]]. subst r.
+               symmetry. apply merged_ruleGs_outcome_eq_origr.
+             - reflexivity.
+             - reflexivity.
+             - rewrite merged_ruleGs_applies. rewrite Hcert.
+               rewrite existsb_map_eq.
+               rewrite (existsb_ext _ _ _ ivsAll
+                          (fun iv0 (_ : In iv0 ivsAll) =>
+                             orig_ruleGr_applies f gm (fst iv0) (snd iv0) body r1 e p)).
+               symmetry. apply existsb_guardhead_factor. }
+           assert (HmfM : forallb rule_mutfree
+                     [merged_ruleGs f gm (setname n) body r1] = true).
+           { cbn [forallb]. unfold merged_ruleGs.
+             unfold orig_ruleGr in Hmf1'.
+             rewrite (rule_mutfree_mk_head2_swap gm (MRange f false lo1 hi1)
+                        (MConcatSet [f] false (setname n)) body r1 eq_refl Hmf1').
+             reflexivity. }
+           assert (HmfR : forallb rule_mutfree
+                     (map (fun iv0 => orig_ruleGr f gm (fst iv0) (snd iv0) body r1)
+                        ivsAll) = true).
+           { unfold orig_ruleGr in *.
+             apply (forallb_mutfree_shells2 (data * data)
+                      (fun iv0 => MRange f false (fst iv0) (snd iv0)) gm ivsAll body r1
+                      (MRange f false lo1 hi1)); [intro; reflexivity | exact Hmf1']. }
+           change (merged_ruleGs f gm (setname n) body r1 :: rr'')
+             with ([merged_ruleGs f gm (setname n) body r1] ++ rr'').
+           rewrite Hrun_eq.
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rr'' e p HmfM).
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rest' e p HmfR).
+           rewrite Hpure.
+           destruct (eval_rules
+                       (map (fun iv0 => orig_ruleGr f gm (fst iv0) (snd iv0) body r1)
+                          ivsAll) e p) as [w|]; [reflexivity |].
+           apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
+           ++ intros k Hk Hin. subst dn; cbn [sd_sets map fst] in Hin.
+              destruct Hin as [Heq | Hin];
+                [ apply setname_inj in Heq; lia
+                | apply (Hfresh k); [lia | exact Hin] ].
+           ++ intros k Hk Hk'. apply Hmint; lia.
+           ++ eapply Forall_impl;
+                [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr] |].
+              rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
+              exact (proj2 Hwf_tail).
+      * remember (optimize_rules_intervalsetguarded fuel n d (r2 :: rest)) as t eqn:Erec.
+        destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        cbn [eval_rules_mut_env].
+        assert (Hst : forall k, n <= k ->
+                  e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                  = e_set e (setname k))
+          by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+        destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+        ++ destruct (terminal w); [reflexivity |].
+           apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+Qed.
+
+(** *** mixedpointrangeguarded (guarded point+range run -> interval set). *)
+Theorem optimize_rules_mixedpointrangeguarded_mut_env : forall h fuel rs n d n' d' rs' base e p,
+  optimize_rules_mixedpointrangeguarded fuel n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) rs ->
+  eval_rules_mut_env h rs' e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' base e p H Hfresh Hmint Hwf.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest]].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_mixedpointrangeguarded_consSS in H.
+      inversion Hwf as [| ? ? Hwf1 Hwf_tail]; subst.
+      destruct (head_mixGm r1) as [[[[gm f] e1] body] |] eqn:Ehd.
+      * destruct (take_mix_run r1 (r2 :: rest)) as [es rest'] eqn:Erun.
+        pose proof (take_mix_run_shape r1 gm f e1 body (r2 :: rest) es rest' Ehd Erun)
+          as Hsplit.
+        destruct es as [| el es'].
+        -- remember (optimize_rules_mixedpointrangeguarded fuel n d (r2 :: rest)) as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           cbn [eval_rules_mut_env].
+           assert (Hst : forall k, n <= k ->
+                     e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                     = e_set e (setname k))
+             by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+           destruct (rule_step h r1 e p) as [[w|] [e1' p1]]; cbn [fst snd] in Hst.
+           ++ destruct (terminal w); [reflexivity |].
+              apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1' p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+           ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1' p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        -- cbv zeta in H.
+           remember (optimize_rules_mixedpointrangeguarded fuel (S n)
+                       {| sd_sets := (setname n, map melem_iv (e1 :: el :: es')) :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as t eqn:Erec.
+           destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           set (esAll := e1 :: el :: es') in *.
+           set (dn := {| sd_sets := (setname n, map melem_iv esAll) :: sd_sets d;
+                         sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) in *.
+           pose proof (optimize_rules_mixedpointrangeguarded_mono fuel (S n) dn rest'
+                         m'' dd'' rr'' (eq_sym Erec)) as Hmono.
+           assert (Hok_all : forall e0, In e0 esAll -> melem_ok f e0 = true).
+           { intros e0 He0.
+             pose proof (take_mix_run_melem_ok r1 gm f e1 body (r2 :: rest)
+                           (el :: es') rest' Ehd Erun ltac:(discriminate)) as Hforall.
+             rewrite forallb_forall in Hforall. apply (Hforall e0). exact He0. }
+           assert (Hmf1 : rule_mutfree r1 = true).
+           { pose proof Erun as Erun2. unfold take_mix_run in Erun2.
+             rewrite Ehd in Erun2.
+             destruct (take_mix_run_raw r1 (r2 :: rest)) as [es0 rest0] eqn:Eraw.
+             destruct (forallb (melem_ok f) (e1 :: es0)
+                       && all_disjoint (map melem_iv (e1 :: es0))); [| inversion Erun2].
+             inversion Erun2; subst es0 rest0.
+             cbn in Eraw.
+             destruct (mix_mergeGm_pair r1 r2) as [[[[[gma fa] ea] eb] bd]|] eqn:Evm.
+             - exact (mix_mergeGm_pair_mutfree r1 r2 _ Evm).
+             - inversion Eraw. }
+           assert (Hr1shell : r1 = orig_ruleGm f gm e1 body r1)
+             by (apply head_mixGm_canon; exact Ehd).
+           assert (Hmf1' : rule_mutfree (orig_ruleGm f gm e1 body r1) = true)
+             by (rewrite <- Hr1shell; exact Hmf1).
+           assert (Hrun_eq : r1 :: r2 :: rest
+                   = map (fun e0 => orig_ruleGm f gm e0 body r1) esAll ++ rest').
+           { subst esAll. cbn [map app]. f_equal; [exact Hr1shell | exact Hsplit]. }
+           assert (Hlook : e_set e (setname n) = map melem_iv esAll).
+           { rewrite (Hmint n (le_n n) ltac:(lia)).
+             rewrite e_set_declared.
+             erewrite (optimize_rules_mixedpointrangeguarded_assoc_stable fuel (S n) dn rest'
+                         m'' dd'' rr'' (setname n) _ (eq_sym Erec)).
+             - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
+             - intros k Hk Heq. apply setname_inj in Heq. lia. }
+           assert (Hcert : eval_matchcond (MConcatSet [f] false (setname n)) e p
+                   = existsb (fun iv0 =>
+                                eval_matchcond (MRange f false (fst iv0) (snd iv0)) e p)
+                       (map melem_iv esAll)).
+           { apply (concat_set_ivs_existsb f (map melem_iv esAll) (setname n) e p).
+             exact Hlook. }
+           assert (Hpure : eval_rules [merged_ruleGs f gm (setname n) body r1] e p
+                           = eval_rules
+                               (map (fun e0 => orig_ruleGm f gm e0 body r1) esAll) e p).
+           { pose proof (eval_rules_run_collapse
+                           (map (fun e0 => orig_ruleGm f gm e0 body r1) esAll)
+                           (rule_loadable (merged_ruleGs f gm (setname n) body r1) e p)
+                           (outcome (merged_ruleGs f gm (setname n) body r1) e p)
+                           (merged_ruleGs f gm (setname n) body r1) [] e p) as Habs.
+             rewrite app_nil_r in Habs.
+             apply Habs.
+             - subst esAll. cbn [map]. discriminate.
+             - intros r Hr. apply in_map_iff in Hr as [e0 [He0 _]]. subst r.
+               symmetry. apply merged_ruleGs_loadable_eq_origm.
+             - intros r Hr. apply in_map_iff in Hr as [e0 [He0 _]]. subst r.
+               symmetry. apply merged_ruleGs_outcome_eq_origm.
+             - reflexivity.
+             - reflexivity.
+             - rewrite merged_ruleGs_applies. rewrite Hcert. rewrite existsb_map_eq.
+               rewrite (existsb_ext _
+                          (fun e0 => eval_matchcond
+                                       (MRange f false (fst (melem_iv e0)) (snd (melem_iv e0))) e p)
+                          (fun e0 => eval_matchcond (melem_mc f e0) e p) esAll
+                          (fun e0 He0 => eq_sym (eval_melem_mrange f e0 e p (Hok_all e0 He0)))).
+               symmetry. rewrite existsb_map_eq.
+               rewrite (existsb_ext _ _ _ esAll
+                          (fun e0 (_ : In e0 esAll) =>
+                             orig_ruleGm_applies f gm e0 body r1 e p)).
+               apply existsb_guardhead_factor. }
+           assert (HmfM : forallb rule_mutfree
+                     [merged_ruleGs f gm (setname n) body r1] = true).
+           { cbn [forallb]. unfold merged_ruleGs.
+             unfold orig_ruleGm in Hmf1'. cbn [melem_mc] in Hmf1'.
+             rewrite (rule_mutfree_mk_head2_swap gm (melem_mc f e1)
+                        (MConcatSet [f] false (setname n)) body r1 eq_refl
+                        ltac:(destruct e1; exact Hmf1')).
+             reflexivity. }
+           assert (HmfR : forallb rule_mutfree
+                     (map (fun e0 => orig_ruleGm f gm e0 body r1) esAll) = true).
+           { unfold orig_ruleGm in *.
+             apply (forallb_mutfree_shells2 melem
+                      (fun e0 => melem_mc f e0) gm esAll body r1 (melem_mc f e1));
+               [intro a; destruct a; reflexivity | destruct e1; exact Hmf1']. }
+           change (merged_ruleGs f gm (setname n) body r1 :: rr'')
+             with ([merged_ruleGs f gm (setname n) body r1] ++ rr'').
+           rewrite Hrun_eq.
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rr'' e p HmfM).
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rest' e p HmfR).
+           rewrite Hpure.
+           destruct (eval_rules
+                       (map (fun e0 => orig_ruleGm f gm e0 body r1) esAll) e p) as [w|];
+             [reflexivity |].
+           apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
+           ++ intros k Hk Hin. subst dn; cbn [sd_sets map fst] in Hin.
+              destruct Hin as [Heq | Hin];
+                [ apply setname_inj in Heq; lia
+                | apply (Hfresh k); [lia | exact Hin] ].
+           ++ intros k Hk Hk'. apply Hmint; lia.
+           ++ eapply Forall_impl;
+                [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr] |].
+              rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
+              exact (proj2 Hwf_tail).
+      * remember (optimize_rules_mixedpointrangeguarded fuel n d (r2 :: rest)) as t eqn:Erec.
+        destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        cbn [eval_rules_mut_env].
+        assert (Hst : forall k, n <= k ->
+                  e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                  = e_set e (setname k))
+          by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+        destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+        ++ destruct (terminal w); [reflexivity |].
+           apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+Qed.
+
+(** Compositional [rule_mutfree] intro/elim for arbitrary shell shapes. *)
+Lemma rule_mutfree_mk_head_intro : forall m body r,
+  match_consumefree m = true ->
+  forallb body_item_mutfree body = true ->
+  forallb (fun s => negb (is_mut_stmt s)) (r_after r) = true ->
+  rule_natfree r = true ->
+  rule_mutfree (mk_head m body r) = true.
+Proof.
+  intros m body r Hm Hb Ha Hn. rewrite rule_mutfree_mk_head.
+  rewrite Hm, Hb, Ha, Hn. reflexivity.
+Qed.
+
+Lemma rule_mutfree_mk_head_elim : forall m body r,
+  rule_mutfree (mk_head m body r) = true ->
+  forallb body_item_mutfree body = true
+  /\ forallb (fun s => negb (is_mut_stmt s)) (r_after r) = true
+  /\ rule_natfree r = true.
+Proof.
+  intros m body r H. rewrite rule_mutfree_mk_head in H.
+  apply Bool.andb_true_iff in H as [_ H].
+  apply Bool.andb_true_iff in H as [H Hn].
+  apply Bool.andb_true_iff in H as [Hb Ha].
+  auto.
+Qed.
+
+Lemma forallb_bim_cons_bmatch : forall m body,
+  forallb body_item_mutfree (BMatch m :: body)
+  = match_consumefree m && forallb body_item_mutfree body.
+Proof. reflexivity. Qed.
+
+(** *** concat (two-selector tuple-run -> concat set). *)
+Theorem optimize_rules_concat_mut_env : forall h fuel rs n d n' d' rs' base e p,
+  optimize_rules_concat fuel n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) rs ->
+  eval_rules_mut_env h rs' e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' base e p H Hfresh Hmint Hwf.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest]].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_concat_consSS in H.
+      inversion Hwf as [| ? ? Hwf1 Hwf_tail]; subst.
+      destruct (head_value2 r1) as [[[[[f1 a1] f2] b1] body] |] eqn:Ehd.
+      * destruct (take_concat_run r1 (r2 :: rest)) as [ts rest'] eqn:Erun.
+        destruct (take_concat_run_shape r1 f1 a1 f2 b1 body (r2 :: rest) ts rest' Ehd Erun)
+          as [Hsplit [HwA HwB]].
+        destruct ts as [| t ts'].
+        -- remember (optimize_rules_concat fuel n d (r2 :: rest)) as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           cbn [eval_rules_mut_env].
+           assert (Hst : forall k, n <= k ->
+                     e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                     = e_set e (setname k))
+             by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+           destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+           ++ destruct (terminal w); [reflexivity |].
+              apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+           ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        -- cbv zeta in H.
+           remember (optimize_rules_concat fuel (S n)
+                       {| sd_sets := (setname n, map pack_tuple ((a1,b1) :: t :: ts'))
+                                     :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           set (tuples := (a1, b1) :: t :: ts') in *.
+           set (dn := {| sd_sets := (setname n, map pack_tuple tuples) :: sd_sets d;
+                         sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) in *.
+           pose proof (optimize_rules_concat_mono fuel (S n) dn rest' m'' dd'' rr''
+                         (eq_sym Erec)) as Hmono.
+           assert (Hmf1 : rule_mutfree r1 = true).
+           { pose proof Erun as Erun2. cbn in Erun2.
+             destruct (concat_merge_pair r1 r2)
+               as [[[[[[[fa ga] aa] ba] a2] b2] bd]|] eqn:Evm.
+             - exact (concat_merge_pair_mutfree r1 r2 _ Evm).
+             - inversion Erun2. }
+           assert (Hr1shell : r1 = orig_rule2 f1 f2 a1 b1 body r1)
+             by (apply head_value2_canon; exact Ehd).
+           (* decompose the shared tail's mut-freedom *)
+           assert (Hparts : forallb body_item_mutfree body = true
+                            /\ forallb (fun s => negb (is_mut_stmt s)) (r_after r1) = true
+                            /\ rule_natfree r1 = true).
+           { rewrite Hr1shell in Hmf1. unfold orig_rule2 in Hmf1.
+             destruct (rule_mutfree_mk_head_elim _ _ _ Hmf1) as [Hb [Ha Hn2]].
+             rewrite forallb_bim_cons_bmatch in Hb.
+             apply Bool.andb_true_iff in Hb as [_ Hb].
+             unfold mk_head in Ha, Hn2; cbn [r_after] in Ha;
+               unfold rule_natfree, r_nat in Hn2 |- *; cbn [r_outcome] in Hn2.
+             auto. }
+           destruct Hparts as [Hbody_mf [Hafter_mf Hnat_mf]].
+           assert (Hrun_eq : r1 :: r2 :: rest
+                   = map (fun ab => orig_rule2 f1 f2 (fst ab) (snd ab) body r1) tuples
+                     ++ rest').
+           { subst tuples. cbn [map app fst snd]. f_equal; [exact Hr1shell | exact Hsplit]. }
+           assert (Hlook : e_set e (setname n) = map pack_tuple tuples).
+           { rewrite (Hmint n (le_n n) ltac:(lia)).
+             rewrite e_set_declared.
+             erewrite (optimize_rules_concat_assoc_stable fuel (S n) dn rest'
+                         m'' dd'' rr'' (setname n) _ (eq_sym Erec)).
+             - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
+             - intros k Hk Heq. apply setname_inj in Heq. lia. }
+           assert (Hcert : eval_matchcond (MConcatSet [f1; f2] false (setname n)) e p
+                   = existsb (fun ab => andb (eval_matchcond (MCmp f1 CEq (fst ab)) e p)
+                                             (eval_matchcond (MCmp f2 CEq (snd ab)) e p))
+                             tuples).
+           { apply (concat_two_fields_certificate_N f1 f2 tuples (setname n) e p).
+             - exact Hlook.
+             - intros a b Hin Hld.
+               assert (Hfx : field_fixed_len f1 = Some (Datatypes.length a)).
+               { destruct (take_concat_run_head_width r1 f1 a1 f2 b1 body r2 rest
+                             (t :: ts') rest' Ehd Erun ltac:(discriminate)) as [Hh1 _].
+                 subst tuples. destruct Hin as [Hab | Hin].
+                 - injection Hab as -> ->. exact Hh1.
+                 - apply (HwA a b Hin). }
+               apply (field_fixed_len_loaded f1 (Datatypes.length a) e p Hfx Hld).
+             - intros a b Hin Hld.
+               assert (Hfx : field_fixed_len f2 = Some (Datatypes.length b)).
+               { destruct (take_concat_run_head_width r1 f1 a1 f2 b1 body r2 rest
+                             (t :: ts') rest' Ehd Erun ltac:(discriminate)) as [_ Hh2].
+                 subst tuples. destruct Hin as [Hab | Hin].
+                 - injection Hab as -> ->. exact Hh2.
+                 - apply (HwB a b Hin). }
+               apply (field_fixed_len_loaded f2 (Datatypes.length b) e p Hfx Hld). }
+           assert (Hpure : eval_rules [merged_rule2 f1 f2 (setname n) body r1] e p
+                           = eval_rules
+                               (map (fun ab => orig_rule2 f1 f2 (fst ab) (snd ab) body r1)
+                                  tuples) e p).
+           { pose proof (eval_rules_run_collapse
+                           (map (fun ab => orig_rule2 f1 f2 (fst ab) (snd ab) body r1) tuples)
+                           (rule_loadable (merged_rule2 f1 f2 (setname n) body r1) e p)
+                           (outcome (merged_rule2 f1 f2 (setname n) body r1) e p)
+                           (merged_rule2 f1 f2 (setname n) body r1) [] e p) as Habs.
+             rewrite app_nil_r in Habs.
+             apply Habs.
+             - subst tuples. cbn [map]. discriminate.
+             - intros r Hr. apply in_map_iff in Hr as [ab [Hab _]]. subst r.
+               symmetry. apply merged_rule2_loadable_eq_orig.
+             - intros r Hr. apply in_map_iff in Hr as [ab [Hab _]]. subst r.
+               symmetry. apply merged_rule2_outcome_eq_orig.
+             - reflexivity.
+             - reflexivity.
+             - rewrite merged_rule2_applies. rewrite Hcert.
+               rewrite existsb_map_eq.
+               transitivity (existsb (fun ab =>
+                   andb (andb (eval_matchcond (MCmp f1 CEq (fst ab)) e p)
+                              (eval_matchcond (MCmp f2 CEq (snd ab)) e p))
+                        (rule_applies_walk body e p)) tuples).
+               + rewrite existsb_andb_const. reflexivity.
+               + apply existsb_ext. intros ab _. symmetry. apply orig_rule2_applies. }
+           assert (HmfM : forallb rule_mutfree
+                     [merged_rule2 f1 f2 (setname n) body r1] = true).
+           { cbn [forallb]. unfold merged_rule2.
+             rewrite (rule_mutfree_mk_head_intro (MConcatSet [f1; f2] false (setname n))
+                        body r1 eq_refl Hbody_mf Hafter_mf Hnat_mf).
+             reflexivity. }
+           assert (HmfR : forallb rule_mutfree
+                     (map (fun ab => orig_rule2 f1 f2 (fst ab) (snd ab) body r1)
+                        tuples) = true).
+           { apply forallb_forall. intros x Hx.
+             apply in_map_iff in Hx as [ab [Hab _]]. subst x. unfold orig_rule2.
+             apply rule_mutfree_mk_head_intro;
+               [ reflexivity
+               | rewrite forallb_bim_cons_bmatch; cbn [match_consumefree];
+                 exact Hbody_mf
+               | exact Hafter_mf | exact Hnat_mf ]. }
+           change (merged_rule2 f1 f2 (setname n) body r1 :: rr'')
+             with ([merged_rule2 f1 f2 (setname n) body r1] ++ rr'').
+           rewrite Hrun_eq.
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rr'' e p HmfM).
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rest' e p HmfR).
+           rewrite Hpure.
+           destruct (eval_rules
+                       (map (fun ab => orig_rule2 f1 f2 (fst ab) (snd ab) body r1)
+                          tuples) e p) as [w|]; [reflexivity |].
+           apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
+           ++ intros k Hk Hin. subst dn; cbn [sd_sets map fst] in Hin.
+              destruct Hin as [Heq | Hin];
+                [ apply setname_inj in Heq; lia
+                | apply (Hfresh k); [lia | exact Hin] ].
+           ++ intros k Hk Hk'. apply Hmint; lia.
+           ++ eapply Forall_impl;
+                [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr] |].
+              rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
+              exact (proj2 Hwf_tail).
+      * remember (optimize_rules_concat fuel n d (r2 :: rest)) as tt eqn:Erec.
+        destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        cbn [eval_rules_mut_env].
+        assert (Hst : forall k, n <= k ->
+                  e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                  = e_set e (setname k))
+          by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+        destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+        ++ destruct (terminal w); [reflexivity |].
+           apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+Qed.
+
+(** *** concatguarded (guarded two-selector tuple-run -> concat set). *)
+Theorem optimize_rules_concatguarded_mut_env : forall h fuel rs n d n' d' rs' base e p,
+  optimize_rules_concatguarded fuel n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) rs ->
+  eval_rules_mut_env h rs' e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' base e p H Hfresh Hmint Hwf.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest]].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_concatguarded_consSS in H.
+      inversion Hwf as [| ? ? Hwf1 Hwf_tail]; subst.
+      destruct (head_value2g r1) as [[[[[[f1 a1] gm] f2] b1] body] |] eqn:Ehd.
+      * destruct (take_concatg_run r1 (r2 :: rest)) as [ts rest'] eqn:Erun.
+        destruct (take_concatg_run_shape r1 f1 a1 gm f2 b1 body (r2 :: rest) ts rest'
+                    Ehd Erun) as [Hsplit [HwA HwB]].
+        destruct ts as [| t ts'].
+        -- remember (optimize_rules_concatguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           cbn [eval_rules_mut_env].
+           assert (Hst : forall k, n <= k ->
+                     e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                     = e_set e (setname k))
+             by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+           destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+           ++ destruct (terminal w); [reflexivity |].
+              apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+           ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        -- cbv zeta in H.
+           remember (optimize_rules_concatguarded fuel (S n)
+                       {| sd_sets := (setname n, map pack_tuple ((a1,b1) :: t :: ts'))
+                                     :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           set (tuples := (a1, b1) :: t :: ts') in *.
+           set (dn := {| sd_sets := (setname n, map pack_tuple tuples) :: sd_sets d;
+                         sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) in *.
+           pose proof (optimize_rules_concatguarded_mono fuel (S n) dn rest' m'' dd'' rr''
+                         (eq_sym Erec)) as Hmono.
+           assert (Hmf1 : rule_mutfree r1 = true).
+           { pose proof Erun as Erun2. cbn in Erun2.
+             destruct (concat_mergeg_pair r1 r2)
+               as [[[[[[[[fa ga] gma] aa] ba] a2] b2] bd]|] eqn:Evm.
+             - exact (concat_mergeg_pair_mutfree r1 r2 _ Evm).
+             - inversion Erun2. }
+           assert (Hr1shell : r1 = orig_rule2g f1 f2 gm a1 b1 body r1)
+             by (apply head_value2g_canon; exact Ehd).
+           assert (Hparts : match_consumefree gm = true
+                            /\ forallb body_item_mutfree body = true
+                            /\ forallb (fun s => negb (is_mut_stmt s)) (r_after r1) = true
+                            /\ rule_natfree r1 = true).
+           { rewrite Hr1shell in Hmf1. unfold orig_rule2g in Hmf1.
+             destruct (rule_mutfree_mk_head_elim _ _ _ Hmf1) as [Hb [Ha Hn2]].
+             rewrite forallb_bim_cons_bmatch in Hb.
+             apply Bool.andb_true_iff in Hb as [Hgm Hb].
+             rewrite forallb_bim_cons_bmatch in Hb.
+             apply Bool.andb_true_iff in Hb as [_ Hb].
+             unfold mk_head in Ha, Hn2; cbn [r_after] in Ha;
+               unfold rule_natfree, r_nat in Hn2 |- *; cbn [r_outcome] in Hn2.
+             auto. }
+           destruct Hparts as [Hgm_cf [Hbody_mf [Hafter_mf Hnat_mf]]].
+           assert (Hrun_eq : r1 :: r2 :: rest
+                   = map (fun ab => orig_rule2g f1 f2 gm (fst ab) (snd ab) body r1) tuples
+                     ++ rest').
+           { subst tuples. cbn [map app fst snd]. f_equal; [exact Hr1shell | exact Hsplit]. }
+           assert (Hlook : e_set e (setname n) = map pack_tuple tuples).
+           { rewrite (Hmint n (le_n n) ltac:(lia)).
+             rewrite e_set_declared.
+             erewrite (optimize_rules_concatguarded_assoc_stable fuel (S n) dn rest'
+                         m'' dd'' rr'' (setname n) _ (eq_sym Erec)).
+             - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
+             - intros k Hk Heq. apply setname_inj in Heq. lia. }
+           assert (Hcert : eval_matchcond (MConcatSet [f1; f2] false (setname n)) e p
+                   = existsb (fun ab => andb (eval_matchcond (MCmp f1 CEq (fst ab)) e p)
+                                             (eval_matchcond (MCmp f2 CEq (snd ab)) e p))
+                             tuples).
+           { apply (concat_two_fields_certificate_N f1 f2 tuples (setname n) e p).
+             - exact Hlook.
+             - intros a b Hin Hld.
+               assert (Hfx : field_fixed_len f1 = Some (Datatypes.length a)).
+               { destruct (take_concatg_run_head_width r1 f1 a1 gm f2 b1 body r2 rest
+                             (t :: ts') rest' Ehd Erun ltac:(discriminate)) as [Hh1 _].
+                 subst tuples. destruct Hin as [Hab | Hin].
+                 - injection Hab as -> ->. exact Hh1.
+                 - apply (HwA a b Hin). }
+               apply (field_fixed_len_loaded f1 (Datatypes.length a) e p Hfx Hld).
+             - intros a b Hin Hld.
+               assert (Hfx : field_fixed_len f2 = Some (Datatypes.length b)).
+               { destruct (take_concatg_run_head_width r1 f1 a1 gm f2 b1 body r2 rest
+                             (t :: ts') rest' Ehd Erun ltac:(discriminate)) as [_ Hh2].
+                 subst tuples. destruct Hin as [Hab | Hin].
+                 - injection Hab as -> ->. exact Hh2.
+                 - apply (HwB a b Hin). }
+               apply (field_fixed_len_loaded f2 (Datatypes.length b) e p Hfx Hld). }
+           assert (Hpure : eval_rules [merged_rule2g f1 f2 gm (setname n) body r1] e p
+                           = eval_rules
+                               (map (fun ab => orig_rule2g f1 f2 gm (fst ab) (snd ab) body r1)
+                                  tuples) e p).
+           { pose proof (eval_rules_run_collapse
+                           (map (fun ab => orig_rule2g f1 f2 gm (fst ab) (snd ab) body r1)
+                              tuples)
+                           (rule_loadable (merged_rule2g f1 f2 gm (setname n) body r1) e p)
+                           (outcome (merged_rule2g f1 f2 gm (setname n) body r1) e p)
+                           (merged_rule2g f1 f2 gm (setname n) body r1) [] e p) as Habs.
+             rewrite app_nil_r in Habs.
+             apply Habs.
+             - subst tuples. cbn [map]. discriminate.
+             - intros r Hr. apply in_map_iff in Hr as [ab [Hab _]]. subst r.
+               symmetry. apply merged_rule2g_loadable_eq_orig.
+             - intros r Hr. apply in_map_iff in Hr as [ab [Hab _]]. subst r.
+               symmetry. apply merged_rule2g_outcome_eq_orig.
+             - reflexivity.
+             - reflexivity.
+             - rewrite merged_rule2g_applies. rewrite Hcert.
+               rewrite existsb_map_eq.
+               transitivity (existsb (fun ab =>
+                   andb (andb (andb (eval_matchcond (MCmp f1 CEq (fst ab)) e p)
+                                    (eval_matchcond gm e p))
+                              (eval_matchcond (MCmp f2 CEq (snd ab)) e p))
+                        (rule_applies_walk body e p)) tuples).
+               + rewrite existsb_guard_factor. rewrite Bool.andb_assoc. reflexivity.
+               + apply existsb_ext. intros ab _. symmetry. apply orig_rule2g_applies. }
+           assert (HmfM : forallb rule_mutfree
+                     [merged_rule2g f1 f2 gm (setname n) body r1] = true).
+           { cbn [forallb]. unfold merged_rule2g.
+             rewrite (rule_mutfree_mk_head_intro gm
+                        (BMatch (MConcatSet [f1; f2] false (setname n)) :: body) r1 Hgm_cf
+                        ltac:(rewrite forallb_bim_cons_bmatch; cbn [match_consumefree];
+                              exact Hbody_mf)
+                        Hafter_mf Hnat_mf).
+             reflexivity. }
+           assert (HmfR : forallb rule_mutfree
+                     (map (fun ab => orig_rule2g f1 f2 gm (fst ab) (snd ab) body r1)
+                        tuples) = true).
+           { apply forallb_forall. intros x Hx.
+             apply in_map_iff in Hx as [ab [Hab _]]. subst x. unfold orig_rule2g.
+             apply rule_mutfree_mk_head_intro;
+               [ reflexivity
+               | rewrite forallb_bim_cons_bmatch; rewrite Hgm_cf;
+                 rewrite forallb_bim_cons_bmatch; cbn [match_consumefree];
+                 exact Hbody_mf
+               | exact Hafter_mf | exact Hnat_mf ]. }
+           change (merged_rule2g f1 f2 gm (setname n) body r1 :: rr'')
+             with ([merged_rule2g f1 f2 gm (setname n) body r1] ++ rr'').
+           rewrite Hrun_eq.
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rr'' e p HmfM).
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rest' e p HmfR).
+           rewrite Hpure.
+           destruct (eval_rules
+                       (map (fun ab => orig_rule2g f1 f2 gm (fst ab) (snd ab) body r1)
+                          tuples) e p) as [w|]; [reflexivity |].
+           apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
+           ++ intros k Hk Hin. subst dn; cbn [sd_sets map fst] in Hin.
+              destruct Hin as [Heq | Hin];
+                [ apply setname_inj in Heq; lia
+                | apply (Hfresh k); [lia | exact Hin] ].
+           ++ intros k Hk Hk'. apply Hmint; lia.
+           ++ eapply Forall_impl;
+                [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr] |].
+              rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
+              exact (proj2 Hwf_tail).
+      * remember (optimize_rules_concatguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
+        destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        cbn [eval_rules_mut_env].
+        assert (Hst : forall k, n <= k ->
+                  e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                  = e_set e (setname k))
+          by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+        destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+        ++ destruct (terminal w); [reflexivity |].
+           apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+Qed.
+
+(** *** setguarded (guarded single-field value-run -> set). *)
+Theorem optimize_rules_setguarded_mut_env : forall h fuel rs n d n' d' rs' base e p,
+  optimize_rules_setguarded fuel n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) rs ->
+  eval_rules_mut_env h rs' e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' base e p H Hfresh Hmint Hwf.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest]].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_setguarded_consSS in H.
+      inversion Hwf as [| ? ? Hwf1 Hwf_tail]; subst.
+      destruct (head_valueGs r1) as [[[[gm f] v1] body] |] eqn:Ehd.
+      * destruct (take_setg_run r1 (r2 :: rest)) as [vs rest'] eqn:Erun.
+        destruct (take_setg_run_shape r1 gm f v1 body (r2 :: rest) vs rest' Ehd Erun)
+          as [Hsplit Hall].
+        destruct vs as [| v0 vs'].
+        -- remember (optimize_rules_setguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           cbn [eval_rules_mut_env].
+           assert (Hst : forall k, n <= k ->
+                     e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                     = e_set e (setname k))
+             by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+           destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+           ++ destruct (terminal w); [reflexivity |].
+              apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+           ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                       Hfresh); [| exact Hwf_tail].
+              intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        -- cbv zeta in H.
+           remember (optimize_rules_setguarded fuel (S n)
+                       {| sd_sets := (setname n, map (fun v => (v, v)) (v1 :: v0 :: vs'))
+                                     :: sd_sets d;
+                          sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+             as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           set (vals := v1 :: v0 :: vs') in *.
+           set (dn := {| sd_sets := (setname n, map (fun v => (v, v)) vals) :: sd_sets d;
+                         sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) in *.
+           pose proof (optimize_rules_setguarded_mono fuel (S n) dn rest' m'' dd'' rr''
+                         (eq_sym Erec)) as Hmono.
+           assert (Hmf1 : rule_mutfree r1 = true).
+           { pose proof Erun as Erun2. cbn in Erun2.
+             destruct (value_mergeGs_pair r1 r2)
+               as [[[[[gma fa] va] v2] bd]|] eqn:Evm.
+             - exact (value_mergeGs_pair_mutfree r1 r2 _ Evm).
+             - inversion Erun2. }
+           assert (Hr1shell : r1 = orig_ruleGs f gm v1 body r1)
+             by (apply head_valueGs_canon; exact Ehd).
+           assert (Hmf1' : rule_mutfree (orig_ruleGs f gm v1 body r1) = true)
+             by (rewrite <- Hr1shell; exact Hmf1).
+           assert (Hrun_eq : r1 :: r2 :: rest
+                   = map (fun v => orig_ruleGs f gm v body r1) vals ++ rest').
+           { subst vals. cbn [map app]. f_equal; [exact Hr1shell | exact Hsplit]. }
+           assert (Hlook : e_set e (setname n) = map (fun v => (v, v)) vals).
+           { rewrite (Hmint n (le_n n) ltac:(lia)).
+             rewrite e_set_declared.
+             erewrite (optimize_rules_setguarded_assoc_stable fuel (S n) dn rest'
+                         m'' dd'' rr'' (setname n) _ (eq_sym Erec)).
+             - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
+             - intros k Hk Heq. apply setname_inj in Heq. lia. }
+           assert (Hcert : eval_matchcond (MConcatSet [f] false (setname n)) e p
+                   = existsb (fun v => eval_matchcond (MCmp f CEq v) e p) vals).
+           { apply (concat_set_existsb f vals (setname n) e p).
+             - exact Hlook.
+             - intros v Hin Hld.
+               assert (Hfx : field_fixed_len f = Some (Datatypes.length v)).
+               { subst vals. destruct Hin as [Hv | Hin].
+                 - subst v. apply (take_setg_run_head_width r1 gm f v1 body r2 rest
+                                     (v0 :: vs') rest' Ehd Erun ltac:(discriminate)).
+                 - apply (Hall v Hin). }
+               apply (field_fixed_len_loaded f (Datatypes.length v) e p Hfx Hld). }
+           assert (Hpure : eval_rules [merged_ruleGs f gm (setname n) body r1] e p
+                           = eval_rules
+                               (map (fun v => orig_ruleGs f gm v body r1) vals) e p).
+           { pose proof (eval_rules_run_collapse
+                           (map (fun v => orig_ruleGs f gm v body r1) vals)
+                           (rule_loadable (merged_ruleGs f gm (setname n) body r1) e p)
+                           (outcome (merged_ruleGs f gm (setname n) body r1) e p)
+                           (merged_ruleGs f gm (setname n) body r1) [] e p) as Habs.
+             rewrite app_nil_r in Habs.
+             apply Habs.
+             - subst vals. cbn [map]. discriminate.
+             - intros r Hr. apply in_map_iff in Hr as [v [Hv _]]. subst r.
+               symmetry. apply merged_ruleGs_loadable_eq_orig.
+             - intros r Hr. apply in_map_iff in Hr as [v [Hv _]]. subst r.
+               symmetry. apply merged_ruleGs_outcome_eq_orig.
+             - reflexivity.
+             - reflexivity.
+             - rewrite merged_ruleGs_applies. rewrite Hcert.
+               rewrite existsb_map_eq.
+               rewrite (existsb_ext _ _ _ vals
+                          (fun v (_ : In v vals) => orig_ruleGs_applies f gm v body r1 e p)).
+               symmetry. apply existsb_guardhead_factor. }
+           assert (HmfM : forallb rule_mutfree
+                     [merged_ruleGs f gm (setname n) body r1] = true).
+           { cbn [forallb]. unfold merged_ruleGs.
+             unfold orig_ruleGs in Hmf1'.
+             rewrite (rule_mutfree_mk_head2_swap gm (MCmp f CEq v1)
+                        (MConcatSet [f] false (setname n)) body r1 eq_refl Hmf1').
+             reflexivity. }
+           assert (HmfR : forallb rule_mutfree
+                     (map (fun v => orig_ruleGs f gm v body r1) vals) = true).
+           { unfold orig_ruleGs in *.
+             apply (forallb_mutfree_shells2 data
+                      (fun v => MCmp f CEq v) gm vals body r1 (MCmp f CEq v1));
+               [intro; reflexivity | exact Hmf1']. }
+           change (merged_ruleGs f gm (setname n) body r1 :: rr'')
+             with ([merged_ruleGs f gm (setname n) body r1] ++ rr'').
+           rewrite Hrun_eq.
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rr'' e p HmfM).
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rest' e p HmfR).
+           rewrite Hpure.
+           destruct (eval_rules
+                       (map (fun v => orig_ruleGs f gm v body r1) vals) e p) as [w|];
+             [reflexivity |].
+           apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
+           ++ intros k Hk Hin. subst dn; cbn [sd_sets map fst] in Hin.
+              destruct Hin as [Heq | Hin];
+                [ apply setname_inj in Heq; lia
+                | apply (Hfresh k); [lia | exact Hin] ].
+           ++ intros k Hk Hk'. apply Hmint; lia.
+           ++ eapply Forall_impl;
+                [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr] |].
+              rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
+              exact (proj2 Hwf_tail).
+      * remember (optimize_rules_setguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
+        destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        cbn [eval_rules_mut_env].
+        assert (Hst : forall k, n <= k ->
+                  e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                  = e_set e (setname k))
+          by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+        destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+        ++ destruct (terminal w); [reflexivity |].
+           apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+        ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec)
+                    Hfresh); [| exact Hwf_tail].
+           intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+Qed.
+
+(** K-field shells: the [kmatches] prefix is all pure [MCmp] heads. *)
+Lemma forallb_bim_kmatches : forall fields row,
+  forallb body_item_mutfree (kmatches fields row) = true.
+Proof.
+  intros fields row. unfold kmatches. apply forallb_forall.
+  intros x Hx. apply in_map_iff in Hx as [fa [Hfa _]]. subst x. reflexivity.
+Qed.
+
+Lemma rule_mutfree_orig_ruleK_intro : forall fields row body r1,
+  forallb body_item_mutfree body = true ->
+  forallb (fun s => negb (is_mut_stmt s)) (r_after r1) = true ->
+  rule_natfree r1 = true ->
+  rule_mutfree (orig_ruleK fields row body r1) = true.
+Proof.
+  intros fields row body r1 Hb Ha Hn.
+  unfold rule_mutfree, orig_ruleK, rule_natfree, r_nat in *.
+  cbn [r_body r_after r_outcome].
+  rewrite forallb_app, forallb_bim_kmatches, Hb, Ha. cbn [andb].
+  destruct (r_outcome r1); cbn in Hn |- *; congruence.
+Qed.
+
+Lemma rule_mutfree_orig_ruleK_elim : forall fields row body r1,
+  rule_mutfree (orig_ruleK fields row body r1) = true ->
+  forallb body_item_mutfree body = true
+  /\ forallb (fun s => negb (is_mut_stmt s)) (r_after r1) = true
+  /\ rule_natfree r1 = true.
+Proof.
+  intros fields row body r1 H.
+  unfold rule_mutfree, orig_ruleK, rule_natfree, r_nat in *.
+  cbn [r_body r_after r_outcome] in H.
+  rewrite forallb_app in H.
+  apply Bool.andb_true_iff in H as [H Hn].
+  apply Bool.andb_true_iff in H as [H Ha].
+  apply Bool.andb_true_iff in H as [_ Hb].
+  auto.
+Qed.
+
+(** *** concatmulti (K>=3-field pairwise concat merge). *)
+Theorem optimize_rules_concatmulti_mut_env : forall h rs n d n' d' rs' base e p,
+  optimize_rules_concatmulti n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) rs ->
+  eval_rules_mut_env h rs' e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h rs.
+  induction rs as [rs IHrs] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' base e p H Hfresh Hmint Hwf.
+  destruct rs as [| r1 [| r2 rest]].
+  - cbn in H. inversion H; subst; reflexivity.
+  - cbn in H. inversion H; subst; reflexivity.
+  - rewrite optimize_rules_concatmulti_cons2 in H.
+    inversion Hwf as [| ? ? Hwf1 Hwf2]; subst.
+    inversion Hwf2 as [| ? ? Hwf2' Hwf_rest]; subst.
+    destruct (concat_mergeK_pair r1 r2) as [[[[fields row1] row2] body] |] eqn:Em.
+    + cbv zeta in H.
+      destruct (concat_mergeK_pair_shape r1 r2 fields row1 row2 body Em)
+        as [Hr1eq [Hr2eq [Hwk1 [Hwk2 [Hfne _]]]]].
+      set (dn := {| sd_sets := (setname n, map pack_row [row1; row2]) :: sd_sets d;
+                    sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |}) in *.
+      remember (optimize_rules_concatmulti (S n) dn rest) as tt eqn:Erec.
+      destruct tt as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
+      pose proof (optimize_rules_concatmulti_mono rest (S n) dn m'' dd'' rr''
+                    (eq_sym Erec)) as Hmono.
+      assert (Hmf1 : rule_mutfree r1 = true)
+        by (exact (concat_mergeK_pair_mutfree r1 r2 _ Em)).
+      assert (Hparts : forallb body_item_mutfree body = true
+                       /\ forallb (fun s => negb (is_mut_stmt s)) (r_after r1) = true
+                       /\ rule_natfree r1 = true).
+      { rewrite Hr1eq in Hmf1. exact (rule_mutfree_orig_ruleK_elim _ _ _ _ Hmf1). }
+      destruct Hparts as [Hbody_mf [Hafter_mf Hnat_mf]].
+      assert (Hlook : e_set e (setname n) = map pack_row [row1; row2]).
+      { rewrite (Hmint n (le_n n) ltac:(lia)).
+        rewrite e_set_declared.
+        erewrite (optimize_rules_concatmulti_assoc_stable rest (S n) dn m'' dd'' rr''
+                    (setname n) _ (eq_sym Erec)).
+        - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
+        - intros k Hk Heq. apply setname_inj in Heq. lia. }
+      assert (Hpure : eval_rules [merged_ruleK fields (setname n) body r1] e p
+                      = eval_rules [r1; r2] e p).
+      { pose proof (eval_rules_concat_mergeK fields [row1; row2] (setname n) body r1 [] e p
+                      Hfne ltac:(discriminate) Hlook
+                      ltac:(intros row Hin; destruct Hin as [<-|[<-|[]]]; assumption))
+          as Hk.
+        cbn [map app] in Hk. rewrite <- Hr1eq, <- Hr2eq in Hk. exact Hk. }
+      assert (HmfM : forallb rule_mutfree
+                [merged_ruleK fields (setname n) body r1] = true).
+      { cbn [forallb]. unfold merged_ruleK.
+        rewrite (rule_mutfree_mk_head_intro (MConcatSet fields false (setname n))
+                   body r1 eq_refl Hbody_mf Hafter_mf Hnat_mf).
+        reflexivity. }
+      assert (HmfR : forallb rule_mutfree [r1; r2] = true).
+      { cbn [forallb]. rewrite Hr1eq at 1. rewrite Hr2eq.
+        rewrite (rule_mutfree_orig_ruleK_intro fields row1 body r1
+                   Hbody_mf Hafter_mf Hnat_mf).
+        rewrite (rule_mutfree_orig_ruleK_intro fields row2 body r1
+                   Hbody_mf Hafter_mf Hnat_mf).
+        reflexivity. }
+      change (merged_ruleK fields (setname n) body r1 :: rr'')
+        with ([merged_ruleK fields (setname n) body r1] ++ rr'').
+      change (r1 :: r2 :: rest) with ([r1; r2] ++ rest).
+      rewrite (eval_rules_mut_env_mutfree_prefix h _ rr'' e p HmfM).
+      rewrite (eval_rules_mut_env_mutfree_prefix h _ rest e p HmfR).
+      rewrite Hpure.
+      destruct (eval_rules [r1; r2] e p) as [w|]; [reflexivity |].
+      apply (IHrs rest ltac:(unfold ltof; cbn; lia) (S n) dn m'' dd'' rr'' base e p
+               (eq_sym Erec)).
+      * intros k Hk Hin. subst dn; cbn [sd_sets map fst] in Hin.
+        destruct Hin as [Heq | Hin];
+          [ apply setname_inj in Heq; lia
+          | apply (Hfresh k); [lia | exact Hin] ].
+      * intros k Hk Hk'. apply Hmint; lia.
+      * eapply Forall_impl;
+          [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr]
+          | exact Hwf_rest ].
+    + remember (optimize_rules_concatmulti n d (r2 :: rest)) as tt eqn:Erec.
+      destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as Hn' Hd' Hr'. subst n' d' rs'.
+      cbn [eval_rules_mut_env].
+      assert (Hst : forall k, n <= k ->
+                e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                = e_set e (setname k))
+        by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+      destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+      * destruct (terminal w); [reflexivity |].
+        apply (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) n d m'' dd'' rr''
+                 base e1 p1 (eq_sym Erec) Hfresh);
+          [| constructor; assumption].
+        intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+      * apply (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) n d m'' dd'' rr''
+                 base e1 p1 (eq_sym Erec) Hfresh);
+          [| constructor; assumption].
+        intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+Qed.
+
+(** vmap-family shells. *)
+Lemma rule_mutfree_orig_rule_intro : forall f v body w,
+  forallb body_item_mutfree body = true ->
+  rule_mutfree (orig_rule f v body w) = true.
+Proof.
+  intros f v body w Hb. unfold orig_rule.
+  apply rule_mutfree_mk_head_intro; [reflexivity | exact Hb | reflexivity | reflexivity].
+Qed.
+
+Lemma rule_mutfree_orig_rule_elim : forall f v body w,
+  rule_mutfree (orig_rule f v body w) = true ->
+  forallb body_item_mutfree body = true.
+Proof.
+  intros f v body w H. unfold orig_rule in H.
+  exact (proj1 (rule_mutfree_mk_head_elim _ _ _ H)).
+Qed.
+
+Lemma rule_mutfree_mk_vmap_rule : forall f nm body,
+  forallb body_item_mutfree body = true ->
+  rule_mutfree (mk_vmap_rule f nm body) = true.
+Proof.
+  intros f nm body Hb.
+  unfold rule_mutfree, mk_vmap_rule, rule_natfree, r_nat.
+  cbn [r_body r_after r_outcome forallb]. rewrite Hb. reflexivity.
+Qed.
+
+(** The vmap driver's counter is monotone (the only stage missing this lemma). *)
+Lemma optimize_rules_vmap_mono : forall fuel n d rs n' d' rs',
+  optimize_rules_vmap fuel n d rs = (n', d', rs') -> n <= n'.
+Proof.
+  induction fuel as [| fuel IH]; intros n d rs n' d' rs' H.
+  - cbn in H. inversion H; subst. lia.
+  - destruct rs as [| r1 [| r2 rest]]; try (cbn in H; inversion H; subst; lia).
+    rewrite optimize_rules_vmap_consSS in H.
+    destruct (head_value r1) as [[[f v1] body]|].
+    + destruct (take_vmap_run r1 (r2 :: rest)) as [es rest'].
+      destruct es as [| e0 es'].
+      * destruct (optimize_rules_vmap fuel n d (r2 :: rest))
+          as [[m'' dd''] rr''] eqn:Erec.
+        cbv zeta in H. inversion H; subst. exact (IH _ _ _ _ _ _ Erec).
+      * destruct (has_distinct_verdict (r_verdict r1) (e0 :: es') && body_vmap_safe body).
+        -- cbv zeta in H.
+           destruct (optimize_rules_vmap fuel (S n) _ rest')
+             as [[m'' dd''] rr''] eqn:Erec.
+           inversion H; subst.
+           pose proof (IH _ _ _ _ _ _ Erec). lia.
+        -- destruct (optimize_rules_vmap fuel n d (r2 :: rest))
+             as [[m'' dd''] rr''] eqn:Erec.
+           cbv zeta in H. inversion H; subst. exact (IH _ _ _ _ _ _ Erec).
+    + destruct (optimize_rules_vmap fuel n d (r2 :: rest))
+        as [[m'' dd''] rr''] eqn:Erec.
+      cbv zeta in H. inversion H; subst. exact (IH _ _ _ _ _ _ Erec).
+Qed.
+
+(** *** vmap (value+verdict run -> verdict map).  The minted namespace is
+    [e_vmap], which NO evaluator write ever touches ([Semantics.rule_step_vmap])
+    — so no write-freshness side condition is needed at all. *)
+Theorem optimize_rules_vmap_mut_env : forall h fuel rs n d n' d' rs' base e p,
+  optimize_rules_vmap fuel n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_vmap e (vmapname k) = e_vmap (env_with_sets base d') (vmapname k)) ->
+  eval_rules_mut_env h rs' e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' base e p H Hfresh Hmint.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest]].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_vmap_consSS in H.
+      destruct (head_value r1) as [[[f v1] body] |] eqn:Ehd.
+      * destruct (take_vmap_run r1 (r2 :: rest)) as [es rest'] eqn:Erun.
+        destruct (take_vmap_run_shape r1 f v1 body (r2 :: rest) es rest' Ehd Erun)
+          as [Hsplit [HwK HwT]].
+        destruct es as [| e0 es'].
+        -- remember (optimize_rules_vmap fuel n d (r2 :: rest)) as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           cbn [eval_rules_mut_env].
+           pose proof (rule_step_vmap h r1 e p) as Hst.
+           destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+           ++ destruct (terminal w); [reflexivity |].
+              apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+              intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
+           ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+              intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
+        -- destruct (take_vmap_run_head r1 f v1 body r2 rest (e0 :: es') rest' Ehd Erun
+                       ltac:(discriminate)) as [Hr1eq [HwK1 HwT1]].
+           destruct (has_distinct_verdict (r_verdict r1) (e0 :: es') && body_vmap_safe body)
+             eqn:Hdv.
+           2:{ remember (optimize_rules_vmap fuel n d (r2 :: rest)) as tt eqn:Erec.
+               destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+               injection H as Hn' Hd' Hr'. subst n' d' rs'.
+               cbn [eval_rules_mut_env].
+               pose proof (rule_step_vmap h r1 e p) as Hst.
+               destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+               - destruct (terminal w); [reflexivity |].
+                 apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+                 intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
+               - apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+                 intros k Hk Hk'. rewrite Hst. apply Hmint; assumption. }
+           apply Bool.andb_true_iff in Hdv as [_ Hsafe].
+           apply Bool.andb_true_iff in Hsafe as [Hns Hnt].
+           apply Bool.negb_true_iff in Hns. apply Bool.negb_true_iff in Hnt.
+           cbv zeta in H.
+           remember (optimize_rules_vmap fuel (S n)
+                       {| sd_sets := sd_sets d;
+                          sd_vmaps := (vmapname n,
+                            map vmap_pt ((v1, r_verdict r1) :: e0 :: es')) :: sd_vmaps d;
+                          sd_maps := sd_maps d |} rest')
+             as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           set (entries := (v1, r_verdict r1) :: e0 :: es') in *.
+           set (dn := {| sd_sets := sd_sets d;
+                         sd_vmaps := (vmapname n, map vmap_pt entries) :: sd_vmaps d;
+                         sd_maps := sd_maps d |}) in *.
+           pose proof (optimize_rules_vmap_mono fuel (S n) dn rest' m'' dd'' rr''
+                         (eq_sym Erec)) as Hmono.
+           assert (Hmf1 : rule_mutfree r1 = true).
+           { pose proof Erun as Erun2. cbn in Erun2.
+             destruct (vmap_run_pair r1 r2) as [[[[fa v2] w2] bd]|] eqn:Evm.
+             - exact (vmap_run_pair_mutfree r1 r2 _ Evm).
+             - inversion Erun2. }
+           assert (Hbody_mf : forallb body_item_mutfree body = true).
+           { rewrite Hr1eq in Hmf1. exact (rule_mutfree_orig_rule_elim _ _ _ _ Hmf1). }
+           assert (Hrun_eq : r1 :: r2 :: rest
+                   = map (fun vw => orig_rule f (fst vw) body (snd vw)) entries ++ rest').
+           { subst entries. cbn [map app fst snd]. f_equal; [exact Hr1eq | exact Hsplit]. }
+           assert (Hlook : e_vmap e (vmapname n) = map vmap_pt entries).
+           { rewrite (Hmint n (le_n n) ltac:(lia)).
+             rewrite e_vmap_env_with_sets.
+             erewrite (optimize_rules_vmap_assoc_stable fuel (S n) dn rest'
+                         m'' dd'' rr'' (vmapname n) _ (eq_sym Erec)).
+             - subst dn; cbn [sd_vmaps assoc_str]. rewrite String.eqb_refl. reflexivity.
+             - intros k Hk Heq. apply vmapname_inj in Heq. lia. }
+           assert (Hpure : eval_rules [mk_vmap_rule f (vmapname n) body] e p
+                           = eval_rules
+                               (map (fun vw => orig_rule f (fst vw) body (snd vw))
+                                  entries) e p).
+           { pose proof (eval_rules_vmap_mergeN f (vmapname n) entries body [] e p
+                           Hlook
+                           ltac:(intros v w Hin; subst entries;
+                                 destruct Hin as [Hvw | Hin];
+                                 [ inversion Hvw; subst; exact HwK1 | apply (HwK v w Hin) ])
+                           ltac:(intros v w Hin; subst entries;
+                                 destruct Hin as [Hvw | Hin];
+                                 [ inversion Hvw; subst; exact HwT1 | apply (HwT v w Hin) ])
+                           (body_has_synproxy_false_stops body p Hns) Hnt) as Hk.
+             rewrite app_nil_r in Hk. exact Hk. }
+           assert (HmfM : forallb rule_mutfree [mk_vmap_rule f (vmapname n) body] = true).
+           { cbn [forallb]. rewrite (rule_mutfree_mk_vmap_rule f (vmapname n) body Hbody_mf).
+             reflexivity. }
+           assert (HmfR : forallb rule_mutfree
+                     (map (fun vw => orig_rule f (fst vw) body (snd vw)) entries) = true).
+           { apply forallb_forall. intros x Hx.
+             apply in_map_iff in Hx as [vw [Hvw _]]. subst x.
+             apply rule_mutfree_orig_rule_intro. exact Hbody_mf. }
+           change (mk_vmap_rule f (vmapname n) body :: rr'')
+             with ([mk_vmap_rule f (vmapname n) body] ++ rr'').
+           rewrite Hrun_eq.
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rr'' e p HmfM).
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rest' e p HmfR).
+           rewrite Hpure.
+           destruct (eval_rules
+                       (map (fun vw => orig_rule f (fst vw) body (snd vw)) entries) e p)
+             as [w|]; [reflexivity |].
+           apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
+           ++ intros k Hk Hin. subst dn; cbn [sd_vmaps map fst] in Hin.
+              destruct Hin as [Heq | Hin];
+                [ apply vmapname_inj in Heq; lia
+                | apply (Hfresh k); [lia | exact Hin] ].
+           ++ intros k Hk Hk'. apply Hmint; lia.
+      * remember (optimize_rules_vmap fuel n d (r2 :: rest)) as tt eqn:Erec.
+        destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        cbn [eval_rules_mut_env].
+        pose proof (rule_step_vmap h r1 e p) as Hst.
+        destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+        ++ destruct (terminal w); [reflexivity |].
+           apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+           intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
+        ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+           intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
+Qed.
+
+(** *** vmapguarded (guarded value+verdict run -> verdict map). *)
+Theorem optimize_rules_vmapguarded_mut_env : forall h fuel rs n d n' d' rs' base e p,
+  optimize_rules_vmapguarded fuel n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_vmap e (vmapname k) = e_vmap (env_with_sets base d') (vmapname k)) ->
+  eval_rules_mut_env h rs' e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' base e p H Hfresh Hmint.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest]].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_vmapguarded_consSS in H.
+      destruct (head_valueGs r1) as [[[[gm f] v1] body] |] eqn:Ehd.
+      * destruct (take_vmapG_run r1 (r2 :: rest)) as [es rest'] eqn:Erun.
+        destruct (take_vmapG_run_shape r1 gm f v1 body (r2 :: rest) es rest' Ehd Erun)
+          as [Hsplit [HwK HwT]].
+        destruct es as [| e0 es'].
+        -- remember (optimize_rules_vmapguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           cbn [eval_rules_mut_env].
+           pose proof (rule_step_vmap h r1 e p) as Hst.
+           destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+           ++ destruct (terminal w); [reflexivity |].
+              apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+              intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
+           ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+              intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
+        -- destruct (take_vmapG_run_head r1 gm f v1 body r2 rest (e0 :: es') rest' Ehd Erun
+                       ltac:(discriminate)) as [Hr1eq [HwK1 HwT1]].
+           destruct (has_distinct_verdict (r_verdict r1) (e0 :: es') && body_vmap_safe body)
+             eqn:Hdv.
+           2:{ remember (optimize_rules_vmapguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
+               destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+               injection H as Hn' Hd' Hr'. subst n' d' rs'.
+               cbn [eval_rules_mut_env].
+               pose proof (rule_step_vmap h r1 e p) as Hst.
+               destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+               - destruct (terminal w); [reflexivity |].
+                 apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+                 intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
+               - apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+                 intros k Hk Hk'. rewrite Hst. apply Hmint; assumption. }
+           apply Bool.andb_true_iff in Hdv as [_ Hsafe].
+           apply Bool.andb_true_iff in Hsafe as [Hns Hnt].
+           apply Bool.negb_true_iff in Hns. apply Bool.negb_true_iff in Hnt.
+           cbv zeta in H.
+           remember (optimize_rules_vmapguarded fuel (S n)
+                       {| sd_sets := sd_sets d;
+                          sd_vmaps := (vmapname n,
+                            map vmap_pt ((v1, r_verdict r1) :: e0 :: es')) :: sd_vmaps d;
+                          sd_maps := sd_maps d |} rest')
+             as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           set (entries := (v1, r_verdict r1) :: e0 :: es') in *.
+           set (dn := {| sd_sets := sd_sets d;
+                         sd_vmaps := (vmapname n, map vmap_pt entries) :: sd_vmaps d;
+                         sd_maps := sd_maps d |}) in *.
+           pose proof (optimize_rules_vmapguarded_mono fuel (S n) dn rest' m'' dd'' rr''
+                         (eq_sym Erec)) as Hmono.
+           assert (Hmf1 : rule_mutfree r1 = true).
+           { pose proof Erun as Erun2. cbn in Erun2.
+             destruct (vmap_run_pairG r1 r2) as [[[[[gma fa] v2] w2] bd]|] eqn:Evm.
+             - exact (vmap_run_pairG_mutfree r1 r2 _ Evm).
+             - inversion Erun2. }
+           assert (Hparts : match_consumefree gm = true
+                            /\ forallb body_item_mutfree body = true).
+           { rewrite Hr1eq in Hmf1. unfold orig_ruleGv, orig_ruleGs in Hmf1.
+             rewrite rule_mutfree_mk_head in Hmf1.
+             apply Bool.andb_true_iff in Hmf1 as [Hgm Htl].
+             apply Bool.andb_true_iff in Htl as [Htl _].
+             apply Bool.andb_true_iff in Htl as [Htl _].
+             rewrite forallb_bim_cons_bmatch in Htl.
+             apply Bool.andb_true_iff in Htl as [_ Hb].
+             auto. }
+           destruct Hparts as [Hgm_cf Hbody_mf].
+           assert (Hrun_eq : r1 :: r2 :: rest
+                   = map (fun vw => orig_ruleGv f gm (fst vw) body (snd vw)) entries
+                     ++ rest').
+           { subst entries. cbn [map app fst snd]. f_equal; [exact Hr1eq | exact Hsplit]. }
+           assert (Hlook : e_vmap e (vmapname n) = map vmap_pt entries).
+           { rewrite (Hmint n (le_n n) ltac:(lia)).
+             rewrite e_vmap_env_with_sets.
+             erewrite (optimize_rules_vmapguarded_assoc_stable fuel (S n) dn rest'
+                         m'' dd'' rr'' (vmapname n) _ (eq_sym Erec)).
+             - subst dn; cbn [sd_vmaps assoc_str]. rewrite String.eqb_refl. reflexivity.
+             - intros k Hk Heq. apply vmapname_inj in Heq. lia. }
+           assert (Hpure : eval_rules [merged_ruleGv f gm (vmapname n) body] e p
+                           = eval_rules
+                               (map (fun vw => orig_ruleGv f gm (fst vw) body (snd vw))
+                                  entries) e p).
+           { pose proof (eval_rules_vmap_mergeNg f gm (vmapname n) entries body [] e p
+                           Hlook
+                           ltac:(intros v w Hin; subst entries;
+                                 destruct Hin as [Hvw | Hin];
+                                 [ inversion Hvw; subst; exact HwK1 | apply (HwK v w Hin) ])
+                           ltac:(intros v w Hin; subst entries;
+                                 destruct Hin as [Hvw | Hin];
+                                 [ inversion Hvw; subst; exact HwT1 | apply (HwT v w Hin) ])
+                           (body_has_synproxy_false_stops body p Hns) Hnt) as Hk.
+             rewrite app_nil_r in Hk. exact Hk. }
+           assert (HmfM : forallb rule_mutfree [merged_ruleGv f gm (vmapname n) body] = true).
+           { cbn [forallb]. unfold merged_ruleGv.
+             rewrite (rule_mutfree_mk_vmap_rule f (vmapname n) (BMatch gm :: body)
+                        ltac:(rewrite forallb_bim_cons_bmatch; rewrite Hgm_cf;
+                              exact Hbody_mf)).
+             reflexivity. }
+           assert (HmfR : forallb rule_mutfree
+                     (map (fun vw => orig_ruleGv f gm (fst vw) body (snd vw)) entries)
+                     = true).
+           { apply forallb_forall. intros x Hx.
+             apply in_map_iff in Hx as [vw [Hvw _]]. subst x.
+             unfold orig_ruleGv, orig_ruleGs.
+             apply rule_mutfree_mk_head_intro;
+               [ exact Hgm_cf
+               | rewrite forallb_bim_cons_bmatch; cbn [match_consumefree];
+                 exact Hbody_mf
+               | reflexivity | reflexivity ]. }
+           change (merged_ruleGv f gm (vmapname n) body :: rr'')
+             with ([merged_ruleGv f gm (vmapname n) body] ++ rr'').
+           rewrite Hrun_eq.
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rr'' e p HmfM).
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rest' e p HmfR).
+           rewrite Hpure.
+           destruct (eval_rules
+                       (map (fun vw => orig_ruleGv f gm (fst vw) body (snd vw)) entries)
+                       e p) as [w|]; [reflexivity |].
+           apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
+           ++ intros k Hk Hin. subst dn; cbn [sd_vmaps map fst] in Hin.
+              destruct Hin as [Heq | Hin];
+                [ apply vmapname_inj in Heq; lia
+                | apply (Hfresh k); [lia | exact Hin] ].
+           ++ intros k Hk Hk'. apply Hmint; lia.
+      * remember (optimize_rules_vmapguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
+        destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        cbn [eval_rules_mut_env].
+        pose proof (rule_step_vmap h r1 e p) as Hst.
+        destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+        ++ destruct (terminal w); [reflexivity |].
+           apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+           intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
+        ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+           intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
+Qed.
+
+(** *** dscpvmap (masked value+verdict run -> transformed verdict map). *)
+Theorem optimize_rules_dscpvmap_mut_env : forall h fuel rs n d n' d' rs' base e p,
+  optimize_rules_dscpvmap fuel n d rs = (n', d', rs') ->
+  (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_vmap e (vmapname k) = e_vmap (env_with_sets base d') (vmapname k)) ->
+  eval_rules_mut_env h rs' e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' base e p H Hfresh Hmint.
+  - cbn in H. inversion H; subst; reflexivity.
+  - destruct rs as [| r1 [| r2 rest]].
+    + cbn in H. inversion H; subst; reflexivity.
+    + cbn in H. inversion H; subst; reflexivity.
+    + rewrite optimize_rules_dscpvmap_consSS in H.
+      destruct (head_dscp r1) as [[[[[f mask] xor] v1] body] |] eqn:Ehd.
+      * destruct (take_dscpv_run r1 (r2 :: rest)) as [es rest'] eqn:Erun.
+        destruct (take_dscpv_run_shape r1 f mask xor v1 body (r2 :: rest) es rest' Ehd Erun)
+          as [Hsplit [HwK [HwM [HwX HwT]]]].
+        destruct es as [| e0 es'].
+        -- remember (optimize_rules_dscpvmap fuel n d (r2 :: rest)) as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           cbn [eval_rules_mut_env].
+           pose proof (rule_step_vmap h r1 e p) as Hst.
+           destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+           ++ destruct (terminal w); [reflexivity |].
+              apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+              intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
+           ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+              intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
+        -- destruct (take_dscpv_run_head r1 f mask xor v1 body r2 rest (e0 :: es') rest'
+                       Ehd Erun ltac:(discriminate))
+             as [Hr1eq [HwK1 [HwM1 [HwX1 HwT1]]]].
+           destruct (has_distinct_verdict (r_verdict r1) (e0 :: es') && body_vmap_safe body)
+             eqn:Hdv.
+           2:{ remember (optimize_rules_dscpvmap fuel n d (r2 :: rest)) as tt eqn:Erec.
+               destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+               injection H as Hn' Hd' Hr'. subst n' d' rs'.
+               cbn [eval_rules_mut_env].
+               pose proof (rule_step_vmap h r1 e p) as Hst.
+               destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+               - destruct (terminal w); [reflexivity |].
+                 apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+                 intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
+               - apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+                 intros k Hk Hk'. rewrite Hst. apply Hmint; assumption. }
+           apply Bool.andb_true_iff in Hdv as [_ Hsafe].
+           apply Bool.andb_true_iff in Hsafe as [Hns Hnt].
+           apply Bool.negb_true_iff in Hns. apply Bool.negb_true_iff in Hnt.
+           cbv zeta in H.
+           remember (optimize_rules_dscpvmap fuel (S n)
+                       {| sd_sets := sd_sets d;
+                          sd_vmaps := (vmapname n,
+                            map vmap_pt ((v1, r_verdict r1) :: e0 :: es')) :: sd_vmaps d;
+                          sd_maps := sd_maps d |} rest')
+             as tt eqn:Erec.
+           destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+           injection H as Hn' Hd' Hr'. subst n' d' rs'.
+           set (entries := (v1, r_verdict r1) :: e0 :: es') in *.
+           set (dn := {| sd_sets := sd_sets d;
+                         sd_vmaps := (vmapname n, map vmap_pt entries) :: sd_vmaps d;
+                         sd_maps := sd_maps d |}) in *.
+           pose proof (optimize_rules_dscpvmap_mono fuel (S n) dn rest' m'' dd'' rr''
+                         (eq_sym Erec)) as Hmono.
+           assert (Hmf1 : rule_mutfree r1 = true).
+           { pose proof Erun as Erun2. cbn in Erun2.
+             destruct (dscpv_run_pair r1 r2) as [[[[[[fa ma] xa] v2] w2] bd]|] eqn:Evm.
+             - exact (dscpv_run_pair_mutfree r1 r2 _ Evm).
+             - inversion Erun2. }
+           assert (Hbody_mf : forallb body_item_mutfree body = true).
+           { rewrite Hr1eq in Hmf1. unfold orig_rule_m in Hmf1.
+             exact (proj1 (rule_mutfree_mk_head_elim _ _ _ Hmf1)). }
+           assert (Hrun_eq : r1 :: r2 :: rest
+                   = map (fun vw => orig_rule_m f mask xor (fst vw) body (snd vw)) entries
+                     ++ rest').
+           { subst entries. cbn [map app fst snd]. f_equal; [exact Hr1eq | exact Hsplit]. }
+           assert (Hlook : e_vmap e (vmapname n) = map vmap_pt entries).
+           { rewrite (Hmint n (le_n n) ltac:(lia)).
+             rewrite e_vmap_env_with_sets.
+             erewrite (optimize_rules_dscpvmap_assoc_stable fuel (S n) dn rest'
+                         m'' dd'' rr'' (vmapname n) _ (eq_sym Erec)).
+             - subst dn; cbn [sd_vmaps assoc_str]. rewrite String.eqb_refl. reflexivity.
+             - intros k Hk Heq. apply vmapname_inj in Heq. lia. }
+           assert (Hpure : eval_rules
+                             [mk_vmap_rule_t f [TBitAnd mask xor] (vmapname n) body] e p
+                           = eval_rules
+                               (map (fun vw => orig_rule_m f mask xor (fst vw) body (snd vw))
+                                  entries) e p).
+           { pose proof (eval_rules_dscpv_mergeN f mask xor (vmapname n) entries body [] e p
+                           Hlook
+                           ltac:(intros v w Hin; subst entries;
+                                 destruct Hin as [Hvw | Hin];
+                                 [ inversion Hvw; subst; exact HwK1 | apply (HwK v w Hin) ])
+                           ltac:(intros v w Hin; subst entries;
+                                 destruct Hin as [Hvw | Hin];
+                                 [ inversion Hvw; subst; exact HwM1 | apply (HwM v w Hin) ])
+                           ltac:(intros v w Hin; subst entries;
+                                 destruct Hin as [Hvw | Hin];
+                                 [ inversion Hvw; subst; exact HwX1 | apply (HwX v w Hin) ])
+                           ltac:(intros v w Hin; subst entries;
+                                 destruct Hin as [Hvw | Hin];
+                                 [ inversion Hvw; subst; exact HwT1 | apply (HwT v w Hin) ])
+                           (body_has_synproxy_false_stops body p Hns) Hnt) as Hk.
+             rewrite app_nil_r in Hk. exact Hk. }
+           assert (HmfM : forallb rule_mutfree
+                     [mk_vmap_rule_t f [TBitAnd mask xor] (vmapname n) body] = true).
+           { cbn [forallb].
+             assert (Hm : rule_mutfree (mk_vmap_rule_t f [TBitAnd mask xor]
+                                          (vmapname n) body) = true).
+             { unfold rule_mutfree, mk_vmap_rule_t, rule_natfree, r_nat.
+               cbn [r_body r_after r_outcome forallb]. rewrite Hbody_mf. reflexivity. }
+             rewrite Hm. reflexivity. }
+           assert (HmfR : forallb rule_mutfree
+                     (map (fun vw => orig_rule_m f mask xor (fst vw) body (snd vw))
+                        entries) = true).
+           { apply forallb_forall. intros x Hx.
+             apply in_map_iff in Hx as [vw [Hvw _]]. subst x. unfold orig_rule_m.
+             apply rule_mutfree_mk_head_intro;
+               [ reflexivity | exact Hbody_mf | reflexivity | reflexivity ]. }
+           change (mk_vmap_rule_t f [TBitAnd mask xor] (vmapname n) body :: rr'')
+             with ([mk_vmap_rule_t f [TBitAnd mask xor] (vmapname n) body] ++ rr'').
+           rewrite Hrun_eq.
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rr'' e p HmfM).
+           rewrite (eval_rules_mut_env_mutfree_prefix h _ rest' e p HmfR).
+           rewrite Hpure.
+           destruct (eval_rules
+                       (map (fun vw => orig_rule_m f mask xor (fst vw) body (snd vw))
+                          entries) e p) as [w|]; [reflexivity |].
+           apply (IH rest' (S n) dn m'' dd'' rr'' base e p (eq_sym Erec)).
+           ++ intros k Hk Hin. subst dn; cbn [sd_vmaps map fst] in Hin.
+              destruct Hin as [Heq | Hin];
+                [ apply vmapname_inj in Heq; lia
+                | apply (Hfresh k); [lia | exact Hin] ].
+           ++ intros k Hk Hk'. apply Hmint; lia.
+      * remember (optimize_rules_dscpvmap fuel n d (r2 :: rest)) as tt eqn:Erec.
+        destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+        injection H as Hn' Hd' Hr'. subst n' d' rs'.
+        cbn [eval_rules_mut_env].
+        pose proof (rule_step_vmap h r1 e p) as Hst.
+        destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+        ++ destruct (terminal w); [reflexivity |].
+           apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+           intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
+        ++ apply (IH (r2 :: rest) n d m'' dd'' rr'' base e1 p1 (eq_sym Erec) Hfresh).
+           intros k Hk Hk'. rewrite Hst. apply Hmint; assumption.
+Qed.
+
+(** ** The three EFFECT-REWRITING stages: fold-level per-shape certificates.
+
+    dnat/snat fold whole NAT terminals and datamap folds `meta mark set` runs —
+    their merged rules are NOT write-free, so the block lemma does not apply;
+    instead each merge shape carries a fold-level certificate: the merged rule's
+    [rule_step] equals the step sequence of the originals (same verdict, same
+    (env, packet) out), built on the M3 data-plane equalities
+    ([apply_nat_dnat_eq]/[apply_nat_snat_eq]/[dsl_step_map_merge]). *)
+
+(** The fold on a dnat shell: fire (drop-or-translate) on a head hit, fall
+    through state-unchanged otherwise. *)
+Lemma rule_step_orig_dnat : forall h f v T e p,
+  rule_step h (orig_dnat_rule f v T) e p
+  = if eval_matchcond (MCmp f CEq v) e p
+    then (if nat_drops h (orig_dnat_rule f v T) e p
+          then (Some Drop, (e, p))
+          else (Some Accept, apply_nat h (orig_dnat_rule f v T) e p))
+    else (None, (e, p)).
+Proof.
+  intros h f v T e p.
+  unfold rule_step. cbn [orig_dnat_rule r_body body_step match_consume].
+  destruct (eval_matchcond (MCmp f CEq v) e p); [| reflexivity].
+  unfold end_step. cbn [r_vmap r_outcome].
+  unfold terminal_step, has_effect_terminal.
+  cbn [r_nat r_tproxy r_fwd r_queue r_outcome].
+  unfold terminal_loadable.
+  cbn [r_nat r_outcome nat_src nat_map nat_field dnat_imm_spec].
+  reflexivity.
+Qed.
+
+(** The fold on the bare merged map rule: translate on a map HIT, NFT_BREAK
+    (fall through, state unchanged) on a miss or unloadable field. *)
+Lemma rule_step_mk_dnat : forall h f m e p,
+  rule_step h (mk_dnat_rule f m) e p
+  = if field_loadable f p && map_has_key (field_value f e p) (e_map e m)
+    then (if nat_drops h (mk_dnat_rule f m) e p
+          then (Some Drop, (e, p))
+          else (Some Accept, apply_nat h (mk_dnat_rule f m) e p))
+    else (None, (e, p)).
+Proof.
+  intros h f m e p.
+  unfold rule_step. cbn [mk_dnat_rule r_body body_step].
+  unfold end_step, terminal_step, has_effect_terminal, terminal_loadable.
+  cbn [mk_dnat_rule r_vmap r_nat r_tproxy r_fwd r_queue r_outcome
+       nat_src nat_map nat_field dnat_map_spec fields_loadable forallb].
+  rewrite nat_map_key_single. rewrite Bool.andb_true_r.
+  reflexivity.
+Qed.
+
+Lemma nat_drops_dnat_eq : forall h f m v T e p,
+  nat_drops h (mk_dnat_rule f m) e p = nat_drops h (orig_dnat_rule f v T) e p.
+Proof. reflexivity. Qed.
+
+Corollary apply_nat_dnat_merge2 : forall h f v1 v2 T1 T2 m e p,
+  e_map e m = dmap2 v1 v2 T1 T2 ->
+  data_eqb (field_value f e p) v1 = false ->
+  data_eqb (field_value f e p) v2 = true ->
+  apply_nat h (mk_dnat_rule f m) e p = apply_nat h (orig_dnat_rule f v2 T2) e p.
+Proof.
+  intros h f v1 v2 T1 T2 m e p Hmap Hv1 Hv2.
+  transitivity (apply_nat h (orig_dnat_rule f [] T2) e p).
+  - apply apply_nat_dnat_eq.
+    rewrite Hmap. unfold dmap2. cbn [map_lookup_data]. rewrite Hv1, Hv2. reflexivity.
+  - unfold apply_nat, orig_dnat_rule. cbn [r_nat r_outcome]. reflexivity.
+Qed.
+
+(** THE dnat pair certificate at the EFFECT level: verdict AND (env, packet). *)
+Lemma eval_rules_mut_env_dnat_merge : forall h f v1 v2 T1 T2 m rest e p,
+  e_map e m = dmap2 v1 v2 T1 T2 ->
+  field_fixed_len f = Some (List.length v1) ->
+  field_fixed_len f = Some (List.length v2) ->
+  eval_rules_mut_env h (mk_dnat_rule f m :: rest) e p
+  = eval_rules_mut_env h (orig_dnat_rule f v1 T1 :: orig_dnat_rule f v2 T2 :: rest) e p.
+Proof.
+  intros h f v1 v2 T1 T2 m rest e p Hmap Hfx1 Hfx2.
+  cbn [eval_rules_mut_env].
+  rewrite rule_step_mk_dnat.
+  rewrite (rule_step_orig_dnat h f v1 T1 e p).
+  rewrite Hmap, map_has_key_dmap2.
+  destruct (field_loadable f p) eqn:Hld.
+  2:{ cbn [andb].
+      rewrite (eval_mcmp_point_unload f v1 e p Hld).
+      rewrite (rule_step_orig_dnat h f v2 T2 e p).
+      rewrite (eval_mcmp_point_unload f v2 e p Hld).
+      reflexivity. }
+  rewrite (eval_mcmp_point f v1 e p Hld
+             (field_fixed_len_loaded f (List.length v1) e p Hfx1 Hld)).
+  cbn [andb].
+  destruct (data_eqb (field_value f e p) v1) eqn:Hv1; cbn [orb].
+  - (* key v1 hits: the merged translation IS the first original's *)
+    rewrite (nat_drops_dnat_eq h f m v1 T1 e p).
+    destruct (nat_drops h (orig_dnat_rule f v1 T1) e p); cbn [terminal];
+      [reflexivity |].
+    rewrite (apply_nat_dnat_merge1 h f v1 v2 T1 T2 m e p Hmap Hv1).
+    destruct (apply_nat h (orig_dnat_rule f v1 T1) e p) as [e2 p2].
+    reflexivity.
+  - (* first original's head fails, state unchanged *)
+    rewrite (rule_step_orig_dnat h f v2 T2 e p).
+    rewrite (eval_mcmp_point f v2 e p Hld
+               (field_fixed_len_loaded f (List.length v2) e p Hfx2 Hld)).
+    destruct (data_eqb (field_value f e p) v2) eqn:Hv2.
+    + (* key v2 hits *)
+      rewrite (nat_drops_dnat_eq h f m v2 T2 e p).
+      destruct (nat_drops h (orig_dnat_rule f v2 T2) e p); cbn [terminal];
+        [reflexivity |].
+      rewrite (apply_nat_dnat_merge2 h f v1 v2 T1 T2 m e p Hmap Hv1 Hv2).
+      destruct (apply_nat h (orig_dnat_rule f v2 T2) e p) as [e2 p2].
+      reflexivity.
+    + (* miss: NFT_BREAK on the map = both originals' failing heads *)
+      reflexivity.
+Qed.
+
+(** *** dnat (pairwise NAT-map fold) — effect-level stage lemma. *)
+Theorem optimize_rules_dnat_mut_env : forall h rs n d n' d' rs' base e p,
+  optimize_rules_dnat n d rs = (n', d', rs') ->
+  (forall k, n <= k -> k < n' ->
+     e_map e (mapname k) = e_map (env_with_sets base d') (mapname k)) ->
+  Forall (rule_dynset_fresh n) rs ->
+  eval_rules_mut_env h rs' e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h rs.
+  induction rs as [rs IHrs] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' base e p H Hmint Hwf.
+  destruct rs as [| r1 [| r2 rest]].
+  - cbn in H. inversion H; subst; reflexivity.
+  - cbn in H. inversion H; subst; reflexivity.
+  - rewrite optimize_rules_dnat_cons2 in H.
+    inversion Hwf as [| ? ? Hwf1 Hwf2]; subst.
+    inversion Hwf2 as [| ? ? Hwf2' Hwf_rest]; subst.
+    destruct (dnat_merge_pair r1 r2) as [[[[[f v1] v2] T1] T2]|] eqn:Em; cbv zeta in H.
+    + destruct (dnat_merge_pair_shape r1 r2 f v1 v2 T1 T2 Em)
+        as [Hr1eq [Hr2eq [Hfx1 [Hfx2 Hne]]]].
+      set (dn := {| sd_sets := sd_sets d; sd_vmaps := sd_vmaps d;
+                    sd_maps := (mapname n, dmap2 v1 v2 T1 T2) :: sd_maps d |}) in *.
+      remember (optimize_rules_dnat (S n) dn rest) as tt eqn:Erec.
+      destruct tt as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
+      pose proof (optimize_rules_dnat_mono rest (S n) dn m'' dd'' rr''
+                    (eq_sym Erec)) as Hmono.
+      assert (Hlook : e_map e (mapname n) = dmap2 v1 v2 T1 T2).
+      { rewrite (Hmint n (le_n n) ltac:(lia)).
+        rewrite e_map_env_with_sets.
+        erewrite (optimize_rules_dnat_maps_assoc_stable rest (S n) dn m'' dd'' rr''
+                    (mapname n) _ (eq_sym Erec)).
+        - subst dn; cbn [sd_maps assoc_str]. rewrite String.eqb_refl. reflexivity.
+        - intros k Hk Heq. apply mapname_inj in Heq. lia. }
+      rewrite Hr1eq, Hr2eq.
+      rewrite <- (eval_rules_mut_env_dnat_merge h f v1 v2 T1 T2 (mapname n) rest e p
+                    Hlook Hfx1 Hfx2).
+      cbn [eval_rules_mut_env].
+      assert (Hst : forall nm, e_map (fst (snd (rule_step h (mk_dnat_rule f (mapname n))
+                                                  e p))) nm
+                    = e_map e nm).
+      { intro nm.
+        exact (proj2 (rule_step_sm_stable h (mk_dnat_rule f (mapname n)) e p nm
+                        (fun F => F))). }
+      destruct (rule_step h (mk_dnat_rule f (mapname n)) e p) as [[w|] [e1 p1]];
+        cbn [fst snd] in Hst.
+      * destruct (terminal w); [reflexivity |].
+        apply (IHrs rest ltac:(unfold ltof; cbn; lia) (S n) dn m'' dd'' rr'' base e1 p1
+                 (eq_sym Erec)).
+        -- intros k Hk Hk'. rewrite (Hst (mapname k)). apply Hmint; lia.
+        -- eapply Forall_impl;
+             [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr]
+             | exact Hwf_rest ].
+      * apply (IHrs rest ltac:(unfold ltof; cbn; lia) (S n) dn m'' dd'' rr'' base e1 p1
+                 (eq_sym Erec)).
+        -- intros k Hk Hk'. rewrite (Hst (mapname k)). apply Hmint; lia.
+        -- eapply Forall_impl;
+             [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr]
+             | exact Hwf_rest ].
+    + remember (optimize_rules_dnat n d (r2 :: rest)) as tt eqn:Erec.
+      destruct tt as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
+      cbn [eval_rules_mut_env].
+      assert (Hst : forall k, n <= k ->
+                e_map (fst (snd (rule_step h r1 e p))) (mapname k)
+                = e_map e (mapname k))
+        by (intros k Hk; exact (rule_step_mapname_stable h r1 e p k n Hwf1 Hk)).
+      destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+      * destruct (terminal w); [reflexivity |].
+        apply (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) n d m'' dd'' rr''
+                 base e1 p1 (eq_sym Erec));
+          [| constructor; assumption].
+        intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+      * apply (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) n d m'' dd'' rr''
+                 base e1 p1 (eq_sym Erec));
+          [| constructor; assumption].
+        intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+Qed.
+
+(** Mirror fold characterisations for snat. *)
+Lemma rule_step_orig_snat : forall h f v T e p,
+  rule_step h (orig_snat_rule f v T) e p
+  = if eval_matchcond (MCmp f CEq v) e p
+    then (if nat_drops h (orig_snat_rule f v T) e p
+          then (Some Drop, (e, p))
+          else (Some Accept, apply_nat h (orig_snat_rule f v T) e p))
+    else (None, (e, p)).
+Proof.
+  intros h f v T e p.
+  unfold rule_step. cbn [orig_snat_rule r_body body_step match_consume].
+  destruct (eval_matchcond (MCmp f CEq v) e p); [| reflexivity].
+  unfold end_step, terminal_step, has_effect_terminal, terminal_loadable.
+  cbn [orig_snat_rule r_vmap r_nat r_tproxy r_fwd r_queue r_outcome
+       nat_src nat_map nat_field snat_imm_spec].
+  reflexivity.
+Qed.
+
+Lemma rule_step_mk_snat : forall h f m e p,
+  rule_step h (mk_snat_rule f m) e p
+  = if field_loadable f p && map_has_key (field_value f e p) (e_map e m)
+    then (if nat_drops h (mk_snat_rule f m) e p
+          then (Some Drop, (e, p))
+          else (Some Accept, apply_nat h (mk_snat_rule f m) e p))
+    else (None, (e, p)).
+Proof.
+  intros h f m e p.
+  unfold rule_step. cbn [mk_snat_rule r_body body_step].
+  unfold end_step, terminal_step, has_effect_terminal, terminal_loadable.
+  cbn [mk_snat_rule r_vmap r_nat r_tproxy r_fwd r_queue r_outcome
+       nat_src nat_map nat_field snat_map_spec fields_loadable forallb].
+  rewrite nat_map_key_single. rewrite Bool.andb_true_r.
+  reflexivity.
+Qed.
+
+Lemma nat_drops_snat_eq : forall h f m v T e p,
+  nat_drops h (mk_snat_rule f m) e p = nat_drops h (orig_snat_rule f v T) e p.
+Proof. reflexivity. Qed.
+
+Corollary apply_nat_snat_merge2 : forall h f v1 v2 T1 T2 m e p,
+  e_map e m = dmap2 v1 v2 T1 T2 ->
+  data_eqb (field_value f e p) v1 = false ->
+  data_eqb (field_value f e p) v2 = true ->
+  apply_nat h (mk_snat_rule f m) e p = apply_nat h (orig_snat_rule f v2 T2) e p.
+Proof.
+  intros h f v1 v2 T1 T2 m e p Hmap Hv1 Hv2.
+  transitivity (apply_nat h (orig_snat_rule f [] T2) e p).
+  - apply apply_nat_snat_eq.
+    rewrite Hmap. unfold dmap2. cbn [map_lookup_data]. rewrite Hv1, Hv2. reflexivity.
+  - unfold apply_nat, orig_snat_rule. cbn [r_nat r_outcome]. reflexivity.
+Qed.
+
+Lemma eval_rules_mut_env_snat_merge : forall h f v1 v2 T1 T2 m rest e p,
+  e_map e m = dmap2 v1 v2 T1 T2 ->
+  field_fixed_len f = Some (List.length v1) ->
+  field_fixed_len f = Some (List.length v2) ->
+  eval_rules_mut_env h (mk_snat_rule f m :: rest) e p
+  = eval_rules_mut_env h (orig_snat_rule f v1 T1 :: orig_snat_rule f v2 T2 :: rest) e p.
+Proof.
+  intros h f v1 v2 T1 T2 m rest e p Hmap Hfx1 Hfx2.
+  cbn [eval_rules_mut_env].
+  rewrite rule_step_mk_snat.
+  rewrite (rule_step_orig_snat h f v1 T1 e p).
+  rewrite Hmap, map_has_key_dmap2.
+  destruct (field_loadable f p) eqn:Hld.
+  2:{ cbn [andb].
+      rewrite (eval_mcmp_point_unload f v1 e p Hld).
+      rewrite (rule_step_orig_snat h f v2 T2 e p).
+      rewrite (eval_mcmp_point_unload f v2 e p Hld).
+      reflexivity. }
+  rewrite (eval_mcmp_point f v1 e p Hld
+             (field_fixed_len_loaded f (List.length v1) e p Hfx1 Hld)).
+  cbn [andb].
+  destruct (data_eqb (field_value f e p) v1) eqn:Hv1; cbn [orb].
+  - rewrite (nat_drops_snat_eq h f m v1 T1 e p).
+    destruct (nat_drops h (orig_snat_rule f v1 T1) e p); cbn [terminal];
+      [reflexivity |].
+    rewrite (apply_nat_snat_merge1 h f v1 v2 T1 T2 m e p Hmap Hv1).
+    destruct (apply_nat h (orig_snat_rule f v1 T1) e p) as [e2 p2].
+    reflexivity.
+  - rewrite (rule_step_orig_snat h f v2 T2 e p).
+    rewrite (eval_mcmp_point f v2 e p Hld
+               (field_fixed_len_loaded f (List.length v2) e p Hfx2 Hld)).
+    destruct (data_eqb (field_value f e p) v2) eqn:Hv2.
+    + rewrite (nat_drops_snat_eq h f m v2 T2 e p).
+      destruct (nat_drops h (orig_snat_rule f v2 T2) e p); cbn [terminal];
+        [reflexivity |].
+      rewrite (apply_nat_snat_merge2 h f v1 v2 T1 T2 m e p Hmap Hv1 Hv2).
+      destruct (apply_nat h (orig_snat_rule f v2 T2) e p) as [e2 p2].
+      reflexivity.
+    + reflexivity.
+Qed.
+
+(** *** snat (pairwise NAT-map fold) — effect-level stage lemma. *)
+Theorem optimize_rules_snat_mut_env : forall h rs n d n' d' rs' base e p,
+  optimize_rules_snat n d rs = (n', d', rs') ->
+  (forall k, n <= k -> k < n' ->
+     e_map e (mapname k) = e_map (env_with_sets base d') (mapname k)) ->
+  Forall (rule_dynset_fresh n) rs ->
+  eval_rules_mut_env h rs' e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h rs.
+  induction rs as [rs IHrs] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' base e p H Hmint Hwf.
+  destruct rs as [| r1 [| r2 rest]].
+  - cbn in H. inversion H; subst; reflexivity.
+  - cbn in H. inversion H; subst; reflexivity.
+  - rewrite optimize_rules_snat_cons2 in H.
+    inversion Hwf as [| ? ? Hwf1 Hwf2]; subst.
+    inversion Hwf2 as [| ? ? Hwf2' Hwf_rest]; subst.
+    destruct (snat_merge_pair r1 r2) as [[[[[f v1] v2] T1] T2]|] eqn:Em; cbv zeta in H.
+    + destruct (snat_merge_pair_shape r1 r2 f v1 v2 T1 T2 Em)
+        as [Hr1eq [Hr2eq [Hfx1 [Hfx2 Hne]]]].
+      set (dn := {| sd_sets := sd_sets d; sd_vmaps := sd_vmaps d;
+                    sd_maps := (mapname n, dmap2 v1 v2 T1 T2) :: sd_maps d |}) in *.
+      remember (optimize_rules_snat (S n) dn rest) as tt eqn:Erec.
+      destruct tt as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
+      pose proof (optimize_rules_snat_mono rest (S n) dn m'' dd'' rr''
+                    (eq_sym Erec)) as Hmono.
+      assert (Hlook : e_map e (mapname n) = dmap2 v1 v2 T1 T2).
+      { rewrite (Hmint n (le_n n) ltac:(lia)).
+        rewrite e_map_env_with_sets.
+        erewrite (optimize_rules_snat_maps_assoc_stable rest (S n) dn m'' dd'' rr''
+                    (mapname n) _ (eq_sym Erec)).
+        - subst dn; cbn [sd_maps assoc_str]. rewrite String.eqb_refl. reflexivity.
+        - intros k Hk Heq. apply mapname_inj in Heq. lia. }
+      rewrite Hr1eq, Hr2eq.
+      rewrite <- (eval_rules_mut_env_snat_merge h f v1 v2 T1 T2 (mapname n) rest e p
+                    Hlook Hfx1 Hfx2).
+      cbn [eval_rules_mut_env].
+      assert (Hst : forall nm, e_map (fst (snd (rule_step h (mk_snat_rule f (mapname n))
+                                                  e p))) nm
+                    = e_map e nm).
+      { intro nm.
+        exact (proj2 (rule_step_sm_stable h (mk_snat_rule f (mapname n)) e p nm
+                        (fun F => F))). }
+      destruct (rule_step h (mk_snat_rule f (mapname n)) e p) as [[w|] [e1 p1]];
+        cbn [fst snd] in Hst.
+      * destruct (terminal w); [reflexivity |].
+        apply (IHrs rest ltac:(unfold ltof; cbn; lia) (S n) dn m'' dd'' rr'' base e1 p1
+                 (eq_sym Erec)).
+        -- intros k Hk Hk'. rewrite (Hst (mapname k)). apply Hmint; lia.
+        -- eapply Forall_impl;
+             [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr]
+             | exact Hwf_rest ].
+      * apply (IHrs rest ltac:(unfold ltof; cbn; lia) (S n) dn m'' dd'' rr'' base e1 p1
+                 (eq_sym Erec)).
+        -- intros k Hk Hk'. rewrite (Hst (mapname k)). apply Hmint; lia.
+        -- eapply Forall_impl;
+             [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr]
+             | exact Hwf_rest ].
+    + remember (optimize_rules_snat n d (r2 :: rest)) as tt eqn:Erec.
+      destruct tt as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
+      cbn [eval_rules_mut_env].
+      assert (Hst : forall k, n <= k ->
+                e_map (fst (snd (rule_step h r1 e p))) (mapname k)
+                = e_map e (mapname k))
+        by (intros k Hk; exact (rule_step_mapname_stable h r1 e p k n Hwf1 Hk)).
+      destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+      * destruct (terminal w); [reflexivity |].
+        apply (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) n d m'' dd'' rr''
+                 base e1 p1 (eq_sym Erec));
+          [| constructor; assumption].
+        intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+      * apply (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) n d m'' dd'' rr''
+                 base e1 p1 (eq_sym Erec));
+          [| constructor; assumption].
+        intros k Hk Hk'. rewrite (Hst k Hk). apply Hmint; assumption.
+Qed.
+
+(** *** datamap (guarded `meta set` value-map fold) — effect-level. *)
+Lemma eval_rules_mut_env_continue : forall h r rest e p,
+  fst (rule_step h r e p) = None ->
+  eval_rules_mut_env h (r :: rest) e p
+  = (let '(e', p') := dsl_step h r e p in eval_rules_mut_env h rest e' p').
+Proof.
+  intros h r rest e p Ho. cbn [eval_rules_mut_env]. unfold dsl_step.
+  destruct (rule_step h r e p) as [v [e' p']]. cbn [fst snd] in Ho |- *.
+  subst v. reflexivity.
+Qed.
+
+(** THE datamap pair certificate at the EFFECT level (env-returning analogue of
+    [Optimize_DataMap.eval_rules_mut_map_merge]). *)
+Lemma eval_rules_mut_env_map_merge : forall h f v1 v2 M1 M2 sn mn k rest e p,
+  is_payload_load f = true ->
+  e_set e sn = map2_set v1 v2 ->
+  e_map e mn = map2_map v1 v2 M1 M2 ->
+  field_fixed_len f = Some (List.length v1) ->
+  field_fixed_len f = Some (List.length v2) ->
+  data_eqb v1 v2 = false ->
+  eval_rules_mut_env h (mk_map_rule f sn mn k :: rest) e p
+  = eval_rules_mut_env h (orig_map_rule f v1 M1 k :: orig_map_rule f v2 M2 k :: rest) e p.
+Proof.
+  intros h f v1 v2 M1 M2 sn mn k rest e p Hpl Hset Hmap Hfx1 Hfx2 Hne.
+  rewrite (eval_rules_mut_env_continue h _ rest e p (step_mk_map_none h f sn mn k e p)).
+  rewrite (eval_rules_mut_env_continue h _ _ e p (step_orig_map_none h f v1 M1 k e p)).
+  rewrite (dsl_step_map_merge h f v1 v2 M1 M2 sn mn k e p Hpl Hset Hmap Hfx1 Hfx2 Hne).
+  destruct (dsl_step h (orig_map_rule f v1 M1 k) e p) as [e1 p1].
+  rewrite (eval_rules_mut_env_continue h _ rest e1 p1 (step_orig_map_none h f v2 M2 k e1 p1)).
+  reflexivity.
+Qed.
+
+Theorem optimize_rules_datamap_mut_env : forall h rs n d n' d' rs' base e p,
+  optimize_rules_datamap n d rs = (n', d', rs') ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  (forall k, n <= k -> k < n' ->
+     e_map e (mapname k) = e_map (env_with_sets base d') (mapname k)) ->
+  Forall (rule_dynset_fresh n) rs ->
+  eval_rules_mut_env h rs' e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h rs.
+  induction rs as [rs IHrs] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' base e p H Hmints Hmintm Hwf.
+  destruct rs as [| r1 [| r2 rest]].
+  - cbn in H. inversion H; subst; reflexivity.
+  - cbn in H. inversion H; subst; reflexivity.
+  - rewrite optimize_rules_datamap_cons2 in H.
+    inversion Hwf as [| ? ? Hwf1 Hwf2]; subst.
+    inversion Hwf2 as [| ? ? Hwf2' Hwf_rest]; subst.
+    destruct (map_merge_pair r1 r2) as [[[[[[f v1] v2] M1] M2] k0]|] eqn:Em; cbv zeta in H.
+    + destruct (map_merge_pair_shape r1 r2 f v1 v2 M1 M2 k0 Em)
+        as [Hr1eq [Hr2eq [Hfx1 [Hfx2 Hne]]]].
+      pose proof (map_merge_pair_payload r1 r2 f v1 v2 M1 M2 k0 Em) as Hpl.
+      set (dn := {| sd_sets := (setname n, map2_set v1 v2) :: sd_sets d;
+                    sd_vmaps := sd_vmaps d;
+                    sd_maps := (mapname n, map2_map v1 v2 M1 M2) :: sd_maps d |}) in *.
+      remember (optimize_rules_datamap (S n) dn rest) as tt eqn:Erec.
+      destruct tt as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
+      pose proof (optimize_rules_datamap_mono rest (S n) dn m'' dd'' rr''
+                    (eq_sym Erec)) as Hmono.
+      assert (Hlooks : e_set e (setname n) = map2_set v1 v2).
+      { rewrite (Hmints n (le_n n) ltac:(lia)).
+        rewrite e_set_declared.
+        erewrite (optimize_rules_datamap_assoc_stable rest (S n) dn m'' dd'' rr''
+                    (setname n) _ (eq_sym Erec)).
+        - subst dn; cbn [sd_sets assoc_str]. rewrite String.eqb_refl. reflexivity.
+        - intros k Hk Heq. apply setname_inj in Heq. lia. }
+      assert (Hlookm : e_map e (mapname n) = map2_map v1 v2 M1 M2).
+      { rewrite (Hmintm n (le_n n) ltac:(lia)).
+        rewrite e_map_env_with_sets.
+        erewrite (optimize_rules_datamap_maps_assoc_stable rest (S n) dn m'' dd'' rr''
+                    (mapname n) _ (eq_sym Erec)).
+        - subst dn; cbn [sd_maps assoc_str]. rewrite String.eqb_refl. reflexivity.
+        - intros k Hk Heq. apply mapname_inj in Heq. lia. }
+      rewrite Hr1eq, Hr2eq.
+      rewrite <- (eval_rules_mut_env_map_merge h f v1 v2 M1 M2 (setname n) (mapname n) k0
+                    rest e p Hpl Hlooks Hlookm Hfx1 Hfx2 Hne).
+      cbn [eval_rules_mut_env].
+      assert (Hst : forall nm, e_set (fst (snd (rule_step h
+                        (mk_map_rule f (setname n) (mapname n) k0) e p))) nm
+                      = e_set e nm
+                    /\ e_map (fst (snd (rule_step h
+                        (mk_map_rule f (setname n) (mapname n) k0) e p))) nm
+                      = e_map e nm).
+      { intro nm.
+        exact (rule_step_sm_stable h (mk_map_rule f (setname n) (mapname n) k0) e p nm
+                 (fun F => F)). }
+      destruct (rule_step h (mk_map_rule f (setname n) (mapname n) k0) e p)
+        as [[w|] [e1 p1]]; cbn [fst snd] in Hst.
+      * destruct (terminal w); [reflexivity |].
+        apply (IHrs rest ltac:(unfold ltof; cbn; lia) (S n) dn m'' dd'' rr'' base e1 p1
+                 (eq_sym Erec)).
+        -- intros k Hk Hk'. rewrite (proj1 (Hst (setname k))). apply Hmints; lia.
+        -- intros k Hk Hk'. rewrite (proj2 (Hst (mapname k))). apply Hmintm; lia.
+        -- eapply Forall_impl;
+             [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr]
+             | exact Hwf_rest ].
+      * apply (IHrs rest ltac:(unfold ltof; cbn; lia) (S n) dn m'' dd'' rr'' base e1 p1
+                 (eq_sym Erec)).
+        -- intros k Hk Hk'. rewrite (proj1 (Hst (setname k))). apply Hmints; lia.
+        -- intros k Hk Hk'. rewrite (proj2 (Hst (mapname k))). apply Hmintm; lia.
+        -- eapply Forall_impl;
+             [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr]
+             | exact Hwf_rest ].
+    + remember (optimize_rules_datamap n d (r2 :: rest)) as tt eqn:Erec.
+      destruct tt as [[m'' dd''] rr'']. injection H as Hn' Hd' Hr'. subst n' d' rs'.
+      cbn [eval_rules_mut_env].
+      assert (Hsts : forall k, n <= k ->
+                e_set (fst (snd (rule_step h r1 e p))) (setname k)
+                = e_set e (setname k))
+        by (intros k Hk; exact (rule_step_setname_stable h r1 e p k n Hwf1 Hk)).
+      assert (Hstm : forall k, n <= k ->
+                e_map (fst (snd (rule_step h r1 e p))) (mapname k)
+                = e_map e (mapname k))
+        by (intros k Hk; exact (rule_step_mapname_stable h r1 e p k n Hwf1 Hk)).
+      destruct (rule_step h r1 e p) as [[w|] [e1 p1]]; cbn [fst snd] in Hsts, Hstm.
+      * destruct (terminal w); [reflexivity |].
+        apply (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) n d m'' dd'' rr''
+                 base e1 p1 (eq_sym Erec));
+          [ | | constructor; assumption].
+        -- intros k Hk Hk'. rewrite (Hsts k Hk). apply Hmints; assumption.
+        -- intros k Hk Hk'. rewrite (Hstm k Hk). apply Hmintm; assumption.
+      * apply (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) n d m'' dd'' rr''
+                 base e1 p1 (eq_sym Erec));
+          [ | | constructor; assumption].
+        -- intros k Hk Hk'. rewrite (Hsts k Hk). apply Hmints; assumption.
+        -- intros k Hk Hk'. rewrite (Hstm k Hk). apply Hmintm; assumption.
+Qed.
+
+(** *** absorb (prefix-subsumed rule deletion) — effect-level. *)
+Theorem optimize_rules_absorb_mut_env : forall h fuel rs e p,
+  eval_rules_mut_env h (optimize_rules_absorb fuel rs) e p
+  = eval_rules_mut_env h rs e p.
+Proof.
+  induction fuel as [| fuel IH]; intros rs e p; [reflexivity |].
+  destruct rs as [| r1 [| r2 rest]]; try reflexivity.
+  cbn [optimize_rules_absorb].
+  destruct (absorb_pair r1 r2) as [tup |] eqn:Eap.
+  - (* r1 deleted: both r1 and the surviving r2 are write-free shells *)
+    rewrite (IH (r2 :: rest) e p).
+    assert (Hmf1 : rule_mutfree r1 = true) by (exact (absorb_pair_mutfree r1 r2 _ Eap)).
+    destruct tup as [[[[[[b off] w1] w2] v1] v2] body].
+    destruct (absorb_pair_facts r1 r2 b off w1 w2 v1 v2 body Eap)
+      as [Hr1 [Hr2 _]].
+    assert (Hmf1' : rule_mutfree (mk_head (MCmp (FPayload b off w1) CEq v1) body r1) = true)
+      by (rewrite <- Hr1; exact Hmf1).
+    assert (Hmf2 : rule_mutfree r2 = true).
+    { rewrite Hr2.
+      exact (rule_mutfree_mk_head_swap (MCmp (FPayload b off w1) CEq v1)
+               (MCmp (FPayload b off w2) CEq v2) body r1 eq_refl Hmf1'). }
+    apply (eval_rules_mut_env_mutfree_block h [r2] [r1; r2] rest e p).
+    + cbn [forallb]. rewrite Hmf2. reflexivity.
+    + cbn [forallb]. rewrite Hmf1, Hmf2. reflexivity.
+    + pose proof (eval_rules_absorb_correct r1 r2
+                    (b, off, w1, w2, v1, v2, body) [] e p Eap) as Hp.
+      exact Hp.
+  - cbn [eval_rules_mut_env].
+    destruct (rule_step h r1 e p) as [[w|] [e1 p1]];
+      [ destruct (terminal w); [reflexivity | apply IH] | apply IH ].
+Qed.
+
+(** *** ctmask (bitmask-union pair merge) — effect-level. *)
+Theorem optimize_rules_ctmask_mut_env : forall h fuel rs e p,
+  eval_rules_mut_env h (optimize_rules_ctmask fuel rs) e p
+  = eval_rules_mut_env h rs e p.
+Proof.
+  induction fuel as [| fuel IH]; intros rs e p; [reflexivity |].
+  destruct rs as [| r1 [| r2 rest]]; try reflexivity.
+  cbn [optimize_rules_ctmask].
+  destruct (ctmask_pair r1 r2) as [[[[[f m1] m2] z] body] |] eqn:Ep.
+  - rewrite (IH (ctmask_merged f m1 m2 z body r1 :: rest) e p).
+    assert (Hmf1 : rule_mutfree r1 = true) by (exact (ctmask_pair_mutfree r1 r2 _ Ep)).
+    destruct (ctmask_pair_facts r1 r2 f m1 m2 z body Ep) as [Hr1 [Hr2 _]].
+    assert (Hmf1' : rule_mutfree (mk_head (MMasked f CNe m1 z z) body r1) = true)
+      by (rewrite <- Hr1; exact Hmf1).
+    assert (Hmf2 : rule_mutfree r2 = true).
+    { rewrite Hr2.
+      exact (rule_mutfree_mk_head_swap (MMasked f CNe m1 z z)
+               (MMasked f CNe m2 z z) body r1 eq_refl Hmf1'). }
+    assert (HmfM : rule_mutfree (ctmask_merged f m1 m2 z body r1) = true).
+    { unfold ctmask_merged.
+      exact (rule_mutfree_mk_head_swap (MMasked f CNe m1 z z)
+               (MMasked f CNe (data_or m1 m2) z z) body r1 eq_refl Hmf1'). }
+    apply (eval_rules_mut_env_mutfree_block h [ctmask_merged f m1 m2 z body r1]
+             [r1; r2] rest e p).
+    + cbn [forallb]. rewrite HmfM. reflexivity.
+    + cbn [forallb]. rewrite Hmf1, Hmf2. reflexivity.
+    + exact (eval_rules_ctmask_correct r1 r2 f m1 m2 z body [] e p Ep).
+  - cbn [eval_rules_mut_env].
+    destruct (rule_step h r1 e p) as [[w|] [e1 p1]];
+      [ destruct (terminal w); [reflexivity | apply IH] | apply IH ].
+Qed.
+
+(** ** Part E: the BASE pass ([Optimize.optimize_chain]) and [normalize_chain]
+    at the effect level. *)
+
+(** dce: everything after an unconditionally-terminal EMPTY rule is dead in the
+    fold too — the shadowing rule's step is ([Some v], (e,p)) with [v] terminal. *)
+Lemma eval_rules_mut_env_dce : forall h rs e p,
+  eval_rules_mut_env h (dce rs) e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h rs. induction rs as [| r rs IH]; intros e p; [reflexivity |].
+  cbn [dce]. destruct (shadows r) eqn:Hs.
+  - unfold shadows in Hs.
+    apply andb_true_iff in Hs. destruct Hs as [Hs1 Hq].
+    apply andb_true_iff in Hs1. destruct Hs1 as [Hs2 Hfwd].
+    apply andb_true_iff in Hs2. destruct Hs2 as [Hs3 Htp].
+    apply andb_true_iff in Hs3. destruct Hs3 as [Hs4 Hnat].
+    apply andb_true_iff in Hs4. destruct Hs4 as [Hs5 Hvm].
+    apply andb_true_iff in Hs5. destruct Hs5 as [Hm Hv].
+    cbn [eval_rules_mut_env].
+    unfold rule_step.
+    destruct (r_body r) as [| it body] eqn:Eb; [| discriminate Hm].
+    cbn [body_step].
+    unfold end_step.
+    destruct (r_vmap r) as [vm |] eqn:Evm; [discriminate Hvm |].
+    unfold terminal_step, has_effect_terminal.
+    destruct (r_nat r) as [ns |] eqn:Enat; [discriminate Hnat |].
+    destruct (r_tproxy r) as [t |] eqn:Etp; [discriminate Htp |].
+    destruct (r_fwd r) as [w |] eqn:Efwd; [discriminate Hfwd |].
+    destruct (r_queue r) as [q |] eqn:Eq; [discriminate Hq |].
+    destruct (r_verdict r) eqn:Ev; cbn in Hv |- *; try discriminate Hv; reflexivity.
+  - cbn [eval_rules_mut_env].
+    destruct (rule_step h r e p) as [[w|] [e1 p1]];
+      [ destruct (terminal w); [reflexivity | apply IH] | apply IH ].
+Qed.
+
+(** prune_noops: a no-op rule's step is the identity ([None], (e,p)). *)
+Lemma eval_rules_mut_env_prune_noops : forall h rs e p,
+  eval_rules_mut_env h (prune_noops rs) e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h rs. induction rs as [| r rs IH]; intros e p; [reflexivity |].
+  unfold prune_noops in *. cbn [filter]. destruct (is_noop r) eqn:Hn; cbn [negb].
+  - rewrite IH. symmetry.
+    unfold is_noop in Hn.
+    apply andb_true_iff in Hn as [Hn Hq].
+    apply andb_true_iff in Hn as [Hn Hfwd].
+    apply andb_true_iff in Hn as [Hn Htp].
+    apply andb_true_iff in Hn as [Hn Hnat].
+    apply andb_true_iff in Hn as [Hn Hvm].
+    apply andb_true_iff in Hn as [Hba Hv].
+    apply andb_true_iff in Hba as [Hb Hra].
+    cbn [eval_rules_mut_env].
+    unfold rule_step.
+    destruct (r_body r) as [| it b] eqn:Eb; [| discriminate Hb].
+    cbn [body_step].
+    unfold end_step.
+    destruct (r_vmap r); [discriminate Hvm |].
+    unfold terminal_step, has_effect_terminal.
+    destruct (r_nat r); [discriminate Hnat |].
+    destruct (r_tproxy r); [discriminate Htp |].
+    destruct (r_fwd r); [discriminate Hfwd |].
+    destruct (r_queue r); [discriminate Hq |].
+    destruct (r_verdict r) eqn:Ev; cbn in Hv |- *; try discriminate Hv.
+    destruct (r_after r) as [| sa ra] eqn:Era; [| discriminate Hra].
+    cbn [after_step]. reflexivity.
+  - cbn [eval_rules_mut_env].
+    destruct (rule_step h r e p) as [[w|] [e1 p1]];
+      [ destruct (terminal w); [reflexivity | apply IH] | apply IH ].
+Qed.
+
+(** dedup: the pass fires ONLY on [rule_mutfree] rules (the new guard), where
+    both sides' steps are the state-invariant pure projections and the historical
+    verdict equalities apply. *)
+Lemma forallb_bim_map_bmatch : forall l,
+  forallb body_item_mutfree (map BMatch l) = forallb match_consumefree l.
+Proof.
+  induction l as [| m l IH]; [reflexivity |].
+  cbn [map forallb body_item_mutfree]. rewrite IH. reflexivity.
+Qed.
+
+Lemma forallb_bim_map_bstmt : forall l,
+  forallb body_item_mutfree (map BStmt l)
+  = forallb (fun s => negb (is_mut_stmt s)) l.
+Proof.
+  induction l as [| s l IH]; [reflexivity |].
+  cbn [map forallb body_item_mutfree]. rewrite IH. reflexivity.
+Qed.
+
+Lemma forallb_bim_matches : forall body,
+  forallb body_item_mutfree body = true ->
+  forallb match_consumefree (body_matches body) = true.
+Proof.
+  induction body as [| it body IH]; intro H; [reflexivity |].
+  cbn [forallb] in H. apply andb_true_iff in H as [Hit Hrest].
+  destruct it as [m | s]; unfold body_matches in *; cbn.
+  - cbn [body_item_mutfree] in Hit. rewrite Hit. cbn [andb].
+    apply IH; exact Hrest.
+  - apply IH; exact Hrest.
+Qed.
+
+Lemma forallb_bim_stmts : forall body,
+  forallb body_item_mutfree body = true ->
+  forallb (fun s => negb (is_mut_stmt s)) (body_stmts body) = true.
+Proof.
+  induction body as [| it body IH]; intro H; [reflexivity |].
+  cbn [forallb] in H. apply andb_true_iff in H as [Hit Hrest].
+  destruct it as [m | s]; unfold body_stmts in *; cbn.
+  - apply IH; exact Hrest.
+  - cbn [body_item_mutfree] in Hit. rewrite Hit. cbn [andb].
+    apply IH; exact Hrest.
+Qed.
+
+Lemma dedup_rule_mutfree : forall r,
+  rule_mutfree r = true -> rule_mutfree (dedup_rule r) = true.
+Proof.
+  intros r Hmf. unfold dedup_rule.
+  destruct (body_has_synproxy (r_body r) || body_has_notrack (r_body r)
+            || negb (rule_mutfree r)) eqn:Hg; [exact Hmf |].
+  unfold rule_mutfree in Hmf |- *.
+  cbn [r_body r_after r_outcome].
+  apply andb_true_iff in Hmf as [Hmf Hnat].
+  apply andb_true_iff in Hmf as [Hbody Hafter].
+  rewrite forallb_app, forallb_bim_map_bmatch, forallb_bim_map_bstmt.
+  rewrite (forallb_nodup _ matchcond_eq_dec).
+  rewrite (forallb_bim_matches _ Hbody), (forallb_bim_stmts _ Hbody).
+  unfold rule_natfree, r_nat in Hnat |- *. cbn [r_outcome].
+  rewrite Hafter, Hnat. reflexivity.
+Qed.
+
+Lemma eval_rules_mut_env_map_dedup : forall h rs e p,
+  eval_rules_mut_env h (map (fun r => simplify_rule (dedup_rule r)) rs) e p
+  = eval_rules_mut_env h rs e p.
+Proof.
+  intros h rs.
+  assert (Hsid : forall r, simplify_rule r = r).
+  { intros [b o a]. unfold simplify_rule. cbn [r_body r_outcome r_after].
+    rewrite map_simplify_item_id. reflexivity. }
+  induction rs as [| r rs IH]; intros e p; [reflexivity |].
+  cbn [map]. rewrite Hsid.
+  destruct (body_has_synproxy (r_body r) || body_has_notrack (r_body r)
+            || negb (rule_mutfree r)) eqn:Hg.
+  - assert (Hid : dedup_rule r = r) by (unfold dedup_rule; rewrite Hg; reflexivity).
+    rewrite Hid. cbn [eval_rules_mut_env].
+    destruct (rule_step h r e p) as [[w|] [e1 p1]];
+      [ destruct (terminal w); [reflexivity | apply IH] | apply IH ].
+  - assert (Hmf : rule_mutfree r = true).
+    { destruct (rule_mutfree r); [reflexivity |].
+      rewrite !Bool.orb_true_r in Hg. discriminate Hg. }
+    assert (Hmfd : rule_mutfree (dedup_rule r) = true)
+      by (apply dedup_rule_mutfree; exact Hmf).
+    cbn [eval_rules_mut_env].
+    rewrite (rule_step_mutfree h r e p Hmf).
+    rewrite (rule_step_mutfree h (dedup_rule r) e p Hmfd).
+    rewrite rule_applies_dedup, rule_loadable_dedup, outcome_dedup.
+    destruct (rule_loadable r e p && rule_applies r e p).
+    + destruct (outcome r e p) as [w|];
+        [ destruct (terminal w); [reflexivity | apply IH] | apply IH ].
+    + apply IH.
+Qed.
+
+(** The whole base pass. *)
+Theorem optimize_chain_mut_env : forall h c e p,
+  eval_chain_mut_env h (optimize_chain c) e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h c e p. unfold eval_chain_mut_env, optimize_chain. cbn [c_rules c_policy].
+  rewrite eval_rules_mut_env_dce, eval_rules_mut_env_prune_noops.
+  rewrite eval_rules_mut_env_map_dedup. reflexivity.
+Qed.
+
+(** normalize ([MEq] -> [MCmp CEq]): the rewritten match is extensionally the
+    same PURE match, so the fold agrees step-for-step. *)
+Lemma normalize_mc_consume : forall m e p,
+  match_consume (normalize_mc m) e p = match_consume m e p.
+Proof. intros [f v|f v|f neg lo hi|f neg msk xr v|f op v| | | | | | | | ] e p; reflexivity. Qed.
+
+Lemma normalize_body_step : forall body e p,
+  body_step (map normalize_bi body) e p = body_step body e p.
+Proof.
+  induction body as [| it body IH]; intros e p; [reflexivity |].
+  destruct it as [m | s].
+  - cbn [map normalize_bi body_step].
+    rewrite normalize_mc_matchcond, normalize_mc_consume.
+    destruct (eval_matchcond m e p); [apply IH | reflexivity].
+  - destruct s; cbn [map normalize_bi body_step];
+      repeat first
+        [ match goal with
+          | |- context [match ?l with nil => _ | cons _ _ => _ end] =>
+              is_var l; destruct l
+          end
+        | match goal with
+          | |- context [if ?b then _ else _] => destruct b
+          end ];
+      rewrite ?IH; reflexivity.
+Qed.
+
+Lemma normalize_rule_step : forall h r e p,
+  rule_step h (normalize_rule r) e p = rule_step h r e p.
+Proof.
+  intros h r e p. unfold rule_step.
+  rewrite normalize_r_body, normalize_body_step.
+  destruct (body_step (r_body r) e p) as [e' p' | e' p' | e' p']; reflexivity.
+Qed.
+
+Lemma eval_rules_mut_env_normalize : forall h rs e p,
+  eval_rules_mut_env h (map normalize_rule rs) e p = eval_rules_mut_env h rs e p.
+Proof.
+  intros h rs. induction rs as [| r rs IH]; intros e p; [reflexivity |].
+  cbn [map eval_rules_mut_env]. rewrite normalize_rule_step.
+  destruct (rule_step h r e p) as [[w|] [e1 p1]];
+    [ destruct (terminal w); [reflexivity | apply IH] | apply IH ].
+Qed.
+
+Theorem normalize_chain_mut_env : forall h c e p,
+  eval_chain_mut_env h (normalize_chain c) e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h c e p. unfold eval_chain_mut_env, normalize_chain. cbn [c_rules c_policy].
+  rewrite eval_rules_mut_env_normalize. reflexivity.
+Qed.
+
+(** ** Part F: dynset-target freshness is PRESERVED by every stage.
+
+    A merged rule's dynset targets are exactly its base rule's (same shared tail
+    body and end fields; the fresh head match contributes no statement), or
+    empty (the exact-shape dnat/snat/datamap shells).  So the write-target
+    freshness [rule_dynset_fresh n0] transfers from a stage's input to its
+    output — at a FIXED bound [n0], no counter bookkeeping. *)
+
+Lemma rule_dynset_names_mk_head : forall m body r,
+  rule_dynset_names (mk_head m body r)
+  = body_dynset_names body ++ flat_map stmt_dynset_names (r_after r).
+Proof. reflexivity. Qed.
+
+Lemma rule_dynset_names_bmatch_cons : forall m body,
+  body_dynset_names (BMatch m :: body) = body_dynset_names body.
+Proof. reflexivity. Qed.
+
+(** Freshness transfer between two shells over the SAME tail body/end fields. *)
+Lemma rule_dynset_fresh_mk_head_swap : forall n0 m m' body r,
+  rule_dynset_fresh n0 (mk_head m body r) ->
+  rule_dynset_fresh n0 (mk_head m' body r).
+Proof.
+  intros n0 m m' body r Hf k Hk.
+  specialize (Hf k Hk). rewrite rule_dynset_names_mk_head in Hf |- *. exact Hf.
+Qed.
+
+Lemma rule_dynset_fresh_mk_head2_swap : forall n0 gm m m' body r,
+  rule_dynset_fresh n0 (mk_head gm (BMatch m :: body) r) ->
+  rule_dynset_fresh n0 (mk_head gm (BMatch m' :: body) r).
+Proof.
+  intros n0 gm m m' body r Hf k Hk.
+  specialize (Hf k Hk).
+  rewrite rule_dynset_names_mk_head, rule_dynset_names_bmatch_cons in Hf |- *.
+  exact Hf.
+Qed.
+
+(** Head-hoisting transfer (guarded families / vmap shells): any two rules whose
+    dynset-name LISTS agree share the freshness. *)
+Lemma rule_dynset_fresh_names_eq : forall n0 r r',
+  rule_dynset_names r' = rule_dynset_names r ->
+  rule_dynset_fresh n0 r -> rule_dynset_fresh n0 r'.
+Proof. intros n0 r r' Heq Hf k Hk. rewrite Heq. exact (Hf k Hk). Qed.
+
+Lemma optimize_rules_valueset_dynset_fresh : forall n0 fuel rs n d n' d' rs',
+  optimize_rules_valueset fuel n d rs = (n', d', rs') ->
+  Forall (rule_dynset_fresh n0) rs -> Forall (rule_dynset_fresh n0) rs'.
+Proof.
+  intros n0 fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' H Hwf;
+    [cbn in H; inversion H; subst; exact Hwf |].
+  destruct rs as [| r1 [| r2 rest]]; try (cbn in H; inversion H; subst; exact Hwf).
+  rewrite optimize_rules_valueset_consSS in H.
+  inversion Hwf as [| ? ? Hw1 Hwtail]; subst.
+  destruct (head_value r1) as [[[f v1] body] |] eqn:Ehd.
+  - destruct (take_value_run r1 (r2 :: rest)) as [vs rest'] eqn:Erun.
+    destruct (take_value_run_shape r1 f v1 body (r2 :: rest) vs rest' Ehd Erun)
+      as [Hsplit _].
+    destruct vs as [| v vs'].
+    + remember (optimize_rules_valueset fuel n d (r2 :: rest)) as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+    + cbv zeta in H.
+      remember (optimize_rules_valueset fuel (S n)
+                  {| sd_sets := (setname n, map (fun w => (w,w)) (v1 :: v :: vs'))
+                                :: sd_sets d;
+                     sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+        as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      assert (Hf' : rule_dynset_fresh n0 (mk_head (MCmp f CEq v1) body r1))
+        by (rewrite <- (head_value_canon r1 f v1 body Ehd); exact Hw1).
+      constructor.
+      * exact (rule_dynset_fresh_names_eq n0 _ _ eq_refl Hf').
+      * apply (IH _ _ _ _ _ _ (eq_sym Erec)).
+        rewrite Hsplit in Hwtail. apply Forall_app in Hwtail. exact (proj2 Hwtail).
+  - remember (optimize_rules_valueset fuel n d (r2 :: rest)) as t eqn:Erec.
+    destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+    injection H as _ _ Hr'. subst rs'.
+    constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+Qed.
+
+Lemma optimize_rules_dscp_dynset_fresh : forall n0 fuel rs n d n' d' rs',
+  optimize_rules_dscp fuel n d rs = (n', d', rs') ->
+  Forall (rule_dynset_fresh n0) rs -> Forall (rule_dynset_fresh n0) rs'.
+Proof.
+  intros n0 fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' H Hwf;
+    [cbn in H; inversion H; subst; exact Hwf |].
+  destruct rs as [| r1 [| r2 rest]]; try (cbn in H; inversion H; subst; exact Hwf).
+  rewrite optimize_rules_dscp_consSS in H.
+  inversion Hwf as [| ? ? Hw1 Hwtail]; subst.
+  destruct (head_dscp r1) as [[[[[f mask] xor] v1] body] |] eqn:Ehd.
+  - destruct (take_dscp_run r1 (r2 :: rest)) as [vs rest'] eqn:Erun.
+    destruct (take_dscp_run_shape r1 f mask xor v1 body (r2 :: rest) vs rest' Ehd Erun)
+      as [Hsplit _].
+    destruct vs as [| v vs'].
+    + remember (optimize_rules_dscp fuel n d (r2 :: rest)) as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+    + cbv zeta in H.
+      remember (optimize_rules_dscp fuel (S n)
+                  {| sd_sets := (setname n, map (fun w => (w,w)) (v1 :: v :: vs'))
+                                :: sd_sets d;
+                     sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+        as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      assert (Hf' : rule_dynset_fresh n0 (mk_head (MMasked f CEq mask xor v1) body r1))
+        by (rewrite <- (head_dscp_canon r1 f mask xor v1 body Ehd); exact Hw1).
+      constructor.
+      * exact (rule_dynset_fresh_names_eq n0 _ _ eq_refl Hf').
+      * apply (IH _ _ _ _ _ _ (eq_sym Erec)).
+        rewrite Hsplit in Hwtail. apply Forall_app in Hwtail. exact (proj2 Hwtail).
+  - remember (optimize_rules_dscp fuel n d (r2 :: rest)) as t eqn:Erec.
+    destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+    injection H as _ _ Hr'. subst rs'.
+    constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+Qed.
+
+Lemma optimize_rules_intervalset_dynset_fresh : forall n0 fuel rs n d n' d' rs',
+  optimize_rules_intervalset fuel n d rs = (n', d', rs') ->
+  Forall (rule_dynset_fresh n0) rs -> Forall (rule_dynset_fresh n0) rs'.
+Proof.
+  intros n0 fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' H Hwf;
+    [cbn in H; inversion H; subst; exact Hwf |].
+  destruct rs as [| r1 [| r2 rest]]; try (cbn in H; inversion H; subst; exact Hwf).
+  rewrite optimize_rules_intervalset_consSS in H.
+  inversion Hwf as [| ? ? Hw1 Hwtail]; subst.
+  destruct (head_range r1) as [[[[f lo1] hi1] body] |] eqn:Ehd.
+  - destruct (take_range_run r1 (r2 :: rest)) as [ivs rest'] eqn:Erun.
+    pose proof (take_range_run_shape r1 f lo1 hi1 body (r2 :: rest) ivs rest' Ehd Erun)
+      as Hsplit.
+    destruct ivs as [| iv ivs'].
+    + remember (optimize_rules_intervalset fuel n d (r2 :: rest)) as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+    + cbv zeta in H.
+      remember (optimize_rules_intervalset fuel (S n)
+                  {| sd_sets := (setname n, (lo1, hi1) :: iv :: ivs') :: sd_sets d;
+                     sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+        as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      assert (Hf' : rule_dynset_fresh n0 (mk_head (MRange f false lo1 hi1) body r1))
+        by (rewrite <- (head_range_canon r1 f lo1 hi1 body Ehd); exact Hw1).
+      constructor.
+      * exact (rule_dynset_fresh_names_eq n0 _ _ eq_refl Hf').
+      * apply (IH _ _ _ _ _ _ (eq_sym Erec)).
+        rewrite Hsplit in Hwtail. apply Forall_app in Hwtail. exact (proj2 Hwtail).
+  - remember (optimize_rules_intervalset fuel n d (r2 :: rest)) as t eqn:Erec.
+    destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+    injection H as _ _ Hr'. subst rs'.
+    constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+Qed.
+
+Lemma optimize_rules_intervalsethostorder_dynset_fresh : forall n0 fuel rs n d n' d' rs',
+  optimize_rules_intervalsethostorder fuel n d rs = (n', d', rs') ->
+  Forall (rule_dynset_fresh n0) rs -> Forall (rule_dynset_fresh n0) rs'.
+Proof.
+  intros n0 fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' H Hwf;
+    [cbn in H; inversion H; subst; exact Hwf |].
+  destruct rs as [| r1 [| r2 rest]]; try (cbn in H; inversion H; subst; exact Hwf).
+  rewrite optimize_rules_intervalsethostorder_consSS in H.
+  inversion Hwf as [| ? ? Hw1 Hwtail]; subst.
+  destruct (head_ivsett r1) as [[[[[f ts] lo1] hi1] body] |] eqn:Ehd.
+  - destruct (take_ivsett_run r1 (r2 :: rest)) as [ivs rest'] eqn:Erun.
+    pose proof (take_ivsett_run_shape r1 f ts lo1 hi1 body (r2 :: rest) ivs rest'
+                  Ehd Erun) as Hsplit.
+    destruct ivs as [| iv ivs'].
+    + remember (optimize_rules_intervalsethostorder fuel n d (r2 :: rest)) as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+    + cbv zeta in H.
+      remember (optimize_rules_intervalsethostorder fuel (S n)
+                  {| sd_sets := (setname n, (lo1, hi1) :: iv :: ivs') :: sd_sets d;
+                     sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+        as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      assert (Hf' : rule_dynset_fresh n0 (mk_head (MRangeT f ts false lo1 hi1) body r1))
+        by (rewrite <- (head_ivsett_canon r1 f ts lo1 hi1 body Ehd); exact Hw1).
+      constructor.
+      * exact (rule_dynset_fresh_names_eq n0 _ _ eq_refl Hf').
+      * apply (IH _ _ _ _ _ _ (eq_sym Erec)).
+        rewrite Hsplit in Hwtail. apply Forall_app in Hwtail. exact (proj2 Hwtail).
+  - remember (optimize_rules_intervalsethostorder fuel n d (r2 :: rest)) as t eqn:Erec.
+    destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+    injection H as _ _ Hr'. subst rs'.
+    constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+Qed.
+
+Lemma optimize_rules_intervalsetguarded_dynset_fresh : forall n0 fuel rs n d n' d' rs',
+  optimize_rules_intervalsetguarded fuel n d rs = (n', d', rs') ->
+  Forall (rule_dynset_fresh n0) rs -> Forall (rule_dynset_fresh n0) rs'.
+Proof.
+  intros n0 fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' H Hwf;
+    [cbn in H; inversion H; subst; exact Hwf |].
+  destruct rs as [| r1 [| r2 rest]]; try (cbn in H; inversion H; subst; exact Hwf).
+  rewrite optimize_rules_intervalsetguarded_consSS in H.
+  inversion Hwf as [| ? ? Hw1 Hwtail]; subst.
+  destruct (head_rangeGr r1) as [[[[[gm f] lo1] hi1] body] |] eqn:Ehd.
+  - destruct (take_rangeg_run r1 (r2 :: rest)) as [ivs rest'] eqn:Erun.
+    pose proof (take_rangeg_run_shape r1 gm f lo1 hi1 body (r2 :: rest) ivs rest'
+                  Ehd Erun) as Hsplit.
+    destruct ivs as [| iv ivs'].
+    + remember (optimize_rules_intervalsetguarded fuel n d (r2 :: rest)) as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+    + cbv zeta in H.
+      remember (optimize_rules_intervalsetguarded fuel (S n)
+                  {| sd_sets := (setname n, (lo1, hi1) :: iv :: ivs') :: sd_sets d;
+                     sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+        as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      assert (Hf' : rule_dynset_fresh n0 (orig_ruleGr f gm lo1 hi1 body r1))
+        by (rewrite <- (head_rangeGr_canon r1 gm f lo1 hi1 body Ehd); exact Hw1).
+      constructor.
+      * unfold orig_ruleGr in Hf'.
+        exact (rule_dynset_fresh_names_eq n0 _ _ eq_refl Hf').
+      * apply (IH _ _ _ _ _ _ (eq_sym Erec)).
+        rewrite Hsplit in Hwtail. apply Forall_app in Hwtail. exact (proj2 Hwtail).
+  - remember (optimize_rules_intervalsetguarded fuel n d (r2 :: rest)) as t eqn:Erec.
+    destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+    injection H as _ _ Hr'. subst rs'.
+    constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+Qed.
+
+Lemma optimize_rules_mixedpointrangeguarded_dynset_fresh : forall n0 fuel rs n d n' d' rs',
+  optimize_rules_mixedpointrangeguarded fuel n d rs = (n', d', rs') ->
+  Forall (rule_dynset_fresh n0) rs -> Forall (rule_dynset_fresh n0) rs'.
+Proof.
+  intros n0 fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' H Hwf;
+    [cbn in H; inversion H; subst; exact Hwf |].
+  destruct rs as [| r1 [| r2 rest]]; try (cbn in H; inversion H; subst; exact Hwf).
+  rewrite optimize_rules_mixedpointrangeguarded_consSS in H.
+  inversion Hwf as [| ? ? Hw1 Hwtail]; subst.
+  destruct (head_mixGm r1) as [[[[gm f] e1] body] |] eqn:Ehd.
+  - destruct (take_mix_run r1 (r2 :: rest)) as [es rest'] eqn:Erun.
+    pose proof (take_mix_run_shape r1 gm f e1 body (r2 :: rest) es rest' Ehd Erun)
+      as Hsplit.
+    destruct es as [| el es'].
+    + remember (optimize_rules_mixedpointrangeguarded fuel n d (r2 :: rest)) as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+    + cbv zeta in H.
+      remember (optimize_rules_mixedpointrangeguarded fuel (S n)
+                  {| sd_sets := (setname n, map melem_iv (e1 :: el :: es')) :: sd_sets d;
+                     sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+        as t eqn:Erec.
+      destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      assert (Hf' : rule_dynset_fresh n0 (orig_ruleGm f gm e1 body r1))
+        by (rewrite <- (head_mixGm_canon r1 gm f e1 body Ehd); exact Hw1).
+      constructor.
+      * unfold orig_ruleGm in Hf'. unfold merged_ruleGs.
+        exact (rule_dynset_fresh_names_eq n0 _ _ eq_refl Hf').
+      * apply (IH _ _ _ _ _ _ (eq_sym Erec)).
+        rewrite Hsplit in Hwtail. apply Forall_app in Hwtail. exact (proj2 Hwtail).
+  - remember (optimize_rules_mixedpointrangeguarded fuel n d (r2 :: rest)) as t eqn:Erec.
+    destruct t as [[m'' dd''] rr'']. cbv zeta in H.
+    injection H as _ _ Hr'. subst rs'.
+    constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+Qed.
+
+Lemma optimize_rules_concat_dynset_fresh : forall n0 fuel rs n d n' d' rs',
+  optimize_rules_concat fuel n d rs = (n', d', rs') ->
+  Forall (rule_dynset_fresh n0) rs -> Forall (rule_dynset_fresh n0) rs'.
+Proof.
+  intros n0 fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' H Hwf;
+    [cbn in H; inversion H; subst; exact Hwf |].
+  destruct rs as [| r1 [| r2 rest]]; try (cbn in H; inversion H; subst; exact Hwf).
+  rewrite optimize_rules_concat_consSS in H.
+  inversion Hwf as [| ? ? Hw1 Hwtail]; subst.
+  destruct (head_value2 r1) as [[[[[f1 a1] f2] b1] body] |] eqn:Ehd.
+  - destruct (take_concat_run r1 (r2 :: rest)) as [ts rest'] eqn:Erun.
+    destruct (take_concat_run_shape r1 f1 a1 f2 b1 body (r2 :: rest) ts rest' Ehd Erun)
+      as [Hsplit _].
+    destruct ts as [| t ts'].
+    + remember (optimize_rules_concat fuel n d (r2 :: rest)) as tt eqn:Erec.
+      destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+    + cbv zeta in H.
+      remember (optimize_rules_concat fuel (S n)
+                  {| sd_sets := (setname n, map pack_tuple ((a1,b1) :: t :: ts'))
+                                :: sd_sets d;
+                     sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+        as tt eqn:Erec.
+      destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      assert (Hf' : rule_dynset_fresh n0 (orig_rule2 f1 f2 a1 b1 body r1))
+        by (rewrite <- (head_value2_canon r1 f1 a1 f2 b1 body Ehd); exact Hw1).
+      constructor.
+      * unfold orig_rule2 in Hf'. unfold merged_rule2.
+        exact (rule_dynset_fresh_names_eq n0 _ _ eq_refl Hf').
+      * apply (IH _ _ _ _ _ _ (eq_sym Erec)).
+        rewrite Hsplit in Hwtail. apply Forall_app in Hwtail. exact (proj2 Hwtail).
+  - remember (optimize_rules_concat fuel n d (r2 :: rest)) as tt eqn:Erec.
+    destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+    injection H as _ _ Hr'. subst rs'.
+    constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+Qed.
+
+Lemma optimize_rules_concatguarded_dynset_fresh : forall n0 fuel rs n d n' d' rs',
+  optimize_rules_concatguarded fuel n d rs = (n', d', rs') ->
+  Forall (rule_dynset_fresh n0) rs -> Forall (rule_dynset_fresh n0) rs'.
+Proof.
+  intros n0 fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' H Hwf;
+    [cbn in H; inversion H; subst; exact Hwf |].
+  destruct rs as [| r1 [| r2 rest]]; try (cbn in H; inversion H; subst; exact Hwf).
+  rewrite optimize_rules_concatguarded_consSS in H.
+  inversion Hwf as [| ? ? Hw1 Hwtail]; subst.
+  destruct (head_value2g r1) as [[[[[[f1 a1] gm] f2] b1] body] |] eqn:Ehd.
+  - destruct (take_concatg_run r1 (r2 :: rest)) as [ts rest'] eqn:Erun.
+    destruct (take_concatg_run_shape r1 f1 a1 gm f2 b1 body (r2 :: rest) ts rest'
+                Ehd Erun) as [Hsplit _].
+    destruct ts as [| t ts'].
+    + remember (optimize_rules_concatguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
+      destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+    + cbv zeta in H.
+      remember (optimize_rules_concatguarded fuel (S n)
+                  {| sd_sets := (setname n, map pack_tuple ((a1,b1) :: t :: ts'))
+                                :: sd_sets d;
+                     sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+        as tt eqn:Erec.
+      destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      assert (Hf' : rule_dynset_fresh n0 (orig_rule2g f1 f2 gm a1 b1 body r1))
+        by (rewrite <- (head_value2g_canon r1 f1 a1 gm f2 b1 body Ehd); exact Hw1).
+      constructor.
+      * unfold orig_rule2g in Hf'. unfold merged_rule2g.
+        exact (rule_dynset_fresh_names_eq n0 _ _ eq_refl Hf').
+      * apply (IH _ _ _ _ _ _ (eq_sym Erec)).
+        rewrite Hsplit in Hwtail. apply Forall_app in Hwtail. exact (proj2 Hwtail).
+  - remember (optimize_rules_concatguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
+    destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+    injection H as _ _ Hr'. subst rs'.
+    constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+Qed.
+
+Lemma optimize_rules_setguarded_dynset_fresh : forall n0 fuel rs n d n' d' rs',
+  optimize_rules_setguarded fuel n d rs = (n', d', rs') ->
+  Forall (rule_dynset_fresh n0) rs -> Forall (rule_dynset_fresh n0) rs'.
+Proof.
+  intros n0 fuel.
+  induction fuel as [| fuel IH]; intros rs n d n' d' rs' H Hwf;
+    [cbn in H; inversion H; subst; exact Hwf |].
+  destruct rs as [| r1 [| r2 rest]]; try (cbn in H; inversion H; subst; exact Hwf).
+  rewrite optimize_rules_setguarded_consSS in H.
+  inversion Hwf as [| ? ? Hw1 Hwtail]; subst.
+  destruct (head_valueGs r1) as [[[[gm f] v1] body] |] eqn:Ehd.
+  - destruct (take_setg_run r1 (r2 :: rest)) as [vs rest'] eqn:Erun.
+    destruct (take_setg_run_shape r1 gm f v1 body (r2 :: rest) vs rest' Ehd Erun)
+      as [Hsplit _].
+    destruct vs as [| v0 vs'].
+    + remember (optimize_rules_setguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
+      destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+    + cbv zeta in H.
+      remember (optimize_rules_setguarded fuel (S n)
+                  {| sd_sets := (setname n, map (fun v => (v, v)) (v1 :: v0 :: vs'))
+                                :: sd_sets d;
+                     sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest')
+        as tt eqn:Erec.
+      destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+      injection H as _ _ Hr'. subst rs'.
+      assert (Hf' : rule_dynset_fresh n0 (orig_ruleGs f gm v1 body r1))
+        by (rewrite <- (head_valueGs_canon r1 gm f v1 body Ehd); exact Hw1).
+      constructor.
+      * unfold orig_ruleGs in Hf'. unfold merged_ruleGs.
+        exact (rule_dynset_fresh_names_eq n0 _ _ eq_refl Hf').
+      * apply (IH _ _ _ _ _ _ (eq_sym Erec)).
+        rewrite Hsplit in Hwtail. apply Forall_app in Hwtail. exact (proj2 Hwtail).
+  - remember (optimize_rules_setguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
+    destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
+    injection H as _ _ Hr'. subst rs'.
+    constructor; [exact Hw1 | exact (IH _ _ _ _ _ _ (eq_sym Erec) Hwtail)].
+Qed.
+
+Lemma optimize_rules_concatmulti_dynset_fresh : forall n0 rs n d n' d' rs',
+  optimize_rules_concatmulti n d rs = (n', d', rs') ->
+  Forall (rule_dynset_fresh n0) rs -> Forall (rule_dynset_fresh n0) rs'.
+Proof.
+  intros n0 rs.
+  induction rs as [rs IHrs] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' H Hwf.
+  destruct rs as [| r1 [| r2 rest]]; try (cbn in H; inversion H; subst; exact Hwf).
+  rewrite optimize_rules_concatmulti_cons2 in H.
+  inversion Hwf as [| ? ? Hw1 Hwf2]; subst.
+  inversion Hwf2 as [| ? ? Hw2 Hwrest]; subst.
+  destruct (concat_mergeK_pair r1 r2) as [[[[fields row1] row2] body] |] eqn:Em;
+    cbv zeta in H.
+  - destruct (concat_mergeK_pair_shape r1 r2 fields row1 row2 body Em)
+      as [Hr1eq [_ _]].
+    remember (optimize_rules_concatmulti (S n)
+                {| sd_sets := (setname n, map pack_row [row1; row2]) :: sd_sets d;
+                   sd_vmaps := sd_vmaps d; sd_maps := sd_maps d |} rest) as tt eqn:Erec.
+    destruct tt as [[m'' dd''] rr'']. injection H as _ _ Hr'. subst rs'.
+    constructor.
+    + (* merged_ruleK's dynset names = the shared tail's = r1's *)
+      intros k Hk. specialize (Hw1 k Hk).
+      rewrite Hr1eq in Hw1.
+      unfold merged_ruleK, rule_dynset_names, orig_ruleK in Hw1 |- *.
+      cbn [mk_head r_body r_after] in Hw1 |- *.
+      unfold body_dynset_names in Hw1 |- *.
+      rewrite flat_map_app in Hw1.
+      assert (Hkm : flat_map
+                      (fun it => match it with BStmt s => stmt_dynset_names s
+                                 | BMatch _ => [] end) (kmatches fields row1) = []).
+      { unfold kmatches. induction (combine fields row1) as [| fa l IHl];
+          [reflexivity |]. cbn [map flat_map]. exact IHl. }
+      rewrite Hkm in Hw1. cbn [app] in Hw1. exact Hw1.
+    + apply (IHrs rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym Erec) Hwrest).
+  - remember (optimize_rules_concatmulti n d (r2 :: rest)) as tt eqn:Erec.
+    destruct tt as [[m'' dd''] rr'']. injection H as _ _ Hr'. subst rs'.
+    constructor;
+      [ exact Hw1
+      | apply (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym Erec));
+        constructor; assumption ].
+Qed.
+
+Lemma rule_dynset_fresh_nil_names : forall n0 r,
+  rule_dynset_names r = [] -> rule_dynset_fresh n0 r.
+Proof. intros n0 r Hn k Hk. rewrite Hn. split; intros []. Qed.
+
+Lemma optimize_rules_dnat_dynset_fresh : forall n0 rs n d n' d' rs',
+  optimize_rules_dnat n d rs = (n', d', rs') ->
+  Forall (rule_dynset_fresh n0) rs -> Forall (rule_dynset_fresh n0) rs'.
+Proof.
+  intros n0 rs.
+  induction rs as [rs IHrs] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' H Hwf.
+  destruct rs as [| r1 [| r2 rest]]; try (cbn in H; inversion H; subst; exact Hwf).
+  rewrite optimize_rules_dnat_cons2 in H.
+  inversion Hwf as [| ? ? Hw1 Hwf2]; subst.
+  inversion Hwf2 as [| ? ? Hw2 Hwrest]; subst.
+  destruct (dnat_merge_pair r1 r2) as [[[[[f v1] v2] T1] T2]|] eqn:Em; cbv zeta in H.
+  - remember (optimize_rules_dnat (S n)
+                {| sd_sets := sd_sets d; sd_vmaps := sd_vmaps d;
+                   sd_maps := (mapname n, dmap2 v1 v2 T1 T2) :: sd_maps d |} rest)
+      as tt eqn:Erec.
+    destruct tt as [[m'' dd''] rr'']. injection H as _ _ Hr'. subst rs'.
+    constructor.
+    + apply rule_dynset_fresh_nil_names. reflexivity.
+    + apply (IHrs rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym Erec) Hwrest).
+  - remember (optimize_rules_dnat n d (r2 :: rest)) as tt eqn:Erec.
+    destruct tt as [[m'' dd''] rr'']. injection H as _ _ Hr'. subst rs'.
+    constructor;
+      [ exact Hw1
+      | apply (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym Erec));
+        constructor; assumption ].
+Qed.
+
+Lemma optimize_rules_snat_dynset_fresh : forall n0 rs n d n' d' rs',
+  optimize_rules_snat n d rs = (n', d', rs') ->
+  Forall (rule_dynset_fresh n0) rs -> Forall (rule_dynset_fresh n0) rs'.
+Proof.
+  intros n0 rs.
+  induction rs as [rs IHrs] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' H Hwf.
+  destruct rs as [| r1 [| r2 rest]]; try (cbn in H; inversion H; subst; exact Hwf).
+  rewrite optimize_rules_snat_cons2 in H.
+  inversion Hwf as [| ? ? Hw1 Hwf2]; subst.
+  inversion Hwf2 as [| ? ? Hw2 Hwrest]; subst.
+  destruct (snat_merge_pair r1 r2) as [[[[[f v1] v2] T1] T2]|] eqn:Em; cbv zeta in H.
+  - remember (optimize_rules_snat (S n)
+                {| sd_sets := sd_sets d; sd_vmaps := sd_vmaps d;
+                   sd_maps := (mapname n, dmap2 v1 v2 T1 T2) :: sd_maps d |} rest)
+      as tt eqn:Erec.
+    destruct tt as [[m'' dd''] rr'']. injection H as _ _ Hr'. subst rs'.
+    constructor.
+    + apply rule_dynset_fresh_nil_names. reflexivity.
+    + apply (IHrs rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym Erec) Hwrest).
+  - remember (optimize_rules_snat n d (r2 :: rest)) as tt eqn:Erec.
+    destruct tt as [[m'' dd''] rr'']. injection H as _ _ Hr'. subst rs'.
+    constructor;
+      [ exact Hw1
+      | apply (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym Erec));
+        constructor; assumption ].
+Qed.
+
+Lemma optimize_rules_datamap_dynset_fresh : forall n0 rs n d n' d' rs',
+  optimize_rules_datamap n d rs = (n', d', rs') ->
+  Forall (rule_dynset_fresh n0) rs -> Forall (rule_dynset_fresh n0) rs'.
+Proof.
+  intros n0 rs.
+  induction rs as [rs IHrs] using (induction_ltof1 _ (@List.length rule)).
+  intros n d n' d' rs' H Hwf.
+  destruct rs as [| r1 [| r2 rest]]; try (cbn in H; inversion H; subst; exact Hwf).
+  rewrite optimize_rules_datamap_cons2 in H.
+  inversion Hwf as [| ? ? Hw1 Hwf2]; subst.
+  inversion Hwf2 as [| ? ? Hw2 Hwrest]; subst.
+  destruct (map_merge_pair r1 r2) as [[[[[[f v1] v2] M1] M2] k0]|] eqn:Em; cbv zeta in H.
+  - remember (optimize_rules_datamap (S n)
+                {| sd_sets := (setname n, map2_set v1 v2) :: sd_sets d;
+                   sd_vmaps := sd_vmaps d;
+                   sd_maps := (mapname n, map2_map v1 v2 M1 M2) :: sd_maps d |} rest)
+      as tt eqn:Erec.
+    destruct tt as [[m'' dd''] rr'']. injection H as _ _ Hr'. subst rs'.
+    constructor.
+    + apply rule_dynset_fresh_nil_names. reflexivity.
+    + apply (IHrs rest ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym Erec) Hwrest).
+  - remember (optimize_rules_datamap n d (r2 :: rest)) as tt eqn:Erec.
+    destruct tt as [[m'' dd''] rr'']. injection H as _ _ Hr'. subst rs'.
+    constructor;
+      [ exact Hw1
+      | apply (IHrs (r2 :: rest) ltac:(unfold ltof; cbn; lia) _ _ _ _ _ (eq_sym Erec));
+        constructor; assumption ].
+Qed.
+
+(** ctmask: the merged rule's dynset names are its base rule's. *)
+Lemma optimize_rules_ctmask_dynset_fresh : forall n0 fuel rs,
+  Forall (rule_dynset_fresh n0) rs ->
+  Forall (rule_dynset_fresh n0) (optimize_rules_ctmask fuel rs).
+Proof.
+  intros n0 fuel rs Hwf.
+  apply (optimize_rules_ctmask_Forall (rule_dynset_fresh n0) fuel rs); [| exact Hwf].
+  intros r1 r2 f m1 m2 z body Hp Hf1.
+  destruct (ctmask_pair_facts r1 r2 f m1 m2 z body Hp) as [Hr1 _].
+  rewrite Hr1 in Hf1. unfold ctmask_merged.
+  exact (rule_dynset_fresh_names_eq n0 _ _ eq_refl Hf1).
+Qed.
+
+Lemma optimize_chain_valueset_mut_env : forall h n d c n' d' c' base e p,
+  optimize_chain_valueset n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) (c_rules c) ->
+  eval_chain_mut_env h c' e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h n d c n' d' c' base e p H Hfresh Hmint Hwf.
+  unfold optimize_chain_valueset in H.
+  destruct (optimize_rules_valueset (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain_mut_env. cbn [c_rules c_policy].
+  rewrite (optimize_rules_valueset_mut_env h (Datatypes.length (c_rules c)) (c_rules c)
+             n d m'' dd'' rr'' base e p E Hfresh Hmint Hwf). reflexivity.
+Qed.
+
+Lemma optimize_chain_valueset_sets_assoc_stable : forall n d c n' d' c' nm X0,
+  optimize_chain_valueset n d c = (n', d', c') ->
+  (forall k, n <= k -> nm <> setname k) ->
+  assoc_str nm (sd_sets d') X0 = assoc_str nm (sd_sets d) X0.
+Proof.
+  intros n d c n' d' c' nm X0 H Hnm.
+  unfold optimize_chain_valueset in H.
+  destruct (optimize_rules_valueset (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  exact (optimize_rules_valueset_assoc_stable (Datatypes.length (c_rules c)) n d
+           (c_rules c) m'' dd'' rr'' nm X0 E Hnm).
+Qed.
+
+Lemma optimize_chain_valueset_dynset_fresh : forall n0 n d c n' d' c',
+  optimize_chain_valueset n d c = (n', d', c') ->
+  Forall (rule_dynset_fresh n0) (c_rules c) ->
+  Forall (rule_dynset_fresh n0) (c_rules c').
+Proof.
+  intros n0 n d c n' d' c' H Hwf.
+  unfold optimize_chain_valueset in H.
+  destruct (optimize_rules_valueset (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. cbn [c_rules].
+  exact (optimize_rules_valueset_dynset_fresh n0 (Datatypes.length (c_rules c))
+           (c_rules c) n d m'' dd'' rr'' E Hwf).
+Qed.
+
+Lemma optimize_chain_concat_mut_env : forall h n d c n' d' c' base e p,
+  optimize_chain_concat n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) (c_rules c) ->
+  eval_chain_mut_env h c' e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h n d c n' d' c' base e p H Hfresh Hmint Hwf.
+  unfold optimize_chain_concat in H.
+  destruct (optimize_rules_concat (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain_mut_env. cbn [c_rules c_policy].
+  rewrite (optimize_rules_concat_mut_env h (Datatypes.length (c_rules c)) (c_rules c)
+             n d m'' dd'' rr'' base e p E Hfresh Hmint Hwf). reflexivity.
+Qed.
+
+Lemma optimize_chain_concat_sets_assoc_stable : forall n d c n' d' c' nm X0,
+  optimize_chain_concat n d c = (n', d', c') ->
+  (forall k, n <= k -> nm <> setname k) ->
+  assoc_str nm (sd_sets d') X0 = assoc_str nm (sd_sets d) X0.
+Proof.
+  intros n d c n' d' c' nm X0 H Hnm.
+  unfold optimize_chain_concat in H.
+  destruct (optimize_rules_concat (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  exact (optimize_rules_concat_assoc_stable (Datatypes.length (c_rules c)) n d
+           (c_rules c) m'' dd'' rr'' nm X0 E Hnm).
+Qed.
+
+Lemma optimize_chain_concat_dynset_fresh : forall n0 n d c n' d' c',
+  optimize_chain_concat n d c = (n', d', c') ->
+  Forall (rule_dynset_fresh n0) (c_rules c) ->
+  Forall (rule_dynset_fresh n0) (c_rules c').
+Proof.
+  intros n0 n d c n' d' c' H Hwf.
+  unfold optimize_chain_concat in H.
+  destruct (optimize_rules_concat (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. cbn [c_rules].
+  exact (optimize_rules_concat_dynset_fresh n0 (Datatypes.length (c_rules c))
+           (c_rules c) n d m'' dd'' rr'' E Hwf).
+Qed.
+
+Lemma optimize_chain_concatguarded_mut_env : forall h n d c n' d' c' base e p,
+  optimize_chain_concatguarded n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) (c_rules c) ->
+  eval_chain_mut_env h c' e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h n d c n' d' c' base e p H Hfresh Hmint Hwf.
+  unfold optimize_chain_concatguarded in H.
+  destruct (optimize_rules_concatguarded (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain_mut_env. cbn [c_rules c_policy].
+  rewrite (optimize_rules_concatguarded_mut_env h (Datatypes.length (c_rules c)) (c_rules c)
+             n d m'' dd'' rr'' base e p E Hfresh Hmint Hwf). reflexivity.
+Qed.
+
+Lemma optimize_chain_concatguarded_sets_assoc_stable : forall n d c n' d' c' nm X0,
+  optimize_chain_concatguarded n d c = (n', d', c') ->
+  (forall k, n <= k -> nm <> setname k) ->
+  assoc_str nm (sd_sets d') X0 = assoc_str nm (sd_sets d) X0.
+Proof.
+  intros n d c n' d' c' nm X0 H Hnm.
+  unfold optimize_chain_concatguarded in H.
+  destruct (optimize_rules_concatguarded (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  exact (optimize_rules_concatguarded_assoc_stable (Datatypes.length (c_rules c)) n d
+           (c_rules c) m'' dd'' rr'' nm X0 E Hnm).
+Qed.
+
+Lemma optimize_chain_concatguarded_dynset_fresh : forall n0 n d c n' d' c',
+  optimize_chain_concatguarded n d c = (n', d', c') ->
+  Forall (rule_dynset_fresh n0) (c_rules c) ->
+  Forall (rule_dynset_fresh n0) (c_rules c').
+Proof.
+  intros n0 n d c n' d' c' H Hwf.
+  unfold optimize_chain_concatguarded in H.
+  destruct (optimize_rules_concatguarded (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. cbn [c_rules].
+  exact (optimize_rules_concatguarded_dynset_fresh n0 (Datatypes.length (c_rules c))
+           (c_rules c) n d m'' dd'' rr'' E Hwf).
+Qed.
+
+Lemma optimize_chain_setguarded_mut_env : forall h n d c n' d' c' base e p,
+  optimize_chain_setguarded n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) (c_rules c) ->
+  eval_chain_mut_env h c' e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h n d c n' d' c' base e p H Hfresh Hmint Hwf.
+  unfold optimize_chain_setguarded in H.
+  destruct (optimize_rules_setguarded (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain_mut_env. cbn [c_rules c_policy].
+  rewrite (optimize_rules_setguarded_mut_env h (Datatypes.length (c_rules c)) (c_rules c)
+             n d m'' dd'' rr'' base e p E Hfresh Hmint Hwf). reflexivity.
+Qed.
+
+Lemma optimize_chain_setguarded_sets_assoc_stable : forall n d c n' d' c' nm X0,
+  optimize_chain_setguarded n d c = (n', d', c') ->
+  (forall k, n <= k -> nm <> setname k) ->
+  assoc_str nm (sd_sets d') X0 = assoc_str nm (sd_sets d) X0.
+Proof.
+  intros n d c n' d' c' nm X0 H Hnm.
+  unfold optimize_chain_setguarded in H.
+  destruct (optimize_rules_setguarded (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  exact (optimize_rules_setguarded_assoc_stable (Datatypes.length (c_rules c)) n d
+           (c_rules c) m'' dd'' rr'' nm X0 E Hnm).
+Qed.
+
+Lemma optimize_chain_setguarded_dynset_fresh : forall n0 n d c n' d' c',
+  optimize_chain_setguarded n d c = (n', d', c') ->
+  Forall (rule_dynset_fresh n0) (c_rules c) ->
+  Forall (rule_dynset_fresh n0) (c_rules c').
+Proof.
+  intros n0 n d c n' d' c' H Hwf.
+  unfold optimize_chain_setguarded in H.
+  destruct (optimize_rules_setguarded (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. cbn [c_rules].
+  exact (optimize_rules_setguarded_dynset_fresh n0 (Datatypes.length (c_rules c))
+           (c_rules c) n d m'' dd'' rr'' E Hwf).
+Qed.
+
+Lemma optimize_chain_intervalset_mut_env : forall h n d c n' d' c' base e p,
+  optimize_chain_intervalset n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) (c_rules c) ->
+  eval_chain_mut_env h c' e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h n d c n' d' c' base e p H Hfresh Hmint Hwf.
+  unfold optimize_chain_intervalset in H.
+  destruct (optimize_rules_intervalset (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain_mut_env. cbn [c_rules c_policy].
+  rewrite (optimize_rules_intervalset_mut_env h (Datatypes.length (c_rules c)) (c_rules c)
+             n d m'' dd'' rr'' base e p E Hfresh Hmint Hwf). reflexivity.
+Qed.
+
+Lemma optimize_chain_intervalset_sets_assoc_stable : forall n d c n' d' c' nm X0,
+  optimize_chain_intervalset n d c = (n', d', c') ->
+  (forall k, n <= k -> nm <> setname k) ->
+  assoc_str nm (sd_sets d') X0 = assoc_str nm (sd_sets d) X0.
+Proof.
+  intros n d c n' d' c' nm X0 H Hnm.
+  unfold optimize_chain_intervalset in H.
+  destruct (optimize_rules_intervalset (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  exact (optimize_rules_intervalset_assoc_stable (Datatypes.length (c_rules c)) n d
+           (c_rules c) m'' dd'' rr'' nm X0 E Hnm).
+Qed.
+
+Lemma optimize_chain_intervalset_dynset_fresh : forall n0 n d c n' d' c',
+  optimize_chain_intervalset n d c = (n', d', c') ->
+  Forall (rule_dynset_fresh n0) (c_rules c) ->
+  Forall (rule_dynset_fresh n0) (c_rules c').
+Proof.
+  intros n0 n d c n' d' c' H Hwf.
+  unfold optimize_chain_intervalset in H.
+  destruct (optimize_rules_intervalset (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. cbn [c_rules].
+  exact (optimize_rules_intervalset_dynset_fresh n0 (Datatypes.length (c_rules c))
+           (c_rules c) n d m'' dd'' rr'' E Hwf).
+Qed.
+
+Lemma optimize_chain_intervalsethostorder_mut_env : forall h n d c n' d' c' base e p,
+  optimize_chain_intervalsethostorder n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) (c_rules c) ->
+  eval_chain_mut_env h c' e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h n d c n' d' c' base e p H Hfresh Hmint Hwf.
+  unfold optimize_chain_intervalsethostorder in H.
+  destruct (optimize_rules_intervalsethostorder (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain_mut_env. cbn [c_rules c_policy].
+  rewrite (optimize_rules_intervalsethostorder_mut_env h (Datatypes.length (c_rules c)) (c_rules c)
+             n d m'' dd'' rr'' base e p E Hfresh Hmint Hwf). reflexivity.
+Qed.
+
+Lemma optimize_chain_intervalsethostorder_sets_assoc_stable : forall n d c n' d' c' nm X0,
+  optimize_chain_intervalsethostorder n d c = (n', d', c') ->
+  (forall k, n <= k -> nm <> setname k) ->
+  assoc_str nm (sd_sets d') X0 = assoc_str nm (sd_sets d) X0.
+Proof.
+  intros n d c n' d' c' nm X0 H Hnm.
+  unfold optimize_chain_intervalsethostorder in H.
+  destruct (optimize_rules_intervalsethostorder (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  exact (optimize_rules_intervalsethostorder_assoc_stable (Datatypes.length (c_rules c)) n d
+           (c_rules c) m'' dd'' rr'' nm X0 E Hnm).
+Qed.
+
+Lemma optimize_chain_intervalsethostorder_dynset_fresh : forall n0 n d c n' d' c',
+  optimize_chain_intervalsethostorder n d c = (n', d', c') ->
+  Forall (rule_dynset_fresh n0) (c_rules c) ->
+  Forall (rule_dynset_fresh n0) (c_rules c').
+Proof.
+  intros n0 n d c n' d' c' H Hwf.
+  unfold optimize_chain_intervalsethostorder in H.
+  destruct (optimize_rules_intervalsethostorder (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. cbn [c_rules].
+  exact (optimize_rules_intervalsethostorder_dynset_fresh n0 (Datatypes.length (c_rules c))
+           (c_rules c) n d m'' dd'' rr'' E Hwf).
+Qed.
+
+Lemma optimize_chain_dscp_mut_env : forall h n d c n' d' c' base e p,
+  optimize_chain_dscp n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) (c_rules c) ->
+  eval_chain_mut_env h c' e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h n d c n' d' c' base e p H Hfresh Hmint Hwf.
+  unfold optimize_chain_dscp in H.
+  destruct (optimize_rules_dscp (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain_mut_env. cbn [c_rules c_policy].
+  rewrite (optimize_rules_dscp_mut_env h (Datatypes.length (c_rules c)) (c_rules c)
+             n d m'' dd'' rr'' base e p E Hfresh Hmint Hwf). reflexivity.
+Qed.
+
+Lemma optimize_chain_dscp_sets_assoc_stable : forall n d c n' d' c' nm X0,
+  optimize_chain_dscp n d c = (n', d', c') ->
+  (forall k, n <= k -> nm <> setname k) ->
+  assoc_str nm (sd_sets d') X0 = assoc_str nm (sd_sets d) X0.
+Proof.
+  intros n d c n' d' c' nm X0 H Hnm.
+  unfold optimize_chain_dscp in H.
+  destruct (optimize_rules_dscp (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  exact (optimize_rules_dscp_assoc_stable (Datatypes.length (c_rules c)) n d
+           (c_rules c) m'' dd'' rr'' nm X0 E Hnm).
+Qed.
+
+Lemma optimize_chain_dscp_dynset_fresh : forall n0 n d c n' d' c',
+  optimize_chain_dscp n d c = (n', d', c') ->
+  Forall (rule_dynset_fresh n0) (c_rules c) ->
+  Forall (rule_dynset_fresh n0) (c_rules c').
+Proof.
+  intros n0 n d c n' d' c' H Hwf.
+  unfold optimize_chain_dscp in H.
+  destruct (optimize_rules_dscp (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. cbn [c_rules].
+  exact (optimize_rules_dscp_dynset_fresh n0 (Datatypes.length (c_rules c))
+           (c_rules c) n d m'' dd'' rr'' E Hwf).
+Qed.
+
+Lemma optimize_chain_intervalsetguarded_mut_env : forall h n d c n' d' c' base e p,
+  optimize_chain_intervalsetguarded n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) (c_rules c) ->
+  eval_chain_mut_env h c' e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h n d c n' d' c' base e p H Hfresh Hmint Hwf.
+  unfold optimize_chain_intervalsetguarded in H.
+  destruct (optimize_rules_intervalsetguarded (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain_mut_env. cbn [c_rules c_policy].
+  rewrite (optimize_rules_intervalsetguarded_mut_env h (Datatypes.length (c_rules c)) (c_rules c)
+             n d m'' dd'' rr'' base e p E Hfresh Hmint Hwf). reflexivity.
+Qed.
+
+Lemma optimize_chain_intervalsetguarded_sets_assoc_stable : forall n d c n' d' c' nm X0,
+  optimize_chain_intervalsetguarded n d c = (n', d', c') ->
+  (forall k, n <= k -> nm <> setname k) ->
+  assoc_str nm (sd_sets d') X0 = assoc_str nm (sd_sets d) X0.
+Proof.
+  intros n d c n' d' c' nm X0 H Hnm.
+  unfold optimize_chain_intervalsetguarded in H.
+  destruct (optimize_rules_intervalsetguarded (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  exact (optimize_rules_intervalsetguarded_assoc_stable (Datatypes.length (c_rules c)) n d
+           (c_rules c) m'' dd'' rr'' nm X0 E Hnm).
+Qed.
+
+Lemma optimize_chain_intervalsetguarded_dynset_fresh : forall n0 n d c n' d' c',
+  optimize_chain_intervalsetguarded n d c = (n', d', c') ->
+  Forall (rule_dynset_fresh n0) (c_rules c) ->
+  Forall (rule_dynset_fresh n0) (c_rules c').
+Proof.
+  intros n0 n d c n' d' c' H Hwf.
+  unfold optimize_chain_intervalsetguarded in H.
+  destruct (optimize_rules_intervalsetguarded (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. cbn [c_rules].
+  exact (optimize_rules_intervalsetguarded_dynset_fresh n0 (Datatypes.length (c_rules c))
+           (c_rules c) n d m'' dd'' rr'' E Hwf).
+Qed.
+
+Lemma optimize_chain_mixedpointrangeguarded_mut_env : forall h n d c n' d' c' base e p,
+  optimize_chain_mixedpointrangeguarded n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) (c_rules c) ->
+  eval_chain_mut_env h c' e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h n d c n' d' c' base e p H Hfresh Hmint Hwf.
+  unfold optimize_chain_mixedpointrangeguarded in H.
+  destruct (optimize_rules_mixedpointrangeguarded (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain_mut_env. cbn [c_rules c_policy].
+  rewrite (optimize_rules_mixedpointrangeguarded_mut_env h (Datatypes.length (c_rules c)) (c_rules c)
+             n d m'' dd'' rr'' base e p E Hfresh Hmint Hwf). reflexivity.
+Qed.
+
+Lemma optimize_chain_mixedpointrangeguarded_sets_assoc_stable : forall n d c n' d' c' nm X0,
+  optimize_chain_mixedpointrangeguarded n d c = (n', d', c') ->
+  (forall k, n <= k -> nm <> setname k) ->
+  assoc_str nm (sd_sets d') X0 = assoc_str nm (sd_sets d) X0.
+Proof.
+  intros n d c n' d' c' nm X0 H Hnm.
+  unfold optimize_chain_mixedpointrangeguarded in H.
+  destruct (optimize_rules_mixedpointrangeguarded (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  exact (optimize_rules_mixedpointrangeguarded_assoc_stable (Datatypes.length (c_rules c)) n d
+           (c_rules c) m'' dd'' rr'' nm X0 E Hnm).
+Qed.
+
+Lemma optimize_chain_concatmulti_mut_env : forall h n d c n' d' c' base e p,
+  optimize_chain_concatmulti n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k) (map fst (sd_sets d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  Forall (rule_dynset_fresh n) (c_rules c) ->
+  eval_chain_mut_env h c' e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h n d c n' d' c' base e p H Hfresh Hmint Hwf.
+  unfold optimize_chain_concatmulti in H.
+  destruct (optimize_rules_concatmulti n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain_mut_env. cbn [c_rules c_policy].
+  rewrite (optimize_rules_concatmulti_mut_env h (c_rules c)
+             n d m'' dd'' rr'' base e p E Hfresh Hmint Hwf). reflexivity.
+Qed.
+
+Lemma optimize_chain_concatmulti_sets_assoc_stable : forall n d c n' d' c' nm X0,
+  optimize_chain_concatmulti n d c = (n', d', c') ->
+  (forall k, n <= k -> nm <> setname k) ->
+  assoc_str nm (sd_sets d') X0 = assoc_str nm (sd_sets d) X0.
+Proof.
+  intros n d c n' d' c' nm X0 H Hnm.
+  unfold optimize_chain_concatmulti in H.
+  destruct (optimize_rules_concatmulti n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  exact (optimize_rules_concatmulti_assoc_stable (c_rules c) n d m'' dd'' rr'' nm X0
+           E Hnm).
+Qed.
+
+Lemma optimize_chain_concatmulti_dynset_fresh : forall n0 n d c n' d' c',
+  optimize_chain_concatmulti n d c = (n', d', c') ->
+  Forall (rule_dynset_fresh n0) (c_rules c) ->
+  Forall (rule_dynset_fresh n0) (c_rules c').
+Proof.
+  intros n0 n d c n' d' c' H Hwf.
+  unfold optimize_chain_concatmulti in H.
+  destruct (optimize_rules_concatmulti n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. cbn [c_rules].
+  exact (optimize_rules_concatmulti_dynset_fresh n0 (c_rules c) n d m'' dd'' rr'' E Hwf).
+Qed.
+
+Lemma optimize_chain_datamap_mut_env : forall h n d c n' d' c' base e p,
+  optimize_chain_datamap n d c = (n', d', c') ->
+  (forall k, n <= k -> k < n' ->
+     e_set e (setname k) = e_set (env_with_sets base d') (setname k)) ->
+  (forall k, n <= k -> k < n' ->
+     e_map e (mapname k) = e_map (env_with_sets base d') (mapname k)) ->
+  Forall (rule_dynset_fresh n) (c_rules c) ->
+  eval_chain_mut_env h c' e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h n d c n' d' c' base e p H Hms Hmm Hwf.
+  unfold optimize_chain_datamap in H.
+  destruct (optimize_rules_datamap n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain_mut_env. cbn [c_rules c_policy].
+  rewrite (optimize_rules_datamap_mut_env h (c_rules c)
+             n d m'' dd'' rr'' base e p E Hms Hmm Hwf). reflexivity.
+Qed.
+
+Lemma optimize_chain_datamap_sets_assoc_stable : forall n d c n' d' c' nm X0,
+  optimize_chain_datamap n d c = (n', d', c') ->
+  (forall k, n <= k -> nm <> setname k) ->
+  assoc_str nm (sd_sets d') X0 = assoc_str nm (sd_sets d) X0.
+Proof.
+  intros n d c n' d' c' nm X0 H Hnm.
+  unfold optimize_chain_datamap in H.
+  destruct (optimize_rules_datamap n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  exact (optimize_rules_datamap_assoc_stable (c_rules c) n d m'' dd'' rr'' nm X0 E Hnm).
+Qed.
+
+Lemma optimize_chain_datamap_maps_assoc_stable : forall n d c n' d' c' nm X0,
+  optimize_chain_datamap n d c = (n', d', c') ->
+  (forall k, n <= k -> nm <> mapname k) ->
+  assoc_str nm (sd_maps d') X0 = assoc_str nm (sd_maps d) X0.
+Proof.
+  intros n d c n' d' c' nm X0 H Hnm.
+  unfold optimize_chain_datamap in H.
+  destruct (optimize_rules_datamap n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  exact (optimize_rules_datamap_maps_assoc_stable (c_rules c) n d m'' dd'' rr'' nm X0
+           E Hnm).
+Qed.
+
+Lemma optimize_chain_datamap_dynset_fresh : forall n0 n d c n' d' c',
+  optimize_chain_datamap n d c = (n', d', c') ->
+  Forall (rule_dynset_fresh n0) (c_rules c) ->
+  Forall (rule_dynset_fresh n0) (c_rules c').
+Proof.
+  intros n0 n d c n' d' c' H Hwf.
+  unfold optimize_chain_datamap in H.
+  destruct (optimize_rules_datamap n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. cbn [c_rules].
+  exact (optimize_rules_datamap_dynset_fresh n0 (c_rules c) n d m'' dd'' rr'' E Hwf).
+Qed.
+
+Lemma optimize_chain_dnat_mut_env : forall h n d c n' d' c' base e p,
+  optimize_chain_dnat n d c = (n', d', c') ->
+  (forall k, n <= k -> k < n' ->
+     e_map e (mapname k) = e_map (env_with_sets base d') (mapname k)) ->
+  Forall (rule_dynset_fresh n) (c_rules c) ->
+  eval_chain_mut_env h c' e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h n d c n' d' c' base e p H Hmint Hwf.
+  unfold optimize_chain_dnat in H.
+  destruct (optimize_rules_dnat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain_mut_env. cbn [c_rules c_policy].
+  rewrite (optimize_rules_dnat_mut_env h (c_rules c)
+             n d m'' dd'' rr'' base e p E Hmint Hwf). reflexivity.
+Qed.
+
+Lemma optimize_chain_dnat_dynset_fresh : forall n0 n d c n' d' c',
+  optimize_chain_dnat n d c = (n', d', c') ->
+  Forall (rule_dynset_fresh n0) (c_rules c) ->
+  Forall (rule_dynset_fresh n0) (c_rules c').
+Proof.
+  intros n0 n d c n' d' c' H Hwf.
+  unfold optimize_chain_dnat in H.
+  destruct (optimize_rules_dnat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. cbn [c_rules].
+  exact (optimize_rules_dnat_dynset_fresh n0 (c_rules c) n d m'' dd'' rr'' E Hwf).
+Qed.
+
+Lemma optimize_chain_snat_mut_env : forall h n d c n' d' c' base e p,
+  optimize_chain_snat n d c = (n', d', c') ->
+  (forall k, n <= k -> k < n' ->
+     e_map e (mapname k) = e_map (env_with_sets base d') (mapname k)) ->
+  Forall (rule_dynset_fresh n) (c_rules c) ->
+  eval_chain_mut_env h c' e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h n d c n' d' c' base e p H Hmint Hwf.
+  unfold optimize_chain_snat in H.
+  destruct (optimize_rules_snat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain_mut_env. cbn [c_rules c_policy].
+  rewrite (optimize_rules_snat_mut_env h (c_rules c)
+             n d m'' dd'' rr'' base e p E Hmint Hwf). reflexivity.
+Qed.
+
+Lemma optimize_chain_snat_dynset_fresh : forall n0 n d c n' d' c',
+  optimize_chain_snat n d c = (n', d', c') ->
+  Forall (rule_dynset_fresh n0) (c_rules c) ->
+  Forall (rule_dynset_fresh n0) (c_rules c').
+Proof.
+  intros n0 n d c n' d' c' H Hwf.
+  unfold optimize_chain_snat in H.
+  destruct (optimize_rules_snat n d (c_rules c)) as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. cbn [c_rules].
+  exact (optimize_rules_snat_dynset_fresh n0 (c_rules c) n d m'' dd'' rr'' E Hwf).
+Qed.
+
+Lemma optimize_chain_vmapguarded_mut_env : forall h n d c n' d' c' base e p,
+  optimize_chain_vmapguarded n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_vmap e (vmapname k) = e_vmap (env_with_sets base d') (vmapname k)) ->
+  eval_chain_mut_env h c' e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h n d c n' d' c' base e p H Hfresh Hmint.
+  unfold optimize_chain_vmapguarded in H.
+  destruct (optimize_rules_vmapguarded (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain_mut_env. cbn [c_rules c_policy].
+  rewrite (optimize_rules_vmapguarded_mut_env h (Datatypes.length (c_rules c)) (c_rules c)
+             n d m'' dd'' rr'' base e p E Hfresh Hmint). reflexivity.
+Qed.
+
+Lemma optimize_chain_vmapguarded_vmaps_assoc_stable : forall n d c n' d' c' nm X0,
+  optimize_chain_vmapguarded n d c = (n', d', c') ->
+  (forall k, n <= k -> nm <> vmapname k) ->
+  assoc_str nm (sd_vmaps d') X0 = assoc_str nm (sd_vmaps d) X0.
+Proof.
+  intros n d c n' d' c' nm X0 H Hnm.
+  unfold optimize_chain_vmapguarded in H.
+  destruct (optimize_rules_vmapguarded (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  exact (optimize_rules_vmapguarded_assoc_stable (Datatypes.length (c_rules c)) n d
+           (c_rules c) m'' dd'' rr'' nm X0 E Hnm).
+Qed.
+
+Lemma optimize_chain_dscpvmap_mut_env : forall h n d c n' d' c' base e p,
+  optimize_chain_dscpvmap n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_vmap e (vmapname k) = e_vmap (env_with_sets base d') (vmapname k)) ->
+  eval_chain_mut_env h c' e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h n d c n' d' c' base e p H Hfresh Hmint.
+  unfold optimize_chain_dscpvmap in H.
+  destruct (optimize_rules_dscpvmap (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain_mut_env. cbn [c_rules c_policy].
+  rewrite (optimize_rules_dscpvmap_mut_env h (Datatypes.length (c_rules c)) (c_rules c)
+             n d m'' dd'' rr'' base e p E Hfresh Hmint). reflexivity.
+Qed.
+
+Lemma optimize_chain_dscpvmap_vmaps_assoc_stable : forall n d c n' d' c' nm X0,
+  optimize_chain_dscpvmap n d c = (n', d', c') ->
+  (forall k, n <= k -> nm <> vmapname k) ->
+  assoc_str nm (sd_vmaps d') X0 = assoc_str nm (sd_vmaps d) X0.
+Proof.
+  intros n d c n' d' c' nm X0 H Hnm.
+  unfold optimize_chain_dscpvmap in H.
+  destruct (optimize_rules_dscpvmap (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  exact (optimize_rules_dscpvmap_assoc_stable (Datatypes.length (c_rules c)) n d
+           (c_rules c) m'' dd'' rr'' nm X0 E Hnm).
+Qed.
+
+Lemma optimize_chain_vmap_mut_env : forall h n d c n' d' c' base e p,
+  optimize_chain_vmap n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
+  (forall k, n <= k -> k < n' ->
+     e_vmap e (vmapname k) = e_vmap (env_with_sets base d') (vmapname k)) ->
+  eval_chain_mut_env h c' e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h n d c n' d' c' base e p H Hfresh Hmint.
+  unfold optimize_chain_vmap in H.
+  destruct (optimize_rules_vmap (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'. unfold eval_chain_mut_env. cbn [c_rules c_policy].
+  rewrite (optimize_rules_vmap_mut_env h (Datatypes.length (c_rules c)) (c_rules c)
+             n d m'' dd'' rr'' base e p E Hfresh Hmint). reflexivity.
+Qed.
+
+Lemma optimize_chain_vmap_vmaps_assoc_stable : forall n d c n' d' c' nm X0,
+  optimize_chain_vmap n d c = (n', d', c') ->
+  (forall k, n <= k -> nm <> vmapname k) ->
+  assoc_str nm (sd_vmaps d') X0 = assoc_str nm (sd_vmaps d) X0.
+Proof.
+  intros n d c n' d' c' nm X0 H Hnm.
+  unfold optimize_chain_vmap in H.
+  destruct (optimize_rules_vmap (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  exact (optimize_rules_vmap_assoc_stable (Datatypes.length (c_rules c)) n d
+           (c_rules c) m'' dd'' rr'' nm X0 E Hnm).
+Qed.
+
+Lemma optimize_chain_vmap_sets : forall n d c n' d' c',
+  optimize_chain_vmap n d c = (n', d', c') -> sd_sets d' = sd_sets d.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_vmap in H.
+  destruct (optimize_rules_vmap (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  exact (optimize_rules_vmap_sets (Datatypes.length (c_rules c)) n d (c_rules c)
+           m'' dd'' rr'' E).
+Qed.
+
+Lemma optimize_chain_vmap_maps : forall n d c n' d' c',
+  optimize_chain_vmap n d c = (n', d', c') -> sd_maps d' = sd_maps d.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_vmap in H.
+  destruct (optimize_rules_vmap (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  inversion H; subst n' d' c'.
+  exact (optimize_rules_vmap_maps (Datatypes.length (c_rules c)) n d (c_rules c)
+           m'' dd'' rr'' E).
+Qed.
+
+Lemma optimize_chain_vmap_mono : forall n d c n' d' c',
+  optimize_chain_vmap n d c = (n', d', c') -> n <= n'.
+Proof.
+  intros n d c n' d' c' H. unfold optimize_chain_vmap in H.
+  destruct (optimize_rules_vmap (Datatypes.length (c_rules c)) n d (c_rules c))
+    as [[m'' dd''] rr''] eqn:E.
+  injection H as Hn Hd Hc. subst m'' dd''.
+  exact (optimize_rules_vmap_mono _ _ _ _ _ _ _ E).
+Qed.
+
+(** absorb / ctmask at the chain level. *)
+Lemma absorb_chain_mut_env : forall h c e p,
+  eval_chain_mut_env h (absorb_chain c) e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h c e p. unfold eval_chain_mut_env, absorb_chain. cbn [c_rules c_policy].
+  rewrite optimize_rules_absorb_mut_env. reflexivity.
+Qed.
+
+Lemma ctmask_chain_mut_env : forall h c e p,
+  eval_chain_mut_env h (ctmask_chain c) e p = eval_chain_mut_env h c e p.
+Proof.
+  intros h c e p. unfold eval_chain_mut_env, ctmask_chain. cbn [c_rules c_policy].
+  rewrite optimize_rules_ctmask_mut_env. reflexivity.
+Qed.
+
+Lemma ctmask_chain_dynset_fresh : forall n0 c,
+  Forall (rule_dynset_fresh n0) (c_rules c) ->
+  Forall (rule_dynset_fresh n0) (c_rules (ctmask_chain c)).
+Proof.
+  intros n0 c Hwf. unfold ctmask_chain. cbn [c_rules].
+  exact (optimize_rules_ctmask_dynset_fresh n0 (Datatypes.length (c_rules c))
+           (c_rules c) Hwf).
+Qed.
+
+(** ** Part G: the COMPOSED effect-level pipeline theorem.
+
+    The 18-stage [Optimize_Table.optimize_table], certified against the
+    EFFECT-OBSERVING [eval_chain_mut_env h]: under the deployed environment
+    (the synthesised declarations in scope), the optimised chain and the input
+    chain produce the SAME verdict AND the SAME resulting environment, for
+    every hook, base environment and packet. *)
+Theorem optimize_table_mut_env_correct_uncond_gen : forall h n d c n' d' c' base p,
+  optimize_table n d c = (n', d', c') ->
+  (forall k, n <= k -> ~ In (setname k)  (map fst (sd_sets  d))) ->
+  (forall k, n <= k -> ~ In (vmapname k) (map fst (sd_vmaps d))) ->
+  (forall k, n <= k -> ~ In (mapname k)  (map fst (sd_maps  d))) ->
+  Forall (rule_dynset_fresh n) (c_rules (optimize_chain c)) ->
+  eval_chain_mut_env h c' (env_with_sets base d') p
+  = eval_chain_mut_env h c (env_with_sets base d') p.
+Proof.
+  intros h n d c n' d' c' base p H Hfs Hfv Hfm Hwf.
+  unfold optimize_table in H.
+  destruct (optimize_chain_absorb n d (optimize_chain c)) as [[nA dA] cA] eqn:EA.
+  pose proof (optimize_chain_absorb_eq n d (optimize_chain c)) as Habs.
+  rewrite EA in Habs. injection Habs as HnA HdA HcA. subst nA dA.
+  destruct (optimize_chain_ctmask n d cA) as [[nT dT] cT] eqn:ET.
+  pose proof (optimize_chain_ctmask_eq n d cA) as Hct.
+  rewrite ET in Hct. injection Hct as HnT HdT HcT. subst nT dT.
+  assert (HwfA : Forall (rule_dynset_fresh n) (c_rules cA))
+    by (rewrite HcA; apply absorb_chain_Forall; exact Hwf).
+  assert (HwfT : Forall (rule_dynset_fresh n) (c_rules cT))
+    by (rewrite HcT; apply ctmask_chain_dynset_fresh; exact HwfA).
+  destruct (optimize_chain_dnat n d cT) as [[nD dD] cD] eqn:ED.
+  destruct (optimize_chain_snat nD dD cD) as [[nS dS] cS] eqn:ES.
+  destruct (optimize_chain_valueset nS dS cS) as [[n1 d1] c1] eqn:E1.
+  destruct (optimize_chain_concatmulti n1 d1 c1) as [[nK dK] cK] eqn:EK.
+  destruct (optimize_chain_datamap nK dK cK) as [[nM dM] cM] eqn:EM.
+  destruct (optimize_chain_concat nM dM cM) as [[n2 d2] c2] eqn:E2.
+  destruct (optimize_chain_concatguarded n2 d2 c2) as [[nG dG] cG] eqn:EG.
+  destruct (optimize_chain_setguarded nG dG cG) as [[nGs dGs] cGs] eqn:EGs.
+  destruct (optimize_chain_intervalset nGs dGs cGs) as [[nI dI] cI] eqn:EI.
+  destruct (optimize_chain_intervalsethostorder nI dI cI) as [[nIt dIt] cIt] eqn:EIt.
+  destruct (optimize_chain_dscp nIt dIt cIt) as [[nDs dDs] cDs] eqn:EDs.
+  destruct (optimize_chain_intervalsetguarded nDs dDs cDs) as [[nIg dIg] cIg] eqn:EIg.
+  destruct (optimize_chain_mixedpointrangeguarded nIg dIg cIg) as [[nMx dMx] cMx] eqn:EMx.
+  destruct (optimize_chain_vmapguarded nMx dMx cMx) as [[nVg dVg] cVg] eqn:EVg.
+  destruct (optimize_chain_dscpvmap nVg dVg cVg) as [[nDv dDv] cDv] eqn:EDv.
+  (* counter monotonicity chain *)
+  pose proof (optimize_chain_dnat_mono n d cT nD dD cD ED) as HmnD.
+  pose proof (optimize_chain_snat_mono nD dD cD nS dS cS ES) as HmnS.
+  pose proof (optimize_chain_valueset_mono nS dS cS n1 d1 c1 E1) as Hmn1.
+  pose proof (optimize_chain_concatmulti_mono n1 d1 c1 nK dK cK EK) as HmnK.
+  pose proof (optimize_chain_datamap_mono nK dK cK nM dM cM EM) as HmnM.
+  pose proof (optimize_chain_concat_mono nM dM cM n2 d2 c2 E2) as Hmn2.
+  pose proof (optimize_chain_concatguarded_mono n2 d2 c2 nG dG cG EG) as HmnG.
+  pose proof (optimize_chain_setguarded_mono nG dG cG nGs dGs cGs EGs) as HmnGs.
+  pose proof (optimize_chain_intervalset_mono nGs dGs cGs nI dI cI EI) as HmnI.
+  pose proof (optimize_chain_intervalsethostorder_mono nI dI cI nIt dIt cIt EIt) as HmnIt.
+  pose proof (optimize_chain_dscp_mono nIt dIt cIt nDs dDs cDs EDs) as HmnDs.
+  pose proof (optimize_chain_intervalsetguarded_mono nDs dDs cDs nIg dIg cIg EIg) as HmnIg.
+  pose proof (optimize_chain_mixedpointrangeguarded_mono nIg dIg cIg nMx dMx cMx EMx) as HmnMx.
+  pose proof (optimize_chain_vmapguarded_mono nMx dMx cMx nVg dVg cVg EVg) as HmnVg.
+  pose proof (optimize_chain_dscpvmap_mono nVg dVg cVg nDv dDv cDv EDv) as HmnDv.
+  pose proof (optimize_chain_vmap_mono nDv dDv cDv n' d' c' H) as Hmn'.
+  (* setname decl-freshness threading (as in the verdict-level harness) *)
+  assert (Hfs_D : forall k, nD <= k -> ~ In (setname k) (map fst (sd_sets dD))).
+  { intros k Hk. rewrite (optimize_chain_dnat_sets n d cT nD dD cD ED).
+    apply Hfs. lia. }
+  assert (Hfs_S : forall k, nS <= k -> ~ In (setname k) (map fst (sd_sets dS))).
+  { intros k Hk. rewrite (optimize_chain_snat_sets nD dD cD nS dS cS ES).
+    apply Hfs_D. lia. }
+  pose proof (optimize_chain_valueset_fresh_setname nS dS cS n1 d1 c1 E1 Hfs_S) as Hfs1.
+  pose proof (optimize_chain_concatmulti_fresh_setname n1 d1 c1 nK dK cK EK Hfs1) as HfsK.
+  pose proof (optimize_chain_datamap_fresh_setname nK dK cK nM dM cM EM HfsK) as HfsM.
+  pose proof (optimize_chain_concat_fresh_setname nM dM cM n2 d2 c2 E2 HfsM) as Hfs2.
+  pose proof (optimize_chain_concatguarded_fresh_setname n2 d2 c2 nG dG cG EG Hfs2) as HfsG.
+  pose proof (optimize_chain_setguarded_fresh_setname nG dG cG nGs dGs cGs EGs HfsG) as HfsGs.
+  pose proof (optimize_chain_intervalset_fresh_setname nGs dGs cGs nI dI cI EI HfsGs) as HfsI.
+  pose proof (optimize_chain_intervalsethostorder_fresh_setname nI dI cI nIt dIt cIt EIt HfsI) as HfsIt.
+  pose proof (optimize_chain_dscp_fresh_setname nIt dIt cIt nDs dDs cDs EDs HfsIt) as HfsDs.
+  pose proof (optimize_chain_intervalsetguarded_fresh_setname nDs dDs cDs nIg dIg cIg EIg HfsDs) as HfsIg.
+  (* vmapname decl-freshness threading *)
+  assert (Hfv_D : forall k, nD <= k -> ~ In (vmapname k) (map fst (sd_vmaps dD))).
+  { intros k Hk. rewrite (optimize_chain_dnat_vmaps n d cT nD dD cD ED).
+    apply Hfv. lia. }
+  assert (Hfv_S : forall k, nS <= k -> ~ In (vmapname k) (map fst (sd_vmaps dS))).
+  { intros k Hk. rewrite (optimize_chain_snat_vmaps nD dD cD nS dS cS ES).
+    apply Hfv_D. lia. }
+  assert (HvmG : sd_vmaps dG = sd_vmaps dS).
+  { rewrite (optimize_chain_concatguarded_vmaps n2 d2 c2 nG dG cG EG).
+    rewrite (optimize_chain_concat_vmaps nM dM cM n2 d2 c2 E2).
+    rewrite (optimize_chain_datamap_vmaps nK dK cK nM dM cM EM).
+    rewrite (optimize_chain_concatmulti_vmaps n1 d1 c1 nK dK cK EK).
+    apply (optimize_chain_valueset_vmaps nS dS cS n1 d1 c1 E1). }
+  assert (HvmMx : sd_vmaps dMx = sd_vmaps dS).
+  { rewrite (optimize_chain_mixedpointrangeguarded_vmaps nIg dIg cIg nMx dMx cMx EMx).
+    rewrite (optimize_chain_intervalsetguarded_vmaps nDs dDs cDs nIg dIg cIg EIg).
+    rewrite (optimize_chain_dscp_vmaps nIt dIt cIt nDs dDs cDs EDs).
+    rewrite (optimize_chain_intervalsethostorder_vmaps nI dI cI nIt dIt cIt EIt).
+    rewrite (optimize_chain_intervalset_vmaps nGs dGs cGs nI dI cI EI).
+    rewrite (optimize_chain_setguarded_vmaps nG dG cG nGs dGs cGs EGs).
+    exact HvmG. }
+  assert (HfvMx : forall k, nMx <= k -> ~ In (vmapname k) (map fst (sd_vmaps dMx))).
+  { intros k Hk. rewrite HvmMx. apply Hfv_S. lia. }
+  pose proof (optimize_chain_vmapguarded_fresh_vmapname nMx dMx cMx nVg dVg cVg EVg HfvMx) as HfvVg.
+  pose proof (optimize_chain_dscpvmap_fresh_vmapname nVg dVg cVg nDv dDv cDv EDv HfvVg) as HfvDv.
+  (* dynset write-target freshness threading (all at the fixed seed [n]) *)
+  assert (HwfD : Forall (rule_dynset_fresh n) (c_rules cD))
+    by (exact (optimize_chain_dnat_dynset_fresh n n d cT nD dD cD ED HwfT)).
+  assert (HwfS : Forall (rule_dynset_fresh n) (c_rules cS))
+    by (exact (optimize_chain_snat_dynset_fresh n nD dD cD nS dS cS ES HwfD)).
+  assert (Hwf1 : Forall (rule_dynset_fresh n) (c_rules c1))
+    by (exact (optimize_chain_valueset_dynset_fresh n nS dS cS n1 d1 c1 E1 HwfS)).
+  assert (HwfK : Forall (rule_dynset_fresh n) (c_rules cK))
+    by (exact (optimize_chain_concatmulti_dynset_fresh n n1 d1 c1 nK dK cK EK Hwf1)).
+  assert (HwfM : Forall (rule_dynset_fresh n) (c_rules cM))
+    by (exact (optimize_chain_datamap_dynset_fresh n nK dK cK nM dM cM EM HwfK)).
+  assert (Hwf2 : Forall (rule_dynset_fresh n) (c_rules c2))
+    by (exact (optimize_chain_concat_dynset_fresh n nM dM cM n2 d2 c2 E2 HwfM)).
+  assert (HwfG : Forall (rule_dynset_fresh n) (c_rules cG))
+    by (exact (optimize_chain_concatguarded_dynset_fresh n n2 d2 c2 nG dG cG EG Hwf2)).
+  assert (HwfGs : Forall (rule_dynset_fresh n) (c_rules cGs))
+    by (exact (optimize_chain_setguarded_dynset_fresh n nG dG cG nGs dGs cGs EGs HwfG)).
+  assert (HwfI : Forall (rule_dynset_fresh n) (c_rules cI))
+    by (exact (optimize_chain_intervalset_dynset_fresh n nGs dGs cGs nI dI cI EI HwfGs)).
+  assert (HwfIt : Forall (rule_dynset_fresh n) (c_rules cIt))
+    by (exact (optimize_chain_intervalsethostorder_dynset_fresh n nI dI cI nIt dIt cIt EIt HwfI)).
+  assert (HwfDs : Forall (rule_dynset_fresh n) (c_rules cDs))
+    by (exact (optimize_chain_dscp_dynset_fresh n nIt dIt cIt nDs dDs cDs EDs HwfIt)).
+  assert (HwfIg : Forall (rule_dynset_fresh n) (c_rules cIg))
+    by (exact (optimize_chain_intervalsetguarded_dynset_fresh n nDs dDs cDs nIg dIg cIg EIg HwfDs)).
+  (* per-stage weakening of the write-target freshness to the stage counter *)
+  assert (Wk : forall m rs, n <= m -> Forall (rule_dynset_fresh n) rs ->
+                Forall (rule_dynset_fresh m) rs).
+  { intros m rs Hle Hf. eapply Forall_impl; [| exact Hf].
+    intros r Hr. exact (rule_dynset_fresh_mono n m r Hle Hr). }
+  (* the SETS declaration ladder: the vmap family leaves sd_sets untouched, and
+     each set-minting stage preserves the lookup of every EARLIER-minted name *)
+  assert (HsetsTop : sd_sets d' = sd_sets dMx).
+  { rewrite (optimize_chain_vmap_sets nDv dDv cDv n' d' c' H).
+    rewrite (optimize_chain_dscpvmap_sets nVg dVg cVg nDv dDv cDv EDv).
+    apply (optimize_chain_vmapguarded_sets nMx dMx cMx nVg dVg cVg EVg). }
+  (* the MAPS declaration ladder *)
+  assert (HmapsTop : sd_maps d' = sd_maps dM).
+  { rewrite (optimize_chain_vmap_maps nDv dDv cDv n' d' c' H).
+    rewrite (optimize_chain_dscpvmap_maps nVg dVg cVg nDv dDv cDv EDv).
+    rewrite (optimize_chain_vmapguarded_maps nMx dMx cMx nVg dVg cVg EVg).
+    rewrite (optimize_chain_mixedpointrangeguarded_maps nIg dIg cIg nMx dMx cMx EMx).
+    rewrite (optimize_chain_intervalsetguarded_maps nDs dDs cDs nIg dIg cIg EIg).
+    rewrite (optimize_chain_dscp_maps nIt dIt cIt nDs dDs cDs EDs).
+    rewrite (optimize_chain_intervalsethostorder_maps nI dI cI nIt dIt cIt EIt).
+    rewrite (optimize_chain_intervalset_maps nGs dGs cGs nI dI cI EI).
+    rewrite (optimize_chain_setguarded_maps nG dG cG nGs dGs cGs EGs).
+    rewrite (optimize_chain_concatguarded_maps n2 d2 c2 nG dG cG EG).
+    apply (optimize_chain_concat_maps nM dM cM n2 d2 c2 E2). }
+  set (E := env_with_sets base d') in *.
+  (* rewrite the pipeline right-to-left, discharging each stage's minted-name
+     resolution from the declaration ladders *)
+  rewrite (optimize_chain_vmap_mut_env h nDv dDv cDv n' d' c' base E p H HfvDv
+             ltac:(intros k Hk Hk'; reflexivity)).
+  rewrite (optimize_chain_dscpvmap_mut_env h nVg dVg cVg nDv dDv cDv base E p EDv HfvVg
+             ltac:(intros k Hk Hk'; unfold E; rewrite !e_vmap_env_with_sets;
+                   rewrite (optimize_chain_vmap_vmaps_assoc_stable nDv dDv cDv n' d' c'
+                              (vmapname k) _ H
+                              ltac:(intros j Hj Heq; apply vmapname_inj in Heq; lia));
+                   reflexivity)).
+  rewrite (optimize_chain_vmapguarded_mut_env h nMx dMx cMx nVg dVg cVg base E p EVg HfvMx
+             ltac:(intros k Hk Hk'; unfold E; rewrite !e_vmap_env_with_sets;
+                   rewrite (optimize_chain_vmap_vmaps_assoc_stable nDv dDv cDv n' d' c'
+                              (vmapname k) _ H
+                              ltac:(intros j Hj Heq; apply vmapname_inj in Heq; lia));
+                   rewrite (optimize_chain_dscpvmap_vmaps_assoc_stable nVg dVg cVg nDv dDv cDv
+                              (vmapname k) _ EDv
+                              ltac:(intros j Hj Heq; apply vmapname_inj in Heq; lia));
+                   reflexivity)).
+  rewrite (optimize_chain_mixedpointrangeguarded_mut_env h nIg dIg cIg nMx dMx cMx base E p
+             EMx HfsIg
+             ltac:(intros k Hk Hk'; unfold E; rewrite !e_set_declared;
+                   rewrite HsetsTop; reflexivity)
+             (Wk nIg (c_rules cIg) ltac:(lia) HwfIg)).
+  rewrite (optimize_chain_intervalsetguarded_mut_env h nDs dDs cDs nIg dIg cIg base E p
+             EIg HfsDs
+             ltac:(intros k Hk Hk'; unfold E; rewrite !e_set_declared;
+                   rewrite HsetsTop;
+                   rewrite (optimize_chain_mixedpointrangeguarded_sets_assoc_stable
+                              nIg dIg cIg nMx dMx cMx (setname k) _ EMx
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   reflexivity)
+             (Wk nDs (c_rules cDs) ltac:(lia) HwfDs)).
+  rewrite (optimize_chain_dscp_mut_env h nIt dIt cIt nDs dDs cDs base E p EDs HfsIt
+             ltac:(intros k Hk Hk'; unfold E; rewrite !e_set_declared;
+                   rewrite HsetsTop;
+                   rewrite (optimize_chain_mixedpointrangeguarded_sets_assoc_stable
+                              nIg dIg cIg nMx dMx cMx (setname k) _ EMx
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalsetguarded_sets_assoc_stable
+                              nDs dDs cDs nIg dIg cIg (setname k) _ EIg
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   reflexivity)
+             (Wk nIt (c_rules cIt) ltac:(lia) HwfIt)).
+  rewrite (optimize_chain_intervalsethostorder_mut_env h nI dI cI nIt dIt cIt base E p
+             EIt HfsI
+             ltac:(intros k Hk Hk'; unfold E; rewrite !e_set_declared;
+                   rewrite HsetsTop;
+                   rewrite (optimize_chain_mixedpointrangeguarded_sets_assoc_stable
+                              nIg dIg cIg nMx dMx cMx (setname k) _ EMx
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalsetguarded_sets_assoc_stable
+                              nDs dDs cDs nIg dIg cIg (setname k) _ EIg
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_dscp_sets_assoc_stable
+                              nIt dIt cIt nDs dDs cDs (setname k) _ EDs
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   reflexivity)
+             (Wk nI (c_rules cI) ltac:(lia) HwfI)).
+  rewrite (optimize_chain_intervalset_mut_env h nGs dGs cGs nI dI cI base E p EI HfsGs
+             ltac:(intros k Hk Hk'; unfold E; rewrite !e_set_declared;
+                   rewrite HsetsTop;
+                   rewrite (optimize_chain_mixedpointrangeguarded_sets_assoc_stable
+                              nIg dIg cIg nMx dMx cMx (setname k) _ EMx
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalsetguarded_sets_assoc_stable
+                              nDs dDs cDs nIg dIg cIg (setname k) _ EIg
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_dscp_sets_assoc_stable
+                              nIt dIt cIt nDs dDs cDs (setname k) _ EDs
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalsethostorder_sets_assoc_stable
+                              nI dI cI nIt dIt cIt (setname k) _ EIt
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   reflexivity)
+             (Wk nGs (c_rules cGs) ltac:(lia) HwfGs)).
+  rewrite (optimize_chain_setguarded_mut_env h nG dG cG nGs dGs cGs base E p EGs HfsG
+             ltac:(intros k Hk Hk'; unfold E; rewrite !e_set_declared;
+                   rewrite HsetsTop;
+                   rewrite (optimize_chain_mixedpointrangeguarded_sets_assoc_stable
+                              nIg dIg cIg nMx dMx cMx (setname k) _ EMx
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalsetguarded_sets_assoc_stable
+                              nDs dDs cDs nIg dIg cIg (setname k) _ EIg
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_dscp_sets_assoc_stable
+                              nIt dIt cIt nDs dDs cDs (setname k) _ EDs
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalsethostorder_sets_assoc_stable
+                              nI dI cI nIt dIt cIt (setname k) _ EIt
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalset_sets_assoc_stable
+                              nGs dGs cGs nI dI cI (setname k) _ EI
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   reflexivity)
+             (Wk nG (c_rules cG) ltac:(lia) HwfG)).
+  rewrite (optimize_chain_concatguarded_mut_env h n2 d2 c2 nG dG cG base E p EG Hfs2
+             ltac:(intros k Hk Hk'; unfold E; rewrite !e_set_declared;
+                   rewrite HsetsTop;
+                   rewrite (optimize_chain_mixedpointrangeguarded_sets_assoc_stable
+                              nIg dIg cIg nMx dMx cMx (setname k) _ EMx
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalsetguarded_sets_assoc_stable
+                              nDs dDs cDs nIg dIg cIg (setname k) _ EIg
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_dscp_sets_assoc_stable
+                              nIt dIt cIt nDs dDs cDs (setname k) _ EDs
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalsethostorder_sets_assoc_stable
+                              nI dI cI nIt dIt cIt (setname k) _ EIt
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalset_sets_assoc_stable
+                              nGs dGs cGs nI dI cI (setname k) _ EI
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_setguarded_sets_assoc_stable
+                              nG dG cG nGs dGs cGs (setname k) _ EGs
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   reflexivity)
+             (Wk n2 (c_rules c2) ltac:(lia) Hwf2)).
+  rewrite (optimize_chain_concat_mut_env h nM dM cM n2 d2 c2 base E p E2 HfsM
+             ltac:(intros k Hk Hk'; unfold E; rewrite !e_set_declared;
+                   rewrite HsetsTop;
+                   rewrite (optimize_chain_mixedpointrangeguarded_sets_assoc_stable
+                              nIg dIg cIg nMx dMx cMx (setname k) _ EMx
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalsetguarded_sets_assoc_stable
+                              nDs dDs cDs nIg dIg cIg (setname k) _ EIg
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_dscp_sets_assoc_stable
+                              nIt dIt cIt nDs dDs cDs (setname k) _ EDs
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalsethostorder_sets_assoc_stable
+                              nI dI cI nIt dIt cIt (setname k) _ EIt
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalset_sets_assoc_stable
+                              nGs dGs cGs nI dI cI (setname k) _ EI
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_setguarded_sets_assoc_stable
+                              nG dG cG nGs dGs cGs (setname k) _ EGs
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_concatguarded_sets_assoc_stable
+                              n2 d2 c2 nG dG cG (setname k) _ EG
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   reflexivity)
+             (Wk nM (c_rules cM) ltac:(lia) HwfM)).
+  rewrite (optimize_chain_datamap_mut_env h nK dK cK nM dM cM base E p EM
+             ltac:(intros k Hk Hk'; unfold E; rewrite !e_set_declared;
+                   rewrite HsetsTop;
+                   rewrite (optimize_chain_mixedpointrangeguarded_sets_assoc_stable
+                              nIg dIg cIg nMx dMx cMx (setname k) _ EMx
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalsetguarded_sets_assoc_stable
+                              nDs dDs cDs nIg dIg cIg (setname k) _ EIg
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_dscp_sets_assoc_stable
+                              nIt dIt cIt nDs dDs cDs (setname k) _ EDs
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalsethostorder_sets_assoc_stable
+                              nI dI cI nIt dIt cIt (setname k) _ EIt
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalset_sets_assoc_stable
+                              nGs dGs cGs nI dI cI (setname k) _ EI
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_setguarded_sets_assoc_stable
+                              nG dG cG nGs dGs cGs (setname k) _ EGs
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_concatguarded_sets_assoc_stable
+                              n2 d2 c2 nG dG cG (setname k) _ EG
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_concat_sets_assoc_stable
+                              nM dM cM n2 d2 c2 (setname k) _ E2
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   reflexivity)
+             ltac:(intros k Hk Hk'; unfold E; rewrite !e_map_env_with_sets;
+                   rewrite HmapsTop; reflexivity)
+             (Wk nK (c_rules cK) ltac:(lia) HwfK)).
+  rewrite (optimize_chain_concatmulti_mut_env h n1 d1 c1 nK dK cK base E p EK Hfs1
+             ltac:(intros k Hk Hk'; unfold E; rewrite !e_set_declared;
+                   rewrite HsetsTop;
+                   rewrite (optimize_chain_mixedpointrangeguarded_sets_assoc_stable
+                              nIg dIg cIg nMx dMx cMx (setname k) _ EMx
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalsetguarded_sets_assoc_stable
+                              nDs dDs cDs nIg dIg cIg (setname k) _ EIg
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_dscp_sets_assoc_stable
+                              nIt dIt cIt nDs dDs cDs (setname k) _ EDs
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalsethostorder_sets_assoc_stable
+                              nI dI cI nIt dIt cIt (setname k) _ EIt
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalset_sets_assoc_stable
+                              nGs dGs cGs nI dI cI (setname k) _ EI
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_setguarded_sets_assoc_stable
+                              nG dG cG nGs dGs cGs (setname k) _ EGs
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_concatguarded_sets_assoc_stable
+                              n2 d2 c2 nG dG cG (setname k) _ EG
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_concat_sets_assoc_stable
+                              nM dM cM n2 d2 c2 (setname k) _ E2
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_datamap_sets_assoc_stable
+                              nK dK cK nM dM cM (setname k) _ EM
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   reflexivity)
+             (Wk n1 (c_rules c1) ltac:(lia) Hwf1)).
+  rewrite (optimize_chain_valueset_mut_env h nS dS cS n1 d1 c1 base E p E1 Hfs_S
+             ltac:(intros k Hk Hk'; unfold E; rewrite !e_set_declared;
+                   rewrite HsetsTop;
+                   rewrite (optimize_chain_mixedpointrangeguarded_sets_assoc_stable
+                              nIg dIg cIg nMx dMx cMx (setname k) _ EMx
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalsetguarded_sets_assoc_stable
+                              nDs dDs cDs nIg dIg cIg (setname k) _ EIg
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_dscp_sets_assoc_stable
+                              nIt dIt cIt nDs dDs cDs (setname k) _ EDs
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalsethostorder_sets_assoc_stable
+                              nI dI cI nIt dIt cIt (setname k) _ EIt
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_intervalset_sets_assoc_stable
+                              nGs dGs cGs nI dI cI (setname k) _ EI
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_setguarded_sets_assoc_stable
+                              nG dG cG nGs dGs cGs (setname k) _ EGs
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_concatguarded_sets_assoc_stable
+                              n2 d2 c2 nG dG cG (setname k) _ EG
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_concat_sets_assoc_stable
+                              nM dM cM n2 d2 c2 (setname k) _ E2
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_datamap_sets_assoc_stable
+                              nK dK cK nM dM cM (setname k) _ EM
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   rewrite (optimize_chain_concatmulti_sets_assoc_stable
+                              n1 d1 c1 nK dK cK (setname k) _ EK
+                              ltac:(intros j Hj Heq; apply setname_inj in Heq; lia));
+                   reflexivity)
+             (Wk nS (c_rules cS) ltac:(lia) HwfS)).
+  rewrite (optimize_chain_snat_mut_env h nD dD cD nS dS cS base E p ES
+             ltac:(intros k Hk Hk'; unfold E; rewrite !e_map_env_with_sets;
+                   rewrite HmapsTop;
+                   rewrite (optimize_chain_datamap_maps_assoc_stable
+                              nK dK cK nM dM cM (mapname k) _ EM
+                              ltac:(intros j Hj Heq; apply mapname_inj in Heq; lia));
+                   rewrite (optimize_chain_concatmulti_maps n1 d1 c1 nK dK cK EK);
+                   rewrite (optimize_chain_valueset_maps nS dS cS n1 d1 c1 E1);
+                   reflexivity)
+             (Wk nD (c_rules cD) ltac:(lia) HwfD)).
+  rewrite (optimize_chain_dnat_mut_env h n d cT nD dD cD base E p ED
+             ltac:(intros k Hk Hk'; unfold E; rewrite !e_map_env_with_sets;
+                   rewrite HmapsTop;
+                   rewrite (optimize_chain_datamap_maps_assoc_stable
+                              nK dK cK nM dM cM (mapname k) _ EM
+                              ltac:(intros j Hj Heq; apply mapname_inj in Heq; lia));
+                   rewrite (optimize_chain_concatmulti_maps n1 d1 c1 nK dK cK EK);
+                   rewrite (optimize_chain_valueset_maps nS dS cS n1 d1 c1 E1);
+                   rewrite (optimize_chain_snat_maps_assoc_stable nD dD cD nS dS cS
+                              (mapname k) _ ES
+                              ltac:(intros j Hj Heq; apply mapname_inj in Heq; lia));
+                   reflexivity)
+             HwfT).
+  rewrite HcT, (ctmask_chain_mut_env h cA E p).
+  rewrite HcA, (absorb_chain_mut_env h (optimize_chain c) E p).
+  apply optimize_chain_mut_env.
+Qed.
+
+(** ** HEADLINE (optimizer EFFECT axis; see proof/THEOREMS.md).
+
+    THE effect-level pipeline guarantee, with NO hypothesis on the input chain:
+    running the SHIPPED unconditional optimizer [optimize_table_uncond] and
+    evaluating its output in the deployed environment (the synthesised
+    declarations [d'] in scope) yields, at EVERY netfilter hook, for EVERY base
+    environment and EVERY packet, EXACTLY the original chain's verdict AND
+    resulting environment under the effect-observing chain semantics
+    [eval_chain_mut_env h] — the single per-rule fold that threads packet
+    meta/ct writes, dynset env writes, the notrack latch, limiter/quota/
+    connlimit consumption and the NAT data plane at their own body positions.
+
+    A pipeline stage can therefore no longer preserve every verdict while
+    altering a write a later hook observes: the write-effects ARE the theorem's
+    observable.  (The packet half of the state is threaded internally by the
+    same fold; the chain exports the env — packet fields are per-packet local,
+    see Semantics § Stateful accumulation.  Freshness is discharged BY
+    CONSTRUCTION: [seed_start] mints past every name the chain reads AND every
+    dynset write target, so no rule can shadow or clobber a minted
+    declaration.) *)
+Theorem optimize_table_uncond_mut_env_correct : forall h c base p n' d' c',
+  optimize_table_uncond c = (n', d', c') ->
+  eval_chain_mut_env h c' (env_with_sets base d') p
+  = eval_chain_mut_env h c (env_with_sets base d') p.
+Proof.
+  intros h c base p n' d' c' H. unfold optimize_table_uncond in H.
+  transitivity (eval_chain_mut_env h (normalize_chain c) (env_with_sets base d') p);
+    [| apply normalize_chain_mut_env].
+  apply (optimize_table_mut_env_correct_uncond_gen h
+           (seed_start (optimize_chain (normalize_chain c))) empty_decls
+           (normalize_chain c) n' d' c' base p H).
+  - intros k _ Hin; cbn in Hin; exact Hin.
+  - intros k _ Hin; cbn in Hin; exact Hin.
+  - intros k _ Hin; cbn in Hin; exact Hin.
+  - apply seed_start_dynset_fresh.
+Qed.
+
+(** ** Axiom-freedom audit (build-time guard; mirrors Optimize_Uncond).
+    Prints "Closed under the global context". *)
+Print Assumptions optimize_table_uncond_mut_env_correct.

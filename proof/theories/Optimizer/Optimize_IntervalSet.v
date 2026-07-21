@@ -67,6 +67,8 @@ Qed.
     [data_le]-membership already coincides with interval-set membership. *)
 Definition range_merge_pair (r1 r2 : rule)
   : option (field * (data * data) * (data * data) * list body_item) :=
+  (* EFFECT-SAFETY GUARD — see [Optimize_ValueSet.value_merge_pair]. *)
+  if negb (rule_mutfree r1) then None else
   match head_range r1, head_range r2 with
   | Some (f1, lo1, hi1, rest1), Some (f2, lo2, hi2, rest2) =>
       if field_eq_dec f1 f2 then
@@ -79,6 +81,14 @@ Definition range_merge_pair (r1 r2 : rule)
   | _, _ => None
   end.
 
+(** The guard, extracted: a fired pair certifies its canonical rule write-free. *)
+Lemma range_merge_pair_mutfree : forall r1 r2 x,
+  range_merge_pair r1 r2 = Some x -> rule_mutfree r1 = true.
+Proof.
+  intros r1 r2 x H. unfold range_merge_pair in H.
+  destruct (rule_mutfree r1); [reflexivity | discriminate H].
+Qed.
+
 (** When it fires, both inputs are EXACTLY the canonical range shells over the same
     field, with a common tail and agreeing end-fields. *)
 Lemma range_merge_pair_shape : forall r1 r2 f iv1 iv2 body,
@@ -87,6 +97,7 @@ Lemma range_merge_pair_shape : forall r1 r2 f iv1 iv2 body,
   r2 = mk_head (MRange f false (fst iv2) (snd iv2)) body r1.
 Proof.
   intros r1 r2 f iv1 iv2 body H. unfold range_merge_pair in H.
+  destruct (negb (rule_mutfree r1)); [discriminate |].
   destruct (head_range r1) as [[[[f1 lo1] hi1] rest1] |] eqn:H1; [| discriminate].
   destruct (head_range r2) as [[[[f2 lo2] hi2] rest2] |] eqn:H2; [| discriminate].
   destruct (field_eq_dec f1 f2) as [Ef |]; [| discriminate]. subst f2.
@@ -109,7 +120,9 @@ Lemma range_merge_pair_with_head : forall r1 r2 f lo1 hi1 body f' iv1 iv2 body',
   r2 = mk_head (MRange f false (fst iv2) (snd iv2)) body r1.
 Proof.
   intros r1 r2 f lo1 hi1 body f' iv1 iv2 body' Hhd Hvm.
-  unfold range_merge_pair in Hvm. rewrite Hhd in Hvm.
+  unfold range_merge_pair in Hvm.
+  destruct (negb (rule_mutfree r1)); [discriminate Hvm |].
+  rewrite Hhd in Hvm.
   destruct (head_range r2) as [[[[f2 lo2] hi2] rest2] |] eqn:H2; [| discriminate].
   destruct (field_eq_dec f f2) as [Ef |]; [| discriminate]. subst f2.
   destruct (list_eq_dec body_item_eq_dec body rest2) as [Er |]; [| discriminate]. subst rest2.

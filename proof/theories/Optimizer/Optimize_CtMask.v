@@ -192,6 +192,8 @@ Qed.
     end-fields.  Returns [(f, m1, m2, z, body)]. *)
 Definition ctmask_pair (r1 r2 : rule)
   : option (field * data * data * data * list body_item) :=
+  (* EFFECT-SAFETY GUARD — see [Optimize_ValueSet.value_merge_pair]. *)
+  if negb (rule_mutfree r1) then None else
   match head_ctmask r1, head_ctmask r2 with
   | Some (f1, m1, x1, v1, rest1), Some (f2, m2, x2, v2, rest2) =>
       if field_eq_dec f1 f2 then
@@ -209,6 +211,14 @@ Definition ctmask_pair (r1 r2 : rule)
   | _, _ => None
   end.
 
+(** The guard, extracted: a fired pair certifies its canonical rule write-free. *)
+Lemma ctmask_pair_mutfree : forall r1 r2 x,
+  ctmask_pair r1 r2 = Some x -> rule_mutfree r1 = true.
+Proof.
+  intros r1 r2 x H. unfold ctmask_pair in H.
+  destruct (rule_mutfree r1); [reflexivity | discriminate H].
+Qed.
+
 Lemma ctmask_pair_facts : forall r1 r2 f m1 m2 z body,
   ctmask_pair r1 r2 = Some (f, m1, m2, z, body) ->
   r1 = mk_head (MMasked f CNe m1 z z) body r1 /\
@@ -217,6 +227,7 @@ Lemma ctmask_pair_facts : forall r1 r2 f m1 m2 z body,
   Forall (fun b => b = 0) z.
 Proof.
   intros r1 r2 f m1 m2 z body H. unfold ctmask_pair in H.
+  destruct (negb (rule_mutfree r1)); [discriminate |].
   destruct (head_ctmask r1) as [[[[[f1 mm1] x1] v1] rest1] |] eqn:H1; [| discriminate].
   destruct (head_ctmask r2) as [[[[[f2 mm2] x2] v2] rest2] |] eqn:H2; [| discriminate].
   destruct (field_eq_dec f1 f2) as [Ef |]; [| discriminate]. subst f2.
