@@ -31,27 +31,16 @@ Theorem unlisted_daddr_unconstrained : forall e p,
   field_value Fobrname e p = ifreg "br.20" ->
   read_payload_ok PNetwork 16 4 p = true ->
   set_mem (field_value FIp4Daddr e p) (e_set e "vmaddrs") = false ->
-  eval_table vm_fuel vmfilter_chains vmfilter_output e p = Accept.
+  forall h, fst (eval_table_u h vm_fuel vmfilter_chains vmfilter_output e p) = Accept.
 Proof.
-  intros e p Henv Hobr Hok Hnotin. unfold Fobrname in Hobr.
-  unfold eval_table, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
-  (* the antispoof rule does NOT fire: `ip daddr @vmaddrs` is false *)
-  erewrite erj_skip.
-  2:{ unfold rule_applies, rule_applies_walk, eval_matchcond, match_loadable, eval_matchcond_body,
-        fields_loadable, field_loadable, load_ok.
-      cbn -[field_value read_payload_ok].
-      rewrite ?Hok, Hobr, ?app_nil_r, ?concat_set_mem_single, Hnotin, ?Henv.
-      (* the frontend's `ether type ip` dependency guard sits (symbolically stuck)
-         before the daddr match; step past the first two conjuncts — the daddr ∉
-         @vmaddrs conjunct is false, killing the rule for EVERY frame, so the gap
-         needs no IPv4 hypothesis *)
-      apply Bool.andb_false_intro2. apply Bool.andb_false_intro2.
-      vm_compute. reflexivity. }
+  intros e p Henv Hobr Hok Hnotin h. clear Henv. unfold Fobrname in Hobr.
+  unfold eval_table_u, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
+  (* the antispoof rule does NOT fire: `ip daddr @vmaddrs` is false, so the body
+     BREAKs at that match and [rule_step] yields no verdict. *)
+  erewrite eru_skip by rstep_reduce.
   (* the hass rule does not fire either (its guard is obrname br.1, not br.20) *)
-  erewrite erj_skip.
-  2:{ unfold rule_applies, rule_applies_walk. cbn -[field_value]. rewrite Hobr.
-      vm_compute. reflexivity. }
-  reflexivity.
+  erewrite eru_skip by rstep_reduce.
+  cbn [fst]. reflexivity.
 Qed.
 
 (** A concrete free spoof: 192.168.51.13 is NOT in @vmaddrs (it sits between
@@ -64,7 +53,7 @@ Theorem spoof_to_unlisted_address : forall e p,
   read_payload_ok PNetwork 16 4 p = true ->
   field_value FIp4Daddr e p = ip4 192 168 51 13 ->        (* not a registered VM *)
   field_value FMetaOifname e p = ifreg "inc-budge" ->     (* a mismatched interface *)
-  eval_table vm_fuel vmfilter_chains vmfilter_output e p = Accept.
+  forall h, fst (eval_table_u h vm_fuel vmfilter_chains vmfilter_output e p) = Accept.
 Proof.
   intros e p Henv Hobr Hok Hdaddr Hoif.
   apply unlisted_daddr_unconstrained; auto.
@@ -84,19 +73,15 @@ Theorem other_bridge_port_bypasses_binding : forall e p,
   field_value Fobrname e p = ifreg "br.3" ->            (* NOT br.20 *)
   field_value FIp4Daddr e p = ip4 192 168 51 20 ->        (* budget's PROTECTED address *)
   field_value FMetaOifname e p = ifreg "vb-evil" ->       (* not budget's interface *)
-  eval_table vm_fuel vmfilter_chains vmfilter_output e p = Accept.
+  forall h, fst (eval_table_u h vm_fuel vmfilter_chains vmfilter_output e p) = Accept.
 Proof.
-  intros e p Henv Hobr Hdaddr Hoif. unfold Fobrname in Hobr.
-  unfold eval_table, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
+  intros e p Henv Hobr Hdaddr Hoif h. clear Henv. unfold Fobrname in Hobr.
+  unfold eval_table_u, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
   (* antispoof rule: its `meta obrname br.20` guard is false (we are on br.3) *)
-  erewrite erj_skip.
-  2:{ unfold rule_applies, rule_applies_walk. cbn -[field_value]. rewrite Hobr.
-      vm_compute. reflexivity. }
+  erewrite eru_skip by rstep_reduce.
   (* hass rule: its `meta obrname br.1` guard is also false *)
-  erewrite erj_skip.
-  2:{ unfold rule_applies, rule_applies_walk. cbn -[field_value]. rewrite Hobr.
-      vm_compute. reflexivity. }
-  reflexivity.
+  erewrite eru_skip by rstep_reduce.
+  cbn [fst]. reflexivity.
 Qed.
 
 (** ** Risk 3 (the gap is exactly characterised): protection holds IFF both guards.
