@@ -266,6 +266,7 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Router_Realistic.inbound_licensed_real Nft_Demo_Concrete.demo_dns_accepted_unified \
   Nft_Demo_Concrete.demo_smtp_denied_unified \
   Semantics.eval_rules_u_mut_proj Semantics.eval_table_u_mut_proj \
+  Semantics.eval_rules_u_mut_st_proj Semantics.eval_table_u_mut_st_proj \
   Correct.run_table_writefree_compiled Correct.eval_chain_writefree_jumpfree_proj \
   Setread_UnderJump.setread_under_jump_accepted \
   Setread_UnderJump.vm_setread_under_jump_accepted \
