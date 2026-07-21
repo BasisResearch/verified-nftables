@@ -5,9 +5,7 @@
     value+verdict->vmap / two-selector->concat passes into [optimize_table],
     threading a fresh counter and a [set_decls] accumulator across the table
     semantics, and provides the pipeline-composition seam lemmas the
-    UNCONDITIONAL correctness proofs build on.  (The historical whole-rule
-    cleanliness layer -- an input precondition no composed theorem consumes
-    -- is retired; see THEOREMS.md § strata retirements.)
+    UNCONDITIONAL correctness proofs build on.
 
     The whole-pipeline correctness of [optimize_table] is proved — with NO
     [rules_clean] and NO freshness precondition on the input — in [Optimize_Uncond.v]
@@ -24,13 +22,6 @@ Import ListNotations.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
   Compile Correct Optimize Optimize_ValueSet Optimize_Vmap Optimize_VmapGuarded Optimize_Concat Optimize_ConcatMulti
   Optimize_ConcatGuarded Optimize_SetGuarded Optimize_IntervalSet Optimize_IntervalSetGuarded Optimize_MixedPointRangeGuarded Optimize_Absorb Optimize_CtMask Optimize_Dscp Optimize_DscpVmap Optimize_IntervalSetHostOrder Optimize_DataMap Optimize_Dnat Optimize_Snat Optimize_Table_Inv.
-
-(** (RETIRED, M6: "Step 1" -- the base pass preserves whole-rule
-    cleanliness -- is gone together with the clean predicate family itself
-    (Optimize_ValueSet).  The composed pipeline's correctness never needed
-    it: [Optimize_Uncond] proves [optimize_table] correct with NO cleanliness
-    or freshness precondition on the input.  See THEOREMS.md § strata
-    retirements.) *)
 
 (** ** Step 2 (first rung): compose base [optimize_chain] then the N-WAY value->set
     pass.  Step 1 supplies the [rules_clean] hypothesis the [valueset] theorem needs. *)

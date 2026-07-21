@@ -264,10 +264,10 @@ Proof.
      | exact global_chains_limiter_tol].
 Qed.
 
-(* (The historical [postrouting_hook_licensed] — the masquerade hook as a pure
-   projection — is RETIRED: post-M3 it is genuinely false (the pure strand
-   cannot see the NAT drop / packet rewrite).  Its successor is the unified
-   statement below plus the Router_Reach data-plane theorems.) *)
+(* The masquerade hook is stated on the unified semantics: the write-free
+   projection cannot see the NAT drop / packet rewrite, so the masquerade hook
+   is characterised here on [eval_hook_u], with the data-plane facts in
+   Router_Reach. *)
 Theorem postrouting_hook_unified : forall fuel e p,
   eval_hook_u Hpostrouting (S fuel) global_hooks e p
   = match eval_table_u Hpostrouting (S fuel) global_chains global_postrouting e p with

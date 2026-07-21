@@ -33,11 +33,10 @@
         masked compare ([prefix_erasure]: a masked top-bits compare is
         numerically a right-shift compare of both sides).
 
-    These four scalar-shape theorems SUPERSEDE the retired
-    [Elab.elab_matchcond_correct] (a definitional consistency check, proved
-    by [reflexivity] because the legacy typed semantics was itself defined
-    through the byte encoding); the shapes now carry the same NON-definitional
-    erasure obligations as every other typed construct.
+    These four scalar-shape theorems carry NON-definitional erasure
+    obligations: the register decodes to the value's number exactly when the
+    byte compare against its register encoding succeeds — the same treatment
+    every other typed construct gets.
 
     Every theorem here is axiom-free and enforced by `make axioms`
     ([eq_erasure], [neq_erasure], [prefix_erasure], [wildcard_erasure],
@@ -1302,8 +1301,7 @@ Qed.
 (** Typed equality / inequality: the register decodes — at the VALUE's
     byteorder — to the value's number exactly when the byte compare against
     its register encoding succeeds (the host-endian case reduces to the
-    big-endian one by reversal on both sides).  These SUPERSEDE the retired
-    [Elab.elab_matchcond_correct] consistency check with genuine
+    big-endian one by reversal on both sides).  These carry genuine
     decode-vs-encode obligations. *)
 
 (** The shared compare core of the eq / neq shapes. *)

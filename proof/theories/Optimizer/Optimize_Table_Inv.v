@@ -1031,11 +1031,6 @@ Proof.
   apply (optimize_rules_vmapguarded_keys_bound _ _ _ _ _ _ _ k E Hin).
 Qed.
 
-(** (RETIRED, M6: the [rule_lookup_vmapN_ok]/[rs_vmapN_ok] predicates --
-    "clean, or a merged lookup rule" -- were dead scaffolding from the
-    clean-input era; nothing consumed them.  See THEOREMS.md § strata
-    retirements.) *)
-
 Lemma optimize_rules_valueset_keys_bound : forall fuel n d rs n' d' rs' k,
   optimize_rules_valueset fuel n d rs = (n', d', rs') ->
   In (setname k) (map fst (sd_sets d')) ->

@@ -24,7 +24,7 @@
     entry state — or drops a callee's writes on return — flips these theorems
     and must be caught here.
 
-    The retired-as-independent-semantics PURE jump strand ([eval_table]) is
+    The write-free projection ([eval_table]) is
     also pinned here, on the OTHER side of its license: on this config it
     computes a DIFFERENT verdict class (the entry-state match misses), and
     its [rule_writefree] license check is [false] — so no projection theorem
@@ -110,7 +110,7 @@ Theorem vm_setread_wrong_under_jump_dropped :
                    (c_policy sr_base) env0 pkt_mark0) = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
-(** …and the RETIRED pure jump strand is licensed on NEITHER config: it
+(** …and the pure jump strand is licensed on NEITHER config: it
     evaluates the callee's match against the ENTRY packet (verdict class
     Drop-by-policy instead of Accept), and its projection license
     [rule_writefree] is [false] on the effectful rule — the coincidence

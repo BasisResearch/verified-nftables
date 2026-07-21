@@ -73,9 +73,9 @@
       run_rule/run_program  | no_writes programs (no mut/  | Correct.run_rule_step_no_writes
                             | limiter/inc-numgen instr)    |
       run_rules_j/run_table | compiled write-free chains   | Correct.run_table_writefree_compiled
-      (seq_eval — RETIRED: the external-step sequence stratum; the sequence
-       semantics is [seq_eval_env] over [eval_hook_env_u] — see § Stateful
-       accumulation)
+
+    The cross-packet sequence semantics is [seq_eval_env] over
+    [eval_hook_env_u] (§ Stateful accumulation).
 
     Within the flat mutation strand every evaluator consumes ONE step function
     per side — [rule_step] (DSL) / [run_rule_step empty_rf] (VM), each
@@ -83,10 +83,9 @@
     fold IN FULL — verdict and the exact (env, packet) left — and the _mut /
     _mut_env evaluators are its projections ([eval_rules_mut_env_st],
     [eval_rules_mut_env_fst] / [run_program_mut_env_fst]), so their compiler
-    proofs are derived, not re-proved.  (The historical [dsl_rule_step]/[vm_rule_step] boundary
-    wrappers — the fold plus a whole-body limiter/numgen sweep — are RETIRED:
-    with the consumption evaluated in-fold they were identical to the folds,
-    see THEOREMS.md § strata retirements.)
+    proofs are derived, not re-proved.  Consumption of every limiter/numgen is
+    evaluated in-fold at its own break-aware position, so the folds need no
+    separate whole-body sweep.
 
     STRUCTURAL GUARANTEE (M6): exactly ONE recursive rule-list/jump traversal
     exists per side — the Fixpoints [eval_rules_u] and [run_rules_u].  Every
@@ -2889,12 +2888,7 @@ Definition dsl_writes (r : rule) (e : env) (p : packet) : env * packet :=
     compiler-correctness bridge is one equation, on numgen-free rules (every
     frontend-emitted rule; [Lower_Proofs.lower_ruleset_numgen_free]):
     [run_rule_step empty_rf (compile_rule r) = rule_step r]
-    ([Correct.run_rule_step_compile_rule]).
-
-    (The historical [dsl_rule_step]/[vm_rule_step] boundary wrappers — the
-    fold plus an unconditional whole-body limiter/numgen sweep, the historical
-    over-consumption divergence — are RETIRED: with the consumption
-    in-fold they equal the folds; see THEOREMS.md § strata retirements.) *)
+    ([Correct.run_rule_step_compile_rule]). *)
 
 (** The state half of a rule's step (writes + limiter consumption + the NAT
     data plane) — the named notion the optimizer's effect certificates
@@ -3080,10 +3074,8 @@ Proof.
 Qed.
 
 (** With a mut-free [r_after] the step's state half is exactly the BODY's
-    writes — which, post the in-fold limiter fix, already include any
-    limiter consumption at its own position (successor of the retired
-    [dsl_step_limit_free], whose extra limit-freedom hypothesis existed only
-    to cancel the boundary sweep). *)
+    writes, which already include any limiter consumption at its own
+    break-aware position. *)
 Lemma dsl_step_after_free : forall r e p,
   rule_natfree r = true ->
   forallb (fun s => negb (is_mut_stmt s)) (r_after r) = true ->
@@ -3648,16 +3640,9 @@ Definition run_table (fuel : nat) (cs : list (String.string * program))
     ([eval_table_policy_is_fallthrough]).  For the common transfer-free case
     (no rule outcome is ever Jump/Goto under the given env) the boolean
     [chains_no_transfer] discharges [chain_ranked] in one [reflexivity]
-    ([chains_no_transfer_ranked]).
-
-    RETIRED STRATUM (M6): the historical exhaustion-observable TWIN evaluator
-    (the "jx" strand) -- a third recursive jump traversal whose [Some o]
-    witnessed a clean run, with its Kleene-monotonicity layer (monotone /
-    stable / the jx-witnessed [eval_rules_j_fuel_stable])
-    -- is DELETED: the direct rank-descent induction proves the same
-    user-facing fuel-independence with no parallel traversal for rules to
-    flow through, and the unified evaluator now carries the same discipline
-    itself.  See THEOREMS.md § strata retirements.
+    ([chains_no_transfer_ranked]).  Fuel-independence is proved by direct
+    rank-descent induction, and the unified evaluator carries the same
+    discipline.
 
     VM side: the compiled mirror needs no second development --
     [Correct.compile_table_correct] equates [run_table] with [eval_table] at
@@ -3835,9 +3820,8 @@ Qed.
 
 (** At adequate fuel, [eval_table]'s policy fallback can only be GENUINE
     fall-through: the [None] it maps to the policy persists at EVERY adequate
-    fuel -- which exhaustion, curable by more fuel, cannot.  (Successor of the
-    retired jx-witnessed form: same name, same role in config proofs; the
-    cleanness witness is now fuel-independence itself.) *)
+    fuel -- which exhaustion, curable by more fuel, cannot.  (The cleanness
+    witness is fuel-independence itself.) *)
 Theorem eval_table_policy_is_fallthrough : forall rank cs e,
   chain_ranked rank cs e ->
   forall base p fuel,
@@ -4206,14 +4190,10 @@ Definition eval_hook (fuel : nat) (rs : list hooked_chain) (h : hook_id)
 
 (** ** Stateful accumulation across a packet sequence.
 
-    RETIRED STRATUM: the historical [seq_eval] threaded the between-packet
-    environment through an EXTERNAL, caller-supplied
-    [step : verdict -> env -> env] — the environment evolution was NOT
-    generated by the ruleset itself, so an effectful ruleset's own learning
-    (dynset adds, limiter depletion, NAT mappings) was modeled by whatever the
-    caller wrote, i.e. not modeled at all.  Its successor is [seq_eval_env]
-    (above) instantiated with the unified per-packet run [eval_hook_env_u]:
-    the between-packet env is definitionally the ruleset's OWN env-out
+    The cross-packet sequence semantics is [seq_eval_env] (above) instantiated
+    with the unified per-packet run [eval_hook_env_u]: the between-packet env is
+    definitionally the ruleset's OWN env-out, so the ruleset's own learning
+    (dynset adds, limiter depletion, NAT mappings) threads packet-to-packet
     (compiler theorem [Correct.compile_seq_hook_correct]; cross-packet pins
     Regression/Seq_Hook_Carry.v). *)
 
@@ -4345,10 +4325,8 @@ Definition run_table_u (fuel : nat) (cs : list (String.string * program))
 
 (** The state a single (jump-free) chain LEAVES — the packet handed to the next
     chain/hook and the env (learned dynsets, established NAT tuples, depleted
-    limiters) for the next packet.  Successor of the RETIRED trace strand
-    ([eval_rules_trace]/[eval_chain_trace]/[chain_out], THEOREMS.md § strata
-    retirements): the packet/env/NAT threading is the unified fold's own state
-    half, not a side evaluator's. *)
+    limiters) for the next packet.  The packet/env/NAT threading is the unified
+    fold's own state half. *)
 Definition eval_chain_u (c : chain) (e : env) (p : packet)
   : verdict * (env * packet) :=
   eval_table_u (S (List.length (c_rules c))) [] c e p.
