@@ -215,6 +215,13 @@ validate: glue
 #                        bitwise the identity on a normalised read
 #                        (Syntax.do_load_bitops_id) — what lets the elide
 #                        stage delete nft's spent xor binop unconditionally
+#   reject guard (W4)    the reject dependency guard is emitted at the RULE
+#                        HEAD (Lower.ensure_dep_head — nft's evaluate-time
+#                        list_add, stmt_reject_gen_dependency), and the
+#                        placement is OBSERVABLE: a non-TCP packet breaks on
+#                        the guard before any body effect runs, on both
+#                        evaluators (Reject_GuardFirst pins + the guard-last
+#                        counterfactual leak)
 # Any NEW README-claimed result must be added here in the same commit.
 AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   compile_chain_mut_env_correct compile_seq_mut_correct compile_table_correct \
@@ -271,6 +278,11 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Semantics.rule_step_mutfree \
   Setread_IntraRule.setread_accepted Setread_IntraRule.vm_setread_accepted \
   Setread_IntraRule.dynset_feedback_accepted Setread_IntraRule.vm_dynset_feedback_accepted \
+  Reject_GuardFirst.udp_guard_breaks_before_mark_write \
+  Reject_GuardFirst.tcp_mark_written_and_rejected \
+  Reject_GuardFirst.vm_udp_guard_breaks_before_mark_write \
+  Reject_GuardFirst.vm_tcp_mark_written_and_rejected \
+  Reject_GuardFirst.guard_last_leaks_the_write \
   Bytes.fit_length Bytes.fit_idempotent Bytes.fit_exact \
   Bytes.data_bitops_fit_octets_id Syntax.do_load_bitops_id \
   Syntax.read_meta_length Syntax.meta_load_length Syntax.ct_load_length \
@@ -278,7 +290,7 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Syntax.read_numgen_length Syntax.read_symhash_length
 
 axioms:
-	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optimize_PayMerge Optimize_XorFold Optimize_Linearize Optimize_Registry Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs RegsValid_Proofs Setread_IntraRule.\n'; \
+	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optimize_PayMerge Optimize_XorFold Optimize_Linearize Optimize_Registry Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs RegsValid_Proofs Setread_IntraRule Reject_GuardFirst.\n'; \
 	  for t in $(AXIOM_GATE_THEOREMS); do printf 'Print Assumptions %s.\n' "$$t"; done; } \
 	| $(COQTOP) -R . Nft 2>/dev/null \
 	| grep -E 'Closed under the global context|Axioms' \

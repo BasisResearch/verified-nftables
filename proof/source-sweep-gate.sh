@@ -56,7 +56,26 @@ cd "$(dirname "$0")"
 # (the endian-unportable part was the deleted bitwise's mask/xor operands).
 # The same 4 blocks also entered byteorder-gate's plain-cmp scope (21 -> 25
 # blocks, all green).
-SOURCE_SWEEP_FLOOR="${SOURCE_SWEEP_FLOOR:-1202}"
+# Raised 1202 -> 1205 when the reject-dependency guard moved to the RULE HEAD
+# (W4, corpus class Q: Lower.ensure_dep_head — nft's stmt_reject_gen_dependency
+# list_add's the synthesised `meta l4proto tcp` guard at the beginning of the
+# rule, "Otherwise we'd log things that won't be rejected", so stateful body
+# items after a failed guard never run).  The 3 class-Q blocks —
+# ip/reject.t.payload:37, ip6/reject.t.payload.ip6:33,
+# inet/reject.t.payload.inet:67 (`mark … reject with tcp reset`) — moved from
+# divergent to byte-identical; guard-before-effects is pinned semantically in
+# theories/Regression/Reject_GuardFirst.v.
+# Raised 1205 -> 1209 when the bare-reject family concretization landed (W4,
+# corpus class R: Lower.reject_type_code now takes the rule's pinned network
+# family, Lower.deps_pinned_nfproto over the per-rule guard/dedup set — nft's
+# stmt_evaluate_reject_default concretizes a bare `reject` on inet/bridge/
+# netdev from icmpx port-unreach (2,1) to icmp (0,3) / icmpv6 (0,4) once the
+# rule pins the network family via `meta nfproto`, `ether type`, or a
+# synthesised network guard).  The 4 class-R blocks —
+# inet/reject.t.payload.inet:79/:85, bridge/reject.t.payload:81/:87 — moved
+# from divergent to byte-identical (the 5th, inet:135, keeps its reject
+# concretized but stays open on the class-S guard choice).
+SOURCE_SWEEP_FLOOR="${SOURCE_SWEEP_FLOOR:-1209}"
 
 CORPUS_DIR="${NFT_CORPUS:-/tmp/nftables-src}"
 if [ ! -d "$CORPUS_DIR/tests/py" ]; then

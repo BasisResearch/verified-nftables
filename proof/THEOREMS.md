@@ -475,3 +475,55 @@ asserts `regs_valid` on every compiled corpus rule and fails the build on any
 violation (extracted/corpus_test.ml, `make corpus`).  Scope: the `-O`
 consolidation passes construct new rules outside the theorem; their outputs
 are covered by the runtime corpus assertion.
+
+## 9. Width audit (W4): the post-widths re-adjudication, and reject-lowering fidelity
+
+W4 re-audited everything the linearization audit
+(`reports/default-linearization-audit.md`) had ledgered as blocked, against
+the W1–W3 by-construction width discipline.  Two classes were closed IN THE
+VERIFIED LOWERING (no theorem statement changed; all pre-existing statements
+survive verbatim — the W4 additions are new definitions and gated pins):
+
+- **Class Q (reject guard placement).**  `Lower.ensure_dep_head` /
+  `rl_push_head`: the reject dependency guard (`meta l4proto tcp` for
+  `reject with tcp reset`, the family guard for `with icmp/icmpv6` on inet)
+  lands at the RULE HEAD, mirroring nft's evaluate-time `list_add`
+  (src/evaluate.c `stmt_reject_gen_dependency` — "Otherwise we'd log things
+  that won't be rejected"); every match-synthesised dependency keeps its
+  in-place `ensure_dep` position.  The placement is OBSERVABLE for stateful
+  bodies (the audit's earlier "pure placement, packet-equal" claim was wrong
+  and is corrected in the report and DEVELOPMENT.md class E):
+  `Regression/Reject_GuardFirst.v` pins guard-before-effects on BOTH
+  evaluators — `udp_guard_breaks_before_mark_write` /
+  `tcp_mark_written_and_rejected` (DSL `dsl_rule_step`) and their `vm_*`
+  twins over `Compile.compile_rule` (VM `vm_rule_step`), plus
+  `guard_last_leaks_the_write`, the counterfactual that the PRE-FIX
+  guard-last body runs the write on the same non-TCP packet (all five in
+  `make axioms`; the counter placement itself is pinned structurally by
+  `counter_guard_first` — `SCounter`/`ICounter` are verdict-neutral and
+  stateless in the model, and the limiter bucket cannot witness ordering
+  because of the known whole-body sweep infidelity,
+  `Known_Infidelities.gate_limit_drained`).
+- **Class R (bare-reject family concretization).**  `Lower.reject_type_code`
+  now takes the rule's pinned network family, computed by
+  `Lower.deps_pinned_nfproto` from the per-rule guard/dedup set (`meta
+  nfproto` value, or an IPv4/IPv6 ethertype under any of the `layer_class`
+  spellings — `meta protocol`, `ether type`, in-frame `payload @
+  link+12/+16`; the 0x8100 vlan tag does not pin): a BARE `reject` in a
+  multi-L3 family concretizes from icmpx port-unreach (2,1) to icmp (0,3) /
+  icmpv6 (0,4) exactly when nft's `stmt_evaluate_reject_default` does
+  (network desc in scope), and an explicit `reject with icmpx …` never
+  concretizes (Examples `reject_bare_inet_{unpinned,pinned_v4,pinned_v6}`,
+  `reject_icmpx_explicit_stays_abstract`, `deps_pin_spellings` in
+  `Lower.v`).
+
+Every class that stays open is re-ledgered in the audit report with a
+post-W1 blocker that is NOT a width fact: P (chains carry no family), P′
+(oracle independence of `pkt_meta MKl4proto` vs the raw nexthdr byte — a
+value-coupling; a blanket definitional equation would be kernel-unfaithful
+on extension-header packets, so the faithful close is a tprot-deriving
+packet-record restructure), S (frontend guard choice for inet+ether), log
+canonicalization (attribute text), fib presence (the `e_routes` result
+column is an env-oracle VALUE, `{0,1}`-ness is not a width fact; kernel
+derives it, `nft_fib_store_result` stores `!!index`).  Sweep after W4:
+pass=1209 (floor raised 1202 -> 1205 -> 1209), mismatch=38, all ledgered.
