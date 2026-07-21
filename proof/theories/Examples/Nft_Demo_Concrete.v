@@ -62,3 +62,24 @@ Proof. intro H. nft_unfold. vm_compute in H. discriminate. Qed.
     [Fail] succeeds).  This is the anti-vacuity witness the review demands. *)
 Goal global_inbound accepts pkt_lan_smtp in env_lan under global_chains budget in_fuel.
 Proof. Fail now nft_decide. Abort.
+
+(* ------------------------------------------------------------------ *)
+(** ** UNIFIED-SEMANTICS LICENSE (Semantics.v § "Projection 1b").
+
+    The readable statements above ARE raw [eval_table] statements
+    ([demo_c_accepts_def]/[demo_c_denies_def]) over the router config,
+    whose one effectful rule is the `limit 5/second` limiter
+    ([Router_Private.r_icmp]).  [Router_Input.inbound_licensed] licenses
+    them as VERDICT projections of the unified effect-threading semantics;
+    the two concrete cruxes are re-stated over [eval_table_u] here so the
+    demo layer carries its own unified-semantics witnesses. *)
+
+Theorem demo_dns_accepted_unified :
+  fst (eval_table_u in_fuel global_chains global_inbound env_lan pkt_lan_dns)
+  = Accept.
+Proof. rewrite <- inbound_licensed. exact demo_dns_accepted. Qed.
+
+Theorem demo_smtp_denied_unified :
+  fst (eval_table_u in_fuel global_chains global_inbound env_lan pkt_lan_smtp)
+  = Drop.
+Proof. rewrite <- inbound_licensed. exact demo_smtp_denied. Qed.

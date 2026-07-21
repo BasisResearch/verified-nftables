@@ -129,16 +129,16 @@ Definition break_keeps_rule : rule :=
      r_outcome := OVerdict Accept; r_after := [] |}.
 
 Theorem break_keeps_earlier_write :
-  pkt_meta (snd (snd (dsl_rule_step break_keeps_rule env0 pkt_mark0))) MKmark
+  pkt_meta (snd (snd (rule_step break_keeps_rule env0 pkt_mark0))) MKmark
   = [0;0;0;7].
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem break_yields_no_verdict :
-  fst (dsl_rule_step break_keeps_rule env0 pkt_mark0) = None.
+  fst (rule_step break_keeps_rule env0 pkt_mark0) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The VM step agrees on both components. *)
 Theorem vm_break_agrees :
-  vm_rule_step (compile_rule break_keeps_rule) env0 pkt_mark0
-  = dsl_rule_step break_keeps_rule env0 pkt_mark0.
+  run_rule_step empty_rf (compile_rule break_keeps_rule) env0 pkt_mark0
+  = rule_step break_keeps_rule env0 pkt_mark0.
 Proof. vm_compute. reflexivity. Qed.

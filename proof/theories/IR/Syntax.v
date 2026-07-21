@@ -483,10 +483,10 @@ Definition do_load (ld : loaddesc) (e : env) (p : packet) : data :=
   | LNumgen spec    =>
       (* `numgen inc` reads the SHARED, persistent counter from the env and renders
          the round-robin value [(counter mod modulus) + offset]; the increment that
-         makes the NEXT evaluation differ is applied by [numgen_sweep_prog] at the
-         [vm_rule_step] boundary (VM-only: the lowering rejects incremental numgen
-         fail-loud, [Lower.LEnumgen], so every frontend-emitted rule is
-         [rule_numgen_free] and the sweep is the identity there).  `numgen random`
+         makes the NEXT evaluation differ is applied in-fold by
+         [Semantics.run_rule_step]'s [INumgen] case (VM-only: the lowering rejects
+         incremental numgen fail-loud, [Lower.LEnumgen], so every frontend-emitted
+         rule is [rule_numgen_free] and the advance never fires).  `numgen random`
          (ng_random = true: get_random_u32) is genuinely per-packet, so it stays the
          oracle [pkt_numgen]. *)
       if ng_random spec then read_numgen p spec

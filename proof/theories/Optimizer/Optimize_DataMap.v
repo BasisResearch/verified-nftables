@@ -131,9 +131,9 @@ Lemma body_writes_orig : forall (f : field) (v M : data) (k : meta_key) (e : env
   body_writes (r_body (orig_map_rule f v M k)) e p
   = (e, if data_eqb (field_value f e p) v then set_meta p k M else p).
 Proof.
-  intros f v M k e p Hfx Hld. unfold body_writes; cbn [orig_map_rule r_body body_res_state body_step].
+  intros f v M k e p Hfx Hld. unfold body_writes; cbn [orig_map_rule r_body body_res_state body_step match_consume].
   rewrite (eval_mcmp_point f v e p Hld (field_fixed_len_loaded f (List.length v) e p Hfx Hld)).
-  destruct (data_eqb (field_value f e p) v); [unfold body_writes; cbn [body_res_state body_step vsrc_loadable eval_vsrc] | reflexivity].
+  destruct (data_eqb (field_value f e p) v); [unfold body_writes; cbn [body_res_state body_step vsrc_loadable eval_vsrc match_consume] | reflexivity].
   reflexivity.
 Qed.
 
@@ -152,11 +152,11 @@ Lemma body_writes_merged : forall (f : field) (setname mapname : string)
         else p).
 Proof.
   intros f setname mapname v1 v2 M1 M2 k e p Hset Hmap Hfx1 Hfx2 Hld.
-  unfold body_writes; cbn [mk_map_rule r_body body_res_state body_step].
+  unfold body_writes; cbn [mk_map_rule r_body body_res_state body_step match_consume].
   rewrite (mapn_head_mem f setname v1 v2 e p Hset Hfx1 Hfx2 Hld).
   destruct (data_eqb v1 (field_value f e p) || data_eqb v2 (field_value f e p));
     [| reflexivity].
-  unfold body_writes; cbn [body_res_state body_step vsrc_loadable fields_loadable forallb].
+  unfold body_writes; cbn [body_res_state body_step vsrc_loadable fields_loadable forallb match_consume].
   rewrite Hld, Bool.andb_true_r.
   cbn [eval_vsrc apply_transforms map List.concat].
   rewrite app_nil_r, Hmap. reflexivity.
@@ -177,8 +177,8 @@ Lemma dsl_step_map_merge : forall (f : field) (v1 v2 M1 M2 : data)
      dsl_step (orig_map_rule f v2 M2 k) e1 p1).
 Proof.
   intros f v1 v2 M1 M2 setname mapname k e p Hpl Hset Hmap Hfx1 Hfx2 Hne.
-  rewrite (dsl_step_limit_free (mk_map_rule f setname mapname k) e p) by reflexivity.
-  rewrite (dsl_step_limit_free (orig_map_rule f v1 M1 k) e p) by reflexivity.
+  rewrite (dsl_step_after_free (mk_map_rule f setname mapname k) e p) by reflexivity.
+  rewrite (dsl_step_after_free (orig_map_rule f v1 M1 k) e p) by reflexivity.
   unfold dsl_writes.
   destruct (field_loadable f p) eqn:Hld.
   - (* field loads *)
@@ -191,7 +191,7 @@ Proof.
     + (* fvp = v1: orig1 set mark to M1; orig2 (v2) cannot match (v1<>v2); merged map -> M1 *)
       pose proof (proj1 (data_eqb_true_iff (field_value f e p) v1) E1) as Ev1.
       cbv iota beta.
-      rewrite (dsl_step_limit_free (orig_map_rule f v2 M2 k) e (set_meta p k M1)) by reflexivity.
+      rewrite (dsl_step_after_free (orig_map_rule f v2 M2 k) e (set_meta p k M1)) by reflexivity.
       unfold dsl_writes.
       rewrite (body_writes_orig f v2 M2 k e (set_meta p k M1) Hfx2 (eq_trans Hldm1 Hld)).
       rewrite Hfvm1, Ev1. cbn [orb].
@@ -199,14 +199,14 @@ Proof.
     + destruct (data_eqb (field_value f e p) v2) eqn:E2.
       * (* fvp = v2: orig1 no match (q=p); orig2 sets M2; merged map -> M2 (skips v1) *)
         cbv iota beta.
-        rewrite (dsl_step_limit_free (orig_map_rule f v2 M2 k) e p) by reflexivity.
+        rewrite (dsl_step_after_free (orig_map_rule f v2 M2 k) e p) by reflexivity.
         unfold dsl_writes.
         rewrite (body_writes_orig f v2 M2 k e p Hfx2 Hld).
         rewrite E2. cbn [orb]. unfold map2_map; cbn [map_lookup_data].
         rewrite E1, E2. reflexivity.
       * (* fvp neither: both originals fall through (q=p), merged head fails *)
         cbv iota beta.
-        rewrite (dsl_step_limit_free (orig_map_rule f v2 M2 k) e p) by reflexivity.
+        rewrite (dsl_step_after_free (orig_map_rule f v2 M2 k) e p) by reflexivity.
         unfold dsl_writes.
         rewrite (body_writes_orig f v2 M2 k e p Hfx2 Hld).
         rewrite E2. cbn [orb]. reflexivity.
@@ -215,15 +215,15 @@ Proof.
       by (unfold eval_matchcond, match_loadable; cbn [fields_loadable forallb];
           rewrite Hld; reflexivity).
     assert (Hmerged_p : body_writes (r_body (mk_map_rule f setname mapname k)) e p = (e, p))
-      by (unfold body_writes; cbn [mk_map_rule r_body body_res_state body_step]; rewrite Hmcc; reflexivity).
+      by (unfold body_writes; cbn [mk_map_rule r_body body_res_state body_step match_consume]; rewrite Hmcc; reflexivity).
     assert (Horig1 : body_writes (r_body (orig_map_rule f v1 M1 k)) e p = (e, p))
-      by (unfold body_writes; cbn [orig_map_rule r_body body_res_state body_step];
+      by (unfold body_writes; cbn [orig_map_rule r_body body_res_state body_step match_consume];
           unfold eval_matchcond, match_loadable; rewrite Hld; reflexivity).
     assert (Horig2 : body_writes (r_body (orig_map_rule f v2 M2 k)) e p = (e, p))
-      by (unfold body_writes; cbn [orig_map_rule r_body body_res_state body_step];
+      by (unfold body_writes; cbn [orig_map_rule r_body body_res_state body_step match_consume];
           unfold eval_matchcond, match_loadable; rewrite Hld; reflexivity).
     rewrite Hmerged_p, Horig1. cbv iota beta.
-    rewrite (dsl_step_limit_free (orig_map_rule f v2 M2 k) e p) by reflexivity.
+    rewrite (dsl_step_after_free (orig_map_rule f v2 M2 k) e p) by reflexivity.
     unfold dsl_writes. rewrite Horig2. reflexivity.
 Qed.
 
@@ -240,13 +240,13 @@ Proof. reflexivity. Qed.
 Lemma step_orig_map_none : forall f v M k e p,
   fst (rule_step (orig_map_rule f v M k) e p) = None.
 Proof.
-  intros. unfold rule_step. cbn [orig_map_rule r_body body_step].
+  intros. unfold rule_step. cbn [orig_map_rule r_body body_step match_consume].
   destruct (eval_matchcond (MCmp f CEq v) e p); reflexivity.
 Qed.
 Lemma step_mk_map_none : forall f setname mapname k e p,
   fst (rule_step (mk_map_rule f setname mapname k) e p) = None.
 Proof.
-  intros. unfold rule_step. cbn [mk_map_rule r_body body_step].
+  intros. unfold rule_step. cbn [mk_map_rule r_body body_step match_consume].
   destruct (eval_matchcond (MConcatSet [f] false setname) e p);
     [destruct (vsrc_loadable (VMap [f] [] mapname) p) |]; reflexivity.
 Qed.
@@ -257,7 +257,7 @@ Lemma eval_rules_mut_continue : forall r rest e p,
   = (let '(e', p') := dsl_step r e p in eval_rules_mut rest e' p').
 Proof.
   intros r rest e p Ho. cbn [eval_rules_mut].
-  unfold dsl_step, dsl_rule_step.
+  unfold dsl_step.
   destruct (rule_step r e p) as [v [e' p']]. cbn [fst] in Ho. subst v.
   reflexivity.
 Qed.
@@ -357,8 +357,8 @@ Lemma dsl_step_bare_offkey : forall f v1 v2 M1 M2 mapname k e p,
   dsl_step (mk_map_rule_bare f mapname k) e p = (e, set_meta p k []).
 Proof.
   intros f v1 v2 M1 M2 mapname k e p Hmap Hld H1 H2.
-  rewrite (dsl_step_limit_free (mk_map_rule_bare f mapname k) e p) by reflexivity.
-  unfold dsl_writes. unfold body_writes; cbn [mk_map_rule_bare r_body body_res_state body_step].
+  rewrite (dsl_step_after_free (mk_map_rule_bare f mapname k) e p) by reflexivity.
+  unfold dsl_writes. unfold body_writes; cbn [mk_map_rule_bare r_body body_res_state body_step match_consume].
   cbn [vsrc_loadable fields_loadable forallb]. rewrite Hld, Bool.andb_true_r.
   rewrite eval_vsrc_vmap_single, Hmap.
   rewrite (map_lookup_data_offkey _ v1 v2 M1 M2 H1 H2). reflexivity.
@@ -372,7 +372,7 @@ Lemma dsl_step_orig_offkey : forall f v M k e p,
   dsl_step (orig_map_rule f v M k) e p = (e, p).
 Proof.
   intros f v M k e p Hfx Hld Hne.
-  rewrite (dsl_step_limit_free (orig_map_rule f v M k) e p) by reflexivity.
+  rewrite (dsl_step_after_free (orig_map_rule f v M k) e p) by reflexivity.
   unfold dsl_writes. rewrite (body_writes_orig f v M k e p Hfx Hld), Hne. reflexivity.
 Qed.
 

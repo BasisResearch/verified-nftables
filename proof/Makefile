@@ -232,12 +232,28 @@ validate: glue
 #                        / eval_rules_u_mut_proj), and the witnessed
 #                        set-then-read-under-jump behaviour is pinned on both
 #                        sides (Setread_UnderJump)
+#   in-fold limiter (M2) limit/quota/connlimit consumption (and the VM numgen
+#                        advance) is evaluated at its own body/instruction
+#                        position INSIDE the break-aware per-rule fold — the
+#                        boundary sweeps and the dsl_rule_step/vm_rule_step
+#                        wrappers are retired; a limiter after a failing
+#                        match consumes nothing (gate_limit_undrained pins,
+#                        flipped from the retired infidelity entry 1), a
+#                        limiter before it consumes and the write survives
+#                        the break (Limit_SharedBucket positional pins)
 # Any NEW README-claimed result must be added here in the same commit.
 AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   compile_table_u_correct compile_ruleset_u_correct compile_hook_u_correct \
   compile_seq_hook_u_correct \
   Semantics.eval_rules_u_writefree Semantics.eval_table_u_writefree \
   Semantics.eval_ruleset_u_writefree Semantics.eval_hook_u_writefree \
+  Semantics.eval_rules_u_limiter_tolerant Semantics.eval_table_u_limiter_tolerant \
+  Semantics.eval_hook_u_limiter_tolerant_1 \
+  Router_Input.inbound_licensed Router_Input.router_rules_licensed \
+  Router_Forward.forward_licensed Router_Private.private_rules_licensed \
+  Router_Hooks.input_hook_licensed Router_Hooks.forward_hook_licensed \
+  Router_Realistic.inbound_licensed_real Nft_Demo_Concrete.demo_dns_accepted_unified \
+  Nft_Demo_Concrete.demo_smtp_denied_unified \
   Semantics.eval_rules_u_mut_proj Semantics.eval_table_u_mut_proj \
   Correct.run_table_writefree_compiled Correct.eval_chain_writefree_jumpfree_proj \
   Setread_UnderJump.setread_under_jump_accepted \
@@ -301,6 +317,10 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   RegsValid_Proofs.lower_ruleset_default_regs_valid \
   RegsValid_Proofs.lower_ruleset_compile_regs_valid \
   Semantics.rule_step_mutfree \
+  Known_Infidelities.gate_limit_undrained \
+  Known_Infidelities.vm_gate_limit_undrained \
+  Limit_SharedBucket.limit_before_failing_match_consumed \
+  Limit_SharedBucket.vm_limit_before_failing_match_consumed \
   Setread_IntraRule.setread_accepted Setread_IntraRule.vm_setread_accepted \
   Setread_IntraRule.dynset_feedback_accepted Setread_IntraRule.vm_dynset_feedback_accepted \
   Reject_GuardFirst.udp_guard_breaks_before_mark_write \
@@ -315,7 +335,7 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Syntax.read_numgen_length Syntax.read_symhash_length
 
 axioms:
-	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optimize_PayMerge Optimize_XorFold Optimize_Linearize Optimize_Registry Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs RegsValid_Proofs Setread_IntraRule Setread_UnderJump Reject_GuardFirst.\n'; \
+	@cd theories && { printf 'From Nft Require Import Correct Optimize_Uncond Optimize_PayMerge Optimize_XorFold Optimize_Linearize Optimize_Registry Optiplex_Antispoof Optiplex_Mark Nft_Tactics Tutorial_Proofs Example_Ruleset Netstate_MultiAddr Fib_Local Ct_State Lower_Proofs RegsValid_Proofs Setread_IntraRule Setread_UnderJump Reject_GuardFirst Known_Infidelities Limit_SharedBucket Router_Input Router_Forward Router_Private Router_Hooks Router_Realistic Nft_Demo_Concrete.\n'; \
 	  for t in $(AXIOM_GATE_THEOREMS); do printf 'Print Assumptions %s.\n' "$$t"; done; } \
 	| $(COQTOP) -R . Nft 2>/dev/null \
 	| grep -E 'Closed under the global context|Axioms' \

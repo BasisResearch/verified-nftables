@@ -521,3 +521,35 @@ Lemma pkt_lan_smtp_facts :
   icmp_ok env_lan pkt_lan_smtp = false /\
   svc_key env_lan pkt_lan_smtp = [6;0;25].
 Proof. repeat split; try (vm_compute; reflexivity). Qed.
+
+(* ============================================================ *)
+(** ** UNIFIED-SEMANTICS LICENSE (Semantics.v § "Projection 1b").
+
+    [r_icmp] is the ONE effectful rule of the router config: its
+    `limit 5/second` consumption is an env write, so this file's theorems
+    could not ride the write-free license.  They are licensed by the
+    LIMITER-TOLERANT projection instead ([r_icmp] is a [rule_one_limiter]
+    rule: non-inverted limiter, last body position, terminal `accept`):
+    - every [eval_table … global_chains global_inbound …] theorem above is
+      a unified-semantics statement by [Router_Input.inbound_licensed];
+    - the sub-chain lemma [inbound_private_eval] (an [eval_rules_j]
+      statement over [r_icmp; r_svc] itself) is licensed by
+      [private_rules_licensed] below;
+    - the mutation-kill env [bug_priv_chains] by [bug_priv_chains_licensed].
+    So the limiter rule is never modelled by an unlicensed pure
+    evaluator — the pure strand is a PROVEN verdict projection here. *)
+
+Theorem private_rules_licensed : forall fuel e p,
+  eval_rules_j fuel global_chains (c_rules global_inbound_private) e p
+  = fst (eval_rules_u fuel global_chains (c_rules global_inbound_private) e p).
+Proof.
+  intros fuel e p. apply router_rules_licensed. vm_compute. reflexivity.
+Qed.
+
+Theorem bug_priv_chains_licensed : forall fuel e p,
+  eval_table fuel bug_priv_chains global_inbound e p
+  = fst (eval_table_u fuel bug_priv_chains global_inbound e p).
+Proof.
+  intros fuel e p. symmetry.
+  apply eval_table_u_limiter_tolerant; vm_compute; reflexivity.
+Qed.

@@ -12,24 +12,23 @@
     DROP policy applies.  Consecutive packets get DIFFERENT verdicts — the entire
     purpose of a rate limit.  nft_quota.c / nft_connlimit.c likewise accumulate.
 
-    In the model [e_limit] is that shared, consuming bucket: a passing `limit`
-    match DECREMENTS it (cost = 1), and the consumption is threaded across rules
-    and packets by [limit_sweep_body] (DSL) / [limit_sweep_prog] (VM) at the
-    mutation-evaluator boundary — the same threading as the `numgen inc`
-    (e_numgen) / ct-mark (e_ct) / NAT (e_nat) env writes.
+    In the model [e_limit] is that shared, consuming bucket: EVALUATING a
+    `limit` match writes it at the match's own position inside the break-aware
+    per-rule folds ([Semantics.body_step]'s [match_consume] /
+    [run_rule_step]'s [ILimit]) — position-exact, exactly like the kernel's
+    per-evaluation tokens store — and the consumption is threaded across
+    rules and packets by the mutation evaluators, the same threading as the
+    `numgen inc` (e_numgen) / ct-mark (e_ct) / NAT (e_nat) env writes.
 
     Regression gate: [p1_accepted], [limit_consumed], [p2_dropped], and
     [limit_actually_limits] (with their VM twins [vm_*]) lock in the
     consume-and-differ behaviour; a model regression to a stateless per-packet
     token read (both packets seeing the same count, hence the same verdict)
-    makes them unprovable.
-
-    CAVEAT (known, open infidelity — NOT covered by this file's rules, whose
-    limiter is the FIRST body item): the sweep that threads this consumption
-    is unconditional over the whole rule body, so a limiter sitting AFTER a
-    failing match is also drained, which the kernel never does (NFT_BREAK
-    fires first).  See DEVELOPMENT.md § "Known model infidelities" and the
-    lock-in pin Known_Infidelities.v [gate_limit_drained]. *)
+    makes them unprovable.  [limit_before_failing_match_consumed] (+ VM twin)
+    locks in the POSITION of the write: a limiter BEFORE a failing match is
+    evaluated and consumes even though the rule breaks afterwards — while a
+    limiter AFTER a failing match consumes nothing
+    (Known_Infidelities.v [gate_limit_undrained], the repaired entry 1). *)
 
 From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile.
@@ -106,4 +105,31 @@ Proof. reflexivity. Qed.
 Lemma vm_limit_consumed : e_limit (snd vres1) lim1 = 0.
 Proof. reflexivity. Qed.
 Lemma vm_p2_dropped : vv2 = Drop.
+Proof. reflexivity. Qed.
+
+(* ---- Position-exactness: a limiter BEFORE a failing match IS evaluated. ---- *)
+(* `limit rate 1/second burst 1  meta mark 0x1  accept` on a packet whose mark
+   does NOT match: the kernel evaluates the limiter (consuming the token),
+   then the mark match sets NFT_BREAK — the rule yields no verdict but the
+   bucket write already happened and persists. *)
+Definition rule_lim_first : rule :=
+  {| r_body := [ BMatch (MLimit lim1) ; BMatch (MEq FMetaMark [0;0;0;1]) ];
+     r_outcome := OVerdict Accept; r_after := [] |}.
+Definition chain_lim_first : chain := {| c_policy := Drop; c_rules := [rule_lim_first] |}.
+
+Definition lf_res : verdict * env := eval_chain_mut_env chain_lim_first env1 pk1.
+
+(* The rule does not apply (the mark match fails) — the DROP policy verdict. *)
+Lemma lim_first_policy : fst lf_res = Drop.
+Proof. reflexivity. Qed.
+
+(* But the limiter WAS evaluated before the break: its token is consumed. *)
+Lemma limit_before_failing_match_consumed : e_limit (snd lf_res) lim1 = 0.
+Proof. reflexivity. Qed.
+
+(* VM twin: the compiled bytecode consumes the same bucket at the same position. *)
+Definition vm_lf_res : verdict * env :=
+  run_chain_mut_env (compile_chain chain_lim_first) Drop env1 pk1.
+
+Lemma vm_limit_before_failing_match_consumed : e_limit (snd vm_lf_res) lim1 = 0.
 Proof. reflexivity. Qed.

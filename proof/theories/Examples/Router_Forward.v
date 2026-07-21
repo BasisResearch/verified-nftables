@@ -381,3 +381,31 @@ Theorem forward_property_discriminates_bug :
   eval_table fw_fuel global_chains global_forward env_fwd pkt_world
   <> eval_table fw_fuel global_chains bug_forward env_fwd pkt_world.
 Proof. rewrite pkt_world_dropped, bug_world_accepted. discriminate. Qed.
+
+(* ============================================================ *)
+(** ** UNIFIED-SEMANTICS LICENSE (Semantics.v § "Projection 1b").
+
+    The `global` chain env is not write-free (`inbound_private`'s
+    `limit rate 5/second` is an env write), but it IS limiter-tolerant
+    ([Semantics.chains_limiter_tol]), so every [eval_table] statement in
+    this file is the proven VERDICT projection of the unified
+    effect-threading semantics ([Semantics.eval_table_u_limiter_tolerant])
+    at every fuel, env and packet — see the license header in
+    [Router_Input] § "UNIFIED-SEMANTICS LICENSE". *)
+
+Theorem forward_licensed : forall fuel e p,
+  eval_table fuel global_chains global_forward e p
+  = fst (eval_table_u fuel global_chains global_forward e p).
+Proof.
+  intros fuel e p. symmetry.
+  apply eval_table_u_limiter_tolerant; vm_compute; reflexivity.
+Qed.
+
+(** The mutation-kill base chain is licensed under the same chain env. *)
+Theorem bug_forward_licensed : forall fuel e p,
+  eval_table fuel global_chains bug_forward e p
+  = fst (eval_table_u fuel global_chains bug_forward e p).
+Proof.
+  intros fuel e p. symmetry.
+  apply eval_table_u_limiter_tolerant; vm_compute; reflexivity.
+Qed.

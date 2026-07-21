@@ -25,9 +25,9 @@
       carry no model state — the model has no per-rule hit count to observe —
       so the counter placement is pinned structurally, and the OBSERVABLE
       effect twin below uses the mark write, the model's stateful body item.
-      The limiter bucket cannot serve as the witness either: its depletion is
-      threaded by an unconditional whole-body sweep, the known infidelity
-      pinned in Known_Infidelities.v [gate_limit_drained].)
+      Since the in-fold limiter fix the bucket is a second position witness:
+      Limit_SharedBucket.v [limit_before_failing_match_consumed] vs
+      Known_Infidelities.v [gate_limit_undrained].)
     - [udp_guard_breaks_before_mark_write] / [vm_udp_*]: a NON-TCP packet
       leaves a `mark set 1 reject with tcp reset` rule with its mark
       UNTOUCHED (the guard breaks first) and no verdict.
@@ -111,14 +111,14 @@ Definition p_tcp : packet := mkpkt [6].
 (** DSL: the non-TCP packet BREAKs on the head guard — no verdict, and the
     body's mark write never ran. *)
 Example udp_guard_breaks_before_mark_write :
-  (let '(v, (_, p')) := dsl_rule_step rule_mark env0 p_udp in
+  (let '(v, (_, p')) := rule_step rule_mark env0 p_udp in
    (v, pkt_meta p' MKmark))
   = (None, []).
 Proof. vm_compute. reflexivity. Qed.
 
 (** DSL: the TCP packet passes the guard, takes the write AND the Reject. *)
 Example tcp_mark_written_and_rejected :
-  (let '(v, (_, p')) := dsl_rule_step rule_mark env0 p_tcp in
+  (let '(v, (_, p')) := rule_step rule_mark env0 p_tcp in
    (v, pkt_meta p' MKmark))
   = (Some (Reject 1 0), [1; 0; 0; 0]).
 Proof. vm_compute. reflexivity. Qed.
@@ -128,13 +128,13 @@ Proof. vm_compute. reflexivity. Qed.
 Definition prog_mark : rule_prog := Compile.compile_rule rule_mark.
 
 Example vm_udp_guard_breaks_before_mark_write :
-  (let '(v, (_, p')) := vm_rule_step prog_mark env0 p_udp in
+  (let '(v, (_, p')) := run_rule_step empty_rf prog_mark env0 p_udp in
    (v, pkt_meta p' MKmark))
   = (None, []).
 Proof. vm_compute. reflexivity. Qed.
 
 Example vm_tcp_mark_written_and_rejected :
-  (let '(v, (_, p')) := vm_rule_step prog_mark env0 p_tcp in
+  (let '(v, (_, p')) := run_rule_step empty_rf prog_mark env0 p_tcp in
    (v, pkt_meta p' MKmark))
   = (Some (Reject 1 0), [1; 0; 0; 0]).
 Proof. vm_compute. reflexivity. Qed.
@@ -152,7 +152,7 @@ Definition rule_mark_guard_last : rule :=
      r_outcome := OVerdict (Reject 1 0); r_after := nil |}.
 
 Example guard_last_leaks_the_write :
-  (let '(v, (_, p')) := dsl_rule_step rule_mark_guard_last env0 p_udp in
+  (let '(v, (_, p')) := rule_step rule_mark_guard_last env0 p_udp in
    (v, pkt_meta p' MKmark))
   = (None, [1; 0; 0; 0]).
 Proof. vm_compute. reflexivity. Qed.

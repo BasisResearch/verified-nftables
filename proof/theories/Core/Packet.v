@@ -223,10 +223,11 @@ Record env : Type := {
                                                 (the kernel nft_limit_eval:
                                                 `delta = tokens - cost; if (delta>=0)
                                                 tokens = delta; return invert`).  The
-                                                consumption is applied cross-rule/cross-
-                                                packet by [limit_sweep_prog] (VM) /
-                                                [limit_sweep_body] (DSL) at the mutation-
-                                                evaluator boundary, exactly like the
+                                                consumption is applied AT the limiter's
+                                                own position inside the break-aware
+                                                per-rule folds ([Semantics.body_step] /
+                                                [run_rule_step]) and threaded cross-rule/
+                                                cross-packet, exactly like the
                                                 `numgen inc` counter — so a later packet
                                                 of a traversal reads the depleted bucket
                                                 and gets a DIFFERENT verdict, which is
@@ -242,8 +243,8 @@ Record env : Type := {
                                                 byte length ([quota_cost], = skb->len) on
                                                 EVERY evaluation (the kernel nft_overquota
                                                 accumulates skb->len UNCONDITIONALLY,
-                                                regardless of pass/fail).  Consumed by
-                                                [limit_sweep_*] like [e_limit]. *)
+                                                regardless of pass/fail).  Consumed
+                                                in-fold like [e_limit]. *)
   e_ifaddrs : data -> list ifaddr;           (* an interface's FULL IPv4 address LIST
                                                 (primary + secondaries), keyed by its
                                                 name — the genuine multi-address
@@ -282,9 +283,9 @@ Record env : Type := {
                                                 connections and ANY number of packets of ONE
                                                 connection always read the same count and are
                                                 never throttled by the connection itself.
-                                                Threaded+inserted across rules and packets by
-                                                [limit_sweep_prog] / [limit_sweep_body] at the
-                                                mutation-evaluator boundary (the same pattern
+                                                Inserted at the match's own position inside
+                                                the break-aware per-rule folds and threaded
+                                                across rules and packets (the same pattern
                                                 as the flow-keyed [e_ct] and [e_limit]). *)
   e_ct : data -> ct_key -> data;             (* the SHARED, flow-keyed conntrack
                                                 table: the writable+persistent

@@ -206,3 +206,66 @@ Qed.
 Theorem bug_breaks_input_lockdown :
   eval_hook hk_fuel global_hooks_bug Hinput env_lan pkt_lan_smtp <> Drop.
 Proof. rewrite input_hook_smtp_bug_accept. discriminate. Qed.
+
+(* ------------------------------------------------------------------ *)
+(** ** UNIFIED-SEMANTICS LICENSE (Semantics.v § "Projection 1b").
+
+    The registration dispatches to the `global` chain env, which carries the
+    ONE limiter rule ([Router_Private.r_icmp]) — not write-free, but
+    LIMITER-TOLERANT.  Each hook the parser registers selects exactly one
+    base chain ([select_input]/[select_forward]/[select_postrouting]
+    above), so every [eval_hook] statement in this file (and in
+    [Router_Realistic]'s hook section) is the proven VERDICT projection of
+    the unified [eval_hook_u]
+    ([Semantics.eval_hook_u_limiter_tolerant_1]), at every fuel, env and
+    packet. *)
+
+Theorem input_hook_licensed : forall fuel e p,
+  eval_hook fuel global_hooks Hinput e p
+  = fst (eval_hook_u fuel global_hooks Hinput e p).
+Proof.
+  intros fuel e p. symmetry.
+  apply (eval_hook_u_limiter_tolerant_1 fuel global_hooks Hinput
+           global_chains global_inbound);
+    [exact select_input | vm_compute; reflexivity
+     | exact global_chains_limiter_tol].
+Qed.
+
+Theorem forward_hook_licensed : forall fuel e p,
+  eval_hook fuel global_hooks Hforward e p
+  = fst (eval_hook_u fuel global_hooks Hforward e p).
+Proof.
+  intros fuel e p. symmetry.
+  apply (eval_hook_u_limiter_tolerant_1 fuel global_hooks Hforward
+           global_chains global_forward);
+    [exact select_forward | vm_compute; reflexivity
+     | exact global_chains_limiter_tol].
+Qed.
+
+Theorem postrouting_hook_licensed : forall fuel e p,
+  eval_hook fuel global_hooks Hpostrouting e p
+  = fst (eval_hook_u fuel global_hooks Hpostrouting e p).
+Proof.
+  intros fuel e p. symmetry.
+  apply (eval_hook_u_limiter_tolerant_1 fuel global_hooks Hpostrouting
+           global_chains global_postrouting);
+    [exact select_postrouting | vm_compute; reflexivity
+     | exact global_chains_limiter_tol].
+Qed.
+
+(** The mutation-kill registration (inbound<->forward swapped) is licensed
+    too — its hooks still each select one base under the same tolerant env. *)
+Lemma select_input_bug :
+  select_hook global_hooks_bug Hinput = [(global_chains, global_forward)].
+Proof. vm_compute. reflexivity. Qed.
+
+Theorem input_hook_bug_licensed : forall fuel e p,
+  eval_hook fuel global_hooks_bug Hinput e p
+  = fst (eval_hook_u fuel global_hooks_bug Hinput e p).
+Proof.
+  intros fuel e p. symmetry.
+  apply (eval_hook_u_limiter_tolerant_1 fuel global_hooks_bug Hinput
+           global_chains global_forward);
+    [exact select_input_bug | vm_compute; reflexivity
+     | exact global_chains_limiter_tol].
+Qed.

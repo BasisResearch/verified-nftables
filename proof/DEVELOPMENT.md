@@ -271,11 +271,15 @@ The gap-closing program was tracked as C→A→B→D. Status as of 2026-06:
   no-usable-address — observed across hooks by the whole-chain trace evaluator
   (`eval_chain_trace`). **STILL OPEN:** payload-mangle (`SMangle`) and IMMEDIATE-data
   dynsets are threaded only as state-*neutral* (their own writes are not yet visible
-  to later rules); and two *confirmed divergences inside the modelled features*
-  (limiter sweep past a failing match, `OVmapNat` vmap-hit trace NAT) are
-  ledgered in **"Known model infidelities"** below (the third — intra-rule
-  set-then-read — is REPAIRED by the T1 single-fold rule semantics; positive
-  pins in `Regression/Setread_IntraRule.v`).
+  to later rules); and ONE *confirmed divergence inside the modelled features*
+  (`OVmapNat` vmap-hit trace NAT) is ledgered in **"Known model
+  infidelities"** below.  The other two historical divergences are REPAIRED:
+  intra-rule set-then-read by the T1 single-fold rule semantics (positive
+  pins in `Regression/Setread_IntraRule.v`), and the limiter over-consumption
+  by the M2 in-fold consumption (a limiter after a failing match is never
+  evaluated and never consumes — kernel NFT_BREAK order; positive pins in
+  `Regression/Known_Infidelities.v` § repaired entry 1 and
+  `Regression/Limit_SharedBucket.v`).
 - ✅ **(4) Explicit tables** (D-ish): FIB done (`lpm_fib`); the **conntrack table is
   now flow-keyed** (`e_ct`, keyed by `pkt_flow`) by the 2026-06 audit — `ct
   mark`/`state`/`direction`/`connlimit` accumulate across a flow's packets. (See TODO 1
@@ -303,8 +307,8 @@ internal consistency against a self-authored semantics, with kernel fidelity now
 on the 2026-06 adversarial audit (`../adversarial.md` — see its evidence-class ledger:
 most fixes are backed by kernel *source reading* + golden control-plane payloads, few by
 kernel-executed packet differentials) and `make validate` (28/28) rather than the
-corpus round-trip. Additionally, two **confirmed model-vs-kernel divergences inside
-modelled features** are known and deliberately left open — the ledger below.
+corpus round-trip. Additionally, one **confirmed model-vs-kernel divergence inside
+modelled features** is known and deliberately left open — the ledger below.
 
 ## Known model infidelities (open, confirmed)
 
@@ -320,28 +324,26 @@ theorem in [`theories/Regression/Known_Infidelities.v`](theories/Regression/Know
 that pins the **model's divergent behaviour**: a future fidelity fix MUST flip
 that pin (it becomes unprovable) and update this ledger, so the divergence can
 be neither forgotten nor silently half-fixed. The DSL and the VM **agree** on
-both (the compiler theorems are honest); the divergence is model-vs-kernel.
+the one open entry (the compiler theorems are honest); the divergence is
+model-vs-kernel.
 
-**1. The limiter sweep depletes buckets the kernel never evaluates.**
-- *Kernel*: a rule's expressions run left-to-right; a failing match sets
-  `NFT_BREAK` and ends the rule (nf_tables_core.c `nft_do_chain`'s
-  per-expression verdict check), so in `ip saddr 1.2.3.4 limit rate 1/second
-  accept` a non-matching packet never reaches `nft_limit_eval` — **no token is
-  consumed**.
-- *Model*: `dsl_step` applies `limit_sweep_body` (and `vm_rule_step` applies
-  `limit_sweep_prog`) **unconditionally over the whole rule body**
-  (`Semantics.v`, the sweep definitions + `dsl_step`), draining every
-  `limit`/`quota`/`connlimit` the rule *contains* — even past a failing earlier
-  match or a breaking load.
-- *Repro*: a `meta mark 0x1 limit rate 1/second accept` chain on a
-  non-matching packet leaves `e_limit = 0` (kernel: 1); verdict sequences over
-  `seq_eval_env` then diverge observably from the kernel.
-- *Pin*: `Known_Infidelities.gate_limit_drained` / `vm_gate_limit_drained`.
-- *Why open*: the faithful shape folds the CONSUMPTION into the break-aware
-  `body_step`/`run_rule_step` fold at the limiter's position (the CHECK already
-  evaluates there against the running state; only the depletion remains a
-  whole-body sweep at the `dsl_rule_step`/`vm_rule_step` boundary) — a semantics
-  change on both sides (audit track).
+**(repaired) 1. Limiter consumption is position-exact in the fold.**  The
+historical first entry — an unconditional whole-body sweep draining every
+`limit`/`quota`/`connlimit` a rule *contains*, even past a failing earlier
+match (the kernel `NFT_BREAK`s before `nft_limit_eval` ever runs, consuming
+NO token) — is FIXED: the consumption (and, VM-only, the `numgen inc` counter
+advance) is evaluated AT the limiter's own body/instruction position INSIDE
+the break-aware folds (`body_step`'s `match_consume` / `run_rule_step`'s
+`ILimit`/`IQuota`/`IConnlimit`/`INumgen` cases); the boundary sweeps and the
+`dsl_rule_step`/`vm_rule_step` wrappers that carried them are retired
+(`THEOREMS.md` § strata retirements).  A limiter after a failing match now
+consumes nothing; a reached limiter still writes its bucket on BOTH the pass
+and the exhausted branch (kernel `nft_limit_eval` stores `tokens` on both).
+Pins flipped to positive witnesses: `Known_Infidelities.gate_limit_undrained`
+/ `vm_gate_limit_undrained` (unreached limiter keeps its token) and
+`Limit_SharedBucket.limit_before_failing_match_consumed` (+ VM twin — a
+reached limiter's write survives a later break); the consume-and-differ
+cross-packet behaviour remains pinned in `Limit_SharedBucket.v`.
 
 **2. A vmap HIT on an `OVmapNat` rule still runs the trailing NAT in the trace
 evaluator (including a spurious flow-state write).**
@@ -360,7 +362,7 @@ evaluator (including a spurious flow-state write).**
   10.0.0.1 and `e_nat` populated (kernel: packet untouched, no NAT tuple).
 - *Pin*: `Known_Infidelities.vmaphit_daddr_rewritten` /
   `vmaphit_stores_nat_mapping`.
-- *Why open*: `dsl_rule_step` returns only the verdict, not which outcome arm
+- *Why open*: `rule_step` returns only the verdict, not which outcome arm
   produced it; the fix threads outcome provenance (or re-tests the hit) through
   the trace evaluator — a semantics change (audit track). Plain `ONat` rules
   (the corpus/ruleset-common shape) are unaffected.
@@ -379,8 +381,8 @@ directions, on DSL and VM — `Regression/Setread_UnderJump.v`.
 
 Cross-references: `THEOREMS.md` §1 scope notes and §3 (evaluator matrix);
 `../adversarial.md` "Outcome" (scoping note). The in-source ⚠ KNOWN INFIDELITY
-markers sit on `limit_sweep_prog` and `eval_rules_trace` in `Semantics.v`,
-and on `OVmapNat` in `IR/Syntax.v`.
+markers sit on `eval_rules_trace` in `Semantics.v` and on `OVmapNat` in
+`IR/Syntax.v`.
 
 ## What exists
 
@@ -504,8 +506,9 @@ one must print "Closed under the global context".
 unified evaluator pair `eval_rules_u`/`eval_table_u`/`eval_ruleset_u`/
 `eval_hook_u` (DSL) and `run_rules_u`/`run_table_u`/`run_ruleset_u` (VM): a
 single fuel-bounded fold that both threads every state effect (meta/ct
-writes, dynset learning, notrack, limiter depletion — via
-`dsl_rule_step`/`vm_rule_step`) and follows control flow (jump/goto/return,
+writes, dynset learning, notrack, position-exact limiter consumption — via
+the per-rule folds `rule_step`/`run_rule_step`) and follows control flow
+(jump/goto/return,
 user chains, multi-table/hook dispatch), with cross-packet env carry
 (`seq_eval_env` over `eval_hook_env_u`).  **Mutation × jump/goto is jointly
 verified** there (witness pins: `Regression/Setread_UnderJump.v`).  Every
@@ -548,13 +551,13 @@ statements (counter/notrack/log), reject/queue verdicts, stateful
 `limit`/`quota`/`connlimit` (rendered here; their *semantics* are now live consuming
 token buckets, not oracles — 2026-06 audit), all meta keys, rt/socket/osf oracle loads
 and `numgen` (whose `inc` form is now a persistent counter in `env` — advanced by the
-**VM-side** mutation evaluators only: the DSL step has no numgen sweep, and the
+**VM-side** mutation evaluators only: the DSL fold has no numgen advance, and the
 `rule_numgen_free` hypothesis excludes numgen-inc rules from every mutation-strand
 compiler theorem — discharged for all frontend programs by
 `Lower_Proofs.lower_ruleset_numgen_free` (the lowering refuses incremental numgen,
 `Lower.LEnumgen`) — so the round-robin behaviour `Regression/Numgen_RoundRobin.v` pins is
-**not compiler-preserved**; rationale on `Semantics.dsl_rule_step`, cross-referenced in
-`THEOREMS.md` §3), **verified
+**not compiler-preserved**; rationale on `Semantics.run_rule_step`'s `INumgen` case,
+cross-referenced in `THEOREMS.md` §3), **verified
 multi-register concatenation** (a real register-allocation proof: distinct
 registers via `NoDup`, non-clobbering loads, concat lookup), **sets/ranges over
 transformed values** (`MSetT`/`MRangeT`), and **verified verdict maps** (`vmap`:
@@ -1486,9 +1489,9 @@ Be precise about this, because the honest answer is layered:
   flow in one fold, with the projection licenses `eval_rules_u_writefree` /
   `eval_rules_u_mut_proj`); the projection evaluators (`eval_chain`/`run_chain`,
   jump-aware pure `eval_table`/`run_table`, hook `eval_ruleset`/`eval_hook`);
-  **mutation** machinery (the per-rule folds `body_step`/`run_rule_step` and
-  their step boundary `dsl_rule_step`/`vm_rule_step`,
-  `eval_chain_mut`/`run_chain_mut`); **cross-packet**
+  **mutation** machinery (the per-rule folds `body_step`/`rule_step`/
+  `run_rule_step` — limiter consumption and the VM numgen advance in-fold at
+  their own positions — `eval_chain_mut`/`run_chain_mut`); **cross-packet**
   (`eval_chain_mut_env`/`run_chain_mut_env`/`seq_eval_env`); packet/env mutators
   (`set_meta`/`set_ct`/`env_set_upd`/`env_map_upd`).
 - `theories/Compiler/Correct.v` — all the theorems and their scaffolding.

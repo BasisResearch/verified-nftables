@@ -13,11 +13,15 @@
     (../adversarial.md), not to a documentation milestone; until then this file
     keeps the divergent behaviour checked instead of merely described.
 
-    Two entries:
-      (1) whole-body limiter sweep     — [gate_*] theorems below;
+    One open entry:
       (2) OVmapNat vmap-HIT trace NAT  — [vmaphit_*] theorems below.
 
-    (The historical third entry — intra-rule set-then-read — is REPAIRED: the
+    (Historical entry (1) — the whole-body limiter sweep — is REPAIRED: the
+    `limit`/`quota`/`connlimit` consumption is evaluated AT the limiter's own
+    body/instruction position inside the break-aware fold, so a limiter after
+    a failing match consumes nothing, exactly the kernel NFT_BREAK order.
+    Its positive successor pins are the [gate_*] theorems below.
+    Historical entry (3) — intra-rule set-then-read — is REPAIRED: the
     single-fold rule semantics runs every expression against the running
     state, so `meta mark set 0x1 meta mark 0x1 accept` now ACCEPTS on both
     sides.  Its positive successors live in Regression/Setread_IntraRule.v.) *)
@@ -42,8 +46,7 @@ Definition mkpkt (meta : meta_key -> data) (nh th flow : data) : packet :=
      pkt_ctdir_orig := true; pkt_ct_present := true |}.
 
 (* ------------------------------------------------------------------------ *)
-(** ** (1) KNOWN INFIDELITY — the limiter sweep depletes buckets the kernel
-    never evaluates.
+(** ** (1) REPAIRED — a limiter after a failing match consumes NOTHING.
 
     Kernel: a rule's expressions run left-to-right and a failing match sets
     NFT_BREAK, ending the rule (nf_tables_core.c nft_do_chain: the per-expr
@@ -51,15 +54,15 @@ Definition mkpkt (meta : meta_key -> data) (nh th flow : data) : packet :=
     `meta mark 0x1 limit rate 1/second accept` a packet whose mark is NOT 0x1
     never reaches nft_limit_eval and consumes NO token.
 
-    Model: [dsl_step] applies [limit_sweep_body] over the WHOLE rule body
-    unconditionally (Semantics.v), and [vm_rule_step] mirrors it with
-    [limit_sweep_prog] — so the bucket is drained even though the first match
-    failed.  Both sides agree (the compiler theorems are honest); both diverge
-    from the kernel.
-
-    PINNED (model behaviour; a fidelity fix MUST flip [gate_limit_drained] /
-    [vm_gate_limit_drained] to "= 1" and update the ledger): the failing-match
-    rule still drains [e_limit] from 1 to 0 on BOTH the DSL and the VM side. *)
+    Model (repaired): the consumption is applied AT the limiter's body /
+    instruction position inside the break-aware folds ([body_step]'s
+    [match_consume] / [run_rule_step]'s [ILimit]), so the failing mark match
+    BREAKs the rule before the limiter is ever evaluated and the bucket keeps
+    its token — on BOTH the DSL and the VM side.  (The historical unconditional
+    whole-body sweep drained it to 0; these pins FLIPPED from "= 0" when the
+    consumption moved in-fold.)  The reached-limiter consumption itself —
+    pass AND exhausted-branch token store — is pinned in
+    Regression/Limit_SharedBucket.v. *)
 
 Definition lim1 : limit_spec :=
   {| ls_rate := 1; ls_unit := 0; ls_burst := 1; ls_bytes := false; ls_flags := 0 |}.
@@ -93,16 +96,22 @@ Definition gate_res : verdict * env := eval_chain_mut_env gate_chain env_lim pkt
 Lemma gate_verdict_policy : fst gate_res = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
-(* THE DIVERGENCE: the model drains the bucket anyway (kernel leaves 1). *)
-Theorem gate_limit_drained : e_limit (snd gate_res) lim1 = 0.
+(* THE REPAIR: the bucket is NOT drained — the unreached limiter kept its
+   token, exactly as the kernel leaves it. *)
+Theorem gate_limit_undrained : e_limit (snd gate_res) lim1 = 1.
 Proof. vm_compute. reflexivity. Qed.
 
-(* The compiled VM agrees with the DSL (and hence also diverges from the kernel). *)
+(* The compiled VM agrees with the DSL (and with the kernel). *)
 Definition vm_gate_res : verdict * env :=
   run_chain_mut_env (compile_chain gate_chain) Drop env_lim pkt_nomatch.
 
-Theorem vm_gate_limit_drained : e_limit (snd vm_gate_res) lim1 = 0.
+Theorem vm_gate_limit_undrained : e_limit (snd vm_gate_res) lim1 = 1.
 Proof. vm_compute. reflexivity. Qed.
+
+(* The positional counterpart — the SAME limiter placed BEFORE the failing
+   match IS evaluated and consumes its token (the write surviving the later
+   break) — is pinned in Regression/Limit_SharedBucket.v
+   ([limit_before_failing_match_consumed] / [vm_limit_before_failing_match_consumed]). *)
 
 (* ------------------------------------------------------------------------ *)
 (** ** (2) KNOWN INFIDELITY — a vmap HIT on an [OVmapNat] rule still runs the

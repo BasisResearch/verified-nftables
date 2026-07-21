@@ -478,3 +478,44 @@ Proof.
   apply (forward_hook_unsolicited_dropped_real env_fwd pkt_world
            pkt_world_vmap3 pkt_world_ct pkt_world_iif).
 Qed.
+
+(* ============================================================ *)
+(** ** UNIFIED-SEMANTICS LICENSE (Semantics.v § "Projection 1b").
+
+    Everything this file states through the pure strand — [eval_table] over
+    [global_forward]/[global_inbound], the [eval_rules_j] sub-chain
+    reduction, and the [eval_hook] dispatch theorems — is about the config
+    with the ONE limiter rule ([Router_Private.r_icmp]).  The config is
+    LIMITER-TOLERANT, so each statement is the proven VERDICT projection of
+    the unified effect-threading semantics; the license instances are
+    re-stated here (and proved from
+    [Semantics.eval_table_u_limiter_tolerant] and friends) so this file's
+    theorems carry their own citation:
+    [Router_Input.inbound_licensed] / [Router_Input.router_rules_licensed] /
+    [Router_Forward.forward_licensed] / [Router_Private.private_rules_licensed] /
+    [Router_Hooks.input_hook_licensed] / [Router_Hooks.forward_hook_licensed]. *)
+
+Theorem inbound_licensed_real : forall fuel e p,
+  eval_table fuel global_chains global_inbound e p
+  = fst (eval_table_u fuel global_chains global_inbound e p).
+Proof. exact Router_Input.inbound_licensed. Qed.
+
+Theorem forward_licensed_real : forall fuel e p,
+  eval_table fuel global_chains global_forward e p
+  = fst (eval_table_u fuel global_chains global_forward e p).
+Proof. exact Router_Forward.forward_licensed. Qed.
+
+Theorem private_rules_licensed_real : forall fuel e p,
+  eval_rules_j fuel global_chains (c_rules global_inbound_private) e p
+  = fst (eval_rules_u fuel global_chains (c_rules global_inbound_private) e p).
+Proof. exact Router_Private.private_rules_licensed. Qed.
+
+Theorem input_hook_licensed_real : forall fuel e p,
+  eval_hook fuel global_hooks Hinput e p
+  = fst (eval_hook_u fuel global_hooks Hinput e p).
+Proof. exact Router_Hooks.input_hook_licensed. Qed.
+
+Theorem forward_hook_licensed_real : forall fuel e p,
+  eval_hook fuel global_hooks Hforward e p
+  = fst (eval_hook_u fuel global_hooks Hforward e p).
+Proof. exact Router_Hooks.forward_hook_licensed. Qed.

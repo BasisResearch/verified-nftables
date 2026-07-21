@@ -100,12 +100,14 @@ Scope notes (each also sits on the theorem in the source):
   key would merge their ct marks). Rationale + designated fix: the `pkt_flow`
   comment in `Core/Packet.v`; honest-gaps entry in `DEVELOPMENT.md`.
 
-Known-gaps note: three **confirmed model-vs-kernel divergences** (limiter
-sweep past a failing match; `OVmapNat` vmap-hit trace NAT + spurious `e_nat`
-store; intra-rule set-then-read) hold **inside** the theorems above — DSL and
-VM agree on them, so no compile theorem is weakened, but the *model* is not
-kernel-exact there. Ledger with kernel citations, repros, and `vm_compute`
-lock-in pins: `DEVELOPMENT.md` § "Known model infidelities" +
+Known-gaps note: one **confirmed model-vs-kernel divergence** (`OVmapNat`
+vmap-hit trace NAT + spurious `e_nat` store) holds **inside** the theorems
+above — DSL and VM agree on it, so no compile theorem is weakened, but the
+*model* is not kernel-exact there.  (The historical limiter-sweep-past-a-
+failing-match and intra-rule set-then-read entries are REPAIRED — limiter
+consumption is now position-exact in the break-aware fold, and the pins
+flipped to positive witnesses.)  Ledger with kernel citations, repros, and
+`vm_compute` lock-in pins: `DEVELOPMENT.md` § "Known model infidelities" +
 `theories/Regression/Known_Infidelities.v`.
 
 ## 2. Classification of every `Theorem`/`Corollary` in `Correct.v` and `Optimize*.v`
@@ -117,7 +119,7 @@ lock-in pins: `DEVELOPMENT.md` § "Known model infidelities" +
 | `compile_chain_correct` | SUPPORTING (stratum 1: one chain, pure verdict) | from `run_program_compile_chain`; consumed by the optimizer headline via `compile_chain_sets_correct` |
 | `compile_chain_sets_correct` (Corollary) | SUPPORTING | corollary of `compile_chain_correct` at `env_with_sets`; consumed (via `compile_chain_default_sets_correct`) by `optimize_table_uncond_compile_correct` |
 | `compile_chain_mut_correct` | SUPPORTING (stratum 2: + in-traversal mutation) | **derived**: the `fst` projection of stratum 3 (`run_program_mut_env_fst` / `eval_rules_mut_env_fst`), no second induction |
-| `compile_chain_mut_env_correct` | SUPPORTING (stratum 3: + env the chain leaves) | from `run_program_mut_env_compile_chain`, one induction over the per-rule step equation `vm_rule_step_compile_rule` (`vm_rule_step (compile_rule r) e p = dsl_rule_step r e p` under `rule_numgen_free`) |
+| `compile_chain_mut_env_correct` | SUPPORTING (stratum 3: + env the chain leaves) | from `run_program_mut_env_compile_chain`, one induction over the per-rule step equation `run_rule_step_compile_rule` (`run_rule_step empty_rf (compile_rule r) e p = rule_step r e p` under `rule_numgen_free`) |
 | `compile_seq_mut_correct` | **HEADLINE** (mutation/sequence axis) | = `compile_chain_mut_env_correct` + `seq_eval_env_ext` |
 | `compile_table_correct` | SUPPORTING (stratum 5: + jump/goto/return) | from `run_eval_rules_j`; consumed by `compile_ruleset_correct` |
 | `eval_chain_eq_table_jumpfree` | SUPPORTING (fidelity bridge: `eval_chain` = `eval_table` on jump-free chains) | from `eval_rules_jumpfree_eq_j` |
@@ -129,7 +131,7 @@ lock-in pins: `DEVELOPMENT.md` § "Known model infidelities" +
 | `compile_hook_correct` | **HEADLINE** (compiler axis) | = `compile_ruleset_correct` after pure hook selection/ordering |
 | `compile_seq_correct` | **HEADLINE** (congruence corollary — see scope note §1) | = `compile_hook_correct` + `seq_eval_ext` |
 | `run_table_fuel_indep_compiled` (Corollary) | SUPPORTING (VM mirror of the M4 fuel-adequacy result, §3) | = `compile_table_correct` (at both fuels) + `Semantics.eval_table_fuel_indep` |
-| `run_rules_u_compile` | SUPPORTING (stratum 8 induction: unified fold, rule list) | one induction over `vm_rule_step_compile_rule`, jumps included |
+| `run_rules_u_compile` | SUPPORTING (stratum 8 induction: unified fold, rule list) | one induction over `run_rule_step_compile_rule`, jumps included |
 | `compile_table_u_correct` | **HEADLINE** (stratum 8, unified axis: mutation × jump, one table) | from `run_rules_u_compile` |
 | `compile_ruleset_u_correct` / `compile_hook_u_correct` | **HEADLINE** (stratum 8: + multi-table / hook dispatch, state threaded between bases) | from `compile_table_u_correct` per base chain |
 | `compile_seq_hook_u_correct` | **HEADLINE** (stratum 8: + cross-packet env carry over the unified per-packet run) | = `compile_ruleset_u_correct` + `seq_eval_env_ext` |
@@ -173,8 +175,9 @@ lock-in pins: `DEVELOPMENT.md` § "Known model infidelities" +
 semantics"): DSL `eval_rules_u` / `eval_table_u` / `eval_ruleset_u` /
 `eval_hook_u`, VM `run_rules_u` / `run_table_u` / `run_ruleset_u` — one
 fuel-bounded fold per side that **threads every state effect** (packet
-meta/ct writes, dynset env writes, notrack, limiter/quota/connlimit
-depletion, via the per-rule fold `dsl_rule_step`/`vm_rule_step`) **and
+meta/ct writes, dynset env writes, notrack, position-exact
+limiter/quota/connlimit consumption, via the per-rule fold
+`rule_step`/`run_rule_step`) **and
 follows control flow** (jump/goto/return, user chains, multi-table and
 hook/priority dispatch), returning verdict AND the `(env, packet)` the
 traversal leaves; cross-packet env carry is `seq_eval_env` over
@@ -195,12 +198,13 @@ successor for every out-of-domain input is the unified `_u` family.)
 | projection (DSL + VM mirror) | licensed sub-domain | coincidence equation |
 |---|---|---|
 | `eval_rules_j`/`eval_table` (VM `run_rules_j`/`run_table`) | write-free rules everywhere: `rule_writefree` (no meta/ct set, dynset, notrack, limiter/quota/connlimit) on the entry list, `chains_writefree` on the chain env | `eval_rules_u_writefree`: `eval_rules_u fuel cs rs e p = (eval_rules_j fuel cs rs e p, (e, p))`; table form `eval_table_u_writefree`; VM form `Correct.run_table_writefree_compiled` |
+| `eval_rules_j`/`eval_table`/`eval_hook` (limiter-tolerant extension, Semantics.v § Projection 1b) | limiter-tolerant configs: every rule `rule_limiter_tol` = write-free OR a `rule_one_limiter` rule (match-only body whose ONE non-consume-free match is a tolerable limiter — non-inverted `limit`/`quota` or any `connlimit` — in last position, under a static terminal verdict); entry list + `chains_limiter_tol` on the chain env | VERDICT projection only (the unified run's bucket IS depleted): `eval_rules_u_limiter_tolerant`: `fst (eval_rules_u fuel cs rs e p) = eval_rules_j fuel cs rs e p`; table form `eval_table_u_limiter_tolerant`; single-base hook form `eval_hook_u_limiter_tolerant_1` — every fuel/env/packet, jumps, gotos and chain re-entries included |
 | `eval_ruleset`/`eval_hook` (VM `run_ruleset`) | write-free bases (`bases_writefree`) | `eval_ruleset_u_writefree` / `eval_hook_u_writefree` |
 | `eval_rules`/`eval_chain` (VM `run_program`/`run_chain`) | write-free **and** jump-free | `eval_rules_u_writefree` + `eval_rules_jumpfree_eq_j`; packaged as `Correct.eval_chain_writefree_jumpfree_proj` |
-| `eval_rules_mut(_env)`/`eval_chain_mut(_env)` (VM `run_program_mut(_env)`) | transfer-free rules: `rule_plain` (no realisable Jump/Goto/Return under the run's verdict maps — step-threaded: rule writes provably cannot touch `e_vmap`, `dsl_rule_step_vmap`) | `eval_rules_u_mut_proj`: verdict = `eval_rules_mut`, env = `snd ∘ eval_rules_mut_env`; table form `eval_table_u_mut_proj` |
+| `eval_rules_mut(_env)`/`eval_chain_mut(_env)` (VM `run_program_mut(_env)`) | transfer-free rules: `rule_plain` (no realisable Jump/Goto/Return under the run's verdict maps — step-threaded: rule writes provably cannot touch `e_vmap`, `rule_step_vmap`) | `eval_rules_u_mut_proj`: verdict = `eval_rules_mut`, env = `snd ∘ eval_rules_mut_env`; table form `eval_table_u_mut_proj` |
 | `eval_rules_trace` (DSL only — NAT axis) | verdict = mut strand except the data-plane NAT drop | `eval_rules_trace_verdict` (known infidelity on an `OVmapNat` vmap **hit** — see the ledger) |
-| `rule_applies(_walk)`/`outcome`/`rule_loadable` (per-rule bools) | mut-free rule | `rule_step_mutfree` |
-| `run_rule`/`run_program` (per-rule pure VM) | `no_writes` programs | `Correct.run_rule_step_no_writes` |
+| `rule_applies(_walk)`/`outcome`/`rule_loadable` (per-rule bools) | write-free rule (`rule_mutfree`: no mutating statement AND no limiter match — evaluating a limiter writes its bucket) | `rule_step_mutfree` |
+| `run_rule`/`run_program` (per-rule pure VM) | `no_writes` programs (no mutating/limiter/incremental-numgen instruction) | `Correct.run_rule_step_no_writes` |
 | `seq_eval` | per-packet congruence over an EXTERNAL, caller-supplied step (see its header) | — |
 | `seq_eval_env` | generic in its per-packet evaluator; the unified instantiation is `eval_hook_env_u` | `compile_seq_hook_u_correct` (unified), `compile_seq_mut_correct` (flat) |
 
@@ -212,12 +216,20 @@ one-`reflexivity` check `nft_writefree` holds): `tutorial.nft`
 (`Ruleset_Verified.firewall_inbound_license`), and the optiplex `vmfilter`
 bridge table (`Optiplex_Antispoof.vmfilter_output_license`) are
 Compute-verified write-free, so every `eval_table` theorem about them IS a
-theorem about the unified semantics.  **Residual (designated follow-up):** the router `global` table contains ONE limiter rule
-(`inbound_private`'s `limit rate 5/second`), whose bucket depletion is an env
-write — outside `rule_writefree` — so the `Router_*` example statements are
-not yet licensed as unified-semantics statements; the follow-up is to restate
-them over `eval_table_u` (or prove a limiter-tolerant license for
-single-limiter configs).  The effectful optiplex `filter`/NAT chains were
+theorem about the unified semantics.  The router `global` table contains ONE
+limiter rule (`inbound_private`'s `limit rate 5/second`), whose bucket
+depletion is an env write — outside `rule_writefree` — and it is licensed by
+the LIMITER-TOLERANT projection (the table row above): the config is
+Compute-verified `chains_limiter_tol`, so every `Router_*` /
+`Nft_Demo_Concrete` pure-strand statement is a proven VERDICT projection of
+the unified semantics — per-file license instances
+`Router_Input.inbound_licensed` / `Router_Input.router_rules_licensed` /
+`Router_Forward.forward_licensed` (+ the `bug_*` mutation-kill envs) /
+`Router_Private.private_rules_licensed` /
+`Router_Hooks.input_hook_licensed`/`forward_hook_licensed`/`postrouting_hook_licensed`
+(+ the swapped-registration bug) / `Router_Realistic.*_licensed_real` /
+`Nft_Demo_Concrete.demo_dns_accepted_unified`/`demo_smtp_denied_unified`,
+all axiom-gated.  The effectful optiplex `filter`/NAT chains were
 never evaluated through the pure strand — their proofs already use the
 effect-threading trace evaluators (`Optiplex_Mark`, `Router_NatHook`,
 `Router_Reach`).
@@ -266,32 +278,62 @@ The bytecode VM mirrors the DSL rows one-for-one (`run_rule(s)`,
 compile theorem in §2 equates one DSL row with its VM mirror.  The VM mirror of
 the `fst` bridge is `run_program_mut_env_fst` / `run_chain_mut_env_fst`.
 
-Every mutation/trace evaluator consumes a single per-rule STEP function —
-`dsl_rule_step` (DSL) / `vm_rule_step` (VM).  Since the T1 single-fold rework,
-each is a projection of ONE left-to-right fold per rule —
-`Semantics.rule_step` (DSL) / `Semantics.run_rule_step` (bytecode) — modelling
-exactly the kernel's expression walk (nf_tables_core.c
-`nft_rule_dp_for_each_expr`): every expression (match, statement operand,
-verdict-map key, limiter check) sees the writes — packet-local meta/ct sets
-AND dynset env writes — of the expressions BEFORE it in the SAME rule; a
-failing match or breaking load stops the walk KEEPING the earlier writes; a
-statement after a terminal verdict never runs; the post-outcome (`r_after`)
-statements run (writes included) only on a `Continue` fall-through.  The step
-adds the limiter consumption sweep, and on the VM side only the `numgen inc`
-counter advance (`numgen_sweep_prog` — the DSL step deliberately has no
-numgen twin; rationale on `Semantics.dsl_rule_step`).
+Every mutation/trace evaluator consumes the per-rule STEP function directly —
+ONE left-to-right fold per rule, `Semantics.rule_step` (DSL) /
+`Semantics.run_rule_step empty_rf` (bytecode) — modelling exactly the
+kernel's expression walk (nf_tables_core.c `nft_rule_dp_for_each_expr`):
+every expression (match, statement operand, verdict-map key, limiter check)
+sees the writes — packet-local meta/ct sets AND dynset env writes AND the
+`limit`/`quota`/`connlimit` bucket consumption of an earlier limiter (the
+kernel writes the bucket on every evaluation, pass or exhausted:
+`body_step`'s `match_consume` / `run_rule_step`'s limiter cases) — of the
+expressions BEFORE it in the SAME rule; a failing match or breaking load
+stops the walk KEEPING the earlier writes (so a limiter AFTER the break is
+never evaluated and never consumes); a statement after a terminal verdict
+never runs; the post-outcome (`r_after`) statements run (writes included)
+only on a `Continue` fall-through.  On the VM side only, the fold also
+advances the `numgen inc` counter at its `INumgen` instruction (the DSL
+deliberately has no numgen surface; the lowering rejects it fail-loud).
 
 The DSL/VM agreement obligation is the one per-rule equation
-`vm_rule_step_compile_rule : rule_numgen_free r = true ->
-vm_rule_step (compile_rule r) e p = dsl_rule_step r e p` (`Correct.v`), built
-on the UNCONDITIONAL fold bridge `run_rule_step_compile_rule :
-run_rule_step empty_rf (compile_rule r) e p = rule_step r e p` (degenerate
-zero-field operands included — `Compile.compile_vsrc` pins their source
-register).  `rule_numgen_free` (IR/Syntax.v) is the strand's ONLY hypothesis,
-and it is discharged by THEOREM over every frontend-emitted program:
-`Lower.lower_rule` refuses incremental numgen fail-loud (`LEnumgen`), and
-`Lower_Proofs.lower_ruleset_numgen_free` proves every chain of every
-successful lowering numgen-free — not a per-ruleset gate spot-check.
+`run_rule_step_compile_rule : rule_numgen_free r = true ->
+run_rule_step empty_rf (compile_rule r) e p = rule_step r e p` (`Correct.v`;
+degenerate zero-field operands included — `Compile.compile_vsrc` pins their
+source register).  `rule_numgen_free` (IR/Syntax.v) is the strand's ONLY
+hypothesis, and it is discharged by THEOREM over every frontend-emitted
+program: `Lower.lower_rule` refuses incremental numgen fail-loud
+(`LEnumgen`), and `Lower_Proofs.lower_ruleset_numgen_free` proves every
+chain of every successful lowering numgen-free — not a per-ruleset gate
+spot-check.
+
+**Strata retirement (M2 in-fold limiter/numgen).**  The historical per-rule
+boundary wrappers `Semantics.dsl_rule_step` / `Semantics.vm_rule_step` — the
+fold plus an UNCONDITIONAL whole-body `limit_sweep_body`/`limit_sweep_prog`
+(+ VM `numgen_sweep_prog`) applied at the step boundary, the source of
+known-infidelity entry 1 (a limiter after a failing match was drained; the
+kernel `NFT_BREAK`s first) — are RETIRED; their successor is the fold pair
+`rule_step` / `run_rule_step empty_rf` itself, with the consumption
+evaluated at each limiter's own body/instruction position (break-aware,
+kernel-exact) and the VM `numgen inc` advance at its `INumgen` instruction.
+With them retire: the sweeps (`limit_sweep_body`/`limit_sweep_prog`/
+`numgen_sweep_prog`) and their identity lemmas, `limit_free_body`/
+`limit_free_prog` (subsumed: `rule_mutfree`/`writes_instr` now count
+limiter matches/instructions as writes), `dsl_rule_step_fst`/`_snd`/
+`_vmap`/`_writefree` (successors: `rule_step` itself, `rule_step_vmap`,
+`rule_step_writefree`), `dsl_step_limit_free` (successor:
+`dsl_step_after_free` — the limit-freedom hypothesis existed only to cancel
+the boundary sweep), `Correct.vm_rule_step_compile_rule` and the
+sweep-agreement lemmas `limit_sweep_prog_compile_rule` etc. (successor: the
+single equation `run_rule_step_compile_rule` above), and the dead
+`no_writes` fragment family (`nw_load_fields` … `nw_compile_end`,
+`straight_imp_nw`) whose statements would be false under the honest
+`writes_instr`.  `dsl_step` (the state half, `snd ∘ rule_step`) remains as
+the named notion the trace evaluator and the optimizer's effect certificates
+consume.  Pins flipped: `Known_Infidelities.gate_limit_undrained` /
+`vm_gate_limit_undrained` (from `gate_limit_drained`'s `= 0` to `= 1`), with
+the position-exactness twins
+`Limit_SharedBucket.limit_before_failing_match_consumed` /
+`vm_limit_before_failing_match_consumed`.
 
 **Strata retirement (T1 single-fold).**  The historical TWO-fold per-rule
 split — an entry-packet verdict pass (`rule_applies`/`outcome` paired into
@@ -541,15 +583,15 @@ survive verbatim — the W4 additions are new definitions and gated pins):
   and is corrected in the report and DEVELOPMENT.md class E):
   `Regression/Reject_GuardFirst.v` pins guard-before-effects on BOTH
   evaluators — `udp_guard_breaks_before_mark_write` /
-  `tcp_mark_written_and_rejected` (DSL `dsl_rule_step`) and their `vm_*`
-  twins over `Compile.compile_rule` (VM `vm_rule_step`), plus
+  `tcp_mark_written_and_rejected` (DSL `rule_step`) and their `vm_*`
+  twins over `Compile.compile_rule` (VM `run_rule_step`), plus
   `guard_last_leaks_the_write`, the counterfactual that the PRE-FIX
   guard-last body runs the write on the same non-TCP packet (all five in
   `make axioms`; the counter placement itself is pinned structurally by
   `counter_guard_first` — `SCounter`/`ICounter` are verdict-neutral and
-  stateless in the model, and the limiter bucket cannot witness ordering
-  because of the known whole-body sweep infidelity,
-  `Known_Infidelities.gate_limit_drained`).
+  stateless in the model.  Since the M2 in-fold limiter fix the bucket CAN
+  witness ordering: `Limit_SharedBucket.limit_before_failing_match_consumed`
+  vs `Known_Infidelities.gate_limit_undrained`).
 - **Class R (bare-reject family concretization).**  `Lower.reject_type_code`
   now takes the rule's pinned network family, computed by
   `Lower.deps_pinned_nfproto` from the per-rule guard/dedup set (`meta

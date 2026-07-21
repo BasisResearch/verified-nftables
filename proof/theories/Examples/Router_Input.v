@@ -600,3 +600,59 @@ Lemma pkt_world_bad_facts :
   /\ world_ssh env_in pkt_world_bad = false.
 Proof. repeat split; vm_compute; reflexivity. Qed.
 
+
+(* ============================================================ *)
+(** ** UNIFIED-SEMANTICS LICENSE (Semantics.v § "Projection 1b").
+
+    The router `global` table is NOT write-free: `inbound_private`'s first
+    rule carries `limit rate 5/second`, whose bucket consumption is an env
+    write ([Router_Private.r_icmp]; [rule_writefree] computes [false] on it).
+    Every [eval_table]/[eval_rules_j] statement in this file — and in
+    Router_Private / Router_Realistic / Router_Forward / Router_Hooks /
+    Nft_Demo_Concrete — is nonetheless a statement about THE unified
+    effect-threading semantics: the config is LIMITER-TOLERANT
+    ([Semantics.chains_limiter_tol], Compute-checked below) — its only
+    state write is that single NON-INVERTED limiter match, in last body
+    position, under a terminal `accept` — so the pure jump strand is the
+    proven VERDICT projection of the unified fold
+    ([Semantics.eval_table_u_limiter_tolerant]) at EVERY fuel, env and
+    packet, jumps and re-entries included.  No rule of this config is ever
+    modelled by an unlicensed pure evaluator. *)
+
+Lemma global_chains_limiter_tol : chains_limiter_tol global_chains = true.
+Proof. vm_compute. reflexivity. Qed.
+
+(** Rule-list form: every [eval_rules_j … global_chains rs …] lemma above
+    (e.g. [inbound_world_eval]) is the verdict projection of
+    [eval_rules_u] on any limiter-tolerant entry list. *)
+Theorem router_rules_licensed : forall fuel rs e p,
+  forallb rule_limiter_tol rs = true ->
+  eval_rules_j fuel global_chains rs e p
+  = fst (eval_rules_u fuel global_chains rs e p).
+Proof.
+  intros fuel rs e p Hrs. symmetry.
+  apply eval_rules_u_limiter_tolerant;
+    [exact Hrs | exact global_chains_limiter_tol].
+Qed.
+
+(** THE table license for every
+    [eval_table … global_chains global_inbound …] theorem here and in the
+    dependent files. *)
+Theorem inbound_licensed : forall fuel e p,
+  eval_table fuel global_chains global_inbound e p
+  = fst (eval_table_u fuel global_chains global_inbound e p).
+Proof.
+  intros fuel e p. symmetry.
+  apply eval_table_u_limiter_tolerant;
+    [vm_compute; reflexivity | exact global_chains_limiter_tol].
+Qed.
+
+(** The mutation-kill chain env keeps the same single limiter, so the
+    bug-discrimination theorems are unified-semantics statements too. *)
+Theorem bug_chains_licensed : forall fuel e p,
+  eval_table fuel bug_chains global_inbound e p
+  = fst (eval_table_u fuel bug_chains global_inbound e p).
+Proof.
+  intros fuel e p. symmetry.
+  apply eval_table_u_limiter_tolerant; vm_compute; reflexivity.
+Qed.

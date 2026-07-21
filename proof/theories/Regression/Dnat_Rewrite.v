@@ -84,7 +84,7 @@ Theorem dnat_output : forall h e p,
 Proof.
   intros h e p Horig Hnone.
   unfold eval_chain_trace, dnat_chain. cbn [c_rules eval_rules_trace].
-  replace (dsl_rule_step dnat_rule e p) with (Some Accept, (e, p)) by reflexivity.
+  replace (rule_step dnat_rule e p) with (Some Accept, (e, p)) by reflexivity.
   cbn -[apply_nat dnat_rule nat_drops].
   rewrite dnat_no_drop.
   rewrite (dnat_apply h e p Horig Hnone). reflexivity.
@@ -290,7 +290,7 @@ Theorem dnat_port_output : forall h e p,
 Proof.
   intros h e p Horig Hnone.
   unfold eval_chain_trace, dnat_port_chain. cbn [c_rules eval_rules_trace].
-  replace (dsl_rule_step dnat_port_rule e p) with (Some Accept, (e, p)) by reflexivity.
+  replace (rule_step dnat_port_rule e p) with (Some Accept, (e, p)) by reflexivity.
   cbn -[apply_nat dnat_port_rule nat_drops].
   rewrite dnat_port_no_drop.
   rewrite (dnat_port_apply h e p Horig Hnone). reflexivity.

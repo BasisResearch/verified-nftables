@@ -15,8 +15,11 @@
 
     a single fuel-bounded fold that BOTH threads every state effect — packet
     meta/ct writes, dynset env writes, the notrack latch, limiter/quota/
-    connlimit depletion, via the per-rule single fold [dsl_rule_step] /
-    [vm_rule_step] — AND follows control flow (jump/goto/return, user-defined
+    connlimit consumption and the VM `numgen inc` counter advance (each applied
+    AT its body/instruction position inside the break-aware per-rule fold
+    [rule_step] / [run_rule_step], so a limiter after a failing match is NOT
+    consumed — kernel NFT_BREAK order) — AND follows control flow
+    (jump/goto/return, user-defined
     chains, multi-chain and hook/priority dispatch), with cross-packet env
     carry ([seq_eval_env] over [eval_hook_env_u]).  A jumped-to chain sees
     the caller's accumulated writes, a rule inside it sees its own intra-rule
@@ -37,9 +40,15 @@
       eval_rules_j /        | write-free rules everywhere  | eval_rules_u_writefree /
         eval_table          | ([rule_writefree]: no meta/  | eval_table_u_writefree
                             | ct set, dynset, notrack,     |
-                            | limiter/quota/connlimit)     |
+                            | limiter/quota/connlimit);    |
+                            | OR limiter-tolerant configs  | eval_rules_u_limiter_tolerant /
+                            | ([rule_limiter_tol]: only    | eval_table_u_limiter_tolerant
+                            | writes are one-limiter rules;| (VERDICT projection only —
+                            | § Projection 1b)             | the bucket IS depleted)
       eval_ruleset /        | write-free bases             | eval_ruleset_u_writefree /
-        eval_hook           | ([bases_writefree])          | eval_hook_u_writefree
+        eval_hook           | ([bases_writefree]); OR one  | eval_hook_u_writefree /
+                            | limiter-tolerant base at the | eval_hook_u_limiter_tolerant_1
+                            | hook                         |
       eval_rules /          | write-free + jump-free       | eval_rules_u_writefree +
         eval_chain          |                              | Correct.eval_rules_jumpfree_eq_j
       eval_rules_mut(_env) /| transfer-free rules          | eval_rules_u_mut_proj /
@@ -48,19 +57,23 @@
                             | run's verdict maps)          |
       eval_rules_trace      | = mut strand verdict except  | eval_rules_trace_verdict
                             | the data-plane NAT drop      | (NAT axis; see its header)
-      rule_applies(_walk) / | mut-free rule                | rule_step_mutfree
-        outcome/rule_loadable                              |
-      run_rule/run_program  | no_writes programs           | Correct.run_rule_step_no_writes
+      rule_applies(_walk) / | write-free rule (no mut stmt,| rule_step_mutfree
+        outcome/rule_loadable  no limiter match)           |
+      run_rule/run_program  | no_writes programs (no mut/  | Correct.run_rule_step_no_writes
+                            | limiter/inc-numgen instr)    |
       run_rules_j/run_table | compiled write-free chains   | Correct.run_table_writefree_compiled
       seq_eval              | per-packet congruence over an|
                             | EXTERNAL step (see its header)|
 
     Within the flat mutation strand every evaluator consumes ONE step function
-    per side — [dsl_rule_step] (DSL) / [vm_rule_step] (VM), each returning
-    (guarded verdict, state left) — and the _mut evaluators are the [fst]
-    projections of the _env ones ([eval_rules_mut_env_fst] /
+    per side — [rule_step] (DSL) / [run_rule_step empty_rf] (VM), each
+    returning (guarded verdict, state left) — and the _mut evaluators are the
+    [fst] projections of the _env ones ([eval_rules_mut_env_fst] /
     [run_program_mut_env_fst]), so their compiler proofs are derived, not
-    re-proved. *)
+    re-proved.  (The historical [dsl_rule_step]/[vm_rule_step] boundary
+    wrappers — the fold plus a whole-body limiter/numgen sweep — are RETIRED:
+    with the consumption evaluated in-fold they were identical to the folds,
+    see THEOREMS.md § strata retirements.) *)
 
 From Stdlib Require Import String List NArith ZArith Bool Lia.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode.
@@ -401,11 +414,11 @@ Definition env_numgen_upd (e : env) (spec : numgen_spec) : env :=
     Every other instance's bucket — and every other env component — is preserved.
     The new level is therefore a genuine function of [ls_rate]/[ls_unit]/[ls_burst]
     (and the packet length in byte mode), not a fixed decrement-by-one.
-    WHEN this update is invoked, however, is NOT kernel-exact: the mutation
-    evaluators apply it via a whole-body sweep ([limit_sweep_body]/
-    [limit_sweep_prog]) that also fires for limiters the kernel never evaluates
-    (a KNOWN INFIDELITY — see the sweep's header below and
-    DEVELOPMENT.md § "Known model infidelities"). *)
+    WHEN this update is invoked is kernel-exact too: the per-rule folds
+    ([body_step]/[run_rule_step]) apply it at the limiter's own body /
+    instruction position, so a limiter after a failing match (which the kernel
+    NFT_BREAKs past before nft_limit_eval) is never evaluated and never
+    consumes (pinned in Regression/Known_Infidelities.v § repaired entry 1). *)
 Definition lim_newtokens (e : env) (p : packet) (spec : limit_spec) : nat :=
   let cap := lim_avail e p spec in
   if Nat.leb (lim_cost p spec) cap then cap - lim_cost p spec else cap.
@@ -455,10 +468,10 @@ Definition set_numgen (e : env) (spec : numgen_spec) : env :=
 (** UPDATE a `limit` token bucket for one evaluation of the limiter on packet [p]
     — the kernel nft_limit_eval writes `tokens` on both the pass and the exhausted
     branch (see [env_limit_upd]/[lim_newtokens]).  Only [e_limit] changes; every
-    other env component is preserved and the packet is untouched.  NOTE the
-    kernel invokes this once per EVALUATION; the model's sweep (below) invokes it
-    once per OCCURRENCE in the rule, evaluated or not — the sweep's documented
-    infidelity, not this update's. *)
+    other env component is preserved and the packet is untouched.  Invoked once
+    per EVALUATION, exactly like the kernel: the folds apply it at the
+    limiter's own position ([match_consume]/[run_rule_step]'s [ILimit]), so an
+    unreached limiter consumes nothing. *)
 Definition set_limit (e : env) (p : packet) (spec : limit_spec) : env :=
   env_limit_upd e p spec.
 
@@ -476,23 +489,9 @@ Definition set_quota (e : env) (p : packet) (spec : quota_spec) : env :=
 Definition set_connlimit (e : env) (p : packet) (spec : connlimit_spec) : env :=
   env_connlimit_upd e p spec.
 
-(** The cross-packet `numgen inc` COUNTER ADVANCE of running a rule's bytecode: each
-    incremental [INumgen] the program contains advances the instance's shared counter
-    once (the kernel's per-evaluation atomic increment).  This is applied by the
-    MUTATION evaluators ([run_program_mut]/[run_program_mut_env]) to the packet a rule
-    leaves, so the NEXT packet of the traversal reads the successor numgen value —
-    threaded through the explicit env exactly like a dynset/ct/nat env write.  Keeping the
-    advance OUT of the per-instruction [run_rule_step] preserves the load-fields
-    lock-step; a `numgen inc` is a verdict-/register effect within a rule, its counter
-    bump a cross-packet effect.  (A real ruleset contains no [INumgen]
-    ([numgen_free_prog]), so the sweep is the identity there and the compiler's
-    mutation correctness is unaffected.) *)
-Definition numgen_sweep_prog (is : list instr) (e : env) : env :=
-  fold_left (fun e' i => match i with INumgen spec _ => set_numgen e' spec | _ => e' end) is e.
-
-(** Whether a program contains NO incremental [INumgen] (so [numgen_sweep_prog] is the
-    identity).  Holds for every compiled real ruleset (numgen has no DSL/parser
-    surface). *)
+(** Whether a program contains NO incremental [INumgen].  Holds for every
+    compiled real ruleset (numgen has no DSL/parser surface); the domain on
+    which [run_rule_step]'s in-fold counter advance never fires. *)
 Definition numgen_free_prog (is : list instr) : bool :=
   forallb (fun i => match i with INumgen spec _ => ng_random spec | _ => true end) is.
 
@@ -500,100 +499,37 @@ Definition numgen_free_prog (is : list instr) : bool :=
 
     [numgen_free_prog] above is a BYTECODE predicate; its source-AST twin
     [rule_numgen_free] lives in IR/Syntax.v (next to the rule record), where
-    the LOWERING gates on it fail-loud ([Lower.LEnumgen]) — so the mutation
-    strand's [rule_numgen_free] hypothesis is discharged for every
+    the LOWERING gates on it fail-loud ([Lower.LEnumgen]) — so the compiler
+    theorems' [rule_numgen_free] hypothesis is discharged for every
     frontend-emitted program ([Lower_Proofs.lower_ruleset_numgen_free]).
     [Correct.numgen_free_compile_rule] proves the two predicates agree
     exactly: [numgen_free_prog (compile_rule r) = rule_numgen_free r]. *)
 
-Lemma numgen_sweep_prog_id : forall is e,
-  numgen_free_prog is = true -> numgen_sweep_prog is e = e.
-Proof.
-  intros is. unfold numgen_sweep_prog, numgen_free_prog.
-  induction is as [| i is IH]; intros e H; [reflexivity|].
-  cbn [forallb] in H. apply Bool.andb_true_iff in H. destruct H as [Hi Hrest].
-  cbn [fold_left]. destruct i; try (apply IH; exact Hrest).
-  (* INumgen: ng_random forces set_numgen = identity *)
-  unfold set_numgen. rewrite Hi. apply IH; exact Hrest.
-Qed.
+(** The env consumption of EVALUATING one match condition — the kernel writes
+    a `limit`/`quota`/`connlimit`'s shared bucket on every evaluation of the
+    expression, pass or fail (nft_limit_eval stores `tokens` on both branches;
+    nft_overquota accumulates skb->len unconditionally; nft_connlimit always
+    nf_conncount_add_skb's the tuple).  Every other match reads only.  The
+    per-rule folds apply this AT the match's position ([body_step]), so a
+    limiter after a failing match — which the kernel NFT_BREAKs past before
+    ever evaluating it — consumes NOTHING.  The verdict test itself
+    ([eval_matchcond]) reads the PRE-write bucket, exactly the kernel's
+    read-tokens-then-store order. *)
+Definition match_consume (m : matchcond) (e : env) (p : packet) : env :=
+  match m with
+  | MLimit spec     => set_limit e p spec
+  | MQuota spec     => set_quota e p spec
+  | MConnlimit spec => set_connlimit e p spec
+  | _ => e
+  end.
 
-(** The cross-rule/cross-packet CONSUMPTION of a rule's `limit`/`quota`/`connlimit`
-    matches.  Mirroring [numgen_sweep_prog], this depletes each limiter the rule
-    CONTAINS, applied by the MUTATION evaluators
-    ([run_program_mut]/[run_program_mut_env]) to the packet a rule leaves, so the
-    NEXT packet of the traversal reads the depleted bucket and can get a DIFFERENT
-    verdict — which is the entire purpose of a rate limit.  Keeping the consumption
-    OUT of the per-instruction [run_rule_step] preserves the load-fields/match
-    lock-step (the verdict side reads the bucket deterministically; the consumption
-    is a cross-rule/cross-packet effect, the same documented intra-rule scoping as
-    `numgen inc`).  The fold is over the running packet, so a second limiter in the
-    same rule sees the first one's consumption (the kernel runs limiters
-    left-to-right against the running token state).
+(** A match with no limiter consumes nothing. *)
+Definition match_consumefree (m : matchcond) : bool :=
+  match m with MLimit _ | MQuota _ | MConnlimit _ => false | _ => true end.
 
-    ⚠ KNOWN INFIDELITY (open; DEVELOPMENT.md § "Known model infidelities",
-    pinned in Regression/Known_Infidelities.v [gate_limit_drained]): the sweep
-    is UNCONDITIONAL over the whole body, so it also depletes a limiter that
-    sits AFTER a failing match (or after a breaking load).  The kernel does
-    not: a failing match NFT_BREAKs the rule before nft_limit_eval ever runs
-    (nf_tables_core.c nft_do_chain's per-expression verdict check), so
-    `meta mark 0x1 limit rate 1/second accept` consumes NO token on a
-    non-matching packet — while this model drains the bucket on every packet.
-    Both evaluator sides share the sweep, so the compiler theorems are honest;
-    the divergence is model-vs-kernel.  The faithful shape (folding the
-    consumption into the break-aware [body_step]/[run_rule_step] walk) is a
-    semantics change owned by the adversarial-audit track. *)
-Definition limit_sweep_prog (is : list instr) (e : env) (p : packet) : env :=
-  fold_left (fun e' i => match i with
-                         | ILimit spec => set_limit e' p spec
-                         | IQuota spec => set_quota e' p spec
-                         | IConnlimit spec => set_connlimit e' p spec
-                         | _ => e'
-                         end) is e.
-
-(** The DSL analogue: consume the same limiters by walking a rule body's matches.  A
-    `limit`/`quota`/`connlimit` is the matchcond [MLimit]/[MQuota]/[MConnlimit]. *)
-Definition limit_sweep_body (body : list body_item) (e : env) (p : packet) : env :=
-  fold_left (fun e' it => match it with
-                          | BMatch (MLimit spec)    => set_limit e' p spec
-                          | BMatch (MQuota spec)    => set_quota e' p spec
-                          | BMatch (MConnlimit spec) => set_connlimit e' p spec
-                          | _ => e'
-                          end) body e.
-
-(** Whether a program contains NO limiter instruction (so [limit_sweep_prog] is the
-    identity).  Used to discharge limiter-neutral programs in the same shape as
-    [numgen_free_prog]. *)
-Definition limit_free_prog (is : list instr) : bool :=
-  forallb (fun i => match i with ILimit _ | IQuota _ | IConnlimit _ => false | _ => true end) is.
-
-Lemma limit_sweep_prog_id : forall is e p,
-  limit_free_prog is = true -> limit_sweep_prog is e p = e.
-Proof.
-  intros is. unfold limit_sweep_prog, limit_free_prog.
-  induction is as [| i is IH]; intros e p H; [reflexivity|].
-  cbn [forallb] in H. apply Bool.andb_true_iff in H. destruct H as [Hi Hrest].
-  cbn [fold_left]. destruct i; try discriminate Hi; apply IH; exact Hrest.
-Qed.
-
-(** Whether a rule body contains NO `limit`/`quota`/`connlimit` match (so the DSL
-    [limit_sweep_body] is the identity — a rule that does no rate limiting threads its
-    writes unchanged, exactly as before this fix).  Every existing example/Gen ruleset
-    EXCEPT the limit cases satisfies this. *)
-Definition limit_free_body (body : list body_item) : bool :=
-  forallb (fun it => match it with
-                     | BMatch (MLimit _) | BMatch (MQuota _) | BMatch (MConnlimit _) => false
-                     | _ => true
-                     end) body.
-
-Lemma limit_sweep_body_id : forall body e p,
-  limit_free_body body = true -> limit_sweep_body body e p = e.
-Proof.
-  intros body. unfold limit_sweep_body, limit_free_body.
-  induction body as [| it body IH]; intros e p H; [reflexivity|].
-  cbn [forallb] in H. apply Bool.andb_true_iff in H. destruct H as [Hi Hrest].
-  cbn [fold_left]. destruct it as [m | s]; [destruct m | ];
-    try discriminate Hi; apply IH; exact Hrest.
-Qed.
+Lemma match_consume_free_id : forall m e p,
+  match_consumefree m = true -> match_consume m e p = e.
+Proof. intros m e p H; destruct m; try reflexivity; discriminate H. Qed.
 
 (** [set_untracked] only flips [pkt_untracked]; it leaves every payload / meta /
     env / oracle component intact.  Hence every loadability predicate (which reads
@@ -1359,10 +1295,10 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (e : env) (p : packet) : optio
       (* `numgen inc` reads the SHARED counter value (= [do_load (LNumgen spec) e p],
          deterministic from [e_numgen]) into the dreg.  [run_rule] is the write-free
          projection of the fold, so it only READS the counter; the COUNTER ADVANCE
-         (the cross-packet round-robin) is applied by [numgen_sweep_prog] at the
-         [vm_rule_step] boundary — VM-only, with no DSL twin: the lowering rejects
+         (the cross-packet round-robin) is applied in-fold by [run_rule_step]'s
+         [INumgen] case — VM-only, with no DSL twin: the lowering rejects
          incremental numgen fail-loud ([Lower.LEnumgen]), so every frontend-emitted
-         rule is [rule_numgen_free] and the sweep is the identity there
+         rule is [rule_numgen_free] and the advance never fires there
          ([Lower_Proofs.lower_ruleset_numgen_free]).  Reading [do_load] keeps this
          lock-step with the DSL [outcome]. *)
       run_rule (set_reg rf dst (do_load (LNumgen spec) e p)) rest e p
@@ -2051,10 +1987,13 @@ Fixpoint run_rule_step (rf : regfile) (is : list instr) (e : env) (p : packet)
   | IRtLoad k dst :: rest => run_rule_step (set_reg rf dst (read_rt e k)) rest e p
   | ISocketLoad k dst :: rest => run_rule_step (set_reg rf dst (read_socket p k)) rest e p
   | INumgen spec dst :: rest =>
-      (* `numgen inc` reads the SHARED counter value; the cross-packet counter
-         ADVANCE is applied by [numgen_sweep_prog] at the step boundary
-         ([vm_rule_step]), keeping the per-instruction fold deterministic. *)
-      run_rule_step (set_reg rf dst (do_load (LNumgen spec) e p)) rest e p
+      (* `numgen inc` reads the SHARED counter value THEN advances the counter
+         — the kernel's read-and-atomically-increment per evaluation
+         (nft_ng_inc_gen), at the instruction's own position: an [INumgen]
+         after a breaking load never advances, and a second read in the SAME
+         rule sees the first one's advance.  [set_numgen] is the identity for
+         `numgen random` (no counter). *)
+      run_rule_step (set_reg rf dst (do_load (LNumgen spec) e p)) rest (set_numgen e spec) p
   | IOsf dst :: rest => run_rule_step (set_reg rf dst (read_osf p)) rest e p
   | IExthdrLoad ep h o l pr dst :: rest =>
       (* a VALUE load of an absent exthdr/option breaks the rule (NFT_BREAK,
@@ -2120,19 +2059,25 @@ Fixpoint run_rule_step (rf : regfile) (is : list instr) (e : env) (p : packet)
   | IFwd _ _ _ :: _ => (Some Accept, (e, p))           (* terminal forward *)
   | IQueueSreg _ _ _ :: _ => (Some Accept, (e, p))     (* terminal queue *)
   | ILimit spec :: rest =>
-      (* the limiter CHECK runs at its position against the running state; the
-         bucket CONSUMPTION is the separate whole-body sweep ([limit_sweep_prog]
-         at the step boundary — its unconditional over-consumption past a
-         failing match is the KNOWN INFIDELITY pinned in
-         Regression/Known_Infidelities.v [gate_limit_drained]). *)
+      (* ONE evaluation of the limiter, at its own position: the CHECK reads
+         the pre-write bucket and the bucket CONSUMPTION ([set_limit], the
+         kernel nft_limit_eval's tokens store on BOTH branches) is applied
+         here, in-fold — so a limiter after a failing match/breaking load is
+         never evaluated and never consumes (kernel NFT_BREAK order), while a
+         failing LIMITER still stores its capped level. *)
       if xorb (Nat.eqb (Nat.land (ls_flags spec) 1) 1) (lim_under e p spec)
-      then run_rule_step rf rest e p else (None, (e, p))
+      then run_rule_step rf rest (set_limit e p spec) p
+      else (None, (set_limit e p spec, p))
   | IQuota spec :: rest =>
+      (* quota accumulates skb->len on EVERY evaluation (pass or fail). *)
       if xorb (Nat.eqb (Nat.land (q_flags spec) 1) 1) (quota_under e p spec)
-      then run_rule_step rf rest e p else (None, (e, p))
+      then run_rule_step rf rest (set_quota e p spec) p
+      else (None, (set_quota e p spec, p))
   | IConnlimit spec :: rest =>
+      (* connlimit counts the tuple on EVERY evaluation (idempotent add). *)
       if xorb (Nat.eqb (Nat.land (cl_flags spec) 1) 1) (connlimit_under e p spec)
-      then run_rule_step rf rest e p else (None, (e, p))
+      then run_rule_step rf rest (set_connlimit e p spec) p
+      else (None, (set_connlimit e p spec, p))
   | ICounter _ _ :: rest => run_rule_step rf rest e p   (* verdict-neutral *)
   | INotrack :: rest      => run_rule_step rf rest e (set_untracked p)
   | ILog _ :: rest        => run_rule_step rf rest e p
@@ -2198,8 +2143,15 @@ Fixpoint body_step (body : list body_item) (e : env) (p : packet) : body_res :=
   match body with
   | [] => BRdone e p
   (* [eval_matchcond] is loadability-guarded: a match whose load breaks is
-     [false], and either way a failing match ends the walk keeping the state. *)
-  | BMatch m :: rest => if eval_matchcond m e p then body_step rest e p else BRbreak e p
+     [false], and either way a failing match ends the walk keeping the state.
+     EVALUATING the match applies its env consumption ([match_consume]: a
+     `limit`/`quota`/`connlimit` writes its shared bucket on pass AND on fail,
+     every other match consumes nothing) — at the match's own position, so a
+     limiter the walk never reaches is never consumed (kernel NFT_BREAK
+     order), and the check itself reads the pre-write bucket. *)
+  | BMatch m :: rest =>
+      if eval_matchcond m e p then body_step rest (match_consume m e p) p
+      else BRbreak (match_consume m e p) p
   | BStmt (SMetaSet k vs) :: rest =>
       if vsrc_loadable vs p
       then body_step rest e (set_meta p k (eval_vsrc vs e p)) else BRbreak e p
@@ -2334,50 +2286,33 @@ Arguments body_writes !body e p /.
 Definition dsl_writes (r : rule) (e : env) (p : packet) : env * packet :=
   body_writes (r_body r) e p.
 
-(** ** ONE step function per rule, per side.
+(** ** ONE step function per rule, per side: [rule_step] (DSL) and
+    [run_rule_step empty_rf] (VM).
 
     In mutation mode a rule's whole contribution to a traversal is a single
     STEP: the verdict it produces paired with the state it leaves — its
-    meta/ct/env writes AND the depletion of every `limit`/`quota`/`connlimit`
-    bucket it CONTAINS ([limit_sweep_body] — unconditional over the whole body,
-    hence over-consuming past a failing match; the KNOWN INFIDELITY pinned in
-    Regression/Known_Infidelities.v); on the VM side ONLY, additionally the
-    `numgen inc` counter advance ([numgen_sweep_prog] — numgen has no
-    parser/DSL surface, the lowering rejects it fail-loud ([Lower.LEnumgen]),
-    and [rule_numgen_free] makes the sweep the identity on every
-    frontend-emitted rule; see [Lower_Proofs.lower_ruleset_numgen_free]).
-    Every mutation/trace evaluator below consumes ONLY the step functions, so
-    the verdict/effect composition is written here and nowhere else.  The
-    compiler-correctness bridge is one equation:
-    [vm_rule_step (compile_rule r) = dsl_rule_step r] on numgen-free rules
-    ([Correct.vm_rule_step_compile_rule]). *)
-Definition dsl_rule_step (r : rule) (e : env) (p : packet)
-  : option verdict * (env * packet) :=
-  let '(v, s) := rule_step r e p in
-  let '(e', p') := s in
-  (v, (limit_sweep_body (r_body r) e' p', p')).
+    meta/ct/env writes AND the consumption of every `limit`/`quota`/
+    `connlimit` (and, VM-only, `numgen inc` counter advance) it EVALUATED,
+    each applied at its own position inside the break-aware fold.  Every
+    mutation/trace evaluator below consumes ONLY the step functions, so the
+    verdict/effect composition is written here and nowhere else.  The
+    compiler-correctness bridge is one equation, on numgen-free rules (every
+    frontend-emitted rule; [Lower_Proofs.lower_ruleset_numgen_free]):
+    [run_rule_step empty_rf (compile_rule r) = rule_step r]
+    ([Correct.run_rule_step_compile_rule]).
 
-(** The state half of a rule's step (writes + limiter consumption). *)
+    (The historical [dsl_rule_step]/[vm_rule_step] boundary wrappers — the
+    fold plus an unconditional whole-body limiter/numgen sweep, the
+    over-consumption KNOWN INFIDELITY — are RETIRED: with the consumption
+    in-fold they equal the folds; see THEOREMS.md § strata retirements.) *)
+
+(** The state half of a rule's step (writes + limiter consumption) — the
+    named notion the trace evaluator and the optimizer's effect certificates
+    consume. *)
 Definition dsl_step (r : rule) (e : env) (p : packet) : env * packet :=
-  snd (dsl_rule_step r e p).
-
-Definition vm_rule_step (is : rule_prog) (e : env) (p : packet)
-  : option verdict * (env * packet) :=
-  let '(v, s) := run_rule_step empty_rf is e p in
-  let '(e', p') := s in
-  (v, (limit_sweep_prog is (numgen_sweep_prog is e') p', p')).
+  snd (rule_step r e p).
 
 (** ** Projections and mut-free coincidence with the pure strand. *)
-
-Lemma dsl_rule_step_fst : forall r e p,
-  fst (dsl_rule_step r e p) = fst (rule_step r e p).
-Proof.
-  intros r e p. unfold dsl_rule_step.
-  destruct (rule_step r e p) as [v [e' p']]. reflexivity.
-Qed.
-
-Lemma dsl_rule_step_snd : forall r e p, snd (dsl_rule_step r e p) = dsl_step r e p.
-Proof. reflexivity. Qed.
 
 (** [after_step] over a mut-free statement list is exactly the historical
     [stmts_after_outcome] verdict, with the state unchanged. *)
@@ -2395,10 +2330,14 @@ Proof.
   destruct (synproxy_stops p); [reflexivity | apply IH; exact Hss].
 Qed.
 
-(** A rule body / whole rule with NO mutating statement ([is_mut_stmt]:
-    meta/ct set, dynset, notrack) anywhere. *)
+(** A rule body / whole rule that WRITES NO STATE: no mutating statement
+    ([is_mut_stmt]: meta/ct set, dynset, notrack) anywhere AND no
+    `limit`/`quota`/`connlimit` match ([match_consumefree]: evaluating one
+    writes its shared bucket) in the body.  This is exactly the domain on
+    which the fold is state-preserving and coincides with the historical pure
+    verdict predicates ([rule_step_mutfree] below). *)
 Definition body_item_mutfree (it : body_item) : bool :=
-  match it with BStmt s => negb (is_mut_stmt s) | BMatch _ => true end.
+  match it with BStmt s => negb (is_mut_stmt s) | BMatch m => match_consumefree m end.
 Definition rule_mutfree (r : rule) : bool :=
   forallb body_item_mutfree (r_body r)
   && forallb (fun s => negb (is_mut_stmt s)) (r_after r).
@@ -2468,8 +2407,10 @@ Proof.
             (match it0 with BStmt (SSynproxy _ _) => synproxy_stops p | _ => false end)
             || body_synproxy_stops b p) by reflexivity.
   destruct it as [m | s].
-  - cbn [body_step body_loadable_walk rule_applies_walk body_item_loadable].
+  - cbn [body_item_mutfree] in Hit.
+    cbn [body_step body_loadable_walk rule_applies_walk body_item_loadable].
     rewrite Hstops. cbn [orb].
+    rewrite (match_consume_free_id m e p Hit).
     unfold eval_matchcond.
     destruct (match_loadable m p).
     + destruct (eval_matchcond_body m e p).
@@ -2543,16 +2484,15 @@ Proof.
   destruct (end_loadable r e' p'); reflexivity.
 Qed.
 
-Lemma dsl_step_limit_free : forall r e p,
-  limit_free_body (r_body r) = true ->
+(** With a mut-free [r_after] the step's state half is exactly the BODY's
+    writes — which, post the in-fold limiter fix, already include any
+    limiter consumption at its own position (successor of the retired
+    [dsl_step_limit_free], whose extra limit-freedom hypothesis existed only
+    to cancel the boundary sweep). *)
+Lemma dsl_step_after_free : forall r e p,
   forallb (fun s => negb (is_mut_stmt s)) (r_after r) = true ->
   dsl_step r e p = dsl_writes r e p.
-Proof.
-  intros r e p Hlf Hmf. unfold dsl_step, dsl_rule_step.
-  pose proof (rule_step_state_after_free r e p Hmf) as Hst.
-  destruct (rule_step r e p) as [v [e' p']]. cbn [snd] in Hst |- *.
-  rewrite (limit_sweep_body_id _ _ _ Hlf). exact Hst.
-Qed.
+Proof. intros r e p Hmf. exact (rule_step_state_after_free r e p Hmf). Qed.
 
 (** Mutation-aware rule-list evaluation: every non-terminal rule threads its
     writes to the rest, so a later rule observes an earlier `set` (the write
@@ -2562,7 +2502,7 @@ Fixpoint eval_rules_mut (rs : list rule) (e : env) (p : packet) : option verdict
   match rs with
   | [] => None
   | r :: rest =>
-      match dsl_rule_step r e p with
+      match rule_step r e p with
       | (Some v, (e', p')) => if terminal v then Some v else eval_rules_mut rest e' p'
       | (None,   (e', p')) => eval_rules_mut rest e' p'
       end
@@ -2572,11 +2512,12 @@ Fixpoint run_program_mut (prog : program) (e : env) (p : packet) : option verdic
   match prog with
   | [] => None
   | rp :: rest =>
-      (* [vm_rule_step]: the state a rule LEAVES carries its [run_rule_step]
-         meta/ct/env writes, its `numgen inc` counter advance, AND the depletion of
-         every `limit`/`quota`/`connlimit` bucket it evaluated; the next rule (and,
-         through the env, the next packet) sees all three. *)
-      match vm_rule_step rp e p with
+      (* the state a rule LEAVES carries its [run_rule_step] meta/ct/env
+         writes, its `numgen inc` counter advance, AND the consumption of
+         every `limit`/`quota`/`connlimit` it evaluated (all applied in-fold
+         at their positions); the next rule (and, through the env, the next
+         packet) sees all three. *)
+      match run_rule_step empty_rf rp e p with
       | (Some v, (e', p')) => if terminal v then Some v else run_program_mut rest e' p'
       | (None,   (e', p')) => run_program_mut rest e' p'
       end
@@ -2603,7 +2544,7 @@ Fixpoint eval_rules_mut_env (rs : list rule) (e : env) (p : packet)
   match rs with
   | [] => (None, e)
   | r :: rest =>
-      match dsl_rule_step r e p with
+      match rule_step r e p with
       | (Some v, (e', p')) => if terminal v then (Some v, e')
                               else eval_rules_mut_env rest e' p'
       | (None,   (e', p')) => eval_rules_mut_env rest e' p'
@@ -2615,7 +2556,7 @@ Fixpoint run_program_mut_env (prog : program) (e : env) (p : packet)
   match prog with
   | [] => (None, e)
   | rp :: rest =>
-      match vm_rule_step rp e p with
+      match run_rule_step empty_rf rp e p with
       | (Some v, (e', p')) => if terminal v then (Some v, e')
                               else run_program_mut_env rest e' p'
       | (None,   (e', p')) => run_program_mut_env rest e' p'
@@ -2643,7 +2584,7 @@ Lemma eval_rules_mut_env_fst : forall rs e p,
 Proof.
   induction rs as [| r rs IH]; intros e p; [reflexivity|].
   cbn [eval_rules_mut_env eval_rules_mut].
-  destruct (dsl_rule_step r e p) as [[v|] [e' p']];
+  destruct (rule_step r e p) as [[v|] [e' p']];
     [destruct (terminal v); [reflexivity | apply IH] | apply IH].
 Qed.
 
@@ -2652,7 +2593,7 @@ Lemma run_program_mut_env_fst : forall prog e p,
 Proof.
   induction prog as [| rp rest IH]; intros e p; [reflexivity|].
   cbn [run_program_mut_env run_program_mut].
-  destruct (vm_rule_step rp e p) as [[v|] [e' p']];
+  destruct (run_rule_step empty_rf rp e p) as [[v|] [e' p']];
     [destruct (terminal v); [reflexivity | apply IH] | apply IH].
 Qed.
 
@@ -3091,7 +3032,7 @@ Definition nat_drops (h : hook_id) (r : rule) (e : env) (p : packet) : bool :=
     terminal/r_after unreachable").  So on a vmap HIT this evaluator both
     rewrites the packet AND spuriously stores a flow-keyed [e_nat] mapping
     ([store_nat_mapping]) that later same-flow packets then reuse.  There is no
-    guard because [dsl_rule_step] returns only the verdict, not WHICH outcome
+    guard because [rule_step] returns only the verdict, not WHICH outcome
     arm produced it; the faithful fix (thread outcome provenance, or dispatch
     the trace NAT on [r_outcome] + the hit/miss test) is a semantics change
     owned by the adversarial-audit track.  Rules with [ONat] (the corpus/
@@ -3101,7 +3042,7 @@ Fixpoint eval_rules_trace (h : hook_id) (rs : list rule) (e : env) (p : packet)
   match rs with
   | [] => (None, (e, p))
   | r :: rest =>
-      match dsl_rule_step r e p with
+      match rule_step r e p with
       | (Some v, (e', p')) =>
           if terminal v then
             (* The NAT core DROPS (returns NF_DROP, overriding the rule's stated
@@ -3133,7 +3074,7 @@ Fixpoint trace_nat_drops (h : hook_id) (rs : list rule) (e : env) (p : packet) :
   match rs with
   | [] => false
   | r :: rest =>
-      match dsl_rule_step r e p with
+      match rule_step r e p with
       | (Some v, (e', p')) => if terminal v then nat_drops h r e' p'
                               else trace_nat_drops h rest e' p'
       | (None,   (e', p')) => trace_nat_drops h rest e' p'
@@ -3153,7 +3094,7 @@ Lemma eval_rules_trace_verdict : forall h rs e p,
 Proof.
   induction rs as [|r rest IH]; intros e p; [reflexivity|].
   cbn [eval_rules_trace trace_nat_drops eval_rules_mut].
-  destruct (dsl_rule_step r e p) as [[v|] [e' p']].
+  destruct (rule_step r e p) as [[v|] [e' p']].
   - destruct (terminal v).
     + destruct (nat_drops h r e' p'); [reflexivity|].
       destruct (apply_nat h r e' p'); reflexivity.
@@ -3964,8 +3905,8 @@ Fixpoint seq_eval (ev : env -> packet -> verdict) (step : verdict -> env -> env)
     [eval_rules_u] (DSL) and [run_rules_u] (VM, below) are THE semantics of a
     rule list under a chain environment: a single fuel-bounded fold that BOTH
     threads every state effect — packet meta/ct writes, dynset env writes, the
-    notrack latch, limiter/quota/connlimit depletion, all via the per-rule
-    single fold [dsl_rule_step]/[vm_rule_step] — AND follows control flow
+    notrack latch, position-exact limiter/quota/connlimit consumption, all via
+    the per-rule single fold [rule_step]/[run_rule_step] — AND follows control flow
     (jump / goto / return, user-defined chains).  The control-flow shape is
     exactly [eval_rules_j]'s (fuel as a descent budget, a jump resumes the
     caller on the callee's fall-through, [None] on exhaustion), but the state
@@ -4001,7 +3942,7 @@ Fixpoint eval_rules_u (fuel : nat) (cs : list (String.string * chain))
     match rs with
     | [] => (None, (e, p))
     | r :: rest =>
-      match dsl_rule_step r e p with
+      match rule_step r e p with
       | (Some v, (e', p')) =>
           match v with
           | Jump n =>
@@ -4039,7 +3980,7 @@ Definition eval_table_u (fuel : nat) (cs : list (String.string * chain))
   end.
 
 (** VM twin: same traversal over compiled rule programs, per-rule state from
-    [vm_rule_step]. *)
+    [run_rule_step]. *)
 Fixpoint run_rules_u (fuel : nat) (cs : list (String.string * program))
                      (prog : program) (e : env) (p : packet)
   : option verdict * (env * packet) :=
@@ -4049,7 +3990,7 @@ Fixpoint run_rules_u (fuel : nat) (cs : list (String.string * program))
     match prog with
     | [] => (None, (e, p))
     | rp :: rest =>
-      match vm_rule_step rp e p with
+      match run_rule_step empty_rf rp e p with
       | (Some v, (e', p')) =>
           match v with
           | Jump n =>
@@ -4133,12 +4074,13 @@ Definition run_ruleset_env_u (fuel : nat)
 (* ------------------------------------------------------------------ *)
 (** *** Projection 1: the pure jump strand, licensed on WRITE-FREE rules.
 
-    A rule is [rule_writefree] when it writes NO state at all: no mutating
-    statement anywhere ([rule_mutfree]: meta/ct set, dynset, notrack) and no
-    limiter/quota/connlimit in its body (whose bucket depletion is an env
-    write).  On such a rule the per-rule fold IS the historical
-    loadability-guarded pure verdict and leaves the state untouched
-    ([dsl_rule_step_writefree]); lifted through the traversal, the pure jump
+    A rule is [rule_writefree] when it writes NO state at all — which since
+    the in-fold limiter fix is exactly [rule_mutfree]: no mutating statement
+    (meta/ct set, dynset, notrack) and no limiter/quota/connlimit match
+    (whose bucket consumption is an env write) anywhere.  On such a rule the
+    per-rule fold IS the historical loadability-guarded pure verdict and
+    leaves the state untouched
+    ([rule_step_mutfree]); lifted through the traversal, the pure jump
     strand [eval_rules_j]/[eval_table] is exactly the verdict projection of
     the unified fold ([eval_rules_u_writefree]/[eval_table_u_writefree]) —
     the coincidence equation that licenses it as a projection, not an
@@ -4146,23 +4088,17 @@ Definition run_ruleset_env_u (fuel : nat)
     the unified fold (Regression/Setread_UnderJump.v pins a witness where the
     two genuinely differ, and its [rule_writefree] check is [false]). *)
 
-Definition rule_writefree (r : rule) : bool :=
-  rule_mutfree r && limit_free_body (r_body r).
+Definition rule_writefree (r : rule) : bool := rule_mutfree r.
 
 Definition chains_writefree (cs : list (String.string * chain)) : bool :=
   forallb (fun nc => forallb rule_writefree (c_rules (snd nc))) cs.
 
-Lemma dsl_rule_step_writefree : forall r e p,
+Lemma rule_step_writefree : forall r e p,
   rule_writefree r = true ->
-  dsl_rule_step r e p
+  rule_step r e p
   = ((if rule_loadable r e p && rule_applies r e p then outcome r e p else None),
      (e, p)).
-Proof.
-  intros r e p H. unfold rule_writefree in H.
-  apply Bool.andb_true_iff in H. destruct H as [Hmf Hlf].
-  unfold dsl_rule_step. rewrite (rule_step_mutfree r e p Hmf).
-  cbn [fst snd]. rewrite (limit_sweep_body_id _ _ _ Hlf). reflexivity.
-Qed.
+Proof. intros r e p H. exact (rule_step_mutfree r e p H). Qed.
 
 Lemma chains_writefree_lookup : forall cs n ch,
   chains_writefree cs = true ->
@@ -4184,7 +4120,7 @@ Proof.
   destruct rs as [| r rest]; [reflexivity|].
   cbn [forallb] in Hrs. apply Bool.andb_true_iff in Hrs. destruct Hrs as [Hr Hrest].
   cbn [eval_rules_u eval_rules_j].
-  rewrite (dsl_rule_step_writefree r e p Hr).
+  rewrite (rule_step_writefree r e p Hr).
   destruct (rule_loadable r e p && rule_applies r e p); [| now apply IH].
   destruct (outcome r e p) as [v|]; [| now apply IH].
   destruct v as [ | | | tc cc | lo hi bp fo | n | n | ];
@@ -4236,6 +4172,720 @@ Proof.
 Qed.
 
 (* ------------------------------------------------------------------ *)
+(** *** Projection 1b: the LIMITER-TOLERANT license for the pure jump strand.
+
+    [eval_rules_u_writefree] licenses the pure strand only on fully
+    write-free configs — a single `limit rate 5/second` anywhere voids it,
+    even though that limiter's bucket write provably cannot change any
+    verdict when no later read observes the depleted bucket.  This section
+    proves that stronger license: on configs whose ONLY state writes are the
+    bucket consumptions of tolerable limiter matches sitting in
+    match-only, terminal-outcome rules ([rule_one_limiter]), the pure jump
+    strand [eval_rules_j]/[eval_table] computes exactly the unified
+    evaluator's VERDICT — at every fuel, env and packet; jumps, gotos and
+    chain re-entries included.  (Only the verdict projection: the unified
+    run's final state genuinely differs — the bucket IS depleted.)
+
+    Why the side conditions are the honest boundary, not a convenience:
+    - NON-INVERTED limit/quota ([match_limiter_tol]): an inverted limiter
+      (`limit rate over ...`) that BREAKs its rule has just PASSED its token
+      check, so the consumption genuinely depletes the bucket; a revisit of
+      the same rule (two jumps to its chain, or a vmap looping under an
+      adversarial env) could then flip the check where the pure strand —
+      which reads the entry env — would not.  A NON-inverted limiter that
+      breaks stores back its capped level: the bucket stays exhausted and
+      every revisit agrees.  `connlimit` consumption is the idempotent
+      insert of THIS packet's flow, so its count never changes within a
+      traversal and any invert bit is tolerable.
+    - TERMINAL static outcome ([terminal (r_verdict r)]): when the limiter
+      check passes, the rule's verdict ends the whole traversal, so the
+      consumption it just performed is unobservable by later reads.
+    - MATCH-ONLY body: every other item of the rule is a consume-free match
+      (no statement), so the rule writes nothing but its one bucket.
+    The router config's `icmp ... limit rate 5/second accept` rule is
+    exactly this shape; the Examples/Router_*.v files instantiate the
+    license by [vm_compute] ([Router_Input.inbound_licensed] etc.). *)
+
+(** The env with its three consumable (limit-family) components replaced —
+    the normal form every state a limiter-tolerant traversal can reach has
+    over its entry env.  Every OTHER component is untouched, which is what
+    the congruence lemmas below exploit. *)
+Definition env_upd_limits (e : env) (lf : limit_spec -> nat)
+    (qf : quota_spec -> nat) (cf : connlimit_spec -> list data) : env :=
+  with_e_limit (with_e_quota (with_e_connlimit e cf) qf) lf.
+
+Lemma env_upd_limits_self : forall e,
+  env_upd_limits e (e_limit e) (e_quota e) (e_connlimit e) = e.
+Proof. intro e. destruct e. reflexivity. Qed.
+
+(** Every load reads the env ONLY through its non-consumable components. *)
+Lemma do_load_upd_limits : forall ld e lf qf cf p,
+  do_load ld (env_upd_limits e lf qf cf) p = do_load ld e p.
+Proof. intros ld e lf qf cf p. destruct ld; reflexivity. Qed.
+
+Lemma field_value_upd_limits : forall f e lf qf cf p,
+  field_value f (env_upd_limits e lf qf cf) p = field_value f e p.
+Proof. intros. apply do_load_upd_limits. Qed.
+
+Lemma map_field_value_upd_limits : forall fs e lf qf cf p,
+  map (fun f => field_value f (env_upd_limits e lf qf cf) p) fs
+  = map (fun f => field_value f e p) fs.
+Proof. intros. apply map_ext. intro f. apply field_value_upd_limits. Qed.
+
+(** A consume-free match reads NO consumable component: its evaluation is
+    invariant under any limit/quota/connlimit replacement. *)
+Lemma eval_matchcond_body_upd_limits : forall m e lf qf cf p,
+  match_consumefree m = true ->
+  eval_matchcond_body m (env_upd_limits e lf qf cf) p = eval_matchcond_body m e p.
+Proof.
+  intros m e lf qf cf p Hcf.
+  destruct m; try discriminate Hcf; cbn [eval_matchcond_body];
+    rewrite ?field_value_upd_limits, ?map_field_value_upd_limits;
+    try reflexivity;
+    (* transformed per-element loads (MConcatSetT) *)
+    (f_equal; f_equal; apply map_ext; intro fe; now rewrite field_value_upd_limits).
+Qed.
+
+Lemma eval_matchcond_upd_limits : forall m e lf qf cf p,
+  match_consumefree m = true ->
+  eval_matchcond m (env_upd_limits e lf qf cf) p = eval_matchcond m e p.
+Proof.
+  intros. unfold eval_matchcond.
+  now rewrite (eval_matchcond_body_upd_limits m e lf qf cf p).
+Qed.
+
+Lemma rule_applies_walk_upd_limits : forall body e lf qf cf p,
+  forallb body_item_mutfree body = true ->
+  rule_applies_walk body (env_upd_limits e lf qf cf) p = rule_applies_walk body e p.
+Proof.
+  induction body as [| it body IH]; intros e lf qf cf p H; [reflexivity|].
+  cbn [forallb] in H. apply Bool.andb_true_iff in H. destruct H as [Hit Hb].
+  destruct it as [m | s].
+  - cbn [rule_applies_walk].
+    now rewrite (eval_matchcond_upd_limits m e lf qf cf p Hit), (IH e lf qf cf p Hb).
+  - destruct s; cbn [body_item_mutfree is_mut_stmt negb] in Hit; try discriminate Hit;
+      cbn [rule_applies_walk]; try (apply IH; exact Hb).
+    (* SSynproxy *)
+    destruct (synproxy_stops p); [reflexivity | apply IH; exact Hb].
+Qed.
+
+Lemma nat_map_key_upd_limits : forall fields ts e lf qf cf p,
+  nat_map_key fields ts (env_upd_limits e lf qf cf) p = nat_map_key fields ts e p.
+Proof.
+  intros. unfold nat_map_key. destruct fields as [| f0 frest]; [reflexivity|].
+  now rewrite field_value_upd_limits, map_field_value_upd_limits.
+Qed.
+
+Lemma terminal_loadable_upd_limits : forall r e lf qf cf p,
+  terminal_loadable r (env_upd_limits e lf qf cf) p = terminal_loadable r e p.
+Proof.
+  intros. unfold terminal_loadable.
+  destruct (r_nat r) as [n|]; [| reflexivity].
+  destruct (nat_src n) as [vs|]; [reflexivity|].
+  destruct (nat_map n) as [[[fields ts] name]|]; [| reflexivity].
+  now rewrite nat_map_key_upd_limits.
+Qed.
+
+Lemma tail_loadable_upd_limits : forall r e lf qf cf p,
+  tail_loadable r (env_upd_limits e lf qf cf) p = tail_loadable r e p.
+Proof.
+  intros. unfold tail_loadable. now rewrite terminal_loadable_upd_limits.
+Qed.
+
+Lemma end_loadable_upd_limits : forall r e lf qf cf p,
+  end_loadable r (env_upd_limits e lf qf cf) p = end_loadable r e p.
+Proof.
+  intros. unfold end_loadable.
+  destruct (r_vmap r) as [vm|]; [| apply tail_loadable_upd_limits].
+  cbv zeta. destruct (vm_keyf vm) as [[f ts]|];
+    rewrite ?field_value_upd_limits, ?map_field_value_upd_limits;
+    change (e_vmap (env_upd_limits e lf qf cf)) with (e_vmap e);
+    destruct (assoc_verdict _ (e_vmap e (vm_name vm)));
+    rewrite ?tail_loadable_upd_limits; reflexivity.
+Qed.
+
+Lemma outcome_core_upd_limits : forall r e lf qf cf p,
+  outcome_core r (env_upd_limits e lf qf cf) p = outcome_core r e p.
+Proof.
+  intros. unfold outcome_core.
+  destruct (r_vmap r) as [vm|]; [| reflexivity].
+  cbv zeta. destruct (vm_keyf vm) as [[f ts]|];
+    rewrite ?field_value_upd_limits, ?map_field_value_upd_limits;
+    change (e_vmap (env_upd_limits e lf qf cf)) with (e_vmap e);
+    destruct (assoc_verdict _ (e_vmap e (vm_name vm))); reflexivity.
+Qed.
+
+Lemma outcome_upd_limits : forall r e lf qf cf p,
+  outcome r (env_upd_limits e lf qf cf) p = outcome r e p.
+Proof.
+  intros. unfold outcome.
+  destruct (body_synproxy_stops (r_body r) p); [reflexivity|].
+  apply outcome_core_upd_limits.
+Qed.
+
+Lemma rule_loadable_upd_limits : forall r e lf qf cf p,
+  rule_loadable r (env_upd_limits e lf qf cf) p = rule_loadable r e p.
+Proof.
+  intros. unfold rule_loadable.
+  destruct (body_synproxy_stops (r_body r) p); [reflexivity|].
+  now rewrite end_loadable_upd_limits.
+Qed.
+
+Lemma rule_applies_upd_limits : forall r e lf qf cf p,
+  rule_mutfree r = true ->
+  rule_applies r (env_upd_limits e lf qf cf) p = rule_applies r e p.
+Proof.
+  intros r e lf qf cf p H. unfold rule_mutfree in H.
+  apply Bool.andb_true_iff in H. destruct H as [Hb _].
+  apply rule_applies_walk_upd_limits. exact Hb.
+Qed.
+
+(** Structural spec equality decides real equality (the specs are records of
+    nats/bools), so an eqb-keyed bucket update hits exactly one spec. *)
+Lemma limit_eqb_eq : forall a b, limit_eqb a b = true -> a = b.
+Proof.
+  intros a b H. unfold limit_eqb in H.
+  apply Bool.andb_true_iff in H; destruct H as [H1 H].
+  apply Bool.andb_true_iff in H; destruct H as [H2 H].
+  apply Bool.andb_true_iff in H; destruct H as [H3 H].
+  apply Bool.andb_true_iff in H; destruct H as [H4 H5].
+  apply Nat.eqb_eq in H1, H2, H3, H5. apply Bool.eqb_prop in H4.
+  destruct a, b; cbn in *; congruence.
+Qed.
+
+Lemma limit_eqb_refl : forall a, limit_eqb a a = true.
+Proof.
+  intro a. unfold limit_eqb.
+  now rewrite !Nat.eqb_refl, Bool.eqb_reflx.
+Qed.
+
+Lemma quota_eqb_eq : forall a b, quota_eqb a b = true -> a = b.
+Proof.
+  intros a b H. unfold quota_eqb in H.
+  apply Bool.andb_true_iff in H; destruct H as [H1 H].
+  apply Bool.andb_true_iff in H; destruct H as [H2 H3].
+  apply Nat.eqb_eq in H1, H2, H3.
+  destruct a, b; cbn in *; congruence.
+Qed.
+
+Lemma quota_eqb_refl : forall a, quota_eqb a a = true.
+Proof. intro a. unfold quota_eqb. now rewrite !Nat.eqb_refl. Qed.
+
+Lemma connlimit_eqb_eq : forall a b, connlimit_eqb a b = true -> a = b.
+Proof.
+  intros a b H. unfold connlimit_eqb in H.
+  apply Bool.andb_true_iff in H; destruct H as [H1 H2].
+  apply Nat.eqb_eq in H1, H2.
+  destruct a, b; cbn in *; congruence.
+Qed.
+
+Lemma connlimit_eqb_refl : forall a, connlimit_eqb a a = true.
+Proof. intro a. unfold connlimit_eqb. now rewrite !Nat.eqb_refl. Qed.
+
+(** The under-tests read exactly one bucket. *)
+Lemma lim_under_ext : forall e e' p s,
+  e_limit e' s = e_limit e s -> lim_under e' p s = lim_under e p s.
+Proof. intros e e' p s H. unfold lim_under, lim_avail. now rewrite H. Qed.
+
+Lemma quota_under_ext : forall e e' p s,
+  e_quota e' s = e_quota e s -> quota_under e' p s = quota_under e p s.
+Proof. intros e e' p s H. unfold quota_under. now rewrite H. Qed.
+
+Lemma connlimit_under_ext : forall e e' p s,
+  e_connlimit e' s = e_connlimit e s -> connlimit_under e' p s = connlimit_under e p s.
+Proof.
+  intros e e' p s H. unfold connlimit_under, connlimit_count, connlimit_after.
+  now rewrite H.
+Qed.
+
+(** THE traversal invariant relating the unified run's threaded env [e'] to
+    the entry env [e0] the pure strand reads: [e'] differs from [e0] only in
+    consumable components, and each touched bucket is EXHAUSTED at both (a
+    non-inverted limiter that broke) — so every future read agrees — while
+    each connlimit count is unchanged (the insert of THIS packet's flow is
+    idempotent). *)
+Definition limiter_inv (e0 e' : env) (p : packet) : Prop :=
+  (exists lf qf cf, e' = env_upd_limits e0 lf qf cf)
+  /\ (forall s, e_limit e' s = e_limit e0 s
+        \/ (lim_under e' p s = false /\ lim_under e0 p s = false))
+  /\ (forall s, e_quota e' s = e_quota e0 s
+        \/ (quota_under e' p s = false /\ quota_under e0 p s = false))
+  /\ (forall s, connlimit_under e' p s = connlimit_under e0 p s).
+
+Lemma limiter_inv_refl : forall e p, limiter_inv e e p.
+Proof.
+  intros e p. split; [| split; [| split]].
+  - exists (e_limit e), (e_quota e), (e_connlimit e).
+    symmetry. apply env_upd_limits_self.
+  - intro s. left. reflexivity.
+  - intro s. left. reflexivity.
+  - intro s. reflexivity.
+Qed.
+
+Lemma limiter_inv_lim_under : forall e0 e' p, limiter_inv e0 e' p ->
+  forall s, lim_under e' p s = lim_under e0 p s.
+Proof.
+  intros e0 e' p Hinv s. destruct Hinv as (_ & HL & _ & _).
+  destruct (HL s) as [Heq | [Hf Hf0]].
+  - apply lim_under_ext. exact Heq.
+  - now rewrite Hf, Hf0.
+Qed.
+
+Lemma limiter_inv_quota_under : forall e0 e' p, limiter_inv e0 e' p ->
+  forall s, quota_under e' p s = quota_under e0 p s.
+Proof.
+  intros e0 e' p Hinv s. destruct Hinv as (_ & _ & HQ & _).
+  destruct (HQ s) as [Heq | [Hf Hf0]].
+  - apply quota_under_ext. exact Heq.
+  - now rewrite Hf, Hf0.
+Qed.
+
+Lemma limiter_inv_connlimit_under : forall e0 e' p, limiter_inv e0 e' p ->
+  forall s, connlimit_under e' p s = connlimit_under e0 p s.
+Proof. intros e0 e' p Hinv s. destruct Hinv as (_ & _ & _ & HC). exact (HC s). Qed.
+
+(** EVERY match — consume-free or limiter-family — evaluates identically at
+    an invariant-related state and at the entry env. *)
+Lemma eval_matchcond_inv : forall m e0 e' p,
+  limiter_inv e0 e' p -> eval_matchcond m e' p = eval_matchcond m e0 p.
+Proof.
+  intros m e0 e' p Hinv.
+  destruct (match_consumefree m) eqn:Hcf.
+  - destruct Hinv as ((lf & qf & cf & ->) & _).
+    apply eval_matchcond_upd_limits. exact Hcf.
+  - destruct m; try discriminate Hcf;
+      unfold eval_matchcond; cbn [match_loadable eval_matchcond_body andb].
+    + now rewrite (limiter_inv_lim_under e0 e' p Hinv).
+    + now rewrite (limiter_inv_quota_under e0 e' p Hinv).
+    + now rewrite (limiter_inv_connlimit_under e0 e' p Hinv).
+Qed.
+
+(** Consuming an EXHAUSTED non-inverted `limit` preserves the invariant: the
+    kernel's fail-branch update stores back the capped level, so the bucket
+    stays exhausted (and stays exhausted under any number of revisits). *)
+Lemma limiter_inv_set_limit : forall e0 e' p s,
+  limiter_inv e0 e' p -> lim_under e' p s = false ->
+  limiter_inv e0 (set_limit e' p s) p.
+Proof.
+  intros e0 e' p s Hinv Hf.
+  pose proof (limiter_inv_lim_under e0 e' p Hinv s) as Hagree.
+  destruct Hinv as ((lf & qf & cf & Heq) & HL & HQ & HC).
+  assert (Hself : e_limit (set_limit e' p s) s = lim_avail e' p s).
+  { unfold set_limit, env_limit_upd, with_e_limit. cbn [e_limit].
+    rewrite limit_eqb_refl. unfold lim_newtokens.
+    unfold lim_under in Hf. cbv zeta. now rewrite Hf. }
+  assert (Hother : forall s2, limit_eqb s s2 = false ->
+            e_limit (set_limit e' p s) s2 = e_limit e' s2).
+  { intros s2 E. unfold set_limit, env_limit_upd, with_e_limit. cbn [e_limit].
+    now rewrite E. }
+  split; [| split; [| split]].
+  - subst e'. eexists _, qf, cf. reflexivity.
+  - intro s2. destruct (limit_eqb s s2) eqn:E.
+    + apply limit_eqb_eq in E. subst s2. right. split.
+      * (* the re-capped bucket is still exhausted *)
+        unfold lim_under, lim_avail at 1. rewrite Hself.
+        rewrite Nat.min_l by (unfold lim_avail; apply Nat.le_min_r).
+        unfold lim_under in Hf. exact Hf.
+      * congruence.
+    + destruct (HL s2) as [Heq2 | [Hf2 Hf02]].
+      * left. rewrite (Hother s2 E). exact Heq2.
+      * right. split; [| exact Hf02].
+        rewrite (lim_under_ext e' (set_limit e' p s) p s2 (Hother s2 E)). exact Hf2.
+  - intro s2. exact (HQ s2).
+  - intro s2. exact (HC s2).
+Qed.
+
+(** Consuming an EXHAUSTED non-inverted `quota` preserves the invariant: the
+    unconditional skb->len accumulation only shrinks the remaining bytes. *)
+Lemma limiter_inv_set_quota : forall e0 e' p s,
+  limiter_inv e0 e' p -> quota_under e' p s = false ->
+  limiter_inv e0 (set_quota e' p s) p.
+Proof.
+  intros e0 e' p s Hinv Hf.
+  pose proof (limiter_inv_quota_under e0 e' p Hinv s) as Hagree.
+  destruct Hinv as ((lf & qf & cf & Heq) & HL & HQ & HC).
+  assert (Hself : e_quota (set_quota e' p s) s = e_quota e' s - quota_cost p).
+  { unfold set_quota, env_quota_upd, with_e_quota. cbn [e_quota].
+    now rewrite quota_eqb_refl. }
+  assert (Hother : forall s2, quota_eqb s s2 = false ->
+            e_quota (set_quota e' p s) s2 = e_quota e' s2).
+  { intros s2 E. unfold set_quota, env_quota_upd, with_e_quota. cbn [e_quota].
+    now rewrite E. }
+  split; [| split; [| split]].
+  - subst e'. eexists lf, _, cf. reflexivity.
+  - intro s2. exact (HL s2).
+  - intro s2. destruct (quota_eqb s s2) eqn:E.
+    + apply quota_eqb_eq in E. subst s2. right. split.
+      * unfold quota_under in *. rewrite Hself.
+        apply Nat.leb_gt. apply Nat.leb_gt in Hf. lia.
+      * congruence.
+    + destruct (HQ s2) as [Heq2 | [Hf2 Hf02]].
+      * left. rewrite (Hother s2 E). exact Heq2.
+      * right. split; [| exact Hf02].
+        rewrite (quota_under_ext e' (set_quota e' p s) p s2 (Hother s2 E)). exact Hf2.
+  - intro s2. exact (HC s2).
+Qed.
+
+Lemma data_mem_head : forall x l, data_mem x (x :: l) = true.
+Proof. intros. unfold data_mem. cbn. now rewrite data_eqb_refl. Qed.
+
+Lemma data_mem_connlimit_after : forall e s fl,
+  data_mem fl (connlimit_after e s fl) = true.
+Proof.
+  intros. unfold connlimit_after.
+  destruct (data_mem fl (e_connlimit e s)) eqn:E; [exact E | apply data_mem_head].
+Qed.
+
+(** `connlimit` consumption is the idempotent insert of THIS packet's flow:
+    it never changes the count any evaluation of THIS traversal reads. *)
+Lemma connlimit_under_upd : forall e p s s2,
+  connlimit_under (set_connlimit e p s) p s2 = connlimit_under e p s2.
+Proof.
+  intros e p s s2.
+  destruct (connlimit_eqb s s2) eqn:E.
+  - apply connlimit_eqb_eq in E. subst s2.
+    assert (Hlist : e_connlimit (set_connlimit e p s) s
+                    = connlimit_after e s (pkt_flow p)).
+    { unfold set_connlimit, env_connlimit_upd, with_e_connlimit. cbn [e_connlimit].
+      now rewrite connlimit_eqb_refl. }
+    unfold connlimit_under. f_equal. f_equal.
+    unfold connlimit_count at 1. unfold connlimit_after at 1. rewrite Hlist.
+    now rewrite data_mem_connlimit_after.
+  - apply connlimit_under_ext.
+    unfold set_connlimit, env_connlimit_upd, with_e_connlimit. cbn [e_connlimit].
+    now rewrite E.
+Qed.
+
+Lemma limiter_inv_set_connlimit : forall e0 e' p s,
+  limiter_inv e0 e' p -> limiter_inv e0 (set_connlimit e' p s) p.
+Proof.
+  intros e0 e' p s Hinv.
+  destruct Hinv as ((lf & qf & cf & Heq) & HL & HQ & HC).
+  split; [| split; [| split]].
+  - subst e'. eexists lf, qf, _. reflexivity.
+  - intro s2. exact (HL s2).
+  - intro s2. exact (HQ s2).
+  - intro s2. rewrite (connlimit_under_upd e' p s s2). exact (HC s2).
+Qed.
+
+(** A TOLERABLE limiter match: non-inverted `limit`/`quota` (an inverted one
+    that breaks has just consumed a live bucket — see the section header), or
+    any `connlimit` (idempotent within a traversal). *)
+Definition match_limiter_tol (m : matchcond) : bool :=
+  match m with
+  | MLimit s => negb (Nat.eqb (Nat.land (ls_flags s) 1) 1)
+  | MQuota s => negb (Nat.eqb (Nat.land (q_flags s) 1) 1)
+  | MConnlimit _ => true
+  | _ => false
+  end.
+
+(** Evaluating (and thus consuming) a tolerable limiter that BREAKS its rule
+    preserves the invariant. *)
+Lemma limiter_inv_match_consume : forall m e0 e' p,
+  limiter_inv e0 e' p -> match_limiter_tol m = true ->
+  eval_matchcond m e' p = false ->
+  limiter_inv e0 (match_consume m e' p) p.
+Proof.
+  intros m e0 e' p Hinv Htol Hc.
+  destruct m; try discriminate Htol; cbn [match_consume].
+  - (* MLimit *)
+    apply limiter_inv_set_limit; [exact Hinv|].
+    unfold eval_matchcond in Hc. cbn [match_loadable eval_matchcond_body andb] in Hc.
+    cbn [match_limiter_tol] in Htol. apply Bool.negb_true_iff in Htol.
+    rewrite Htol, Bool.xorb_false_l in Hc. exact Hc.
+  - (* MQuota *)
+    apply limiter_inv_set_quota; [exact Hinv|].
+    unfold eval_matchcond in Hc. cbn [match_loadable eval_matchcond_body andb] in Hc.
+    cbn [match_limiter_tol] in Htol. apply Bool.negb_true_iff in Htol.
+    rewrite Htol, Bool.xorb_false_l in Hc. exact Hc.
+  - (* MConnlimit *)
+    apply limiter_inv_set_connlimit. exact Hinv.
+Qed.
+
+(** A ONE-LIMITER body: consume-free matches followed by ONE tolerable
+    limiter match in the last position — no statements at all (the rule
+    writes nothing but that bucket). *)
+Fixpoint body_one_limiter (body : list body_item) : bool :=
+  match body with
+  | BMatch m :: nil => match_limiter_tol m
+  | BMatch m :: rest => match_consumefree m && body_one_limiter rest
+  | _ => false
+  end.
+
+Lemma body_one_limiter_no_synproxy : forall body p,
+  body_one_limiter body = true -> body_synproxy_stops body p = false.
+Proof.
+  induction body as [| it rest IH]; intros p H; [reflexivity|].
+  destruct it as [m | s]; [| destruct rest; discriminate H].
+  destruct rest as [| it2 rest2]; [reflexivity|].
+  cbn [body_one_limiter] in H. apply Bool.andb_true_iff in H. destruct H as [_ H2].
+  specialize (IH p H2). unfold body_synproxy_stops in *. cbn [existsb]. exact IH.
+Qed.
+
+Lemma body_one_limiter_no_notrack : forall body,
+  body_one_limiter body = true -> body_has_notrack body = false.
+Proof.
+  induction body as [| it rest IH]; intros H; [reflexivity|].
+  destruct it as [m | s]; [| destruct rest; discriminate H].
+  destruct rest as [| it2 rest2]; [reflexivity|].
+  cbn [body_one_limiter] in H. apply Bool.andb_true_iff in H. destruct H as [_ H2].
+  specialize (IH H2). unfold body_has_notrack in *. cbn [existsb]. exact IH.
+Qed.
+
+Lemma body_one_limiter_applies_loadable : forall body e p,
+  body_one_limiter body = true ->
+  rule_applies_walk body e p = true -> body_loadable_walk body p = true.
+Proof.
+  induction body as [| it rest IH]; intros e p H Ha; [reflexivity|].
+  destruct it as [m | s]; [| destruct rest; discriminate H].
+  cbn [rule_applies_walk] in Ha. apply Bool.andb_true_iff in Ha.
+  destruct Ha as [Hm Ha].
+  unfold eval_matchcond in Hm. apply Bool.andb_true_iff in Hm. destruct Hm as [Hl _].
+  cbn [body_loadable_walk body_item_loadable]. rewrite Hl. cbn [andb].
+  destruct rest as [| it2 rest2]; [reflexivity|].
+  cbn [body_one_limiter] in H. apply Bool.andb_true_iff in H. destruct H as [_ H2].
+  exact (IH e p H2 Ha).
+Qed.
+
+(** The body walk of a one-limiter body at an invariant-related state: it
+    completes exactly when the pure walk at the ENTRY env applies, and a
+    break (which may have consumed the limiter) preserves the invariant. *)
+Lemma body_step_one_limiter : forall body e0 e' p,
+  limiter_inv e0 e' p -> body_one_limiter body = true ->
+  exists e'',
+    body_step body e' p
+      = (if rule_applies_walk body e0 p then BRdone e'' p else BRbreak e'' p)
+    /\ (rule_applies_walk body e0 p = false -> limiter_inv e0 e'' p).
+Proof.
+  induction body as [| it rest IH]; intros e0 e' p Hinv H; [discriminate H|].
+  destruct it as [m | s]; [| destruct rest; discriminate H].
+  destruct rest as [| it2 rest2].
+  - (* the limiter itself, in last position *)
+    cbn [body_one_limiter] in H.
+    cbn [body_step rule_applies_walk].
+    rewrite (eval_matchcond_inv m e0 e' p Hinv), Bool.andb_true_r.
+    exists (match_consume m e' p).
+    destruct (eval_matchcond m e0 p) eqn:Hc.
+    + split; [reflexivity | intro Hcontr; discriminate Hcontr].
+    + split; [reflexivity|]. intros _.
+      apply limiter_inv_match_consume; [exact Hinv | exact H |].
+      rewrite (eval_matchcond_inv m e0 e' p Hinv). exact Hc.
+  - (* a consume-free prefix match *)
+    cbn [body_one_limiter] in H. apply Bool.andb_true_iff in H.
+    destruct H as [Hm Hrest].
+    cbn [body_step rule_applies_walk].
+    rewrite (eval_matchcond_inv m e0 e' p Hinv).
+    rewrite (match_consume_free_id m e' p Hm).
+    destruct (eval_matchcond m e0 p) eqn:Hc.
+    + cbn [andb]. apply IH; assumption.
+    + cbn [andb]. exists e'. split; [reflexivity | intros _; exact Hinv].
+Qed.
+
+(** A ONE-LIMITER rule: a one-limiter body under a STATIC TERMINAL verdict
+    (accept/drop/reject/queue — the traversal ends when it fires, so the
+    consumption the firing evaluation performed is unobservable). *)
+Definition rule_one_limiter (r : rule) : bool :=
+  body_one_limiter (r_body r)
+  && match r_outcome r with OVerdict v => terminal v | _ => false end.
+
+(** The whole one-limiter rule at an invariant-related state: its step IS
+    the pure triple at the ENTRY env, its outcome is a static terminal, and
+    a non-firing step preserves the invariant. *)
+Lemma rule_step_one_limiter : forall r e0 e' p,
+  limiter_inv e0 e' p -> rule_one_limiter r = true ->
+  exists e'',
+    rule_step r e' p
+      = ((if rule_loadable r e0 p && rule_applies r e0 p
+          then outcome r e0 p else None),
+         (e'', p))
+    /\ (rule_loadable r e0 p && rule_applies r e0 p = false ->
+        limiter_inv e0 e'' p)
+    /\ (exists v, outcome r e0 p = Some v /\ terminal v = true).
+Proof.
+  intros r e0 e' p Hinv H.
+  unfold rule_one_limiter in H. apply Bool.andb_true_iff in H. destruct H as [Hb Ho].
+  destruct (r_outcome r) as [v | | | | | | |] eqn:Hout; try discriminate Ho.
+  assert (Hsp := body_one_limiter_no_synproxy (r_body r) p Hb).
+  assert (Hnt := body_one_limiter_no_notrack (r_body r) Hb).
+  assert (Hvm : r_vmap r = None) by (unfold r_vmap; now rewrite Hout).
+  assert (Hnat : r_nat r = None) by (unfold r_nat; now rewrite Hout).
+  assert (Htp : r_tproxy r = None) by (unfold r_tproxy; now rewrite Hout).
+  assert (Hfw : r_fwd r = None) by (unfold r_fwd; now rewrite Hout).
+  assert (Hq : r_queue r = None) by (unfold r_queue; now rewrite Hout).
+  assert (Hrv : r_verdict r = v) by (unfold r_verdict; now rewrite Hout).
+  assert (Hbt : body_thread (r_body r) p = p)
+    by (unfold body_thread; now rewrite Hnt).
+  assert (Hoc : outcome r e0 p = Some v).
+  { unfold outcome. rewrite Hsp, Hbt. unfold outcome_core. rewrite Hvm.
+    unfold terminal_outcome. rewrite Hnat, Htp, Hfw, Hq, Hrv.
+    destruct v; try reflexivity; discriminate Ho. }
+  assert (Hend : forall e2 p2, end_step r e2 p2 = (Some v, (e2, p2))).
+  { intros e2 p2. unfold end_step. rewrite Hvm.
+    unfold terminal_step, has_effect_terminal.
+    rewrite Hnat, Htp, Hfw, Hq, Hrv.
+    destruct v; try reflexivity; discriminate Ho. }
+  destruct (body_step_one_limiter (r_body r) e0 e' p Hinv Hb) as (e'' & Hbs & Hbinv).
+  exists e''.
+  unfold rule_step. rewrite Hbs.
+  unfold rule_applies.
+  destruct (rule_applies_walk (r_body r) e0 p) eqn:Ha.
+  - (* the body passes: the terminal fires *)
+    rewrite Hend.
+    assert (Hld : rule_loadable r e0 p = true).
+    { unfold rule_loadable. rewrite Hsp.
+      rewrite (body_one_limiter_applies_loadable (r_body r) e0 p Hb Ha).
+      cbn [andb]. rewrite Hbt.
+      unfold end_loadable. rewrite Hvm. unfold tail_loadable.
+      unfold terminal_loadable. rewrite Hnat, Htp, Hfw, Hq.
+      unfold terminal_outcome. rewrite Hnat, Htp, Hfw, Hq, Hrv.
+      destruct v; try reflexivity; discriminate Ho. }
+    rewrite Hld. cbn [andb]. rewrite Hoc.
+    split; [reflexivity|]. split.
+    + intro Hcontr. discriminate Hcontr.
+    + exists v. split; [reflexivity | exact Ho].
+  - (* the body breaks (possibly consuming the limiter) *)
+    rewrite Bool.andb_false_r.
+    split; [reflexivity|]. split.
+    + intros _. apply Hbinv. reflexivity.
+    + exists v. split; [exact Hoc | exact Ho].
+Qed.
+
+(** The write-free pure triple is invariant across the invariant relation. *)
+Lemma pure_step_inv : forall r e0 e' p,
+  limiter_inv e0 e' p -> rule_mutfree r = true ->
+  (if rule_loadable r e' p && rule_applies r e' p then outcome r e' p else None)
+  = (if rule_loadable r e0 p && rule_applies r e0 p then outcome r e0 p else None).
+Proof.
+  intros r e0 e' p Hinv Hmf.
+  destruct Hinv as ((lf & qf & cf & ->) & _).
+  now rewrite rule_loadable_upd_limits,
+              (rule_applies_upd_limits r e0 lf qf cf p Hmf),
+              outcome_upd_limits.
+Qed.
+
+(** The LIMITER-TOLERANT domain: every rule is write-free OR a one-limiter
+    rule.  Checkable by [vm_compute] on a concrete config. *)
+Definition rule_limiter_tol (r : rule) : bool :=
+  rule_writefree r || rule_one_limiter r.
+
+Definition chains_limiter_tol (cs : list (String.string * chain)) : bool :=
+  forallb (fun nc => forallb rule_limiter_tol (c_rules (snd nc))) cs.
+
+Lemma chains_limiter_tol_lookup : forall cs n ch,
+  chains_limiter_tol cs = true ->
+  chain_lookup cs n = Some ch ->
+  forallb rule_limiter_tol (c_rules ch) = true.
+Proof.
+  intros cs n ch Hcs Hlk. apply chain_lookup_in in Hlk.
+  unfold chains_limiter_tol in Hcs.
+  eapply forallb_forall in Hcs; [| exact Hlk]. exact Hcs.
+Qed.
+
+Lemma eval_rules_u_limiter_tol_aux : forall fuel cs rs e0 e' p,
+  limiter_inv e0 e' p ->
+  forallb rule_limiter_tol rs = true ->
+  chains_limiter_tol cs = true ->
+  fst (eval_rules_u fuel cs rs e' p) = eval_rules_j fuel cs rs e0 p
+  /\ snd (snd (eval_rules_u fuel cs rs e' p)) = p
+  /\ (fst (eval_rules_u fuel cs rs e' p) = None ->
+      limiter_inv e0 (fst (snd (eval_rules_u fuel cs rs e' p))) p).
+Proof.
+  induction fuel as [| f IH]; intros cs rs e0 e' p Hinv Hrs Hcs.
+  { cbn. split; [reflexivity | split; [reflexivity | intros _; exact Hinv]]. }
+  destruct rs as [| r rest].
+  { cbn. split; [reflexivity | split; [reflexivity | intros _; exact Hinv]]. }
+  cbn [forallb] in Hrs. apply Bool.andb_true_iff in Hrs. destruct Hrs as [Hr Hrest].
+  cbn [eval_rules_u eval_rules_j].
+  destruct (rule_writefree r) eqn:Hwf.
+  - (* write-free rule: the fold is the pure triple, congruent to the entry env *)
+    rewrite (rule_step_writefree r e' p Hwf).
+    rewrite (pure_step_inv r e0 e' p Hinv Hwf).
+    destruct (rule_loadable r e0 p && rule_applies r e0 p);
+      [| exact (IH cs rest e0 e' p Hinv Hrest Hcs)].
+    destruct (outcome r e0 p) as [v|];
+      [| exact (IH cs rest e0 e' p Hinv Hrest Hcs)].
+    destruct v as [ | | | tc cc | lo hi bp fo | n | n | ];
+      try (split; [reflexivity | split; [reflexivity | intro Hc; discriminate Hc]]);
+      try (exact (IH cs rest e0 e' p Hinv Hrest Hcs)).
+    + (* Jump *)
+      destruct (chain_lookup cs n) as [ch|] eqn:Hlk;
+        [| exact (IH cs rest e0 e' p Hinv Hrest Hcs)].
+      destruct (eval_rules_u f cs (c_rules ch) e' p) as [ov [e1 p1]] eqn:E1.
+      pose proof (IH cs (c_rules ch) e0 e' p Hinv
+                    (chains_limiter_tol_lookup cs n ch Hcs Hlk) Hcs) as IH1.
+      rewrite E1 in IH1. cbn [fst snd] in IH1.
+      destruct IH1 as (IHv & IHp & IHinv).
+      rewrite <- IHv. subst p1.
+      destruct ov as [w|].
+      * split; [reflexivity | split; [reflexivity | intro Hc; discriminate Hc]].
+      * exact (IH cs rest e0 e1 p (IHinv eq_refl) Hrest Hcs).
+    + (* Goto *)
+      destruct (chain_lookup cs n) as [ch|] eqn:Hlk.
+      * exact (IH cs (c_rules ch) e0 e' p Hinv
+                 (chains_limiter_tol_lookup cs n ch Hcs Hlk) Hcs).
+      * split; [reflexivity | split; [reflexivity | intros _; exact Hinv]].
+    + (* Return *)
+      split; [reflexivity | split; [reflexivity | intros _; exact Hinv]].
+  - (* one-limiter rule *)
+    assert (Hol : rule_one_limiter r = true).
+    { unfold rule_limiter_tol in Hr. rewrite Hwf in Hr. exact Hr. }
+    destruct (rule_step_one_limiter r e0 e' p Hinv Hol)
+      as (e'' & Hstep & Hinv'' & (v & Hoc & Hterm)).
+    rewrite Hstep.
+    destruct (rule_loadable r e0 p && rule_applies r e0 p) eqn:Hg;
+      [| exact (IH cs rest e0 e'' p (Hinv'' eq_refl) Hrest Hcs)].
+    rewrite Hoc.
+    destruct v; try discriminate Hterm;
+      split; [reflexivity | split; [reflexivity | intro Hc; discriminate Hc]
+             |reflexivity | split; [reflexivity | intro Hc; discriminate Hc]
+             |reflexivity | split; [reflexivity | intro Hc; discriminate Hc]
+             |reflexivity | split; [reflexivity | intro Hc; discriminate Hc]].
+Qed.
+
+(** THE limiter-tolerant license: on a limiter-tolerant config the pure jump
+    strand is the VERDICT projection of the unified fold — every fuel, env,
+    packet; jumps and re-entries included. *)
+Theorem eval_rules_u_limiter_tolerant : forall fuel cs rs e p,
+  forallb rule_limiter_tol rs = true ->
+  chains_limiter_tol cs = true ->
+  fst (eval_rules_u fuel cs rs e p) = eval_rules_j fuel cs rs e p.
+Proof.
+  intros fuel cs rs e p Hrs Hcs.
+  exact (proj1 (eval_rules_u_limiter_tol_aux fuel cs rs e e p
+                  (limiter_inv_refl e p) Hrs Hcs)).
+Qed.
+
+Corollary eval_table_u_limiter_tolerant : forall fuel cs base e p,
+  forallb rule_limiter_tol (c_rules base) = true ->
+  chains_limiter_tol cs = true ->
+  fst (eval_table_u fuel cs base e p) = eval_table fuel cs base e p.
+Proof.
+  intros fuel cs base e p Hb Hcs.
+  unfold eval_table_u, eval_table.
+  pose proof (eval_rules_u_limiter_tolerant fuel cs (c_rules base) e p Hb Hcs) as Hv.
+  destruct (eval_rules_u fuel cs (c_rules base) e p) as [[v|] s];
+    cbn [fst] in Hv; rewrite <- Hv; reflexivity.
+Qed.
+
+(** Hook form for a hook with ONE registered base chain (the common case; a
+    multi-base hook would additionally thread a fired limiter's depletion
+    from one base into the next, where the pure strand cannot follow). *)
+Corollary eval_hook_u_limiter_tolerant_1 : forall fuel rs h cs base e p,
+  select_hook rs h = [(cs, base)] ->
+  forallb rule_limiter_tol (c_rules base) = true ->
+  chains_limiter_tol cs = true ->
+  fst (eval_hook_u fuel rs h e p) = eval_hook fuel rs h e p.
+Proof.
+  intros fuel rs h cs base e p Hsel Hb Hcs.
+  unfold eval_hook_u, eval_hook. rewrite Hsel.
+  cbn [eval_ruleset_u eval_ruleset].
+  pose proof (eval_table_u_limiter_tolerant fuel cs base e p Hb Hcs) as Hv.
+  destruct (eval_table_u fuel cs base e p) as [v [e1 p1]].
+  cbn [fst] in Hv. subst v. cbv zeta.
+  destruct (base_continues (eval_table fuel cs base e p)); reflexivity.
+Qed.
+
+(* ------------------------------------------------------------------ *)
 (** *** Projection 2: the flat mutation strand, licensed on TRANSFER-FREE
     rules.
 
@@ -4245,7 +4895,7 @@ Qed.
     rules that can realise NO transfer verdict: [rule_plain] — every static
     verdict and every verdict-map entry (under the run's verdict maps) is
     non-Jump/Goto/Return.  Because nothing a rule writes can change a verdict
-    map ([dsl_rule_step_vmap]: [e_vmap] is invariant under the fold — dynset
+    map ([rule_step_vmap]: [e_vmap] is invariant under the fold — dynset
     writes named SETS and value MAPS, not verdict maps), the hypothesis is
     checkable once at the ENTRY env and transports itself along the run; this
     is the step-threaded faithful-domain predicate the mutation strand
@@ -4291,7 +4941,11 @@ Lemma body_step_vmap : forall body e p,
 Proof.
   induction body as [| it body IH]; intros e p; [reflexivity|].
   destruct it as [m | s].
-  - cbn [body_step]. destruct (eval_matchcond m e p); [apply IH | reflexivity].
+  - cbn [body_step].
+    assert (Hmc : e_vmap (match_consume m e p) = e_vmap e)
+      by (destruct m; reflexivity).
+    destruct (eval_matchcond m e p);
+      [rewrite IH; exact Hmc | cbn [body_res_state fst]; exact Hmc].
   - destruct s; cbn [body_step];
       repeat first
         [ match goal with
@@ -4351,24 +5005,6 @@ Proof.
   destruct (body_step (r_body r) e p) as [e' p' | e' p' | e' p'];
     cbn [body_res_state fst] in Hb; cbn [fst snd]; try exact Hb.
   rewrite (end_step_vmap r e' p'). exact Hb.
-Qed.
-
-Lemma limit_sweep_body_vmap : forall body e p,
-  e_vmap (limit_sweep_body body e p) = e_vmap e.
-Proof.
-  unfold limit_sweep_body.
-  induction body as [| it body IH]; intros e p; [reflexivity|].
-  cbn [fold_left]. rewrite IH.
-  destruct it as [m | s]; [destruct m|]; reflexivity.
-Qed.
-
-Lemma dsl_rule_step_vmap : forall r e p,
-  e_vmap (fst (snd (dsl_rule_step r e p))) = e_vmap e.
-Proof.
-  intros r e p. unfold dsl_rule_step.
-  pose proof (rule_step_vmap r e p) as Hs.
-  destruct (rule_step r e p) as [v [e' p']]. cbn [fst snd] in *.
-  rewrite limit_sweep_body_vmap. exact Hs.
 Qed.
 
 (** Every verdict [after_step] itself produces is the synproxy [Drop]. *)
@@ -4466,13 +5102,13 @@ Proof.
     cbn [forallb] in Hpl. apply Bool.andb_true_iff in Hpl.
     destruct Hpl as [Hr Hrest].
     cbn [eval_rules_u eval_rules_mut eval_rules_mut_env].
-    pose proof (dsl_rule_step_vmap r e p) as Hstepvm.
-    destruct (dsl_rule_step r e p) as [[v|] [e' p']] eqn:Hstep;
+    pose proof (rule_step_vmap r e p) as Hstepvm.
+    destruct (rule_step r e p) as [[v|] [e' p']] eqn:Hstep;
       cbn [fst snd] in Hstepvm.
     + assert (Hplain : verdict_plain v = true).
       { eapply (rule_step_plain e0 r Hr e p v).
         - congruence.
-        - rewrite <- (dsl_rule_step_fst r e p). now rewrite Hstep. }
+        - now rewrite Hstep. }
       destruct v; try discriminate Hplain; cbn [terminal];
         try (split; reflexivity).
       (* Continue *)
