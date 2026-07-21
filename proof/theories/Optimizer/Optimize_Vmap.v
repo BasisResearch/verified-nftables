@@ -338,6 +338,8 @@ Definition vmap_merge_pair (r1 r2 : rule)
     This is what lets [22:accept, 80:drop, 443:accept] fold into ONE 3-entry vmap. *)
 Definition vmap_run_pair (r1 r2 : rule)
   : option (field * data * verdict * list body_item) :=
+  (* EFFECT-SAFETY GUARD — see [Optimize_ValueSet.value_merge_pair]. *)
+  if negb (rule_mutfree r1) then None else
   match head_value r1, head_value r2 with
   | Some (f1, v1, rest1), Some (f2, v2, rest2) =>
       if field_eq_dec f1 f2 then
@@ -359,6 +361,14 @@ Definition vmap_run_pair (r1 r2 : rule)
   | _, _ => None
   end.
 
+(** The guard, extracted: a fired pair certifies its canonical rule write-free. *)
+Lemma vmap_run_pair_mutfree : forall r1 r2 x,
+  vmap_run_pair r1 r2 = Some x -> rule_mutfree r1 = true.
+Proof.
+  intros r1 r2 x H. unfold vmap_run_pair in H.
+  destruct (rule_mutfree r1); [reflexivity | discriminate H].
+Qed.
+
 Lemma vmap_run_pair_shape : forall r1 r2 f v2 w2 body,
   vmap_run_pair r1 r2 = Some (f, v2, w2, body) ->
   (exists v1, head_value r1 = Some (f, v1, body)
@@ -369,6 +379,7 @@ Lemma vmap_run_pair_shape : forall r1 r2 f v2 w2 body,
   field_fixed_len f = Some (length v2) /\ terminal w2 = true.
 Proof.
   intros r1 r2 f v2 w2 body H. unfold vmap_run_pair in H.
+  destruct (negb (rule_mutfree r1)); [discriminate |].
   destruct (head_value r1) as [[[f1 u1] s1] |] eqn:H1; [| discriminate].
   destruct (head_value r2) as [[[f2 u2] s2] |] eqn:H2; [| discriminate].
   destruct (field_eq_dec f1 f2) as [Ef |]; [| discriminate]. subst f2.

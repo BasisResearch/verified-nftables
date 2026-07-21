@@ -488,6 +488,13 @@ Definition map_merge_pair (r1 r2 : rule)
   match is_orig_map r1, is_orig_map r2 with
   | Some (f1, v1, M1, k1), Some (f2, v2, M2, k2) =>
       if field_eq_dec f1 f2 then if meta_eq_dec k1 k2 then
+      (* EFFECT-SAFETY GUARD: the key field must be a PAYLOAD load — a META key
+         field could be rewritten by the first rule's own `meta set`, making the
+         second original re-fire where the merged map rule runs once.  This is
+         exactly the [is_payload_load] hypothesis of the effect certificate
+         [eval_rules_mut_map_merge]; the recogniser now checks it so the
+         certificate composes through the pipeline. *)
+      if negb (is_payload_load f1) then None else
       match field_fixed_len f1 with
       | Some len =>
           if Nat.eq_dec len (List.length v1) then if Nat.eq_dec len (List.length v2) then
@@ -497,6 +504,24 @@ Definition map_merge_pair (r1 r2 : rule)
       end else None else None
   | _, _ => None
   end.
+
+(** The guard, extracted: a fired pair certifies its key field a payload load. *)
+Lemma map_merge_pair_payload : forall r1 r2 f v1 v2 M1 M2 k,
+  map_merge_pair r1 r2 = Some (f, v1, v2, M1, M2, k) ->
+  is_payload_load f = true.
+Proof.
+  intros r1 r2 f v1 v2 M1 M2 k H. unfold map_merge_pair in H.
+  destruct (is_orig_map r1) as [[[[f1 u1] N1] j1]|]; [|discriminate].
+  destruct (is_orig_map r2) as [[[[f2 u2] N2] j2]|]; [|discriminate].
+  destruct (field_eq_dec f1 f2); [|discriminate].
+  destruct (meta_eq_dec j1 j2); [|discriminate].
+  destruct (is_payload_load f1) eqn:Hpl; cbn [negb] in H; [|discriminate].
+  destruct (field_fixed_len f1) as [len|]; [|discriminate].
+  destruct (Nat.eq_dec len (List.length u1)) as [->|]; [|discriminate].
+  destruct (Nat.eq_dec (List.length u1) (List.length u2)); [|discriminate].
+  destruct (data_eqb u1 u2); [discriminate|].
+  injection H as -> _ _ _ _ _. exact Hpl.
+Qed.
 
 Lemma map_merge_pair_shape : forall r1 r2 f v1 v2 M1 M2 k,
   map_merge_pair r1 r2 = Some (f, v1, v2, M1, M2, k) ->
@@ -509,6 +534,7 @@ Proof.
   destruct (is_orig_map r2) as [[[[f2 u2] N2] j2]|] eqn:H2; [|discriminate].
   destruct (field_eq_dec f1 f2) as [<-|]; [|discriminate].
   destruct (meta_eq_dec j1 j2) as [<-|]; [|discriminate].
+  destruct (negb (is_payload_load f1)); [discriminate |].
   destruct (field_fixed_len f1) as [len|] eqn:Hfx; [|discriminate].
   destruct (Nat.eq_dec len (List.length u1)) as [->|]; [|discriminate].
   destruct (Nat.eq_dec (List.length u1) (List.length u2)) as [Hl|]; [|discriminate].

@@ -39,6 +39,7 @@ axiom-free — without reading 3000 lines of `Correct.v`.
 | sequence semantics / cross-packet carry | `compile_seq_hook_correct` | `Correct.v` | the between-packet env is **definitionally the ruleset's OWN env-out** (`seq_eval_env` over `eval_hook_env_u` / `run_ruleset_env_u`, the fst-of-state projections of the unified hook run — no external step function can be instantiated): dynset adds, limiter depletion and NAT mappings thread packet-to-packet through jumps and multi-chain/hook dispatch, compiler-preserved under `base_numgen_free` (discharged for every frontend program by `Lower_Proofs.lower_ruleset_numgen_free`); cross-packet pins `Regression/Seq_Hook_Carry.v`. Successor of the RETIRED external-step `compile_seq_correct` (strata-retirement note, §3) |
 | mutation / cross-packet learning | `compile_seq_mut_correct` | `Correct.v` | compiled single-chain traversal threading the env each packet LEAVES (meta/ct writes, dynset learning) = DSL sequence, under `rule_numgen_free` (discharged for EVERY frontend program by `Lower_Proofs.lower_ruleset_numgen_free`) |
 | optimizer pipeline | `optimize_table_uncond_compile_correct` | `Optimize_Uncond.v` | the shipped 18-stage `nft -o` pipeline + the DEFAULT compile (`compile_chain_default`) preserves every packet's verdict against the synthesised declarations, for **any input chain** (no `rules_clean`, no freshness precondition) |
+| optimizer pipeline, EFFECT level | `optimize_table_uncond_mut_env_correct` | `Optimize_MutEnv.v` | the same shipped pipeline under the effect-observing `eval_chain_mut_env h`: for **any input chain**, at every hook/base env/packet, the optimised chain in the deployed environment yields the SAME verdict **and** the SAME resulting environment as the input — a stage can no longer preserve verdicts while altering a write (mark/ct set, dynset learning, limiter depletion, NAT mapping) a later hook observes |
 | DEFAULT compile pipeline | `Optimize_Linearize.compile_chain_default_correct` | `Optimize_Linearize.v` | the DEFAULT pipeline `compile_chain_default = compile_chain ∘ elide_chain ∘ xorfold_chain ∘ paymerge_chain` — nft's ALWAYS-ON netlink linearization (classes I + L, including the trivial-binop deletion) — yields exactly the source chain's DSL verdict, for every chain/env/packet; stage composition is `linearize_chain_eval`; non-vacuity Compute-pinned (`default_pipeline_merges_payload_loads`, `default_pipeline_folds_xor` — the folded xor now compiles to a bare load+cmp, NO bitwise — and `default_pipeline_elides_trivial_binop`) |
 | intra-rule pass: adjacent-payload merge | `Optimize_PayMerge.paymerge_chain_eval` | `Optimize_PayMerge.v` | fusing two byte-contiguous full-width payload equalities in the same header into one wider load+compare (nft `payload_can_merge`; corpus class I) preserves `eval_chain` — **UNCONDITIONAL** (`forall c e p`, no hypotheses): the read and its loadability split at any interior offset for every packet |
 | intra-rule pass: bitwise-xor constant fold | `Optimize_XorFold.xorfold_chain_eval` | `Optimize_XorFold.v` | transferring a pure-xor register operand onto the compare value (`(reg & 0xff..) ^ C <op> V  →  ^ 0 <op> V^C`; nft `binop_transfer`; corpus class L) preserves `eval_chain` — **UNCONDITIONAL** (`forall c e p`): bytewise xor is involutive, no width/byte-range side condition. The spent residue is deleted by the next stage (`Optimize_Elide`) |
@@ -71,16 +72,23 @@ Scope notes (each also sits on the theorem in the source):
   all environments/packets. Multi-chain/hook preservation is the separate
   `compile_ruleset_correct`/`compile_hook_correct` family — **not composed
   with the optimizer**.
-- The optimizer headline is **verdict-only**: quantified over `eval_chain`,
-  the write-blind/NAT-blind/jump-free evaluator — even though stages rewrite
-  write-effectful statements (`datamap` folds `meta mark set`, `dnat`/`snat`
-  fold NAT terminals) whose effects later hooks observe. The per-stage effect
-  certificates (`Optimize_DataMap.eval_rules_mut_map_merge`,
-  `Optimize_Dnat.apply_nat_dnat_eq`, snat forms) are **per-merge-shape lemmas,
-  not composed through `optimize_table`** — no theorem lifts the pipeline to
-  the effect-threading `eval_chain_mut`. The full statement of the gap and the
-  not-lifted rationale sit on `optimize_table_uncond_compile_correct`
-  (Optimize_Uncond.v, "Scope note 2").
+- The optimizer is certified at **two observation levels**, both unconditional:
+  the VM-run/verdict headline `optimize_table_uncond_compile_correct`
+  (`eval_chain`, through the DEFAULT compile) **and** the EFFECT-level headline
+  `Optimize_MutEnv.optimize_table_uncond_mut_env_correct` — the same shipped
+  pipeline related, at every hook, under the effect-observing
+  `eval_chain_mut_env h` (verdict **and** resulting environment; the packet
+  half is threaded internally by the same `rule_step` fold). A stage can no
+  longer preserve every verdict while altering a write a later hook observes.
+  What makes the effect level compose: every pure-merge recogniser carries an
+  **effect-safety guard** (`rule_mutfree`, `Optimize_ValueSet.value_merge_pair`)
+  so its merges live on the write-free fold projection; the three
+  effect-rewriting stages (`datamap`/`dnat`/`snat`) carry fold-level per-shape
+  certificates (`Optimize_MutEnv.eval_rules_mut_env_map_merge` /
+  `_dnat_merge` / `_snat_merge`); the base pass is effect-safe by construction
+  (`dedup_rule` fires only on `rule_mutfree` rules); and `seed_start` now also
+  clears every **dynset write target** (`chain_seed` includes
+  `rule_dynset_names`), so no rule can clobber a minted declaration.
 - **Mutation × jump/goto is jointly verified** at the UNIFIED evaluator
   (`Semantics.eval_rules_u`/`run_rules_u`, compile theorems
   `compile_table_u_correct` / `compile_ruleset_u_correct` /
@@ -169,6 +177,10 @@ redirect/masquerade data plane is hook-dependent).
 | `Optimize_Uncond.optimize_table_correct_uncond_gen` | SUPPORTING | the general `(n, d)`-threaded whole-pipeline form |
 | `Optimize_Uncond.optimize_table_uncond_correct` | SUPPORTING | DSL-level form of the optimizer headline |
 | `Optimize_Uncond.optimize_table_uncond_compile_correct` | **HEADLINE** (optimizer axis) | = `optimize_table_uncond_correct` + `Optimize_Linearize.compile_chain_default_sets_correct` (the DEFAULT compile: always-on paymerge + xorfold + elide, then `compile_chain`) |
+| `Optimize_MutEnv.optimize_table_mut_env_correct_uncond_gen` | SUPPORTING | the general `(n, d)`-threaded whole-pipeline EFFECT form: same `eval_chain_mut_env h` result for output and input under the deployed declarations |
+| `Optimize_MutEnv.optimize_table_uncond_mut_env_correct` | **HEADLINE** (optimizer EFFECT axis) | the shipped `optimize_table_uncond`, hypothesis-free, under the effect-observing `eval_chain_mut_env h`: verdict AND resulting env preserved at every hook/base env/packet (built on the per-stage `optimize_rules_*_mut_env` lemmas, the recogniser effect-safety guards, and the fold-level dnat/snat/datamap shape certificates) |
+| `Optimize_MutEnv.eval_rules_mut_env_{map,dnat,snat}_merge` | SUPPORTING | fold-level effect certificates for the three effect-rewriting merge shapes (verdict + (env, packet) out) |
+| `Optimize_MutEnv.optimize_rules_*_mut_env` (15) + `optimize_{chain,rules}_absorb/ctmask_mut_env` + `optimize_chain_mut_env` + `normalize_chain_mut_env` | STAGE | each stage of the pipeline preserved under `eval_rules_mut_env h`, composed into `optimize_table_mut_env_correct_uncond_gen` |
 | `Optimize_Linearize.linearize_chain_eval` | STAGE | the always-on linearization (elide ∘ xorfold ∘ paymerge) preserves `eval_chain`; composed into both default-pipeline headlines |
 | `Optimize_Linearize.compile_chain_default_sets_correct` (Corollary) | SUPPORTING | `compile_chain_default_correct` at `env_with_sets`; consumed by `optimize_table_uncond_compile_correct` |
 

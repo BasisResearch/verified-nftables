@@ -95,6 +95,8 @@ Qed.
     the SAME tail and the SAME end-fields.  No fixed-width guard. *)
 Definition range_mergeGr_pair (r1 r2 : rule)
   : option (matchcond * field * (data * data) * (data * data) * list body_item) :=
+  (* EFFECT-SAFETY GUARD — see [Optimize_ValueSet.value_merge_pair]. *)
+  if negb (rule_mutfree r1) then None else
   match head_rangeGr r1, head_rangeGr r2 with
   | Some (gm1, f1, lo1, hi1, rest1), Some (gm2, f2, lo2, hi2, rest2) =>
       if matchcond_eq_dec gm1 gm2 then
@@ -108,12 +110,21 @@ Definition range_mergeGr_pair (r1 r2 : rule)
   | _, _ => None
   end.
 
+(** The guard, extracted: a fired pair certifies its canonical rule write-free. *)
+Lemma range_mergeGr_pair_mutfree : forall r1 r2 x,
+  range_mergeGr_pair r1 r2 = Some x -> rule_mutfree r1 = true.
+Proof.
+  intros r1 r2 x H. unfold range_mergeGr_pair in H.
+  destruct (rule_mutfree r1); [reflexivity | discriminate H].
+Qed.
+
 Lemma range_mergeGr_pair_shape : forall r1 r2 gm f iv1 iv2 body,
   range_mergeGr_pair r1 r2 = Some (gm, f, iv1, iv2, body) ->
   r1 = orig_ruleGr f gm (fst iv1) (snd iv1) body r1 /\
   r2 = orig_ruleGr f gm (fst iv2) (snd iv2) body r1.
 Proof.
   intros r1 r2 gm f iv1 iv2 body H. unfold range_mergeGr_pair in H.
+  destruct (negb (rule_mutfree r1)); [discriminate |].
   destruct (head_rangeGr r1) as [[[[[gm1 f1] lo1] hi1] rest1] |] eqn:H1; [| discriminate].
   destruct (head_rangeGr r2) as [[[[[gm2 f2] lo2] hi2] rest2] |] eqn:H2; [| discriminate].
   destruct (matchcond_eq_dec gm1 gm2) as [Egm |]; [| discriminate]. subst gm2.
@@ -139,7 +150,9 @@ Lemma range_mergeGr_pair_with_head : forall r1 r2 gm f lo1 hi1 body gm' f' iv1 i
   r2 = orig_ruleGr f gm (fst iv2) (snd iv2) body r1.
 Proof.
   intros r1 r2 gm f lo1 hi1 body gm' f' iv1 iv2 body' Hhd Hvm.
-  unfold range_mergeGr_pair in Hvm. rewrite Hhd in Hvm.
+  unfold range_mergeGr_pair in Hvm.
+  destruct (negb (rule_mutfree r1)); [discriminate Hvm |].
+  rewrite Hhd in Hvm.
   destruct (head_rangeGr r2) as [[[[[gm2 f2] lo2] hi2] rest2] |] eqn:H2; [| discriminate].
   destruct (matchcond_eq_dec gm gm2) as [Egm |]; [| discriminate]. subst gm2.
   destruct (guard_okr gm) eqn:Egok; [| discriminate].

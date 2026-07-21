@@ -55,6 +55,7 @@ theories/Optimizer/Optimize_Snat.v
 theories/Optimizer/Optimize_Table_Inv.v
 theories/Optimizer/Optimize_Table.v
 theories/Optimizer/Optimize_Uncond.v
+theories/Optimizer/Optimize_MutEnv.v
 theories/Optimizer/Optimize_Registry.v
 
 theories/Optimizer/Witness/Optimize_ValueSet_Meta_Witness.v

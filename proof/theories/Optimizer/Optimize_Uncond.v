@@ -5177,9 +5177,36 @@ Proof.
 Qed.
 
 (** *** The fresh-counter seed: choose the start counter STRICTLY above the length
-    of every name the base-optimised chain reads, so minted names avoid the seed. *)
+    of every name the base-optimised chain reads — AND every name it WRITES.
+
+    The dynset WRITE targets ([SDynset]'s set/map name, the one statement family
+    that mutates the shared [e_set]/[e_map] environment) are included so the
+    EFFECT-level pipeline theorem ([Optimize_MutEnv]) gets, by construction,
+    that no rule can clobber a minted declaration: a minted [setname]/[mapname]
+    is strictly longer than every dynset target.  (The verdict-level theorems
+    ignore the extra margin — the seed only grows.) *)
+Definition stmt_dynset_names (s : stmt) : list String.string :=
+  match s with SDynset _ name _ _ => [name] | _ => [] end.
+
+Definition body_dynset_names (b : list body_item) : list String.string :=
+  flat_map (fun it => match it with BStmt s => stmt_dynset_names s | BMatch _ => [] end) b.
+
+Definition rule_dynset_names (r : rule) : list String.string :=
+  body_dynset_names (r_body r) ++ flat_map stmt_dynset_names (r_after r).
+
+(** Write-target freshness: the rule dynset-writes no minted name at-or-above
+    [n] (both namespaces the fold can write: [e_set] and [e_map]). *)
+Definition rule_dynset_fresh (n : nat) (r : rule) : Prop :=
+  forall k, n <= k ->
+    ~ In (setname k) (rule_dynset_names r) /\ ~ In (mapname k) (rule_dynset_names r).
+
+Lemma rule_dynset_fresh_mono : forall n m r,
+  n <= m -> rule_dynset_fresh n r -> rule_dynset_fresh m r.
+Proof. intros n m r Hnm Hf k Hk. apply Hf. lia. Qed.
+
 Definition chain_seed (c : chain) : list string :=
-  flat_map (fun r => body_set_names (r_body r) ++ rule_vmap_name r ++ rule_nat_map_name r)
+  flat_map (fun r => body_set_names (r_body r) ++ rule_vmap_name r
+                     ++ rule_nat_map_name r ++ rule_dynset_names r)
            (c_rules c).
 
 Definition seed_start (c : chain) : nat :=
@@ -5203,7 +5230,16 @@ Lemma chain_seed_nat_map_in : forall c r nm,
   In r (c_rules c) -> In nm (rule_nat_map_name r) -> In nm (chain_seed c).
 Proof.
   intros c r nm Hr Hnm. unfold chain_seed. apply in_flat_map. exists r.
-  split; [exact Hr | apply in_or_app; right; apply in_or_app; right; exact Hnm].
+  split; [exact Hr |].
+  apply in_or_app; right. apply in_or_app; right. apply in_or_app; left. exact Hnm.
+Qed.
+
+Lemma chain_seed_dynset_in : forall c r nm,
+  In r (c_rules c) -> In nm (rule_dynset_names r) -> In nm (chain_seed c).
+Proof.
+  intros c r nm Hr Hnm. unfold chain_seed. apply in_flat_map. exists r.
+  split; [exact Hr |].
+  apply in_or_app; right. apply in_or_app; right. apply in_or_app; right. exact Hnm.
 Qed.
 
 Lemma seed_start_set_fresh : forall c, Forall (rule_set_fresh (seed_start c)) (c_rules c).
@@ -5228,6 +5264,21 @@ Proof.
   apply (not_in_of_length_gt (mapname k) (chain_seed c)).
   - rewrite mapname_length. unfold seed_start in Hk. lia.
   - apply (chain_seed_nat_map_in c r (mapname k) Hr Hin).
+Qed.
+
+(** The WRITE-target freshness, by construction at the seed: every dynset target
+    name is in [chain_seed], so it is strictly shorter than any minted
+    [setname]/[mapname] at-or-above [seed_start]. *)
+Lemma seed_start_dynset_fresh : forall c,
+  Forall (rule_dynset_fresh (seed_start c)) (c_rules c).
+Proof.
+  intro c. apply Forall_forall. intros r Hr k Hk. split; intro Hin.
+  - apply (not_in_of_length_gt (setname k) (chain_seed c)).
+    + rewrite setname_length. unfold seed_start in Hk. lia.
+    + apply (chain_seed_dynset_in c r (setname k) Hr Hin).
+  - apply (not_in_of_length_gt (mapname k) (chain_seed c)).
+    + rewrite mapname_length. unfold seed_start in Hk. lia.
+    + apply (chain_seed_dynset_in c r (mapname k) Hr Hin).
 Qed.
 
 (** *** The UNCONDITIONAL entry point: optimise a fresh table starting the
@@ -5279,29 +5330,24 @@ From Nft Require Optimize_Linearize.
     [compile_ruleset_correct]/[compile_hook_correct] family (Correct.v), not
     composed with the optimizer.
 
-    Scope note 2: VERDICTS ONLY — this theorem (and every [_correct_uncond]
-    stage composed into it) is quantified over [eval_chain], the write-blind,
-    NAT-blind, jump-free evaluator.  Pipeline stages DO rewrite write-effectful
-    statements — [datamap] folds `meta mark set` runs, [dnat]/[snat] fold NAT
-    terminals — and mark/NAT effects are exactly what LATER hooks observe
-    (Examples/Optiplex_Mark.v's masquerade is gated on the mark).  The per-stage
-    EFFECT certificates that exist —
-    [Optimize_DataMap.eval_rules_mut_map_merge] (mut-level verdict+state for
-    the datamap merge shape), [Optimize_Dnat.apply_nat_dnat_eq] /
-    [Optimize_Snat.apply_nat_snat_eq] (the folded NAT's data-plane effect
-    equals the originals') — are PER-MERGE-SHAPE lemmas, NOT composed through
-    [optimize_table]: no theorem lifts the 18-stage pipeline to
-    the effect-threading [eval_chain_mut].  So, formally, a stage could preserve
-    every [eval_chain] verdict while altering a mark write that flips a later
-    hook's decision — the effect certificates are evidence the shipped merges
-    do not, but the COMPOSED guarantee is verdict-only.  Why not lifted: a
-    mut/trace-level pipeline theorem needs mut-level seam lemmas for all 18
-    stages PLUS write-safety proofs for the rule-DELETING passes (base-pass
-    dce/absorb: deleting a shadowed rule preserves verdicts but not its
-    writes/limiter depletion), i.e. a second full composition stack for the
-    one write-mutating stage family; future work if the optimizer is ever run
-    on mutation-relied-upon chains.  Until then: optimizing a chain whose
-    LATER-observed writes matter is outside this theorem's certified scope. *)
+    Scope note 2: this theorem is the VM-run/verdict view of the pipeline; the
+    EFFECT-level composed guarantee is
+    [Optimize_MutEnv.optimize_table_uncond_mut_env_correct] — the same
+    unconditional pipeline related, at every hook, under the effect-observing
+    [eval_chain_mut_env h] (verdict AND resulting environment; the packet half
+    is threaded internally by the same [rule_step] fold).  A stage can no
+    longer alter a write a later hook observes while preserving verdicts: the
+    write effects are an observable of that theorem.  The composition is
+    possible because (a) every pure-merge recogniser carries an EFFECT-SAFETY
+    GUARD ([rule_mutfree], see [Optimize_ValueSet.value_merge_pair]) so its
+    merges are certified by the write-free fold projection, (b) the three
+    effect-rewriting stages carry fold-level per-shape certificates
+    ([Optimize_MutEnv.eval_rules_mut_env_map_merge] /
+    [eval_rules_mut_env_dnat_merge] / [eval_rules_mut_env_snat_merge], built on
+    [Optimize_DataMap.dsl_step_map_merge] and [Optimize_Dnat.apply_nat_dnat_eq]
+    / [Optimize_Snat.apply_nat_snat_eq]), and (c) the base pass is effect-safe
+    by construction ([dce] cuts after an unconditionally-terminal EMPTY rule;
+    [dedup_rule] fires only on [rule_mutfree] rules). *)
 Theorem optimize_table_uncond_compile_correct : forall c base p n' d' c',
   optimize_table_uncond c = (n', d', c') ->
   run_chain (Optimize_Linearize.compile_chain_default c') (c_policy c')

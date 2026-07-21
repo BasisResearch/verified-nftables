@@ -197,6 +197,8 @@ Qed.
 
 Definition vmap_run_pairG (r1 r2 : rule)
   : option (matchcond * field * data * verdict * list body_item) :=
+  (* EFFECT-SAFETY GUARD — see [Optimize_ValueSet.value_merge_pair]. *)
+  if negb (rule_mutfree r1) then None else
   match head_valueGs r1, head_valueGs r2 with
   | Some (gm1, f1, v1, rest1), Some (gm2, f2, v2, rest2) =>
       if matchcond_eq_dec gm1 gm2 then
@@ -220,6 +222,14 @@ Definition vmap_run_pairG (r1 r2 : rule)
   | _, _ => None
   end.
 
+(** The guard, extracted: a fired pair certifies its canonical rule write-free. *)
+Lemma vmap_run_pairG_mutfree : forall r1 r2 x,
+  vmap_run_pairG r1 r2 = Some x -> rule_mutfree r1 = true.
+Proof.
+  intros r1 r2 x H. unfold vmap_run_pairG in H.
+  destruct (rule_mutfree r1); [reflexivity | discriminate H].
+Qed.
+
 Lemma vmap_run_pairG_shape : forall r1 r2 gm f v2 w2 body,
   vmap_run_pairG r1 r2 = Some (gm, f, v2, w2, body) ->
   (exists v1, head_valueGs r1 = Some (gm, f, v1, body)
@@ -230,6 +240,7 @@ Lemma vmap_run_pairG_shape : forall r1 r2 gm f v2 w2 body,
   field_fixed_len f = Some (length v2) /\ terminal w2 = true.
 Proof.
   intros r1 r2 gm f v2 w2 body H. unfold vmap_run_pairG in H.
+  destruct (negb (rule_mutfree r1)); [discriminate |].
   destruct (head_valueGs r1) as [[[[gm1 f1] u1] s1] |] eqn:H1; [| discriminate].
   destruct (head_valueGs r2) as [[[[gm2 f2] u2] s2] |] eqn:H2; [| discriminate].
   destruct (matchcond_eq_dec gm1 gm2) as [Egm |]; [| discriminate]. subst gm2.

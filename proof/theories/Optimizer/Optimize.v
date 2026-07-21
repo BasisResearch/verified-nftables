@@ -177,8 +177,20 @@ Definition body_has_synproxy (body : list body_item) : bool :=
     while one before it does not.  Reordering matches across a notrack is therefore
     NOT verdict-preserving, so [dedup_rule] leaves a notrack-bearing rule untouched
     too (mirrors the synproxy guard). *)
+(** EFFECT-SAFETY GUARD (in addition to the synproxy/notrack position guards):
+    dedup reorders the body — all (deduplicated) matches first, then the
+    statements — which is VERDICT-preserving ([rule_applies] reads the entry
+    state) but NOT EFFECT-preserving on a write-bearing rule: a mutating
+    statement moved past a match changes what the match reads in the
+    state-threading fold ([body_step]), and [nodup] dropping a duplicate
+    `limit` halves its bucket consumption.  So dedup now fires ONLY on
+    [rule_mutfree] rules (no mutating statement, no consuming match, no NAT
+    terminal), where the fold is state-invariant and coincides with the pure
+    walk ([rule_step_mutfree]) — the effect-level pass lemma is
+    [Optimize_MutEnv.eval_rules_mut_env_map_dedup]. *)
 Definition dedup_rule (r : rule) : rule :=
-  if body_has_synproxy (r_body r) || body_has_notrack (r_body r) then r else
+  if body_has_synproxy (r_body r) || body_has_notrack (r_body r)
+     || negb (rule_mutfree r) then r else
   {| r_body := map BMatch (nodup matchcond_eq_dec (body_matches (r_body r)))
                ++ map BStmt (body_stmts (r_body r));
      r_outcome := r_outcome r; r_after := r_after r |}.
@@ -277,7 +289,8 @@ Proof.
   intros r e p. unfold rule_applies, dedup_rule.
   destruct (body_has_synproxy (r_body r)) eqn:Hsp; [reflexivity|].
   destruct (body_has_notrack (r_body r)) eqn:Hnt; [reflexivity|].
-  cbn [orb r_body].
+  destruct (rule_mutfree r) eqn:Hmf; [| reflexivity].
+  cbn [orb negb r_body].
   rewrite (rule_applies_walk_no_synproxy _ e p (dedup_body_no_synproxy_stops _ p Hsp)
              (dedup_body_no_notrack _ Hnt)).
   rewrite (rule_applies_walk_no_synproxy (r_body r) e p
@@ -291,7 +304,8 @@ Proof.
   intros r e p. unfold outcome, dedup_rule.
   destruct (body_has_synproxy (r_body r)) eqn:Hsp; [reflexivity|].
   destruct (body_has_notrack (r_body r)) eqn:Hnt; [reflexivity|].
-  cbn [orb r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after r_outcome].
+  destruct (rule_mutfree r) eqn:Hmf; [| reflexivity].
+  cbn [orb negb r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after r_outcome].
   rewrite (body_has_synproxy_false_stops (r_body r) p Hsp).
   rewrite (dedup_body_no_synproxy_stops _ p Hsp).
   unfold body_thread. rewrite Hnt, (dedup_body_no_notrack _ Hnt). reflexivity.
@@ -323,7 +337,8 @@ Lemma end_loadable_dedup : forall r e p, end_loadable (dedup_rule r) e p = end_l
 Proof.
   intros r e p. unfold dedup_rule.
   destruct (body_has_synproxy (r_body r)); [reflexivity|].
-  destruct (body_has_notrack (r_body r)); [reflexivity|]. cbn [orb].
+  destruct (body_has_notrack (r_body r)); [reflexivity|].
+  destruct (rule_mutfree r); [| reflexivity]. cbn [orb negb].
   unfold end_loadable, tail_loadable, terminal_loadable, vmap_loadable,
     terminal_outcome; reflexivity.
 Qed.
@@ -334,8 +349,9 @@ Lemma dedup_body_no_notrack_rule : forall r,
   body_has_notrack (r_body r) = false ->
   body_has_notrack (r_body (dedup_rule r)) = false.
 Proof.
-  intros r Hsp Hnt. unfold dedup_rule. rewrite Hsp, Hnt. cbn [orb r_body].
-  apply dedup_body_no_notrack; exact Hnt.
+  intros r Hsp Hnt. unfold dedup_rule. rewrite Hsp, Hnt.
+  destruct (rule_mutfree r); cbn [orb negb r_body];
+    [ apply dedup_body_no_notrack; exact Hnt | exact Hnt ].
 Qed.
 
 Lemma rule_loadable_dedup : forall r e p, rule_loadable (dedup_rule r) e p = rule_loadable r e p.
@@ -344,7 +360,9 @@ Proof.
   - (* dedup_rule = r *) unfold dedup_rule; rewrite Hsp; reflexivity.
   - destruct (body_has_notrack (r_body r)) eqn:Hnt.
     + (* dedup_rule = r *) unfold dedup_rule; rewrite Hsp, Hnt; reflexivity.
-    + unfold rule_loadable.
+    + destruct (rule_mutfree r) eqn:Hmf;
+        [| unfold dedup_rule; rewrite Hsp, Hnt, Hmf; reflexivity].
+      unfold rule_loadable.
     (* both bodies are notrack-free, so [body_thread] collapses to [p] on each side *)
     assert (Htd : body_thread (r_body (dedup_rule r)) p = p)
       by (unfold body_thread; rewrite (dedup_body_no_notrack_rule r Hsp Hnt); reflexivity).
@@ -353,13 +371,14 @@ Proof.
     rewrite Htd, Htr, end_loadable_dedup.
     (* both [body_synproxy_stops] sides are [false], so the [if] reduces to [end_loadable] *)
     assert (Hd : body_synproxy_stops (r_body (dedup_rule r)) p = false)
-      by (unfold dedup_rule; rewrite Hsp, Hnt; cbn [orb r_body]; apply dedup_body_no_synproxy_stops; exact Hsp).
+      by (unfold dedup_rule; rewrite Hsp, Hnt, Hmf; cbn [orb negb r_body];
+          apply dedup_body_no_synproxy_stops; exact Hsp).
     rewrite Hd, (body_has_synproxy_false_stops _ p Hsp).
     f_equal.
     rewrite (body_loadable_walk_no_synproxy (r_body (dedup_rule r)) p Hd).
     rewrite (body_loadable_walk_no_synproxy (r_body r) p
                (body_has_synproxy_false_stops _ p Hsp)).
-    unfold dedup_rule; rewrite Hsp, Hnt; cbn [orb r_body].
+    unfold dedup_rule; rewrite Hsp, Hnt, Hmf; cbn [orb negb r_body].
     rewrite body_loadable_split.
     rewrite body_matches_app, body_matches_map_BMatch, body_matches_map_BStmt, app_nil_r.
     rewrite body_stmts_app, body_stmts_map_BMatch, body_stmts_map_BStmt. cbn [app].

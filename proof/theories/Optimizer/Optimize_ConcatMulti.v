@@ -493,6 +493,8 @@ Definition no_guard_fields (ps : list (field * data)) : bool :=
     body. *)
 Definition concat_mergeK_pair (r1 r2 : rule)
   : option (list field * list data * list data * list body_item) :=
+  (* EFFECT-SAFETY GUARD — see [Optimize_ValueSet.value_merge_pair]. *)
+  if negb (rule_mutfree r1) then None else
   let '(ps1, b1) := take_mcmp_prefix (r_body r1) in
   let '(ps2, b2) := take_mcmp_prefix (r_body r2) in
   if Nat.leb 3 (length ps1) then
@@ -505,6 +507,14 @@ Definition concat_mergeK_pair (r1 r2 : rule)
     Some (map fst ps1, map snd ps1, map snd ps2, b1)
   else None else None else None else None else None else None else None.
 
+(** The guard, extracted: a fired pair certifies its canonical rule write-free. *)
+Lemma concat_mergeK_pair_mutfree : forall r1 r2 x,
+  concat_mergeK_pair r1 r2 = Some x -> rule_mutfree r1 = true.
+Proof.
+  intros r1 r2 x H. unfold concat_mergeK_pair in H.
+  destruct (rule_mutfree r1); [reflexivity | discriminate H].
+Qed.
+
 Lemma concat_mergeK_pair_shape : forall r1 r2 fields row1 row2 body,
   concat_mergeK_pair r1 r2 = Some (fields, row1, row2, body) ->
   r1 = orig_ruleK fields row1 body r1 /\
@@ -514,6 +524,7 @@ Lemma concat_mergeK_pair_shape : forall r1 r2 fields row1 row2 body,
   fields <> [] /\ 3 <= length fields.
 Proof.
   intros r1 r2 fields row1 row2 body H. unfold concat_mergeK_pair in H.
+  destruct (negb (rule_mutfree r1)); [discriminate |].
   destruct (take_mcmp_prefix (r_body r1)) as [ps1 b1] eqn:E1.
   destruct (take_mcmp_prefix (r_body r2)) as [ps2 b2] eqn:E2.
   destruct (Nat.leb 3 (length ps1)) eqn:Hlen3; [|discriminate].

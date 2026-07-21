@@ -470,7 +470,15 @@ The first says the netlink ruleset we would install filters every packet exactly
 as the DSL specifies; the `optimize_table_uncond` family (in `Optimize_Uncond.v`)
 says the *optimized* chain — and its compiled bytecode — preserves every packet's
 verdict against the synthesised set/map declarations, for **any** input *chain*
-(no `rules_clean` or freshness precondition). The optimizer theorem is
+(no `rules_clean` or freshness precondition). The pipeline is additionally
+certified at the EFFECT level
+(`Optimize_MutEnv.optimize_table_uncond_mut_env_correct`): under the
+effect-observing `eval_chain_mut_env h`, the optimised chain in the deployed
+environment yields the same verdict **and** the same resulting environment as
+the input, at every hook — a stage cannot preserve verdicts while altering a
+write a later hook observes (the merge recognisers carry `rule_mutfree`
+effect-safety guards; the dnat/snat/datamap merges carry fold-level effect
+certificates). The optimizer theorem is
 **per-chain**: quantified over a single chain and all environments/packets;
 multi-chain/hook preservation is the separate
 `compile_ruleset_correct`/`compile_hook_correct` family, **not composed with

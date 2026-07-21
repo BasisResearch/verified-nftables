@@ -134,6 +134,8 @@ Qed.
     [take_rangeg_run]. *)
 Definition mix_mergeGm_pair (r1 r2 : rule)
   : option (matchcond * field * melem * melem * list body_item) :=
+  (* EFFECT-SAFETY GUARD — see [Optimize_ValueSet.value_merge_pair]. *)
+  if negb (rule_mutfree r1) then None else
   match head_mixGm r1, head_mixGm r2 with
   | Some (gm1, f1, e1, rest1), Some (gm2, f2, e2, rest2) =>
       if matchcond_eq_dec gm1 gm2 then
@@ -146,12 +148,21 @@ Definition mix_mergeGm_pair (r1 r2 : rule)
   | _, _ => None
   end.
 
+(** The guard, extracted: a fired pair certifies its canonical rule write-free. *)
+Lemma mix_mergeGm_pair_mutfree : forall r1 r2 x,
+  mix_mergeGm_pair r1 r2 = Some x -> rule_mutfree r1 = true.
+Proof.
+  intros r1 r2 x H. unfold mix_mergeGm_pair in H.
+  destruct (rule_mutfree r1); [reflexivity | discriminate H].
+Qed.
+
 Lemma mix_mergeGm_pair_shape : forall r1 r2 gm f e1 e2 body,
   mix_mergeGm_pair r1 r2 = Some (gm, f, e1, e2, body) ->
   r1 = orig_ruleGm f gm e1 body r1 /\
   r2 = orig_ruleGm f gm e2 body r1.
 Proof.
   intros r1 r2 gm f e1 e2 body H. unfold mix_mergeGm_pair in H.
+  destruct (negb (rule_mutfree r1)); [discriminate |].
   destruct (head_mixGm r1) as [[[[gm1 f1] u1] rest1] |] eqn:H1; [| discriminate].
   destruct (head_mixGm r2) as [[[[gm2 f2] u2] rest2] |] eqn:H2; [| discriminate].
   destruct (matchcond_eq_dec gm1 gm2) as [Egm |]; [| discriminate]. subst gm2.
@@ -177,7 +188,9 @@ Lemma mix_mergeGm_pair_with_head : forall r1 r2 gm f e1 body gm' f' e1' e2 body'
   r2 = orig_ruleGm f gm e2 body r1.
 Proof.
   intros r1 r2 gm f e1 body gm' f' e1' e2 body' Hhd Hvm.
-  unfold mix_mergeGm_pair in Hvm. rewrite Hhd in Hvm.
+  unfold mix_mergeGm_pair in Hvm.
+  destruct (negb (rule_mutfree r1)); [discriminate Hvm |].
+  rewrite Hhd in Hvm.
   destruct (head_mixGm r2) as [[[[gm2 f2] u2] rest2] |] eqn:H2; [| discriminate].
   destruct (matchcond_eq_dec gm gm2) as [Egm |]; [| discriminate]. subst gm2.
   destruct (guard_okr gm) eqn:Egok; [| discriminate].

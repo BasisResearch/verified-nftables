@@ -690,6 +690,17 @@ Definition head_value (r : rule) : option (field * data * list body_item) :=
     ([field_fixed_len f1 = Some len = len v1 = len v2]) is precisely what makes the
     set membership equal the disjunction of the two point matches. *)
 Definition value_merge_pair (r1 r2 : rule) : option (field * data * data * list body_item) :=
+  (* EFFECT-SAFETY GUARD: merge only WRITE-FREE rules ([rule_mutfree]: no
+     mutating statement, no limiter/quota/connlimit match, no NAT terminal).
+     The shared tail [rest1] is body-agnostic for the VERDICT (the run-merge
+     lemmas hold for any tail), but an EFFECT-bearing tail would run once in the
+     merged rule where the original run could evaluate it several times (e.g. a
+     non-terminal verdict with duplicate values, or a meta-head rewritten by the
+     tail) — so the effect-level pipeline theorem
+     ([Optimize_MutEnv.optimize_table_uncond_mut_env_correct]) requires the
+     recogniser to refuse such runs.  [r2]'s mut-freedom follows from the shape
+     (same tail, same end fields, pure head), see [value_merge_pair_shape]. *)
+  if negb (rule_mutfree r1) then None else
   match head_value r1, head_value r2 with
   | Some (f1, v1, rest1), Some (f2, v2, rest2) =>
       if field_eq_dec f1 f2 then
@@ -950,6 +961,14 @@ Qed.
 
 (** When a merge fires, the two input rules are EXACTLY the canonical shells, and
     the field is fixed-width — so the rewrite matches the value-merge certificate. *)
+(** The guard, extracted: a fired pair certifies its canonical rule write-free. *)
+Lemma value_merge_pair_mutfree : forall r1 r2 x,
+  value_merge_pair r1 r2 = Some x -> rule_mutfree r1 = true.
+Proof.
+  intros r1 r2 x H. unfold value_merge_pair in H.
+  destruct (rule_mutfree r1); [reflexivity | discriminate H].
+Qed.
+
 Lemma value_merge_pair_shape : forall r1 r2 f v1 v2 body,
   value_merge_pair r1 r2 = Some (f, v1, v2, body) ->
   r1 = mk_head (MCmp f CEq v1) body r1 /\
@@ -958,6 +977,7 @@ Lemma value_merge_pair_shape : forall r1 r2 f v1 v2 body,
   field_fixed_len f = Some (length v2).
 Proof.
   intros r1 r2 f v1 v2 body H. unfold value_merge_pair in H.
+  destruct (negb (rule_mutfree r1)); [discriminate |].
   destruct (head_value r1) as [[[f1 w1] rest1] |] eqn:H1; [| discriminate].
   destruct (head_value r2) as [[[f2 w2] rest2] |] eqn:H2; [| discriminate].
   unfold head_value in H1, H2.
