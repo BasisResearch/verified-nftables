@@ -90,7 +90,7 @@ Qed.
     A kernel register slot has a FIXED byte width: [nft_regs] is 16 x u32 words
     (include/net/netfilter/nf_tables.h, [struct nft_regs]: [u32 data[NFT_REG32_NUM]]),
     a store of a [len]-byte value zeroes the containing word(s) and writes the value
-    bytes at the start (nf_tables_core.h: [nft_reg_store8]/[16] do [*dreg = 0] then
+    bytes at the start (include/net/netfilter/nf_tables.h: [nft_reg_store8]/[16] do [*dreg = 0] then
     write the low bytes; wider stores write exactly [len] bytes), and
     [nft_validate_register_load]/[store] (net/netfilter/nf_tables_api.c) bound every
     access to [reg + len].  [fit w d] normalises an abstract oracle read to exactly
@@ -127,7 +127,7 @@ Proof. intros w d. apply fit_exact, fit_length. Qed.
     array of [u32] words ([u32 data[NFT_REG32_NUM]], include/net/netfilter/
     nf_tables.h), and every eval-side store writes u8/u16/u32/u64 components or
     memcpys a u8 buffer into it ([nft_reg_store8]/[16]/[64],
-    include/net/netfilter/nf_tables_core.h) — no register cell can hold a value
+    include/net/netfilter/nf_tables.h) — no register cell can hold a value
     above 0xff.  The model byte is a [nat] ([byte] above), so an abstract
     oracle read could otherwise carry an out-of-range "byte"; [octets] clamps
     each byte to its low 8 bits ([b mod 256] = [Nat.land b 255], the value the
