@@ -15,7 +15,8 @@
 
 From Stdlib Require Import List.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile
-  Correct Optimize Optimize_Table Optimize_Uncond Optimize_Linearize.
+  Correct Optimize Optimize_Table Optimize_Uncond Optimize_Linearize
+  Optimize_Linearize_MutSt.
 
 (** ** Axis 0 — THE UNIFIED SEMANTICS ([compile_hook_u_correct] /
     [compile_seq_hook_correct]): mutation x jump/goto/return x multi-chain
@@ -131,6 +132,35 @@ Theorem main_optimize_table_uncond_compile_correct : forall c base p n' d' c',
   = eval_chain c (env_with_sets base empty_decls) p.
 Proof. exact optimize_table_uncond_compile_correct. Qed.
 Print Assumptions main_optimize_table_uncond_compile_correct.
+
+(** ** Axis 3, STATE FOLD — the same optimize∘default-compile guarantee over the
+    effect-observing [eval_chain_mut_st]: verdict AND the resulting (env, packet)
+    the [rule_step] fold leaves, nothing dropped.
+
+    The full-state twin of [main_optimize_table_uncond_compile_correct],
+    composed from [Optimize_Linearize_MutSt.compile_chain_default_mut_st_correct]
+    (the compiled optimised chain's VM run reproduces its own DSL state fold,
+    under the single [rule_numgen_free] hypothesis every frontend chain
+    discharges by [Lower_Proofs.lower_ruleset_numgen_free]) and
+    [Optimize_MutEnv.optimize_table_uncond_mut_st_correct] (the 18-stage
+    consolidation preserves the source chain's state fold at every hook).
+
+    Both sides run under [env_with_sets base d'].  The pure verdict-only headline
+    reads the SOURCE at [empty_decls] because [eval_chain] discards the env; the
+    state fold RETURNS the threaded env, so the synthesised declarations [d'] the
+    compiled side needs to resolve its set/map lookups are part of the observable
+    and must appear on both sides for the returned (env, packet) pairs to match —
+    reading the source at [empty_decls] would drop [d'] from the returned env and
+    break the equality. *)
+Theorem main_optimize_table_uncond_compile_mut_st_correct :
+  forall h c base p n' d' c',
+  forallb rule_numgen_free (c_rules c') = true ->
+  optimize_table_uncond c = (n', d', c') ->
+  run_chain_mut_st h (compile_chain_default c') (c_policy c')
+                   (env_with_sets base d') p
+  = eval_chain_mut_st h c (env_with_sets base d') p.
+Proof. exact Optimize_Linearize_MutSt.optimize_table_uncond_compile_mut_st_correct. Qed.
+Print Assumptions main_optimize_table_uncond_compile_mut_st_correct.
 
 (** ** Axis 3b — the DEFAULT compile pipeline
     ([Optimize_Linearize.compile_chain_default_correct]).
