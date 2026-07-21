@@ -345,7 +345,7 @@ Proof.
     [ destruct (terminal v); [reflexivity | apply Htail] | apply Htail ].
 Qed.
 
-(** *** State-fold analogue of [Optimize_ValueSet.eval_rules_run_merge_abs].
+(** *** The first-match N-way merge/absorption certificate over the state fold.
 
     The direct first-match N-way merge/absorption certificate over the
     STATE-THREADING fold [eval_rules_mut_st], NOT the write-free verdict
@@ -362,11 +362,10 @@ Qed.
     the next shell — so an unconstrained merge would NOT preserve the threaded
     state.  Under mut-freeness [rule_step_mutfree] pins every shell's step to
     leave the state at [(e, p)]; the threaded state is then constant across the
-    whole run, and the first-match/break argument is exactly the pure
-    [eval_rules_run_merge_abs] induction lifted one level into the fold's
-    (verdict, state) pair.  This is the substrate a later step re-points the
-    optimizer's per-pass merge proofs onto so the pure [eval_rules] strand and
-    its [eval_rules_run_merge_abs] can be dropped. *)
+    whole run, and the first-match/break argument runs directly over the fold's
+    (verdict, state) pair.  This is the substrate the optimizer's per-pass merge
+    proofs are certified on (via [eval_rules_st_merge_pure], which reads the merge
+    back as an [eval_rules] equality for the mut-free run). *)
 Lemma eval_rules_mut_st_run_merge_abs :
   forall (ms : list matchcond) (ML : packet -> bool) body r1 m12 rest e p,
   ms <> [] ->
@@ -465,6 +464,50 @@ Proof.
         destruct (eval_matchcond m e p); cbn [orb andb]; reflexivity. }
   (* Assemble: the merged shell's single step vs the run's characterisation. *)
   rewrite (Hshell m12 rest Hmf12), Hml, Hev, Hrun. reflexivity.
+Qed.
+
+(** A write-free run's state fold carries EXACTLY the pure [eval_rules] verdict in
+    its first component: the fold walks the whole block leaving [(e, p)] fixed, so
+    the [(verdict, state)] pair's verdict is the pure one.  The projection that
+    lets a mut-free merge be certified at the state level and read back as an
+    [eval_rules] equality. *)
+Lemma eval_rules_mutfree_fst : forall b e p,
+  forallb rule_mutfree b = true ->
+  fst (eval_rules_mut_st h b e p) = eval_rules b e p.
+Proof.
+  intros b e p Hmf.
+  pose proof (eval_rules_mut_st_mutfree_prefix b [] e p Hmf) as Hp.
+  rewrite app_nil_r in Hp. rewrite eval_rules_mut_st_nil in Hp.
+  rewrite Hp. destruct (eval_rules b e p); reflexivity.
+Qed.
+
+(** The mut-free first-match N-way merge, read back as an [eval_rules] equality:
+    the merged shell and the run of shells (sharing body [body] and end record
+    [r1]) evaluate identically under the pure verdict, derived from the state-fold
+    certificate [eval_rules_mut_st_run_merge_abs] via [eval_rules_mutfree_fst].
+    This is the substrate the optimizer's per-pass merge proofs use in place of a
+    standalone pure induction. *)
+Lemma eval_rules_st_merge_pure :
+  forall (ms : list matchcond) (ML : packet -> bool) body r1 m12 e p,
+  ms <> [] ->
+  rule_mutfree (mk_head m12 body r1) = true ->
+  forallb rule_mutfree (map (fun m => mk_head m body r1) ms) = true ->
+  (forall m, In m ms -> match_loadable m p = ML p) ->
+  match_loadable m12 p = ML p ->
+  eval_matchcond m12 e p = existsb (fun m => eval_matchcond m e p) ms ->
+  eval_rules [mk_head m12 body r1] e p
+  = eval_rules (map (fun m => mk_head m body r1) ms) e p.
+Proof.
+  intros ms ML body r1 m12 e p Hne Hmf12 HmfR Hml Hml12 Hev.
+  assert (Hmf1 : forallb rule_mutfree [mk_head m12 body r1] = true)
+    by (cbn [forallb]; rewrite Hmf12; reflexivity).
+  rewrite <- (eval_rules_mutfree_fst [mk_head m12 body r1] e p Hmf1).
+  rewrite <- (eval_rules_mutfree_fst (map (fun m => mk_head m body r1) ms) e p HmfR).
+  f_equal.
+  change [mk_head m12 body r1] with (mk_head m12 body r1 :: []).
+  rewrite <- (app_nil_r (map (fun m => mk_head m body r1) ms)).
+  exact (eval_rules_mut_st_run_merge_abs ms ML body r1 m12 [] e p
+           Hne Hmf12 HmfR Hml Hml12 Hev).
 Qed.
 
 End WithHook.
@@ -668,20 +711,6 @@ Proof.
                                      (v :: vs') rest' Ehd Erun). discriminate.
                  - apply (Hwidth w Hw). }
                apply (field_fixed_len_loaded f (Datatypes.length w) e p Hfxw Hld). }
-           assert (Hpure : eval_rules
-                             [mk_head (MConcatSet [f] false (setname n)) body r1] e p
-                           = eval_rules
-                               (map (fun w => mk_head (MCmp f CEq w) body r1) vals) e p).
-           { pose proof (eval_rules_run_merge_abs
-                           (map (fun w => MCmp f CEq w) vals)
-                           (fun q => fields_loadable [f] q) body r1
-                           (MConcatSet [f] false (setname n)) [] e p) as Habs.
-             rewrite app_nil_r in Habs. rewrite List.map_map in Habs.
-             apply Habs.
-             - subst vals. cbn [map]. discriminate.
-             - intros m Hm. apply (match_loadable_run f vals p m Hm).
-             - apply match_loadable_mconcat1.
-             - rewrite Hcert. rewrite existsb_map_eq. reflexivity. }
            assert (HmfM : forallb rule_mutfree
                      [mk_head (MConcatSet [f] false (setname n)) body r1] = true).
            { cbn [forallb].
@@ -692,6 +721,22 @@ Proof.
                      (map (fun w => mk_head (MCmp f CEq w) body r1) vals) = true).
            { apply (forallb_mutfree_shells data (fun w => MCmp f CEq w) vals body r1
                       (MCmp f CEq v1)); [intro; reflexivity | exact Hmf1']. }
+           assert (Hpure : eval_rules
+                             [mk_head (MConcatSet [f] false (setname n)) body r1] e p
+                           = eval_rules
+                               (map (fun w => mk_head (MCmp f CEq w) body r1) vals) e p).
+           { pose proof (eval_rules_st_merge_pure h
+                           (map (fun w => MCmp f CEq w) vals)
+                           (fun q => fields_loadable [f] q) body r1
+                           (MConcatSet [f] false (setname n)) e p) as Habs.
+             rewrite List.map_map in Habs.
+             apply Habs.
+             - subst vals. cbn [map]. discriminate.
+             - cbn [forallb] in HmfM. apply Bool.andb_true_iff in HmfM. exact (proj1 HmfM).
+             - exact HmfR.
+             - intros m Hm. apply (match_loadable_run f vals p m Hm).
+             - apply match_loadable_mconcat1.
+             - rewrite Hcert. rewrite existsb_map_eq. reflexivity. }
            change (mk_head (MConcatSet [f] false (setname n)) body r1 :: rr'')
              with ([mk_head (MConcatSet [f] false (setname n)) body r1] ++ rr'').
            rewrite Hrun_eq.
@@ -825,20 +870,6 @@ Proof.
                + exact Hfl.
                + lia.
                + lia. }
-           assert (Hpure : eval_rules
-                             [mk_head (MSetT f [TBitAnd mask xor] false (setname n)) body r1] e p
-                           = eval_rules
-                               (map (fun w => mk_head (MMasked f CEq mask xor w) body r1) vals) e p).
-           { pose proof (eval_rules_run_merge_abs
-                           (map (fun w => MMasked f CEq mask xor w) vals)
-                           (fun q => field_loadable f q) body r1
-                           (MSetT f [TBitAnd mask xor] false (setname n)) [] e p) as Habs.
-             rewrite app_nil_r in Habs. rewrite List.map_map in Habs.
-             apply Habs.
-             - subst vals. cbn [map]. discriminate.
-             - intros m Hm. apply (match_loadable_dscp_run f mask xor vals p m Hm).
-             - apply match_loadable_msett_bitand.
-             - rewrite Hcert. rewrite existsb_map_eq. reflexivity. }
            assert (HmfM : forallb rule_mutfree
                      [mk_head (MSetT f [TBitAnd mask xor] false (setname n)) body r1] = true).
            { cbn [forallb].
@@ -849,6 +880,22 @@ Proof.
                      (map (fun w => mk_head (MMasked f CEq mask xor w) body r1) vals) = true).
            { apply (forallb_mutfree_shells data (fun w => MMasked f CEq mask xor w) vals body r1
                       (MMasked f CEq mask xor v1)); [intro; reflexivity | exact Hmf1']. }
+           assert (Hpure : eval_rules
+                             [mk_head (MSetT f [TBitAnd mask xor] false (setname n)) body r1] e p
+                           = eval_rules
+                               (map (fun w => mk_head (MMasked f CEq mask xor w) body r1) vals) e p).
+           { pose proof (eval_rules_st_merge_pure h
+                           (map (fun w => MMasked f CEq mask xor w) vals)
+                           (fun q => field_loadable f q) body r1
+                           (MSetT f [TBitAnd mask xor] false (setname n)) e p) as Habs.
+             rewrite List.map_map in Habs.
+             apply Habs.
+             - subst vals. cbn [map]. discriminate.
+             - cbn [forallb] in HmfM. apply Bool.andb_true_iff in HmfM. exact (proj1 HmfM).
+             - exact HmfR.
+             - intros m Hm. apply (match_loadable_dscp_run f mask xor vals p m Hm).
+             - apply match_loadable_msett_bitand.
+             - rewrite Hcert. rewrite existsb_map_eq. reflexivity. }
            change (mk_head (MSetT f [TBitAnd mask xor] false (setname n)) body r1 :: rr'')
              with ([mk_head (MSetT f [TBitAnd mask xor] false (setname n)) body r1] ++ rr'').
            rewrite Hrun_eq.
@@ -961,22 +1008,6 @@ Proof.
                                 eval_matchcond (MRange f false (fst iv0) (snd iv0)) e p)
                        ivsAll).
            { apply (concat_set_ivs_existsb f ivsAll (setname n) e p). exact Hlook. }
-           assert (Hpure : eval_rules
-                             [mk_head (MConcatSet [f] false (setname n)) body r1] e p
-                           = eval_rules
-                               (map (fun iv0 =>
-                                       mk_head (MRange f false (fst iv0) (snd iv0)) body r1)
-                                  ivsAll) e p).
-           { pose proof (eval_rules_run_merge_abs
-                           (map (fun iv0 => MRange f false (fst iv0) (snd iv0)) ivsAll)
-                           (fun q => fields_loadable [f] q) body r1
-                           (MConcatSet [f] false (setname n)) [] e p) as Habs.
-             rewrite app_nil_r in Habs. rewrite List.map_map in Habs.
-             apply Habs.
-             - subst ivsAll. cbn [map]. discriminate.
-             - intros m Hm. apply (match_loadable_range_run f ivsAll p m Hm).
-             - apply match_loadable_mconcat1.
-             - rewrite Hcert. rewrite existsb_map_eq. reflexivity. }
            assert (HmfM : forallb rule_mutfree
                      [mk_head (MConcatSet [f] false (setname n)) body r1] = true).
            { cbn [forallb].
@@ -989,6 +1020,24 @@ Proof.
            { apply (forallb_mutfree_shells (data * data)
                       (fun iv0 => MRange f false (fst iv0) (snd iv0)) ivsAll body r1
                       (MRange f false lo1 hi1)); [intro; reflexivity | exact Hmf1']. }
+           assert (Hpure : eval_rules
+                             [mk_head (MConcatSet [f] false (setname n)) body r1] e p
+                           = eval_rules
+                               (map (fun iv0 =>
+                                       mk_head (MRange f false (fst iv0) (snd iv0)) body r1)
+                                  ivsAll) e p).
+           { pose proof (eval_rules_st_merge_pure h
+                           (map (fun iv0 => MRange f false (fst iv0) (snd iv0)) ivsAll)
+                           (fun q => fields_loadable [f] q) body r1
+                           (MConcatSet [f] false (setname n)) e p) as Habs.
+             rewrite List.map_map in Habs.
+             apply Habs.
+             - subst ivsAll. cbn [map]. discriminate.
+             - cbn [forallb] in HmfM. apply Bool.andb_true_iff in HmfM. exact (proj1 HmfM).
+             - exact HmfR.
+             - intros m Hm. apply (match_loadable_range_run f ivsAll p m Hm).
+             - apply match_loadable_mconcat1.
+             - rewrite Hcert. rewrite existsb_map_eq. reflexivity. }
            change (mk_head (MConcatSet [f] false (setname n)) body r1 :: rr'')
              with ([mk_head (MConcatSet [f] false (setname n)) body r1] ++ rr'').
            rewrite Hrun_eq.
@@ -1106,22 +1155,6 @@ Proof.
                                 eval_matchcond (MRangeT f ts false (fst iv0) (snd iv0)) e p)
                        ivsAll).
            { apply (msett_ivs_existsb f ts ivsAll (setname n) e p). exact Hlook. }
-           assert (Hpure : eval_rules
-                             [mk_head (MSetT f ts false (setname n)) body r1] e p
-                           = eval_rules
-                               (map (fun iv0 =>
-                                       mk_head (MRangeT f ts false (fst iv0) (snd iv0)) body r1)
-                                  ivsAll) e p).
-           { pose proof (eval_rules_run_merge_abs
-                           (map (fun iv0 => MRangeT f ts false (fst iv0) (snd iv0)) ivsAll)
-                           (fun q => field_loadable f q) body r1
-                           (MSetT f ts false (setname n)) [] e p) as Habs.
-             rewrite app_nil_r in Habs. rewrite List.map_map in Habs.
-             apply Habs.
-             - subst ivsAll. cbn [map]. discriminate.
-             - intros m Hm. apply (match_loadable_ranget_run f ts ivsAll p m Hm).
-             - apply match_loadable_msett.
-             - rewrite Hcert. rewrite existsb_map_eq. reflexivity. }
            assert (HmfM : forallb rule_mutfree
                      [mk_head (MSetT f ts false (setname n)) body r1] = true).
            { cbn [forallb].
@@ -1134,6 +1167,24 @@ Proof.
            { apply (forallb_mutfree_shells (data * data)
                       (fun iv0 => MRangeT f ts false (fst iv0) (snd iv0)) ivsAll body r1
                       (MRangeT f ts false lo1 hi1)); [intro; reflexivity | exact Hmf1']. }
+           assert (Hpure : eval_rules
+                             [mk_head (MSetT f ts false (setname n)) body r1] e p
+                           = eval_rules
+                               (map (fun iv0 =>
+                                       mk_head (MRangeT f ts false (fst iv0) (snd iv0)) body r1)
+                                  ivsAll) e p).
+           { pose proof (eval_rules_st_merge_pure h
+                           (map (fun iv0 => MRangeT f ts false (fst iv0) (snd iv0)) ivsAll)
+                           (fun q => field_loadable f q) body r1
+                           (MSetT f ts false (setname n)) e p) as Habs.
+             rewrite List.map_map in Habs.
+             apply Habs.
+             - subst ivsAll. cbn [map]. discriminate.
+             - cbn [forallb] in HmfM. apply Bool.andb_true_iff in HmfM. exact (proj1 HmfM).
+             - exact HmfR.
+             - intros m Hm. apply (match_loadable_ranget_run f ts ivsAll p m Hm).
+             - apply match_loadable_msett.
+             - rewrite Hcert. rewrite existsb_map_eq. reflexivity. }
            change (mk_head (MSetT f ts false (setname n)) body r1 :: rr'')
              with ([mk_head (MSetT f ts false (setname n)) body r1] ++ rr'').
            rewrite Hrun_eq.

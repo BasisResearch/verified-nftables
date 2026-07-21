@@ -481,9 +481,8 @@ Qed.
     bytecode, run on the state VM, reproduces the source chain's DSL STATE fold
     — verdict AND resulting (env, packet) — for every chain, env and packet,
     under the single [rule_numgen_free] hypothesis (discharged for every
-    frontend-emitted chain by [Lower_Proofs.lower_ruleset_numgen_free]).  This is
-    the state-fold analogue of [Optimize_Linearize.compile_chain_default_correct]
-    / [Main.main_compile_chain_default_correct]. *)
+    frontend-emitted chain by [Lower_Proofs.lower_ruleset_numgen_free]).  Re-exported
+    as the Main headline [Main.main_compile_chain_default_correct]. *)
 Theorem compile_chain_default_mut_st_correct : forall h c e p,
   forallb rule_numgen_free (c_rules c) = true ->
   run_chain_mut_st h (compile_chain_default c) (c_policy c) e p
@@ -498,8 +497,9 @@ Proof.
 Qed.
 
 (* ================================================================== *)
-(** ** HEADLINE (optimizer axis, full state): the STATE-fold analogue of
-    [Optimize_Uncond.optimize_table_uncond_compile_correct].
+(** ** HEADLINE (optimizer axis, full state): the shipped optimize∘default-compile
+    guarantee over the effect-observing state fold.  Re-exported as the Main
+    headline [Main.main_optimize_table_uncond_compile_mut_st_correct].
 
     Run the shipped 18-stage `nft -o` consolidation
     ([Optimize_Uncond.optimize_table_uncond]), DEFAULT-compile the optimised

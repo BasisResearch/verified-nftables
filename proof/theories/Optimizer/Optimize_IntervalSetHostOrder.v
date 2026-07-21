@@ -36,8 +36,9 @@
     SAME operand in both an [MRangeT]'s range test ([data_in_iv v (lo,hi)]) and the
     [MSetT]'s membership ([set_mem v = existsb (data_in_iv v)]), so the merged head is
     EXACTLY the [existsb] disjunction of the run's ranges ([msett_ivs_existsb]) — with NO
-    fixed-width side-condition ([data_le] does not truncate).  We reuse
-    [eval_rules_run_merge_abs] (Optimize_ValueSet) VERBATIM.
+    fixed-width side-condition ([data_le] does not truncate).  The first-match
+    merge is certified over the state fold by
+    [Optimize_MutEnv.eval_rules_mut_st_run_merge_abs].
 
     REPRESENTABILITY.  A single-field nftables interval set is the kernel [rbtree]
     backend, a strict PARTITION whose insert rejects ANY overlap; so we only emit a fold

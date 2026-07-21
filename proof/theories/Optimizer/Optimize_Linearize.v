@@ -25,18 +25,19 @@
 
     — what `nftc compile` (and the final compile step of `nftc optimize`/
     `nftc send`) actually emits, so the shipped default output matches nft's
-    default linearization.  The composed HEADLINE
-    [compile_chain_default_correct] carries [compile_chain_correct] through the
-    three stages, axiom-free.
+    default linearization.  The composed default pipeline
+    [compile_chain_default] is certified over the state fold by
+    [Optimize_Linearize_MutSt.compile_chain_default_mut_st_correct].
 
     Placement mirrors nft: linearization happens AT EMISSION, after any `-o`
     consolidation — so the stage lives at the compile boundary (applied to
     whatever chain reaches the compiler), NOT inside
     [Optimize_Uncond.optimize_table_uncond]; the optimize path's composed
-    headline is [Optimize_Uncond.optimize_table_uncond_compile_correct], which
-    is stated over THIS pipeline.  The `-O paymerge` / `-O xorfold` registry
-    passes remain (an explicit second application is idempotent in effect:
-    both passes only rewrite where their guard still fires). *)
+    headline is
+    [Optimize_Linearize_MutSt.optimize_table_uncond_compile_mut_st_correct],
+    which is stated over THIS pipeline.  The `-O paymerge` / `-O xorfold`
+    registry passes remain (an explicit second application is idempotent in
+    effect: both passes only rewrite where their guard still fires). *)
 
 From Stdlib Require Import List.
 Import ListNotations.
@@ -71,27 +72,6 @@ Proof. reflexivity. Qed.
     `nftc optimize` / `nftc send`). *)
 Definition compile_chain_default (c : chain) : program :=
   compile_chain (linearize_chain c).
-
-(** HEADLINE (default-pipeline axis): the DEFAULT pipeline's bytecode, run on
-    the VM, yields EXACTLY the DSL verdict of the source chain — for every
-    chain, environment and packet.  [compile_chain_correct] carried through the
-    two always-on stages.  Axiom-free (gated in `make axioms`). *)
-Theorem compile_chain_default_correct : forall c e p,
-  run_chain (compile_chain_default c) (c_policy c) e p = eval_chain c e p.
-Proof.
-  intros c e p.
-  change (c_policy c) with (c_policy (linearize_chain c)).
-  unfold compile_chain_default.
-  rewrite compile_chain_correct. apply linearize_chain_eval.
-Qed.
-
-(** Sets/maps-as-declared-objects corollary, the [compile_chain_sets_correct]
-    mirror — the form [Optimize_Uncond]'s optimize-then-compile headline
-    composes with. *)
-Corollary compile_chain_default_sets_correct : forall c base d p,
-  run_chain (compile_chain_default c) (c_policy c) (env_with_sets base d) p
-  = eval_chain c (env_with_sets base d) p.
-Proof. intros. apply compile_chain_default_correct. Qed.
 
 (* ================================================================== *)
 (** ** Non-vacuity: the DEFAULT pipeline genuinely merges (mirrors the
@@ -159,4 +139,3 @@ Proof. vm_compute. reflexivity. Qed.
 
 (** Axiom-freedom audit (build-time guard; enforcement is `make axioms`). *)
 Print Assumptions linearize_chain_eval.
-Print Assumptions compile_chain_default_correct.

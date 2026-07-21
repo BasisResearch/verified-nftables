@@ -52,7 +52,8 @@ From Nft Require Import Optimize_PayMerge Optimize_XorFold Optimize_Elide
   Optimize_Registry.
 (* The DEFAULT compile pipeline (nft's always-on linearization: payload merge +
    xor fold, then compile) — what `nftc compile` and the final compile step of
-   `nftc optimize`/`nftc send` emit ([compile_chain_default_correct]). *)
+   `nftc optimize`/`nftc send` emit
+   ([Optimize_Linearize_MutSt.compile_chain_default_mut_st_correct]). *)
 From Nft Require Import Optimize_Linearize.
 (* The typed-layer surface (T1): the Coq surface AST, datatype/coercion
    lattice, symbol tables, selector map and typechecker.  Extracted so the
