@@ -278,7 +278,7 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Setread_UnderJump.vm_callee_write_survives_return \
   Setread_UnderJump.dynset_learned_under_jump \
   Setread_UnderJump.vm_dynset_learned_under_jump \
-  Nft_Tactics.nft_yields_unified \
+  Nft_Tactics.nft_yields_writefree_at \
   compile_nat_effect_correct \
   Known_Infidelities.vmaphit_daddr_rewritten \
   Known_Infidelities.vmaphit_stores_nat_mapping \
