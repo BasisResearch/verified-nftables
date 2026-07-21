@@ -14,8 +14,9 @@
 
     The pass is SELF-GUARDING: it rewrites ONLY where the syntactic precondition
     (two adjacent full-width payload equalities) holds, so its correctness is
-    UNCONDITIONAL — [eval_chain (paymerge_chain c) e p = eval_chain c e p] for
-    every chain, env and packet, no hypotheses.  The load-bearing fact is that a
+    UNCONDITIONAL — its state-fold preservation
+    [Optimize_Linearize_MutSt.paymerge_chain_mut_st] holds for every chain, env
+    and packet, no hypotheses.  The load-bearing fact is that a
     payload read splits at any interior offset ([read_payload_split]) and its
     loadability splits the same way ([read_payload_ok_split]) — both hold for
     ALL packets (a short/absent header fails the wide read exactly when it fails
@@ -414,59 +415,11 @@ Proof.
 Qed.
 
 (* ================================================================== *)
-(** ** Lift to [eval_rules] / [eval_chain]. *)
-
-Lemma merge_body_loadable : forall b p,
-  body_loadable_walk (merge_body b) p = body_loadable_walk b p.
-Proof. intros b p. apply merge_body_fuel_loadable. Qed.
-
-Lemma merge_body_applies : forall b e p,
-  rule_applies_walk (merge_body b) e p = rule_applies_walk b e p.
-Proof. intros b e p. apply merge_body_fuel_applies. Qed.
+(** ** The rule-body projection the state-fold pass threads through. *)
 
 Lemma paymerge_rule_body : forall r,
   r_body (paymerge_rule r) = merge_body (r_body r).
 Proof. reflexivity. Qed.
-
-Lemma paymerge_rule_loadable : forall r e p,
-  rule_loadable (paymerge_rule r) e p = rule_loadable r e p.
-Proof.
-  intros r e p. unfold rule_loadable. rewrite paymerge_rule_body.
-  rewrite merge_body_loadable, merge_body_synproxy_stops, merge_body_thread.
-  reflexivity.
-Qed.
-
-Lemma paymerge_rule_applies : forall r e p,
-  rule_applies (paymerge_rule r) e p = rule_applies r e p.
-Proof.
-  intros r e p. unfold rule_applies. rewrite paymerge_rule_body.
-  apply merge_body_applies.
-Qed.
-
-Lemma paymerge_outcome : forall r e p,
-  outcome (paymerge_rule r) e p = outcome r e p.
-Proof.
-  intros r e p. unfold outcome. rewrite paymerge_rule_body.
-  rewrite merge_body_synproxy_stops, merge_body_thread.
-  destruct (body_synproxy_stops (r_body r) p); reflexivity.
-Qed.
-
-Lemma paymerge_eval_rules : forall rs e p,
-  eval_rules (map paymerge_rule rs) e p = eval_rules rs e p.
-Proof.
-  induction rs as [| r rs IH]; intros e p; [reflexivity|].
-  cbn [map]. rewrite ?eval_rules_cons, ?eval_rules_nil.
-  rewrite paymerge_rule_loadable, paymerge_rule_applies, paymerge_outcome.
-  destruct (rule_loadable r e p && rule_applies r e p); [| apply IH].
-  destruct (outcome r e p) as [v|]; [destruct v|]; rewrite ?IH; reflexivity.
-Qed.
-
-Theorem paymerge_chain_eval : forall c e p,
-  eval_chain (paymerge_chain c) e p = eval_chain c e p.
-Proof.
-  intros c e p. unfold eval_chain, paymerge_chain. cbn [c_rules c_policy].
-  rewrite paymerge_eval_rules. reflexivity.
-Qed.
 
 (* ================================================================== *)
 (** ** Non-vacuity: the pass GENUINELY rewrites.
@@ -499,6 +452,3 @@ Example paymerge_no_gap :
   merge_body [BMatch (MEq FThSport [0;1]); BMatch (MEq FTcpSeq [0;0;0;0])]
   = [BMatch (MEq FThSport [0;1]); BMatch (MEq FTcpSeq [0;0;0;0])].
 Proof. vm_compute. reflexivity. Qed.
-
-(** Axiom-freedom audit (build-time guard). *)
-Print Assumptions paymerge_chain_eval.
