@@ -183,9 +183,9 @@ Definition mkpkt_p (saddr daddr sport dport : data) (dir : bool) : packet :=
      pkt_flow := [7;7]; pkt_untracked := false; pkt_ctdir_orig := dir; pkt_ct_present := true |}.
 
 Definition out_sport (e : env) (p : packet) : data :=
-  slice (pkt_th (snd (snd (eval_chain_trace Hprerouting dnat_port_chain e p)))) 0 2.
+  slice (pkt_th (snd (snd (eval_chain_u Hprerouting dnat_port_chain e p)))) 0 2.
 Definition out_dport (e : env) (p : packet) : data :=
-  slice (pkt_th (snd (snd (eval_chain_trace Hprerouting dnat_port_chain e p)))) 2 2.
+  slice (pkt_th (snd (snd (eval_chain_u Hprerouting dnat_port_chain e p)))) 2 2.
 
 (* FORWARD packet: client (sport 4444) -> router:80 ([0;80]).  dnat to 8.8.8.8:8080
    rewrites the DESTINATION port 80 -> 8080 ([31;144]). *)
@@ -196,7 +196,7 @@ Proof. vm_compute. reflexivity. Qed.
 (* The env after the forward packet records the ORIGINAL dest port ([0;80]) as the
    4th tuple component, alongside the new port 8080. *)
 Definition env_after_fwd_p : env :=
-  fst (snd (eval_chain_trace Hprerouting dnat_port_chain env0 fwd_p)).
+  fst (snd (eval_chain_u Hprerouting dnat_port_chain env0 fwd_p)).
 Lemma mapping_port_stored :
   e_nat env_after_fwd_p [7;7]
     = Some (Some [9;9;9;9], Some [8;8;8;8], Some 8080, Some [0;80]).

@@ -153,7 +153,8 @@ Lemma nat_operand_addr_snat_eq : forall h f m T e p,
   map_lookup_data (field_value f e p) (e_map e m) = T ->
   nat_operand_addr h (snat_map_spec f m) e p = nat_operand_addr h (snat_imm_spec T) e p.
 Proof.
-  intros h f m T e p Hlk. unfold nat_operand_addr, nat_has_addr, nat_addr.
+  intros h f m T e p Hlk.
+  unfold nat_operand_addr, nat_new_addr, nat_opnd, nat_portonly, nat_has_addr, nat_addr.
   cbn [nat_kind nat_src nat_map nat_field nat_addr_imm snat_map_spec snat_imm_spec].
   rewrite nat_map_key_single, Hlk. reflexivity.
 Qed.

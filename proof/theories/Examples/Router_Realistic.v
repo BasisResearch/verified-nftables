@@ -486,7 +486,10 @@ Qed.
     [global_forward]/[global_inbound], the [eval_rules_j] sub-chain
     reduction, and the [eval_hook] dispatch theorems — is about the config
     with the ONE limiter rule ([Router_Private.r_icmp]).  The config is
-    LIMITER-TOLERANT, so each statement is the proven VERDICT projection of
+    LIMITER-TOLERANT over its NAT-free chain env
+    ([Router_Input.global_tol_chains]; the masquerade chain is outside every
+    pure-strand license since M3 — see [Router_Input]'s license header), so
+    each statement is the proven VERDICT projection of
     the unified effect-threading semantics; the license instances are
     re-stated here (and proved from
     [Semantics.eval_table_u_limiter_tolerant] and friends) so this file's
@@ -495,27 +498,27 @@ Qed.
     [Router_Forward.forward_licensed] / [Router_Private.private_rules_licensed] /
     [Router_Hooks.input_hook_licensed] / [Router_Hooks.forward_hook_licensed]. *)
 
-Theorem inbound_licensed_real : forall fuel e p,
-  eval_table fuel global_chains global_inbound e p
-  = fst (eval_table_u fuel global_chains global_inbound e p).
+Theorem inbound_licensed_real : forall h fuel e p,
+  eval_table fuel Router_Input.global_tol_chains global_inbound e p
+  = fst (eval_table_u h fuel Router_Input.global_tol_chains global_inbound e p).
 Proof. exact Router_Input.inbound_licensed. Qed.
 
-Theorem forward_licensed_real : forall fuel e p,
-  eval_table fuel global_chains global_forward e p
-  = fst (eval_table_u fuel global_chains global_forward e p).
+Theorem forward_licensed_real : forall h fuel e p,
+  eval_table fuel Router_Input.global_tol_chains global_forward e p
+  = fst (eval_table_u h fuel Router_Input.global_tol_chains global_forward e p).
 Proof. exact Router_Forward.forward_licensed. Qed.
 
-Theorem private_rules_licensed_real : forall fuel e p,
-  eval_rules_j fuel global_chains (c_rules global_inbound_private) e p
-  = fst (eval_rules_u fuel global_chains (c_rules global_inbound_private) e p).
+Theorem private_rules_licensed_real : forall h fuel e p,
+  eval_rules_j fuel Router_Input.global_tol_chains (c_rules global_inbound_private) e p
+  = fst (eval_rules_u h fuel Router_Input.global_tol_chains (c_rules global_inbound_private) e p).
 Proof. exact Router_Private.private_rules_licensed. Qed.
 
 Theorem input_hook_licensed_real : forall fuel e p,
-  eval_hook fuel global_hooks Hinput e p
-  = fst (eval_hook_u fuel global_hooks Hinput e p).
+  eval_hook fuel Router_Hooks.global_tol_hooks Hinput e p
+  = fst (eval_hook_u Hinput fuel Router_Hooks.global_tol_hooks e p).
 Proof. exact Router_Hooks.input_hook_licensed. Qed.
 
 Theorem forward_hook_licensed_real : forall fuel e p,
-  eval_hook fuel global_hooks Hforward e p
-  = fst (eval_hook_u fuel global_hooks Hforward e p).
+  eval_hook fuel Router_Hooks.global_tol_hooks Hforward e p
+  = fst (eval_hook_u Hforward fuel Router_Hooks.global_tol_hooks e p).
 Proof. exact Router_Hooks.forward_hook_licensed. Qed.

@@ -20,6 +20,11 @@ From Nft Require Import Bytes Packet Verdict Bytecode Syntax Semantics Compile.
 Import ListNotations.
 Local Open Scope string_scope.
 
+(* Pins below hold at EVERY netfilter hook [h] (no rule here carries a NAT
+   terminal, so the hook is inert); the section generalizes each statement. *)
+Section AtHook.
+Context (h : hook_id).
+
 Definition base_meta : meta_key -> data := fun _ => [].
 
 Definition mkpkt (meta : meta_key -> data) (flow : data) : packet :=
@@ -56,12 +61,12 @@ Definition pkt_mark0 : packet := mkpkt base_meta [3;3].
 
 (* The fold's walk sees the intra-rule write: the match reads the mark the
    preceding set statement just wrote. *)
-Theorem setread_accepted : eval_chain_mut setread_chain env0 pkt_mark0 = Accept.
+Theorem setread_accepted : eval_chain_mut h setread_chain env0 pkt_mark0 = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The compiled VM agrees (both sides are kernel-faithful). *)
 Theorem vm_setread_accepted :
-  run_chain_mut (compile_chain setread_chain) Drop env0 pkt_mark0 = Accept.
+  run_chain_mut h (compile_chain setread_chain) Drop env0 pkt_mark0 = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* Non-vacuity: a rule whose comparison wants a DIFFERENT mark still drops —
@@ -74,10 +79,10 @@ Definition setread_wrong_chain : chain :=
   {| c_policy := Drop; c_rules := [setread_wrong_rule] |}.
 
 Theorem setread_wrong_dropped :
-  eval_chain_mut setread_wrong_chain env0 pkt_mark0 = Drop.
+  eval_chain_mut h setread_wrong_chain env0 pkt_mark0 = Drop.
 Proof. vm_compute. reflexivity. Qed.
 Theorem vm_setread_wrong_dropped :
-  run_chain_mut (compile_chain setread_wrong_chain) Drop env0 pkt_mark0 = Drop.
+  run_chain_mut h (compile_chain setread_wrong_chain) Drop env0 pkt_mark0 = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 (* ------------------------------------------------------------------------ *)
@@ -97,11 +102,11 @@ Definition dynset_feedback_chain : chain :=
   {| c_policy := Drop; c_rules := [dynset_feedback_rule] |}.
 
 Theorem dynset_feedback_accepted :
-  eval_chain_mut dynset_feedback_chain env0 pkt_mark9 = Accept.
+  eval_chain_mut h dynset_feedback_chain env0 pkt_mark9 = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem vm_dynset_feedback_accepted :
-  run_chain_mut (compile_chain dynset_feedback_chain) Drop env0 pkt_mark9 = Accept.
+  run_chain_mut h (compile_chain dynset_feedback_chain) Drop env0 pkt_mark9 = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* Non-vacuity: WITHOUT the dynset add, the same lookup misses and the chain
@@ -114,7 +119,7 @@ Definition lookup_only_chain : chain :=
   {| c_policy := Drop; c_rules := [lookup_only_rule] |}.
 
 Theorem lookup_only_dropped :
-  eval_chain_mut lookup_only_chain env0 pkt_mark9 = Drop.
+  eval_chain_mut h lookup_only_chain env0 pkt_mark9 = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 (* ------------------------------------------------------------------------ *)
@@ -129,16 +134,18 @@ Definition break_keeps_rule : rule :=
      r_outcome := OVerdict Accept; r_after := [] |}.
 
 Theorem break_keeps_earlier_write :
-  pkt_meta (snd (snd (rule_step break_keeps_rule env0 pkt_mark0))) MKmark
+  pkt_meta (snd (snd (rule_step h break_keeps_rule env0 pkt_mark0))) MKmark
   = [0;0;0;7].
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem break_yields_no_verdict :
-  fst (rule_step break_keeps_rule env0 pkt_mark0) = None.
+  fst (rule_step h break_keeps_rule env0 pkt_mark0) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The VM step agrees on both components. *)
 Theorem vm_break_agrees :
-  run_rule_step empty_rf (compile_rule break_keeps_rule) env0 pkt_mark0
-  = rule_step break_keeps_rule env0 pkt_mark0.
+  run_rule_step h empty_rf (compile_rule break_keeps_rule) env0 pkt_mark0
+  = rule_step h break_keeps_rule env0 pkt_mark0.
 Proof. vm_compute. reflexivity. Qed.
+
+End AtHook.

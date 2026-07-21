@@ -212,60 +212,90 @@ Proof. rewrite input_hook_smtp_bug_accept. discriminate. Qed.
 
     The registration dispatches to the `global` chain env, which carries the
     ONE limiter rule ([Router_Private.r_icmp]) — not write-free, but
-    LIMITER-TOLERANT.  Each hook the parser registers selects exactly one
-    base chain ([select_input]/[select_forward]/[select_postrouting]
-    above), so every [eval_hook] statement in this file (and in
-    [Router_Realistic]'s hook section) is the proven VERDICT projection of
-    the unified [eval_hook_u]
-    ([Semantics.eval_hook_u_limiter_tolerant_1]), at every fuel, env and
-    packet. *)
+    LIMITER-TOLERANT — and, since M3, the postrouting MASQUERADE, whose NAT
+    data plane (packet rewrite + [e_nat] store + possible NF_DROP) lives
+    inside the fold and is OUTSIDE every pure-strand license (see
+    [Router_Input] § "UNIFIED-SEMANTICS LICENSE").  The filter hooks are
+    licensed over the NAT-free registration [global_tol_hooks] (their bases
+    and jump env restricted to [Router_Input.global_tol_chains]); the
+    postrouting hook is stated over the unified semantics ONLY
+    ([postrouting_hook_masquerades] below; data-plane characterisation in
+    Router_Reach / Router_NatHook; compiler axis in
+    [Correct.compile_hook_u_correct]). *)
+
+Definition global_tol_hooks : list hooked_chain :=
+  map (fun hc => {| hc_hook := hc_hook hc; hc_prio := hc_prio hc;
+                    hc_env := global_tol_chains; hc_base := hc_base hc |})
+      (filter (fun hc => forallb rule_natfree (c_rules (hc_base hc))) global_hooks).
+
+Lemma select_input_tol :
+  select_hook global_tol_hooks Hinput = [(global_tol_chains, global_inbound)].
+Proof. vm_compute. reflexivity. Qed.
+Lemma select_forward_tol :
+  select_hook global_tol_hooks Hforward = [(global_tol_chains, global_forward)].
+Proof. vm_compute. reflexivity. Qed.
+(* the masquerade hook has NO NAT-free registration: it is unified-only *)
+Lemma select_postrouting_tol :
+  select_hook global_tol_hooks Hpostrouting = [].
+Proof. vm_compute. reflexivity. Qed.
 
 Theorem input_hook_licensed : forall fuel e p,
-  eval_hook fuel global_hooks Hinput e p
-  = fst (eval_hook_u fuel global_hooks Hinput e p).
+  eval_hook fuel global_tol_hooks Hinput e p
+  = fst (eval_hook_u Hinput fuel global_tol_hooks e p).
 Proof.
   intros fuel e p. symmetry.
-  apply (eval_hook_u_limiter_tolerant_1 fuel global_hooks Hinput
-           global_chains global_inbound);
-    [exact select_input | vm_compute; reflexivity
+  apply (eval_hook_u_limiter_tolerant_1 Hinput fuel global_tol_hooks
+           global_tol_chains global_inbound);
+    [exact select_input_tol | vm_compute; reflexivity
      | exact global_chains_limiter_tol].
 Qed.
 
 Theorem forward_hook_licensed : forall fuel e p,
-  eval_hook fuel global_hooks Hforward e p
-  = fst (eval_hook_u fuel global_hooks Hforward e p).
+  eval_hook fuel global_tol_hooks Hforward e p
+  = fst (eval_hook_u Hforward fuel global_tol_hooks e p).
 Proof.
   intros fuel e p. symmetry.
-  apply (eval_hook_u_limiter_tolerant_1 fuel global_hooks Hforward
-           global_chains global_forward);
-    [exact select_forward | vm_compute; reflexivity
+  apply (eval_hook_u_limiter_tolerant_1 Hforward fuel global_tol_hooks
+           global_tol_chains global_forward);
+    [exact select_forward_tol | vm_compute; reflexivity
      | exact global_chains_limiter_tol].
 Qed.
 
-Theorem postrouting_hook_licensed : forall fuel e p,
-  eval_hook fuel global_hooks Hpostrouting e p
-  = fst (eval_hook_u fuel global_hooks Hpostrouting e p).
+(* (The historical [postrouting_hook_licensed] — the masquerade hook as a pure
+   projection — is RETIRED: post-M3 it is genuinely false (the pure strand
+   cannot see the NAT drop / packet rewrite).  Its successor is the unified
+   statement below plus the Router_Reach data-plane theorems.) *)
+Theorem postrouting_hook_unified : forall fuel e p,
+  eval_hook_u Hpostrouting (S fuel) global_hooks e p
+  = match eval_table_u Hpostrouting (S fuel) global_chains global_postrouting e p with
+    | (v, s) => if base_continues v then (Accept, s) else (v, s)
+    end.
 Proof.
-  intros fuel e p. symmetry.
-  apply (eval_hook_u_limiter_tolerant_1 fuel global_hooks Hpostrouting
-           global_chains global_postrouting);
-    [exact select_postrouting | vm_compute; reflexivity
-     | exact global_chains_limiter_tol].
+  intros fuel e p. unfold eval_hook_u. rewrite select_postrouting.
+  cbn [eval_ruleset_u].
+  destruct (eval_table_u Hpostrouting (S fuel) global_chains global_postrouting e p)
+    as [v [e' p']].
+  destruct (base_continues v); reflexivity.
 Qed.
 
 (** The mutation-kill registration (inbound<->forward swapped) is licensed
-    too — its hooks still each select one base under the same tolerant env. *)
+    too — over its NAT-free restriction, like the parser's. *)
+Definition global_tol_hooks_bug : list hooked_chain :=
+  map (fun hc => {| hc_hook := hc_hook hc; hc_prio := hc_prio hc;
+                    hc_env := global_tol_chains; hc_base := hc_base hc |})
+      (filter (fun hc => forallb rule_natfree (c_rules (hc_base hc))) global_hooks_bug).
+
 Lemma select_input_bug :
-  select_hook global_hooks_bug Hinput = [(global_chains, global_forward)].
+  select_hook global_tol_hooks_bug Hinput = [(global_tol_chains, global_forward)].
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem input_hook_bug_licensed : forall fuel e p,
-  eval_hook fuel global_hooks_bug Hinput e p
-  = fst (eval_hook_u fuel global_hooks_bug Hinput e p).
+  eval_hook fuel global_tol_hooks_bug Hinput e p
+  = fst (eval_hook_u Hinput fuel global_tol_hooks_bug e p).
 Proof.
   intros fuel e p. symmetry.
-  apply (eval_hook_u_limiter_tolerant_1 fuel global_hooks_bug Hinput
-           global_chains global_forward);
+  apply (eval_hook_u_limiter_tolerant_1 Hinput fuel global_tol_hooks_bug
+           global_tol_chains global_forward);
     [exact select_input_bug | vm_compute; reflexivity
      | exact global_chains_limiter_tol].
 Qed.

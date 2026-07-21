@@ -158,13 +158,21 @@ Qed.
 
 (** [apply_nat_tuple] / [nat_orig_addr] read the spec ONLY through its address
     family and src/dst-ness, so two specs agreeing there have the same effect. *)
+Lemma nat_addrfamily_pkt_ext : forall ns1 ns2 p,
+  nat_addrfamily ns1 = nat_addrfamily ns2 ->
+  nat_addrfamily_pkt ns1 p = nat_addrfamily_pkt ns2 p.
+Proof.
+  intros ns1 ns2 p Hf. unfold nat_addrfamily in Hf.
+  unfold nat_addrfamily_pkt, nat_af_pkt. rewrite Hf. reflexivity.
+Qed.
+
 Lemma apply_nat_tuple_indep : forall ns1 ns2 p m,
   nat_addrfamily ns1 = nat_addrfamily ns2 ->
   nat_is_src ns1 = nat_is_src ns2 ->
   apply_nat_tuple ns1 p m = apply_nat_tuple ns2 p m.
 Proof.
-  intros ns1 ns2 p m Hf Hs. unfold apply_nat_tuple, nat_addrfamily_pkt.
-  rewrite Hf, Hs. reflexivity.
+  intros ns1 ns2 p m Hf Hs. unfold apply_nat_tuple.
+  rewrite (nat_addrfamily_pkt_ext ns1 ns2 p Hf), Hs. reflexivity.
 Qed.
 
 Lemma nat_orig_addr_indep : forall ns1 ns2 p,
@@ -172,8 +180,8 @@ Lemma nat_orig_addr_indep : forall ns1 ns2 p,
   nat_is_src ns1 = nat_is_src ns2 ->
   nat_orig_addr ns1 p = nat_orig_addr ns2 p.
 Proof.
-  intros ns1 ns2 p Hf Hs. unfold nat_orig_addr, nat_addrfamily_pkt.
-  rewrite Hf, Hs. reflexivity.
+  intros ns1 ns2 p Hf Hs. unfold nat_orig_addr.
+  rewrite (nat_addrfamily_pkt_ext ns1 ns2 p Hf), Hs. reflexivity.
 Qed.
 
 (** The merged operand resolves to the map value at the key. *)
@@ -181,7 +189,8 @@ Lemma nat_operand_addr_dnat_eq : forall h f m T e p,
   map_lookup_data (field_value f e p) (e_map e m) = T ->
   nat_operand_addr h (dnat_map_spec f m) e p = nat_operand_addr h (dnat_imm_spec T) e p.
 Proof.
-  intros h f m T e p Hlk. unfold nat_operand_addr, nat_has_addr, nat_addr.
+  intros h f m T e p Hlk.
+  unfold nat_operand_addr, nat_new_addr, nat_opnd, nat_portonly, nat_has_addr, nat_addr.
   cbn [nat_kind nat_src nat_map nat_field nat_addr_imm dnat_map_spec dnat_imm_spec].
   rewrite nat_map_key_single, Hlk. reflexivity.
 Qed.

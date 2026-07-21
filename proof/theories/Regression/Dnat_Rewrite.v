@@ -5,7 +5,7 @@
     where [FIp4Daddr] reads) to the target operand — the kernel's
     [NF_NAT_MANIP_DST] from [NFTNL_EXPR_NAT_REG_ADDR_MIN]
     (nf_tables.h NFT_NAT_DNAT; netlink_linearize.c:1304).  These theorems pin
-    that data-plane effect: the whole-chain trace ([eval_chain_trace] /
+    that data-plane effect: the unified fold ([eval_chain_u] /
     [apply_nat]) performs the destination rewrite, and the naive "NAT modelled as
     plain accept" alternative — under which `chain_out dnat_chain p = p` would be
     provable — is refuted on a concrete packet ([dnat_is_not_noop]). *)
@@ -25,7 +25,7 @@ Definition dnat_chain : chain := {| c_policy := Accept; c_rules := [dnat_rule] |
 
 (* dnat is hook-invariant; evaluate the trace at the prerouting hook. *)
 Definition chain_out (c : chain) (e : env) (p : packet) : packet :=
-  snd (snd (eval_chain_trace Hprerouting c e p)).
+  snd (snd (eval_chain_u Hprerouting c e p)).
 
 (* The dnat rule's terminal outcome is Accept (verdict component unchanged). *)
 Lemma dnat_outcome_accept : forall e p, outcome dnat_rule e p = Some Accept.
@@ -65,9 +65,10 @@ Qed.
    data-plane drop predicate [nat_drops] is false for it on any packet. *)
 Lemma dnat_no_drop : forall h e q, nat_drops h dnat_rule e q = false.
 Proof.
-  intros h e q. unfold nat_drops, dnat_rule.
+  intros h e q. unfold nat_drops, nat_drops_c, dnat_rule.
+  cbn [r_nat r_outcome].
   destruct (e_nat e (pkt_flow q)); [reflexivity|].
-  unfold nat_iface_addr_absent, dnat_spec; cbn [nat_kind r_nat r_outcome].
+  unfold nat_iface_addr_absent, dnat_spec; cbn [nat_kind].
   destruct (pkt_ctdir_orig q); reflexivity.
 Qed.
 
@@ -77,15 +78,17 @@ Qed.
 Theorem dnat_output : forall h e p,
   pkt_ctdir_orig p = true ->
   e_nat e (pkt_flow p) = None ->
-  eval_chain_trace h dnat_chain e p
+  eval_chain_u h dnat_chain e p
     = (Accept, (store_nat_mapping e p
                   (Some (slice (pkt_nh p) 16 4), Some [10;0;0;1], None, None),
                 set_daddr nat_fam_ip4 p [10;0;0;1])).
 Proof.
   intros h e p Horig Hnone.
-  unfold eval_chain_trace, dnat_chain. cbn [c_rules eval_rules_trace].
-  replace (rule_step dnat_rule e p) with (Some Accept, (e, p)) by reflexivity.
-  cbn -[apply_nat dnat_rule nat_drops].
+  unfold eval_chain_u, eval_table_u, dnat_chain.
+  cbn [c_rules List.length eval_rules_u].
+  replace (rule_step h dnat_rule e p)
+    with (if nat_drops h dnat_rule e p then (Some Drop, (e, p))
+          else (Some Accept, apply_nat h dnat_rule e p)) by reflexivity.
   rewrite dnat_no_drop.
   rewrite (dnat_apply h e p Horig Hnone). reflexivity.
 Qed.
@@ -272,7 +275,7 @@ Qed.
 
 Lemma dnat_port_no_drop : forall h e q, nat_drops h dnat_port_rule e q = false.
 Proof.
-  intros h e q. unfold nat_drops, dnat_port_rule.
+  intros h e q. unfold nat_drops, nat_drops_c, dnat_port_rule. cbn [r_nat r_outcome].
   destruct (e_nat e (pkt_flow q)); [reflexivity|].
   unfold nat_iface_addr_absent, dnat_port_spec; cbn [nat_kind r_nat r_outcome].
   destruct (pkt_ctdir_orig q); reflexivity.
@@ -282,16 +285,18 @@ Qed.
 Theorem dnat_port_output : forall h e p,
   pkt_ctdir_orig p = true ->
   e_nat e (pkt_flow p) = None ->
-  eval_chain_trace h dnat_port_chain e p
+  eval_chain_u h dnat_port_chain e p
     = (Accept, (store_nat_mapping e p
                   (Some (slice (pkt_nh p) 16 4), Some [10;0;0;1], Some 8080,
                    Some (slice (pkt_th p) 2 2)),
                 set_dport (set_daddr nat_fam_ip4 p [10;0;0;1]) [31; 144])).
 Proof.
   intros h e p Horig Hnone.
-  unfold eval_chain_trace, dnat_port_chain. cbn [c_rules eval_rules_trace].
-  replace (rule_step dnat_port_rule e p) with (Some Accept, (e, p)) by reflexivity.
-  cbn -[apply_nat dnat_port_rule nat_drops].
+  unfold eval_chain_u, eval_table_u, dnat_port_chain.
+  cbn [c_rules List.length eval_rules_u].
+  replace (rule_step h dnat_port_rule e p)
+    with (if nat_drops h dnat_port_rule e p then (Some Drop, (e, p))
+          else (Some Accept, apply_nat h dnat_port_rule e p)) by reflexivity.
   rewrite dnat_port_no_drop.
   rewrite (dnat_port_apply h e p Horig Hnone). reflexivity.
 Qed.

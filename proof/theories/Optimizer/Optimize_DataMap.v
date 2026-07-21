@@ -10,7 +10,7 @@
     Unlike the value→set / concat / vmap merges (which consolidate the VERDICT and
     are checked against the verdict-only [eval_chain]), a data-map merge changes the
     packet's META state (the `mark`), which [eval_chain] cannot observe.  So the
-    soundness here is stated over the DSL STATE-threading semantics [eval_rules_mut]
+    soundness here is stated over the DSL STATE-threading semantics [eval_rules_mut h]
     / [dsl_step] (which thread each rule's [body_writes] meta effect), NOT
     [eval_chain].  This is the non-vacuous content: the map yields exactly the right
     mark.  The verdict side is trivial (all rules are verdict-neutral [Continue], so
@@ -58,6 +58,11 @@ From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
   Optimize Optimize_ValueSet.
 Import ListNotations.
 Local Open Scope nat_scope.
+
+(* The effect certificates below hold at EVERY netfilter hook (the rules here
+   carry no NAT terminal, so the hook is inert in their step semantics). *)
+Section AtHook.
+Context (h : hook_id).
 
 (** An ORIGINAL rule: `<field> = v  meta <k> set M` (verdict-neutral). *)
 Definition orig_map_rule (f : field) (v M : data) (k : meta_key) : rule :=
@@ -172,13 +177,13 @@ Lemma dsl_step_map_merge : forall (f : field) (v1 v2 M1 M2 : data)
   field_fixed_len f = Some (List.length v1) ->
   field_fixed_len f = Some (List.length v2) ->
   data_eqb v1 v2 = false ->
-  dsl_step (mk_map_rule f setname mapname k) e p
-  = (let '(e1, p1) := dsl_step (orig_map_rule f v1 M1 k) e p in
-     dsl_step (orig_map_rule f v2 M2 k) e1 p1).
+  dsl_step h (mk_map_rule f setname mapname k) e p
+  = (let '(e1, p1) := dsl_step h (orig_map_rule f v1 M1 k) e p in
+     dsl_step h (orig_map_rule f v2 M2 k) e1 p1).
 Proof.
   intros f v1 v2 M1 M2 setname mapname k e p Hpl Hset Hmap Hfx1 Hfx2 Hne.
-  rewrite (dsl_step_after_free (mk_map_rule f setname mapname k) e p) by reflexivity.
-  rewrite (dsl_step_after_free (orig_map_rule f v1 M1 k) e p) by reflexivity.
+  rewrite (dsl_step_after_free h (mk_map_rule f setname mapname k) e p) by reflexivity.
+  rewrite (dsl_step_after_free h (orig_map_rule f v1 M1 k) e p) by reflexivity.
   unfold dsl_writes.
   destruct (field_loadable f p) eqn:Hld.
   - (* field loads *)
@@ -191,7 +196,7 @@ Proof.
     + (* fvp = v1: orig1 set mark to M1; orig2 (v2) cannot match (v1<>v2); merged map -> M1 *)
       pose proof (proj1 (data_eqb_true_iff (field_value f e p) v1) E1) as Ev1.
       cbv iota beta.
-      rewrite (dsl_step_after_free (orig_map_rule f v2 M2 k) e (set_meta p k M1)) by reflexivity.
+      rewrite (dsl_step_after_free h (orig_map_rule f v2 M2 k) e (set_meta p k M1)) by reflexivity.
       unfold dsl_writes.
       rewrite (body_writes_orig f v2 M2 k e (set_meta p k M1) Hfx2 (eq_trans Hldm1 Hld)).
       rewrite Hfvm1, Ev1. cbn [orb].
@@ -199,14 +204,14 @@ Proof.
     + destruct (data_eqb (field_value f e p) v2) eqn:E2.
       * (* fvp = v2: orig1 no match (q=p); orig2 sets M2; merged map -> M2 (skips v1) *)
         cbv iota beta.
-        rewrite (dsl_step_after_free (orig_map_rule f v2 M2 k) e p) by reflexivity.
+        rewrite (dsl_step_after_free h (orig_map_rule f v2 M2 k) e p) by reflexivity.
         unfold dsl_writes.
         rewrite (body_writes_orig f v2 M2 k e p Hfx2 Hld).
         rewrite E2. cbn [orb]. unfold map2_map; cbn [map_lookup_data].
         rewrite E1, E2. reflexivity.
       * (* fvp neither: both originals fall through (q=p), merged head fails *)
         cbv iota beta.
-        rewrite (dsl_step_after_free (orig_map_rule f v2 M2 k) e p) by reflexivity.
+        rewrite (dsl_step_after_free h (orig_map_rule f v2 M2 k) e p) by reflexivity.
         unfold dsl_writes.
         rewrite (body_writes_orig f v2 M2 k e p Hfx2 Hld).
         rewrite E2. cbn [orb]. reflexivity.
@@ -223,7 +228,7 @@ Proof.
       by (unfold body_writes; cbn [orig_map_rule r_body body_res_state body_step match_consume];
           unfold eval_matchcond, match_loadable; rewrite Hld; reflexivity).
     rewrite Hmerged_p, Horig1. cbv iota beta.
-    rewrite (dsl_step_after_free (orig_map_rule f v2 M2 k) e p) by reflexivity.
+    rewrite (dsl_step_after_free h (orig_map_rule f v2 M2 k) e p) by reflexivity.
     unfold dsl_writes. rewrite Horig2. reflexivity.
 Qed.
 
@@ -238,13 +243,13 @@ Lemma outcome_mk_map_none : forall f setname mapname k e p,
 Proof. reflexivity. Qed.
 
 Lemma step_orig_map_none : forall f v M k e p,
-  fst (rule_step (orig_map_rule f v M k) e p) = None.
+  fst (rule_step h (orig_map_rule f v M k) e p) = None.
 Proof.
   intros. unfold rule_step. cbn [orig_map_rule r_body body_step match_consume].
   destruct (eval_matchcond (MCmp f CEq v) e p); reflexivity.
 Qed.
 Lemma step_mk_map_none : forall f setname mapname k e p,
-  fst (rule_step (mk_map_rule f setname mapname k) e p) = None.
+  fst (rule_step h (mk_map_rule f setname mapname k) e p) = None.
 Proof.
   intros. unfold rule_step. cbn [mk_map_rule r_body body_step match_consume].
   destruct (eval_matchcond (MConcatSet [f] false setname) e p);
@@ -252,18 +257,18 @@ Proof.
 Qed.
 
 Lemma eval_rules_mut_continue : forall r rest e p,
-  fst (rule_step r e p) = None ->
-  eval_rules_mut (r :: rest) e p
-  = (let '(e', p') := dsl_step r e p in eval_rules_mut rest e' p').
+  fst (rule_step h r e p) = None ->
+  eval_rules_mut h (r :: rest) e p
+  = (let '(e', p') := dsl_step h r e p in eval_rules_mut h rest e' p').
 Proof.
   intros r rest e p Ho. cbn [eval_rules_mut].
   unfold dsl_step.
-  destruct (rule_step r e p) as [v [e' p']]. cbn [fst] in Ho. subst v.
+  destruct (rule_step h r e p) as [v [e' p']]. cbn [fst] in Ho. subst v.
   reflexivity.
 Qed.
 
 (** *** THE per-pass STATE correctness (non-vacuous): replacing the two originals by
-    the merged map rule preserves the STATE-threading evaluation [eval_rules_mut] on
+    the merged map rule preserves the STATE-threading evaluation [eval_rules_mut h] on
     every packet (so the rest of the chain sees the SAME mark). *)
 Theorem eval_rules_mut_map_merge : forall (f : field) (v1 v2 M1 M2 : data)
     (setname mapname : string) (k : meta_key) (rest : list rule) (e : env) (p : packet),
@@ -273,14 +278,14 @@ Theorem eval_rules_mut_map_merge : forall (f : field) (v1 v2 M1 M2 : data)
   field_fixed_len f = Some (List.length v1) ->
   field_fixed_len f = Some (List.length v2) ->
   data_eqb v1 v2 = false ->
-  eval_rules_mut (mk_map_rule f setname mapname k :: rest) e p
-  = eval_rules_mut (orig_map_rule f v1 M1 k :: orig_map_rule f v2 M2 k :: rest) e p.
+  eval_rules_mut h (mk_map_rule f setname mapname k :: rest) e p
+  = eval_rules_mut h (orig_map_rule f v1 M1 k :: orig_map_rule f v2 M2 k :: rest) e p.
 Proof.
   intros f v1 v2 M1 M2 setname mapname k rest e p Hpl Hset Hmap Hfx1 Hfx2 Hne.
   rewrite (eval_rules_mut_continue _ rest e p (step_mk_map_none f setname mapname k e p)).
   rewrite (eval_rules_mut_continue _ _ e p (step_orig_map_none f v1 M1 k e p)).
   rewrite (dsl_step_map_merge f v1 v2 M1 M2 setname mapname k e p Hpl Hset Hmap Hfx1 Hfx2 Hne).
-  destruct (dsl_step (orig_map_rule f v1 M1 k) e p) as [e1 p1].
+  destruct (dsl_step h (orig_map_rule f v1 M1 k) e p) as [e1 p1].
   rewrite (eval_rules_mut_continue _ rest e1 p1 (step_orig_map_none f v2 M2 k e1 p1)).
   reflexivity.
 Qed.
@@ -354,10 +359,10 @@ Lemma dsl_step_bare_offkey : forall f v1 v2 M1 M2 mapname k e p,
   field_loadable f p = true ->
   data_eqb (field_value f e p) v1 = false ->
   data_eqb (field_value f e p) v2 = false ->
-  dsl_step (mk_map_rule_bare f mapname k) e p = (e, set_meta p k []).
+  dsl_step h (mk_map_rule_bare f mapname k) e p = (e, set_meta p k []).
 Proof.
   intros f v1 v2 M1 M2 mapname k e p Hmap Hld H1 H2.
-  rewrite (dsl_step_after_free (mk_map_rule_bare f mapname k) e p) by reflexivity.
+  rewrite (dsl_step_after_free h (mk_map_rule_bare f mapname k) e p) by reflexivity.
   unfold dsl_writes. unfold body_writes; cbn [mk_map_rule_bare r_body body_res_state body_step match_consume].
   cbn [vsrc_loadable fields_loadable forallb]. rewrite Hld, Bool.andb_true_r.
   rewrite eval_vsrc_vmap_single, Hmap.
@@ -369,10 +374,10 @@ Lemma dsl_step_orig_offkey : forall f v M k e p,
   field_fixed_len f = Some (List.length v) ->
   field_loadable f p = true ->
   data_eqb (field_value f e p) v = false ->
-  dsl_step (orig_map_rule f v M k) e p = (e, p).
+  dsl_step h (orig_map_rule f v M k) e p = (e, p).
 Proof.
   intros f v M k e p Hfx Hld Hne.
-  rewrite (dsl_step_after_free (orig_map_rule f v M k) e p) by reflexivity.
+  rewrite (dsl_step_after_free h (orig_map_rule f v M k) e p) by reflexivity.
   unfold dsl_writes. rewrite (body_writes_orig f v M k e p Hfx Hld), Hne. reflexivity.
 Qed.
 
@@ -383,8 +388,8 @@ Lemma dsl_step_orig_pair_offkey : forall f v1 v2 M1 M2 k e p,
   field_loadable f p = true ->
   data_eqb (field_value f e p) v1 = false ->
   data_eqb (field_value f e p) v2 = false ->
-  (let '(e1, p1) := dsl_step (orig_map_rule f v1 M1 k) e p in
-   dsl_step (orig_map_rule f v2 M2 k) e1 p1) = (e, p).
+  (let '(e1, p1) := dsl_step h (orig_map_rule f v1 M1 k) e p in
+   dsl_step h (orig_map_rule f v2 M2 k) e1 p1) = (e, p).
 Proof.
   intros f v1 v2 M1 M2 k e p Hfx1 Hfx2 Hld H1 H2.
   rewrite (dsl_step_orig_offkey f v1 M1 k e p Hfx1 Hld H1). cbv iota beta.
@@ -405,9 +410,9 @@ Theorem mapn_bare_diverges_offkey : forall f v1 v2 M1 M2 mapname k e p,
   field_loadable f p = true ->
   data_eqb (field_value f e p) v1 = false ->
   data_eqb (field_value f e p) v2 = false ->
-  dsl_step (mk_map_rule_bare f mapname k) e p = (e, set_meta p k [])
-  /\ (let '(e1, p1) := dsl_step (orig_map_rule f v1 M1 k) e p in
-      dsl_step (orig_map_rule f v2 M2 k) e1 p1) = (e, p).
+  dsl_step h (mk_map_rule_bare f mapname k) e p = (e, set_meta p k [])
+  /\ (let '(e1, p1) := dsl_step h (orig_map_rule f v1 M1 k) e p in
+      dsl_step h (orig_map_rule f v2 M2 k) e1 p1) = (e, p).
 Proof.
   intros f v1 v2 M1 M2 mapname k e p Hmap Hfx1 Hfx2 Hld H1 H2. split.
   - exact (dsl_step_bare_offkey f v1 v2 M1 M2 mapname k e p Hmap Hld H1 H2).
@@ -753,3 +758,5 @@ Print Assumptions dsl_step_map_merge.
 Print Assumptions eval_rules_mut_map_merge.
 Print Assumptions eval_rules_map_merge.
 Print Assumptions optimize_rules_datamap_eval.
+
+End AtHook.

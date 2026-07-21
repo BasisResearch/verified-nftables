@@ -558,13 +558,14 @@ Definition bug_inbound_world : chain :=
                                BMatch (MEq FThDport [0;22])];
      r_outcome := OVerdict Accept; r_after := [] |}] |}.
 
-(* The chain env with the bugged inbound_world substituted for the parser's. *)
+(* The chain env with the bugged inbound_world substituted for the parser's.
+   (NAT-free like [global_tol_chains]: the masquerade chain is outside every
+   pure-strand license since M3 — see the license header below.) *)
 Definition bug_chains : list (string * chain) :=
   [("inbound_world", bug_inbound_world);
    ("inbound_private", global_inbound_private);
    ("inbound", global_inbound);
-   ("forward", global_forward);
-   ("postrouting", global_postrouting)].
+   ("forward", global_forward)].
 
 (* Under the bug, the SAME wrong-source ssh packet is ACCEPTED -- the ssh-to-the-
    world hole. *)
@@ -606,31 +607,46 @@ Proof. repeat split; vm_compute; reflexivity. Qed.
 
     The router `global` table is NOT write-free: `inbound_private`'s first
     rule carries `limit rate 5/second`, whose bucket consumption is an env
-    write ([Router_Private.r_icmp]; [rule_writefree] computes [false] on it).
-    Every [eval_table]/[eval_rules_j] statement in this file — and in
-    Router_Private / Router_Realistic / Router_Forward / Router_Hooks /
-    Nft_Demo_Concrete — is nonetheless a statement about THE unified
-    effect-threading semantics: the config is LIMITER-TOLERANT
-    ([Semantics.chains_limiter_tol], Compute-checked below) — its only
-    state write is that single NON-INVERTED limiter match, in last body
-    position, under a terminal `accept` — so the pure jump strand is the
-    proven VERDICT projection of the unified fold
-    ([Semantics.eval_table_u_limiter_tolerant]) at EVERY fuel, env and
-    packet, jumps and re-entries included.  No rule of this config is ever
-    modelled by an unlicensed pure evaluator. *)
+    write ([Router_Private.r_icmp]; [rule_writefree] computes [false] on it) —
+    and since M3 the `postrouting` chain's masquerade is a DATA-PLANE WRITE
+    with a possible NF_DROP ([Semantics.apply_nat]/[nat_drops] inside the
+    fold), so a chain environment CONTAINING it is genuinely outside every
+    pure-strand license (an env whose vmap jumps into it can diverge:
+    pure Accept vs kernel Drop on an address-less interface).  The license
+    below is therefore stated over [global_tol_chains] — the table's
+    NAT-free chains, exactly the jump environment of the filter tables the
+    pure-strand statements in this file evaluate — which is LIMITER-TOLERANT
+    ([Semantics.chains_limiter_tol], Compute-checked below): its only state
+    write is that single NON-INVERTED limiter match, in last body position,
+    under a terminal `accept`, so the pure jump strand is the proven VERDICT
+    projection of the unified fold
+    ([Semantics.eval_table_u_limiter_tolerant]) at EVERY hook, fuel, env and
+    packet, jumps and re-entries included.  The masquerade chain itself is
+    stated over the unified/effect-threading semantics ONLY
+    (Router_Reach / Router_NatHook); the demo cruxes are additionally
+    recomputed against [eval_table_u] directly in Nft_Demo_Concrete. *)
 
-Lemma global_chains_limiter_tol : chains_limiter_tol global_chains = true.
+Definition global_tol_chains : list (string * chain) :=
+  filter (fun nc => forallb rule_natfree (c_rules (snd nc))) global_chains.
+
+(* [global_tol_chains] = global_chains minus exactly the masquerade chain. *)
+Lemma global_tol_chains_names :
+  map fst global_tol_chains
+  = ["inbound_world"; "inbound_private"; "inbound"; "forward"]%string.
+Proof. vm_compute. reflexivity. Qed.
+
+Lemma global_chains_limiter_tol : chains_limiter_tol global_tol_chains = true.
 Proof. vm_compute. reflexivity. Qed.
 
 (** Rule-list form: every [eval_rules_j … global_chains rs …] lemma above
     (e.g. [inbound_world_eval]) is the verdict projection of
     [eval_rules_u] on any limiter-tolerant entry list. *)
-Theorem router_rules_licensed : forall fuel rs e p,
+Theorem router_rules_licensed : forall h fuel rs e p,
   forallb rule_limiter_tol rs = true ->
-  eval_rules_j fuel global_chains rs e p
-  = fst (eval_rules_u fuel global_chains rs e p).
+  eval_rules_j fuel global_tol_chains rs e p
+  = fst (eval_rules_u h fuel global_tol_chains rs e p).
 Proof.
-  intros fuel rs e p Hrs. symmetry.
+  intros h fuel rs e p Hrs. symmetry.
   apply eval_rules_u_limiter_tolerant;
     [exact Hrs | exact global_chains_limiter_tol].
 Qed.
@@ -638,21 +654,21 @@ Qed.
 (** THE table license for every
     [eval_table … global_chains global_inbound …] theorem here and in the
     dependent files. *)
-Theorem inbound_licensed : forall fuel e p,
-  eval_table fuel global_chains global_inbound e p
-  = fst (eval_table_u fuel global_chains global_inbound e p).
+Theorem inbound_licensed : forall h fuel e p,
+  eval_table fuel global_tol_chains global_inbound e p
+  = fst (eval_table_u h fuel global_tol_chains global_inbound e p).
 Proof.
-  intros fuel e p. symmetry.
+  intros h fuel e p. symmetry.
   apply eval_table_u_limiter_tolerant;
     [vm_compute; reflexivity | exact global_chains_limiter_tol].
 Qed.
 
 (** The mutation-kill chain env keeps the same single limiter, so the
     bug-discrimination theorems are unified-semantics statements too. *)
-Theorem bug_chains_licensed : forall fuel e p,
+Theorem bug_chains_licensed : forall h fuel e p,
   eval_table fuel bug_chains global_inbound e p
-  = fst (eval_table_u fuel bug_chains global_inbound e p).
+  = fst (eval_table_u h fuel bug_chains global_inbound e p).
 Proof.
-  intros fuel e p. symmetry.
+  intros h fuel e p. symmetry.
   apply eval_table_u_limiter_tolerant; vm_compute; reflexivity.
 Qed.

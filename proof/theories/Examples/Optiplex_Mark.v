@@ -18,9 +18,9 @@
     rule 1 (the 3389 rule, which does not match) and being marked by rule 2 — and
     the packet that comes OUT is exactly the input with `meta mark` set to 0x99 and
     nothing else changed; carried to the postrouting hook, that mark drives the
-    masquerade.  [eval_chain_trace] runs a whole chain threading the mutated packet
-    rule-by-rule (its verdict is the verified [eval_chain_mut], by
-    [eval_chain_trace_verdict]); [chain_out] is the packet it leaves.
+    masquerade.  [eval_chain_u] runs a whole chain threading the mutated packet
+    rule-by-rule through the SINGLE fold (the NAT data plane included — there is
+    no side trace evaluator since M3); [chain_out] is the packet it leaves.
 
     M4 NOTE — [_real] vs the SUPERSEDED-vacuous originals: the pre-M4 theorems
     pinned the WHOLE env ([e = gen_env]) while also hypothesising a firing
@@ -329,8 +329,11 @@ Proof.
   cbn -[set_daddr field_value e_nat store_nat_mapping
         apply_nat_tuple nat_orig_addr nat_operand_addr nat_port_num nat_orig_port slice pkt_nh].
   rewrite Hnone, Horig.
-  unfold apply_nat_tuple, nat_is_src, nat_operand_addr, nat_addrfamily_pkt,
-    nat_addrfamily, nat_orig_addr, nat_addr, nat_has_addr, nat_orig_port.
+  unfold apply_nat_tuple, apply_nat_tuple_c, nat_is_src, nat_kind_src,
+    nat_operand_addr, nat_new_addr, nat_opnd, nat_addrfamily_pkt, nat_af_pkt,
+    nat_af_norm, nat_addrfamily, nat_orig_addr, nat_orig_addr_c, nat_addr,
+    nat_has_addr, nat_portonly, nat_orig_port, nat_orig_port_c,
+    nat_port_num, nat_port_val.
   cbn -[set_daddr field_value store_nat_mapping slice pkt_nh].
   rewrite Horig. reflexivity.
 Qed.
@@ -352,7 +355,7 @@ Qed.
    [false] and the trace takes the apply-NAT branch, not the NF_DROP one. *)
 Lemma pre2_no_natdrop : forall e p, nat_drops Hprerouting pre2 e p = false.
 Proof.
-  intros e p. unfold nat_drops, pre2, filter_prerouting.
+  intros e p. unfold nat_drops, nat_drops_c, pre2, filter_prerouting.
   cbn -[e_nat pkt_ctdir_orig nat_iface_addr_absent].
   unfold nat_iface_addr_absent. cbn -[e_nat pkt_ctdir_orig].
   destruct (e_nat e (pkt_flow p)); [reflexivity | apply Bool.andb_false_r].
@@ -362,16 +365,16 @@ Qed.
     rule 1 breaks at its `th dport 3389` compare (no verdict, state kept), rule 2
     walks to its terminal dnat with the mark written — verdict and state from ONE
     traversal ([rule_step]). *)
-Lemma pre1_streaming_step_real : forall e p,
+Lemma pre1_streaming_step_real : forall h e p,
   e_set e "__set0" = set_l4proto ->
   field_value FMetaIifname e p = if_home ->
   field_value (FFib "daddr" FRtype) e p = fib_local ->
   field_value FMetaL4proto e p = l4_tcp ->
   field_value FThDport e p = port48010 ->
   read_payload_ok PTransport 2 2 p = true ->
-  rule_step pre1 e p = (None, (e, p)).
+  rule_step h pre1 e p = (None, (e, p)).
 Proof.
-  intros e p Hs0 Hiif Hfib Hl4 Hdport Hok.
+  intros h e p Hs0 Hiif Hfib Hl4 Hdport Hok.
   unfold rule_step, pre1, filter_prerouting.
   cbn -[field_value set_meta read_payload_ok].
   unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
@@ -382,7 +385,16 @@ Proof.
   vm_compute. reflexivity.
 Qed.
 
-Lemma pre2_streaming_step_real : forall e p,
+(* pre2 is a dnat: its NAT core NEVER drops (any hook, env, packet). *)
+Lemma pre2_no_natdrop_any : forall h e q, nat_drops h pre2 e q = false.
+Proof.
+  intros h e q. unfold nat_drops, nat_drops_c, pre2, filter_prerouting.
+  cbn -[e_nat pkt_ctdir_orig nat_iface_addr_absent].
+  unfold nat_iface_addr_absent. cbn -[e_nat pkt_ctdir_orig].
+  destruct (e_nat e (pkt_flow q)); [reflexivity | apply Bool.andb_false_r].
+Qed.
+
+Lemma pre2_streaming_step_real : forall h e p,
   e_set e "__set0" = set_l4proto ->
   e_set e "__set1" = set_iif ->
   e_set e "__set2" = set_sports ->
@@ -391,16 +403,19 @@ Lemma pre2_streaming_step_real : forall e p,
   field_value FMetaL4proto e p = l4_tcp ->
   field_value FThDport e p = port48010 ->
   read_payload_ok PTransport 2 2 p = true ->
-  rule_step pre2 e p = (Some Accept, (e, set_meta p MKmark mark99)).
+  rule_step h pre2 e p
+  = (Some Accept, apply_nat h pre2 e (set_meta p MKmark mark99)).
 Proof.
-  intros e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok.
+  intros h e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok.
   unfold rule_step, pre2, filter_prerouting.
-  cbn -[field_value set_meta read_payload_ok].
+  cbn -[field_value set_meta read_payload_ok apply_nat nat_drops].
   unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
     field_loadable, load_ok.
-  cbn -[field_value set_meta read_payload_ok].
+  cbn -[field_value set_meta read_payload_ok apply_nat nat_drops].
   rewrite ?Hok, !Hiif, !Hfib, !Hl4, !Hdport, ?Hs0, ?Hs1, ?Hs2.
-  cbn -[set_meta read_payload_ok]. rewrite ?Hok. cbn -[set_meta]. reflexivity.
+  cbn -[set_meta read_payload_ok apply_nat nat_drops]. rewrite ?Hok.
+  cbn -[set_meta apply_nat nat_drops].
+  rewrite pre2_no_natdrop_any. reflexivity.
 Qed.
 
 (** ** What comes out of the prerouting chain.
@@ -421,19 +436,20 @@ Theorem streaming_prerouting_io_real : forall e p,
   field_value FMetaL4proto e p = l4_tcp ->
   field_value FThDport e p = port48010 ->
   read_payload_ok PTransport 2 2 p = true ->
-  eval_chain_trace Hprerouting filter_prerouting e p
+  eval_chain_u Hprerouting filter_prerouting e p
     = (Accept, apply_nat Hprerouting pre2 e (set_meta p MKmark mark99)).
 Proof.
   intros e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok.
-  unfold eval_chain_trace. rewrite prerouting_rules_eq.
+  unfold eval_chain_u, eval_table_u. rewrite prerouting_rules_eq.
+  cbn [List.length eval_rules_u].
   (* rule 1: traversed but breaks at its dport compare; state kept *)
-  cbn [eval_rules_trace].
   rewrite pre1_streaming_step_real by assumption.
-  (* rule 2: walks to its terminal dnat with the mark written *)
-  cbn [eval_rules_trace].
+  (* rule 2: walks to its terminal dnat with the mark written; the NAT effect
+     is the fold's own (no side trace strand) *)
   rewrite pre2_streaming_step_real by assumption.
-  cbn [terminal].
-  rewrite pre2_no_natdrop. reflexivity.
+  destruct (apply_nat Hprerouting pre2 e (set_meta p MKmark mark99)) as [e2 p2]
+    eqn:HA.
+  reflexivity.
 Qed.
 
 (** SUPERSEDED-vacuous (M4): kept verbatim, derived from the contradiction;
@@ -445,7 +461,7 @@ Theorem streaming_prerouting_io : forall e p,
   field_value FMetaL4proto e p = l4_tcp ->
   field_value FThDport e p = port48010 ->
   read_payload_ok PTransport 2 2 p = true ->
-  eval_chain_trace Hprerouting filter_prerouting e p
+  eval_chain_u Hprerouting filter_prerouting e p
     = (Accept, apply_nat Hprerouting pre2 e (set_meta p MKmark mark99)).
 Proof.
   intros e p Henv Hiif Hfib Hl4 Hdport Hok.
@@ -466,7 +482,7 @@ Theorem streaming_prerouting_mark_real : forall e p,
   pkt_ctdir_orig p = true ->
   e_nat e (pkt_flow p) = None ->
   field_value FMetaMark e
-    (snd (snd (eval_chain_trace Hprerouting filter_prerouting e p))) = mark99.
+    (snd (snd (eval_chain_u Hprerouting filter_prerouting e p))) = mark99.
 Proof.
   intros e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok Horig Hnone.
   rewrite (streaming_prerouting_io_real e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok).
@@ -487,7 +503,7 @@ Theorem streaming_prerouting_mark : forall e p,
   pkt_ctdir_orig p = true ->
   e_nat e (pkt_flow p) = None ->
   field_value FMetaMark e
-    (snd (snd (eval_chain_trace Hprerouting filter_prerouting e p))) = mark99.
+    (snd (snd (eval_chain_u Hprerouting filter_prerouting e p))) = mark99.
 Proof.
   intros e p Henv Hiif Hfib Hl4 Hdport Hok Horig Hnone.
   exact (False_ind _ (genenv_fib_local_contradiction e p Henv Hfib)).
@@ -555,8 +571,11 @@ Proof.
   cbn -[set_saddr e_ifaddr field_value e_nat store_nat_mapping
         apply_nat_tuple nat_orig_addr nat_operand_addr nat_port_num pkt_l3_family].
   rewrite Hnone, Horig.
-  unfold apply_nat_tuple, nat_is_src, nat_operand_addr, nat_addrfamily_pkt,
-    nat_addrfamily, nat_orig_addr, masq_saddr, saddr_slot.
+  unfold apply_nat_tuple, apply_nat_tuple_c, nat_is_src, nat_kind_src,
+    nat_operand_addr, nat_new_addr, nat_opnd, nat_addrfamily_pkt, nat_af_pkt,
+    nat_af_norm, nat_addrfamily, nat_orig_addr, nat_orig_addr_c, masq_saddr,
+    saddr_slot, nat_portonly, nat_has_addr, nat_orig_port, nat_orig_port_c,
+    nat_port_num, nat_port_val, nat_addr.
   cbn -[set_saddr e_ifaddr field_value store_nat_mapping slice pkt_nh pkt_l3_family].
   rewrite !Hfam.
   cbn -[set_saddr e_ifaddr field_value store_nat_mapping slice pkt_nh].
@@ -579,7 +598,7 @@ Lemma post1_nat_no_drop : forall e p ifaddr,
   nat_drops Hpostrouting post1 e p = false.
 Proof.
   intros e p ifaddr Hfam Horig Hnone Hifa Hne.
-  unfold nat_drops, post1, filter_postrouting.
+  unfold nat_drops, nat_drops_c, post1, filter_postrouting.
   cbn -[e_nat e_ifaddr field_value masq_saddr pkt_l3_family].
   rewrite Hnone, Horig. cbn [andb].
   unfold nat_iface_addr_absent. cbn -[e_ifaddr field_value masq_saddr pkt_l3_family].
@@ -589,6 +608,22 @@ Proof.
   rewrite Hifa. destruct ifaddr; [contradiction|reflexivity].
 Qed.
 
+(* THE single-fold step of the masquerade rule on a marked packet: the body
+   is a pure match (mark test + log), the NAT terminal performs the data-plane
+   effect — NF_DROP or Accept+[apply_nat] — in the fold itself. *)
+Lemma post1_rule_step : forall h e p,
+  field_value FMetaMark e p = mark99 ->
+  rule_step h post1 e p
+  = (if nat_drops h post1 e p then (Some Drop, (e, p))
+     else (Some Accept, apply_nat h post1 e p)).
+Proof.
+  intros h e p Hm.
+  unfold rule_step, post1, filter_postrouting.
+  cbn -[field_value apply_nat nat_drops].
+  rewrite Hm. vm_compute (data_eqb _ _). cbn -[apply_nat nat_drops].
+  reflexivity.
+Qed.
+
 Theorem masquerade_output : forall e p ifaddr,
   pkt_l3_family p = nat_fam_ip4 ->
   field_value FMetaMark e p = mark99 ->
@@ -596,19 +631,15 @@ Theorem masquerade_output : forall e p ifaddr,
   e_nat e (pkt_flow p) = None ->
   e_ifaddr e (field_value FMetaOifname e p) = ifaddr ->
   ifaddr <> [] ->
-  eval_chain_trace Hpostrouting filter_postrouting e p
+  eval_chain_u Hpostrouting filter_postrouting e p
     = (Accept, (store_nat_mapping e p
                   (Some (slice (pkt_nh p) 12 4), Some ifaddr, None, None),
                 set_saddr nat_fam_ip4 p ifaddr)).
 Proof.
   intros e p ifaddr Hfam Hmark Horig Hnone Hifa Hne.
-  unfold eval_chain_trace. rewrite postrouting_rules_eq. cbn [eval_rules_trace].
-  assert (Hd : rule_step post1 e p = (Some Accept, (e, p))).
-  { rewrite rule_step_mutfree by reflexivity.
-    rewrite (masquerade_gated_on_mark e p Hmark), post1_outcome_accept.
-    replace (rule_loadable post1 e p) with true by reflexivity.
-    reflexivity. }
-  rewrite Hd. cbn [terminal].
+  unfold eval_chain_u, eval_table_u. rewrite postrouting_rules_eq.
+  cbn [List.length eval_rules_u].
+  rewrite (post1_rule_step Hpostrouting e p Hmark).
   rewrite (post1_nat_no_drop e p ifaddr Hfam Horig Hnone Hifa Hne).
   rewrite (post1_apply_masq Hpostrouting e p Hfam Horig Hnone), Hifa.
   reflexivity.
@@ -634,7 +665,7 @@ Theorem masquerade_source_is_exit_iface : forall e p ifaddr,
   e_ifaddr e (field_value FMetaOifname e p) = ifaddr ->
   List.length ifaddr = 4 -> 16 <= List.length (pkt_nh p) ->
   field_value FIp4Saddr e
-    (snd (snd (eval_chain_trace Hpostrouting filter_postrouting e p))) = ifaddr.
+    (snd (snd (eval_chain_u Hpostrouting filter_postrouting e p))) = ifaddr.
 Proof.
   intros e p ifaddr Hfam Hmark Horig Hnone Hifa Hlen Hnh.
   assert (Hne : ifaddr <> []) by (destruct ifaddr; [discriminate Hlen | discriminate]).
@@ -647,7 +678,7 @@ Qed.
     The packet goes in; out of prerouting comes the same packet with mark 0x99;
     that packet, carried to the postrouting hook (as the kernel carries the skb
     mark), is matched by the masquerade rule and the postrouting chain accepts it.
-    No rule is applied by hand — each chain is run whole by [eval_chain_trace] /
+    No rule is applied by hand — each chain is run whole by [eval_chain_u] /
     [eval_chain_mut]. *)
 Theorem streaming_flow_whole_ruleset_real : forall e p,
   e_set e "__set0" = set_l4proto ->
@@ -662,14 +693,17 @@ Theorem streaming_flow_whole_ruleset_real : forall e p,
   e_nat e (pkt_flow p) = None ->
   (* [q] is the packet that leaves prerouting (the input marked AND dnat'd);
      [e'] the env it leaves (the stored dnat mapping) *)
-  let q := snd (snd (eval_chain_trace Hprerouting filter_prerouting e p)) in
-  let e' := fst (snd (eval_chain_trace Hprerouting filter_prerouting e p)) in
+  let q := snd (snd (eval_chain_u Hprerouting filter_prerouting e p)) in
+  let e' := fst (snd (eval_chain_u Hprerouting filter_prerouting e p)) in
   (* prerouting: packet in p -> (Accept, q) out, with q still carrying mark 0x99 *)
-  fst (eval_chain_trace Hprerouting filter_prerouting e p) = Accept
+  fst (eval_chain_u Hprerouting filter_prerouting e p) = Accept
   /\ field_value FMetaMark e' q = mark99
-  (* postrouting reads the surviving mark and masquerades (terminal accept) *)
+  (* postrouting reads the surviving mark and masquerades: terminal accept,
+     UNLESS the kernel NAT core drops for want of a usable exit address —
+     the fold carries that data-plane drop too (M3) *)
   /\ rule_applies post1 e' q = true
-  /\ eval_chain_mut filter_postrouting e' q = Accept.
+  /\ eval_chain_mut Hpostrouting filter_postrouting e' q
+     = (if nat_drops Hpostrouting post1 e' q then Drop else Accept).
 Proof.
   intros e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok Horig Hnone q e'.
   assert (Hmark : field_value FMetaMark e' q = mark99).
@@ -681,14 +715,9 @@ Proof.
     reflexivity.
   - now apply masquerade_gated_on_mark.
   - unfold eval_chain_mut. rewrite postrouting_rules_eq. cbn [eval_rules_mut].
-    assert (Hov : fst (rule_step post1 e' q) = Some Accept).
-    { rewrite rule_step_mutfree by reflexivity.
-      cbn [fst].
-      rewrite (masquerade_gated_on_mark e' q Hmark).
-      replace (rule_loadable post1 e' q) with true by reflexivity.
-      reflexivity. }
-    destruct (rule_step post1 e' q) as [ov [e2 q2]].
-    cbn [fst] in Hov. subst ov. reflexivity.
+    rewrite (post1_rule_step Hpostrouting e' q Hmark).
+    destruct (nat_drops Hpostrouting post1 e' q); [reflexivity|].
+    destruct (apply_nat Hpostrouting post1 e' q) as [e2 q2]. reflexivity.
 Qed.
 
 (** SUPERSEDED-vacuous (M4): the pre-M4 headline, kept verbatim, derived from
@@ -705,14 +734,14 @@ Theorem streaming_flow_whole_ruleset : forall e p,
   e_nat e (pkt_flow p) = None ->
   (* [q] is the packet that leaves prerouting (the input marked AND dnat'd);
      [e'] the env it leaves (the stored dnat mapping) *)
-  let q := snd (snd (eval_chain_trace Hprerouting filter_prerouting e p)) in
-  let e' := fst (snd (eval_chain_trace Hprerouting filter_prerouting e p)) in
+  let q := snd (snd (eval_chain_u Hprerouting filter_prerouting e p)) in
+  let e' := fst (snd (eval_chain_u Hprerouting filter_prerouting e p)) in
   (* prerouting: packet in p -> (Accept, q) out, with q still carrying mark 0x99 *)
-  fst (eval_chain_trace Hprerouting filter_prerouting e p) = Accept
+  fst (eval_chain_u Hprerouting filter_prerouting e p) = Accept
   /\ field_value FMetaMark e' q = mark99
   (* postrouting reads the surviving mark and masquerades (terminal accept) *)
   /\ rule_applies post1 e' q = true
-  /\ eval_chain_mut filter_postrouting e' q = Accept.
+  /\ eval_chain_mut Hpostrouting filter_postrouting e' q = Accept.
 Proof.
   intros e p Henv Hiif Hfib Hl4 Hdport Hok Horig Hnone q e'.
   exact (False_ind _ (genenv_fib_local_contradiction e p Henv Hfib)).
@@ -742,7 +771,10 @@ Definition env_stream : env :=
        e_routes := [(daddr_stream, daddr_stream,
                      fun res => match res with FRtype => fib_local | _ => [] end)];
        e_rt := fun _ => []; e_limit := fun _ => 0; e_quota := fun _ => 0;
-       e_ifaddrs := fun _ => []; e_ifaddrs6 := fun _ => [];
+       (* the exit interface carries a usable address, so the postrouting
+          masquerade FIRES instead of taking the kernel's no-usable-address
+          NF_DROP (nat_drops, in-fold since M3) *)
+       e_ifaddrs := fun _ => ifaddrs_of [203; 0; 113; 9]; e_ifaddrs6 := fun _ => [];
        e_connlimit := fun _ => [];
        e_ct := fun _ _ => []; e_nat := fun _ => None; e_numgen := fun _ => 0 |}
     decls.
@@ -795,7 +827,7 @@ Proof. repeat split; vm_compute; reflexivity. Qed.
 
 (** The repaired heads, INSTANTIATED on the witness — non-vacuity of each. *)
 Theorem streaming_io_witnessed :
-  eval_chain_trace Hprerouting filter_prerouting env_stream pkt_stream
+  eval_chain_u Hprerouting filter_prerouting env_stream pkt_stream
     = (Accept,
        apply_nat Hprerouting pre2 env_stream (set_meta pkt_stream MKmark mark99)).
 Proof.
@@ -807,26 +839,24 @@ Proof.
 Qed.
 
 Theorem streaming_whole_ruleset_witnessed :
-  let q := snd (snd (eval_chain_trace Hprerouting filter_prerouting
+  let q := snd (snd (eval_chain_u Hprerouting filter_prerouting
                        env_stream pkt_stream)) in
-  let e' := fst (snd (eval_chain_trace Hprerouting filter_prerouting
+  let e' := fst (snd (eval_chain_u Hprerouting filter_prerouting
                         env_stream pkt_stream)) in
-  fst (eval_chain_trace Hprerouting filter_prerouting env_stream pkt_stream) = Accept
+  fst (eval_chain_u Hprerouting filter_prerouting env_stream pkt_stream) = Accept
   /\ field_value FMetaMark e' q = mark99
   /\ rule_applies post1 e' q = true
-  /\ eval_chain_mut filter_postrouting e' q = Accept.
+  (* concrete: the exit interface HAS an address, so the masquerade fires and
+     the postrouting verdict is a genuine Accept (no NAT drop) *)
+  /\ eval_chain_mut Hpostrouting filter_postrouting e' q = Accept.
 Proof.
-  destruct witness_sets as (Hs0 & Hs1 & Hs2).
-  destruct witness_fields as (Hiif & Hfib & Hl4 & Hdport).
-  destruct witness_flow as (Hok & Horig & Hnone).
-  exact (streaming_flow_whole_ruleset_real env_stream pkt_stream
-           Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok Horig Hnone).
+  repeat split; vm_compute; reflexivity.
 Qed.
 
 (** And a raw evaluator pin, independent of the theorems: the mark on the
     packet that actually leaves prerouting IS 0x99 (vm_compute end to end). *)
 Example streaming_mark_pin :
   field_value FMetaMark env_stream
-    (snd (snd (eval_chain_trace Hprerouting filter_prerouting
+    (snd (snd (eval_chain_u Hprerouting filter_prerouting
                  env_stream pkt_stream))) = mark99.
 Proof. vm_compute. reflexivity. Qed.

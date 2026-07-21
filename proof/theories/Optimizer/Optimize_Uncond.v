@@ -5291,7 +5291,7 @@ From Nft Require Optimize_Linearize.
     [Optimize_Snat.apply_nat_snat_eq] (the folded NAT's data-plane effect
     equals the originals') — are PER-MERGE-SHAPE lemmas, NOT composed through
     [optimize_table]: no theorem lifts the 18-stage pipeline to
-    [eval_chain_mut]/[eval_rules_trace].  So, formally, a stage could preserve
+    the effect-threading [eval_chain_mut].  So, formally, a stage could preserve
     every [eval_chain] verdict while altering a mark write that flips a later
     hook's decision — the effect certificates are evidence the shipped merges
     do not, but the COMPOSED guarantee is verdict-only.  Why not lifted: a

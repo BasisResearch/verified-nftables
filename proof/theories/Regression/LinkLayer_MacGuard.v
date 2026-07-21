@@ -48,6 +48,11 @@ From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Packet Verdict Syntax Semantics.
 Import ListNotations.
 
+(* Pins below hold at EVERY netfilter hook [h] (no rule here carries a NAT
+   terminal, so the hook is inert); the section generalizes each statement. *)
+Section AtHook.
+Context (h : hook_id).
+
 (* `ether saddr aa:bb:cc:dd:ee:ff` lowers to MEq FEtherSaddr <6 bytes>
    (FEtherSaddr = LPayload PLink 6 6). *)
 Definition src_mac : data := [0xaa;0xbb;0xcc;0xdd;0xee;0xff].
@@ -114,7 +119,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 (* The same property holds via the stateful evaluator. *)
 Theorem model_accepts_like_kernel_mut :
-  eval_chain_mut output_chain env0 locally_generated = Accept.
+  eval_chain_mut h output_chain env0 locally_generated = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* With a built MAC header the load succeeds and the rule legitimately DROPS,
@@ -132,3 +137,5 @@ Proof. vm_compute. reflexivity. Qed.
 Lemma transport_load_correctly_breaks :
   field_loadable FThDport locally_generated = false.
 Proof. vm_compute. reflexivity. Qed.
+
+End AtHook.
