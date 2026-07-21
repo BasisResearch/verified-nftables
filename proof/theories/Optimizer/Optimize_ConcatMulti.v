@@ -210,8 +210,11 @@ Qed.
     CEq a_i] per field) atop the SAME body/end.  The K-match prefix is transparent
     to synproxy/notrack/thread and contributes its loadability/applicability
     value-independently, so all rows share one loadability + outcome; the merged
-    rule's applicability is the [existsb] the matchcond certificate pins down.  Via
-    [eval_rules_run_collapse] the merged rule replaces the whole run. *)
+    rule's applicability is the [existsb] the matchcond certificate
+    ([concat_fields_certificate_N]) pins down.  These are the building blocks the
+    concatmulti pass proof feeds to the state-fold collapse
+    ([Optimize_MutEnv.eval_rules_concat_mergeK]) to replace the whole run with the
+    merged rule. *)
 
 Definition kmatches (fields : list field) (row : list data) : list body_item :=
   map (fun fa => BMatch (MCmp (fst fa) CEq (snd fa))) (combine fields row).
@@ -338,57 +341,6 @@ Lemma orig_ruleK_applies : forall fields row body r1 e p,
 Proof.
   intros fields row body r1 e p. unfold rule_applies, orig_ruleK. cbn [r_body].
   apply kmatches_applies_walk.
-Qed.
-
-(** *** The K-field concat merge, verdict-preserving on every packet. *)
-Theorem eval_rules_concat_mergeK : forall fields rows name body r1 rest e p,
-  fields <> [] -> rows <> [] ->
-  e_set e name = map pack_row rows ->
-  (forall row, In row rows ->
-     Forall2 (fun f a => field_fixed_len f = Some (length a)) fields row) ->
-  eval_rules (merged_ruleK fields name body r1 :: rest) e p
-  = eval_rules (map (fun row => orig_ruleK fields row body r1) rows ++ rest) e p.
-Proof.
-  intros fields rows name body r1 rest e p Hfne Hrne Hset Hwf.
-  (* every row has length = length fields (from the Forall2) *)
-  assert (Hlenrow : forall row, In row rows -> length fields = length row)
-    by (intros row Hin; apply (Forall2_length (Hwf row Hin))).
-  set (LL := fields_loadable fields p &&
-             (body_loadable_walk body p &&
-              (if body_synproxy_stops body p then true
-               else end_loadable r1 e (body_thread body p)))).
-  set (O := if body_synproxy_stops body p then Some Drop
-            else outcome_core r1 e (body_thread body p)).
-  apply (eval_rules_run_collapse
-           (map (fun row => orig_ruleK fields row body r1) rows) LL O
-           (merged_ruleK fields name body r1) rest e p).
-  - (* run nonempty *)
-    intro Hc. apply map_eq_nil in Hc. contradiction.
-  - (* all rows: rule_loadable = LL *)
-    intros r Hin. apply in_map_iff in Hin as [row [Heq Hin]]. subst r.
-    unfold LL. apply (orig_ruleK_loadable fields row body r1 e p (Hlenrow row Hin)).
-  - (* all rows: outcome = O *)
-    intros r Hin. apply in_map_iff in Hin as [row [Heq Hin]]. subst r.
-    unfold O. apply orig_ruleK_outcome.
-  - (* merged loadable = LL *)
-    unfold LL. apply merged_ruleK_loadable.
-  - (* merged outcome = O *)
-    unfold O. apply merged_ruleK_outcome.
-  - (* merged applies = existsb (orig applies) *)
-    unfold merged_ruleK. rewrite rule_applies_mk_head.
-    (* eval_matchcond (MConcatSet ..) = existsb (per-row K-conjunction)  [certificate] *)
-    rewrite (concat_fields_certificate_N fields rows name e p Hfne Hset Hwf).
-    (* existsb (orig applies) = existsb ((K-conj) && walk) = (existsb K-conj) && walk *)
-    rewrite (existsb_map_local _ _ (fun r => rule_applies r e p)
-                               (fun row => orig_ruleK fields row body r1) rows).
-    symmetry.
-    rewrite (existsb_ext _
-               (fun row => rule_applies (orig_ruleK fields row body r1) e p)
-               (fun row => forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) e p)
-                                   (combine fields row) && rule_applies_walk body e p)
-               rows
-               (fun row _ => orig_ruleK_applies fields row body r1 e p)).
-    apply existsb_andb_const.
 Qed.
 
 (* ================================================================== *)
@@ -555,7 +507,7 @@ Qed.
     prepends the two packed rows to [sd_sets], and rewrites the pair into ONE
     [merged_ruleK] (a single [MConcatSet] head atop the shared body).  Mirrors the
     pairwise 2-field [Optimize_Concat.optimize_rules_concat2]; correctness is
-    [eval_rules_concat_mergeK] (with two rows). *)
+    [Optimize_MutEnv.eval_rules_concat_mergeK] (with two rows). *)
 Fixpoint optimize_rules_concatmulti (n : nat) (d : set_decls) (rs : list rule)
   : nat * set_decls * list rule :=
   match rs with
@@ -748,4 +700,3 @@ Qed.
 (** Axiom-freedom guard (build-time): prints "Closed under the global context". *)
 Print Assumptions concat_in_iv_pointsN.
 Print Assumptions concat_fields_certificate_N.
-Print Assumptions eval_rules_concat_mergeK.

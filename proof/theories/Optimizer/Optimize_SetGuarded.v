@@ -24,7 +24,8 @@
     set is [map (fun v => (v,v)) vals] — exactly the encoding [valueset] emits (nft keeps
     the values discrete, never range-coalesced).
 
-    Verdict-preservation reuses the family-agnostic [eval_rules_run_collapse] and the
+    Verdict-preservation reuses the family-agnostic state-fold collapse
+    [Optimize_MutEnv.eval_rules_mut_st_run_collapse] and the
     N-element single-field membership certificate [concat_set_existsb] from
     [Optimize_ValueSet] VERBATIM — the guard is a pure conjunctive match at the head,
     transparent to loadability/outcome and factored out of the [existsb] by boolean

@@ -503,8 +503,9 @@ Qed.
     The pairwise pass above merges exactly two rules; nft -o consolidates a whole run
     [ip saddr A1 dport B1 accept; A2 B2; A3 B3] into ONE
     [ip saddr . tcp dport { A1.B1, A2.B2, A3.B3 } accept].  This section delivers the
-    N-way pass, reusing the family-agnostic [eval_rules_run_collapse] from
-    [Optimize_ValueSet] (all rules in the run share the SAME verdict). *)
+    N-way pass, reusing the family-agnostic state-fold collapse
+    [Optimize_MutEnv.eval_rules_mut_st_run_collapse] (all rules in the run share the
+    SAME verdict). *)
 
 Definition pack_tuple (ab : data * data) : data * data :=
   (pack2 (fst ab) (snd ab), pack2 (fst ab) (snd ab)).
