@@ -6,16 +6,16 @@
     the [Nft_Tactics] layer:
 
       - the conclusion reads [firewall_inbound accepts p in e under
-        firewall_chains budget fw_fuel] instead of the raw [eval_table … = Accept];
+        firewall_chains budget fw_fuel] instead of the raw [eval_table_u … = Accept];
       - the hypotheses read [fieldof FCtState e p === ct_established] — routed
         through the central [Nftval] typed constructor [ct_established] — instead
         of a raw [field_value … = [0;0;0;2]];
       - the proof is a single [nft_eval Hpe] instead of the unfold list +
-        [eval_fw_core].
+        [eval_fw_core_u].
 
     SOUNDNESS: [demo_*_def] prove the readable conclusion / hypothesis are
     DEFINITIONALLY the raw statements ([reflexivity]); [demo_recovers_original]
-    re-derives the ORIGINAL [Ruleset_Verified]-shaped statement (raw [eval_table],
+    re-derives the ORIGINAL [Ruleset_Verified]-shaped statement (raw [eval_table_u],
     raw [cts_established]) from the readable one — so nothing was weakened.  Both
     headline demos are guarded axiom-free by [Print Assumptions].
 
@@ -42,12 +42,12 @@ Open Scope string_scope.
 
 Example demo_accepts_def : forall e p,
   (firewall_inbound accepts p in e under firewall_chains budget fw_fuel)
-  = (eval_table fw_fuel firewall_chains firewall_inbound e p = Accept).
+  = (forall h, fst (eval_table_u h fw_fuel firewall_chains firewall_inbound e p) = Accept).
 Proof. reflexivity. Qed.
 
 Example demo_denies_def : forall e p,
   (firewall_inbound denies p in e under firewall_chains budget fw_fuel)
-  = (eval_table fw_fuel firewall_chains firewall_inbound e p = Drop).
+  = (forall h, fst (eval_table_u h fw_fuel firewall_chains firewall_inbound e p) = Drop).
 Proof. reflexivity. Qed.
 
 Example demo_fieldis_def : forall e p,
@@ -88,9 +88,9 @@ Print Assumptions demo_smtp_dropped.
     ct_established] is convertible to [Ruleset_Verified]'s raw
     [field_value FCtState e p = cts_established] (as [cts_established :=
     encode ct_established]); and its conclusion is convertible to the raw
-    [eval_table … = Accept].  So the original statement follows by [apply]. *)
+    [eval_table_u … = Accept].  So the original statement follows by [apply]. *)
 Theorem demo_recovers_original : forall e p,
   e = gen_env ->
   field_value FCtState e p = cts_established ->
-  eval_table fw_fuel firewall_chains firewall_inbound e p = Accept.
+  forall h, fst (eval_table_u h fw_fuel firewall_chains firewall_inbound e p) = Accept.
 Proof. intros e p Hpe Hct. apply demo_established_accepted; assumption. Qed.

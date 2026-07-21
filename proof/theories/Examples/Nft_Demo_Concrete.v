@@ -8,7 +8,7 @@
     tactic FAILS to prove the FALSE claim that the unlisted SMTP packet is
     accepted, and that the claim is in fact refutable.
 
-    SOUNDNESS: [demo_*_def] pin the readable forms to the raw [eval_table]
+    SOUNDNESS: [demo_*_def] pin the readable forms to the raw [eval_table_u]
     statements ([reflexivity]); [demo_smtp_not_accepted] refutes the false
     property; [demo_nft_decide_cannot_prove_false] shows [nft_decide] leaves the
     false goal OPEN (so it cannot be used to "prove" it).  All axiom-free. *)
@@ -24,12 +24,12 @@ Open Scope string_scope.
 
 Example demo_c_accepts_def :
   (global_inbound accepts pkt_lan_dns in env_lan under global_chains budget in_fuel)
-  = (eval_table in_fuel global_chains global_inbound env_lan pkt_lan_dns = Accept).
+  = (forall h, fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_dns) = Accept).
 Proof. reflexivity. Qed.
 
 Example demo_c_denies_def :
   (global_inbound denies pkt_lan_smtp in env_lan under global_chains budget in_fuel)
-  = (eval_table in_fuel global_chains global_inbound env_lan pkt_lan_smtp = Drop).
+  = (forall h, fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_smtp) = Drop).
 Proof. reflexivity. Qed.
 
 (* ------------------------------------------------------------------ *)
@@ -55,7 +55,7 @@ Print Assumptions demo_smtp_denied.
 
 Theorem demo_smtp_not_accepted :
   ~ (global_inbound accepts pkt_lan_smtp in env_lan under global_chains budget in_fuel).
-Proof. intro H. nft_unfold. vm_compute in H. discriminate. Qed.
+Proof. intro H. nft_unfold. specialize (H Hinput). vm_compute in H. discriminate. Qed.
 
 (** [nft_decide] does NOT close the false goal: the wrapped attempt fails
     (leaving the goal open is a *non*-completion, so [now nft_decide] errors and
@@ -64,15 +64,13 @@ Goal global_inbound accepts pkt_lan_smtp in env_lan under global_chains budget i
 Proof. Fail now nft_decide. Abort.
 
 (* ------------------------------------------------------------------ *)
-(** ** UNIFIED-SEMANTICS LICENSE (Semantics.v § "Projection 1b").
+(** ** UNIFIED-SEMANTICS WITNESSES.
 
-    The readable statements above ARE raw [eval_table] statements
-    ([demo_c_accepts_def]/[demo_c_denies_def]) over the router config,
-    whose one effectful rule is the `limit 5/second` limiter
-    ([Router_Private.r_icmp]).  [Router_Input.inbound_licensed] licenses
-    them as VERDICT projections of the unified effect-threading semantics;
-    the two concrete cruxes are re-stated over [eval_table_u] here so the
-    demo layer carries its own unified-semantics witnesses. *)
+    The readable statements above ARE [eval_table_u] statements (at every hook)
+    ([demo_c_accepts_def]/[demo_c_denies_def]) over the router config, whose one
+    effectful rule is the `limit 5/second` limiter ([Router_Private.r_icmp]).
+    The two concrete cruxes are re-stated with an explicit [forall h] here so the
+    demo layer carries its own hook-independence witnesses. *)
 
 (* Stated over the FULL parser chain env (incl. the effectful masquerade
    chain) and at EVERY hook: at these concrete env/packets the traversal
