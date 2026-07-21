@@ -10,7 +10,7 @@
     The only difference from [Optimize_Dnat] is the NAT [nat_kind] ([nat_snat_kind]
     instead of [nat_dnat_kind]); everything downstream ([nat_is_src] = true, the
     SOURCE address/port slots) is derived from it by [Semantics].  The verdict
-    machinery ([outcome]/[rule_loadable]/[rule_applies]) is kind-independent, so the
+    machinery (verdict / loadability / applicability) is kind-independent, so the
     kind-agnostic helpers ([dmap2], [nat_map_key_single], [map_has_key_dmap2],
     [apply_nat_tuple_indep], [nat_orig_addr_indep]) are REUSED verbatim from
     [Optimize_Dnat].
@@ -19,12 +19,11 @@
     guard so its statement-map lookup always hits, this pass relies on Phase 1's
     NFT_BREAK-on-map-miss ([ILookupValBr] / [terminal_loadable]'s [map_has_key]):
     a packet whose key is NOT in the map makes the merged rule's [rule_loadable]
-    FALSE, so [eval_rules] skips it and falls through — exactly as the two
+    FALSE, so the state fold skips it and falls through — exactly as the two
     original rules fall through when neither head match fires.
 
-    This file proves the per-merge VERDICT correctness over [eval_rules]
-    ([eval_rules_snat_merge]); the meaningfulness rests on the break (a packet
-    off the key set must fall through, not accept). *)
+    The break is what makes the head-guard-free map sound: a packet off the key
+    set must fall through, not accept. *)
 
 From Stdlib Require Import List Bool Arith Lia String.
 Import ListNotations.
@@ -49,7 +48,7 @@ Definition snat_map_spec (f : field) (mapname : string) : nat_spec :=
     is [Accept]: the frontend lowers a bare `snat`/`dnat` statement to a terminal
     ACCEPT ([nft_lower]'s [stmt_is_terminal_accept]), so the recogniser must match
     that real shape to FIRE on parsed rulesets.  The NAT is terminal regardless:
-    [terminal_outcome] returns [Some Accept] whenever [r_nat] is set, so the merge is
+    a set [r_nat] yields a [Some Accept] terminal, so the merge is
     verdict-preserving independent of the stated [r_verdict]. *)
 Definition orig_snat_rule (f : field) (v T : data) : rule :=
   {| r_body := [BMatch (MCmp f CEq v)];
@@ -62,86 +61,6 @@ Definition mk_snat_rule (f : field) (mapname : string) : rule :=
 
 (** [dmap2], [nat_map_key_single], [map_has_key_dmap2], [apply_nat_tuple_indep]
     and [nat_orig_addr_indep] are kind-independent — reused from [Optimize_Dnat]. *)
-
-(** *** [outcome] of either rule is [Some Accept] (a NAT terminal), with no
-    synproxy/vmap to intervene. *)
-Lemma outcome_orig_snat : forall f v T e p, outcome (orig_snat_rule f v T) e p = Some Accept.
-Proof.
-  intros f v T e p. unfold outcome, orig_snat_rule.
-  cbn [body_synproxy_stops r_body body_matches].
-  unfold outcome_core. cbn [r_vmap r_nat r_outcome]. reflexivity.
-Qed.
-
-Lemma outcome_mk_snat : forall f mapname e p, outcome (mk_snat_rule f mapname) e p = Some Accept.
-Proof. intros. reflexivity. Qed.
-
-(** *** [rule_applies] of the original rule is the head [MCmp] eval; the merged
-    rule (empty body) always applies. *)
-Lemma applies_orig_snat : forall f v T e p,
-  rule_applies (orig_snat_rule f v T) e p = eval_matchcond (MCmp f CEq v) e p.
-Proof.
-  intros f v T e p. unfold rule_applies, orig_snat_rule.
-  cbn [r_body rule_applies_walk body_matches]. apply andb_true_r.
-Qed.
-
-Lemma applies_mk_snat : forall f mapname e p, rule_applies (mk_snat_rule f mapname) e p = true.
-Proof. reflexivity. Qed.
-
-(** *** [rule_loadable] of the original rule = the head field loads (its terminal
-    is an immediate, always loadable). *)
-Lemma loadable_orig_snat : forall f v T e p,
-  rule_loadable (orig_snat_rule f v T) e p = field_loadable f p.
-Proof.
-  intros f v T e p. unfold rule_loadable, orig_snat_rule, end_loadable, tail_loadable.
-  cbn [r_body body_loadable_walk body_item_loadable body_synproxy_stops body_thread
-       r_after r_vmap terminal_loadable terminal_outcome r_nat r_tproxy r_fwd r_queue
-       nat_src nat_map nat_field snat_imm_spec forallb r_outcome].
-  unfold match_loadable. rewrite !andb_true_r. reflexivity.
-Qed.
-
-(** *** [rule_loadable] of the merged rule = the field loads AND its value is a
-    KEY of the map (else the terminal data-map lookup BREAKs — NFT_BREAK). *)
-Lemma loadable_mk_snat : forall f mapname e p,
-  rule_loadable (mk_snat_rule f mapname) e p
-  = field_loadable f p && map_has_key (field_value f e p) (e_map e mapname).
-Proof.
-  intros f mapname e p.
-  unfold rule_loadable, mk_snat_rule, end_loadable, tail_loadable, terminal_loadable,
-    terminal_outcome, snat_map_spec.
-  cbn [r_body r_vmap r_nat r_tproxy r_fwd r_queue r_after body_loadable_walk
-       body_synproxy_stops body_thread nat_src nat_map fields_loadable forallb r_outcome].
-  rewrite nat_map_key_single. rewrite !andb_true_r, !andb_true_l. reflexivity.
-Qed.
-
-(** *** THE per-merge VERDICT correctness: the bare merged map rule accepts
-    EXACTLY the packets the two originals accept, and falls through on the rest —
-    the break-on-miss ([loadable_mk_snat]'s [map_has_key]) is what makes the
-    head-guard-free map sound. *)
-Theorem eval_rules_snat_merge : forall (f : field) (v1 v2 T1 T2 : data)
-    (mapname : string) (rest : list rule) (e : env) (p : packet),
-  e_map e mapname = dmap2 v1 v2 T1 T2 ->
-  field_fixed_len f = Some (List.length v1) ->
-  field_fixed_len f = Some (List.length v2) ->
-  eval_rules (mk_snat_rule f mapname :: rest) e p
-  = eval_rules (orig_snat_rule f v1 T1 :: orig_snat_rule f v2 T2 :: rest) e p.
-Proof.
-  intros f v1 v2 T1 T2 mapname rest e p Hmap Hfx1 Hfx2.
-  rewrite ?eval_rules_cons, ?eval_rules_nil.
-  rewrite loadable_mk_snat, applies_mk_snat, outcome_mk_snat.
-  rewrite loadable_orig_snat, applies_orig_snat, outcome_orig_snat.
-  rewrite loadable_orig_snat, applies_orig_snat, outcome_orig_snat.
-  rewrite Hmap, map_has_key_dmap2.
-  destruct (field_loadable f p) eqn:Hld.
-  - (* field loads: relate the head MCmp matches to the data_eqb disjunction *)
-    rewrite (eval_mcmp_point f v1 e p Hld (field_fixed_len_loaded f (List.length v1) e p Hfx1 Hld)).
-    rewrite (eval_mcmp_point f v2 e p Hld (field_fixed_len_loaded f (List.length v2) e p Hfx2 Hld)).
-    rewrite (data_eqb_sym (field_value f e p) v1), (data_eqb_sym (field_value f e p) v2).
-    cbn [andb terminal].
-    destruct (data_eqb v1 (field_value f e p)); cbn [orb];
-      destruct (data_eqb v2 (field_value f e p)); reflexivity.
-  - (* field does not load: every rule BREAKs (rule_loadable false) -> fall through *)
-    cbn [andb]. reflexivity.
-Qed.
 
 (** ** The NON-VACUOUS data-plane correctness: the bare merged map rule applies
     the SAME NAT translation as a `snat to T` rule whose target [T] is the map

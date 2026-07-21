@@ -203,7 +203,7 @@ Proof.
 Qed.
 
 (* ================================================================== *)
-(** ** The eval_rules-level N-field concat merge.
+(** ** The N-field concat merge shell certificates.
 
     [merged_ruleK] has ONE head — the concat set over [fields] — atop the shared
     [body]; each [orig_ruleK fields row body r1] has K head matches (one [MCmp f_i

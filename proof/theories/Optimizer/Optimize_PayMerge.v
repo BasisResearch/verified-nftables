@@ -356,16 +356,6 @@ Proof.
   apply merge_body_fuel_existsb. reflexivity.
 Qed.
 
-Lemma merge_body_synproxy_stops : forall b p,
-  body_synproxy_stops (merge_body b) p = body_synproxy_stops b p.
-Proof.
-  intros b p. unfold body_synproxy_stops, merge_body.
-  apply (merge_body_fuel_existsb
-           (fun it => match it with BStmt (SSynproxy _ _) => synproxy_stops p
-                                  | _ => false end)).
-  reflexivity.
-Qed.
-
 Lemma merge_body_thread : forall b p,
   body_thread (merge_body b) p = body_thread b p.
 Proof.
@@ -374,45 +364,6 @@ Qed.
 
 (* ================================================================== *)
 (** ** Applicability / loadability walks are invariant. *)
-
-Lemma merge_body_fuel_applies : forall fuel b e p,
-  rule_applies_walk (merge_body_fuel fuel b) e p = rule_applies_walk b e p.
-Proof.
-  induction fuel as [|fk IH]; intros b e p; [reflexivity|].
-  destruct b as [|it1 [|it2 rest]]; try reflexivity.
-  - cbn [merge_body_fuel]. destruct it1 as [m|s]; cbn [rule_applies_walk].
-    + now rewrite IH.
-    + destruct s; cbn [rule_applies_walk]; rewrite IH; reflexivity.
-  - cbn [merge_body_fuel]. destruct it1 as [m1|s1].
-    + destruct it2 as [m2|s2].
-      * destruct (try_merge m1 m2) as [m|] eqn:T.
-        -- rewrite IH. cbn [rule_applies_walk].
-           rewrite (try_merge_eval m1 m2 m e p T). now rewrite andb_assoc.
-        -- cbn [rule_applies_walk]. rewrite IH. reflexivity.
-      * cbn [rule_applies_walk]. rewrite IH. reflexivity.
-    + destruct s1; cbn [rule_applies_walk]; rewrite IH; reflexivity.
-Qed.
-
-Lemma merge_body_fuel_loadable : forall fuel b p,
-  body_loadable_walk (merge_body_fuel fuel b) p = body_loadable_walk b p.
-Proof.
-  induction fuel as [|fk IH]; intros b p; [reflexivity|].
-  destruct b as [|it1 [|it2 rest]]; try reflexivity.
-  - cbn [merge_body_fuel]. destruct it1 as [m|s];
-      cbn [body_loadable_walk body_item_loadable].
-    + now rewrite IH.
-    + destruct s; cbn [body_loadable_walk body_item_loadable]; rewrite IH;
-        reflexivity.
-  - cbn [merge_body_fuel]. destruct it1 as [m1|s1].
-    + destruct it2 as [m2|s2].
-      * destruct (try_merge m1 m2) as [m|] eqn:T.
-        -- rewrite IH. cbn [body_loadable_walk body_item_loadable].
-           rewrite (try_merge_loadable m1 m2 m p T). now rewrite andb_assoc.
-        -- cbn [body_loadable_walk body_item_loadable]. rewrite IH. reflexivity.
-      * cbn [body_loadable_walk body_item_loadable]. rewrite IH. reflexivity.
-    + destruct s1; cbn [body_loadable_walk body_item_loadable]; rewrite IH;
-        reflexivity.
-Qed.
 
 (* ================================================================== *)
 (** ** The rule-body projection the state-fold pass threads through. *)

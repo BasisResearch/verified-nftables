@@ -25,8 +25,8 @@
     that dispatches `dport` through a verdict map returning `w_i` on key `v_i` and
     FALLING THROUGH (a miss) on every other value — the merged rule applies on more
     packets than either original, but on the extra packets the vmap MISSES, the
-    rule's outcome is [None], and [eval_rules] treats that exactly as "the rule did
-    not apply".
+    rule's verdict is [None], and the state fold treats that exactly as "the rule
+    did not apply".
 
     The two point keys resolve through [assoc_verdict] to `w1`/`w2` ([data_in_iv k
     (k,k) = data_eqb k k]); the certificate [vmap_two_points] mirrors
@@ -60,201 +60,19 @@ Definition mk_vmap_base (w : verdict) : rule :=
   {| r_body := [];
      r_outcome := OVerdict w; r_after := [] |}.
 
-(** *** The vmap-lookup certificate at two point keys.
-
-    With the named map [nm] declared as the two POINT entries [(v1,v1,w1);
-    (v2,v2,w2)], the merged rule's [outcome_core] at [q] is: [w1] when [f] loads to
-    [v1], else [w2] when it loads to [v2], else the terminal fall-through
-    ([Continue] => [None]).  Each point key test [data_in_iv k (vi,vi)] is exactly
-    [data_eqb k vi] ([data_in_iv_point]); the width guard makes that the same test
-    as the original [MCmp f CEq vi] head. *)
-Lemma vmap_two_points : forall f nm v1 v2 w1 w2 body e q,
-  e_vmap e nm = [(v1, v1, w1); (v2, v2, w2)] ->
-  (field_loadable f q = true -> length (field_value f e q) = length v1) ->
-  (field_loadable f q = true -> length (field_value f e q) = length v2) ->
-  field_loadable f q = true ->
-  outcome_core (mk_vmap_rule f nm body) e q
-  = if eval_cmp CEq (field_value f e q) v1 then Some w1
-    else if eval_cmp CEq (field_value f e q) v2 then Some w2
-    else None.
-Proof.
-  intros f nm v1 v2 w1 w2 body e q Hvm H1 H2 Hld.
-  specialize (H1 Hld). specialize (H2 Hld).
-  unfold outcome_core, mk_vmap_rule. cbn [r_vmap vm_keyf vm_name vm_fields r_outcome].
-  cbn [apply_transforms fold_left].
-  rewrite Hvm. cbn [assoc_verdict].
-  rewrite !data_in_iv_point_eqb.
-  unfold eval_cmp.
-  rewrite <- H1, <- H2, !List.firstn_all.
-  rewrite (data_eqb_sym (field_value f e q) v1), (data_eqb_sym (field_value f e q) v2).
-  destruct (data_eqb v1 (field_value f e q)) eqn:E1; [reflexivity|].
-  destruct (data_eqb v2 (field_value f e q)) eqn:E2; [reflexivity|].
-  unfold terminal_outcome, mk_vmap_rule. cbn [r_nat r_tproxy r_fwd r_queue r_verdict r_after r_outcome].
-  reflexivity.
-Qed.
-
 (** ** Loadability of the merged vmap rule.
 
     Pull the head out: [mk_vmap_rule]'s body is [body] (no head match), so
-    [rule_loadable] reduces to [body_loadable_walk body] times the vmap-keyed end
+    [rule_loadable] reduces to the body's loadability times the vmap-keyed end
     load.  The two originals are [mk_head (MCmp f CEq vi) body (mk_vmap_base wi)],
-    whose loadability is [field_loadable f] (the head) times the same
-    [body_loadable_walk body] (the terminal of a pure-verdict rule always loads).
+    whose loadability is [field_loadable f] (the head) times the same body's
+    loadability (the terminal of a pure-verdict rule always loads).
     We only ever USE these on the no-synproxy / no-notrack CLEAN body, where the
     bookkeeping collapses. *)
 
 (** The originals' shape: [mk_head (MCmp f CEq vi) body (mk_vmap_base wi)]. *)
 Definition orig_rule (f : field) (v : data) (body : list body_item) (w : verdict) : rule :=
   mk_head (MCmp f CEq v) body (mk_vmap_base w).
-
-Lemma orig_rule_loadable : forall f v body w e p,
-  rule_loadable (orig_rule f v body w) e p =
-    field_loadable f p &&
-    (body_loadable_walk body p &&
-     (if body_synproxy_stops body p then true else true)).
-Proof.
-  intros f v body w e p. unfold orig_rule.
-  rewrite rule_loadable_mk_head.
-  cbn [match_loadable].
-  (* end_loadable of mk_vmap_base = true (no vmap, terminal verdict loads) *)
-  assert (Hend : forall q, end_loadable (mk_vmap_base w) e q = true).
-  { intro q. unfold end_loadable, mk_vmap_base. cbn [r_vmap r_outcome].
-    unfold tail_loadable, terminal_loadable, terminal_outcome.
-    cbn [r_nat r_tproxy r_fwd r_queue r_verdict r_after r_outcome].
-    destruct w; cbn [terminal]; reflexivity. }
-  rewrite Hend.
-  destruct (body_synproxy_stops body p); reflexivity.
-Qed.
-
-Lemma orig_rule_applies : forall f v body w e p,
-  rule_applies (orig_rule f v body w) e p
-  = eval_matchcond (MCmp f CEq v) e p && rule_applies_walk body e p.
-Proof.
-  intros. unfold orig_rule. apply rule_applies_mk_head.
-Qed.
-
-Lemma orig_rule_outcome : forall f v body w e p,
-  outcome (orig_rule f v body w) e p =
-    if body_synproxy_stops body p then Some Drop
-    else (if body_has_notrack body
-          then terminal_outcome (mk_vmap_base w) (set_untracked p)
-          else terminal_outcome (mk_vmap_base w) p).
-Proof.
-  intros f v body w e p. unfold orig_rule.
-  rewrite outcome_mk_head.
-  destruct (body_synproxy_stops body p); [reflexivity|].
-  unfold outcome_core, body_thread, mk_vmap_base. cbn [r_vmap r_outcome].
-  destruct (body_has_notrack body); reflexivity.
-Qed.
-
-(** terminal_outcome of [mk_vmap_base w] for a TERMINAL [w] is [Some w]
-    (independent of packet). *)
-Lemma terminal_outcome_vmap_base : forall w q,
-  terminal w = true ->
-  terminal_outcome (mk_vmap_base w) q = Some w.
-Proof.
-  intros w q Hw. unfold terminal_outcome, mk_vmap_base.
-  cbn [r_nat r_tproxy r_fwd r_queue r_verdict r_after r_outcome].
-  destruct w; cbn [terminal] in Hw; try discriminate; reflexivity.
-Qed.
-
-(** ** The core two-rule vmap merge (per packet, on a CLEAN shared body).
-
-    On a body with no stopping synproxy and no notrack, the merged vmap rule
-    replaces the adjacent pair [orig_rule f v1 body w1 :: orig_rule f v2 body w2]
-    without changing [eval_rules] on any packet — PROVIDED [w1],[w2] are terminal,
-    [f] is fixed-width matching [v1],[v2], and [nm] resolves to the two point
-    entries.  This is the vmap analogue of [eval_rules_value_merge]. *)
-Theorem eval_rules_vmap_merge2 : forall f nm v1 v2 w1 w2 body rest e p,
-  e_vmap e nm = [(v1, v1, w1); (v2, v2, w2)] ->
-  field_fixed_len f = Some (length v1) ->
-  field_fixed_len f = Some (length v2) ->
-  terminal w1 = true ->
-  terminal w2 = true ->
-  body_synproxy_stops body p = false ->
-  body_has_notrack body = false ->
-  eval_rules (mk_vmap_rule f nm body :: rest) e p
-  = eval_rules (orig_rule f v1 body w1 :: orig_rule f v2 body w2 :: rest) e p.
-Proof.
-  intros f nm v1 v2 w1 w2 body rest e p Hvm Hfx1 Hfx2 Hw1 Hw2 Hsp Hnt.
-  (* loadability of the merged rule *)
-  assert (HmL : rule_loadable (mk_vmap_rule f nm body) e p =
-                body_loadable_walk body p &&
-                (if field_loadable f p
-                 then match assoc_verdict (field_value f e p) (e_vmap e nm) with
-                      | Some _ => true | None => true end
-                 else false)).
-  { unfold rule_loadable, mk_vmap_rule. cbn [r_body].
-    rewrite Hsp.
-    unfold body_thread. cbn [r_body]. rewrite Hnt.
-    unfold end_loadable. cbn [r_vmap r_outcome].
-    unfold vmap_loadable. cbn [r_vmap vm_keyf r_outcome].
-    cbn [apply_transforms fold_left vm_name].
-    destruct (field_loadable f p) eqn:Hfld; cbn [andb].
-    - destruct (assoc_verdict (field_value f e p) (e_vmap e nm)); reflexivity.
-    - rewrite Bool.andb_false_r. reflexivity. }
-  (* simplify the merged-rule loadability: both branches of the inner match are
-     [true], so it is just [body_loadable_walk body p && field_loadable f p]. *)
-  assert (HmL' : rule_loadable (mk_vmap_rule f nm body) e p =
-                 body_loadable_walk body p && field_loadable f p).
-  { rewrite HmL. destruct (field_loadable f p);
-      [ destruct (assoc_verdict (field_value f e p) (e_vmap e nm)) | ];
-      rewrite ?Bool.andb_true_r, ?Bool.andb_false_r; reflexivity. }
-  (* applicability of the merged rule: body only (no head match) *)
-  assert (HmA : rule_applies (mk_vmap_rule f nm body) e p = rule_applies_walk body e p)
-    by reflexivity.
-  (* now evaluate.  Field-loadable case split drives everything. *)
-  rewrite ?eval_rules_cons, ?eval_rules_nil.
-  rewrite HmL', HmA.
-  destruct (field_loadable f p) eqn:Hfld; cbn [andb].
-  - (* f loads.  Build the two point-equality tests. *)
-    set (b1 := eval_cmp CEq (field_value f e p) v1).
-    set (b2 := eval_cmp CEq (field_value f e p) v2).
-    (* outcome of the merged rule via vmap_two_points *)
-    assert (Hmout : outcome (mk_vmap_rule f nm body) e p =
-                    if b1 then Some w1 else if b2 then Some w2 else None).
-    { unfold outcome, mk_vmap_rule. cbn [r_body]. rewrite Hsp.
-      unfold body_thread. cbn [r_body]. rewrite Hnt.
-      change ({| r_body := body;
-     r_outcome := OVmap {| vm_fields := [f]; vm_keyf := Some (f, []); vm_name := nm |}; r_after := [] |}) with (mk_vmap_rule f nm body).
-      rewrite (vmap_two_points f nm v1 v2 w1 w2 body e p Hvm); try assumption.
-      - reflexivity.
-      - intro. apply (field_fixed_len_loaded f (length v1) e p Hfx1); assumption.
-      - intro. apply (field_fixed_len_loaded f (length v2) e p Hfx2); assumption. }
-    rewrite Hmout, Bool.andb_true_r.
-    (* the originals: loadable = field_loadable && body_loadable_walk = same *)
-    rewrite ?eval_rules_cons, ?eval_rules_nil.
-    rewrite !orig_rule_loadable, !orig_rule_applies, !orig_rule_outcome.
-    cbn [match_loadable]. rewrite Hfld, Hsp, Hnt. cbn [andb].
-    rewrite !(terminal_outcome_vmap_base _ _ Hw1), !(terminal_outcome_vmap_base _ _ Hw2).
-    (* eval_matchcond (MCmp f CEq vi) e p = field_loadable f && b_i = b_i *)
-    assert (Hm1 : eval_matchcond (MCmp f CEq v1) e p = b1).
-    { unfold eval_matchcond, eval_matchcond_body. cbn [match_loadable].
-      rewrite Hfld. reflexivity. }
-    assert (Hm2 : eval_matchcond (MCmp f CEq v2) e p = b2).
-    { unfold eval_matchcond, eval_matchcond_body. cbn [match_loadable].
-      rewrite Hfld. reflexivity. }
-    rewrite Hm1, Hm2.
-    (* split on whether the shared body applies; then on b1, b2 *)
-    destruct (body_loadable_walk body p) eqn:HbL; cbn [andb];
-      [| (* body not loadable: merged & both originals all skipped *)
-         destruct b1; cbn [andb]; [reflexivity|];
-         destruct b2; cbn [andb]; reflexivity ].
-    destruct (rule_applies_walk body e p) eqn:HbA; cbn [andb].
-    + (* body applies *)
-      destruct b1; cbn [andb].
-      * rewrite Hw1. reflexivity.
-      * destruct b2; cbn [andb]; [rewrite Hw2; reflexivity | reflexivity].
-    + (* body does not apply: every rule skipped, fall to rest *)
-      rewrite !Bool.andb_false_r. reflexivity.
-  - (* f does not load: merged rule not loadable (skipped); both originals have
-       head match_loadable = field_loadable f = false -> not loadable, skipped. *)
-    rewrite Bool.andb_false_r.
-    rewrite ?eval_rules_cons, ?eval_rules_nil.
-    rewrite !orig_rule_loadable.
-    cbn [match_loadable]. rewrite Hfld. cbn [andb].
-    reflexivity.
-Qed.
 
 (** ** Fresh-name minting for verdict maps. *)
 Definition vmapname (n : nat) : String.string :=
@@ -525,14 +343,13 @@ Proof. reflexivity. Qed.
     under [d].  The merged rule's `__vmapN` lookup resolves to its two point
     entries (freshness + injectivity); [eval_rules_vmap_merge2] collapses the pair;
     the clean tail is env-irrelevant. *)
-(** *** The CHAIN-level entry (the [eval_chain] specialisation). *)
 (** * N-WAY verdict-map merge: fold a whole RUN of same-field/different-verdict rules
       into ONE vmap with N entries (matching nft -o).
 
     nft -o consolidates [dport 22 accept; 80 drop; 443 accept] into ONE
     [tcp dport vmap { 22:accept, 80:drop, 443:accept }].  Unlike the value->set and
     concat families (single shared verdict), the vmap rule's OUTCOME is value-
-    DEPENDENT, so this needs a dedicated N-way collapse rather than the shared-outcome
+    DEPENDENT, so this needs a dedicated N-way collapse rather than the shared-verdict
     [Optimize_MutEnv.eval_rules_mut_st_run_collapse]. *)
 
 Definition vmap_pt (vw : data * verdict) : data * data * verdict :=
@@ -559,128 +376,6 @@ Proof.
   rewrite (eval_mcmp_point f v e q Hld (Hlen v w (or_introl eq_refl) Hld)).
   destruct (data_eqb (field_value f e q) v) eqn:E; [reflexivity|].
   apply IH. intros v' w' Hin Hld'. apply (Hlen v' w'); [right; exact Hin | exact Hld'].
-Qed.
-
-(** The merged vmap rule's [outcome_core] over an N-entry point map is [first_match]. *)
-Lemma outcome_core_vmapN : forall es f e q nm body,
-  e_vmap e nm = map vmap_pt es ->
-  (forall v w, In (v, w) es -> field_loadable f q = true ->
-               length (field_value f e q) = length v) ->
-  field_loadable f q = true ->
-  outcome_core (mk_vmap_rule f nm body) e q = first_match f e q es.
-Proof.
-  intros es f e q nm body Hvm Hlen Hld.
-  unfold outcome_core, mk_vmap_rule. cbn [r_vmap vm_keyf vm_name vm_fields r_outcome].
-  cbn [apply_transforms fold_left]. rewrite Hvm.
-  rewrite (assoc_verdict_points es f e q Hlen Hld).
-  destruct (first_match f e q es) eqn:Efm; [reflexivity|].
-  unfold terminal_outcome, mk_vmap_rule.
-  cbn [r_nat r_tproxy r_fwd r_queue r_verdict r_after terminal r_outcome]. reflexivity.
-Qed.
-
-(** On a clean body (no synproxy stop, no notrack), [orig_rule]'s outcome is just the
-    terminal verdict (when [w] is terminal). *)
-Lemma orig_rule_outcome_clean : forall f v body w e p,
-  body_synproxy_stops body p = false ->
-  body_has_notrack body = false ->
-  terminal w = true ->
-  outcome (orig_rule f v body w) e p = Some w.
-Proof.
-  intros f v body w e p Hsp Hnt Hw.
-  rewrite orig_rule_outcome, Hsp, Hnt.
-  apply (terminal_outcome_vmap_base w p Hw).
-Qed.
-
-(** The N-way vmap collapse: a run [map (fun '(v,w) => orig_rule f v body w) es] of
-    same-field rules with DISTINCT terminal verdicts and DISTINCT keys, whose merged
-    vmap [nm] carries the N point entries [map vmap_pt es], collapses to ONE
-    [mk_vmap_rule].  On a packet matching key [vi] -> the verdict [wi] (first-match);
-    on a miss -> the vmap returns None -> Continue -> fall through to [rest]. *)
-Lemma eval_rules_vmap_mergeN : forall f nm es body rest e p,
-  e_vmap e nm = map vmap_pt es ->
-  (forall v w, In (v, w) es -> field_fixed_len f = Some (length v)) ->
-  (forall v w, In (v, w) es -> terminal w = true) ->
-  body_synproxy_stops body p = false ->
-  body_has_notrack body = false ->
-  eval_rules (mk_vmap_rule f nm body :: rest) e p
-  = eval_rules (map (fun vw => orig_rule f (fst vw) body (snd vw)) es ++ rest) e p.
-Proof.
-  intros f nm es body rest e p Hvm Hfx Hterm Hsp Hnt.
-  (* merged rule loadable / applies / outcome *)
-  assert (HmL : rule_loadable (mk_vmap_rule f nm body) e p
-                = body_loadable_walk body p && field_loadable f p).
-  { unfold rule_loadable, mk_vmap_rule. cbn [r_body]. rewrite Hsp.
-    unfold body_thread. cbn [r_body]. rewrite Hnt.
-    unfold end_loadable. cbn [r_vmap r_outcome]. unfold vmap_loadable.
-    cbn [r_vmap vm_keyf apply_transforms fold_left vm_name r_outcome].
-    destruct (field_loadable f p) eqn:Hfld; cbn [andb].
-    - destruct (assoc_verdict (field_value f e p) (e_vmap e nm));
-        rewrite ?Bool.andb_true_r; reflexivity.
-    - rewrite Bool.andb_false_r. reflexivity. }
-  assert (HmA : rule_applies (mk_vmap_rule f nm body) e p = rule_applies_walk body e p)
-    by reflexivity.
-  rewrite ?eval_rules_cons, ?eval_rules_nil. rewrite HmL, HmA.
-  destruct (field_loadable f p) eqn:Hfld; cbn [andb].
-  - (* f loads: merged outcome = first_match; the run scans the same keys *)
-    rewrite Bool.andb_true_r.
-    assert (Hmout : outcome (mk_vmap_rule f nm body) e p = first_match f e p es).
-    { unfold outcome, mk_vmap_rule. cbn [r_body]. rewrite Hsp.
-      unfold body_thread. cbn [r_body]. rewrite Hnt.
-      change ({| r_body := body;
-     r_outcome := OVmap {| vm_fields := [f]; vm_keyf := Some (f, []); vm_name := nm |}; r_after := [] |}) with (mk_vmap_rule f nm body).
-      apply (outcome_core_vmapN es f e p nm body Hvm); [| exact Hfld].
-      intros v w Hin Hld. apply (field_fixed_len_loaded f (length v) e p (Hfx v w Hin) Hld). }
-    rewrite Hmout.
-    destruct (body_loadable_walk body p) eqn:HbL; cbn [andb].
-    + destruct (rule_applies_walk body e p) eqn:HbA; cbn [andb].
-      * (* body loads & applies: induct on es, matching first_match to the run *)
-        clear HmL HmA Hmout Hvm.
-        induction es as [| [v w] es IH]; cbn [map app first_match fst snd].
-        -- (* empty run: first_match = None -> fall through to rest *)
-           reflexivity.
-        -- rewrite ?eval_rules_cons, ?eval_rules_nil.
-           rewrite orig_rule_loadable, orig_rule_applies,
-                   (orig_rule_outcome_clean f v body w e p Hsp Hnt
-                      (Hterm v w (or_introl eq_refl))).
-           cbn [match_loadable]. rewrite Hfld, HbL, Hsp. cbn [andb].
-           assert (Hm : eval_matchcond (MCmp f CEq v) e p
-                        = eval_cmp CEq (field_value f e p) v).
-           { unfold eval_matchcond, eval_matchcond_body. cbn [match_loadable].
-             rewrite Hfld. reflexivity. }
-           rewrite Hm. rewrite HbA. cbn [andb].
-           destruct (eval_cmp CEq (field_value f e p) v) eqn:Ev.
-           ++ (* head matches: both sides give Some w (w terminal) *)
-              rewrite (Hterm v w (or_introl eq_refl)). reflexivity.
-           ++ (* head misses: both fall through; induct on the tail *)
-              apply IH.
-              ** intros v' w' Hin. apply (Hfx v' w'); right; exact Hin.
-              ** intros v' w' Hin. apply (Hterm v' w'); right; exact Hin.
-      * (* body doesn't apply: merged skipped (applies false), run all skipped *)
-        clear HmL HmA Hmout Hvm.
-        induction es as [| [v w] es IH]; cbn [map app fst snd]; [reflexivity|].
-        rewrite ?eval_rules_cons, ?eval_rules_nil.
-        rewrite orig_rule_loadable, orig_rule_applies.
-        cbn [match_loadable]. rewrite Hfld, HbL, Hsp. cbn [andb].
-        rewrite HbA. rewrite Bool.andb_false_r. apply IH;
-          [ intros v' w' Hin; apply (Hfx v' w'); right; exact Hin
-          | intros v' w' Hin; apply (Hterm v' w'); right; exact Hin ].
-    + (* body doesn't load: merged skipped, run all skipped *)
-      clear HmL HmA Hmout Hvm.
-      induction es as [| [v w] es IH]; cbn [map app fst snd]; [reflexivity|].
-      rewrite ?eval_rules_cons, ?eval_rules_nil.
-      rewrite orig_rule_loadable. cbn [match_loadable]. rewrite Hfld, HbL, Hsp.
-      cbn [andb]. apply IH;
-        [ intros v' w' Hin; apply (Hfx v' w'); right; exact Hin
-        | intros v' w' Hin; apply (Hterm v' w'); right; exact Hin ].
-  - (* f does not load: merged skipped; every orig has head field-load false -> skipped *)
-    rewrite Bool.andb_false_r. cbn [andb].
-    clear HmL HmA Hvm.
-    induction es as [| [v w] es IH]; cbn [map app fst snd]; [reflexivity|].
-    rewrite ?eval_rules_cons, ?eval_rules_nil.
-    rewrite orig_rule_loadable. cbn [match_loadable]. rewrite Hfld. cbn [andb].
-    apply IH;
-      [ intros v' w' Hin; apply (Hfx v' w'); right; exact Hin
-      | intros v' w' Hin; apply (Hterm v' w'); right; exact Hin ].
 Qed.
 
 (** ** Executable N-WAY vmap pass.
@@ -714,7 +409,7 @@ Definition has_distinct_verdict (w1 : verdict) (es : list (data * verdict)) : bo
     in the body would make [body_thread] flip the conntrack latch, so a
     ct-dependent key would be read in a DIFFERENT tracking state than the originals
     — the merge would be UNSOUND.  Likewise a body SYN-proxy STOP short-circuits
-    the outcome.  This guard is VACUOUSLY TRUE on a clean rule body (no statements),
+    the verdict.  This guard is VACUOUSLY TRUE on a clean rule body (no statements),
     so it never blocks the merges [nft -o] performs on real rulesets, but it makes
     the pass sound on ARBITRARY input. *)
 Definition body_vmap_safe (body : list body_item) : bool :=

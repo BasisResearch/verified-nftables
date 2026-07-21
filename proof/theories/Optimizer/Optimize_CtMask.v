@@ -255,28 +255,6 @@ Definition ctmask_merged (f : field) (m1 m2 z : data) (body : list body_item)
   (r1 : rule) : rule :=
   mk_head (MMasked f CNe (data_or m1 m2) z z) body r1.
 
-(** *** Two-rule correctness: an eligible pair collapses to its merged rule,
-    preserving every verdict.  Reuses [eval_rules_value_merge] with the bitmask
-    disjunction certificate. *)
-Lemma eval_rules_ctmask_correct : forall r1 r2 f m1 m2 z body rest e p,
-  ctmask_pair r1 r2 = Some (f, m1, m2, z, body) ->
-  eval_rules (ctmask_merged f m1 m2 z body r1 :: rest) e p
-  = eval_rules (r1 :: r2 :: rest) e p.
-Proof.
-  intros r1 r2 f m1 m2 z body rest e p H.
-  destruct (ctmask_pair_facts r1 r2 f m1 m2 z body H)
-    as [Hr1 [Hr2 [Hl1 [Hl2 Hz]]]].
-  unfold ctmask_merged.
-  transitivity (eval_rules (mk_head (MMasked f CNe m1 z z) body r1
-                            :: mk_head (MMasked f CNe m2 z z) body r1 :: rest) e p).
-  - apply (eval_rules_value_merge (MMasked f CNe m1 z z) (MMasked f CNe m2 z z)
-             (MMasked f CNe (data_or m1 m2) z z) body r1 rest e p).
-    + intro q. reflexivity.
-    + intro q. reflexivity.
-    + intro q. apply (mmasked_ctmask_disjunction f m1 m2 z e q Hl1 Hl2 Hz).
-  - rewrite <- Hr1, <- Hr2. reflexivity.
-Qed.
-
 (** ** Executable fuel-driven pass: merge an adjacent eligible pair into its union
     rule and RETRY (so an N-way run folds by repeated pairwise union), else keep
     and advance. *)
@@ -294,17 +272,6 @@ Fixpoint optimize_rules_ctmask (fuel : nat) (rs : list rule) : list rule :=
     | _ => rs
     end
   end.
-
-Lemma optimize_rules_ctmask_eval : forall fuel rs e p,
-  eval_rules (optimize_rules_ctmask fuel rs) e p = eval_rules rs e p.
-Proof.
-  induction fuel as [| fuel IH]; intros rs e p; [reflexivity |].
-  destruct rs as [| r1 [| r2 rest]]; try reflexivity.
-  cbn [optimize_rules_ctmask].
-  destruct (ctmask_pair r1 r2) as [[[[[f m1] m2] z] body] |] eqn:Ep.
-  - rewrite IH. apply (eval_rules_ctmask_correct r1 r2 f m1 m2 z body rest e p Ep).
-  - apply eval_rules_cons_cong. apply IH.
-Qed.
 
 (** *** Freshness / name-set preservation: a merged rule reads EXACTLY the names
     its base rule [r1] reads (the union [MMasked] head references no set name, and
@@ -362,13 +329,6 @@ Definition optimize_chain_ctmask (n : nat) (d : set_decls) (c : chain)
 Lemma optimize_chain_ctmask_eq : forall n d c,
   optimize_chain_ctmask n d c = (n, d, ctmask_chain c).
 Proof. reflexivity. Qed.
-
-Lemma ctmask_chain_eval : forall c e p,
-  eval_chain (ctmask_chain c) e p = eval_chain c e p.
-Proof.
-  intros c e p. unfold eval_chain, ctmask_chain. cbn [c_rules c_policy].
-  rewrite optimize_rules_ctmask_eval. reflexivity.
-Qed.
 
 (** ** Non-vacuity witnesses (battery shape "ctstate-mask-union"): two adjacent
     `ct state new/established accept` bitmask rules fold to ONE union rule. *)

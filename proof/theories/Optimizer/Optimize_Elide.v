@@ -131,43 +131,15 @@ Proof.
   destruct it as [m | s]; [reflexivity | destruct s; reflexivity].
 Qed.
 
-Lemma elide_body_synproxy_stops : forall body p,
-  body_synproxy_stops (map elide_bi body) p = body_synproxy_stops body p.
-Proof.
-  induction body as [| it b IH]; intro p; [reflexivity|].
-  unfold body_synproxy_stops in *. cbn [map existsb]. rewrite IH.
-  destruct it as [m | s]; [reflexivity | destruct s; reflexivity].
-Qed.
-
 Lemma elide_body_thread : forall body p,
   body_thread (map elide_bi body) p = body_thread body p.
 Proof.
   intros body p. unfold body_thread. rewrite elide_body_has_notrack. reflexivity.
 Qed.
 
-Lemma elide_rule_applies_walk : forall body e p,
-  rule_applies_walk (map elide_bi body) e p = rule_applies_walk body e p.
-Proof.
-  induction body as [| it b IH]; intros e p; [reflexivity|].
-  destruct it as [m | s]; cbn [map elide_bi rule_applies_walk].
-  - rewrite elide_mc_matchcond, IH. reflexivity.
-  - destruct s; cbn [rule_applies_walk]; rewrite IH; reflexivity.
-Qed.
-
-Lemma elide_body_loadable_walk : forall body p,
-  body_loadable_walk (map elide_bi body) p = body_loadable_walk body p.
-Proof.
-  induction body as [| it b IH]; intro p; [reflexivity|].
-  destruct it as [m | s]; cbn [map elide_bi body_loadable_walk body_item_loadable].
-  - rewrite elide_mc_loadable, IH. reflexivity.
-  - destruct s; cbn [body_loadable_walk body_item_loadable stmt_loadable];
-      rewrite IH; reflexivity.
-Qed.
-
 Lemma elide_r_body : forall r,
   r_body (elide_rule r) = map elide_bi (r_body r).
 Proof. reflexivity. Qed.
-
 
 (* ================================================================== *)
 (** ** Non-vacuity: the pass GENUINELY deletes the trivial binop.

@@ -46,110 +46,12 @@ Local Open Scope nat_scope.
     body evaluates ([mc_set_name]) and the verdict map it carries ([rule_vmap_name]).
     We prove this WITHOUT the [body_only_matches] restriction, which means handling
     statement body items — [SSynproxy] and [SNotrack] (threads [set_untracked] into
-    the rest of the walk).  Loadability predicates and [synproxy_stops]/
-    [body_synproxy_stops] do not take the env at all, so their stability across two
+    the rest of the walk).  The loadability and synproxy-stop predicates do not take
+    the env at all, so their stability across two
     decls is a TYPING fact (no lemma needed); [set_untracked] acts on the packet
     alone, so it trivially preserves whichever env the walk carries. *)
 
-(** [outcome_core] AGREES across two decls that agree on the rule's vmap name. *)
-Lemma outcome_core_agree : forall r q base d1 d2,
-  (forall nm, In nm (rule_vmap_name r) ->
-     e_vmap (env_with_sets base d1) nm = e_vmap (env_with_sets base d2) nm) ->
-  outcome_core r (env_with_sets base d1) q
-  = outcome_core r (env_with_sets base d2) q.
-Proof.
-  intros r q base d1 d2 Hvmap. unfold outcome_core.
-  destruct (r_vmap r) as [vm |] eqn:Ev; [| reflexivity].
-  assert (Hk : match vm_keyf vm with
-                 | Some (f, ts) => apply_transforms ts (field_value f (env_with_sets base d1) q)
-                 | None => List.concat (map (fun f => field_value f (env_with_sets base d1) q) (vm_fields vm))
-                 end
-             = match vm_keyf vm with
-                 | Some (f, ts) => apply_transforms ts (field_value f (env_with_sets base d2) q)
-                 | None => List.concat (map (fun f => field_value f (env_with_sets base d2) q) (vm_fields vm))
-                 end).
-  { destruct (vm_keyf vm) as [[f ts] |].
-    - rewrite (field_value_env_with_sets f q base d1 d2). reflexivity.
-    - rewrite (map_ext _ _ (fun f => field_value_env_with_sets f q base d1 d2)). reflexivity. }
-  rewrite Hk.
-  rewrite (Hvmap (vm_name vm)) by (unfold rule_vmap_name; rewrite Ev; left; reflexivity).
-  destruct (assoc_verdict _ (e_vmap (env_with_sets base d2) (vm_name vm))); reflexivity.
-Qed.
-
 (** *** Generalised whole-rule agreement: ARBITRARY body (no [body_only_matches]). *)
-
-Lemma rule_applies_walk_agree_gen : forall body p base d1 d2,
-  (forall nm, In nm (body_set_names body) ->
-     e_set (env_with_sets base d1) nm = e_set (env_with_sets base d2) nm) ->
-  rule_applies_walk body (env_with_sets base d1) p
-  = rule_applies_walk body (env_with_sets base d2) p.
-Proof.
-  intros body. induction body as [| it body IH]; intros p base d1 d2 Hag; [reflexivity|].
-  assert (Hsub : forall nm, In nm (body_set_names body) -> In nm (body_set_names (it :: body))).
-  { intros nm Hnm. unfold body_set_names in *. cbn [body_matches flat_map].
-    destruct it as [m | s]; cbn [flat_map].
-    - apply in_or_app. right. exact Hnm.
-    - exact Hnm. }
-  destruct it as [m | s].
-  - cbn [rule_applies_walk].
-    rewrite (eval_matchcond_agree m p base d1 d2).
-    + rewrite (IH p base d1 d2 (fun nm Hnm => Hag nm (Hsub nm Hnm))). reflexivity.
-    + intros nm Hnm. apply Hag. apply (mc_in_body_read (BMatch m :: body) m nm);
-        [ left; reflexivity | exact Hnm ].
-  - cbn [rule_applies_walk]. destruct s;
-      try (apply (IH p base d1 d2 (fun nm Hnm => Hag nm (Hsub nm Hnm)))).
-    + (* SNotrack *)
-      apply (IH (set_untracked p) base d1 d2 (fun nm Hnm => Hag nm (Hsub nm Hnm))).
-    + (* SSynproxy *)
-      destruct (synproxy_stops p);
-        [reflexivity | apply (IH p base d1 d2 (fun nm Hnm => Hag nm (Hsub nm Hnm)))].
-Qed.
-
-Lemma rule_loadable_agree_gen : forall r p base d1 d2,
-  decls_agree_rule base d1 d2 r ->
-  rule_loadable r (env_with_sets base d1) p
-  = rule_loadable r (env_with_sets base d2) p.
-Proof.
-  intros r p base d1 d2 [_ [Hvmap Hmap]]. unfold rule_loadable.
-  f_equal.
-  destruct (body_synproxy_stops (r_body r) p); [reflexivity |].
-  apply (end_loadable_agree r (body_thread (r_body r) p) base d1 d2 Hvmap Hmap).
-Qed.
-
-Lemma rule_applies_agree_gen : forall r p base d1 d2,
-  decls_agree_rule base d1 d2 r ->
-  rule_applies r (env_with_sets base d1) p
-  = rule_applies r (env_with_sets base d2) p.
-Proof.
-  intros r p base d1 d2 [Hset _]. unfold rule_applies.
-  apply (rule_applies_walk_agree_gen (r_body r) p base d1 d2 Hset).
-Qed.
-
-Lemma outcome_agree_gen : forall r p base d1 d2,
-  decls_agree_rule base d1 d2 r ->
-  outcome r (env_with_sets base d1) p
-  = outcome r (env_with_sets base d2) p.
-Proof.
-  intros r p base d1 d2 [_ [Hvmap _]]. unfold outcome.
-  destruct (body_synproxy_stops (r_body r) p); [reflexivity |].
-  apply (outcome_core_agree r (body_thread (r_body r) p) base d1 d2 Hvmap).
-Qed.
-
-(** [eval_rules] AGREES across two decls that agree (per-rule) on the names each
-    rule reads — for an ARBITRARY rule list. *)
-Lemma eval_rules_agree_gen : forall rs p base d1 d2,
-  (forall r, In r rs -> decls_agree_rule base d1 d2 r) ->
-  eval_rules rs (env_with_sets base d1) p
-  = eval_rules rs (env_with_sets base d2) p.
-Proof.
-  induction rs as [| r rs IH]; intros p base d1 d2 Hag; [reflexivity|].
-  pose proof (Hag r (or_introl eq_refl)) as Hda.
-  rewrite ?eval_rules_cons, ?eval_rules_nil.
-  rewrite (rule_loadable_agree_gen r p base d1 d2 Hda).
-  rewrite (rule_applies_agree_gen r p base d1 d2 Hda).
-  rewrite (outcome_agree_gen r p base d1 d2 Hda).
-  rewrite (IH p base d1 d2 (fun r' Hr' => Hag r' (or_intror Hr'))). reflexivity.
-Qed.
 
 (** ** Part 2: the length-based fresh-counter and read-freshness predicates.
 
@@ -299,18 +201,6 @@ Proof.
   - intros nm Hnm. symmetry. apply Hset; exact Hnm.
   - intros nm Hnm. symmetry. apply Hvmap; exact Hnm.
   - intros nm Hnm. symmetry. apply Hmap; exact Hnm.
-Qed.
-
-(** A cons-step congruence for [eval_rules]: equal head behaviour (loadable /
-    applies / outcome) AND equal tail evaluations give equal whole evaluations. *)
-Lemma eval_rules_cons_cong : forall r X Y e1 e2 p,
-  rule_loadable r e1 p = rule_loadable r e2 p ->
-  rule_applies r e1 p = rule_applies r e2 p ->
-  outcome r e1 p = outcome r e2 p ->
-  eval_rules X e1 p = eval_rules Y e2 p ->
-  eval_rules (r :: X) e1 p = eval_rules (r :: Y) e2 p.
-Proof.
-  intros r X Y e1 e2 p HL HA HO HXY. rewrite ?eval_rules_cons, ?eval_rules_nil. rewrite HL, HA, HO, HXY. reflexivity.
 Qed.
 
 (** An [orig_dnat_rule] reads NO set/vmap/map name, so it AGREES across any decls. *)
