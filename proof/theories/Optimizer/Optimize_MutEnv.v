@@ -345,6 +345,128 @@ Proof.
     [ destruct (terminal v); [reflexivity | apply Htail] | apply Htail ].
 Qed.
 
+(** *** State-fold analogue of [Optimize_ValueSet.eval_rules_run_merge_abs].
+
+    The direct first-match N-way merge/absorption certificate over the
+    STATE-THREADING fold [eval_rules_mut_st], NOT the write-free verdict
+    [eval_rules].  A nonempty run [map (fun m => mk_head m body r1) ms] of shells
+    that share the SAME tail body and SAME end record [r1], differing only in the
+    head match, collapses to the ONE merged shell [mk_head m12 body r1] whose head
+    realises the disjunction ([eval_matchcond m12 = existsb ...]).  The conclusion
+    is over the FULL observable of the fold — verdict AND resulting (env, packet).
+
+    The [rule_mutfree] hypotheses on every shell (and on the merged shell) are
+    load-bearing rather than incidental: on the state fold a shell that does NOT
+    fire can still advance the env (a limiter head consumes its bucket at its
+    position), and a firing shell whose outcome falls through re-runs its body on
+    the next shell — so an unconstrained merge would NOT preserve the threaded
+    state.  Under mut-freeness [rule_step_mutfree] pins every shell's step to
+    leave the state at [(e, p)]; the threaded state is then constant across the
+    whole run, and the first-match/break argument is exactly the pure
+    [eval_rules_run_merge_abs] induction lifted one level into the fold's
+    (verdict, state) pair.  This is the substrate a later step re-points the
+    optimizer's per-pass merge proofs onto so the pure [eval_rules] strand and
+    its [eval_rules_run_merge_abs] can be dropped. *)
+Lemma eval_rules_mut_st_run_merge_abs :
+  forall (ms : list matchcond) (ML : packet -> bool) body r1 m12 rest e p,
+  ms <> [] ->
+  rule_mutfree (mk_head m12 body r1) = true ->
+  forallb rule_mutfree (map (fun m => mk_head m body r1) ms) = true ->
+  (forall m, In m ms -> match_loadable m p = ML p) ->
+  match_loadable m12 p = ML p ->
+  eval_matchcond m12 e p = existsb (fun m => eval_matchcond m e p) ms ->
+  eval_rules_mut_st h (mk_head m12 body r1 :: rest) e p
+  = eval_rules_mut_st h (map (fun m => mk_head m body r1) ms ++ rest) e p.
+Proof.
+  intros ms ML body r1 m12 rest e p Hne Hmf12 HmfRun HmlAll Hml Hev.
+  (* The shared loadability path [L], applies-walk [A], and outcome [O] — read
+     off the shared [body]/[r1], exactly as in the pure substrate. *)
+  set (L := body_loadable_walk body p &&
+            (if body_synproxy_stops body p then true
+             else end_loadable r1 e (body_thread body p))).
+  set (A := rule_applies_walk body e p).
+  set (O := if body_synproxy_stops body p then Some Drop
+            else outcome_core r1 e (body_thread body p)).
+  assert (Hload : forall m, rule_loadable (mk_head m body r1) e p
+                            = match_loadable m p && L)
+    by (intro m; rewrite rule_loadable_mk_head; reflexivity).
+  assert (Happ : forall m, rule_applies (mk_head m body r1) e p
+                           = eval_matchcond m e p && A)
+    by (intro m; rewrite rule_applies_mk_head; reflexivity).
+  assert (Hout : forall m, outcome (mk_head m body r1) e p = O)
+    by (intro m; rewrite outcome_mk_head; reflexivity).
+  (* Each mut-free shell steps in the pure guarded [if]-shape, its state pinned
+     to [(e, p)] — the state fold's [(verdict, state)] pair for one shell,
+     recast as [eval_rules]'s [rule_loadable && rule_applies] / [outcome]
+     branch so the first-match induction is the pure one. *)
+  assert (Hshell : forall m tl, rule_mutfree (mk_head m body r1) = true ->
+            eval_rules_mut_st h (mk_head m body r1 :: tl) e p
+            = if (match_loadable m p && L) && (eval_matchcond m e p && A)
+              then match O with
+                   | Some w => if terminal w then (Some w, (e, p))
+                               else eval_rules_mut_st h tl e p
+                   | None => eval_rules_mut_st h tl e p
+                   end
+              else eval_rules_mut_st h tl e p).
+  { intros m tl Hm. rewrite eval_rules_mut_st_cons, (rule_step_mutfree h _ e p Hm).
+    rewrite (Hload m), (Happ m), (Hout m).
+    destruct ((match_loadable m p && L) && (eval_matchcond m e p && A)); reflexivity. }
+  (* Every run shell is mut-free (from the [forallb] over the mapped list). *)
+  assert (HmfEach : forall m, In m ms -> rule_mutfree (mk_head m body r1) = true).
+  { intros m Hm. rewrite forallb_forall in HmfRun.
+    exact (HmfRun (mk_head m body r1) (in_map (fun m => mk_head m body r1) ms m Hm)). }
+  (* Characterise the whole run [run ++ rest] by first-match induction on [ms],
+     with the threaded state pinned at [(e, p)] throughout. *)
+  assert (Hrun :
+    eval_rules_mut_st h (map (fun m => mk_head m body r1) ms ++ rest) e p
+    = if ((ML p && L) && (existsb (fun m => eval_matchcond m e p) ms && A)) then
+        match O with
+        | Some v => if terminal v then (Some v, (e, p))
+                    else eval_rules_mut_st h rest e p
+        | None => eval_rules_mut_st h rest e p
+        end
+      else eval_rules_mut_st h rest e p).
+  { clear Hev Hml Hmf12 HmfRun Hload Happ Hout.
+    assert (Hterm : (match O with Some v => terminal v | None => false end) = false
+                    \/ (exists v, O = Some v /\ terminal v = true)).
+    { destruct O as [v |]; [destruct (terminal v) eqn:Et;
+        [right; eauto | left; reflexivity] | left; reflexivity]. }
+    destruct Hterm as [Hnt | [v [EO Ev]]].
+    - (* non-terminal / None outcome: the whole run falls through to [rest] *)
+      assert (Htarget :
+        match O with
+        | Some w => if terminal w then (Some w, (e, p)) else eval_rules_mut_st h rest e p
+        | None => eval_rules_mut_st h rest e p
+        end = eval_rules_mut_st h rest e p).
+      { clearbody O. destruct O as [w |]; [destruct (terminal w) eqn:Etw;
+          [exfalso; clear -Hnt Etw; cbn in Hnt; congruence | reflexivity] | reflexivity]. }
+      transitivity (eval_rules_mut_st h rest e p).
+      2:{ rewrite Htarget. destruct ((ML p && L) && _); reflexivity. }
+      clear Hne Hnt. revert HmlAll HmfEach.
+      induction ms as [| m ms IH]; intros HmlAll HmfEach.
+      + reflexivity.
+      + cbn [map app]. rewrite (Hshell m _ (HmfEach m (or_introl eq_refl))).
+        rewrite (IH (fun mm Hmm => HmlAll mm (or_intror Hmm))
+                    (fun mm Hmm => HmfEach mm (or_intror Hmm))).
+        destruct (match_loadable m p && L && (eval_matchcond m e p && A));
+          [rewrite Htarget; reflexivity | reflexivity].
+    - (* terminal [Some v]: first-match position matters *)
+      rewrite EO. clear Hne. revert HmlAll HmfEach.
+      induction ms as [| m ms IH]; intros HmlAll HmfEach.
+      + cbn [map app existsb]. rewrite Bool.andb_false_r. reflexivity.
+      + cbn [map app]. rewrite (Hshell m _ (HmfEach m (or_introl eq_refl))).
+        rewrite (HmlAll m (or_introl eq_refl)). cbn [existsb].
+        rewrite (IH (fun mm Hmm => HmlAll mm (or_intror Hmm))
+                    (fun mm Hmm => HmfEach mm (or_intror Hmm))).
+        rewrite EO, Ev.
+        destruct (ML p && L); cbn [andb]; [| reflexivity].
+        destruct A; [| rewrite !Bool.andb_false_r; reflexivity].
+        rewrite !Bool.andb_true_r.
+        destruct (eval_matchcond m e p); cbn [orb andb]; reflexivity. }
+  (* Assemble: the merged shell's single step vs the run's characterisation. *)
+  rewrite (Hshell m12 rest Hmf12), Hml, Hev, Hrun. reflexivity.
+Qed.
+
 End WithHook.
 
 (** [rule_mutfree] transfer along [mk_head] shells: mut-freedom is the tail
