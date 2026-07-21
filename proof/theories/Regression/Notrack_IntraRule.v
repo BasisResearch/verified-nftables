@@ -20,14 +20,14 @@
     and SUCCEEDS, so the kernel ACCEPTS.  On a packet that ALREADY has an entry the
     `notrack` is a no-op and `ct state untracked` reads the entry's real state.
 
-    In the model, [rule_applies_walk]/[outcome]/[run_rule] all thread
+    In the model, [body_step]/[rule_step]/[run_rule_step] all thread
     [set_untracked] past [SNotrack]/[INotrack] into the rule's OWN later
     matches/terminal, and [set_untracked] mirrors the kernel guard exactly (it is
     a NO-OP when [pkt_ct_present = true]) — so the model ACCEPTS a NO-ENTRY packet
     and leaves an entry-present packet's state untouched.  All theorems below are
     proved axiom-free by [vm_compute].
 
-    Regression gate: [model_accepts_like_kernel_eval_chain]/[_mut] and
+    Regression gate: [model_accepts_like_kernel_eval_chain_mut] and
     [model_drops_entry_present_packet] lock in the intra-rule threading + guard;
     a model that skips statements when walking a rule's matches (the `ct state
     untracked` match never seeing the same rule's `notrack` latch) makes them
@@ -76,17 +76,14 @@ Definition pkt_noentry : packet :=
      pkt_flow := [7;7]; pkt_untracked := false; pkt_ctdir_orig := true; pkt_ct_present := false |}.
 
 (* On the NO-ENTRY packet the intra-rule `notrack` latches IP_CT_UNTRACKED before
-   the SAME rule's `ct state untracked` match, which therefore SUCCEEDS. *)
+   the SAME rule's `ct state untracked` match, which therefore SUCCEEDS, so the
+   rule fires (its [rule_step] produces a verdict). *)
 Lemma intra_match_succeeds_after_notrack :
-  rule_applies intra_rule env0 pkt_noentry = true.
+  fst (rule_step h intra_rule env0 pkt_noentry) = Some Accept.
 Proof. vm_compute. reflexivity. Qed.
 
-(* KERNEL-FAITHFUL: the model ACCEPTS the no-entry packet the kernel ACCEPTS. *)
-Theorem model_accepts_like_kernel_eval_chain :
-  eval_chain intra_chain env0 pkt_noentry = Accept.
-Proof. vm_compute. reflexivity. Qed.
-
-(* The stateful threading evaluator agrees. *)
+(* KERNEL-FAITHFUL: the model ACCEPTS the no-entry packet the kernel ACCEPTS, on
+   the canonical stateful threading evaluator. *)
 Theorem model_accepts_like_kernel_eval_chain_mut :
   eval_chain_mut h intra_chain env0 pkt_noentry = Accept.
 Proof. vm_compute. reflexivity. Qed.
@@ -118,13 +115,14 @@ Definition pkt_est : packet :=
      pkt_flow := [9;9]; pkt_untracked := false; pkt_ctdir_orig := true; pkt_ct_present := true |}.
 
 (* notrack is a no-op on the entry-present packet: its ct state is read as the live
-   ESTABLISHED value, so `ct state untracked` does NOT match and the rule is skipped. *)
+   ESTABLISHED value, so `ct state untracked` does NOT match and the rule is
+   skipped (its [rule_step] produces no verdict). *)
 Lemma intra_match_noop_on_entry :
-  rule_applies intra_rule env_est pkt_est = false.
+  fst (rule_step h intra_rule env_est pkt_est) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem model_drops_entry_present_packet :
-  eval_chain intra_chain env_est pkt_est = Drop.
+  eval_chain_mut h intra_chain env_est pkt_est = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 End AtHook.

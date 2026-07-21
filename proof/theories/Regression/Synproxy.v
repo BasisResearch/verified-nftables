@@ -1,7 +1,7 @@
 (** * SYN-proxy is verdict-bearing, NOT a no-op.
 
     A verdict-neutral `synproxy` statement would make a rule whose only action
-    is `synproxy` a complete verdict no-op ([eval_chain {synproxy} p = policy]
+    is `synproxy` a complete verdict no-op ([eval_chain_mut {synproxy} p = policy]
     for EVERY packet) — UNSOUND.  The kernel (net/netfilter/nft_synproxy.c,
     nft_synproxy_do_eval / _eval_v4) is verdict-bearing in every interesting
     case:
@@ -12,7 +12,7 @@
       - TCP client ACK  => NF_STOLEN (valid) / NF_DROP (rejected) — STOPS;
       - other TCP       => implicit NFT_CONTINUE (fall through).
 
-    The model captures the control-flow outcome the single-packet semantics can see:
+    The model captures the control-flow decision the single-packet semantics can see:
     a non-TCP packet makes the rule unloadable (NFT_BREAK, via the TCP-flags
     transport load), a SYN/ACK packet STOPS traversal — modelled as the terminal
     verdict [Drop] (the documented behaviour: doc/statements.txt:55, "reject and
@@ -22,7 +22,7 @@
     non-SYN/non-ACK TCP packet falls through (NFT_CONTINUE).
 
     These theorems witness that the model is not a verdict no-op, and that the
-    compiled bytecode agrees (via [compile_chain_correct]). *)
+    compiled bytecode agrees (via [compile_chain_mut_correct]). *)
 
 From Stdlib Require Import List String Bool.
 From Nft Require Import Bytes Verdict Packet Syntax Semantics Compile Correct.
@@ -67,7 +67,7 @@ Definition ack_pkt  : packet := mk_tcp_pkt 16.  (* ACK  = 0x10 *)
 Definition rst_pkt  : packet := mk_tcp_pkt 4.   (* RST  = 0x04 (neither SYN nor ACK) *)
 
 (** A chain whose ONLY rule is `synproxy mss 1460 wscale 7`, with policy Accept.
-    (Accept, not Drop, so that a [Drop] outcome can only come FROM the synproxy.) *)
+    (Accept, not Drop, so that a [Drop] verdict can only come FROM the synproxy.) *)
 Definition synproxy_rule : rule :=
   {| r_body := [ BStmt (SSynproxy 1460 7) ];
      r_outcome := ONone; r_after := [] |}.
@@ -75,50 +75,59 @@ Definition synproxy_chain : chain :=
   {| c_policy := Accept; c_rules := [ synproxy_rule ] |}.
 
 (** *** A SYN packet STOPS at the synproxy — the statement is verdict-bearing. *)
-Theorem syn_pkt_stopped : eval_chain synproxy_chain syn_env syn_pkt = Drop.
-Proof. reflexivity. Qed.
+Theorem syn_pkt_stopped : forall h, eval_chain_mut h synproxy_chain syn_env syn_pkt = Drop.
+Proof. intro h. vm_compute. reflexivity. Qed.
 
 (** An ACK packet likewise stops (kernel: STOLEN valid / DROP rejected). *)
-Theorem ack_pkt_stopped : eval_chain synproxy_chain syn_env ack_pkt = Drop.
-Proof. reflexivity. Qed.
+Theorem ack_pkt_stopped : forall h, eval_chain_mut h synproxy_chain syn_env ack_pkt = Drop.
+Proof. intro h. vm_compute. reflexivity. Qed.
 
 (** A non-SYN/non-ACK TCP packet (a bare RST) falls through (NFT_CONTINUE) to the
     chain policy — the synproxy does not apply to it. *)
-Theorem rst_pkt_continues : eval_chain synproxy_chain syn_env rst_pkt = Accept.
-Proof. reflexivity. Qed.
+Theorem rst_pkt_continues : forall h, eval_chain_mut h synproxy_chain syn_env rst_pkt = Accept.
+Proof. intro h. vm_compute. reflexivity. Qed.
 
 (** A NON-TCP packet: the rule does not apply (NFT_BREAK), so the packet reaches
     the policy. *)
-Theorem non_tcp_falls_through : eval_chain synproxy_chain syn_env non_tcp_pkt = Accept.
-Proof. reflexivity. Qed.
+Theorem non_tcp_falls_through : forall h, eval_chain_mut h synproxy_chain syn_env non_tcp_pkt = Accept.
+Proof. intro h. vm_compute. reflexivity. Qed.
 
 (** The CENTRAL refutation: the synproxy rule is NOT a verdict no-op.  The
-    no-op property ([forall p, eval_chain synproxy_chain e p = <policy>]) is
+    no-op property ([forall p, eval_chain_mut h synproxy_chain e p = <policy>]) is
     FALSE — the SYN packet is a counterexample. *)
 Theorem synproxy_is_NOT_verdict_noop :
-  ~ (forall e p, eval_chain synproxy_chain e p = c_policy synproxy_chain).
+  ~ (forall h e p, eval_chain_mut h synproxy_chain e p = c_policy synproxy_chain).
 Proof.
-  intro H. specialize (H syn_env syn_pkt). cbn [c_policy synproxy_chain] in H.
-  rewrite syn_pkt_stopped in H. discriminate H.
+  intro H. specialize (H Hinput syn_env syn_pkt). cbn [c_policy synproxy_chain] in H.
+  rewrite (syn_pkt_stopped Hinput) in H. discriminate H.
 Qed.
 
 (** And it genuinely DECIDES the verdict differently for different packets — it is
     not constant. *)
-Theorem synproxy_not_constant :
-  eval_chain synproxy_chain syn_env syn_pkt <> eval_chain synproxy_chain syn_env rst_pkt.
-Proof. rewrite syn_pkt_stopped, rst_pkt_continues. discriminate. Qed.
+Theorem synproxy_not_constant : forall h,
+  eval_chain_mut h synproxy_chain syn_env syn_pkt <> eval_chain_mut h synproxy_chain syn_env rst_pkt.
+Proof. intro h. rewrite (syn_pkt_stopped h), (rst_pkt_continues h). discriminate. Qed.
 
-(** The compiled bytecode agrees (via [compile_chain_correct]): the installed
+(** The compiled bytecode agrees (via [compile_chain_mut_correct]): the installed
     netlink program also stops the SYN packet, falls through the RST packet, and
     does not apply to a non-TCP packet. *)
-Theorem syn_pkt_stopped_bytecode :
-  run_chain (compile_chain synproxy_chain) (c_policy synproxy_chain) syn_env syn_pkt = Drop.
-Proof. rewrite compile_chain_correct. apply syn_pkt_stopped. Qed.
+Theorem syn_pkt_stopped_bytecode : forall h,
+  run_chain_mut h (compile_chain synproxy_chain) (c_policy synproxy_chain) syn_env syn_pkt = Drop.
+Proof.
+  intro h. rewrite (compile_chain_mut_correct h) by (vm_compute; reflexivity).
+  exact (syn_pkt_stopped h).
+Qed.
 
-Theorem rst_pkt_continues_bytecode :
-  run_chain (compile_chain synproxy_chain) (c_policy synproxy_chain) syn_env rst_pkt = Accept.
-Proof. rewrite compile_chain_correct. apply rst_pkt_continues. Qed.
+Theorem rst_pkt_continues_bytecode : forall h,
+  run_chain_mut h (compile_chain synproxy_chain) (c_policy synproxy_chain) syn_env rst_pkt = Accept.
+Proof.
+  intro h. rewrite (compile_chain_mut_correct h) by (vm_compute; reflexivity).
+  exact (rst_pkt_continues h).
+Qed.
 
-Theorem non_tcp_falls_through_bytecode :
-  run_chain (compile_chain synproxy_chain) (c_policy synproxy_chain) syn_env non_tcp_pkt = Accept.
-Proof. rewrite compile_chain_correct. apply non_tcp_falls_through. Qed.
+Theorem non_tcp_falls_through_bytecode : forall h,
+  run_chain_mut h (compile_chain synproxy_chain) (c_policy synproxy_chain) syn_env non_tcp_pkt = Accept.
+Proof.
+  intro h. rewrite (compile_chain_mut_correct h) by (vm_compute; reflexivity).
+  exact (non_tcp_falls_through h).
+Qed.
