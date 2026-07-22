@@ -247,9 +247,9 @@ Print Assumptions budget_legitimate_allowed.
 
 (* ================================================================== *)
 (** ** The parsed vmfilter table is write-free, so every verdict above — stated
-    over the canonical unified evaluator [eval_table_u] — coincides with the pure
-    jump strand ([Semantics.eval_table_u_writefree]); the [forall h] form records
-    that these verdicts are hook-independent. *)
+    over the canonical unified evaluator [eval_table_u] — is hook-independent
+    ([Nft_Tactics.eval_table_u_hookindep_writefree]); the [forall h] form records
+    that these verdicts hold at every hook. *)
 Example vmfilter_output_license :
   forallb rule_writefree (c_rules vmfilter_output) = true
   /\ chains_writefree vmfilter_chains = true.

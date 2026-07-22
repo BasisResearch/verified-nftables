@@ -173,17 +173,54 @@ Proof. intros. now apply nft_yields_fuel_indep with (rank := rank). Qed.
 
     [nft_yields] quantifies the verdict over EVERY hook.  For a WRITE-FREE
     config (no meta/ct set, dynset, notrack, limiter/quota/connlimit anywhere
-    in the evaluated table) the unified evaluator's verdict is hook-independent
-    and coincides with the historical pure jump strand
-    ([Semantics.eval_table_u_writefree], which holds at every hook), so the
-    quantified statement is exactly "the config's verdict is [v]".
-    [nft_writefree] is the one-[vm_compute] check that a config is in this
-    class; a config with writes is OUTSIDE it and its per-hook verdict must be
-    reasoned about directly on [eval_table_u] (see
+    in the evaluated table) the unified evaluator's verdict is hook-independent:
+    every rule's [rule_step] leaves the state untouched and reduces to the
+    hook-free per-rule fold ([Semantics.rule_step_writefree]), so the whole
+    traversal is the same at every hook.  The quantified statement is then
+    exactly "the config's verdict is [v]".  [nft_writefree] is the one-[vm_compute]
+    check that a config is in this class; a config with writes is OUTSIDE it and
+    its per-hook verdict must be reasoned about directly on [eval_table_u] (see
     Regression/Setread_UnderJump.v for the divergence witness). *)
 
 Definition nft_writefree (cs : list (string * chain)) (c : chain) : bool :=
   forallb rule_writefree (c_rules c) && chains_writefree cs.
+
+(** Hook-independence of the unified rule traversal on write-free rules: each
+    [rule_step] leaves the state at [(e,p)] and its verdict is the hook-free
+    per-rule outcome ([rule_step_writefree]), so the whole fold agrees at any
+    two hooks. *)
+Lemma eval_rules_u_hookindep_writefree : forall (h1 h2 : hook_id) fuel cs rs e p,
+  forallb rule_writefree rs = true ->
+  chains_writefree cs = true ->
+  eval_rules_u h1 fuel cs rs e p = eval_rules_u h2 fuel cs rs e p.
+Proof.
+  induction fuel as [| f IH]; intros cs rs e p Hrs Hcs; [reflexivity|].
+  destruct rs as [| r rest]; [reflexivity|].
+  cbn [forallb] in Hrs. apply Bool.andb_true_iff in Hrs. destruct Hrs as [Hr Hrest].
+  cbn [eval_rules_u].
+  rewrite (rule_step_writefree h1 r e p Hr), (rule_step_writefree h2 r e p Hr).
+  destruct (andb (rule_loadable r e p) (rule_applies r e p)); [| now apply IH].
+  destruct (outcome r e p) as [v|]; [| now apply IH].
+  destruct v as [ | | | tc cc | lo hi bp fo | n | n | ];
+    try reflexivity; try (now apply IH).
+  - (* Jump *)
+    destruct (chain_lookup cs n) as [ch|] eqn:Hlk; [| now apply IH].
+    rewrite (IH cs (c_rules ch) e p (chains_writefree_lookup cs n ch Hcs Hlk) Hcs).
+    destruct (eval_rules_u h2 f cs (c_rules ch) e p) as [[w|] [e2 p2]];
+      [reflexivity | now apply IH].
+  - (* Goto *)
+    destruct (chain_lookup cs n) as [ch|] eqn:Hlk; [| reflexivity].
+    apply IH; [eapply chains_writefree_lookup; eauto | exact Hcs].
+Qed.
+
+Lemma eval_table_u_hookindep_writefree : forall (h1 h2 : hook_id) fuel cs base e p,
+  forallb rule_writefree (c_rules base) = true ->
+  chains_writefree cs = true ->
+  eval_table_u h1 fuel cs base e p = eval_table_u h2 fuel cs base e p.
+Proof.
+  intros h1 h2 fuel cs base e p Hb Hcs. unfold eval_table_u.
+  now rewrite (eval_rules_u_hookindep_writefree h1 h2 fuel cs (c_rules base) e p Hb Hcs).
+Qed.
 
 (** For a write-free config the surface predicate is equivalent to the verdict
     at any single hook (the unified evaluator being hook-independent there). *)
@@ -196,8 +233,7 @@ Proof.
   unfold nft_yields. split.
   - intros Hy. exact (Hy h).
   - intros Hh h'.
-    rewrite (eval_table_u_writefree h' fuel cs c e p Hc Hcs). cbn [fst].
-    rewrite (eval_table_u_writefree h fuel cs c e p Hc Hcs) in Hh. cbn [fst] in Hh.
+    rewrite (eval_table_u_hookindep_writefree h' h fuel cs c e p Hc Hcs).
     exact Hh.
 Qed.
 

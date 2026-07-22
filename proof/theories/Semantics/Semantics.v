@@ -35,30 +35,14 @@
     [Correct.compile_table_u_correct] / [compile_ruleset_u_correct] /
     [compile_hook_u_correct] / [compile_seq_hook_correct].
 
-    Every OTHER rule-list entry point is a PROJECTION of the unified fold,
-    licensed by a coincidence theorem on the sub-domain where it PROVABLY
-    agrees — never an independent semantics for a rule to be evaluated
-    through.  An input outside an evaluator's licensed sub-domain must be run
-    on the unified evaluator (or an evaluator whose license covers it):
+    The remaining per-rule read functions are PROJECTIONS of the unified fold,
+    licensed by a coincidence theorem on the sub-domain where they PROVABLY
+    agree — never an independent semantics for a rule to be evaluated
+    through.  An input outside a projection's licensed sub-domain must be run
+    on the unified evaluator:
 
       projection            | licensed sub-domain          | coincidence theorem
       ----------------------+------------------------------+--------------------
-      eval_rules_j /        | write-free rules everywhere  | eval_rules_u_writefree /
-        eval_table          | ([rule_writefree]: no meta/  | eval_table_u_writefree
-                            | ct set, dynset, notrack,     |
-                            | limiter/quota/connlimit);    |
-                            | OR limiter-tolerant configs  | eval_rules_u_limiter_tolerant /
-                            | ([rule_limiter_tol]: only    | eval_table_u_limiter_tolerant
-                            | writes are one-limiter rules;| (VERDICT projection only —
-                            | § Projection 1b)             | the bucket IS depleted)
-      eval_ruleset /        | write-free bases             | eval_ruleset_u_writefree /
-        eval_hook           | ([bases_writefree]); OR one  | eval_hook_u_writefree /
-                            | limiter-tolerant base at the | eval_hook_u_limiter_tolerant_1
-                            | hook                         |
-      eval_rules /          | write-free + jump-free       | eval_rules_u_writefree +
-        eval_chain          | (entry-state-free syntactic  | Correct.eval_rules_jumpfree_eq_j
-                            | form: chain_jumpfree_syn,    | / Correct.eval_chain_writefree_
-                            | rules_jumpfree_syn_sound)    |   jumpfree_syn_proj
       eval_rules_mut_st /   | transfer-free rules          | eval_rules_u_mut_st_proj /
         eval_chain_mut_st   | ([rule_plain]: no realisable | eval_table_u_mut_st_proj
         (full state; _mut / | jump/goto/return under the   | (whole-triple equality;
@@ -70,9 +54,10 @@
         (notrack ADMITTED)  | sume-free matches, non-mut   | break/no-break projection of
                             | stmts, notrack allowed) that | body_step; its set_untracked
                             | load (body_loadable_walk)    | threading is body_step's own)
-      run_rule/run_program  | no_writes programs (no mut/  | Correct.run_rule_step_no_writes
-                            | limiter/inc-numgen instr)    |
-      run_rules_j/run_table | compiled write-free chains   | Correct.run_table_writefree_compiled
+
+    For a WRITE-FREE config the unified verdict is additionally
+    hook-independent ([Nft_Tactics.eval_table_u_hookindep_writefree]); this is
+    what makes the [forall h] config theorems provable by one hook's compute.
 
     The cross-packet sequence semantics is [seq_eval_env] over
     [eval_hook_env_u] (§ Stateful accumulation).
@@ -676,8 +661,8 @@ Definition body_synproxy_stops (body : list body_item) (p : packet) : bool :=
                      end) body.
 
 (** A rule applies when all its match conditions hold (empty = matches all).
-    ROLE: this is the WRITE-FREE projection of the per-rule fold — the pure
-    strand ([eval_rules]/[run_program], the optimizer theorems) consumes it,
+    ROLE: this is the WRITE-FREE projection of the per-rule fold — the
+    optimizer's per-rule reasoning consumes it,
     and on rules without mutating statements it agrees with the authoritative
     single fold [rule_step] below ([rule_step_mutfree]); a rule WITH intra-rule
     writes is evaluated by the fold, which threads them.
@@ -1143,7 +1128,7 @@ Qed.
         operand then accepts (so [r_after] never runs); a static *terminal*
         verdict stops too; only a [Continue] fall-through runs [r_after].
     [rule_loadable] is [false] exactly when some load on this evaluated path
-    breaks; [eval_rules] then skips the rule, matching the VM (which breaks at
+    breaks; the traversal then skips the rule, matching the VM (which breaks at
     that load and falls through to the next rule). *)
 
 (** Loadability of the part that runs AFTER the verdict map misses: the terminal,
@@ -1243,76 +1228,6 @@ Definition rule_loadable (r : rule) (e : env) (p : packet) : bool :=
   (if body_synproxy_stops (r_body r) p then true
    else end_loadable r e (body_thread (r_body r) p)).
 
-(** Evaluate a rule list.  [None] means "fell through every rule"; [Some v]
-    means a terminal verdict [v] was reached.  A [Continue] verdict on an
-    applicable rule simply proceeds, exactly like a non-applicable rule.
-
-    NON-RECURSIVE (M6): the pure strand owns no recursion of its own — this is
-    a [fold_right] of the per-rule read [rule_loadable]/[rule_applies]/[outcome]
-    (the write-free per-rule projection, [rule_step_mutfree]); the ONE recursive
-    rule-list traversal on the DSL side is the unified [eval_rules_u].  Proofs
-    step this definition with [eval_rules_nil]/[eval_rules_cons], which restate
-    the historical unfolding verbatim. *)
-Definition eval_rules (rs : list rule) (e : env) (p : packet) : option verdict :=
-  fold_right (fun r k =>
-      if rule_loadable r e p && rule_applies r e p then
-        match outcome r e p with
-        | Some v => if terminal v then Some v else k
-        | None   => k
-        end
-      else k) None rs.
-
-Arguments eval_rules : simpl never.
-
-Lemma eval_rules_nil : forall e p, eval_rules [] e p = None.
-Proof. reflexivity. Qed.
-
-Lemma eval_rules_cons : forall r rest e p,
-  eval_rules (r :: rest) e p
-  = if rule_loadable r e p && rule_applies r e p then
-      match outcome r e p with
-      | Some v => if terminal v then Some v else eval_rules rest e p
-      | None   => eval_rules rest e p
-      end
-    else eval_rules rest e p.
-Proof. reflexivity. Qed.
-
-Definition eval_chain (c : chain) (e : env) (p : packet) : verdict :=
-  match eval_rules (c_rules c) e p with
-  | Some v => v
-  | None   => c_policy c
-  end.
-
-(** ** Jump-freedom: the exact domain on which [eval_rules]/[eval_chain] are
-    FAITHFUL.
-
-    [eval_rules] has NO chain environment, so when a rule's realised outcome on
-    [p] is a [Jump]/[Goto]/[Return] it can only treat it as a non-terminal
-    fall-through ([terminal (Jump _) = false]) — i.e. it silently ignores the
-    control transfer.  That is unfaithful to netfilter (nf_tables_core.c: a JUMP
-    runs the target chain, resuming the caller on return; a GOTO tail-calls it; a
-    RETURN pops to the caller).  The faithful interpreter is the unified
-    [eval_rules_u]/[eval_table_u] (§ "The unified semantics", end of file); on
-    write-free rules the environment-aware pure [eval_rules_j]/[eval_table]
-    below coincides with it ([eval_rules_u_writefree]).
-
-    [outcome_jumpfree r p] holds exactly when the rule's realised outcome on [p]
-    is NOT a control-transfer verdict; [rules_jumpfree]/[chain_jumpfree] lift it to
-    a rule list / chain.  On this domain — and only on it — the cheap
-    environment-free [eval_chain] coincides with the faithful [eval_table] (see
-    [eval_rules_jumpfree_eq_j] / [eval_chain_eq_table_jumpfree] in Correct.v). *)
-Definition outcome_jumpfree (r : rule) (e : env) (p : packet) : bool :=
-  match outcome r e p with
-  | Some (Jump _) | Some (Goto _) | Some Return => false
-  | _ => true
-  end.
-
-Definition rules_jumpfree (rs : list rule) (e : env) (p : packet) : bool :=
-  forallb (fun r => outcome_jumpfree r e p) rs.
-
-Definition chain_jumpfree (c : chain) (e : env) (p : packet) : bool :=
-  rules_jumpfree (c_rules c) e p.
-
 (** ** Bytecode VM semantics. *)
 
 (** Run one rule's program over a register file.  [None] means a [cmp] failed
@@ -1411,8 +1326,8 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (e : env) (p : packet) : optio
   | IImmediateData dst v :: rest =>
       run_rule (set_reg rf dst v) rest e p
   (* Set/mangle: no-ops in this WRITE-FREE projection.  [run_rule] is the
-     mutation-free evaluator the pure strand ([eval_rules]/[run_program], the
-     optimizer theorems) consumes; the authoritative per-rule semantics is the
+     mutation-free per-rule evaluator the optimizer's per-rule reasoning
+     consumes; the authoritative per-rule semantics is the
      single fold [run_rule_step] below, which applies these writes to the
      running state so a later expression of the SAME rule reads them (kernel
      nft_rule_dp_for_each_expr).  On rules without mutating statements the two
@@ -1471,38 +1386,6 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (e : env) (p : packet) : optio
   | IReject t c :: _ => Some (Reject t c)
   | IQueue lo hi b f :: _ => Some (Queue lo hi b f)
   | IImmediate v :: _ => Some v
-  end.
-
-(** Run a base chain's program: ordered per-rule programs, each from a fresh
-    (empty) register file, stopping at the first terminal verdict.
-
-    NON-RECURSIVE (M6): a [fold_right] of the write-free per-rule interpreter
-    [run_rule]; the ONE recursive program traversal on the VM side is the
-    unified [run_rules_u].  Step with [run_program_nil]/[run_program_cons]. *)
-Definition run_program (prog : program) (e : env) (p : packet) : option verdict :=
-  fold_right (fun rp k =>
-      match run_rule empty_rf rp e p with
-      | Some v => if terminal v then Some v else k
-      | None   => k
-      end) None prog.
-
-Arguments run_program : simpl never.
-
-Lemma run_program_nil : forall e p, run_program [] e p = None.
-Proof. reflexivity. Qed.
-
-Lemma run_program_cons : forall rp rest e p,
-  run_program (rp :: rest) e p
-  = match run_rule empty_rf rp e p with
-    | Some v => if terminal v then Some v else run_program rest e p
-    | None   => run_program rest e p
-    end.
-Proof. reflexivity. Qed.
-
-Definition run_chain (prog : program) (policy : verdict) (e : env) (p : packet) : verdict :=
-  match run_program prog e p with
-  | Some v => v
-  | None   => policy
   end.
 
 (** ** In-traversal mutation: the single-fold rule semantics.
@@ -2532,8 +2415,8 @@ Context (h : hook_id).
     positioned after a terminal verdict never run.
 
     [run_rule] above remains as the WRITE-FREE projection of this fold: the
-    per-entry-packet verdict evaluator that the pure strand
-    ([eval_rules]/[run_program], the optimizer theorems) consumes.  On rules
+    per-entry-packet verdict evaluator that the optimizer's per-rule
+    reasoning consumes.  On rules
     without mutating statements the two agree ([rule_step_mutfree] /
     [Correct.run_rule_step_no_writes]); on rules WITH intra-rule writes the
     fold is the authoritative (kernel-faithful) semantics. *)
@@ -3015,11 +2898,10 @@ Proof.
     + exact (IH e p Hmf).
 Qed.
 
-(** COINCIDENCE with the pure strand: on a mut-free rule the fold IS the
+(** COINCIDENCE with the per-rule reads: on a mut-free rule the fold IS the
     historical loadability-guarded verdict — [rule_applies]/[outcome]/
     [rule_loadable] are the write-free projection of the single fold, which is
-    why the pure evaluators ([eval_rules]/[run_program], the optimizer
-    theorems) remain stated over them. *)
+    why the optimizer's per-rule reasoning remains stated over them. *)
 Theorem rule_step_mutfree : forall r e p,
   rule_mutfree r = true ->
   rule_step r e p
@@ -3420,270 +3302,6 @@ Fixpoint prog_lookup (cs : list (String.string * program)) (n : String.string) :
   | (m, prg) :: rest => if String.eqb n m then Some prg else prog_lookup rest n
   end.
 
-(** PROJECTION evaluator under a chain environment [cs] (the user-defined
-    chains): the jump/goto/return traversal with NO state threading.
-
-    License: on WRITE-FREE rules everywhere ([rule_writefree] on the entry
-    list, [chains_writefree] on [cs]) this is exactly the verdict projection
-    of the unified fold, with the state provably untouched —
-    [eval_rules_u_writefree]:
-      eval_rules_u fuel cs rs e p = (eval_rules_j fuel cs rs e p, (e, p)).
-    A rule OUTSIDE that domain (a meta/ct set, dynset, notrack, or limiter)
-    must be evaluated by the unified [eval_rules_u], which threads its writes
-    through the transfer (Regression/Setread_UnderJump.v pins a config where
-    the two genuinely differ).  NON-RECURSIVE (M6): the traversal is a
-    [nat_rect] on the fuel (the pure per-rule read applied under the stdlib
-    recursor — it owns no recursion of its own; the ONE recursive rule-list
-    traversal is [eval_rules_u]); proofs step it with [eval_rules_j_0] /
-    [eval_rules_j_S], which restate the historical unfolding verbatim.  The
-    license theorem is what makes this a projection, not a second semantics. *)
-Definition eval_rules_j (fuel : nat) (cs : list (String.string * chain))
-                        (rs : list rule) (e : env) (p : packet) : option verdict :=
-  nat_rect (fun _ => list rule -> env -> packet -> option verdict)
-    (fun _ _ _ => None)
-    (fun _ rec rs e p =>
-      match rs with
-      | [] => None
-      | r :: rest =>
-        if rule_loadable r e p && rule_applies r e p then
-          match outcome r e p with
-          | None => rec rest e p
-          | Some Return => None
-          | Some (Jump n) =>
-              match chain_lookup cs n with
-              | Some ch => match rec (c_rules ch) e p with
-                           | Some v => Some v
-                           | None   => rec rest e p
-                           end
-              | None => rec rest e p
-              end
-          | Some (Goto n) =>
-              match chain_lookup cs n with
-              | Some ch => rec (c_rules ch) e p
-              | None    => None
-              end
-          | Some Continue => rec rest e p
-          | Some v => Some v
-          end
-        else rec rest e p
-      end)
-    fuel rs e p.
-
-Arguments eval_rules_j : simpl never.
-
-Lemma eval_rules_j_0 : forall cs rs e p, eval_rules_j 0 cs rs e p = None.
-Proof. reflexivity. Qed.
-
-Lemma eval_rules_j_S : forall fuel' cs rs e p,
-  eval_rules_j (S fuel') cs rs e p =
-  match rs with
-  | [] => None
-  | r :: rest =>
-    if rule_loadable r e p && rule_applies r e p then
-      match outcome r e p with
-      | None => eval_rules_j fuel' cs rest e p
-      | Some Return => None
-      | Some (Jump n) =>
-          match chain_lookup cs n with
-          | Some ch => match eval_rules_j fuel' cs (c_rules ch) e p with
-                       | Some v => Some v
-                       | None   => eval_rules_j fuel' cs rest e p
-                       end
-          | None => eval_rules_j fuel' cs rest e p
-          end
-      | Some (Goto n) =>
-          match chain_lookup cs n with
-          | Some ch => eval_rules_j fuel' cs (c_rules ch) e p
-          | None    => None
-          end
-      | Some Continue => eval_rules_j fuel' cs rest e p
-      | Some v => Some v
-      end
-    else eval_rules_j fuel' cs rest e p
-  end.
-Proof. reflexivity. Qed.
-
-Definition eval_table (fuel : nat) (cs : list (String.string * chain))
-                      (base : chain) (e : env) (p : packet) : verdict :=
-  match eval_rules_j fuel cs (c_rules base) e p with
-  | Some v => v
-  | None   => c_policy base
-  end.
-
-(** Bytecode VM under a compiled chain environment [cs]; mirrors [eval_rules_j]
-    (NON-RECURSIVE for the same reason; step with [run_rules_j_0]/[run_rules_j_S]). *)
-Definition run_rules_j (fuel : nat) (cs : list (String.string * program))
-                       (prog : program) (e : env) (p : packet) : option verdict :=
-  nat_rect (fun _ => program -> env -> packet -> option verdict)
-    (fun _ _ _ => None)
-    (fun _ rec prog e p =>
-      match prog with
-      | [] => None
-      | rp :: rest =>
-        match run_rule empty_rf rp e p with
-        | None => rec rest e p
-        | Some Return => None
-        | Some (Jump n) =>
-            match prog_lookup cs n with
-            | Some prg => match rec prg e p with
-                          | Some v => Some v
-                          | None   => rec rest e p
-                          end
-            | None => rec rest e p
-            end
-        | Some (Goto n) =>
-            match prog_lookup cs n with
-            | Some prg => rec prg e p
-            | None     => None
-            end
-        | Some Continue => rec rest e p
-        | Some v => Some v
-        end
-      end)
-    fuel prog e p.
-
-Arguments run_rules_j : simpl never.
-
-Lemma run_rules_j_0 : forall cs prog e p, run_rules_j 0 cs prog e p = None.
-Proof. reflexivity. Qed.
-
-Lemma run_rules_j_S : forall fuel' cs prog e p,
-  run_rules_j (S fuel') cs prog e p =
-  match prog with
-  | [] => None
-  | rp :: rest =>
-    match run_rule empty_rf rp e p with
-    | None => run_rules_j fuel' cs rest e p
-    | Some Return => None
-    | Some (Jump n) =>
-        match prog_lookup cs n with
-        | Some prg => match run_rules_j fuel' cs prg e p with
-                      | Some v => Some v
-                      | None   => run_rules_j fuel' cs rest e p
-                      end
-        | None => run_rules_j fuel' cs rest e p
-        end
-    | Some (Goto n) =>
-        match prog_lookup cs n with
-        | Some prg => run_rules_j fuel' cs prg e p
-        | None     => None
-        end
-    | Some Continue => run_rules_j fuel' cs rest e p
-    | Some v => Some v
-    end
-  end.
-Proof. reflexivity. Qed.
-
-Definition run_table (fuel : nat) (cs : list (String.string * program))
-                     (base : program) (policy : verdict) (e : env) (p : packet) : verdict :=
-  match run_rules_j fuel cs base e p with
-  | Some v => v
-  | None   => policy
-  end.
-
-(* ================================================================== *)
-(** ** Fuel discipline for the jump strand: adequacy + fuel-independence.
-
-    (Scope: this section lives inside the PURE PROJECTION strand --
-    [eval_rules_j]/[eval_table], licensed on write-free rules by
-    [eval_rules_u_writefree] below.  The unified evaluator carries its OWN
-    fuel discipline -- [eval_rules_u_fuel_indep] / [eval_table_u_fuel_indep],
-    § "Fuel discipline for the unified evaluator" -- proved by the same
-    rank-descent induction, so effectful configs are not carved out of the
-    adequacy story.)
-
-    THE PROBLEM.  [eval_rules_j fuel] returns [None] BOTH on genuine
-    fall-through (empty rule list, [return], goto to a missing chain) AND on
-    fuel exhaustion, and [eval_table] maps [None] to the base chain's policy.
-    The exhaustion fallback is a verdict the kernel can never produce: nft
-    rejects jump/goto loops at load time (libnftables walks the chain-binding
-    graph and errors out on a cycle), and the kernel additionally bounds jump
-    nesting at 16 (include/net/netfilter/nf_tables.h, NFT_JUMP_STACK_SIZE = 16;
-    nft_do_chain breaks on overflow).  So a per-configuration theorem stated at
-    ONE fuel value is kernel-meaningful only if that fuel is ADEQUATE -- large
-    enough that the exhaustion case is unreachable.  The lemmas below turn that
-    adequacy into a checkable hypothesis and make the verdict provably
-    fuel-independent above a computable bound.
-
-    WHY NOT PLAIN MONOTONICITY.  The naive statement
-
-        eval_rules_j fuel cs rs e p = Some v ->
-        eval_rules_j (S fuel) cs rs e p = Some v
-
-    is FALSE for this evaluator, because a jump treats the callee's [None] as
-    the callee's fall-through and resumes the caller: with too little fuel the
-    callee exhausts, the caller resumes as if the callee fell through, and MORE
-    fuel can flip the verdict.  [eval_rules_j_not_naively_monotone] below pins
-    a two-chain counterexample (Some Accept at fuel 2, Some Drop at fuel 3),
-    machine-checked so the false statement cannot be "restored" by accident.
-
-    THE HONEST STATEMENT.  Under [chain_ranked] -- a rank function witnessing
-    the load-time acyclicity nft itself enforces (every realised jump/goto
-    target of a chain's rule has smaller rank; targets read from a verdict map
-    depend on the ENV, so the hypothesis is stated per-env, dischargeable once
-    the relevant [e_vmap] contents are pinned) -- every fuel at
-    [sufficient_fuel cs rs] or above yields the SAME result
-    ([eval_rules_j_fuel_indep]).  The proof is ONE rank-descent induction on
-    the fuel ([eval_rules_j_fuel_indep_aux]): with fuel at the structural
-    bound for the current rank budget, a jump's callee (strictly smaller
-    rank) and the resumed caller (one rule shorter) are each themselves
-    adequately fueled, so the exhaustion arm is unreachable in EVERY branch
-    and extra fuel changes nothing.  [sufficient_fuel cs rs] is a computable
-    structural bound (S (|rs| + |cs| * S (max chain length)) -- fuel is a
-    DESCENT budget, not a work budget: a jump gives callee and continuation
-    the SAME decremented fuel, so the requirement is the longest chain of
-    nested decrements, which an acyclic jump graph bounds by one traversal of
-    each chain plus the base).  Consequently [eval_table]'s verdict is
-    fuel-independent there ([eval_table_fuel_indep]) and its policy fallback
-    can only be GENUINE fall-through: a [None] at adequate fuel persists at
-    every adequate fuel, which exhaustion -- curable by more fuel -- cannot
-    ([eval_table_policy_is_fallthrough]).  For the common transfer-free case
-    (no rule outcome is ever Jump/Goto under the given env) the boolean
-    [chains_no_transfer] discharges [chain_ranked] in one [reflexivity]
-    ([chains_no_transfer_ranked]).  Fuel-independence is proved by direct
-    rank-descent induction, and the unified evaluator carries the same
-    discipline.
-
-    VM side: the compiled mirror needs no second development --
-    [Correct.compile_table_correct] equates [run_table] with [eval_table] at
-    EVERY fuel, so fuel-independence transports to every compiled chain
-    environment ([Correct.run_table_fuel_indep_compiled]); a hand-written
-    program that no source chain compiles to has no jump-graph rank to speak
-    of, and is out of scope by design.
-
-    User-facing forms: [Nft_Tactics.nft_yields_fuel_indep] (and the
-    accepts/denies corollaries) + proof/CONFIG_PROOFS.md § "Choosing the fuel
-    budget"; worked instance [Tutorial_Proofs.tutorial_blocks_exactly_any_fuel]. *)
-
-(* ------------------------------------------------------------------ *)
-(** *** Counterexample: [eval_rules_j] alone is NOT fuel-monotone.
-
-    Base chain [jump b; accept], user chain b = [fall-through; drop].  At fuel
-    2 the callee exhausts after its first rule, the caller treats that as b's
-    fall-through and accepts; at fuel 3 the callee reaches its drop.  Any
-    fuel-monotonicity claim must therefore carry an adequacy witness — the
-    [chain_ranked] + [sufficient_fuel] hypotheses of the rank-descent lemmas
-    below.  ([reflexivity] proves both equations for
-    EVERY env and packet: the probe rules have empty bodies.) *)
-
-Definition fuel_probe_noop : rule :=
-  {| r_body := []; r_outcome := ONone; r_after := [] |}.
-Definition fuel_probe_drop : rule :=
-  {| r_body := []; r_outcome := OVerdict Drop; r_after := [] |}.
-Definition fuel_probe_accept : rule :=
-  {| r_body := []; r_outcome := OVerdict Accept; r_after := [] |}.
-Definition fuel_probe_jump : rule :=
-  {| r_body := []; r_outcome := OVerdict (Jump "b"%string); r_after := [] |}.
-Definition fuel_probe_cs : list (String.string * chain) :=
-  [("b"%string,
-    {| c_policy := Accept; c_rules := [fuel_probe_noop; fuel_probe_drop] |})].
-Definition fuel_probe_rs : list rule := [fuel_probe_jump; fuel_probe_accept].
-
-Example eval_rules_j_not_naively_monotone : forall e p,
-  eval_rules_j 2 fuel_probe_cs fuel_probe_rs e p = Some Accept
-  /\ eval_rules_j 3 fuel_probe_cs fuel_probe_rs e p = Some Drop.
-Proof. intros e p. split; reflexivity. Qed.
-
 (* ------------------------------------------------------------------ *)
 (** *** Adequacy: a computable sufficient fuel under an acyclic jump graph. *)
 
@@ -3711,340 +3329,6 @@ Qed.
 Definition sufficient_fuel (cs : list (String.string * chain)) (rs : list rule) : nat :=
   S (List.length rs + List.length cs * S (chain_len_max cs)).
 
-(** Every jump/goto target that rule [r] can realise (under env [e], on any
-    packet) and that resolves in [cs] has rank below [k]. *)
-Definition rule_targets_below (rank : String.string -> nat)
-    (cs : list (String.string * chain)) (e : env) (k : nat) (r : rule) : Prop :=
-  forall p m ch',
-    (outcome r e p = Some (Jump m) \/ outcome r e p = Some (Goto m)) ->
-    chain_lookup cs m = Some ch' ->
-    rank m < k.
-
-(** The acyclicity witness: a rank function under which every chain's realised
-    transfers strictly descend.  This is the semantic shadow of nft's
-    LOAD-TIME loop rejection (nft refuses a ruleset whose chain-binding graph
-    has a cycle), stated per-env because vmap verdicts — hence jump targets —
-    live in [e_vmap e]. *)
-Definition chain_ranked (rank : String.string -> nat)
-    (cs : list (String.string * chain)) (e : env) : Prop :=
-  forall n ch, chain_lookup cs n = Some ch ->
-    rank n < List.length cs /\
-    (forall r, In r (c_rules ch) -> rule_targets_below rank cs e (rank n) r).
-
-(** The rank-descent induction, in pairwise-equality form: with fuel at the
-    structural bound for the current rank budget [k], MORE fuel cannot change
-    the result -- callee and resumed caller are each adequately fueled, so no
-    branch can reach the exhaustion arm.  The entry rule list needs no
-    hypothesis of its own in the corollaries: any target it resolves in [cs]
-    has rank below [length cs] by [chain_ranked]. *)
-Lemma eval_rules_j_fuel_indep_aux : forall rank cs e,
-  chain_ranked rank cs e ->
-  forall fuel k rs p fuel',
-    (forall r, In r rs -> rule_targets_below rank cs e k r) ->
-    S (List.length rs + k * S (chain_len_max cs)) <= fuel ->
-    fuel <= fuel' ->
-    eval_rules_j fuel' cs rs e p = eval_rules_j fuel cs rs e p.
-Proof.
-  intros rank cs e Hcr.
-  induction fuel as [| f IH]; intros k rs p fuel' Htgt Hfuel Hle; [ lia | ].
-  destruct fuel' as [| f']; [ lia | ].
-  apply le_S_n in Hle.
-  rewrite !eval_rules_j_S.
-  destruct rs as [| r rest]; [ reflexivity | ].
-  cbn [List.length] in Hfuel.
-  assert (Hrest : forall r0, In r0 rest -> rule_targets_below rank cs e k r0)
-    by (intros; apply Htgt; now right).
-  destruct (rule_loadable r e p && rule_applies r e p) eqn:Hga.
-  2:{ apply (IH k rest p f' Hrest); lia. }
-  destruct (outcome r e p) as [v|] eqn:Hout.
-  2:{ apply (IH k rest p f' Hrest); lia. }
-  destruct v as [ | | | tc cc | lo hi bp fo | n | n | ];
-    try reflexivity;
-    try (apply (IH k rest p f' Hrest); lia).
-  - (* Jump *)
-    destruct (chain_lookup cs n) as [ch|] eqn:Hlk;
-      [ | apply (IH k rest p f' Hrest); lia ].
-    assert (Hrn : rank n < k)
-      by (eapply (Htgt r (or_introl eq_refl) p n ch); eauto).
-    pose proof (chain_lookup_len_max cs n ch Hlk) as Hlen.
-    pose proof (proj2 (Hcr n ch Hlk)) as Hch.
-    rewrite (IH (rank n) (c_rules ch) p f' Hch); [ | nia | lia ].
-    destruct (eval_rules_j f cs (c_rules ch) e p).
-    + reflexivity.
-    + apply (IH k rest p f' Hrest); lia.
-  - (* Goto *)
-    destruct (chain_lookup cs n) as [ch|] eqn:Hlk; [ | reflexivity ].
-    assert (Hrn : rank n < k)
-      by (eapply (Htgt r (or_introl eq_refl) p n ch); eauto).
-    pose proof (chain_lookup_len_max cs n ch Hlk) as Hlen.
-    pose proof (proj2 (Hcr n ch Hlk)) as Hch.
-    apply (IH (rank n) (c_rules ch) p f' Hch); [ nia | lia ].
-Qed.
-
-(** Above the bound the verdict no longer depends on the fuel at all -- the
-    fuel-free form config theorems quantify with. *)
-Theorem eval_rules_j_fuel_indep : forall rank cs e,
-  chain_ranked rank cs e ->
-  forall rs p fuel fuel',
-    sufficient_fuel cs rs <= fuel ->
-    sufficient_fuel cs rs <= fuel' ->
-    eval_rules_j fuel cs rs e p = eval_rules_j fuel' cs rs e p.
-Proof.
-  intros rank cs e Hcr rs p fuel fuel' Hf Hf'.
-  assert (Htgt : forall r, In r rs ->
-            rule_targets_below rank cs e (List.length cs) r).
-  { intros r _ q m ch' _ Hlk. exact (proj1 (Hcr m ch' Hlk)). }
-  assert (Hbound : S (List.length rs
-                      + List.length cs * S (chain_len_max cs))
-                   <= sufficient_fuel cs rs) by (unfold sufficient_fuel; lia).
-  transitivity (eval_rules_j (sufficient_fuel cs rs) cs rs e p).
-  - exact (eval_rules_j_fuel_indep_aux rank cs e Hcr
-             (sufficient_fuel cs rs) (List.length cs) rs p fuel
-             Htgt Hbound Hf).
-  - symmetry.
-    exact (eval_rules_j_fuel_indep_aux rank cs e Hcr
-             (sufficient_fuel cs rs) (List.length cs) rs p fuel'
-             Htgt Hbound Hf').
-Qed.
-
-Theorem eval_table_fuel_indep : forall rank cs e,
-  chain_ranked rank cs e ->
-  forall base p fuel fuel',
-    sufficient_fuel cs (c_rules base) <= fuel ->
-    sufficient_fuel cs (c_rules base) <= fuel' ->
-    eval_table fuel cs base e p = eval_table fuel' cs base e p.
-Proof.
-  intros rank cs e Hcr base p fuel fuel' Hf Hf'. unfold eval_table.
-  now rewrite (eval_rules_j_fuel_indep rank cs e Hcr (c_rules base) p fuel fuel').
-Qed.
-
-(** At adequate fuel, [eval_table]'s policy fallback can only be GENUINE
-    fall-through: the [None] it maps to the policy persists at EVERY adequate
-    fuel -- which exhaustion, curable by more fuel, cannot.  (The cleanness
-    witness is fuel-independence itself.) *)
-Theorem eval_table_policy_is_fallthrough : forall rank cs e,
-  chain_ranked rank cs e ->
-  forall base p fuel,
-    sufficient_fuel cs (c_rules base) <= fuel ->
-    eval_rules_j fuel cs (c_rules base) e p = None ->
-    forall fuel', sufficient_fuel cs (c_rules base) <= fuel' ->
-      eval_rules_j fuel' cs (c_rules base) e p = None.
-Proof.
-  intros rank cs e Hcr base p fuel Hf Hnone fuel' Hf'.
-  rewrite (eval_rules_j_fuel_indep rank cs e Hcr (c_rules base) p fuel' fuel Hf' Hf).
-  exact Hnone.
-Qed.
-
-(* ------------------------------------------------------------------ *)
-(** *** Discharging [chain_ranked] for transfer-free chain environments.
-
-    Most config proofs are about chains none of whose rules can transfer
-    (every static verdict and every vmap verdict under the pinned env is
-    non-Jump/Goto).  [chains_no_transfer] decides that by computation and
-    [chains_no_transfer_ranked] turns it into the rank witness (rank 0 for
-    everything: no realisable transfer means nothing to descend on). *)
-
-Definition verdict_no_transfer (v : verdict) : bool :=
-  match v with Jump _ | Goto _ => false | _ => true end.
-
-Definition rule_no_transfer (e : env) (r : rule) : bool :=
-  match r_outcome r with
-  | OVerdict v => verdict_no_transfer v
-  | OVmap s | OVmapNat s _ =>
-      forallb (fun ent => verdict_no_transfer (snd ent)) (e_vmap e (vm_name s))
-  | _ => true
-  end.
-
-Lemma assoc_verdict_in : forall key l v,
-  assoc_verdict key l = Some v -> exists lo hi, In (lo, hi, v) l.
-Proof.
-  induction l as [| [[lo hi] v'] l IH]; cbn; intros v H; [ discriminate | ].
-  destruct (data_in_iv key (lo, hi)).
-  - injection H as <-. eauto.
-  - destruct (IH _ H) as (lo' & hi' & Hin). eauto.
-Qed.
-
-(** The only verdict [r_after] statements can produce is the synproxy [Drop]. *)
-Lemma stmts_after_outcome_drop : forall ss p v,
-  stmts_after_outcome ss p = Some v -> v = Drop.
-Proof.
-  induction ss as [| s ss IH]; cbn; intros p v H; [ discriminate | ].
-  destruct s; try (destruct (stmt_loadable _ p); [ eauto | discriminate ]).
-  destruct (synproxy_loadable p); [ | discriminate ].
-  destruct (synproxy_stops p); [ now injection H as <- | eauto ].
-Qed.
-
-Lemma rule_no_transfer_sound : forall e r,
-  rule_no_transfer e r = true ->
-  forall p m,
-    outcome r e p <> Some (Jump m) /\ outcome r e p <> Some (Goto m).
-Proof.
-  intros e r H p m.
-  unfold outcome, outcome_core, terminal_outcome.
-  destruct (body_synproxy_stops (r_body r) p); [ split; discriminate | ].
-  unfold rule_no_transfer in H.
-  unfold r_vmap, r_nat, r_tproxy, r_fwd, r_queue, r_verdict.
-  destruct (r_outcome r) as [ v | | s | s ns | ns | ts | fs | qs ]; cbn.
-  - (* OVerdict v *)
-    destruct v; try (split; discriminate); try discriminate H.
-    (* Continue: the static verdict falls through to the after-statements *)
-    split; intro Hc; apply stmts_after_outcome_drop in Hc; discriminate.
-  - (* ONone *)
-    split; intro Hc; apply stmts_after_outcome_drop in Hc; discriminate.
-  - (* OVmap *)
-    destruct (assoc_verdict _ (e_vmap e (vm_name s))) as [v|] eqn:Ha.
-    + apply assoc_verdict_in in Ha as (lo & hi & Hin).
-      eapply forallb_forall in H; [ | exact Hin ].
-      cbn in H. destruct v; try (split; discriminate); discriminate H.
-    + (* miss: falls through to the after-statements *)
-      split; intro Hc; apply stmts_after_outcome_drop in Hc; discriminate.
-  - (* OVmapNat *)
-    destruct (assoc_verdict _ (e_vmap e (vm_name s))) as [v|] eqn:Ha.
-    + apply assoc_verdict_in in Ha as (lo & hi & Hin).
-      eapply forallb_forall in H; [ | exact Hin ].
-      cbn in H. destruct v; try (split; discriminate); discriminate H.
-    + split; discriminate.
-  - split; discriminate.
-  - split; discriminate.
-  - split; discriminate.
-  - split; discriminate.
-Qed.
-
-Definition chains_no_transfer (e : env) (cs : list (String.string * chain)) : bool :=
-  forallb (fun nc => forallb (rule_no_transfer e) (c_rules (snd nc))) cs.
-
-Lemma chain_lookup_in : forall cs n ch,
-  chain_lookup cs n = Some ch -> In (n, ch) cs.
-Proof.
-  induction cs as [| [m ch'] cs IH]; cbn; intros n ch H; [ discriminate | ].
-  destruct (String.eqb n m) eqn:He.
-  - apply String.eqb_eq in He. subst m. injection H as <-. now left.
-  - right. now apply IH.
-Qed.
-
-Lemma chains_no_transfer_ranked : forall e cs,
-  chains_no_transfer e cs = true ->
-  chain_ranked (fun _ => O) cs e.
-Proof.
-  intros e cs H n ch Hlk.
-  pose proof (chain_lookup_in _ _ _ Hlk) as Hin. split.
-  - destruct cs; [ cbn in Hlk; discriminate | cbn; lia ].
-  - intros r Hr p m ch' Ho Hlk'.
-    exfalso.
-    unfold chains_no_transfer in H.
-    eapply forallb_forall in H; [ | exact Hin ].
-    eapply forallb_forall in H; [ | exact Hr ].
-    destruct (rule_no_transfer_sound _ _ H p m) as [H1 H2].
-    destruct Ho; auto.
-Qed.
-
-(* ------------------------------------------------------------------ *)
-(** *** SYNTACTIC jump-freedom: the entry-state-free license (M6).
-
-    [rules_jumpfree]/[chain_jumpfree] are ENTRY-STATE predicates: they ask
-    whether the realised outcomes at ONE (env, packet) are transfer-free,
-    which is exactly the pair the traversal was entered with -- under
-    mutation, later rules run at a DIFFERENT state, so an entry-state
-    hypothesis about them is wrong by construction.  The syntactic form below
-    quantifies away the state: a rule whose STATIC outcome is neither a
-    transfer verdict nor a verdict-map dispatch can realise no Jump/Goto/
-    Return at ANY (env, packet) -- its only other verdict sources are the
-    post-outcome statements (Drop only, [stmts_after_outcome_drop]) and the
-    NAT/tproxy/fwd/queue terminals (never transfers).  The implication lemma
-    [rules_jumpfree_syn_sound] discharges the semantic predicate at every
-    state at once, so no license needs an entry-state hypothesis. *)
-
-Definition rule_jumpfree_syn (r : rule) : bool :=
-  match r_outcome r with
-  | OVerdict (Jump _) | OVerdict (Goto _) | OVerdict Return => false
-  | OVmap _ | OVmapNat _ _ => false
-  | _ => true
-  end.
-
-Definition rules_jumpfree_syn (rs : list rule) : bool :=
-  forallb rule_jumpfree_syn rs.
-
-Definition chain_jumpfree_syn (c : chain) : bool :=
-  rules_jumpfree_syn (c_rules c).
-
-Lemma rule_jumpfree_syn_sound : forall r,
-  rule_jumpfree_syn r = true ->
-  forall e p, outcome_jumpfree r e p = true.
-Proof.
-  intros r H e p.
-  unfold outcome_jumpfree.
-  destruct (outcome r e p) as [v|] eqn:Ho; [| reflexivity].
-  unfold outcome, outcome_core, terminal_outcome in Ho.
-  destruct (body_synproxy_stops (r_body r) p);
-    [ injection Ho as <-; reflexivity |].
-  unfold rule_jumpfree_syn in H.
-  unfold r_vmap, r_nat, r_tproxy, r_fwd, r_queue, r_verdict in Ho.
-  destruct (r_outcome r) as [ w | | s | s ns | ns | ts | fs | qs ];
-    cbn in Ho, H; try discriminate H.
-  - (* OVerdict w *)
-    destruct w; try discriminate H; try (injection Ho as <-; reflexivity).
-    (* Continue: falls through to the after-statements (Drop only) *)
-    apply stmts_after_outcome_drop in Ho. now subst v.
-  - (* ONone: after-statements only *)
-    apply stmts_after_outcome_drop in Ho. now subst v.
-  - (* ONat *) destruct v; try reflexivity; discriminate Ho.
-  - (* OTproxy *) destruct v; try reflexivity; discriminate Ho.
-  - (* OFwd *) destruct v; try reflexivity; discriminate Ho.
-  - (* OQueue *) destruct v; try reflexivity; discriminate Ho.
-Qed.
-
-Lemma rules_jumpfree_syn_sound : forall rs,
-  rules_jumpfree_syn rs = true ->
-  forall e p, rules_jumpfree rs e p = true.
-Proof.
-  intros rs H e p. unfold rules_jumpfree. apply forallb_forall.
-  intros r Hr. apply rule_jumpfree_syn_sound.
-  unfold rules_jumpfree_syn in H. eapply forallb_forall in H; eauto.
-Qed.
-
-Lemma chain_jumpfree_syn_sound : forall c,
-  chain_jumpfree_syn c = true ->
-  forall e p, chain_jumpfree c e p = true.
-Proof.
-  intros c H e p. unfold chain_jumpfree. now apply rules_jumpfree_syn_sound.
-Qed.
-
-
-(* ------------------------------------------------------------------ *)
-(** *** The under-fueled fallback, exhibited and then excluded.
-
-    With fuel 1 the probe ruleset's [eval_table] returns the chain POLICY
-    ([Continue] here — a verdict no kernel hook can yield): the jump exhausts
-    and the fallback fires.  At [sufficient_fuel] (= 6, computable) and above,
-    the adequacy lemma pins the verdict to the real [Drop] for EVERY fuel —
-    the exhaustion fallback is gone. *)
-
-Example eval_table_under_fueled : forall e p,
-  eval_table 1 fuel_probe_cs
-    {| c_policy := Continue; c_rules := fuel_probe_rs |} e p = Continue.
-Proof. intros e p. reflexivity. Qed.
-
-Example fuel_probe_ranked : forall e, chain_ranked (fun _ => O) fuel_probe_cs e.
-Proof. intro e. apply chains_no_transfer_ranked. reflexivity. Qed.
-
-Example fuel_probe_sufficient :
-  sufficient_fuel fuel_probe_cs fuel_probe_rs = 6.
-Proof. reflexivity. Qed.
-
-Example eval_table_adequately_fueled : forall e p fuel,
-  6 <= fuel ->
-  eval_table fuel fuel_probe_cs
-    {| c_policy := Continue; c_rules := fuel_probe_rs |} e p = Drop.
-Proof.
-  intros e p fuel Hf.
-  set (base := {| c_policy := Continue; c_rules := fuel_probe_rs |}).
-  assert (Hs : sufficient_fuel fuel_probe_cs (c_rules base) <= fuel) by exact Hf.
-  assert (H6 : sufficient_fuel fuel_probe_cs (c_rules base) <= 6) by exact (le_n 6).
-  rewrite (eval_table_fuel_indep (fun _ => O) fuel_probe_cs e (fuel_probe_ranked e)
-             base p fuel 6 Hs H6).
-  reflexivity.
-Qed.
-
 (** ** Multi-table / multi-hook dispatch (netfilter verdict combination).
 
     At one hook the registered base chains across all tables run in priority
@@ -4054,108 +3338,17 @@ Qed.
     that ACCEPTs (or falls through to an accept policy) lets the packet proceed to
     the NEXT base chain, while DROP/REJECT/QUEUE is terminal — exactly how
     netfilter propagates a verdict across the chains at a hook.  If every base
-    chain accepts, the packet is accepted.
-
-    PROJECTION evaluator: built on [eval_table], so — like it — no writes are
-    threaded between rules, between chains, or between base chains; licensed
-    on write-free bases by [eval_ruleset_u_writefree] (the unified
-    [eval_ruleset_u] below threads the state a base chain leaves into the
-    next one). *)
+    chain accepts, the packet is accepted.  [base_continues] decides whether a
+    base chain's verdict lets the packet proceed; the unified [eval_ruleset_u]
+    below threads the state a base chain leaves into the next one. *)
 Definition base_continues (v : verdict) : bool :=
   match v with Accept | Continue => true | _ => false end.
-
-(** NON-RECURSIVE (M6): the pure hook dispatch is a [fold_left] over the base
-    chains with a "settled" accumulator ([Some v] = a non-continuing verdict
-    settled the hook, absorbing the rest; [None] = still traversing); step
-    with [eval_ruleset_nil]/[eval_ruleset_cons].  The unified
-    [eval_ruleset_u] below has the same shape with the state threaded. *)
-Definition eval_ruleset_step (fuel : nat) (e : env) (p : packet)
-    (acc : option verdict) (cb : list (String.string * chain) * chain)
-  : option verdict :=
-  match acc with
-  | Some v => Some v
-  | None =>
-      let v := eval_table fuel (fst cb) (snd cb) e p in
-      if base_continues v then None else Some v
-  end.
-
-Definition eval_ruleset (fuel : nat)
-    (bases : list (list (String.string * chain) * chain)) (e : env) (p : packet) : verdict :=
-  match fold_left (eval_ruleset_step fuel e p) bases None with
-  | Some v => v
-  | None => Accept
-  end.
-
-Arguments eval_ruleset : simpl never.
-
-Lemma eval_ruleset_settled : forall fuel bases e p v,
-  fold_left (eval_ruleset_step fuel e p) bases (Some v) = Some v.
-Proof.
-  intros fuel bases e p; induction bases as [| cb bases IH]; intros v;
-    [reflexivity | apply IH].
-Qed.
-
-Lemma eval_ruleset_nil : forall fuel e p, eval_ruleset fuel [] e p = Accept.
-Proof. reflexivity. Qed.
-
-Lemma eval_ruleset_cons : forall fuel cs base rest e p,
-  eval_ruleset fuel ((cs, base) :: rest) e p
-  = let v := eval_table fuel cs base e p in
-    if base_continues v then eval_ruleset fuel rest e p else v.
-Proof.
-  intros fuel cs base rest e p. cbv zeta. unfold eval_ruleset.
-  cbn [fold_left]. unfold eval_ruleset_step at 2. cbn [fst snd].
-  destruct (base_continues (eval_table fuel cs base e p)) eqn:Hv;
-    [ reflexivity | now rewrite eval_ruleset_settled ].
-Qed.
-
-(** VM mirror; same shape. *)
-Definition run_ruleset_step (fuel : nat) (e : env) (p : packet)
-    (acc : option verdict)
-    (cb : list (String.string * program) * (program * verdict))
-  : option verdict :=
-  match acc with
-  | Some v => Some v
-  | None =>
-      let v := run_table fuel (fst cb) (fst (snd cb)) (snd (snd cb)) e p in
-      if base_continues v then None else Some v
-  end.
-
-Definition run_ruleset (fuel : nat)
-    (bases : list (list (String.string * program) * (program * verdict))) (e : env) (p : packet) : verdict :=
-  match fold_left (run_ruleset_step fuel e p) bases None with
-  | Some v => v
-  | None => Accept
-  end.
-
-Arguments run_ruleset : simpl never.
-
-Lemma run_ruleset_settled : forall fuel bases e p v,
-  fold_left (run_ruleset_step fuel e p) bases (Some v) = Some v.
-Proof.
-  intros fuel bases e p; induction bases as [| cb bases IH]; intros v;
-    [reflexivity | apply IH].
-Qed.
-
-Lemma run_ruleset_nil : forall fuel e p, run_ruleset fuel [] e p = Accept.
-Proof. reflexivity. Qed.
-
-Lemma run_ruleset_cons : forall fuel cs base policy rest e p,
-  run_ruleset fuel ((cs, (base, policy)) :: rest) e p
-  = let v := run_table fuel cs base policy e p in
-    if base_continues v then run_ruleset fuel rest e p else v.
-Proof.
-  intros fuel cs base policy rest e p. cbv zeta. unfold run_ruleset.
-  cbn [fold_left]. unfold run_ruleset_step at 2. cbn [fst snd].
-  destruct (base_continues (run_table fuel cs base policy e p)) eqn:Hv;
-    [ reflexivity | now rewrite run_ruleset_settled ].
-Qed.
 
 (** ** Hook registration: which base chains are active at which hook, and in what
     priority order.  This is *separate* metadata from a chain's rules (a base
     chain is `type filter hook input priority 0`), so we model it as a tagged list
     rather than fields on [chain] — the engine then filters by hook and sorts by
-    priority to obtain the ordered base-chain list [eval_ruleset] traverses.
+    priority to obtain the ordered base-chain list [eval_ruleset_u] traverses.
     [hook_id]/[hook_eqb] are defined above (near [apply_nat], which is itself
     hook-dependent). *)
 Record hooked_chain : Type := {
@@ -4180,14 +3373,6 @@ Definition select_hook (rs : list hooked_chain) (h : hook_id)
   map (fun hc => (hc_env hc, hc_base hc))
       (sort_hc (filter (fun hc => hook_eqb (hc_hook hc) h) rs)).
 
-(** Full ruleset evaluation at a hook: select+order the base chains, then dispatch.
-    PROJECTION evaluator: inherits [eval_ruleset]'s license — no writes are
-    threaded; on write-free bases it is the verdict projection of the unified
-    [eval_hook_u] ([eval_hook_u_writefree]). *)
-Definition eval_hook (fuel : nat) (rs : list hooked_chain) (h : hook_id)
-                     (e : env) (p : packet) : verdict :=
-  eval_ruleset fuel (select_hook rs h) e p.
-
 (** ** Stateful accumulation across a packet sequence.
 
     The cross-packet sequence semantics is [seq_eval_env] (above) instantiated
@@ -4207,7 +3392,7 @@ Definition eval_hook (fuel : nat) (rs : list hooked_chain) (h : hook_id)
     notrack latch, position-exact limiter/quota/connlimit consumption, all via
     the per-rule single fold [rule_step]/[run_rule_step] — AND follows control flow
     (jump / goto / return, user-defined chains).  The control-flow shape is
-    exactly [eval_rules_j]'s (fuel as a descent budget, a jump resumes the
+    a fuel-bounded descent (fuel as a descent budget, a jump resumes the
     caller on the callee's fall-through, [None] on exhaustion), but the state
     is threaded THROUGH the transfer: the jumped-to chain starts from the
     caller's accumulated (env, packet), each of its rules sees its own
@@ -4225,12 +3410,11 @@ Definition eval_hook (fuel : nat) (rs : list hooked_chain) (h : hook_id)
     the callee, callee writes visible after the return, dynset learning under
     a jump) is pinned in Regression/Setread_UnderJump.v.
 
-    Every earlier rule-list evaluator in this file is a PROJECTION of this
+    Every per-rule read function in this file is a PROJECTION of this
     fold, licensed by a coincidence theorem on the sub-domain where it
-    provably agrees (see the evaluator matrix in the file header):
-    [eval_rules_u_writefree] (the pure jump strand, on write-free rules) and
-    [eval_rules_u_mut_proj] (the flat mutation strand, on transfer-free
-    rules). *)
+    provably agrees (see the projection matrix in the file header):
+    [rule_step_mutfree] (write-free rules) and [eval_rules_u_mut_proj] (the
+    flat mutation strand, on transfer-free rules). *)
 
 Fixpoint eval_rules_u (fuel : nat) (cs : list (String.string * chain))
                       (rs : list rule) (e : env) (p : packet)
@@ -4441,7 +3625,7 @@ Proof.
   - now rewrite run_ruleset_u_settled.
 Qed.
 
-(** Hook dispatch (same selection/ordering as [eval_hook]). *)
+(** Hook dispatch (base chains selected and priority-ordered by [select_hook]). *)
 Definition eval_hook_u (fuel : nat) (rs : list hooked_chain)
                        (e : env) (p : packet) : verdict * (env * packet) :=
   eval_ruleset_u fuel (select_hook rs h) e p.
@@ -4461,21 +3645,21 @@ Definition run_ruleset_env_u (fuel : nat)
   let '(v, s) := run_ruleset_u fuel bases e p in (v, fst s).
 
 (* ------------------------------------------------------------------ *)
-(** *** Projection 1: the pure jump strand, licensed on WRITE-FREE rules.
+(** *** Write-free rules: state-untouched traversal and hook-independence.
 
     A rule is [rule_writefree] when it writes NO state at all — which since
     the in-fold limiter fix is exactly [rule_mutfree]: no mutating statement
     (meta/ct set, dynset, notrack) and no limiter/quota/connlimit match
     (whose bucket consumption is an env write) anywhere.  On such a rule the
-    per-rule fold IS the historical loadability-guarded pure verdict and
-    leaves the state untouched
-    ([rule_step_mutfree]); lifted through the traversal, the pure jump
-    strand [eval_rules_j]/[eval_table] is exactly the verdict projection of
-    the unified fold ([eval_rules_u_writefree]/[eval_table_u_writefree]) —
-    the coincidence equation that licenses it as a projection, not an
-    independent semantics.  A rule OUTSIDE this domain must be evaluated by
-    the unified fold (Regression/Setread_UnderJump.v pins a witness where the
-    two genuinely differ, and its [rule_writefree] check is [false]). *)
+    per-rule fold [rule_step] leaves the state untouched and its verdict is
+    the hook-free loadability-guarded per-rule outcome
+    ([rule_step_writefree], from [rule_step_mutfree]).  Lifted through the
+    traversal this makes the unified verdict hook-independent
+    ([Nft_Tactics.eval_table_u_hookindep_writefree]) — which is why the
+    [forall h] config theorems are provable by one hook's compute.  A rule
+    OUTSIDE this domain is genuinely hook/state-dependent
+    (Regression/Setread_UnderJump.v pins a witness, and its [rule_writefree]
+    check is [false]). *)
 
 Definition rule_writefree (r : rule) : bool := rule_mutfree r.
 
@@ -4489,6 +3673,15 @@ Lemma rule_step_writefree : forall r e p,
      (e, p)).
 Proof. intros r e p H. exact (rule_step_mutfree r e p H). Qed.
 
+Lemma chain_lookup_in : forall cs n ch,
+  chain_lookup cs n = Some ch -> In (n, ch) cs.
+Proof.
+  induction cs as [| [m ch'] cs IH]; cbn; intros n ch H; [ discriminate | ].
+  destruct (String.eqb n m) eqn:He.
+  - apply String.eqb_eq in He. subst m. injection H as <-. now left.
+  - right. now apply IH.
+Qed.
+
 Lemma chains_writefree_lookup : forall cs n ch,
   chains_writefree cs = true ->
   chain_lookup cs n = Some ch ->
@@ -4498,782 +3691,6 @@ Proof.
   apply chain_lookup_in in Hlk.
   unfold chains_writefree in Hcs.
   eapply forallb_forall in Hcs; [| exact Hlk]. exact Hcs.
-Qed.
-
-Theorem eval_rules_u_writefree : forall fuel cs rs e p,
-  forallb rule_writefree rs = true ->
-  chains_writefree cs = true ->
-  eval_rules_u fuel cs rs e p = (eval_rules_j fuel cs rs e p, (e, p)).
-Proof.
-  induction fuel as [| f IH]; intros cs rs e p Hrs Hcs; [reflexivity|].
-  destruct rs as [| r rest]; [reflexivity|].
-  cbn [forallb] in Hrs. apply Bool.andb_true_iff in Hrs. destruct Hrs as [Hr Hrest].
-  rewrite eval_rules_j_S. cbn [eval_rules_u].
-  rewrite (rule_step_writefree r e p Hr).
-  destruct (rule_loadable r e p && rule_applies r e p); [| now apply IH].
-  destruct (outcome r e p) as [v|]; [| now apply IH].
-  destruct v as [ | | | tc cc | lo hi bp fo | n | n | ];
-    try reflexivity; try (now apply IH).
-  - (* Jump *)
-    destruct (chain_lookup cs n) as [ch|] eqn:Hlk; [| now apply IH].
-    rewrite (IH cs (c_rules ch) e p (chains_writefree_lookup cs n ch Hcs Hlk) Hcs).
-    destruct (eval_rules_j f cs (c_rules ch) e p); [reflexivity | now apply IH].
-  - (* Goto *)
-    destruct (chain_lookup cs n) as [ch|] eqn:Hlk; [| reflexivity].
-    apply IH; [eapply chains_writefree_lookup; eauto | exact Hcs].
-Qed.
-
-Corollary eval_table_u_writefree : forall fuel cs base e p,
-  forallb rule_writefree (c_rules base) = true ->
-  chains_writefree cs = true ->
-  eval_table_u fuel cs base e p = (eval_table fuel cs base e p, (e, p)).
-Proof.
-  intros fuel cs base e p Hb Hcs. unfold eval_table_u, eval_table.
-  rewrite (eval_rules_u_writefree fuel cs (c_rules base) e p Hb Hcs).
-  destruct (eval_rules_j fuel cs (c_rules base) e p); reflexivity.
-Qed.
-
-Definition bases_writefree
-    (bases : list (list (String.string * chain) * chain)) : bool :=
-  forallb (fun cb => chains_writefree (fst cb)
-                     && forallb rule_writefree (c_rules (snd cb))) bases.
-
-Corollary eval_ruleset_u_writefree : forall fuel bases e p,
-  bases_writefree bases = true ->
-  eval_ruleset_u fuel bases e p = (eval_ruleset fuel bases e p, (e, p)).
-Proof.
-  intros fuel bases. induction bases as [| [cs base] rest IHb]; intros e p Hwf;
-    [reflexivity|].
-  cbn [bases_writefree forallb] in Hwf. apply Bool.andb_true_iff in Hwf.
-  destruct Hwf as [Hhd Hrest]. apply Bool.andb_true_iff in Hhd.
-  destruct Hhd as [Hcs Hb]. cbn [fst snd] in Hcs, Hb.
-  rewrite eval_ruleset_u_cons, eval_ruleset_cons. cbv zeta.
-  rewrite (eval_table_u_writefree fuel cs base e p Hb Hcs).
-  cbv beta iota.
-  destruct (base_continues (eval_table fuel cs base e p)); [now apply IHb | reflexivity].
-Qed.
-
-Corollary eval_hook_u_writefree : forall fuel rs e p,
-  bases_writefree (select_hook rs h) = true ->
-  eval_hook_u fuel rs e p = (eval_hook fuel rs h e p, (e, p)).
-Proof.
-  intros fuel rs e p Hwf. unfold eval_hook_u, eval_hook.
-  now apply eval_ruleset_u_writefree.
-Qed.
-
-(* ------------------------------------------------------------------ *)
-(** *** Projection 1b: the LIMITER-TOLERANT license for the pure jump strand.
-
-    [eval_rules_u_writefree] licenses the pure strand only on fully
-    write-free configs — a single `limit rate 5/second` anywhere voids it,
-    even though that limiter's bucket write provably cannot change any
-    verdict when no later read observes the depleted bucket.  This section
-    proves that stronger license: on configs whose ONLY state writes are the
-    bucket consumptions of tolerable limiter matches sitting in
-    match-only, terminal-outcome rules ([rule_one_limiter]), the pure jump
-    strand [eval_rules_j]/[eval_table] computes exactly the unified
-    evaluator's VERDICT — at every fuel, env and packet; jumps, gotos and
-    chain re-entries included.  (Only the verdict projection: the unified
-    run's final state genuinely differs — the bucket IS depleted.)
-
-    Why the side conditions are the honest boundary, not a convenience:
-    - NON-INVERTED limit/quota ([match_limiter_tol]): an inverted limiter
-      (`limit rate over ...`) that BREAKs its rule has just PASSED its token
-      check, so the consumption genuinely depletes the bucket; a revisit of
-      the same rule (two jumps to its chain, or a vmap looping under an
-      adversarial env) could then flip the check where the pure strand —
-      which reads the entry env — would not.  A NON-inverted limiter that
-      breaks stores back its capped level: the bucket stays exhausted and
-      every revisit agrees.  `connlimit` consumption is the idempotent
-      insert of THIS packet's flow, so its count never changes within a
-      traversal and any invert bit is tolerable.
-    - TERMINAL static outcome ([terminal (r_verdict r)]): when the limiter
-      check passes, the rule's verdict ends the whole traversal, so the
-      consumption it just performed is unobservable by later reads.
-    - MATCH-ONLY body: every other item of the rule is a consume-free match
-      (no statement), so the rule writes nothing but its one bucket.
-    The router config's `icmp ... limit rate 5/second accept` rule is
-    exactly this shape; the Examples/Router_*.v files instantiate the
-    license by [vm_compute] ([Router_Input.inbound_licensed] etc.). *)
-
-(** The env with its three consumable (limit-family) components replaced —
-    the normal form every state a limiter-tolerant traversal can reach has
-    over its entry env.  Every OTHER component is untouched, which is what
-    the congruence lemmas below exploit. *)
-Definition env_upd_limits (e : env) (lf : limit_spec -> nat)
-    (qf : quota_spec -> nat) (cf : connlimit_spec -> list data) : env :=
-  with_e_limit (with_e_quota (with_e_connlimit e cf) qf) lf.
-
-Lemma env_upd_limits_self : forall e,
-  env_upd_limits e (e_limit e) (e_quota e) (e_connlimit e) = e.
-Proof. intro e. destruct e. reflexivity. Qed.
-
-(** Every load reads the env ONLY through its non-consumable components. *)
-Lemma do_load_upd_limits : forall ld e lf qf cf p,
-  do_load ld (env_upd_limits e lf qf cf) p = do_load ld e p.
-Proof. intros ld e lf qf cf p. destruct ld; reflexivity. Qed.
-
-Lemma field_value_upd_limits : forall f e lf qf cf p,
-  field_value f (env_upd_limits e lf qf cf) p = field_value f e p.
-Proof. intros. apply do_load_upd_limits. Qed.
-
-Lemma map_field_value_upd_limits : forall fs e lf qf cf p,
-  map (fun f => field_value f (env_upd_limits e lf qf cf) p) fs
-  = map (fun f => field_value f e p) fs.
-Proof. intros. apply map_ext. intro f. apply field_value_upd_limits. Qed.
-
-(** A consume-free match reads NO consumable component: its evaluation is
-    invariant under any limit/quota/connlimit replacement. *)
-Lemma eval_matchcond_body_upd_limits : forall m e lf qf cf p,
-  match_consumefree m = true ->
-  eval_matchcond_body m (env_upd_limits e lf qf cf) p = eval_matchcond_body m e p.
-Proof.
-  intros m e lf qf cf p Hcf.
-  destruct m; try discriminate Hcf; cbn [eval_matchcond_body];
-    rewrite ?field_value_upd_limits, ?map_field_value_upd_limits;
-    try reflexivity;
-    (* transformed per-element loads (MConcatSetT) *)
-    (f_equal; f_equal; apply map_ext; intro fe; now rewrite field_value_upd_limits).
-Qed.
-
-Lemma eval_matchcond_upd_limits : forall m e lf qf cf p,
-  match_consumefree m = true ->
-  eval_matchcond m (env_upd_limits e lf qf cf) p = eval_matchcond m e p.
-Proof.
-  intros. unfold eval_matchcond.
-  now rewrite (eval_matchcond_body_upd_limits m e lf qf cf p).
-Qed.
-
-Lemma rule_applies_walk_upd_limits : forall body e lf qf cf p,
-  forallb body_item_mutfree body = true ->
-  rule_applies_walk body (env_upd_limits e lf qf cf) p = rule_applies_walk body e p.
-Proof.
-  induction body as [| it body IH]; intros e lf qf cf p H; [reflexivity|].
-  cbn [forallb] in H. apply Bool.andb_true_iff in H. destruct H as [Hit Hb].
-  destruct it as [m | s].
-  - cbn [rule_applies_walk].
-    now rewrite (eval_matchcond_upd_limits m e lf qf cf p Hit), (IH e lf qf cf p Hb).
-  - destruct s; cbn [body_item_mutfree is_mut_stmt negb] in Hit; try discriminate Hit;
-      cbn [rule_applies_walk]; try (apply IH; exact Hb).
-    (* SSynproxy *)
-    destruct (synproxy_stops p); [reflexivity | apply IH; exact Hb].
-Qed.
-
-Lemma nat_map_key_upd_limits : forall fields ts e lf qf cf p,
-  nat_map_key fields ts (env_upd_limits e lf qf cf) p = nat_map_key fields ts e p.
-Proof.
-  intros. unfold nat_map_key. destruct fields as [| f0 frest]; [reflexivity|].
-  now rewrite field_value_upd_limits, map_field_value_upd_limits.
-Qed.
-
-Lemma terminal_loadable_upd_limits : forall r e lf qf cf p,
-  terminal_loadable r (env_upd_limits e lf qf cf) p = terminal_loadable r e p.
-Proof.
-  intros. unfold terminal_loadable.
-  destruct (r_nat r) as [n|]; [| reflexivity].
-  destruct (nat_src n) as [vs|]; [reflexivity|].
-  destruct (nat_map n) as [[[fields ts] name]|]; [| reflexivity].
-  now rewrite nat_map_key_upd_limits.
-Qed.
-
-Lemma tail_loadable_upd_limits : forall r e lf qf cf p,
-  tail_loadable r (env_upd_limits e lf qf cf) p = tail_loadable r e p.
-Proof.
-  intros. unfold tail_loadable. now rewrite terminal_loadable_upd_limits.
-Qed.
-
-Lemma end_loadable_upd_limits : forall r e lf qf cf p,
-  end_loadable r (env_upd_limits e lf qf cf) p = end_loadable r e p.
-Proof.
-  intros. unfold end_loadable.
-  destruct (r_vmap r) as [vm|]; [| apply tail_loadable_upd_limits].
-  cbv zeta. destruct (vm_keyf vm) as [[f ts]|];
-    rewrite ?field_value_upd_limits, ?map_field_value_upd_limits;
-    change (e_vmap (env_upd_limits e lf qf cf)) with (e_vmap e);
-    destruct (assoc_verdict _ (e_vmap e (vm_name vm)));
-    rewrite ?tail_loadable_upd_limits; reflexivity.
-Qed.
-
-Lemma outcome_core_upd_limits : forall r e lf qf cf p,
-  outcome_core r (env_upd_limits e lf qf cf) p = outcome_core r e p.
-Proof.
-  intros. unfold outcome_core.
-  destruct (r_vmap r) as [vm|]; [| reflexivity].
-  cbv zeta. destruct (vm_keyf vm) as [[f ts]|];
-    rewrite ?field_value_upd_limits, ?map_field_value_upd_limits;
-    change (e_vmap (env_upd_limits e lf qf cf)) with (e_vmap e);
-    destruct (assoc_verdict _ (e_vmap e (vm_name vm))); reflexivity.
-Qed.
-
-Lemma outcome_upd_limits : forall r e lf qf cf p,
-  outcome r (env_upd_limits e lf qf cf) p = outcome r e p.
-Proof.
-  intros. unfold outcome.
-  destruct (body_synproxy_stops (r_body r) p); [reflexivity|].
-  apply outcome_core_upd_limits.
-Qed.
-
-Lemma rule_loadable_upd_limits : forall r e lf qf cf p,
-  rule_loadable r (env_upd_limits e lf qf cf) p = rule_loadable r e p.
-Proof.
-  intros. unfold rule_loadable.
-  destruct (body_synproxy_stops (r_body r) p); [reflexivity|].
-  now rewrite end_loadable_upd_limits.
-Qed.
-
-Lemma rule_applies_upd_limits : forall r e lf qf cf p,
-  rule_mutfree r = true ->
-  rule_applies r (env_upd_limits e lf qf cf) p = rule_applies r e p.
-Proof.
-  intros r e lf qf cf p H. unfold rule_mutfree in H.
-  apply Bool.andb_true_iff in H. destruct H as [H _].
-  apply Bool.andb_true_iff in H. destruct H as [Hb _].
-  apply rule_applies_walk_upd_limits. exact Hb.
-Qed.
-
-(** Structural spec equality decides real equality (the specs are records of
-    nats/bools), so an eqb-keyed bucket update hits exactly one spec. *)
-Lemma limit_eqb_eq : forall a b, limit_eqb a b = true -> a = b.
-Proof.
-  intros a b H. unfold limit_eqb in H.
-  apply Bool.andb_true_iff in H; destruct H as [H1 H].
-  apply Bool.andb_true_iff in H; destruct H as [H2 H].
-  apply Bool.andb_true_iff in H; destruct H as [H3 H].
-  apply Bool.andb_true_iff in H; destruct H as [H4 H5].
-  apply Nat.eqb_eq in H1, H2, H3, H5. apply Bool.eqb_prop in H4.
-  destruct a, b; cbn in *; congruence.
-Qed.
-
-Lemma limit_eqb_refl : forall a, limit_eqb a a = true.
-Proof.
-  intro a. unfold limit_eqb.
-  now rewrite !Nat.eqb_refl, Bool.eqb_reflx.
-Qed.
-
-Lemma quota_eqb_eq : forall a b, quota_eqb a b = true -> a = b.
-Proof.
-  intros a b H. unfold quota_eqb in H.
-  apply Bool.andb_true_iff in H; destruct H as [H1 H].
-  apply Bool.andb_true_iff in H; destruct H as [H2 H3].
-  apply Nat.eqb_eq in H1, H2, H3.
-  destruct a, b; cbn in *; congruence.
-Qed.
-
-Lemma quota_eqb_refl : forall a, quota_eqb a a = true.
-Proof. intro a. unfold quota_eqb. now rewrite !Nat.eqb_refl. Qed.
-
-Lemma connlimit_eqb_eq : forall a b, connlimit_eqb a b = true -> a = b.
-Proof.
-  intros a b H. unfold connlimit_eqb in H.
-  apply Bool.andb_true_iff in H; destruct H as [H1 H2].
-  apply Nat.eqb_eq in H1, H2.
-  destruct a, b; cbn in *; congruence.
-Qed.
-
-Lemma connlimit_eqb_refl : forall a, connlimit_eqb a a = true.
-Proof. intro a. unfold connlimit_eqb. now rewrite !Nat.eqb_refl. Qed.
-
-(** The under-tests read exactly one bucket. *)
-Lemma lim_under_ext : forall e e' p s,
-  e_limit e' s = e_limit e s -> lim_under e' p s = lim_under e p s.
-Proof. intros e e' p s H. unfold lim_under, lim_avail. now rewrite H. Qed.
-
-Lemma quota_under_ext : forall e e' p s,
-  e_quota e' s = e_quota e s -> quota_under e' p s = quota_under e p s.
-Proof. intros e e' p s H. unfold quota_under. now rewrite H. Qed.
-
-Lemma connlimit_under_ext : forall e e' p s,
-  e_connlimit e' s = e_connlimit e s -> connlimit_under e' p s = connlimit_under e p s.
-Proof.
-  intros e e' p s H. unfold connlimit_under, connlimit_count, connlimit_after.
-  now rewrite H.
-Qed.
-
-(** THE traversal invariant relating the unified run's threaded env [e'] to
-    the entry env [e0] the pure strand reads: [e'] differs from [e0] only in
-    consumable components, and each touched bucket is EXHAUSTED at both (a
-    non-inverted limiter that broke) — so every future read agrees — while
-    each connlimit count is unchanged (the insert of THIS packet's flow is
-    idempotent). *)
-Definition limiter_inv (e0 e' : env) (p : packet) : Prop :=
-  (exists lf qf cf, e' = env_upd_limits e0 lf qf cf)
-  /\ (forall s, e_limit e' s = e_limit e0 s
-        \/ (lim_under e' p s = false /\ lim_under e0 p s = false))
-  /\ (forall s, e_quota e' s = e_quota e0 s
-        \/ (quota_under e' p s = false /\ quota_under e0 p s = false))
-  /\ (forall s, connlimit_under e' p s = connlimit_under e0 p s).
-
-Lemma limiter_inv_refl : forall e p, limiter_inv e e p.
-Proof.
-  intros e p. split; [| split; [| split]].
-  - exists (e_limit e), (e_quota e), (e_connlimit e).
-    symmetry. apply env_upd_limits_self.
-  - intro s. left. reflexivity.
-  - intro s. left. reflexivity.
-  - intro s. reflexivity.
-Qed.
-
-Lemma limiter_inv_lim_under : forall e0 e' p, limiter_inv e0 e' p ->
-  forall s, lim_under e' p s = lim_under e0 p s.
-Proof.
-  intros e0 e' p Hinv s. destruct Hinv as (_ & HL & _ & _).
-  destruct (HL s) as [Heq | [Hf Hf0]].
-  - apply lim_under_ext. exact Heq.
-  - now rewrite Hf, Hf0.
-Qed.
-
-Lemma limiter_inv_quota_under : forall e0 e' p, limiter_inv e0 e' p ->
-  forall s, quota_under e' p s = quota_under e0 p s.
-Proof.
-  intros e0 e' p Hinv s. destruct Hinv as (_ & _ & HQ & _).
-  destruct (HQ s) as [Heq | [Hf Hf0]].
-  - apply quota_under_ext. exact Heq.
-  - now rewrite Hf, Hf0.
-Qed.
-
-Lemma limiter_inv_connlimit_under : forall e0 e' p, limiter_inv e0 e' p ->
-  forall s, connlimit_under e' p s = connlimit_under e0 p s.
-Proof. intros e0 e' p Hinv s. destruct Hinv as (_ & _ & _ & HC). exact (HC s). Qed.
-
-(** EVERY match — consume-free or limiter-family — evaluates identically at
-    an invariant-related state and at the entry env. *)
-Lemma eval_matchcond_inv : forall m e0 e' p,
-  limiter_inv e0 e' p -> eval_matchcond m e' p = eval_matchcond m e0 p.
-Proof.
-  intros m e0 e' p Hinv.
-  destruct (match_consumefree m) eqn:Hcf.
-  - destruct Hinv as ((lf & qf & cf & ->) & _).
-    apply eval_matchcond_upd_limits. exact Hcf.
-  - destruct m; try discriminate Hcf;
-      unfold eval_matchcond; cbn [match_loadable eval_matchcond_body andb].
-    + now rewrite (limiter_inv_lim_under e0 e' p Hinv).
-    + now rewrite (limiter_inv_quota_under e0 e' p Hinv).
-    + now rewrite (limiter_inv_connlimit_under e0 e' p Hinv).
-Qed.
-
-(** Consuming an EXHAUSTED non-inverted `limit` preserves the invariant: the
-    kernel's fail-branch update stores back the capped level, so the bucket
-    stays exhausted (and stays exhausted under any number of revisits). *)
-Lemma limiter_inv_set_limit : forall e0 e' p s,
-  limiter_inv e0 e' p -> lim_under e' p s = false ->
-  limiter_inv e0 (set_limit e' p s) p.
-Proof.
-  intros e0 e' p s Hinv Hf.
-  pose proof (limiter_inv_lim_under e0 e' p Hinv s) as Hagree.
-  destruct Hinv as ((lf & qf & cf & Heq) & HL & HQ & HC).
-  assert (Hself : e_limit (set_limit e' p s) s = lim_avail e' p s).
-  { unfold set_limit, env_limit_upd, with_e_limit. cbn [e_limit].
-    rewrite limit_eqb_refl. unfold lim_newtokens.
-    unfold lim_under in Hf. cbv zeta. now rewrite Hf. }
-  assert (Hother : forall s2, limit_eqb s s2 = false ->
-            e_limit (set_limit e' p s) s2 = e_limit e' s2).
-  { intros s2 E. unfold set_limit, env_limit_upd, with_e_limit. cbn [e_limit].
-    now rewrite E. }
-  split; [| split; [| split]].
-  - subst e'. eexists _, qf, cf. reflexivity.
-  - intro s2. destruct (limit_eqb s s2) eqn:E.
-    + apply limit_eqb_eq in E. subst s2. right. split.
-      * (* the re-capped bucket is still exhausted *)
-        unfold lim_under, lim_avail at 1. rewrite Hself.
-        rewrite Nat.min_l by (unfold lim_avail; apply Nat.le_min_r).
-        unfold lim_under in Hf. exact Hf.
-      * congruence.
-    + destruct (HL s2) as [Heq2 | [Hf2 Hf02]].
-      * left. rewrite (Hother s2 E). exact Heq2.
-      * right. split; [| exact Hf02].
-        rewrite (lim_under_ext e' (set_limit e' p s) p s2 (Hother s2 E)). exact Hf2.
-  - intro s2. exact (HQ s2).
-  - intro s2. exact (HC s2).
-Qed.
-
-(** Consuming an EXHAUSTED non-inverted `quota` preserves the invariant: the
-    unconditional skb->len accumulation only shrinks the remaining bytes. *)
-Lemma limiter_inv_set_quota : forall e0 e' p s,
-  limiter_inv e0 e' p -> quota_under e' p s = false ->
-  limiter_inv e0 (set_quota e' p s) p.
-Proof.
-  intros e0 e' p s Hinv Hf.
-  pose proof (limiter_inv_quota_under e0 e' p Hinv s) as Hagree.
-  destruct Hinv as ((lf & qf & cf & Heq) & HL & HQ & HC).
-  assert (Hself : e_quota (set_quota e' p s) s = e_quota e' s - quota_cost p).
-  { unfold set_quota, env_quota_upd, with_e_quota. cbn [e_quota].
-    now rewrite quota_eqb_refl. }
-  assert (Hother : forall s2, quota_eqb s s2 = false ->
-            e_quota (set_quota e' p s) s2 = e_quota e' s2).
-  { intros s2 E. unfold set_quota, env_quota_upd, with_e_quota. cbn [e_quota].
-    now rewrite E. }
-  split; [| split; [| split]].
-  - subst e'. eexists lf, _, cf. reflexivity.
-  - intro s2. exact (HL s2).
-  - intro s2. destruct (quota_eqb s s2) eqn:E.
-    + apply quota_eqb_eq in E. subst s2. right. split.
-      * unfold quota_under in *. rewrite Hself.
-        apply Nat.leb_gt. apply Nat.leb_gt in Hf. lia.
-      * congruence.
-    + destruct (HQ s2) as [Heq2 | [Hf2 Hf02]].
-      * left. rewrite (Hother s2 E). exact Heq2.
-      * right. split; [| exact Hf02].
-        rewrite (quota_under_ext e' (set_quota e' p s) p s2 (Hother s2 E)). exact Hf2.
-  - intro s2. exact (HC s2).
-Qed.
-
-Lemma data_mem_head : forall x l, data_mem x (x :: l) = true.
-Proof. intros. unfold data_mem. cbn. now rewrite data_eqb_refl. Qed.
-
-Lemma data_mem_connlimit_after : forall e s fl,
-  data_mem fl (connlimit_after e s fl) = true.
-Proof.
-  intros. unfold connlimit_after.
-  destruct (data_mem fl (e_connlimit e s)) eqn:E; [exact E | apply data_mem_head].
-Qed.
-
-(** `connlimit` consumption is the idempotent insert of THIS packet's flow:
-    it never changes the count any evaluation of THIS traversal reads. *)
-Lemma connlimit_under_upd : forall e p s s2,
-  connlimit_under (set_connlimit e p s) p s2 = connlimit_under e p s2.
-Proof.
-  intros e p s s2.
-  destruct (connlimit_eqb s s2) eqn:E.
-  - apply connlimit_eqb_eq in E. subst s2.
-    assert (Hlist : e_connlimit (set_connlimit e p s) s
-                    = connlimit_after e s (pkt_flow p)).
-    { unfold set_connlimit, env_connlimit_upd, with_e_connlimit. cbn [e_connlimit].
-      now rewrite connlimit_eqb_refl. }
-    unfold connlimit_under. f_equal. f_equal.
-    unfold connlimit_count at 1. unfold connlimit_after at 1. rewrite Hlist.
-    now rewrite data_mem_connlimit_after.
-  - apply connlimit_under_ext.
-    unfold set_connlimit, env_connlimit_upd, with_e_connlimit. cbn [e_connlimit].
-    now rewrite E.
-Qed.
-
-Lemma limiter_inv_set_connlimit : forall e0 e' p s,
-  limiter_inv e0 e' p -> limiter_inv e0 (set_connlimit e' p s) p.
-Proof.
-  intros e0 e' p s Hinv.
-  destruct Hinv as ((lf & qf & cf & Heq) & HL & HQ & HC).
-  split; [| split; [| split]].
-  - subst e'. eexists lf, qf, _. reflexivity.
-  - intro s2. exact (HL s2).
-  - intro s2. exact (HQ s2).
-  - intro s2. rewrite (connlimit_under_upd e' p s s2). exact (HC s2).
-Qed.
-
-(** A TOLERABLE limiter match: non-inverted `limit`/`quota` (an inverted one
-    that breaks has just consumed a live bucket — see the section header), or
-    any `connlimit` (idempotent within a traversal). *)
-Definition match_limiter_tol (m : matchcond) : bool :=
-  match m with
-  | MLimit s => negb (Nat.eqb (Nat.land (ls_flags s) 1) 1)
-  | MQuota s => negb (Nat.eqb (Nat.land (q_flags s) 1) 1)
-  | MConnlimit _ => true
-  | _ => false
-  end.
-
-(** Evaluating (and thus consuming) a tolerable limiter that BREAKS its rule
-    preserves the invariant. *)
-Lemma limiter_inv_match_consume : forall m e0 e' p,
-  limiter_inv e0 e' p -> match_limiter_tol m = true ->
-  eval_matchcond m e' p = false ->
-  limiter_inv e0 (match_consume m e' p) p.
-Proof.
-  intros m e0 e' p Hinv Htol Hc.
-  destruct m; try discriminate Htol; cbn [match_consume].
-  - (* MLimit *)
-    apply limiter_inv_set_limit; [exact Hinv|].
-    unfold eval_matchcond in Hc. cbn [match_loadable eval_matchcond_body andb] in Hc.
-    cbn [match_limiter_tol] in Htol. apply Bool.negb_true_iff in Htol.
-    rewrite Htol, Bool.xorb_false_l in Hc. exact Hc.
-  - (* MQuota *)
-    apply limiter_inv_set_quota; [exact Hinv|].
-    unfold eval_matchcond in Hc. cbn [match_loadable eval_matchcond_body andb] in Hc.
-    cbn [match_limiter_tol] in Htol. apply Bool.negb_true_iff in Htol.
-    rewrite Htol, Bool.xorb_false_l in Hc. exact Hc.
-  - (* MConnlimit *)
-    apply limiter_inv_set_connlimit. exact Hinv.
-Qed.
-
-(** A ONE-LIMITER body: consume-free matches followed by ONE tolerable
-    limiter match in the last position — no statements at all (the rule
-    writes nothing but that bucket). *)
-Fixpoint body_one_limiter (body : list body_item) : bool :=
-  match body with
-  | BMatch m :: nil => match_limiter_tol m
-  | BMatch m :: rest => match_consumefree m && body_one_limiter rest
-  | _ => false
-  end.
-
-Lemma body_one_limiter_no_synproxy : forall body p,
-  body_one_limiter body = true -> body_synproxy_stops body p = false.
-Proof.
-  induction body as [| it rest IH]; intros p H; [reflexivity|].
-  destruct it as [m | s]; [| destruct rest; discriminate H].
-  destruct rest as [| it2 rest2]; [reflexivity|].
-  cbn [body_one_limiter] in H. apply Bool.andb_true_iff in H. destruct H as [_ H2].
-  specialize (IH p H2). unfold body_synproxy_stops in *. cbn [existsb]. exact IH.
-Qed.
-
-Lemma body_one_limiter_no_notrack : forall body,
-  body_one_limiter body = true -> body_has_notrack body = false.
-Proof.
-  induction body as [| it rest IH]; intros H; [reflexivity|].
-  destruct it as [m | s]; [| destruct rest; discriminate H].
-  destruct rest as [| it2 rest2]; [reflexivity|].
-  cbn [body_one_limiter] in H. apply Bool.andb_true_iff in H. destruct H as [_ H2].
-  specialize (IH H2). unfold body_has_notrack in *. cbn [existsb]. exact IH.
-Qed.
-
-Lemma body_one_limiter_applies_loadable : forall body e p,
-  body_one_limiter body = true ->
-  rule_applies_walk body e p = true -> body_loadable_walk body p = true.
-Proof.
-  induction body as [| it rest IH]; intros e p H Ha; [reflexivity|].
-  destruct it as [m | s]; [| destruct rest; discriminate H].
-  cbn [rule_applies_walk] in Ha. apply Bool.andb_true_iff in Ha.
-  destruct Ha as [Hm Ha].
-  unfold eval_matchcond in Hm. apply Bool.andb_true_iff in Hm. destruct Hm as [Hl _].
-  cbn [body_loadable_walk body_item_loadable]. rewrite Hl. cbn [andb].
-  destruct rest as [| it2 rest2]; [reflexivity|].
-  cbn [body_one_limiter] in H. apply Bool.andb_true_iff in H. destruct H as [_ H2].
-  exact (IH e p H2 Ha).
-Qed.
-
-(** The body walk of a one-limiter body at an invariant-related state: it
-    completes exactly when the pure walk at the ENTRY env applies, and a
-    break (which may have consumed the limiter) preserves the invariant. *)
-Lemma body_step_one_limiter : forall body e0 e' p,
-  limiter_inv e0 e' p -> body_one_limiter body = true ->
-  exists e'',
-    body_step body e' p
-      = (if rule_applies_walk body e0 p then BRdone e'' p else BRbreak e'' p)
-    /\ (rule_applies_walk body e0 p = false -> limiter_inv e0 e'' p).
-Proof.
-  induction body as [| it rest IH]; intros e0 e' p Hinv H; [discriminate H|].
-  destruct it as [m | s]; [| destruct rest; discriminate H].
-  destruct rest as [| it2 rest2].
-  - (* the limiter itself, in last position *)
-    cbn [body_one_limiter] in H.
-    cbn [body_step rule_applies_walk].
-    rewrite (eval_matchcond_inv m e0 e' p Hinv), Bool.andb_true_r.
-    exists (match_consume m e' p).
-    destruct (eval_matchcond m e0 p) eqn:Hc.
-    + split; [reflexivity | intro Hcontr; discriminate Hcontr].
-    + split; [reflexivity|]. intros _.
-      apply limiter_inv_match_consume; [exact Hinv | exact H |].
-      rewrite (eval_matchcond_inv m e0 e' p Hinv). exact Hc.
-  - (* a consume-free prefix match *)
-    cbn [body_one_limiter] in H. apply Bool.andb_true_iff in H.
-    destruct H as [Hm Hrest].
-    cbn [body_step rule_applies_walk].
-    rewrite (eval_matchcond_inv m e0 e' p Hinv).
-    rewrite (match_consume_free_id m e' p Hm).
-    destruct (eval_matchcond m e0 p) eqn:Hc.
-    + cbn [andb]. apply IH; assumption.
-    + cbn [andb]. exists e'. split; [reflexivity | intros _; exact Hinv].
-Qed.
-
-(** A ONE-LIMITER rule: a one-limiter body under a STATIC TERMINAL verdict
-    (accept/drop/reject/queue — the traversal ends when it fires, so the
-    consumption the firing evaluation performed is unobservable). *)
-Definition rule_one_limiter (r : rule) : bool :=
-  body_one_limiter (r_body r)
-  && match r_outcome r with OVerdict v => terminal v | _ => false end.
-
-(** The whole one-limiter rule at an invariant-related state: its step IS
-    the pure triple at the ENTRY env, its outcome is a static terminal, and
-    a non-firing step preserves the invariant. *)
-Lemma rule_step_one_limiter : forall r e0 e' p,
-  limiter_inv e0 e' p -> rule_one_limiter r = true ->
-  exists e'',
-    rule_step r e' p
-      = ((if rule_loadable r e0 p && rule_applies r e0 p
-          then outcome r e0 p else None),
-         (e'', p))
-    /\ (rule_loadable r e0 p && rule_applies r e0 p = false ->
-        limiter_inv e0 e'' p)
-    /\ (exists v, outcome r e0 p = Some v /\ terminal v = true).
-Proof.
-  intros r e0 e' p Hinv H.
-  unfold rule_one_limiter in H. apply Bool.andb_true_iff in H. destruct H as [Hb Ho].
-  destruct (r_outcome r) as [v | | | | | | |] eqn:Hout; try discriminate Ho.
-  assert (Hsp := body_one_limiter_no_synproxy (r_body r) p Hb).
-  assert (Hnt := body_one_limiter_no_notrack (r_body r) Hb).
-  assert (Hvm : r_vmap r = None) by (unfold r_vmap; now rewrite Hout).
-  assert (Hnat : r_nat r = None) by (unfold r_nat; now rewrite Hout).
-  assert (Htp : r_tproxy r = None) by (unfold r_tproxy; now rewrite Hout).
-  assert (Hfw : r_fwd r = None) by (unfold r_fwd; now rewrite Hout).
-  assert (Hq : r_queue r = None) by (unfold r_queue; now rewrite Hout).
-  assert (Hrv : r_verdict r = v) by (unfold r_verdict; now rewrite Hout).
-  assert (Hbt : body_thread (r_body r) p = p)
-    by (unfold body_thread; now rewrite Hnt).
-  assert (Hoc : outcome r e0 p = Some v).
-  { unfold outcome. rewrite Hsp, Hbt. unfold outcome_core. rewrite Hvm.
-    unfold terminal_outcome. rewrite Hnat, Htp, Hfw, Hq, Hrv.
-    destruct v; try reflexivity; discriminate Ho. }
-  assert (Hend : forall e2 p2, end_step r e2 p2 = (Some v, (e2, p2))).
-  { intros e2 p2. unfold end_step. rewrite Hvm.
-    unfold terminal_step, has_effect_terminal.
-    rewrite Hnat, Htp, Hfw, Hq, Hrv.
-    destruct v; try reflexivity; discriminate Ho. }
-  destruct (body_step_one_limiter (r_body r) e0 e' p Hinv Hb) as (e'' & Hbs & Hbinv).
-  exists e''.
-  unfold rule_step. rewrite Hbs.
-  unfold rule_applies.
-  destruct (rule_applies_walk (r_body r) e0 p) eqn:Ha.
-  - (* the body passes: the terminal fires *)
-    rewrite Hend.
-    assert (Hld : rule_loadable r e0 p = true).
-    { unfold rule_loadable. rewrite Hsp.
-      rewrite (body_one_limiter_applies_loadable (r_body r) e0 p Hb Ha).
-      cbn [andb]. rewrite Hbt.
-      unfold end_loadable. rewrite Hvm. unfold tail_loadable.
-      unfold terminal_loadable. rewrite Hnat, Htp, Hfw, Hq.
-      unfold terminal_outcome. rewrite Hnat, Htp, Hfw, Hq, Hrv.
-      destruct v; try reflexivity; discriminate Ho. }
-    rewrite Hld. cbn [andb]. rewrite Hoc.
-    split; [reflexivity|]. split.
-    + intro Hcontr. discriminate Hcontr.
-    + exists v. split; [reflexivity | exact Ho].
-  - (* the body breaks (possibly consuming the limiter) *)
-    rewrite Bool.andb_false_r.
-    split; [reflexivity|]. split.
-    + intros _. apply Hbinv. reflexivity.
-    + exists v. split; [exact Hoc | exact Ho].
-Qed.
-
-(** The write-free pure triple is invariant across the invariant relation. *)
-Lemma pure_step_inv : forall r e0 e' p,
-  limiter_inv e0 e' p -> rule_mutfree r = true ->
-  (if rule_loadable r e' p && rule_applies r e' p then outcome r e' p else None)
-  = (if rule_loadable r e0 p && rule_applies r e0 p then outcome r e0 p else None).
-Proof.
-  intros r e0 e' p Hinv Hmf.
-  destruct Hinv as ((lf & qf & cf & ->) & _).
-  now rewrite rule_loadable_upd_limits,
-              (rule_applies_upd_limits r e0 lf qf cf p Hmf),
-              outcome_upd_limits.
-Qed.
-
-(** The LIMITER-TOLERANT domain: every rule is write-free OR a one-limiter
-    rule.  Checkable by [vm_compute] on a concrete config. *)
-Definition rule_limiter_tol (r : rule) : bool :=
-  rule_writefree r || rule_one_limiter r.
-
-Definition chains_limiter_tol (cs : list (String.string * chain)) : bool :=
-  forallb (fun nc => forallb rule_limiter_tol (c_rules (snd nc))) cs.
-
-Lemma chains_limiter_tol_lookup : forall cs n ch,
-  chains_limiter_tol cs = true ->
-  chain_lookup cs n = Some ch ->
-  forallb rule_limiter_tol (c_rules ch) = true.
-Proof.
-  intros cs n ch Hcs Hlk. apply chain_lookup_in in Hlk.
-  unfold chains_limiter_tol in Hcs.
-  eapply forallb_forall in Hcs; [| exact Hlk]. exact Hcs.
-Qed.
-
-Lemma eval_rules_u_limiter_tol_aux : forall fuel cs rs e0 e' p,
-  limiter_inv e0 e' p ->
-  forallb rule_limiter_tol rs = true ->
-  chains_limiter_tol cs = true ->
-  fst (eval_rules_u fuel cs rs e' p) = eval_rules_j fuel cs rs e0 p
-  /\ snd (snd (eval_rules_u fuel cs rs e' p)) = p
-  /\ (fst (eval_rules_u fuel cs rs e' p) = None ->
-      limiter_inv e0 (fst (snd (eval_rules_u fuel cs rs e' p))) p).
-Proof.
-  induction fuel as [| f IH]; intros cs rs e0 e' p Hinv Hrs Hcs.
-  { cbn. split; [reflexivity | split; [reflexivity | intros _; exact Hinv]]. }
-  destruct rs as [| r rest].
-  { cbn. split; [reflexivity | split; [reflexivity | intros _; exact Hinv]]. }
-  cbn [forallb] in Hrs. apply Bool.andb_true_iff in Hrs. destruct Hrs as [Hr Hrest].
-  rewrite eval_rules_j_S. cbn [eval_rules_u].
-  destruct (rule_writefree r) eqn:Hwf.
-  - (* write-free rule: the fold is the pure triple, congruent to the entry env *)
-    rewrite (rule_step_writefree r e' p Hwf).
-    rewrite (pure_step_inv r e0 e' p Hinv Hwf).
-    destruct (rule_loadable r e0 p && rule_applies r e0 p);
-      [| exact (IH cs rest e0 e' p Hinv Hrest Hcs)].
-    destruct (outcome r e0 p) as [v|];
-      [| exact (IH cs rest e0 e' p Hinv Hrest Hcs)].
-    destruct v as [ | | | tc cc | lo hi bp fo | n | n | ];
-      try (split; [reflexivity | split; [reflexivity | intro Hc; discriminate Hc]]);
-      try (exact (IH cs rest e0 e' p Hinv Hrest Hcs)).
-    + (* Jump *)
-      destruct (chain_lookup cs n) as [ch|] eqn:Hlk;
-        [| exact (IH cs rest e0 e' p Hinv Hrest Hcs)].
-      destruct (eval_rules_u f cs (c_rules ch) e' p) as [ov [e1 p1]] eqn:E1.
-      pose proof (IH cs (c_rules ch) e0 e' p Hinv
-                    (chains_limiter_tol_lookup cs n ch Hcs Hlk) Hcs) as IH1.
-      rewrite E1 in IH1. cbn [fst snd] in IH1.
-      destruct IH1 as (IHv & IHp & IHinv).
-      rewrite <- IHv. subst p1.
-      destruct ov as [w|].
-      * split; [reflexivity | split; [reflexivity | intro Hc; discriminate Hc]].
-      * exact (IH cs rest e0 e1 p (IHinv eq_refl) Hrest Hcs).
-    + (* Goto *)
-      destruct (chain_lookup cs n) as [ch|] eqn:Hlk.
-      * exact (IH cs (c_rules ch) e0 e' p Hinv
-                 (chains_limiter_tol_lookup cs n ch Hcs Hlk) Hcs).
-      * split; [reflexivity | split; [reflexivity | intros _; exact Hinv]].
-    + (* Return *)
-      split; [reflexivity | split; [reflexivity | intros _; exact Hinv]].
-  - (* one-limiter rule *)
-    assert (Hol : rule_one_limiter r = true).
-    { unfold rule_limiter_tol in Hr. rewrite Hwf in Hr. exact Hr. }
-    destruct (rule_step_one_limiter r e0 e' p Hinv Hol)
-      as (e'' & Hstep & Hinv'' & (v & Hoc & Hterm)).
-    rewrite Hstep.
-    destruct (rule_loadable r e0 p && rule_applies r e0 p) eqn:Hg;
-      [| exact (IH cs rest e0 e'' p (Hinv'' eq_refl) Hrest Hcs)].
-    rewrite Hoc.
-    destruct v; try discriminate Hterm;
-      split; [reflexivity | split; [reflexivity | intro Hc; discriminate Hc]
-             |reflexivity | split; [reflexivity | intro Hc; discriminate Hc]
-             |reflexivity | split; [reflexivity | intro Hc; discriminate Hc]
-             |reflexivity | split; [reflexivity | intro Hc; discriminate Hc]].
-Qed.
-
-(** THE limiter-tolerant license: on a limiter-tolerant config the pure jump
-    strand is the VERDICT projection of the unified fold — every fuel, env,
-    packet; jumps and re-entries included. *)
-Theorem eval_rules_u_limiter_tolerant : forall fuel cs rs e p,
-  forallb rule_limiter_tol rs = true ->
-  chains_limiter_tol cs = true ->
-  fst (eval_rules_u fuel cs rs e p) = eval_rules_j fuel cs rs e p.
-Proof.
-  intros fuel cs rs e p Hrs Hcs.
-  exact (proj1 (eval_rules_u_limiter_tol_aux fuel cs rs e e p
-                  (limiter_inv_refl e p) Hrs Hcs)).
-Qed.
-
-Corollary eval_table_u_limiter_tolerant : forall fuel cs base e p,
-  forallb rule_limiter_tol (c_rules base) = true ->
-  chains_limiter_tol cs = true ->
-  fst (eval_table_u fuel cs base e p) = eval_table fuel cs base e p.
-Proof.
-  intros fuel cs base e p Hb Hcs.
-  unfold eval_table_u, eval_table.
-  pose proof (eval_rules_u_limiter_tolerant fuel cs (c_rules base) e p Hb Hcs) as Hv.
-  destruct (eval_rules_u fuel cs (c_rules base) e p) as [[v|] s];
-    cbn [fst] in Hv; rewrite <- Hv; reflexivity.
-Qed.
-
-(** Hook form for a hook with ONE registered base chain (the common case; a
-    multi-base hook would additionally thread a fired limiter's depletion
-    from one base into the next, where the pure strand cannot follow). *)
-Corollary eval_hook_u_limiter_tolerant_1 : forall fuel rs cs base e p,
-  select_hook rs h = [(cs, base)] ->
-  forallb rule_limiter_tol (c_rules base) = true ->
-  chains_limiter_tol cs = true ->
-  fst (eval_hook_u fuel rs e p) = eval_hook fuel rs h e p.
-Proof.
-  intros fuel rs cs base e p Hsel Hb Hcs.
-  unfold eval_hook_u, eval_hook. rewrite Hsel.
-  rewrite eval_ruleset_u_cons, eval_ruleset_cons.
-  pose proof (eval_table_u_limiter_tolerant fuel cs base e p Hb Hcs) as Hv.
-  destruct (eval_table_u fuel cs base e p) as [v [e1 p1]].
-  cbn [fst] in Hv. subst v. cbv zeta.
-  destruct (base_continues (eval_table fuel cs base e p)); reflexivity.
 Qed.
 
 (* ------------------------------------------------------------------ *)
@@ -5430,6 +3847,15 @@ Proof.
     solve [ eapply IH; exact H
           | discriminate H
           | injection H as H; congruence ].
+Qed.
+
+Lemma assoc_verdict_in : forall key l v,
+  assoc_verdict key l = Some v -> exists lo hi, In (lo, hi, v) l.
+Proof.
+  induction l as [| [[lo hi] v'] l IH]; cbn; intros v H; [ discriminate | ].
+  destruct (data_in_iv key (lo, hi)).
+  - injection H as <-. eauto.
+  - destruct (IH _ H) as (lo' & hi' & Hin). eauto.
 Qed.
 
 (** Fold-level transfer-freedom: a [rule_plain] rule's step verdict is never a
@@ -5665,8 +4091,8 @@ Definition rule_step_targets_below (rank : String.string -> nat)
     chain_lookup cs m = Some ch' ->
     rank m < k.
 
-(** The unified-level acyclicity witness: like [chain_ranked], but against the
-    per-rule FOLD's verdict and stable under every vmap-preserving mutation --
+(** The unified-level acyclicity witness: an acyclicity witness against the
+    per-rule FOLD's verdict, stable under every vmap-preserving mutation --
     exactly the states a unified traversal can reach. *)
 Definition chain_ranked_u (rank : String.string -> nat)
     (cs : list (String.string * chain)) (e : env) : Prop :=

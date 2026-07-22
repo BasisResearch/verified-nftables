@@ -140,9 +140,9 @@ Qed.
 
 (* ================================================================== *)
 (** ** The parsed firewall config is write-free, so every verdict above — stated
-    over the canonical unified evaluator [eval_table_u] — coincides with the pure
-    jump strand ([Semantics.eval_table_u_writefree]); the [forall h] form records
-    that these verdicts are hook-independent. *)
+    over the canonical unified evaluator [eval_table_u] — is hook-independent
+    ([Nft_Tactics.eval_table_u_hookindep_writefree]); the [forall h] form records
+    that these verdicts hold at every hook. *)
 Example firewall_inbound_license :
   forallb rule_writefree (c_rules firewall_inbound) = true
   /\ forallb rule_writefree (c_rules firewall_forward) = true

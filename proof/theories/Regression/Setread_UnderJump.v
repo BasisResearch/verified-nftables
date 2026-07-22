@@ -110,12 +110,12 @@ Theorem vm_setread_wrong_under_jump_dropped :
                    (c_policy sr_base) env0 pkt_mark0) = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
-(** …and the write-free projection is licensed on NEITHER config: its license
-    check [rule_writefree] is [false] on the effectful rule, so the coincidence
-    theorem [Semantics.eval_rules_u_writefree] correctly does not apply — an
-    effect-dropping projection would evaluate the callee's match against the
-    ENTRY packet (verdict class Drop-by-policy instead of Accept), and the
-    unified evaluator above is the only certified path for this config. *)
+(** …and the write-free hook-independence argument is licensed on NEITHER
+    config: its check [rule_writefree] is [false] on the effectful rule, so
+    [Nft_Tactics.eval_rules_u_hookindep_writefree] correctly does not apply — an
+    effect-dropping evaluation would read the callee's match against the ENTRY
+    packet (verdict class Drop-by-policy instead of Accept), and the unified
+    evaluator above is the only certified path for this config. *)
 Example setread_rule_not_writefree : rule_writefree setread_rule = false.
 Proof. reflexivity. Qed.
 
