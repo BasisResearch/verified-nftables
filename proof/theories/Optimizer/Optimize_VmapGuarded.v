@@ -94,42 +94,6 @@ Definition merged_ruleGv (f : field) (gm : matchcond) (nm : String.string)
     (body : list body_item) : rule :=
   mk_vmap_rule f nm (BMatch gm :: body).
 
-(** *** The SWAP equivalence: the guarded original has the SAME per-rule
-    [rule_loadable] / [rule_applies] / [outcome] as the UNGUARDED [orig_rule] over
-    body [BMatch gm :: body] — i.e. commuting the two leading pure matches (GUARD
-    and the port cmp) preserves every observable.  Both are [BMatch]es: transparent
-    to [body_synproxy_stops] / [body_thread] and factored through [andb]
-    commutativity in [body_loadable_walk] / [rule_applies_walk]. *)
-Lemma orig_ruleGv_eq_swap : forall f gm v body w e p,
-  rule_loadable (orig_ruleGv f gm v body w) e p
-    = rule_loadable (orig_rule f v (BMatch gm :: body) w) e p /\
-  rule_applies (orig_ruleGv f gm v body w) e p
-    = rule_applies (orig_rule f v (BMatch gm :: body) w) e p /\
-  outcome (orig_ruleGv f gm v body w) e p
-    = outcome (orig_rule f v (BMatch gm :: body) w) e p.
-Proof.
-  intros f gm v body w e p.
-  unfold orig_ruleGv, orig_ruleGs, orig_rule.
-  split; [| split].
-  - (* loadability *)
-    rewrite !rule_loadable_mk_head.
-    cbn [body_loadable_walk body_item_loadable].
-    rewrite !synproxy_stops_bmatch, !body_thread_bmatch.
-    (* both sides: 3 loadable booleans and a shared [if] term, reordered *)
-    destruct (match_loadable gm p);
-    destruct (match_loadable (MCmp f CEq v) p);
-    destruct (body_loadable_walk body p); reflexivity.
-  - (* applicability *)
-    rewrite !rule_applies_mk_head.
-    cbn [rule_applies_walk].
-    destruct (eval_matchcond gm e p);
-    destruct (eval_matchcond (MCmp f CEq v) e p);
-    destruct (rule_applies_walk body e p); reflexivity.
-  - (* outcome: identical after removing the leading BMatch from stops/thread *)
-    rewrite !outcome_mk_head.
-    rewrite !synproxy_stops_bmatch, !body_thread_bmatch. reflexivity.
-Qed.
-
 (** ** Recognise a guarded vmap-merge run pair (mirrors [Optimize_Vmap.vmap_run_pair]
     with the shared l4proto GUARD, as in [Optimize_SetGuarded.value_mergeGs_pair]). *)
 

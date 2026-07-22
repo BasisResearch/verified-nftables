@@ -228,33 +228,6 @@ Qed.
 
 (** ** Loadability / outcome / applies of the guarded element shells. *)
 
-Lemma orig_ruleGm_applies : forall f gm el body r1 e p,
-  rule_applies (orig_ruleGm f gm el body r1) e p
-  = andb (eval_matchcond gm e p)
-         (andb (eval_matchcond (melem_mc f el) e p) (rule_applies_walk body e p)).
-Proof.
-  intros. unfold orig_ruleGm. rewrite rule_applies_mk_head.
-  cbn [rule_applies_walk]. reflexivity.
-Qed.
-
-Lemma merged_ruleGs_loadable_eq_origm : forall f gm name el body r1 e p,
-  rule_loadable (merged_ruleGs f gm name body r1) e p
-  = rule_loadable (orig_ruleGm f gm el body r1) e p.
-Proof.
-  intros. destruct el as [v | lo hi]; unfold orig_ruleGm; cbn [melem_mc].
-  - apply (merged_ruleGs_loadable_eq_orig f gm name v body r1 e p).
-  - apply (merged_ruleGs_loadable_eq_origr f gm name lo hi body r1 e p).
-Qed.
-
-Lemma merged_ruleGs_outcome_eq_origm : forall f gm name el body r1 e p,
-  outcome (merged_ruleGs f gm name body r1) e p
-  = outcome (orig_ruleGm f gm el body r1) e p.
-Proof.
-  intros. destruct el as [v | lo hi]; unfold orig_ruleGm; cbn [melem_mc].
-  - apply (merged_ruleGs_outcome_eq_orig f gm name v body r1 e p).
-  - apply (merged_ruleGs_outcome_eq_origr f gm name lo hi body r1 e p).
-Qed.
-
 (** ** Executable N-WAY guarded mixed-set pass (fuel-driven). *)
 
 (** Collect the MAXIMAL run of following rules that each mix-merge with [r1]. *)

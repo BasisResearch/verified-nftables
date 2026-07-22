@@ -185,23 +185,15 @@ Qed.
     the shared tail [body]: [mk_head (MConcatSet [f1;f2] false name) body r1].  Each
     original has TWO head matches (the two differing selectors) atop the SAME tail:
     [mk_head (MCmp f1 CEq a) (BMatch (MCmp f2 CEq b) :: body) r1].  A [BMatch] is
-    transparent to [body_synproxy_stops] / [body_has_notrack] / [body_thread], so the
-    merged rule's outcome and end-loadability coincide with each original's, and its
-    head loadability/applicability is the per-field cross-product the certificate
-    pins down. *)
+    transparent to the tail body walk, so the merged rule's step verdict coincides
+    with each original's on the shared tail, and its head firing is the per-field
+    cross-product the certificate pins down. *)
 
 Definition orig_rule2 (f1 f2 : field) (a b : data) (body : list body_item) (r1 : rule) : rule :=
   mk_head (MCmp f1 CEq a) (BMatch (MCmp f2 CEq b) :: body) r1.
 
 Definition merged_rule2 (f1 f2 : field) (name : String.string) (body : list body_item) (r1 : rule) : rule :=
   mk_head (MConcatSet [f1; f2] false name) body r1.
-
-(* A leading [BMatch] is transparent to the synproxy-stop / notrack predicates and
-   to [body_thread], so the originals' tail [BMatch m2 :: body] threads exactly like
-   [body]. *)
-Lemma synproxy_stops_bmatch : forall m body p,
-  body_synproxy_stops (BMatch m :: body) p = body_synproxy_stops body p.
-Proof. reflexivity. Qed.
 
 Lemma has_notrack_bmatch : forall m body,
   body_has_notrack (BMatch m :: body) = body_has_notrack body.
@@ -593,40 +585,6 @@ Lemma optimize_rules_concat_consSS : forall fuel n d r1 r2 rest,
       (n'', d'', r1 :: rest')
   end.
 Proof. reflexivity. Qed.
-
-Lemma orig_rule2_applies : forall f1 f2 a b body r1 e p,
-  rule_applies (orig_rule2 f1 f2 a b body r1) e p
-  = andb (andb (eval_matchcond (MCmp f1 CEq a) e p) (eval_matchcond (MCmp f2 CEq b) e p))
-         (rule_applies_walk body e p).
-Proof.
-  intros. unfold orig_rule2. rewrite rule_applies_mk_head.
-  cbn [rule_applies_walk]. rewrite Bool.andb_assoc. reflexivity.
-Qed.
-
-Lemma merged_rule2_loadable_eq_orig : forall f1 f2 name a b body r1 e p,
-  rule_loadable (merged_rule2 f1 f2 name body r1) e p
-  = rule_loadable (orig_rule2 f1 f2 a b body r1) e p.
-Proof.
-  intros. unfold merged_rule2, orig_rule2. rewrite !rule_loadable_mk_head.
-  rewrite !synproxy_stops_bmatch, !body_thread_bmatch.
-  cbn [body_loadable_walk body_item_loadable match_loadable fields_loadable forallb].
-  rewrite Bool.andb_true_r, <- !Bool.andb_assoc. reflexivity.
-Qed.
-
-Lemma merged_rule2_outcome_eq_orig : forall f1 f2 name a b body r1 e p,
-  outcome (merged_rule2 f1 f2 name body r1) e p
-  = outcome (orig_rule2 f1 f2 a b body r1) e p.
-Proof.
-  intros. unfold merged_rule2, orig_rule2. rewrite !outcome_mk_head.
-  rewrite !synproxy_stops_bmatch, !body_thread_bmatch. reflexivity.
-Qed.
-
-Lemma merged_rule2_applies : forall f1 f2 name body r1 e p,
-  rule_applies (merged_rule2 f1 f2 name body r1) e p
-  = andb (eval_matchcond (MConcatSet [f1; f2] false name) e p) (rule_applies_walk body e p).
-Proof.
-  intros. unfold merged_rule2. rewrite rule_applies_mk_head. reflexivity.
-Qed.
 
 (** [concat_merge_pair] returns r1's fields/values in the canonical slots, forcing
     [r2] to be the orig_rule2 shell over r2's tuple. *)

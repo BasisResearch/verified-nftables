@@ -65,18 +65,6 @@ Definition orig_rule_m (f : field) (mask xor v : data) (body : list body_item)
     (w : verdict) : rule :=
   mk_head (MMasked f CEq mask xor v) body (mk_vmap_base w).
 
-(** *** Bridges: the masked original agrees with the plain [orig_rule] on loadability
-    and verdict (both differ only in the head match, whose [match_loadable] is
-    [field_loadable f] either way, and whose contribution [outcome_mk_head] strips). *)
-Lemma orig_rule_m_loadable_eq : forall f mask xor v body w e p,
-  rule_loadable (orig_rule_m f mask xor v body w) e p
-  = rule_loadable (orig_rule f v body w) e p.
-Proof.
-  intros. unfold orig_rule_m, orig_rule.
-  rewrite !rule_loadable_mk_head, match_loadable_mmasked. cbn [match_loadable].
-  reflexivity.
-Qed.
-
 (** ** The masked point-key certificate. *)
 
 Lemma eval_mmasked_point : forall f mask xor v e q,

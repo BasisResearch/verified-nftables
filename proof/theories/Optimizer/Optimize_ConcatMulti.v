@@ -228,51 +228,6 @@ Definition merged_ruleK (fields : list field) (name : String.string)
                         (body : list body_item) (r1 : rule) : rule :=
   mk_head (MConcatSet fields false name) body r1.
 
-(** *** The K-match prefix is transparent to synproxy/notrack/thread. *)
-Lemma kmatches_synproxy : forall fields row body p,
-  body_synproxy_stops (kmatches fields row ++ body) p = body_synproxy_stops body p.
-Proof.
-  intros fields row body p. unfold kmatches.
-  induction (combine fields row) as [| fa l IH]; [reflexivity|].
-  cbn [map app]. rewrite synproxy_stops_bmatch. exact IH.
-Qed.
-
-Lemma kmatches_notrack : forall fields row body,
-  body_has_notrack (kmatches fields row ++ body) = body_has_notrack body.
-Proof.
-  intros fields row body. unfold kmatches.
-  induction (combine fields row) as [| fa l IH]; [reflexivity|].
-  cbn [map app]. rewrite has_notrack_bmatch. exact IH.
-Qed.
-
-Lemma kmatches_thread : forall fields row body p,
-  body_thread (kmatches fields row ++ body) p = body_thread body p.
-Proof. intros. unfold body_thread. rewrite kmatches_notrack. reflexivity. Qed.
-
-(** Loadability of the prefix++body: each head match contributes [field_loadable],
-    value-independently. *)
-Lemma kmatches_loadable_walk : forall fields row body p,
-  body_loadable_walk (kmatches fields row ++ body) p
-  = forallb (fun fa => field_loadable (fst fa) p) (combine fields row)
-    && body_loadable_walk body p.
-Proof.
-  intros fields row body p. unfold kmatches.
-  induction (combine fields row) as [| fa l IH]; [reflexivity|].
-  cbn [map app forallb body_loadable_walk body_item_loadable match_loadable].
-  rewrite IH, Bool.andb_assoc. reflexivity.
-Qed.
-
-Lemma kmatches_applies_walk : forall fields row body e p,
-  rule_applies_walk (kmatches fields row ++ body) e p
-  = forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) e p) (combine fields row)
-    && rule_applies_walk body e p.
-Proof.
-  intros fields row body e p. unfold kmatches.
-  induction (combine fields row) as [| fa l IH]; [reflexivity|].
-  cbn [map app forallb rule_applies_walk].
-  rewrite IH, Bool.andb_assoc. reflexivity.
-Qed.
-
 (** [field_loadable] over [combine fields row] = [fields_loadable fields] when the
     two have equal length (so [map fst (combine fields row) = fields]). *)
 Lemma forallb_field_loadable_combine : forall (fields : list field) (row : list data) p,
@@ -286,61 +241,28 @@ Proof.
   rewrite (IH row p ltac:(cbn in Hlen; lia)). reflexivity.
 Qed.
 
-(** orig_ruleK's loadability / outcome are VALUE-INDEPENDENT (head matches only
-    contribute field loadability + are transparent to outcome). *)
-Lemma orig_ruleK_loadable : forall fields row body r1 e p,
-  length fields = length row ->
-  rule_loadable (orig_ruleK fields row body r1) e p
-  = fields_loadable fields p &&
-    (body_loadable_walk body p &&
-     (if body_synproxy_stops body p then true else end_loadable r1 e (body_thread body p))).
-Proof.
-  intros fields row body r1 e p Hlen. unfold rule_loadable, orig_ruleK. cbn [r_body].
-  rewrite kmatches_loadable_walk, kmatches_synproxy, kmatches_thread.
-  rewrite (forallb_field_loadable_combine fields row p Hlen).
-  (* end_loadable of the record = end_loadable r1 (it copies the end fields) *)
-  assert (Hend : forall q, end_loadable (orig_ruleK fields row body r1) e q = end_loadable r1 e q)
-    by reflexivity.
-  rewrite <- Bool.andb_assoc.
-  destruct (body_synproxy_stops body p); reflexivity.
-Qed.
+Lemma forallb_map_gen : forall {A B} (g : B -> bool) (f : A -> B) l,
+  forallb g (map f l) = forallb (fun x => g (f x)) l.
+Proof. induction l; cbn; [reflexivity | rewrite IHl; reflexivity]. Qed.
 
-Lemma merged_ruleK_loadable : forall fields name body r1 e p,
-  rule_loadable (merged_ruleK fields name body r1) e p
-  = fields_loadable fields p &&
-    (body_loadable_walk body p &&
-     (if body_synproxy_stops body p then true else end_loadable r1 e (body_thread body p))).
+(** The body_step-native K-row shell verdict: the K-match prefix's [forallb]
+    guards the shared tail step — no write-free projection named. *)
+Lemma rule_step_fst_kmatches : forall h fields row body r1 e p,
+  fst (rule_step h (orig_ruleK fields row body r1) e p)
+  = if forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) e p) (combine fields row)
+    then fst (rule_step h (mk_tail body r1) e p) else None.
 Proof.
-  intros fields name body r1 e p. unfold merged_ruleK. rewrite rule_loadable_mk_head.
-  cbn [match_loadable]. reflexivity.
-Qed.
-
-Lemma orig_ruleK_outcome : forall fields row body r1 e p,
-  outcome (orig_ruleK fields row body r1) e p
-  = (if body_synproxy_stops body p then Some Drop
-     else outcome_core r1 e (body_thread body p)).
-Proof.
-  intros fields row body r1 e p. unfold outcome, orig_ruleK. cbn [r_body].
-  rewrite kmatches_synproxy, kmatches_thread.
-  assert (Hoc : outcome_core (orig_ruleK fields row body r1) e (body_thread body p)
-                = outcome_core r1 e (body_thread body p)) by reflexivity.
-  unfold orig_ruleK in Hoc. cbn [r_body] in Hoc.
-  destruct (body_synproxy_stops body p); [reflexivity|]. exact Hoc.
-Qed.
-
-Lemma merged_ruleK_outcome : forall fields name body r1 e p,
-  outcome (merged_ruleK fields name body r1) e p
-  = (if body_synproxy_stops body p then Some Drop
-     else outcome_core r1 e (body_thread body p)).
-Proof. intros. unfold merged_ruleK. apply outcome_mk_head. Qed.
-
-Lemma orig_ruleK_applies : forall fields row body r1 e p,
-  rule_applies (orig_ruleK fields row body r1) e p
-  = forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) e p) (combine fields row)
-    && rule_applies_walk body e p.
-Proof.
-  intros fields row body r1 e p. unfold rule_applies, orig_ruleK. cbn [r_body].
-  apply kmatches_applies_walk.
+  intros h fields row body r1 e p.
+  assert (Horig : orig_ruleK fields row body r1
+            = mk_tail (map BMatch (map (fun fa => MCmp (fst fa) CEq (snd fa))
+                                       (combine fields row)) ++ body) r1).
+  { unfold orig_ruleK, mk_tail, kmatches. rewrite map_map. reflexivity. }
+  rewrite Horig.
+  rewrite (rule_step_fst_matches_prefix h
+             (map (fun fa => MCmp (fst fa) CEq (snd fa)) (combine fields row)) body r1 e p).
+  2:{ apply forallb_forall. intros x Hx.
+      apply in_map_iff in Hx as [fa [Heq _]]. subst x. reflexivity. }
+  rewrite forallb_map_gen. reflexivity.
 Qed.
 
 (* ================================================================== *)

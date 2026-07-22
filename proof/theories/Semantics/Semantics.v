@@ -2749,6 +2749,29 @@ Definition rule_step (r : rule) (e : env) (p : packet)
   | BRdone e' p'  => end_step r e' p'
   end.
 
+(** ** Peeling a leading write-free match off a rule's step verdict.
+
+    A rule whose body starts with a consume-free [BMatch m] steps to the SAME
+    verdict as the rule with that head removed, guarded by whether the head
+    matches: a failing head BREAKs (no verdict), a passing consume-free head
+    leaves the state untouched so the tail walks from the SAME [(e,p)].  The end
+    fields ([r_outcome]/[r_after]) are shared, so [end_step] is body-agnostic.
+    This is the substrate the optimizer's per-shell merge certificates read a
+    guarded head verdict off — directly over [rule_step], with no write-free
+    projection function. *)
+Lemma rule_step_fst_cons_bmatch : forall m body o a e p,
+  match_consumefree m = true ->
+  fst (rule_step {| r_body := BMatch m :: body; r_outcome := o; r_after := a |} e p)
+  = if eval_matchcond m e p
+    then fst (rule_step {| r_body := body; r_outcome := o; r_after := a |} e p)
+    else None.
+Proof.
+  intros m body o a e p Hmf. unfold rule_step. cbn [r_body body_step].
+  rewrite (match_consume_free_id m e p Hmf).
+  destruct (eval_matchcond m e p); [| reflexivity].
+  destruct (body_step body e p) as [e' p'|e' p'|e' p']; reflexivity.
+Qed.
+
 (** The meta/ct/env effect of a rule BODY — the state projection of the body
     fold (kept as the named notion the optimizer's per-merge-shape certificates
     reason about). *)
