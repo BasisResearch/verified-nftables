@@ -211,74 +211,10 @@ Proof.
   exact (False_ind _ (genenv_fib_local_contradiction e p Henv Hfib)).
 Qed.
 
-Lemma pre1_streaming_skips_real : forall e p,
-  e_set e "__set0" = set_l4proto ->
-  field_value FMetaIifname e p = if_home ->
-  field_value (FFib "daddr" FRtype) e p = fib_local ->
-  field_value FMetaL4proto e p = l4_tcp ->
-  field_value FThDport e p = port48010 ->
-  read_payload_ok PTransport 2 2 p = true ->
-  rule_applies pre1 e p = false.
-Proof.
-  intros e p Hs0 Hiif Hfib Hl4 Hdport Hok.
-  unfold rule_applies, rule_applies_walk, pre1, filter_prerouting.
-  cbn -[field_value read_payload_ok].
-  unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
-    field_loadable, load_ok.
-  cbn -[field_value read_payload_ok].
-  rewrite ?Hok, !Hiif, !Hfib, !Hl4, !Hdport, ?Hs0. vm_compute. reflexivity.
-Qed.
 
-(** SUPERSEDED-vacuous (M4); successor [pre1_streaming_skips_real]. *)
-Lemma pre1_streaming_skips : forall e p,
-  e = gen_env ->
-  field_value FMetaIifname e p = if_home ->
-  field_value (FFib "daddr" FRtype) e p = fib_local ->
-  field_value FMetaL4proto e p = l4_tcp ->
-  field_value FThDport e p = port48010 ->
-  read_payload_ok PTransport 2 2 p = true ->
-  rule_applies pre1 e p = false.
-Proof.
-  intros e p Henv Hiif Hfib Hl4 Hdport Hok.
-  exact (False_ind _ (genenv_fib_local_contradiction e p Henv Hfib)).
-Qed.
 
-Lemma pre2_streaming_applies_real : forall e p,
-  e_set e "__set0" = set_l4proto ->
-  e_set e "__set1" = set_iif ->
-  e_set e "__set2" = set_sports ->
-  field_value FMetaIifname e p = if_home ->
-  field_value (FFib "daddr" FRtype) e p = fib_local ->
-  field_value FMetaL4proto e p = l4_tcp ->
-  field_value FThDport e p = port48010 ->
-  read_payload_ok PTransport 2 2 p = true ->
-  rule_applies pre2 e p = true.
-Proof.
-  intros e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok.
-  unfold rule_applies, rule_applies_walk, pre2, filter_prerouting.
-  cbn -[field_value read_payload_ok].
-  unfold eval_matchcond, match_loadable, eval_matchcond_body, fields_loadable,
-    field_loadable, load_ok.
-  cbn -[field_value read_payload_ok].
-  rewrite ?Hok, !Hiif, !Hfib, !Hl4, !Hdport, ?Hs0, ?Hs1, ?Hs2. vm_compute. reflexivity.
-Qed.
 
-(** SUPERSEDED-vacuous (M4); successor [pre2_streaming_applies_real]. *)
-Lemma pre2_streaming_applies : forall e p,
-  e = gen_env ->
-  field_value FMetaIifname e p = if_home ->
-  field_value (FFib "daddr" FRtype) e p = fib_local ->
-  field_value FMetaL4proto e p = l4_tcp ->
-  field_value FThDport e p = port48010 ->
-  read_payload_ok PTransport 2 2 p = true ->
-  rule_applies pre2 e p = true.
-Proof.
-  intros e p Henv Hiif Hfib Hl4 Hdport Hok.
-  exact (False_ind _ (genenv_fib_local_contradiction e p Henv Hfib)).
-Qed.
 
-Lemma pre2_outcome_accept : forall e p, outcome pre2 e p = Some Accept.
-Proof. intros e p. reflexivity. Qed.
 
 (* the streaming rule is loadable: its only payload read is the th-dport set key *)
 Lemma pre2_loadable : forall e p,
@@ -509,18 +445,21 @@ Proof.
   exact (False_ind _ (genenv_fib_local_contradiction e p Henv Hfib)).
 Qed.
 
-(** ** The mark is read by the postrouting masquerade rule. *)
+(** ** The mark is read by the postrouting masquerade rule: on a 0x99-marked
+    packet the rule's body WALKS to its end ([BRdone] — the `mark 0x99` match
+    passes, the trailing `log` writes nothing), so the masquerade terminal is
+    reached; on an unmarked packet the body BREAKs (state kept), so it is not. *)
 Theorem masquerade_gated_on_mark : forall e p,
-  field_value FMetaMark e p = mark99 -> rule_applies post1 e p = true.
+  field_value FMetaMark e p = mark99 -> body_step (r_body post1) e p = BRdone e p.
 Proof.
-  intros e p Hm. unfold rule_applies, rule_applies_walk, post1, filter_postrouting.
+  intros e p Hm. unfold post1, filter_postrouting.
   cbn -[field_value]. rewrite Hm. vm_compute. reflexivity.
 Qed.
 
 Theorem unmarked_not_masqueraded : forall e p,
-  field_value FMetaMark e p = [0;0;0;0] -> rule_applies post1 e p = false.
+  field_value FMetaMark e p = [0;0;0;0] -> body_step (r_body post1) e p = BRbreak e p.
 Proof.
-  intros e p Hm. unfold rule_applies, rule_applies_walk, post1, filter_postrouting.
+  intros e p Hm. unfold post1, filter_postrouting.
   cbn -[field_value]. rewrite Hm. vm_compute. reflexivity.
 Qed.
 
@@ -536,9 +475,6 @@ Qed.
 Lemma postrouting_rules_eq : c_rules filter_postrouting = [post1].
 Proof. reflexivity. Qed.
 
-(* the masquerade rule is a terminal NAT (accepts) carrying r_nat = Some masq *)
-Lemma post1_outcome_accept : forall e p, outcome post1 e p = Some Accept.
-Proof. reflexivity. Qed.
 
 (* its body (a mark match + log) writes nothing to the packet *)
 Lemma post1_dsl_noop : forall e p,
@@ -701,7 +637,7 @@ Theorem streaming_flow_whole_ruleset_real : forall e p,
   (* postrouting reads the surviving mark and masquerades: terminal accept,
      UNLESS the kernel NAT core drops for want of a usable exit address —
      the fold carries that data-plane drop too (M3) *)
-  /\ rule_applies post1 e' q = true
+  /\ body_step (r_body post1) e' q = BRdone e' q
   /\ eval_chain_mut Hpostrouting filter_postrouting e' q
      = (if nat_drops Hpostrouting post1 e' q then Drop else Accept).
 Proof.
@@ -740,7 +676,7 @@ Theorem streaming_flow_whole_ruleset : forall e p,
   fst (eval_chain_u Hprerouting filter_prerouting e p) = Accept
   /\ field_value FMetaMark e' q = mark99
   (* postrouting reads the surviving mark and masquerades (terminal accept) *)
-  /\ rule_applies post1 e' q = true
+  /\ body_step (r_body post1) e' q = BRdone e' q
   /\ eval_chain_mut Hpostrouting filter_postrouting e' q = Accept.
 Proof.
   intros e p Henv Hiif Hfib Hl4 Hdport Hok Horig Hnone q e'.
@@ -845,7 +781,7 @@ Theorem streaming_whole_ruleset_witnessed :
                         env_stream pkt_stream)) in
   fst (eval_chain_u Hprerouting filter_prerouting env_stream pkt_stream) = Accept
   /\ field_value FMetaMark e' q = mark99
-  /\ rule_applies post1 e' q = true
+  /\ body_step (r_body post1) e' q = BRdone e' q
   (* concrete: the exit interface HAS an address, so the masquerade fires and
      the postrouting verdict is a genuine Accept (no NAT drop) *)
   /\ eval_chain_mut Hpostrouting filter_postrouting e' q = Accept.

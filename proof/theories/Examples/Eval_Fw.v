@@ -12,10 +12,10 @@
       - [Global Opaque eval_rules_u]: keep it folded thereafter so [cbn] reduces
         only the *current* rule (via its [rule_step]) rather than the whole
         fuel-bounded traversal tree;
-      - [Ltac eval_fw_core]: the shared rewrite/cbn loop.
+      - [Ltac eval_fw_core_u]: the shared rewrite/cbn loop.
 
     Each module then defines its own [eval_fw] as just its chain [unfold] followed
-    by [eval_fw_core]. *)
+    by [eval_fw_core_u]. *)
 
 From Stdlib Require Import List.
 From Nft Require Import Bytes Verdict Packet Syntax Semantics.
@@ -93,51 +93,51 @@ Ltac eval_fw_core_u Hpe :=
     | progress cbn -[eval_rules_u field_value read_payload_ok concat_set_mem] ];
   reflexivity.
 
-(* ================================================================== *)
-(** * TRANSITIONAL: the historical pure jump strand engine.
+(** ** Generic per-rule [rule_step] reductions, shared by the config-proof files.
 
-    Files not yet migrated to the unified evaluator above still step the pure
-    [eval_rules_j].  These steppers keep them compiling during the migration and
-    are removed once every consumer runs on [eval_rules_u]. *)
-Lemma erj_nil : forall n cs e p, eval_rules_j (S n) cs [] e p = None.
-Proof. reflexivity. Qed.
+    A field load never consults the limiter bucket [e_limit], so a limiter
+    consumption is invisible to every subsequent field read. *)
+Lemma field_value_set_limit : forall f e p s q,
+  field_value f (set_limit e p s) q = field_value f e q.
+Proof.
+  intros f e p s q. unfold field_value, do_load, set_limit, env_limit_upd, with_e_limit.
+  destruct (field_load f); try reflexivity.
+Qed.
 
-Lemma erj_cons : forall n cs r rest e p,
-  eval_rules_j (S n) cs (r :: rest) e p =
-  (if andb (rule_loadable r e p) (rule_applies r e p)
-   then match outcome r e p with
-        | None => eval_rules_j n cs rest e p
-        | Some Return => None
-        | Some (Jump m) =>
-            match chain_lookup cs m with
-            | Some ch => match eval_rules_j n cs (c_rules ch) e p with
-                         | Some v => Some v | None => eval_rules_j n cs rest e p end
-            | None => eval_rules_j n cs rest e p
-            end
-        | Some (Goto m) =>
-            match chain_lookup cs m with
-            | Some ch => eval_rules_j n cs (c_rules ch) e p | None => None end
-        | Some Continue => eval_rules_j n cs rest e p
-        | Some v => Some v
-        end
-   else eval_rules_j n cs rest e p).
-Proof. reflexivity. Qed.
-
-Lemma erj_empty : forall m cs e p, eval_rules_j m cs [] e p = None.
-Proof. destruct m; reflexivity. Qed.
-
-Global Opaque eval_rules_j.
-
-Ltac eval_fw_core Hpe :=
-  try rewrite Hpe in * |- *;
-  repeat first
-    [ rewrite Hpe
-    | rewrite erj_nil
-    | rewrite erj_cons
-    | match goal with H : field_value _ _ _ = _ |- _ => rewrite H end
-    | match goal with H : read_payload_ok _ _ _ _ = _ |- _ => rewrite H end
-    | progress unfold rule_loadable, rule_applies, end_loadable, tail_loadable,
-        terminal_loadable, vmap_loadable, body_item_loadable, match_loadable,
-        fields_loadable, field_loadable, load_ok, eval_matchcond, eval_matchcond_body
-    | progress cbn -[eval_rules_j field_value read_payload_ok] ];
+(** An empty-body single-key verdict-map rule: its one [rule_step] is the
+    verdict-map lookup on the key field (state untouched — no body, no writer). *)
+Lemma vmap_single_step : forall h e p f nm,
+  field_loadable f p = true ->
+  rule_step h {| r_body := []; r_outcome := OVmap {| vm_fields := []; vm_keyf := Some (f, []); vm_name := nm |}; r_after := [] |} e p
+  = (match assoc_verdict (field_value f e p) (e_vmap e nm) with
+     | Some v => Some v | None => None end, (e, p)).
+Proof.
+  intros h e p f nm H.
+  unfold rule_step. cbn [r_body body_step].
+  unfold end_step. cbn [r_vmap r_outcome vm_keyf vm_name vm_fields].
+  unfold vmap_loadable. cbn [vm_keyf]. rewrite H.
+  cbn [apply_transforms fold_left].
+  destruct (assoc_verdict (field_value f e p) (e_vmap e nm)) as [v|]; [reflexivity|].
+  unfold terminal_step.
+  cbn [has_effect_terminal r_nat r_tproxy r_fwd r_queue r_outcome r_verdict].
   reflexivity.
+Qed.
+
+(** An empty-body concat-key verdict-map rule: the lookup is on the concatenation
+    of the key fields. *)
+Lemma vmap_concat_step : forall h e p fs nm,
+  fields_loadable fs p = true ->
+  rule_step h {| r_body := []; r_outcome := OVmap {| vm_fields := fs; vm_keyf := None; vm_name := nm |}; r_after := [] |} e p
+  = (match assoc_verdict (List.concat (map (fun f => field_value f e p) fs)) (e_vmap e nm) with
+     | Some v => Some v | None => None end, (e, p)).
+Proof.
+  intros h e p fs nm H.
+  unfold rule_step. cbn [r_body body_step].
+  unfold end_step. cbn [r_vmap r_outcome vm_keyf vm_name vm_fields].
+  unfold vmap_loadable. cbn [vm_keyf vm_fields]. rewrite H.
+  destruct (assoc_verdict (List.concat (map (fun f => field_value f e p) fs)) (e_vmap e nm)) as [v|];
+    [reflexivity|].
+  unfold terminal_step.
+  cbn [has_effect_terminal r_nat r_tproxy r_fwd r_queue r_outcome r_verdict].
+  reflexivity.
+Qed.
