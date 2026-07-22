@@ -195,43 +195,6 @@ Qed.
 
 (** ** Loadability / outcome / applies of the guarded shells. *)
 
-Lemma orig_ruleGs_applies : forall f gm v body r1 e p,
-  rule_applies (orig_ruleGs f gm v body r1) e p
-  = andb (eval_matchcond gm e p)
-         (andb (eval_matchcond (MCmp f CEq v) e p) (rule_applies_walk body e p)).
-Proof.
-  intros. unfold orig_ruleGs. rewrite rule_applies_mk_head.
-  cbn [rule_applies_walk]. reflexivity.
-Qed.
-
-Lemma merged_ruleGs_loadable_eq_orig : forall f gm name v body r1 e p,
-  rule_loadable (merged_ruleGs f gm name body r1) e p
-  = rule_loadable (orig_ruleGs f gm v body r1) e p.
-Proof.
-  intros. unfold merged_ruleGs, orig_ruleGs. rewrite !rule_loadable_mk_head.
-  rewrite !synproxy_stops_bmatch, !body_thread_bmatch.
-  cbn [body_loadable_walk body_item_loadable match_loadable fields_loadable forallb].
-  rewrite Bool.andb_true_r. btauto.
-Qed.
-
-Lemma merged_ruleGs_outcome_eq_orig : forall f gm name v body r1 e p,
-  outcome (merged_ruleGs f gm name body r1) e p
-  = outcome (orig_ruleGs f gm v body r1) e p.
-Proof.
-  intros. unfold merged_ruleGs, orig_ruleGs. rewrite !outcome_mk_head.
-  rewrite !synproxy_stops_bmatch, !body_thread_bmatch. reflexivity.
-Qed.
-
-Lemma merged_ruleGs_applies : forall f gm name body r1 e p,
-  rule_applies (merged_ruleGs f gm name body r1) e p
-  = andb (eval_matchcond gm e p)
-         (andb (eval_matchcond (MConcatSet [f] false name) e p)
-               (rule_applies_walk body e p)).
-Proof.
-  intros. unfold merged_ruleGs. rewrite rule_applies_mk_head.
-  cbn [rule_applies_walk]. reflexivity.
-Qed.
-
 (** The head guard factors out of the [existsb] over the run. *)
 Lemma existsb_guardhead_factor : forall (A : Type) (c : A -> bool) (G W : bool) (l : list A),
   existsb (fun x => andb G (andb (c x) W)) l

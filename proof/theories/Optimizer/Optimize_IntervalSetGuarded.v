@@ -170,33 +170,6 @@ Qed.
 
 (** ** Loadability / outcome / applies of the guarded shells. *)
 
-Lemma orig_ruleGr_applies : forall f gm lo hi body r1 e p,
-  rule_applies (orig_ruleGr f gm lo hi body r1) e p
-  = andb (eval_matchcond gm e p)
-         (andb (eval_matchcond (MRange f false lo hi) e p) (rule_applies_walk body e p)).
-Proof.
-  intros. unfold orig_ruleGr. rewrite rule_applies_mk_head.
-  cbn [rule_applies_walk]. reflexivity.
-Qed.
-
-Lemma merged_ruleGs_loadable_eq_origr : forall f gm name lo hi body r1 e p,
-  rule_loadable (merged_ruleGs f gm name body r1) e p
-  = rule_loadable (orig_ruleGr f gm lo hi body r1) e p.
-Proof.
-  intros. unfold merged_ruleGs, orig_ruleGr. rewrite !rule_loadable_mk_head.
-  rewrite !synproxy_stops_bmatch, !body_thread_bmatch.
-  cbn [body_loadable_walk body_item_loadable match_loadable fields_loadable forallb].
-  rewrite Bool.andb_true_r. btauto.
-Qed.
-
-Lemma merged_ruleGs_outcome_eq_origr : forall f gm name lo hi body r1 e p,
-  outcome (merged_ruleGs f gm name body r1) e p
-  = outcome (orig_ruleGr f gm lo hi body r1) e p.
-Proof.
-  intros. unfold merged_ruleGs, orig_ruleGr. rewrite !outcome_mk_head.
-  rewrite !synproxy_stops_bmatch, !body_thread_bmatch. reflexivity.
-Qed.
-
 (** ** REPRESENTABILITY GATE.  A single-field nftables interval set is stored in the
     kernel [rbtree] backend, a strict PARTITION: its insert rejects ANY overlap in
     either order (net/netfilter/nft_set_rbtree.c).  So we may only emit a fold whose

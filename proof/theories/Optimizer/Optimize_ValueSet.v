@@ -62,20 +62,91 @@ Local Open Scope nat_scope.
     verdict/vmap/nat/…/after.  [merge_head] replaces the head match [m] by [m12].
     When [m12] is the DISJUNCTION certificate of [m1] and [m2] — same field loaded
     ([match_loadable] equal) and value test the [orb] of the two — the merged rule
-    meets [eval_rules_merge2]'s three obligations, because every other ingredient
-    of [rule_loadable]/[outcome]/[rule_applies] is shared (the head [BMatch]
-    contributes nothing to [body_synproxy_stops]/[body_has_notrack], and the
-    body-tail / end-fields are identical). *)
+    meets [eval_rules_merge2]'s three obligations, because the head [BMatch] is
+    transparent to the shared tail body walk and end-fields, so the two shells step
+    to the same guarded tail verdict. *)
 
 Definition mk_head (m : matchcond) (rest : list body_item) (r : rule) : rule :=
   {| r_body := BMatch m :: rest;
      r_outcome := r_outcome r; r_after := r_after r |}.
 
-(* The head [BMatch] is transparent to the synproxy-stop and notrack predicates,
-   so [body_thread] and [body_synproxy_stops] of [mk_head] depend only on [rest]. *)
-Lemma synproxy_stops_mk_head : forall m rest r p,
-  body_synproxy_stops (r_body (mk_head m rest r)) p = body_synproxy_stops rest p.
+(** The head-free shell over the SAME end fields: [mk_head]'s tail rule.  Peeling
+    a leading [BMatch] off [mk_head] lands here, so a run of shells that differ
+    only in leading matches shares this one tail step. *)
+Definition mk_tail (rest : list body_item) (r : rule) : rule :=
+  {| r_body := rest; r_outcome := r_outcome r; r_after := r_after r |}.
+
+Lemma mk_tail_cons : forall m rest r, mk_tail (BMatch m :: rest) r = mk_head m rest r.
 Proof. reflexivity. Qed.
+
+(** THE body_step-native per-shell verdict: [mk_head]'s step verdict is the tail
+    shell's, guarded by the (consume-free) head match — no write-free projection
+    function named.  This is the single certificate every merge/collapse site reads
+    a guarded head verdict off. *)
+Lemma rule_step_fst_mk_head : forall h m rest r e p,
+  match_consumefree m = true ->
+  fst (rule_step h (mk_head m rest r) e p)
+  = if eval_matchcond m e p then fst (rule_step h (mk_tail rest r) e p) else None.
+Proof.
+  intros h m rest r e p Hmf. unfold mk_head, mk_tail.
+  exact (rule_step_fst_cons_bmatch h m rest (r_outcome r) (r_after r) e p Hmf).
+Qed.
+
+(** A consume-free head is absorbed by its own loadability: [eval_matchcond]
+    already gates on [match_loadable]. *)
+Lemma eval_matchcond_loadable_absorb : forall m e p,
+  match_loadable m p && eval_matchcond m e p = eval_matchcond m e p.
+Proof.
+  intros m e p. unfold eval_matchcond. rewrite Bool.andb_assoc, Bool.andb_diag.
+  reflexivity.
+Qed.
+
+(** Collapse a nested head guard into a single conjunction. *)
+Lemma if_and_nest : forall (a b : bool) (A : Type) (x y : A),
+  (if a then (if b then x else y) else y) = (if a && b then x else y).
+Proof. intros [] []; reflexivity. Qed.
+
+(** The head of a mut-free [mk_head] shell is consume-free. *)
+Lemma mk_head_mutfree_head : forall m rest r,
+  rule_mutfree (mk_head m rest r) = true -> match_consumefree m = true.
+Proof.
+  intros m rest r H. unfold rule_mutfree, mk_head in H. cbn [r_body] in H.
+  apply Bool.andb_true_iff in H as [H _]. apply Bool.andb_true_iff in H as [H _].
+  cbn [forallb] in H. apply Bool.andb_true_iff in H as [H _]. exact H.
+Qed.
+
+(** Commuting the two leading consume-free matches of a shell preserves its step
+    verdict: both orders peel to the same guarded tail step (matches commute, and a
+    consume-free match leaves the state untouched). *)
+Lemma rule_step_fst_swap_head : forall h m1 m2 rest r e p,
+  match_consumefree m1 = true -> match_consumefree m2 = true ->
+  fst (rule_step h (mk_head m1 (BMatch m2 :: rest) r) e p)
+  = fst (rule_step h (mk_head m2 (BMatch m1 :: rest) r) e p).
+Proof.
+  intros h m1 m2 rest r e p H1 H2.
+  rewrite (rule_step_fst_mk_head h m1 _ r e p H1), mk_tail_cons.
+  rewrite (rule_step_fst_mk_head h m2 rest r e p H2).
+  rewrite (rule_step_fst_mk_head h m2 _ r e p H2), mk_tail_cons.
+  rewrite (rule_step_fst_mk_head h m1 rest r e p H1).
+  destruct (eval_matchcond m1 e p); destruct (eval_matchcond m2 e p); reflexivity.
+Qed.
+
+(** Peel a WHOLE consume-free match prefix off a shell's step verdict: the run of
+    leading [BMatch]es is the [forallb] of their matches, guarding the tail step —
+    the many-headed generalisation of [rule_step_fst_mk_head]. *)
+Lemma rule_step_fst_matches_prefix : forall h ms tailbody r e p,
+  forallb match_consumefree ms = true ->
+  fst (rule_step h (mk_tail (map BMatch ms ++ tailbody) r) e p)
+  = if forallb (fun m => eval_matchcond m e p) ms
+    then fst (rule_step h (mk_tail tailbody r) e p) else None.
+Proof.
+  induction ms as [| m ms IH]; intros tailbody r e p Hmf; [reflexivity|].
+  cbn [forallb] in Hmf. apply Bool.andb_true_iff in Hmf as [Hm Hms].
+  cbn [map app]. rewrite mk_tail_cons.
+  rewrite (rule_step_fst_mk_head h m (map BMatch ms ++ tailbody) r e p Hm).
+  rewrite (IH tailbody r e p Hms).
+  cbn [forallb]. rewrite if_and_nest. reflexivity.
+Qed.
 
 Lemma has_notrack_mk_head : forall m rest r,
   body_has_notrack (r_body (mk_head m rest r)) = body_has_notrack rest.
@@ -84,54 +155,6 @@ Proof. reflexivity. Qed.
 Lemma body_thread_mk_head : forall m rest r p,
   body_thread (r_body (mk_head m rest r)) p = body_thread rest p.
 Proof. intros. unfold body_thread. rewrite has_notrack_mk_head. reflexivity. Qed.
-
-(* end-loadability and outcome-core of [mk_head] only read the (shared) end-fields
-   of the record, NOT the body — so two [mk_head]s over the same [r] agree there. *)
-Lemma end_loadable_mk_head : forall m rest r e q,
-  end_loadable (mk_head m rest r) e q = end_loadable r e q.
-Proof.
-  intros. unfold end_loadable, tail_loadable, terminal_loadable, vmap_loadable,
-    terminal_outcome. reflexivity.
-Qed.
-
-Lemma outcome_core_mk_head : forall m rest r e q,
-  outcome_core (mk_head m rest r) e q = outcome_core r e q.
-Proof.
-  intros. unfold outcome_core, terminal_outcome. reflexivity.
-Qed.
-
-(* loadability of the merged head reduces to: head match loads + tail body loads +
-   shared end loads.  Pulling the head out makes the dependence on [m] explicit. *)
-Lemma rule_loadable_mk_head : forall m rest r e p,
-  rule_loadable (mk_head m rest r) e p =
-    match_loadable m p &&
-    (body_loadable_walk rest p &&
-     (if body_synproxy_stops rest p then true
-      else end_loadable r e (body_thread rest p))).
-Proof.
-  intros m rest r e p. unfold rule_loadable.
-  rewrite synproxy_stops_mk_head, body_thread_mk_head, end_loadable_mk_head.
-  (* body_loadable_walk (BMatch m :: rest) = match_loadable m p && walk rest *)
-  cbn [r_body body_loadable_walk body_item_loadable].
-  rewrite Bool.andb_assoc. reflexivity.
-Qed.
-
-Lemma outcome_mk_head : forall m rest r e p,
-  outcome (mk_head m rest r) e p =
-    if body_synproxy_stops rest p then Some Drop
-    else outcome_core r e (body_thread rest p).
-Proof.
-  intros m rest r e p. unfold outcome.
-  rewrite synproxy_stops_mk_head, body_thread_mk_head, outcome_core_mk_head.
-  reflexivity.
-Qed.
-
-Lemma rule_applies_mk_head : forall m rest r e p,
-  rule_applies (mk_head m rest r) e p = eval_matchcond m e p && rule_applies_walk rest e p.
-Proof.
-  intros m rest r e p. unfold rule_applies.
-  cbn [r_body rule_applies_walk]. reflexivity.
-Qed.
 
 (** ** A concrete, env-free disjunction certificate: contiguous single-byte ranges.
 

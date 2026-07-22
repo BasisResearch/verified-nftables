@@ -536,14 +536,16 @@ Proof.
   assert (HmfEach : forall m, In m ms -> rule_mutfree (mk_head m body r1) = true).
   { intros m Hm. rewrite forallb_forall in HmfRun.
     exact (HmfRun (mk_head m body r1) (in_map (fun m => mk_head m body r1) ms m Hm)). }
-  refine (shell_run_merge ms ML _ _ _ (fun m => mk_head m body r1) m12 rest e p
+  refine (shell_run_merge ms ML true true
+            (fst (rule_step h (mk_tail body r1) e p))
+            (fun m => mk_head m body r1) m12 rest e p
             Hne Hmf12 HmfEach _ HmlAll Hml Hev).
-  (* Each mut-free shell's step verdict, read off [rule_step_mutfree] and the
-     [mk_head] head/tail/end equations — the abstract [Lc]/[Ac]/[Oc] unify. *)
+  (* Each mut-free shell's step verdict, read off [rule_step_fst_mk_head]: the
+     tail shell's verdict guarded by the (consume-free) head match — the abstract
+     [Lc]/[Ac] collapse to [true], [Oc] to the shared tail step. *)
   intros m Hmfm.
-  rewrite (rule_step_mutfree h (mk_head m body r1) e p Hmfm). cbn [fst].
-  rewrite rule_loadable_mk_head, rule_applies_mk_head, outcome_mk_head.
-  reflexivity.
+  rewrite (rule_step_fst_mk_head h m body r1 e p (mk_head_mutfree_head m body r1 Hmfm)).
+  rewrite !Bool.andb_true_r, eval_matchcond_loadable_absorb. reflexivity.
 Qed.
 
 (** *** The family-agnostic N-way run collapse over the state fold.
@@ -1543,27 +1545,27 @@ Proof.
                     [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr] |].
                   rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
                   exact (proj2 Hwf_tail).
-           ++ refine (eval_rules_mut_st_run_collapse h
+           ++ assert (Hgm : match_consumefree gm = true).
+              { apply (mk_head_mutfree_head gm
+                         (BMatch (MConcatSet [f] false (setname n)) :: body) r1). exact HmfMh. }
+              refine (eval_rules_mut_st_run_collapse h
                         ivsAll
                         (fun iv0 => orig_ruleGr f gm (fst iv0) (snd iv0) body r1)
                         (fun iv0 => eval_matchcond (MRange f false (fst iv0) (snd iv0)) e p)
-                        _ _ (merged_ruleGs f gm (setname n) body r1) rest' e p
+                        (eval_matchcond gm e p) (fst (rule_step h (mk_tail body r1) e p))
+                        (merged_ruleGs f gm (setname n) body r1) rest' e p
                         _ HmfR HmfMh _ _).
               --- subst ivsAll. cbn [map]. discriminate.
-              --- intros iv0 Hin.
-                  assert (Hmfiv : rule_mutfree
-                            (orig_ruleGr f gm (fst iv0) (snd iv0) body r1) = true).
-                  { rewrite forallb_forall in HmfR.
-                    exact (HmfR _ (in_map (fun iv1 => orig_ruleGr f gm (fst iv1) (snd iv1) body r1)
-                                     ivsAll iv0 Hin)). }
-                  rewrite (rule_step_mutfree h _ e p Hmfiv). cbn [fst].
-                  rewrite <- (merged_ruleGs_loadable_eq_origr f gm (setname n)
-                               (fst iv0) (snd iv0) body r1 e p).
-                  rewrite <- (merged_ruleGs_outcome_eq_origr f gm (setname n)
-                               (fst iv0) (snd iv0) body r1 e p).
-                  rewrite orig_ruleGr_applies, andb_pull3. reflexivity.
-              --- rewrite (rule_step_mutfree h _ e p HmfMh). cbn [fst].
-                  rewrite merged_ruleGs_applies, Hcert, andb_pull3. reflexivity.
+              --- intros iv0 Hin. unfold orig_ruleGr.
+                  rewrite (rule_step_fst_mk_head h gm _ r1 e p Hgm), mk_tail_cons.
+                  rewrite (rule_step_fst_mk_head h (MRange f false (fst iv0) (snd iv0))
+                             body r1 e p eq_refl).
+                  rewrite if_and_nest. reflexivity.
+              --- unfold merged_ruleGs.
+                  rewrite (rule_step_fst_mk_head h gm _ r1 e p Hgm), mk_tail_cons.
+                  rewrite (rule_step_fst_mk_head h (MConcatSet [f] false (setname n))
+                             body r1 e p eq_refl).
+                  rewrite if_and_nest, Hcert. reflexivity.
       * remember (optimize_rules_intervalsetguarded fuel n d (r2 :: rest)) as t eqn:Erec.
         destruct t as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
@@ -1700,30 +1702,34 @@ Proof.
                     [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr] |].
                   rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
                   exact (proj2 Hwf_tail).
-           ++ refine (eval_rules_mut_st_run_collapse h
+           ++ assert (Hgm : match_consumefree gm = true).
+              { apply (mk_head_mutfree_head gm
+                         (BMatch (MConcatSet [f] false (setname n)) :: body) r1). exact HmfMh. }
+              refine (eval_rules_mut_st_run_collapse h
                         esAll
                         (fun e0 => orig_ruleGm f gm e0 body r1)
                         (fun e0 => eval_matchcond (melem_mc f e0) e p)
-                        _ _ (merged_ruleGs f gm (setname n) body r1) rest' e p
+                        (eval_matchcond gm e p) (fst (rule_step h (mk_tail body r1) e p))
+                        (merged_ruleGs f gm (setname n) body r1) rest' e p
                         _ HmfR HmfMh _ _).
               --- subst esAll. cbn [map]. discriminate.
-              --- intros e0 Hin.
-                  assert (Hmfe : rule_mutfree (orig_ruleGm f gm e0 body r1) = true).
-                  { rewrite forallb_forall in HmfR.
-                    exact (HmfR _ (in_map (fun e1 => orig_ruleGm f gm e1 body r1)
-                                     esAll e0 Hin)). }
-                  rewrite (rule_step_mutfree h _ e p Hmfe). cbn [fst].
-                  rewrite <- (merged_ruleGs_loadable_eq_origm f gm (setname n) e0 body r1 e p).
-                  rewrite <- (merged_ruleGs_outcome_eq_origm f gm (setname n) e0 body r1 e p).
-                  rewrite orig_ruleGm_applies, andb_pull3. reflexivity.
-              --- rewrite (rule_step_mutfree h _ e p HmfMh). cbn [fst].
-                  rewrite merged_ruleGs_applies, Hcert, existsb_map_eq.
+              --- intros e0 Hin. unfold orig_ruleGm.
+                  assert (Hmm : match_consumefree (melem_mc f e0) = true)
+                    by (destruct e0; reflexivity).
+                  rewrite (rule_step_fst_mk_head h gm _ r1 e p Hgm), mk_tail_cons.
+                  rewrite (rule_step_fst_mk_head h (melem_mc f e0) body r1 e p Hmm).
+                  rewrite if_and_nest. reflexivity.
+              --- unfold merged_ruleGs.
+                  rewrite (rule_step_fst_mk_head h gm _ r1 e p Hgm), mk_tail_cons.
+                  rewrite (rule_step_fst_mk_head h (MConcatSet [f] false (setname n))
+                             body r1 e p eq_refl).
+                  rewrite if_and_nest, Hcert, existsb_map_eq.
                   rewrite (existsb_ext _
                              (fun e0 => eval_matchcond
                                           (MRange f false (fst (melem_iv e0)) (snd (melem_iv e0))) e p)
                              (fun e0 => eval_matchcond (melem_mc f e0) e p) esAll
                              (fun e0 He0 => eq_sym (eval_melem_mrange f e0 e p (Hok_all e0 He0)))).
-                  rewrite andb_pull3. reflexivity.
+                  reflexivity.
       * remember (optimize_rules_mixedpointrangeguarded fuel n d (r2 :: rest)) as t eqn:Erec.
         destruct t as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
@@ -1915,23 +1921,19 @@ Proof.
                         (fun ab => orig_rule2 f1 f2 (fst ab) (snd ab) body r1)
                         (fun ab => eval_matchcond (MCmp f1 CEq (fst ab)) e p
                                    && eval_matchcond (MCmp f2 CEq (snd ab)) e p)
-                        _ _ (merged_rule2 f1 f2 (setname n) body r1) rest' e p
+                        true (fst (rule_step h (mk_tail body r1) e p))
+                        (merged_rule2 f1 f2 (setname n) body r1) rest' e p
                         _ HmfR HmfMh _ _).
               --- subst tuples. cbn [map]. discriminate.
-              --- intros ab Hin.
-                  assert (Hmfab : rule_mutfree
-                            (orig_rule2 f1 f2 (fst ab) (snd ab) body r1) = true).
-                  { rewrite forallb_forall in HmfR.
-                    exact (HmfR _ (in_map (fun ab0 => orig_rule2 f1 f2 (fst ab0) (snd ab0) body r1)
-                                     tuples ab Hin)). }
-                  rewrite (rule_step_mutfree h _ e p Hmfab). cbn [fst].
-                  rewrite <- (merged_rule2_loadable_eq_orig f1 f2 (setname n)
-                               (fst ab) (snd ab) body r1 e p).
-                  rewrite <- (merged_rule2_outcome_eq_orig f1 f2 (setname n)
-                               (fst ab) (snd ab) body r1 e p).
-                  rewrite orig_rule2_applies, andb_swap_mid. reflexivity.
-              --- rewrite (rule_step_mutfree h _ e p HmfMh). cbn [fst].
-                  rewrite merged_rule2_applies, Hcert, andb_swap_mid. reflexivity.
+              --- intros ab Hin. unfold orig_rule2.
+                  rewrite (rule_step_fst_mk_head h (MCmp f1 CEq (fst ab)) _ r1 e p eq_refl).
+                  rewrite mk_tail_cons.
+                  rewrite (rule_step_fst_mk_head h (MCmp f2 CEq (snd ab)) body r1 e p eq_refl).
+                  rewrite if_and_nest, Bool.andb_true_l. reflexivity.
+              --- unfold merged_rule2.
+                  rewrite (rule_step_fst_mk_head h (MConcatSet [f1; f2] false (setname n))
+                             body r1 e p eq_refl).
+                  rewrite Hcert, Bool.andb_true_l. reflexivity.
       * remember (optimize_rules_concat fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
@@ -2094,28 +2096,32 @@ Proof.
                     [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr] |].
                   rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
                   exact (proj2 Hwf_tail).
-           ++ refine (eval_rules_mut_st_run_collapse h
+           ++ assert (Hgm : match_consumefree gm = true).
+              { apply (mk_head_mutfree_head gm
+                         (BMatch (MConcatSet [f1; f2] false (setname n)) :: body) r1).
+                exact HmfMh. }
+              refine (eval_rules_mut_st_run_collapse h
                         tuples
                         (fun ab => orig_rule2g f1 f2 gm (fst ab) (snd ab) body r1)
                         (fun ab => eval_matchcond (MCmp f1 CEq (fst ab)) e p
                                    && eval_matchcond (MCmp f2 CEq (snd ab)) e p)
-                        _ _ (merged_rule2g f1 f2 gm (setname n) body r1) rest' e p
+                        (eval_matchcond gm e p) (fst (rule_step h (mk_tail body r1) e p))
+                        (merged_rule2g f1 f2 gm (setname n) body r1) rest' e p
                         _ HmfR HmfMh _ _).
               --- subst tuples. cbn [map]. discriminate.
-              --- intros ab Hin.
-                  assert (Hmfab : rule_mutfree
-                            (orig_rule2g f1 f2 gm (fst ab) (snd ab) body r1) = true).
-                  { rewrite forallb_forall in HmfR.
-                    exact (HmfR _ (in_map (fun ab0 => orig_rule2g f1 f2 gm (fst ab0) (snd ab0) body r1)
-                                     tuples ab Hin)). }
-                  rewrite (rule_step_mutfree h _ e p Hmfab). cbn [fst].
-                  rewrite <- (merged_rule2g_loadable_eq_orig f1 f2 gm (setname n)
-                               (fst ab) (snd ab) body r1 e p).
-                  rewrite <- (merged_rule2g_outcome_eq_orig f1 f2 gm (setname n)
-                               (fst ab) (snd ab) body r1 e p).
-                  rewrite orig_rule2g_applies, andb_reassoc_g2, andb_pull3. reflexivity.
-              --- rewrite (rule_step_mutfree h _ e p HmfMh). cbn [fst].
-                  rewrite merged_rule2g_applies, Hcert, andb_pull3. reflexivity.
+              --- intros ab Hin. unfold orig_rule2g.
+                  rewrite (rule_step_fst_mk_head h (MCmp f1 CEq (fst ab)) _ r1 e p eq_refl),
+                          mk_tail_cons.
+                  rewrite (rule_step_fst_mk_head h gm _ r1 e p Hgm), mk_tail_cons.
+                  rewrite (rule_step_fst_mk_head h (MCmp f2 CEq (snd ab)) body r1 e p eq_refl).
+                  destruct (eval_matchcond (MCmp f1 CEq (fst ab)) e p);
+                    destruct (eval_matchcond gm e p);
+                    destruct (eval_matchcond (MCmp f2 CEq (snd ab)) e p); reflexivity.
+              --- unfold merged_rule2g.
+                  rewrite (rule_step_fst_mk_head h gm _ r1 e p Hgm), mk_tail_cons.
+                  rewrite (rule_step_fst_mk_head h (MConcatSet [f1; f2] false (setname n))
+                             body r1 e p eq_refl).
+                  rewrite if_and_nest, Hcert. reflexivity.
       * remember (optimize_rules_concatguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
@@ -2247,24 +2253,26 @@ Proof.
                     [ intros r Hr; apply (rule_dynset_fresh_mono n (S n) r); [lia | exact Hr] |].
                   rewrite Hsplit in Hwf_tail. apply Forall_app in Hwf_tail.
                   exact (proj2 Hwf_tail).
-           ++ refine (eval_rules_mut_st_run_collapse h
+           ++ assert (Hgm : match_consumefree gm = true).
+              { apply (mk_head_mutfree_head gm
+                         (BMatch (MConcatSet [f] false (setname n)) :: body) r1). exact HmfMh. }
+              refine (eval_rules_mut_st_run_collapse h
                         vals
                         (fun v => orig_ruleGs f gm v body r1)
                         (fun v => eval_matchcond (MCmp f CEq v) e p)
-                        _ _ (merged_ruleGs f gm (setname n) body r1) rest' e p
+                        (eval_matchcond gm e p) (fst (rule_step h (mk_tail body r1) e p))
+                        (merged_ruleGs f gm (setname n) body r1) rest' e p
                         _ HmfR HmfMh _ _).
               --- subst vals. cbn [map]. discriminate.
-              --- intros v Hin.
-                  assert (Hmfv : rule_mutfree (orig_ruleGs f gm v body r1) = true).
-                  { rewrite forallb_forall in HmfR.
-                    exact (HmfR _ (in_map (fun v0 => orig_ruleGs f gm v0 body r1)
-                                     vals v Hin)). }
-                  rewrite (rule_step_mutfree h _ e p Hmfv). cbn [fst].
-                  rewrite <- (merged_ruleGs_loadable_eq_orig f gm (setname n) v body r1 e p).
-                  rewrite <- (merged_ruleGs_outcome_eq_orig f gm (setname n) v body r1 e p).
-                  rewrite orig_ruleGs_applies, andb_pull3. reflexivity.
-              --- rewrite (rule_step_mutfree h _ e p HmfMh). cbn [fst].
-                  rewrite merged_ruleGs_applies, Hcert, andb_pull3. reflexivity.
+              --- intros v Hin. unfold orig_ruleGs.
+                  rewrite (rule_step_fst_mk_head h gm _ r1 e p Hgm), mk_tail_cons.
+                  rewrite (rule_step_fst_mk_head h (MCmp f CEq v) body r1 e p eq_refl).
+                  rewrite if_and_nest. reflexivity.
+              --- unfold merged_ruleGs.
+                  rewrite (rule_step_fst_mk_head h gm _ r1 e p Hgm), mk_tail_cons.
+                  rewrite (rule_step_fst_mk_head h (MConcatSet [f] false (setname n))
+                             body r1 e p eq_refl).
+                  rewrite if_and_nest, Hcert. reflexivity.
       * remember (optimize_rules_setguarded fuel n d (r2 :: rest)) as tt eqn:Erec.
         destruct tt as [[m'' dd''] rr'']. cbv zeta in H.
         injection H as Hn' Hd' Hr'. subst n' d' rs'.
@@ -2344,20 +2352,14 @@ Proof.
             (fun row => orig_ruleK fields row body r1)
             (fun row => forallb (fun fa => eval_matchcond (MCmp (fst fa) CEq (snd fa)) e p)
                                 (combine fields row))
-            _ _ (merged_ruleK fields name body r1) rest e p
+            true (fst (rule_step h (mk_tail body r1) e p))
+            (merged_ruleK fields name body r1) rest e p
             Hrne Hmfrun Hmfm _ _).
   - intros row Hin.
-    assert (Hmfrow : rule_mutfree (orig_ruleK fields row body r1) = true).
-    { rewrite forallb_forall in Hmfrun.
-      exact (Hmfrun _ (in_map (fun row0 => orig_ruleK fields row0 body r1) rows row Hin)). }
-    rewrite (rule_step_mutfree h _ e p Hmfrow). cbn [fst].
-    rewrite (orig_ruleK_loadable fields row body r1 e p (Hlenrow row Hin)).
-    rewrite (orig_ruleK_outcome fields row body r1 e p).
-    rewrite orig_ruleK_applies, andb_swap_mid. reflexivity.
-  - rewrite (rule_step_mutfree h _ e p Hmfm). cbn [fst].
-    rewrite merged_ruleK_loadable, merged_ruleK_outcome.
-    unfold merged_ruleK at 1. rewrite rule_applies_mk_head.
-    rewrite (concat_fields_certificate_N fields rows name e p Hfne Hset Hwf), andb_swap_mid.
+    rewrite rule_step_fst_kmatches, Bool.andb_true_l. reflexivity.
+  - unfold merged_ruleK.
+    rewrite (rule_step_fst_mk_head h (MConcatSet fields false name) body r1 e p eq_refl).
+    rewrite (concat_fields_certificate_N fields rows name e p Hfne Hset Hwf), Bool.andb_true_l.
     reflexivity.
 Qed.
 
@@ -2803,12 +2805,12 @@ Proof.
              ltac:(unfold body_has_notrack; cbn [existsb]; exact Hnt)
              HbodyG).
   - intros vw _.
-    destruct (orig_ruleGv_eq_swap f gm (fst vw) body (snd vw) e p) as [HL [HA HO]].
-    rewrite (rule_step_mutfree h (orig_ruleGv f gm (fst vw) body (snd vw)) e p
-               (HmfGv (fst vw) (snd vw))).
-    rewrite (rule_step_mutfree h (orig_rule f (fst vw) (BMatch gm :: body) (snd vw)) e p
-               (HmfSw (fst vw) (snd vw))).
-    cbn [fst]. rewrite HL, HA, HO. reflexivity.
+    assert (Hgmsw : match_consumefree gm = true).
+    { apply (mk_head_mutfree_head gm (BMatch (MCmp f CEq (fst vw)) :: body)
+               (mk_vmap_base (snd vw))). exact (HmfGv (fst vw) (snd vw)). }
+    unfold orig_ruleGv, orig_ruleGs, orig_rule.
+    exact (rule_step_fst_swap_head h gm (MCmp f CEq (fst vw)) body
+             (mk_vmap_base (snd vw)) e p Hgmsw eq_refl).
 Qed.
 
 (** *** vmapguarded (guarded value+verdict run -> verdict map). *)
@@ -3714,15 +3716,12 @@ Proof.
   apply (eval_rules_mut_st_absorb_pair h (mk_head m1 body rbase)
            (mk_head m2 body rbase) rest e p Hmf1 Hmf2).
   intros v Hfire.
-  rewrite (rule_step_mutfree h (mk_head m1 body rbase) e p Hmf1) in Hfire.
-  rewrite (rule_step_mutfree h (mk_head m2 body rbase) e p Hmf2).
-  cbn [fst] in Hfire |- *.
-  rewrite rule_loadable_mk_head, rule_applies_mk_head, outcome_mk_head in Hfire.
-  rewrite rule_loadable_mk_head, rule_applies_mk_head, outcome_mk_head.
-  destruct (match_loadable m1 p); cbn [andb] in Hfire; [| discriminate Hfire].
-  destruct (eval_matchcond m1 e p); cbn [andb] in Hfire.
-  - rewrite (Pload eq_refl), (Peval eq_refl). cbn [andb]. exact Hfire.
-  - rewrite Bool.andb_false_r in Hfire. discriminate Hfire.
+  rewrite (rule_step_fst_mk_head h m1 body rbase e p
+             (mk_head_mutfree_head m1 body rbase Hmf1)) in Hfire.
+  rewrite (rule_step_fst_mk_head h m2 body rbase e p
+             (mk_head_mutfree_head m2 body rbase Hmf2)).
+  destruct (eval_matchcond m1 e p) eqn:E1; [| discriminate Hfire].
+  rewrite (Peval eq_refl). exact Hfire.
 Qed.
 
 (** *** absorb (prefix-subsumed rule deletion) — effect-level. *)
@@ -3790,21 +3789,17 @@ Proof.
     refine (eval_rules_mut_st_run_collapse h [m1; m2]
               (fun m => mk_head (MMasked f CNe m z z) body r1)
               (fun m => eval_matchcond (MMasked f CNe m z z) e p)
-              _ _ (mk_head (MMasked f CNe (data_or m1 m2) z z) body r1) rest e p
+              true (fst (rule_step h (mk_tail body r1) e p))
+              (mk_head (MMasked f CNe (data_or m1 m2) z z) body r1) rest e p
               ltac:(discriminate) _ (Hmfg (data_or m1 m2)) _ _).
     + cbn [map forallb]. rewrite !Hmfg. reflexivity.
     + intros m Hin.
-      rewrite (rule_step_mutfree h (mk_head (MMasked f CNe m z z) body r1) e p (Hmfg m)).
-      cbn [fst].
-      rewrite rule_loadable_mk_head, rule_applies_mk_head, outcome_mk_head.
-      cbn [match_loadable]. rewrite andb_swap_mid. reflexivity.
-    + rewrite (rule_step_mutfree h
-                 (mk_head (MMasked f CNe (data_or m1 m2) z z) body r1) e p
-                 (Hmfg (data_or m1 m2))).
-      cbn [fst].
-      rewrite rule_loadable_mk_head, rule_applies_mk_head, outcome_mk_head.
+      rewrite (rule_step_fst_mk_head h (MMasked f CNe m z z) body r1 e p eq_refl).
+      rewrite Bool.andb_true_l. reflexivity.
+    + rewrite (rule_step_fst_mk_head h (MMasked f CNe (data_or m1 m2) z z)
+                 body r1 e p eq_refl).
       rewrite (mmasked_ctmask_disjunction f m1 m2 z e p Hl1 Hl2 Hz).
-      cbn [existsb match_loadable]. rewrite Bool.orb_false_r, andb_swap_mid. reflexivity.
+      cbn [existsb]. rewrite Bool.orb_false_r, Bool.andb_true_l. reflexivity.
   - rewrite ?eval_rules_mut_st_cons, ?eval_rules_mut_st_nil.
     destruct (rule_step h r1 e p) as [[w|] [e1 p1]];
       [ destruct (terminal w); [reflexivity | apply IH] | apply IH ].
