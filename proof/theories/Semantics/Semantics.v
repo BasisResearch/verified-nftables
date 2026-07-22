@@ -35,11 +35,12 @@
     [Correct.compile_table_u_correct] / [compile_ruleset_u_correct] /
     [compile_hook_u_correct] / [compile_seq_hook_correct].
 
-    The remaining per-rule read functions are PROJECTIONS of the unified fold,
-    licensed by a coincidence theorem on the sub-domain where they PROVABLY
-    agree — never an independent semantics for a rule to be evaluated
-    through.  An input outside a projection's licensed sub-domain must be run
-    on the unified evaluator:
+    The remaining per-rule read functions are the STRUCTURAL load-liveness
+    predicates ([rule_loadable]/[body_loadable_walk]/[body_synproxy_stops]) and
+    the flat-strand PROJECTIONS of the unified fold, licensed by a coincidence
+    theorem on the sub-domain where they PROVABLY agree — never an independent
+    verdict semantics for a rule to be evaluated through.  An input outside a
+    projection's licensed sub-domain must be run on the unified evaluator:
 
       projection            | licensed sub-domain          | coincidence theorem
       ----------------------+------------------------------+--------------------
@@ -47,13 +48,12 @@
         eval_chain_mut_st   | ([rule_plain]: no realisable | eval_table_u_mut_st_proj
         (full state; _mut / | jump/goto/return under the   | (whole-triple equality;
         _env project it)    | run's verdict maps)          | _mut/_env: eval_rules_u_mut_proj)
-      rule_applies(_walk) / | write-free rule (no mut stmt,| rule_step_mutfree
-        outcome/rule_loadable  no limiter match, no NAT    |
-                            | terminal)                    |
-      rule_applies_walk     | body_purewalk bodies (con-   | rule_purewalk_ok (the walk =
-        (notrack ADMITTED)  | sume-free matches, non-mut   | break/no-break projection of
-                            | stmts, notrack allowed) that | body_step; its set_untracked
-                            | load (body_loadable_walk)    | threading is body_step's own)
+
+    A mut-free rule's [rule_step] leaves the state at the entry [(e, p)]
+    ([rule_step_state_mutfree]); a nat-free rule's verdict is the same at every
+    hook ([Nft_Tactics.rule_step_natfree_hookindep]).  The verdict of any rule
+    is [fst (rule_step r e p)] — read off the ONE fold, never a parallel
+    per-rule evaluator.
 
     For a WRITE-FREE config the unified verdict is additionally
     hook-independent ([Nft_Tactics.eval_table_u_hookindep_writefree]); this is
@@ -617,9 +617,8 @@ Proof.
 Qed.
 
 (** Whether a body contains a `notrack` statement (the latch source).  When
-    [false] the walk's [set_untracked] threading never fires, so
-    [rule_applies_walk] is exactly the original
-    [forallb eval_matchcond (body_matches …)] over [p]. *)
+    [false] the body walk's [set_untracked] threading never fires, so every
+    match in [body_step] reads the ORIGINAL [p]. *)
 Definition body_has_notrack (body : list body_item) : bool :=
   existsb (fun it => match it with BStmt SNotrack => true | _ => false end) body.
 
@@ -651,84 +650,15 @@ Qed.
 (** Whether a rule's body contains a SYN-proxy statement that STOPS traversal on
     this packet (a TCP packet with SYN or ACK set; see [synproxy_stops]).  Such a
     synproxy is a terminal action — it short-circuits the verdict map / terminal —
-    so it is checked first in [outcome].  (A synproxy whose flags-load BREAKs makes
-    the whole rule unloadable, so it never reaches here; a non-stopping synproxy is
-    transparent.) *)
+    so [body_step] returns [BRstop] on it.  (A synproxy whose flags-load BREAKs
+    makes the whole rule unloadable, so it never reaches here; a non-stopping
+    synproxy is transparent.) *)
 Definition body_synproxy_stops (body : list body_item) (p : packet) : bool :=
   existsb (fun it => match it with
                      | BStmt (SSynproxy _ _) => synproxy_stops p
                      | _ => false
                      end) body.
 
-(** A rule applies when all its match conditions hold (empty = matches all).
-    ROLE: this is the WRITE-FREE projection of the per-rule fold — the
-    optimizer's per-rule reasoning consumes it,
-    and on rules without mutating statements it agrees with the authoritative
-    single fold [rule_step] below ([rule_step_mutfree]); a rule WITH intra-rule
-    writes is evaluated by the fold, which threads them.
-    Statements are walked in ORDER: a SYN-proxy statement that STOPS traversal
-    (see [synproxy_stops]) short-circuits — any match positioned AFTER it is
-    unreachable (the kernel has already STOLEN/DROPped the packet), so the
-    remaining matches vacuously pass; a match positioned BEFORE a stopping synproxy
-    still gates whether the synproxy runs at all (a failing earlier match BREAKs
-    the rule first).  Every other statement is verdict-neutral.  When the body has
-    no stopping synproxy this is exactly [forallb eval_matchcond (body_matches …)]
-    (proved as [rule_applies_no_synproxy]). *)
-Fixpoint rule_applies_walk (body : list body_item) (e : env) (p : packet) : bool :=
-  match body with
-  | [] => true
-  | BMatch m :: rest => eval_matchcond m e p && rule_applies_walk rest e p
-  | BStmt (SSynproxy _ _) :: rest =>
-      if synproxy_stops p then true else rule_applies_walk rest e p
-  (* `notrack` forces IP_CT_UNTRACKED for the rest of THIS rule's traversal ONLY
-     WHEN no conntrack entry exists yet — exactly nft_notrack_eval's
-     `if (ct || ctinfo == IP_CT_UNTRACKED) return;` guard (it is a NO-OP on a
-     packet that already has an entry, e.g. an ESTABLISHED flow).  [set_untracked]
-     encodes that guard ([pkt_ct_present p = true] => unchanged), so a LATER
-     `ct state` MATCH in the SAME rule reads the entry's REAL state on a tracked
-     packet and NF_CT_STATE_UNTRACKED_BIT only on a no-entry packet (kernel runs a
-     rule's expressions left-to-right: nft_notrack_eval may set the untracked latch,
-     a subsequent nft_ct_get_eval NFT_CT_STATE observes the result).  We thread
-     [set_untracked] into the rest of the walk so the model is faithful for the
-     intra-rule `notrack; ct state untracked accept` idiom on a no-entry packet.
-     [set_untracked] preserves every loadability/synproxy predicate (it only flips
-     [pkt_untracked], and only on a no-entry packet), so the VM stays in lock-step
-     (the compiled [INotrack] threads the same [set_untracked]).  This threading
-     is NOT a parallel semantics: it is the SAME transform [body_step]'s
-     [SNotrack] case applies, and [rule_purewalk_ok] (end of file) proves the
-     walk IS the break/no-break projection of the fold on every effect-free-
-     but-notrack body its callers feed it. *)
-  | BStmt SNotrack :: rest => rule_applies_walk rest e (set_untracked p)
-  | BStmt _ :: rest => rule_applies_walk rest e p
-  end.
-Definition rule_applies (r : rule) (e : env) (p : packet) : bool :=
-  rule_applies_walk (r_body r) e p.
-
-(** When the body contains no stopping synproxy AND no `notrack` (so the
-    walk's [set_untracked] threading never fires),
-    [rule_applies_walk] is exactly
-    [forallb eval_matchcond] over the body's matches against the ORIGINAL [p]. *)
-Lemma rule_applies_walk_no_synproxy : forall body e p,
-  body_synproxy_stops body p = false ->
-  body_has_notrack body = false ->
-  rule_applies_walk body e p = forallb (fun m => eval_matchcond m e p) (body_matches body).
-Proof.
-  induction body as [| it body IH]; intros e p Hsp Hnt; [reflexivity|].
-  assert (Hcons : forall it0 b, body_synproxy_stops (it0 :: b) p =
-            (match it0 with BStmt (SSynproxy _ _) => synproxy_stops p | _ => false end)
-            || body_synproxy_stops b p) by reflexivity.
-  assert (Hntcons : forall it0 b, body_has_notrack (it0 :: b) =
-            (match it0 with BStmt SNotrack => true | _ => false end)
-            || body_has_notrack b) by reflexivity.
-  rewrite Hcons in Hsp. rewrite Hntcons in Hnt. destruct it as [m | s].
-  - cbn [orb] in Hsp, Hnt. cbn [rule_applies_walk body_matches flat_map app forallb].
-    rewrite IH by assumption. reflexivity.
-  - destruct s; cbn [orb] in Hsp, Hnt; cbn [rule_applies_walk body_matches flat_map app];
-      try (apply IH; assumption); try discriminate Hnt.
-    (* SSynproxy: the [orb] head is [synproxy_stops p]; Hsp forces it false *)
-    destruct (synproxy_stops p) eqn:Hs;
-      [discriminate Hsp | apply IH; assumption].
-Qed.
 
 (** ** Whole-rule loadability.
 
@@ -979,59 +909,11 @@ Fixpoint assoc_verdict (key : data) (entries : list (data * data * verdict)) : o
       if data_in_iv key (lo, hi) then Some v else assoc_verdict key rest
   end.
 
-(** The terminal outcome of a rule once any verdict map has fallen through: a
-    [nat]/[tproxy]/[fwd]/[queue] side effect accepts, otherwise the static
-    verdict ([Continue] = fall through). *)
-Definition terminal_outcome (r : rule) (p : packet) : option verdict :=
-  match r_nat r with
-  | Some _ => Some Accept   (* NAT is terminal accept (translation is a side effect) *)
-  | None =>
-  match r_tproxy r with
-  | Some _ => Some Accept   (* tproxy is terminal accept (redirect is a side effect) *)
-  | None =>
-  match r_fwd r with
-  | Some _ => Some Accept   (* fwd is terminal accept (forward is a side effect) *)
-  | None =>
-  match r_queue r with
-  | Some _ => Some Accept   (* queue is terminal accept (hand-off is a side effect) *)
-  | None => match r_verdict r with
-            (* a [Continue] verdict falls through to the post-outcome statements;
-               a SYN-proxy among them is the only verdict-bearing one (terminal
-               Drop), otherwise the fall-through continues ([None]). *)
-            | Continue => stmts_after_outcome (r_after r) p
-            | v => Some v
-            end
-  end
-  end
-  end
-  end.
 
-(** A rule's outcome (when it applies): a [Some v] (verdict reached) or [None]
-    (fall through).  A SYN-proxy stop in the body is the terminal action (the
-    packet is consumed/dropped at this hook — see [synproxy_stops]); otherwise a
-    verdict map is evaluated first: a hit gives its verdict, a miss falls through
-    to the terminal outcome (so a rule may carry both a vmap and a trailing
-    redirect/masquerade). *)
-(** The verdict-map / terminal part of a rule's outcome (the part the compiled
-    [compile_end] realises): a vmap hit gives its verdict, a miss falls through to
-    the terminal.  This is the outcome IGNORING any body synproxy. *)
-Definition outcome_core (r : rule) (e : env) (p : packet) : option verdict :=
-  match r_vmap r with
-  | Some vm =>
-      let key := match vm_keyf vm with
-                 | Some (f, ts) => apply_transforms ts (field_value f e p)
-                 | None => List.concat (map (fun f => field_value f e p) (vm_fields vm))
-                 end in
-      match assoc_verdict key (e_vmap e (vm_name vm)) with
-      | Some v => Some v
-      | None   => terminal_outcome r p
-      end
-  | None => terminal_outcome r p
-  end.
-
-(** The packet the rule's TERMINAL/verdict-map part (its [outcome_core]) sees: when
-    the rule applies, every body item — including any [notrack] — was reached, so a
-    `notrack` in the body has latched IP_CT_UNTRACKED before the terminal runs.  As
+(** The packet the rule's END (verdict map / terminal, [end_step]) sees: when the
+    body walk completes, every body item — including any [notrack] — was reached,
+    so a `notrack` in the body has latched IP_CT_UNTRACKED before the terminal
+    runs.  As
     [set_untracked] only flips the (monotone, idempotent) [pkt_untracked] latch,
     threading it through the whole body collapses to: untracked iff the body has a
     [notrack].  This is exactly what the VM's [run_rule] sees after threading
@@ -1039,81 +921,6 @@ Definition outcome_core (r : rule) (e : env) (p : packet) : option verdict :=
 Definition body_thread (body : list body_item) (p : packet) : packet :=
   if body_has_notrack body then set_untracked p else p.
 
-Definition outcome (r : rule) (e : env) (p : packet) : option verdict :=
-  if body_synproxy_stops (r_body r) p then Some Drop
-  else outcome_core r e (body_thread (r_body r) p).
-
-(** ** Ratchet: the outcome sum evaluates exactly as the old product encoding.
-
-    [terminal_outcome_prod]/[outcome_core_prod]/[outcome_prod] are verbatim the
-    pre-sum evaluation over the historical [rule_prod] record (one filler
-    verdict + five optional slots).  [run_rule_outcome_eq] proves that
-    translating a well-formed product ([Syntax.prod_wf]: at most one populated
-    slot, filler [Continue] under a vmap) through [rule_of_prod] preserves the
-    rule outcome on every env/packet — the representation change is
-    evaluation-invisible. *)
-Definition terminal_outcome_prod (rp : rule_prod) (p : packet) : option verdict :=
-  match rp_nat rp with
-  | Some _ => Some Accept
-  | None =>
-  match rp_tproxy rp with
-  | Some _ => Some Accept
-  | None =>
-  match rp_fwd rp with
-  | Some _ => Some Accept
-  | None =>
-  match rp_queue rp with
-  | Some _ => Some Accept
-  | None => match rp_verdict rp with
-            | Continue => stmts_after_outcome (rp_after rp) p
-            | v => Some v
-            end
-  end
-  end
-  end
-  end.
-
-Definition outcome_core_prod (rp : rule_prod) (e : env) (p : packet) : option verdict :=
-  match rp_vmap rp with
-  | Some vm =>
-      let key := match vm_keyf vm with
-                 | Some (f, ts) => apply_transforms ts (field_value f e p)
-                 | None => List.concat (map (fun f => field_value f e p) (vm_fields vm))
-                 end in
-      match assoc_verdict key (e_vmap e (vm_name vm)) with
-      | Some v => Some v
-      | None   => terminal_outcome_prod rp p
-      end
-  | None => terminal_outcome_prod rp p
-  end.
-
-Definition outcome_prod (rp : rule_prod) (e : env) (p : packet) : option verdict :=
-  if body_synproxy_stops (rp_body rp) p then Some Drop
-  else outcome_core_prod rp e (body_thread (rp_body rp) p).
-
-Theorem run_rule_outcome_eq : forall rp e p,
-  prod_wf rp = true ->
-  outcome (rule_of_prod rp) e p = outcome_prod rp e p.
-Proof.
-  intros rp e p Hwf.
-  unfold outcome, outcome_prod, rule_of_prod, prod_wf in *; cbn [r_body].
-  destruct (body_synproxy_stops (rp_body rp) p); [reflexivity|].
-  unfold outcome_core, outcome_core_prod, terminal_outcome, terminal_outcome_prod,
-         r_vmap, r_nat, r_tproxy, r_fwd, r_queue, r_verdict, r_after, r_outcome,
-         outcome_of_prod in *; cbn.
-  destruct (rp_vmap rp) as [vm|]; destruct (rp_nat rp) as [ns|];
-    destruct (rp_tproxy rp) as [tp|]; destruct (rp_fwd rp) as [fw|];
-    destruct (rp_queue rp) as [q|]; try discriminate Hwf; cbn.
-  - (* vmap + NAT: the miss fires the terminal NAT (OVmapNat) *)
-    reflexivity.
-  - (* vmap only: filler verdict is Continue *)
-    destruct (rp_verdict rp); try discriminate Hwf; reflexivity.
-  - reflexivity.
-  - reflexivity.
-  - reflexivity.
-  - reflexivity.
-  - destruct (rp_verdict rp); reflexivity.
-Qed.
 
 (** ** Whole-rule loadability (NFT_BREAK reachability).
 
@@ -1132,16 +939,40 @@ Qed.
     that load and falls through to the next rule). *)
 
 (** Loadability of the part that runs AFTER the verdict map misses: the terminal,
-    and — only on a [Continue] fall-through — the post-outcome statements. *)
+    and — only on a static [Continue] fall-through with no verdict-bearing
+    post-outcome statement — the post-outcome statements themselves.  The [r_after]
+    loadability is required exactly when [terminal_step]'s static branch falls
+    through to [after_step]: no side-effect terminal, a [Continue] static verdict,
+    and no post-outcome SYN-proxy stop ([stmts_after_outcome] returning [None]). *)
 Definition tail_loadable (r : rule) (e : env) (p : packet) : bool :=
   terminal_loadable r e p &&
-  (match terminal_outcome r p with
-   | None => forallb (fun s => stmt_loadable s p) (r_after r)  (* fall-through: r_after runs *)
-   | Some _ => true                                            (* terminal: r_after skipped *)
+  (match r_nat r with
+   | Some _ => true
+   | None =>
+   match r_tproxy r with
+   | Some _ => true
+   | None =>
+   match r_fwd r with
+   | Some _ => true
+   | None =>
+   match r_queue r with
+   | Some _ => true
+   | None =>
+     match r_verdict r with
+     | Continue =>
+         match stmts_after_outcome (r_after r) p with
+         | None => forallb (fun s => stmt_loadable s p) (r_after r)  (* fall-through: r_after runs *)
+         | Some _ => true                                            (* post-outcome stop: r_after skipped *)
+         end
+     | _ => true                                                     (* terminal verdict: r_after skipped *)
+     end
+   end
+   end
+   end
    end).
 
 (** Loadability of a rule's outcome computation (verdict map then terminal),
-    mirroring [outcome]'s evaluation order. *)
+    mirroring [end_step]'s evaluation order. *)
 Definition end_loadable (r : rule) (e : env) (p : packet) : bool :=
   match r_vmap r with
   | Some vm =>
@@ -1219,7 +1050,7 @@ Proof.
 Qed.
 
 (** The END (verdict-map / terminal) part is reached AFTER the body, so — like
-    [outcome_core] — it sees the body-threaded packet: a `notrack` in the body has
+    [end_step] — it sees the body-threaded packet: a `notrack` in the body has
     latched IP_CT_UNTRACKED, which a vmap KEY that reads `ct state` would observe.
     The VM threads the same [set_untracked] into the compiled tail, so end-loadability
     is taken at [body_thread (r_body r) p] on both sides. *)
@@ -1262,7 +1093,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (e : env) (p : packet) : optio
          incremental numgen fail-loud ([Lower.LEnumgen]), so every frontend-emitted
          rule is [rule_numgen_free] and the advance never fires there
          ([Lower_Proofs.lower_ruleset_numgen_free]).  Reading [do_load] keeps this
-         lock-step with the DSL [outcome]. *)
+         lock-step with the DSL fold [rule_step]. *)
       run_rule (set_reg rf dst (do_load (LNumgen spec) e p)) rest e p
   | IOsf dst :: rest =>
       run_rule (set_reg rf dst (read_osf p)) rest e p
@@ -1331,7 +1162,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (e : env) (p : packet) : optio
      single fold [run_rule_step] below, which applies these writes to the
      running state so a later expression of the SAME rule reads them (kernel
      nft_rule_dp_for_each_expr).  On rules without mutating statements the two
-     agree ([Correct.run_rule_step_no_writes] / [rule_step_mutfree]). *)
+     agree ([Correct.run_rule_step_no_writes] / [rule_step_state_mutfree]). *)
   | IPayloadWrite _ _ _ _ _ _ _ :: rest => run_rule rf rest e p
   | IMetaSet _ _ :: rest => run_rule rf rest e p
   | ICtSet _ _ :: rest => run_rule rf rest e p
@@ -1364,7 +1195,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (e : env) (p : packet) : optio
   | ICounter _ _ :: rest => run_rule rf rest e p   (* verdict-neutral *)
   (* `notrack` is verdict-neutral but forces IP_CT_UNTRACKED for the rest of this
      rule's traversal: thread [set_untracked] so a later [ICtLoad CKstate] reads
-     the untracked bit (lock-step with [rule_applies_walk]'s [SNotrack]). *)
+     the untracked bit (lock-step with [body_step]'s [SNotrack]). *)
   | INotrack :: rest      => run_rule rf rest e (set_untracked p)
   | ILog _ :: rest        => run_rule rf rest e p
   | IObjref _ _ :: rest   => run_rule rf rest e p   (* verdict-neutral *)
@@ -2417,7 +2248,7 @@ Context (h : hook_id).
     [run_rule] above remains as the WRITE-FREE projection of this fold: the
     per-entry-packet verdict evaluator that the optimizer's per-rule
     reasoning consumes.  On rules
-    without mutating statements the two agree ([rule_step_mutfree] /
+    without mutating statements the two agree ([rule_step_state_mutfree] /
     [Correct.run_rule_step_no_writes]); on rules WITH intra-rule writes the
     fold is the authoritative (kernel-faithful) semantics. *)
 
@@ -2824,8 +2655,7 @@ Qed.
     ([is_mut_stmt]: meta/ct set, dynset, notrack) anywhere AND no
     `limit`/`quota`/`connlimit` match ([match_consumefree]: evaluating one
     writes its shared bucket) in the body.  This is exactly the domain on
-    which the fold is state-preserving and coincides with the historical pure
-    verdict predicates ([rule_step_mutfree] below). *)
+    which the fold is state-preserving ([rule_step_state_mutfree] below). *)
 Definition body_item_mutfree (it : body_item) : bool :=
   match it with BStmt s => negb (is_mut_stmt s) | BMatch m => match_consumefree m end.
 (** A NAT terminal WRITES state (the packet rewrite + the flow-keyed [e_nat]
@@ -2839,121 +2669,96 @@ Definition rule_mutfree (r : rule) : bool :=
   && forallb (fun s => negb (is_mut_stmt s)) (r_after r)
   && rule_natfree r.
 
-(** On a mut-free rule the fold's terminal/end agree with the historical
-    loadability-guarded [terminal_outcome]/[outcome_core] at the SAME state. *)
-Lemma terminal_step_mutfree : forall r e p,
+(** On a mut-free rule the fold's terminal leaves the state at the entry
+    [(e, p)]: no side-effect (nat-free) terminal, and a mut-free [r_after]. *)
+Lemma terminal_step_state_mutfree : forall r e p,
   rule_natfree r = true ->
   forallb (fun s => negb (is_mut_stmt s)) (r_after r) = true ->
-  terminal_step r e p
-  = ((if tail_loadable r e p then terminal_outcome r p else None), (e, p)).
+  snd (terminal_step r e p) = (e, p).
 Proof.
-  intros r e p Hnat Hmf.
-  unfold rule_natfree in Hnat.
-  unfold terminal_step, has_effect_terminal, tail_loadable, terminal_loadable,
-         terminal_outcome, nat_drops, apply_nat.
+  intros r e p Hnat Hmf. unfold rule_natfree in Hnat.
+  unfold terminal_step, has_effect_terminal, nat_drops, apply_nat.
   destruct (r_nat r) as [n|]; [discriminate Hnat|].
-  destruct (r_tproxy r) as [t|]; [reflexivity|].
+  destruct (r_tproxy r) as [t|];
+    [destruct (terminal_loadable r e p); reflexivity|].
   destruct (r_fwd r) as [w|];
-    [destruct (vsrc_loadable (fwd_dev w) p); reflexivity|].
+    [destruct (terminal_loadable r e p); reflexivity|].
   destruct (r_queue r) as [q|];
-    [destruct (vsrc_loadable (q_num q) p); reflexivity|].
+    [destruct (terminal_loadable r e p); reflexivity|].
   (* static verdict; only [Continue] runs r_after *)
   destruct (r_verdict r); try reflexivity.
-  rewrite (after_step_mutfree (r_after r) e p Hmf).
-  destruct (stmts_after_outcome (r_after r) p) eqn:Hsa; [reflexivity|].
-  destruct (forallb (fun s => stmt_loadable s p) (r_after r)); reflexivity.
+  rewrite (after_step_mutfree (r_after r) e p Hmf); reflexivity.
 Qed.
 
-Lemma end_step_mutfree : forall r e p,
+(** The rule's END (verdict map / terminal) leaves a mut-free rule's state at
+    [(e, p)]: a vmap hit returns without touching the state, a miss falls to the
+    write-free terminal. *)
+Lemma end_step_state_mutfree : forall r e p,
   rule_natfree r = true ->
   forallb (fun s => negb (is_mut_stmt s)) (r_after r) = true ->
-  end_step r e p
-  = ((if end_loadable r e p then outcome_core r e p else None), (e, p)).
+  snd (end_step r e p) = (e, p).
 Proof.
-  intros r e p Hnat Hmf. unfold end_step, end_loadable, outcome_core.
-  destruct (r_vmap r) as [vm|]; [| apply terminal_step_mutfree; assumption].
-  destruct (vmap_loadable (Some vm) p) eqn:Hvl; [| reflexivity].
+  intros r e p Hnat Hmf. unfold end_step.
+  destruct (r_vmap r) as [vm|]; [| apply terminal_step_state_mutfree; assumption].
+  destruct (vmap_loadable (Some vm) p); [| reflexivity].
   cbv zeta.
-  destruct (vm_keyf vm) as [[f ts]|]; cbv iota.
+  destruct (vm_keyf vm) as [[f ts]|].
   - destruct (assoc_verdict (apply_transforms ts (field_value f e p))
-                            (e_vmap e (vm_name vm))); [reflexivity|].
-    rewrite (terminal_step_mutfree r e p Hnat Hmf). reflexivity.
+                            (e_vmap e (vm_name vm)));
+      [reflexivity | apply terminal_step_state_mutfree; assumption].
   - destruct (assoc_verdict
                 (List.concat (map (fun f => field_value f e p) (vm_fields vm)))
-                (e_vmap e (vm_name vm))); [reflexivity|].
-    rewrite (terminal_step_mutfree r e p Hnat Hmf). reflexivity.
+                (e_vmap e (vm_name vm)));
+      [reflexivity | apply terminal_step_state_mutfree; assumption].
 Qed.
 
-(** On a mut-free body the fold's walk agrees with the historical three
-    predicates ([body_loadable_walk]/[rule_applies_walk]/[body_synproxy_stops])
-    and never changes the state. *)
-Lemma body_step_mutfree : forall body e p,
+(** On a mut-free body the fold threads no writes: the walk ends at the entry
+    [(e, p)] whichever way it ends (break, synproxy stop, or completion). *)
+Lemma body_step_state_mutfree : forall body e p,
   forallb body_item_mutfree body = true ->
-  body_step body e p
-  = if body_loadable_walk body p && rule_applies_walk body e p
-    then (if body_synproxy_stops body p then BRstop e p else BRdone e p)
-    else BRbreak e p.
+  body_res_state (body_step body e p) = (e, p).
 Proof.
   induction body as [| it body IH]; intros e p Hmf; [reflexivity|].
   cbn [forallb] in Hmf. apply Bool.andb_true_iff in Hmf. destruct Hmf as [Hit Hmf].
-  assert (Hstops : forall it0 b, body_synproxy_stops (it0 :: b) p =
-            (match it0 with BStmt (SSynproxy _ _) => synproxy_stops p | _ => false end)
-            || body_synproxy_stops b p) by reflexivity.
   destruct it as [m | s].
   - cbn [body_item_mutfree] in Hit.
-    cbn [body_step body_loadable_walk rule_applies_walk body_item_loadable].
-    rewrite Hstops. cbn [orb].
-    rewrite (match_consume_free_id m e p Hit).
-    unfold eval_matchcond.
-    destruct (match_loadable m p).
-    + destruct (eval_matchcond_body m e p).
-      * exact (IH e p Hmf).
-      * destruct (body_loadable_walk body p); reflexivity.
-    + reflexivity.
+    cbn [body_step]. rewrite (match_consume_free_id m e p Hit).
+    destruct (eval_matchcond m e p); [ apply IH; exact Hmf | reflexivity ].
   - destruct s; cbn [body_item_mutfree is_mut_stmt negb] in Hit; try discriminate Hit;
-      cbn [body_step body_loadable_walk rule_applies_walk body_item_loadable];
-      rewrite Hstops; cbn [orb];
-      try (destruct (stmt_loadable _ p); [exact (IH e p Hmf) | reflexivity]).
-    (* SSynproxy *)
+      cbn [body_step];
+      try (destruct (stmt_loadable _ p); [apply IH; exact Hmf | reflexivity]).
+    (* SSynproxy: non-mut; a stop ends at [(e, p)], otherwise the walk continues *)
     destruct (synproxy_loadable p); [| reflexivity].
-    destruct (synproxy_stops p).
-    + destruct (rule_applies_walk body e p); reflexivity.
-    + exact (IH e p Hmf).
+    destruct (synproxy_stops p); [reflexivity | apply IH; exact Hmf].
 Qed.
 
-(** COINCIDENCE with the per-rule reads: on a mut-free rule the fold IS the
-    historical loadability-guarded verdict — [rule_applies]/[outcome]/
-    [rule_loadable] are the write-free projection of the single fold, which is
-    why the optimizer's per-rule reasoning remains stated over them. *)
-Theorem rule_step_mutfree : forall r e p,
-  rule_mutfree r = true ->
-  rule_step r e p
-  = ((if rule_loadable r e p && rule_applies r e p then outcome r e p else None),
-     (e, p)).
+(** On a mut-free body with no stopping SYN-proxy the walk ends in exactly one of
+    two ways — a break or a completion — both at the entry [(e, p)].  This is the
+    shape the optimizer's per-shell vmap-merge certificates read a guarded head
+    verdict off, directly over [body_step] (no write-free projection function). *)
+Lemma body_step_mutfree_synfree : forall body e p,
+  body_synproxy_stops body p = false ->
+  forallb body_item_mutfree body = true ->
+  body_step body e p = BRbreak e p \/ body_step body e p = BRdone e p.
 Proof.
-  intros r e p Hmf. unfold rule_mutfree in Hmf.
-  apply Bool.andb_true_iff in Hmf. destruct Hmf as [Hmf Hnat].
-  apply Bool.andb_true_iff in Hmf. destruct Hmf as [Hbody Hafter].
-  assert (Hnt : body_has_notrack (r_body r) = false).
-  { unfold body_has_notrack. apply Bool.not_true_is_false. intro Hex.
-    apply existsb_exists in Hex. destruct Hex as [it [Hin Hit]].
-    destruct it as [m | s]; [discriminate Hit|]. destruct s; try discriminate Hit.
-    rewrite forallb_forall in Hbody. specialize (Hbody _ Hin). discriminate Hbody. }
-  assert (Hbt : body_thread (r_body r) p = p)
-    by (unfold body_thread; rewrite Hnt; reflexivity).
-  unfold rule_step, rule_applies, rule_loadable, outcome.
-  rewrite Hbt.
-  rewrite (body_step_mutfree (r_body r) e p Hbody).
-  destruct (body_loadable_walk (r_body r) p) eqn:Hlw;
-    [| destruct (rule_applies_walk (r_body r) e p); reflexivity].
-  destruct (rule_applies_walk (r_body r) e p) eqn:Haw.
-  2:{ destruct (body_synproxy_stops (r_body r) p);
-      [reflexivity | destruct (end_loadable r e p); reflexivity]. }
-  destruct (body_synproxy_stops (r_body r) p) eqn:Hst.
-  - reflexivity.
-  - cbn [andb]. rewrite (end_step_mutfree r e p Hnat Hafter).
-    rewrite Bool.andb_true_r.
-    destruct (end_loadable r e p); reflexivity.
+  induction body as [| it body IH]; intros e p Hns Hmf; [right; reflexivity|].
+  cbn [forallb] in Hmf. apply Bool.andb_true_iff in Hmf. destruct Hmf as [Hit Hmf].
+  assert (Hnscons : body_synproxy_stops (it :: body) p =
+            (match it with BStmt (SSynproxy _ _) => synproxy_stops p | _ => false end)
+            || body_synproxy_stops body p) by reflexivity.
+  rewrite Hnscons in Hns.
+  destruct it as [m | s].
+  - cbn [orb] in Hns. cbn [body_item_mutfree] in Hit.
+    cbn [body_step]. rewrite (match_consume_free_id m e p Hit).
+    destruct (eval_matchcond m e p); [ apply IH; assumption | left; reflexivity ].
+  - destruct s; cbn [body_item_mutfree is_mut_stmt negb] in Hit; try discriminate Hit;
+      cbn [orb] in Hns;
+      cbn [body_step];
+      try (destruct (stmt_loadable _ p); [apply IH; assumption | left; reflexivity]).
+    (* SSynproxy: [Hns] forces [synproxy_stops p = false], so no [BRstop] *)
+    apply Bool.orb_false_iff in Hns. destruct Hns as [Hstop Hns].
+    destruct (synproxy_loadable p); [| left; reflexivity].
+    rewrite Hstop. apply IH; assumption.
 Qed.
 
 (** State-side corollaries: with a mut-free [r_after] the whole-rule state is
@@ -2974,8 +2779,19 @@ Proof.
   intros r e p Hnat Hmf. unfold rule_step, dsl_writes, body_writes.
   destruct (body_step (r_body r) e p) as [e' p' | e' p' | e' p'] eqn:Hb;
     cbn [body_res_state]; try reflexivity.
-  rewrite (end_step_mutfree r e' p' Hnat Hmf).
-  destruct (end_loadable r e' p'); reflexivity.
+  apply (end_step_state_mutfree r e' p' Hnat Hmf).
+Qed.
+
+(** A mut-free rule's step leaves the state at the entry [(e, p)] — the body
+    threads no writes and the end is write-free. *)
+Lemma rule_step_state_mutfree : forall r e p,
+  rule_mutfree r = true -> snd (rule_step r e p) = (e, p).
+Proof.
+  intros r e p Hmf. unfold rule_mutfree in Hmf.
+  apply Bool.andb_true_iff in Hmf. destruct Hmf as [Hmf Hnat].
+  apply Bool.andb_true_iff in Hmf. destruct Hmf as [Hbody Hafter].
+  rewrite (rule_step_state_after_free r e p Hnat Hafter).
+  unfold dsl_writes, body_writes. apply body_step_state_mutfree; exact Hbody.
 Qed.
 
 (** With a mut-free [r_after] the step's state half is exactly the BODY's
@@ -3433,11 +3249,11 @@ Definition select_hook (rs : list hooked_chain) (h : hook_id)
     the callee, callee writes visible after the return, dynset learning under
     a jump) is pinned in Regression/Setread_UnderJump.v.
 
-    Every per-rule read function in this file is a PROJECTION of this
-    fold, licensed by a coincidence theorem on the sub-domain where it
-    provably agrees (see the projection matrix in the file header):
-    [rule_step_mutfree] (write-free rules) and [eval_rules_u_mut_proj] (the
-    flat mutation strand, on transfer-free rules). *)
+    The per-rule structural predicates and flat-strand projections in this file
+    are licensed by a coincidence theorem on the sub-domain where they provably
+    agree (see the projection matrix in the file header):
+    [rule_step_state_mutfree] (write-free rules leave the state pinned) and
+    [eval_rules_u_mut_proj] (the flat mutation strand, on transfer-free rules). *)
 
 Fixpoint eval_rules_u (fuel : nat) (cs : list (String.string * chain))
                       (rs : list rule) (e : env) (p : packet)
@@ -3674,9 +3490,9 @@ Definition run_ruleset_env_u (fuel : nat)
     the in-fold limiter fix is exactly [rule_mutfree]: no mutating statement
     (meta/ct set, dynset, notrack) and no limiter/quota/connlimit match
     (whose bucket consumption is an env write) anywhere.  On such a rule the
-    per-rule fold [rule_step] leaves the state untouched and its verdict is
-    the hook-free loadability-guarded per-rule outcome
-    ([rule_step_writefree], from [rule_step_mutfree]).  Lifted through the
+    per-rule fold [rule_step] leaves the state untouched ([rule_step_writefree_state],
+    from [rule_step_state_mutfree]) and — being nat-free — its verdict is the same
+    at every hook ([Nft_Tactics.rule_step_natfree_hookindep]).  Lifted through the
     traversal this makes the unified verdict hook-independent
     ([Nft_Tactics.eval_table_u_hookindep_writefree]) — which is why the
     [forall h] config theorems are provable by one hook's compute.  A rule
@@ -3689,12 +3505,9 @@ Definition rule_writefree (r : rule) : bool := rule_mutfree r.
 Definition chains_writefree (cs : list (String.string * chain)) : bool :=
   forallb (fun nc => forallb rule_writefree (c_rules (snd nc))) cs.
 
-Lemma rule_step_writefree : forall r e p,
-  rule_writefree r = true ->
-  rule_step r e p
-  = ((if rule_loadable r e p && rule_applies r e p then outcome r e p else None),
-     (e, p)).
-Proof. intros r e p H. exact (rule_step_mutfree r e p H). Qed.
+Lemma rule_step_writefree_state : forall r e p,
+  rule_writefree r = true -> snd (rule_step r e p) = (e, p).
+Proof. intros r e p H. exact (rule_step_state_mutfree r e p H). Qed.
 
 Lemma chain_lookup_in : forall cs n ch,
   chain_lookup cs n = Some ch -> In (n, ch) cs.
@@ -4232,76 +4045,6 @@ Proof.
     destruct Hdisj as [Hj | Hj];
       pose proof (rule_step_plain e r H e' p _ Hvm Hj) as Hpl;
       discriminate Hpl.
-Qed.
-
-(* ================================================================== *)
-(** ** The pure body walk is the fold's projection -- notrack included (M6).
-
-    [rule_applies_walk] hand-threads exactly ONE effect: the `notrack`
-    untracked latch ([set_untracked]).  That threading is not a parallel
-    semantics -- it is the SAME transform [body_step]'s [SNotrack] case
-    applies, and on every body whose other items are effect-free (consume-free
-    matches, non-mutating statements; `notrack` itself ALLOWED) the walk is
-    provably the break/no-break projection of the fold.  This is the
-    notrack-admitting coincidence [rule_step_mutfree] could not state
-    ([rule_mutfree] excludes [SNotrack]); together they cover every rule the
-    pure strand's licenses admit, and the pure strand's remaining divergence
-    (consumable matches read the entry bucket in the walk, the running bucket
-    in the fold) is licensed at traversal level by Projection 1b -- never by
-    an unbridged walk. *)
-
-Definition body_item_purewalk (it : body_item) : bool :=
-  match it with
-  | BMatch m => match_consumefree m
-  | BStmt SNotrack => true
-  | BStmt s => negb (is_mut_stmt s)
-  end.
-
-Definition body_purewalk (body : list body_item) : bool :=
-  forallb body_item_purewalk body.
-
-Theorem rule_purewalk_ok : forall body e p,
-  body_purewalk body = true ->
-  body_loadable_walk body p = true ->
-  rule_applies_walk body e p
-  = match body_step body e p with
-    | BRbreak _ _ => false
-    | _ => true
-    end.
-Proof.
-  induction body as [| it body IH]; intros e p Hpw Hld; [reflexivity |].
-  unfold body_purewalk in Hpw. cbn [forallb] in Hpw.
-  apply Bool.andb_true_iff in Hpw. destruct Hpw as [Hit Hrest].
-  destruct it as [m | s].
-  - (* match: both sides evaluate [eval_matchcond] at the same state; a
-       consume-free match leaves the env untouched *)
-    cbn [body_item_purewalk] in Hit.
-    cbn [rule_applies_walk body_step].
-    cbn [body_loadable_walk body_item_loadable] in Hld.
-    apply Bool.andb_true_iff in Hld. destruct Hld as [_ Hld].
-    destruct (eval_matchcond m e p) eqn:Hm; [| reflexivity].
-    rewrite (match_consume_free_id m e p Hit). cbn [andb].
-    apply IH; [exact Hrest | exact Hld].
-  - destruct s; cbn [body_item_purewalk is_mut_stmt negb] in Hit;
-      try discriminate Hit;
-      (* non-mutating, non-synproxy, non-notrack statements: the walk skips,
-         the fold checks the operand load the loadability walk guarantees *)
-      try (cbn [rule_applies_walk body_step];
-           cbn [body_loadable_walk body_item_loadable] in Hld;
-           apply Bool.andb_true_iff in Hld; destruct Hld as [Hs Hld];
-           rewrite Hs; apply IH; [exact Hrest | exact Hld]).
-    + (* SNotrack: BOTH sides thread the same [set_untracked] *)
-      cbn [rule_applies_walk body_step].
-      cbn [body_loadable_walk body_item_loadable stmt_loadable andb] in Hld.
-      rewrite <- (body_loadable_walk_untracked body p) in Hld.
-      apply IH; [exact Hrest | exact Hld].
-    + (* SSynproxy *)
-      cbn [rule_applies_walk body_step].
-      cbn [body_loadable_walk] in Hld.
-      apply Bool.andb_true_iff in Hld. destruct Hld as [Hsl Hld].
-      rewrite Hsl.
-      destruct (synproxy_stops p); [reflexivity |].
-      apply IH; [exact Hrest | exact Hld].
 Qed.
 
 

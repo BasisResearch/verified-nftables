@@ -45,7 +45,7 @@
       mixedpointrangeguarded, vmapguarded, dscpvmap, vmap) carry an
       EFFECT-SAFETY GUARD in their pair recognisers ([rule_mutfree r1], see
       [Optimize_ValueSet.value_merge_pair]): a merged run is WRITE-FREE, so the
-      fold is state-invariant across it ([rule_step_mutfree]) and the existing
+      fold is state-invariant across it ([rule_step_state_mutfree]) and the existing
       pure run-merge lemmas supply the verdicts
       ([eval_rules_mut_st_mutfree_prefix] below).
     - The three EFFECT-REWRITING stages keep their exact-shape recognisers and
@@ -300,10 +300,10 @@ Qed.
 (** ** Part B: generic effect-level list lemmas. *)
 
 (** On a mut-free rule the step leaves the state at [(e, p)]: the state half is
-    pinned, read off [rule_step_mutfree] without naming the write-free verdict. *)
+    pinned, read off [rule_step_state_mutfree] without naming any write-free verdict. *)
 Lemma rule_step_mutfree_state : forall r e p,
   rule_mutfree r = true -> snd (rule_step h r e p) = (e, p).
-Proof. intros r e p H. rewrite (rule_step_mutfree h r e p H). reflexivity. Qed.
+Proof. intros r e p H. exact (rule_step_state_mutfree h r e p H). Qed.
 
 (** A mut-free head steps the fold in the guarded shape, its tail continuing from
     the UNCHANGED [(e, p)] — the fold's own cons equation specialised to a
@@ -416,7 +416,7 @@ Qed.
 
     The shared loadability [Lc], body applicability [Ac] and fired verdict [Oc]
     are ABSTRACT: the caller supplies them (in [eval_rules_mut_st_run_merge_abs]
-    via each shell's own [rule_step] under [rule_step_mutfree]), so the combinator
+    via each shell's own [rule_step] under [rule_step_state_mutfree]), so the combinator
     reasons only over [rule_step]/[eval_rules_mut_st].  The [rule_mutfree]
     hypotheses are load-bearing: on the state fold a shell that does NOT fire can
     still advance the env (a limiter head consumes its bucket at its position),
@@ -515,7 +515,7 @@ Qed.
     collapses to the ONE merged shell [mk_head m12 body r1] whose head realises
     the disjunction ([eval_matchcond m12 = existsb ...]).  The shared loadability,
     body applicability and fired verdict are read off each shell's own [rule_step]
-    under [rule_step_mutfree] — the guarded shell verdict [shell_run_merge]
+    under [body_step_mutfree_synfree] — the guarded shell verdict [shell_run_merge]
     consumes — via the [mk_head] head/tail/end equations; the
     combinator supplies the first-match/break argument over the fold.  This is the
     substrate the optimizer's per-pass merge proofs apply directly (with
@@ -561,7 +561,7 @@ Qed.
     Everything is phrased over [rule_step]/[eval_rules_mut_st]: the per-shell
     firing shape [mc], the shared [LL]/[O] and the merged shell's disjunction are
     supplied by the caller (each read off the shell's own [rule_step] under
-    [rule_step_mutfree] via the pass's structural certificates).  The [rule_mutfree]
+    [rule_step_state_mutfree] via the pass's structural certificates).  The [rule_mutfree]
     hypotheses are load-bearing: on the state fold a shell that does NOT fire can
     still advance the env at its position, so an unconstrained collapse would not
     preserve the threaded state.  Under mut-freeness [rule_step_mutfree_state] pins
@@ -663,7 +663,7 @@ End WithHook.
 (** Pull the per-shell firing bit [c] to the outside of a shell's guard so the
     shared loadability/applicability factor [a && b] reads as the collapse's [LL].
     [reflexivity] on the reassociated form unifies [LL] and the per-shell [mc]
-    against the [rule_step_mutfree] shape at each merge site. *)
+    against the [body_step_mutfree_synfree] shape at each merge site. *)
 Lemma andb_swap_mid : forall a b c, a && (c && b) = (a && b) && c.
 Proof. intros [] [] []; reflexivity. Qed.
 
@@ -678,7 +678,7 @@ Lemma andb_reassoc_g2 : forall c1 g c2 w, (c1 && g) && c2 && w = g && ((c1 && c2
 Proof. intros [] [] [] []; reflexivity. Qed.
 
 (** Push a mut-free rule's loadable/applicable guard [C] outside the fold's
-    verdict [match]: the shape a per-rule [rule_step_mutfree] rewrite lands the
+    verdict [match]: the shape a per-rule [body_step_mutfree_synfree] rewrite lands the
     fold in, restated as the pure-strand [if]-guarded cons the merge inductions
     read.  [T] is the tail's fold, [ep] the pinned state. *)
 Lemma match_if_push :
@@ -2533,13 +2533,12 @@ Proof.
   intros h f nm es body e p Hvm Hfx Hns Hbody_mf.
   pose proof (body_has_synproxy_false_stops body p Hns) as Hsp.
   unfold rule_step, mk_vmap_rule. cbn [r_body].
-  pose proof (body_step_mutfree body e p Hbody_mf) as HBS. rewrite Hsp in HBS.
+  pose proof (body_step_mutfree_synfree body e p Hsp Hbody_mf) as HBS.
   destruct (body_step body e p) as [eb pb | eb pb | eb pb] eqn:EBS; cbn [fst].
   - reflexivity.
-  -     match type of HBS with (_ = (if ?C then _ else _)) => destruct C end; discriminate HBS.
-  -     match type of HBS with (_ = (if ?C then _ else _)) => destruct C end;
-      [| discriminate HBS].
-    injection HBS as Heb Hpb. subst eb pb.
+  -     destruct HBS as [HB | HB]; discriminate HB.
+  -     destruct HBS as [HB | HB]; [discriminate HB |].
+    injection HB as Heb Hpb. subst eb pb.
     unfold end_step. cbn [r_vmap vm_keyf vm_name vm_fields r_outcome].
     cbn [vmap_loadable vm_keyf].
     destruct (field_loadable f p) eqn:Hfld; cbn [fst]; [| reflexivity].
@@ -2571,13 +2570,12 @@ Proof.
   cbn [body_step].
   rewrite (match_consume_free_id (MCmp f CEq v) e p eq_refl).
   destruct (eval_matchcond (MCmp f CEq v) e p) eqn:Ev; [| reflexivity].
-  pose proof (body_step_mutfree body e p Hbody_mf) as HBS. rewrite Hsp in HBS.
+  pose proof (body_step_mutfree_synfree body e p Hsp Hbody_mf) as HBS.
   destruct (body_step body e p) as [eb pb | eb pb | eb pb] eqn:EBS; cbn [fst].
   - reflexivity.
-  -     match type of HBS with (_ = (if ?C then _ else _)) => destruct C end; discriminate HBS.
-  -     match type of HBS with (_ = (if ?C then _ else _)) => destruct C end;
-      [| discriminate HBS].
-    injection HBS as Heb Hpb. subst eb pb.
+  -     destruct HBS as [HB | HB]; discriminate HB.
+  -     destruct HBS as [HB | HB]; [discriminate HB |].
+    injection HB as Heb Hpb. subst eb pb.
     unfold end_step, mk_vmap_base. cbn [r_vmap r_outcome].
     unfold terminal_step.
     cbn [has_effect_terminal r_nat r_tproxy r_fwd r_queue r_verdict r_after r_outcome].
@@ -2957,13 +2955,12 @@ Proof.
   intros h f mask xor nm es body e p Hvm Hfx Hmw Hxw Hns Hbody_mf.
   pose proof (body_has_synproxy_false_stops body p Hns) as Hsp.
   unfold rule_step, mk_vmap_rule_t. cbn [r_body].
-  pose proof (body_step_mutfree body e p Hbody_mf) as HBS. rewrite Hsp in HBS.
+  pose proof (body_step_mutfree_synfree body e p Hsp Hbody_mf) as HBS.
   destruct (body_step body e p) as [eb pb | eb pb | eb pb] eqn:EBS; cbn [fst].
   - reflexivity.
-  - match type of HBS with (_ = (if ?C then _ else _)) => destruct C end; discriminate HBS.
-  - match type of HBS with (_ = (if ?C then _ else _)) => destruct C end;
-      [| discriminate HBS].
-    injection HBS as Heb Hpb. subst eb pb.
+  - destruct HBS as [HB | HB]; discriminate HB.
+  - destruct HBS as [HB | HB]; [discriminate HB |].
+    injection HB as Heb Hpb. subst eb pb.
     unfold end_step. cbn [r_vmap vm_keyf vm_name vm_fields r_outcome].
     cbn [vmap_loadable vm_keyf].
     destruct (field_loadable f p) eqn:Hfld; cbn [fst]; [| reflexivity].
@@ -2995,13 +2992,12 @@ Proof.
   cbn [body_step].
   rewrite (match_consume_free_id (MMasked f CEq mask xor v) e p eq_refl).
   destruct (eval_matchcond (MMasked f CEq mask xor v) e p) eqn:Ev; [| reflexivity].
-  pose proof (body_step_mutfree body e p Hbody_mf) as HBS. rewrite Hsp in HBS.
+  pose proof (body_step_mutfree_synfree body e p Hsp Hbody_mf) as HBS.
   destruct (body_step body e p) as [eb pb | eb pb | eb pb] eqn:EBS; cbn [fst].
   - reflexivity.
-  - match type of HBS with (_ = (if ?C then _ else _)) => destruct C end; discriminate HBS.
-  - match type of HBS with (_ = (if ?C then _ else _)) => destruct C end;
-      [| discriminate HBS].
-    injection HBS as Heb Hpb. subst eb pb.
+  - destruct HBS as [HB | HB]; discriminate HB.
+  - destruct HBS as [HB | HB]; [discriminate HB |].
+    injection HB as Heb Hpb. subst eb pb.
     unfold end_step, mk_vmap_base. cbn [r_vmap r_outcome].
     unfold terminal_step.
     cbn [has_effect_terminal r_nat r_tproxy r_fwd r_queue r_verdict r_after r_outcome].
@@ -3932,6 +3928,65 @@ Proof.
   rewrite Hafter, Hnat. reflexivity.
 Qed.
 
+(** The per-rule verdict certificate for dedup: on a mut-free rule the match
+    reordering / de-duplication leaves the fold's verdict unchanged.  Read
+    directly off [rule_step] — the body's break/completion classification is
+    dedup-invariant ([body_step_done_class] over the preserved match- and
+    load-sets), and the shared end fields give the same [end_step]. *)
+Lemma fst_rule_step_dedup : forall h r e p,
+  rule_mutfree r = true ->
+  fst (rule_step h (dedup_rule r) e p) = fst (rule_step h r e p).
+Proof.
+  intros h r e p Hmf.
+  destruct (body_has_synproxy (r_body r)) eqn:Hsp.
+  { unfold dedup_rule; rewrite Hsp; reflexivity. }
+  destruct (body_has_notrack (r_body r)) eqn:Hnt.
+  { unfold dedup_rule; rewrite Hsp, Hnt; reflexivity. }
+  assert (Hmfd := dedup_rule_mutfree r Hmf).
+  assert (Hbody : forallb body_item_mutfree (r_body r) = true).
+  { unfold rule_mutfree in Hmf. apply andb_true_iff in Hmf as [Hmf' _].
+    apply andb_true_iff in Hmf' as [Hb _]. exact Hb. }
+  assert (Hbody' : forallb body_item_mutfree (r_body (dedup_rule r)) = true).
+  { unfold rule_mutfree in Hmfd. apply andb_true_iff in Hmfd as [Hmfd' _].
+    apply andb_true_iff in Hmfd' as [Hb _]. exact Hb. }
+  assert (Hnt' : body_has_notrack (r_body (dedup_rule r)) = false)
+    by (apply dedup_body_no_notrack_rule; [exact Hsp | exact Hnt]).
+  assert (Hsps : body_synproxy_stops (r_body r) p = false)
+    by (apply body_has_synproxy_false_stops; exact Hsp).
+  assert (Hsps' : body_synproxy_stops (r_body (dedup_rule r)) p = false).
+  { unfold dedup_rule; rewrite Hsp, Hnt, Hmf; cbn [orb negb r_body].
+    apply dedup_body_no_synproxy_stops; exact Hsp. }
+  pose proof (body_step_done_class (r_body (dedup_rule r)) e p Hsps' Hnt' Hbody') as Hcl'.
+  pose proof (body_step_done_class (r_body r) e p Hsps Hnt Hbody) as Hcl.
+  assert (Hclass :
+    (match body_step (r_body (dedup_rule r)) e p with BRdone _ _ => true | _ => false end)
+    = (match body_step (r_body r) e p with BRdone _ _ => true | _ => false end)).
+  { rewrite Hcl', Hcl. f_equal.
+    - (* load-sets agree *)
+      unfold dedup_rule; rewrite Hsp, Hnt, Hmf; cbn [orb negb r_body].
+      rewrite (body_loadable_split
+                 (map BMatch (nodup matchcond_eq_dec (body_matches (r_body r)))
+                  ++ map BStmt (body_stmts (r_body r))) p).
+      rewrite body_matches_app, body_matches_map_BMatch, body_matches_map_BStmt, app_nil_r.
+      rewrite body_stmts_app, body_stmts_map_BMatch, body_stmts_map_BStmt. cbn [app].
+      rewrite (forallb_nodup _ matchcond_eq_dec).
+      symmetry. apply body_loadable_split.
+    - (* match-sets agree *)
+      unfold dedup_rule; rewrite Hsp, Hnt, Hmf; cbn [orb negb r_body].
+      rewrite body_matches_app, body_matches_map_BMatch, body_matches_map_BStmt, app_nil_r.
+      apply (forallb_nodup _ matchcond_eq_dec). }
+  assert (Hend : forall e' p', end_step h (dedup_rule r) e' p' = end_step h r e' p').
+  { intros e' p'. unfold dedup_rule; rewrite Hsp, Hnt, Hmf; cbn [orb negb]. reflexivity. }
+  unfold rule_step.
+  pose proof (body_step_mutfree_synfree (r_body (dedup_rule r)) e p Hsps' Hbody') as Hd'.
+  pose proof (body_step_mutfree_synfree (r_body r) e p Hsps Hbody) as Hd.
+  destruct Hd' as [Hd'|Hd']; destruct Hd as [Hd|Hd].
+  - rewrite Hd', Hd. reflexivity.
+  - rewrite Hd' in Hclass; rewrite Hd in Hclass; cbn in Hclass; discriminate Hclass.
+  - rewrite Hd' in Hclass; rewrite Hd in Hclass; cbn in Hclass; discriminate Hclass.
+  - rewrite Hd', Hd; cbn [fst]; rewrite (Hend e p); reflexivity.
+Qed.
+
 Lemma eval_rules_mut_st_map_dedup : forall h rs e p,
   eval_rules_mut_st h (map (fun r => simplify_rule (dedup_rule r)) rs) e p
   = eval_rules_mut_st h rs e p.
@@ -3953,11 +4008,8 @@ Proof.
       rewrite !Bool.orb_true_r in Hg. discriminate Hg. }
     assert (Hmfd : rule_mutfree (dedup_rule r) = true)
       by (apply dedup_rule_mutfree; exact Hmf).
-    assert (Hstep : fst (rule_step h (dedup_rule r) e p) = fst (rule_step h r e p)).
-    { rewrite (rule_step_mutfree h (dedup_rule r) e p Hmfd),
-              (rule_step_mutfree h r e p Hmf).
-      cbn [fst]. rewrite rule_applies_dedup, rule_loadable_dedup, outcome_dedup.
-      reflexivity. }
+    assert (Hstep : fst (rule_step h (dedup_rule r) e p) = fst (rule_step h r e p))
+      by (apply fst_rule_step_dedup; exact Hmf).
     rewrite (eval_rules_mut_st_mutfree_cons h (dedup_rule r) _ e p Hmfd).
     rewrite (eval_rules_mut_st_mutfree_cons h r _ e p Hmf).
     rewrite Hstep.

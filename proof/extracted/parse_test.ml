@@ -84,7 +84,12 @@ let ev_chain_mut_env c (e, p) = Semantics.eval_chain_mut_env Semantics.Hprerouti
 let ev_chain_u h c (e, p) = Semantics.eval_chain_u h c e p
 let ev_table fuel cs c (e, p) = fst (Semantics.eval_table_u Semantics.Hprerouting fuel cs c e p)
 let run_chain_vm prog pol (e, p) = Semantics.run_chain_mut Semantics.Hprerouting prog pol e p
-let rule_applies_on r (e, p) = Semantics.rule_applies r e p
+(* A rule "applies" when its body walk does not BREAK (all matches pass and
+   load) — read directly off the single fold [body_step]. *)
+let rule_applies_on r (e, p) =
+  match Semantics.body_step r.Syntax.r_body e p with
+  | Semantics.BRbreak (_, _) -> false
+  | _ -> true
 let apply_nat_on h r (e, p) = Semantics.apply_nat h r e p
 let dsl_writes_on r (e, p) = Semantics.dsl_writes r e p
 let fv f (e, p) = Syntax.field_value f e p
@@ -1418,10 +1423,10 @@ let check_exthdr_present () =
    entry-present packet notrack is a no-op (its `if (ct || ...) return;` guard) so the
    match reads the live state and FAILS -> the chain DROPS.  The model threads
    set_untracked (which encodes that guard) into a rule's OWN later matches/terminal
-   (rule_applies_walk/outcome/run_rule), so the single-rule idiom ACCEPTS a no-entry
-   packet and DROPS an entry-present one, matching the kernel.  Before the rule-walk
-   fix the match was evaluated against the original packet and PROVED a kernel-false
-   Drop even on the no-entry packet. *)
+   (body_step/run_rule), so the single-rule idiom ACCEPTS a no-entry packet and DROPS
+   an entry-present one, matching the kernel.  Before the rule-walk fix the match was
+   evaluated against the original packet and PROVED a kernel-false Drop even on the
+   no-entry packet. *)
 let check_notrack_intra () =
   Printf.printf "=== (I''') intra-rule notrack ; ct state untracked accept (same rule) ===\n";
   let untracked = [0;0;0;64] in
