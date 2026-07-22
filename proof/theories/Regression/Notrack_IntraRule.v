@@ -27,7 +27,7 @@
     and leaves an entry-present packet's state untouched.  All theorems below are
     proved axiom-free by [vm_compute].
 
-    Regression gate: [model_accepts_like_kernel_eval_chain_mut] and
+    Regression gate: [model_accepts_like_kernel_eval_chain_flat_verdict] and
     [model_drops_entry_present_packet] lock in the intra-rule threading + guard;
     a model that skips statements when walking a rule's matches (the `ct state
     untracked` match never seeing the same rule's `notrack` latch) makes them
@@ -84,8 +84,8 @@ Proof. vm_compute. reflexivity. Qed.
 
 (* KERNEL-FAITHFUL: the model ACCEPTS the no-entry packet the kernel ACCEPTS, on
    the canonical stateful threading evaluator. *)
-Theorem model_accepts_like_kernel_eval_chain_mut :
-  eval_chain_mut h intra_chain env0 pkt_noentry = Accept.
+Theorem model_accepts_like_kernel_eval_chain_flat_verdict :
+  eval_chain_flat_verdict h intra_chain env0 pkt_noentry = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* KERNEL GUARD: on a packet that ALREADY has a conntrack ENTRY
@@ -122,7 +122,7 @@ Lemma intra_match_noop_on_entry :
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem model_drops_entry_present_packet :
-  eval_chain_mut h intra_chain env_est pkt_est = Drop.
+  eval_chain_flat_verdict h intra_chain env_est pkt_est = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 End AtHook.

@@ -39,7 +39,7 @@
     L2-bearing packet ([pkt_have_l2 := true]) reads the link header.
 
     Regression gate: [ether_load_breaks_without_mac_header],
-    [model_accepts_like_kernel]/[_mut], and [model_drops_with_mac_header] lock in
+    [model_accepts_like_kernel]/[_flat_verdict], and [model_drops_with_mac_header] lock in
     the guard; a model regression to an unguarded L2 read (an `ether saddr` rule
     dropping a locally-generated packet the kernel accepts) makes them
     unprovable. *)
@@ -114,8 +114,8 @@ Proof. vm_compute. reflexivity. Qed.
 (* Consequently the rule is SKIPPED and the chain falls through to its accept
    policy — exactly the kernel verdict; an unguarded L2 read would Drop here.
    Stated on the canonical stateful evaluator. *)
-Theorem model_accepts_like_kernel_mut :
-  eval_chain_mut h output_chain env0 locally_generated = Accept.
+Theorem model_accepts_like_kernel_flat_verdict :
+  eval_chain_flat_verdict h output_chain env0 locally_generated = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* With a built MAC header the load succeeds and the rule legitimately DROPS,
@@ -125,7 +125,7 @@ Lemma ether_load_ok_with_mac_header :
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem model_drops_with_mac_header :
-  eval_chain_mut h output_chain env0 has_l2 = Drop.
+  eval_chain_flat_verdict h output_chain env0 has_l2 = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 (* For contrast: the analogous TRANSPORT load DOES carry its own guard — the model

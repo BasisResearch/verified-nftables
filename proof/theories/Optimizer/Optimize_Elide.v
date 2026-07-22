@@ -25,7 +25,7 @@
     bitwise at that width is the identity on such a value
     ([Syntax.do_load_bitops_id]) — so the masked compare and the bare compare
     see the SAME register value.  The pass's state-fold preservation
-    [Optimize_Linearize_MutSt.elide_chain_mut_st] is UNCONDITIONAL
+    [Optimize_Linearize_MutSt.elide_chain_flat] is UNCONDITIONAL
     ([forall h c e p]), axiom-free.
 
     Guard notes:

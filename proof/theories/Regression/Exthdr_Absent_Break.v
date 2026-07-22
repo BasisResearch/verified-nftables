@@ -12,7 +12,7 @@
     predicate (compile_chain_correct stays axiom-free).
 
     Regression gate: [exthdr_value_not_loadable_when_absent],
-    [model_accepts_like_kernel]/[_mut], and [exthdr_existence_always_loadable]
+    [model_accepts_like_kernel]/[_flat_verdict], and [exthdr_existence_always_loadable]
     lock in the guard; a model regression to an always-succeeding exthdr value
     oracle (`tcp option maxseg size 1460 drop` matching a packet WITHOUT a maxseg
     option) makes them unprovable. *)
@@ -91,13 +91,13 @@ Proof. vm_compute. reflexivity. Qed.
 (* KERNEL-CORRECT: an absent maxseg option BREAKs the value load -> the rule does
    not match -> the chain ACCEPTS via its policy, on the canonical stateful
    evaluator. *)
-Theorem model_accepts_like_kernel_mut :
-  eval_chain_mut h filter_chain env0 pkt_no_maxseg = Accept.
+Theorem model_accepts_like_kernel_flat_verdict :
+  eval_chain_flat_verdict h filter_chain env0 pkt_no_maxseg = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* KERNEL-CORRECT: a PRESENT maxseg option whose value matches 1460 DROPs. *)
-Theorem model_drops_when_present_mut :
-  eval_chain_mut h filter_chain env0 pkt_with_maxseg = Drop.
+Theorem model_drops_when_present_flat_verdict :
+  eval_chain_flat_verdict h filter_chain env0 pkt_with_maxseg = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 (* An EXISTENCE check (present=true) is always loadable even when absent — the

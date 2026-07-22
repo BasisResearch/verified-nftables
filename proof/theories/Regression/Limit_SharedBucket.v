@@ -73,11 +73,11 @@ Definition chain_lim : chain := {| c_policy := Drop; c_rules := [rule_lim] |}.
 Definition pk1 : packet := mkpkt [1;1].
 
 (* Run the chain on packet 1, threading the env it leaves (the consumed bucket). *)
-Definition res1 : verdict * env := eval_chain_mut_env h chain_lim env1 pk1.
+Definition res1 : verdict * env := eval_chain_flat_env h chain_lim env1 pk1.
 
 (* Packet 2 of the SAME flow, carrying the env packet 1 left (bucket now empty). *)
 Definition pk2 : packet := mkpkt [1;1].
-Definition v2 : verdict := fst (eval_chain_mut_env h chain_lim (snd res1) pk2).
+Definition v2 : verdict := fst (eval_chain_flat_env h chain_lim (snd res1) pk2).
 
 (* Packet 1 PASSES the limit and is ACCEPTED (one token available). *)
 Lemma p1_accepted : fst res1 = Accept.
@@ -101,9 +101,9 @@ Proof. cbn. discriminate. Qed.
 (* ---- The VM side agrees: the compiled bytecode consumes the same bucket. ---- *)
 Definition prog_lim : program := compile_chain chain_lim.
 
-Definition vres1 : verdict * env := run_chain_mut_env h prog_lim Drop env1 pk1.
+Definition vres1 : verdict * env := run_chain_flat_env h prog_lim Drop env1 pk1.
 Definition vpk2 : packet := mkpkt [1;1].
-Definition vv2 : verdict := fst (run_chain_mut_env h prog_lim Drop (snd vres1) vpk2).
+Definition vv2 : verdict := fst (run_chain_flat_env h prog_lim Drop (snd vres1) vpk2).
 
 Lemma vm_p1_accepted : fst vres1 = Accept.
 Proof. reflexivity. Qed.
@@ -122,7 +122,7 @@ Definition rule_lim_first : rule :=
      r_outcome := OVerdict Accept; r_after := [] |}.
 Definition chain_lim_first : chain := {| c_policy := Drop; c_rules := [rule_lim_first] |}.
 
-Definition lf_res : verdict * env := eval_chain_mut_env h chain_lim_first env1 pk1.
+Definition lf_res : verdict * env := eval_chain_flat_env h chain_lim_first env1 pk1.
 
 (* The rule does not apply (the mark match fails) — the DROP policy verdict. *)
 Lemma lim_first_policy : fst lf_res = Drop.
@@ -134,7 +134,7 @@ Proof. reflexivity. Qed.
 
 (* VM twin: the compiled bytecode consumes the same bucket at the same position. *)
 Definition vm_lf_res : verdict * env :=
-  run_chain_mut_env h (compile_chain chain_lim_first) Drop env1 pk1.
+  run_chain_flat_env h (compile_chain chain_lim_first) Drop env1 pk1.
 
 Lemma vm_limit_before_failing_match_consumed : e_limit (snd vm_lf_res) lim1 = 0.
 Proof. reflexivity. Qed.

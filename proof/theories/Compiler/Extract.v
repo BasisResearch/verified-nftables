@@ -53,7 +53,7 @@ From Nft Require Import Optimize_PayMerge Optimize_XorFold Optimize_Elide
 (* The DEFAULT compile pipeline (nft's always-on linearization: payload merge +
    xor fold, then compile) — what `nftc compile` and the final compile step of
    `nftc optimize`/`nftc send` emit
-   ([Optimize_Linearize_MutSt.compile_chain_default_mut_st_correct]). *)
+   ([Optimize_Linearize_MutSt.compile_chain_default_flat_correct]). *)
 From Nft Require Import Optimize_Linearize.
 (* The typed-layer surface (T1): the Coq surface AST, datatype/coercion
    lattice, symbol tables, selector map and typechecker.  Extracted so the
@@ -127,8 +127,8 @@ Extract Constant N.of_nat =>
 
 (* The control-plane compiler/optimizer and the field table are what the glue
    needs; we also extract the effect-threading packet semantics
-   ([eval_chain_mut]) and the bytecode VM ([run_chain_mut]) so an executable test
-   can witness [compile_chain_mut_correct] on concrete packets (semtest.ml). *)
+   ([eval_chain_flat_verdict]) and the bytecode VM ([run_chain_flat_verdict]) so an executable test
+   can witness [compile_chain_flat_verdict_correct] on concrete packets (semtest.ml). *)
 Separate Extraction
   compile_chain
   RegsValid.regs_valid
@@ -152,10 +152,10 @@ Separate Extraction
   field_load
   all_fields
   compile_env
-  eval_chain_mut
-  run_chain_mut
-  eval_chain_mut_env
-  run_chain_mut_env
+  eval_chain_flat_verdict
+  run_chain_flat_verdict
+  eval_chain_flat_env
+  run_chain_flat_env
   eval_chain
   chain_out
   chain_out_env

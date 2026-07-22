@@ -9,9 +9,9 @@
 
     The whole-pipeline correctness of [optimize_table] is proved — with NO
     [rules_clean] and NO freshness precondition on the input — over the state fold
-    in [Optimize_MutEnv.v] ([optimize_table_uncond_mut_st_correct]) and composed
+    in [Optimize_MutEnv.v] ([optimize_table_uncond_flat_correct]) and composed
     to the bytecode in
-    [Optimize_Linearize_MutSt.optimize_table_uncond_compile_mut_st_correct].  That
+    [Optimize_Linearize_MutSt.optimize_table_uncond_compile_flat_correct].  That
     UNCONDITIONAL optimizer ([optimize_table_uncond], defined in [Optimize_Uncond.v])
     is what [Extract.v] extracts and what the [glue.ml] CLI invokes, so the shipped
     tool RUNS the verified term. *)
@@ -59,11 +59,11 @@ From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics
     does NOT merge `meta mark set` rules at all, so [datamap] is a LABELLED SOUND
     SUPERSET with no `nft -o` counterpart — NOT part of the byte-fidelity claim, and
     NOT an nft bug (nft is merely conservative; the merge is verdict/state-preserving
-    per [Optimize_DataMap.eval_rules_mut_map_merge], and its effect-level shape
-    certificate [Optimize_MutEnv.eval_rules_mut_st_map_merge] — full state:
+    per [Optimize_DataMap.eval_rules_flat_verdict_map_merge], and its effect-level shape
+    certificate [Optimize_MutEnv.eval_rules_flat_map_merge] — full state:
     verdict + (env, packet) out — IS composed through [optimize_table]: the
     pipeline-level effect guarantee is
-    [Optimize_MutEnv.optimize_table_uncond_mut_st_correct]).  [datamap] emits the HEAD-GUARDED
+    [Optimize_MutEnv.optimize_table_uncond_flat_correct]).  [datamap] emits the HEAD-GUARDED
     form (a synthesised key set in front of the map) because our model loads a
     default on a statement value-map miss rather than NFT_BREAKing; the guard makes
     the lookup always hit, recovering exact equivalence.  Why the guard cannot just
@@ -95,11 +95,11 @@ Definition optimize_table (n : nat) (d : set_decls) (c : chain)
     fold — with NO [rules_clean] and NO caller-supplied freshness side-condition on
     the input chain:
 
-      [Optimize_MutEnv.optimize_table_mut_st_correct_uncond_gen] : general (n,d)
+      [Optimize_MutEnv.optimize_table_flat_correct_uncond_gen] : general (n,d)
         form, freshness obligations only (which a clean input would also satisfy —
         [rules_clean] is subsumed);
-      [Optimize_MutEnv.optimize_table_uncond_mut_st_correct] /
-      [Optimize_Linearize_MutSt.optimize_table_uncond_compile_mut_st_correct] :
+      [Optimize_MutEnv.optimize_table_uncond_flat_correct] /
+      [Optimize_Linearize_MutSt.optimize_table_uncond_compile_flat_correct] :
         the fresh-table entry [optimize_table_uncond c], with NO hypothesis on [c]
         beyond numgen-freedom.
 

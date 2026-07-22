@@ -571,7 +571,7 @@ Definition value_merge_pair (r1 r2 : rule) : option (field * data * data * list 
      merged rule where the original run could evaluate it several times (e.g. a
      non-terminal verdict with duplicate values, or a meta-head rewritten by the
      tail) — so the effect-level pipeline theorem
-     ([Optimize_MutEnv.optimize_table_uncond_mut_st_correct]) requires the
+     ([Optimize_MutEnv.optimize_table_uncond_flat_correct]) requires the
      recogniser to refuse such runs.  [r2]'s mut-freedom follows from the shape
      (same tail, same end fields, pure head), see [value_merge_pair_shape]. *)
   if negb (rule_mutfree r1) then None else
@@ -1094,7 +1094,7 @@ Qed.
     `__setN` resolves to its N point elements (freshness + [optimize_..._assoc_stable]);
     [concat_set_existsb] turns the merged head into the [existsb] disjunction of the N
     point matches; the state-fold run-merge substrate
-    [Optimize_MutEnv.eval_rules_mut_st_run_merge_abs] collapses the whole run; the
+    [Optimize_MutEnv.eval_rules_flat_run_merge_abs] collapses the whole run; the
     clean leftover tail is env-irrelevant.  This matches [nft -o]'s consolidation of an
     N-rule run into a single N-element anonymous set. *)
 

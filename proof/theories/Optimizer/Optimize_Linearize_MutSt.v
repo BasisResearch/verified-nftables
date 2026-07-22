@@ -5,7 +5,7 @@
     (payload merge, xor fold, trivial-binop elision) and the DEFAULT compile
     pipeline [compile_chain_default] against the write-blind verdict semantics —
     verdicts only.  This file lifts that guarantee to the FULL-STATE
-    effect-observing chain semantics [eval_chain_mut_st h] (the single per-rule
+    effect-observing chain semantics [eval_chain_flat h] (the single per-rule
     fold [rule_step]: packet meta/ct writes, dynset env writes, the notrack
     latch, limiter/quota/connlimit consumption, and the NAT data plane — with
     the state pair the fold threads exported IN FULL, verdict AND resulting
@@ -20,8 +20,8 @@
     for every env and packet; the write path is untouched.  This makes each pass
     STATE-PRESERVING unconditionally.
 
-    The composed headline [compile_chain_default_mut_st_correct] carries the
-    plain-compile full-state bridge [compile_chain_mut_st_correct] (built here
+    The composed headline [compile_chain_default_flat_correct] carries the
+    plain-compile full-state bridge [compile_chain_flat_correct] (built here
     from [Correct.run_rule_step_compile_rule]) through the three stages, under
     the single [rule_numgen_free] hypothesis every frontend-emitted chain
     discharges ([Lower_Proofs.lower_ruleset_numgen_free]) — no NEW effectful
@@ -248,93 +248,93 @@ Proof.
 Qed.
 
 (** A per-rule map whose step is preserved preserves the full-state rule fold. *)
-Lemma eval_rules_mut_st_map_cong : forall h (f : rule -> rule) rs e p,
+Lemma eval_rules_flat_map_cong : forall h (f : rule -> rule) rs e p,
   (forall r e' p', rule_step h (f r) e' p' = rule_step h r e' p') ->
-  eval_rules_mut_st h (map f rs) e p = eval_rules_mut_st h rs e p.
+  eval_rules_flat h (map f rs) e p = eval_rules_flat h rs e p.
 Proof.
   intros h f rs e p Hstep. revert e p.
   induction rs as [| r rs IH]; intros e p; [reflexivity|].
-  cbn [map]. rewrite !eval_rules_mut_st_cons. rewrite Hstep.
+  cbn [map]. rewrite !eval_rules_flat_cons. rewrite Hstep.
   destruct (rule_step h r e p) as [[v|] [e' p']].
   - destruct (terminal v); [reflexivity | apply IH].
   - apply IH.
 Qed.
 
-Lemma paymerge_chain_mut_st : forall h c e p,
-  eval_chain_mut_st h (paymerge_chain c) e p = eval_chain_mut_st h c e p.
+Lemma paymerge_chain_flat : forall h c e p,
+  eval_chain_flat h (paymerge_chain c) e p = eval_chain_flat h c e p.
 Proof.
-  intros h c e p. unfold eval_chain_mut_st, paymerge_chain. cbn [c_rules c_policy].
-  rewrite (eval_rules_mut_st_map_cong h paymerge_rule (c_rules c) e p
+  intros h c e p. unfold eval_chain_flat, paymerge_chain. cbn [c_rules c_policy].
+  rewrite (eval_rules_flat_map_cong h paymerge_rule (c_rules c) e p
              (paymerge_rule_step h)). reflexivity.
 Qed.
 
-Lemma xorfold_chain_mut_st : forall h c e p,
-  eval_chain_mut_st h (xorfold_chain c) e p = eval_chain_mut_st h c e p.
+Lemma xorfold_chain_flat : forall h c e p,
+  eval_chain_flat h (xorfold_chain c) e p = eval_chain_flat h c e p.
 Proof.
-  intros h c e p. unfold eval_chain_mut_st, xorfold_chain. cbn [c_rules c_policy].
-  rewrite (eval_rules_mut_st_map_cong h xorfold_rule (c_rules c) e p
+  intros h c e p. unfold eval_chain_flat, xorfold_chain. cbn [c_rules c_policy].
+  rewrite (eval_rules_flat_map_cong h xorfold_rule (c_rules c) e p
              (xorfold_rule_step h)). reflexivity.
 Qed.
 
-Lemma elide_chain_mut_st : forall h c e p,
-  eval_chain_mut_st h (elide_chain c) e p = eval_chain_mut_st h c e p.
+Lemma elide_chain_flat : forall h c e p,
+  eval_chain_flat h (elide_chain c) e p = eval_chain_flat h c e p.
 Proof.
-  intros h c e p. unfold eval_chain_mut_st, elide_chain. cbn [c_rules c_policy].
-  rewrite (eval_rules_mut_st_map_cong h elide_rule (c_rules c) e p
+  intros h c e p. unfold eval_chain_flat, elide_chain. cbn [c_rules c_policy].
+  rewrite (eval_rules_flat_map_cong h elide_rule (c_rules c) e p
              (elide_rule_step h)). reflexivity.
 Qed.
 
 (** The composed always-on linearization is STATE-PRESERVING: for every chain,
     env and packet the linearized chain yields the SAME verdict, the SAME
     resulting env AND the SAME resulting packet as the source chain. *)
-Theorem linearize_chain_mut_st : forall h c e p,
-  eval_chain_mut_st h (linearize_chain c) e p = eval_chain_mut_st h c e p.
+Theorem linearize_chain_flat : forall h c e p,
+  eval_chain_flat h (linearize_chain c) e p = eval_chain_flat h c e p.
 Proof.
   intros h c e p. unfold linearize_chain.
-  rewrite elide_chain_mut_st, xorfold_chain_mut_st, paymerge_chain_mut_st.
+  rewrite elide_chain_flat, xorfold_chain_flat, paymerge_chain_flat.
   reflexivity.
 Qed.
 
 (* ================================================================== *)
 (** ** The plain-compile full-state bridge, then the DEFAULT-pipeline headline.
 
-    The full-state compile bridge — [run_program_mut_st] of the compiled rules
-    IS [eval_rules_mut_st] — is the [_st] analogue of
-    [Correct.run_program_mut_env_compile_chain] (which drops the packet half):
+    The full-state compile bridge — [run_program_flat] of the compiled rules
+    IS [eval_rules_flat] — is the [_st] analogue of
+    [Correct.run_program_flat_env_compile_chain] (which drops the packet half):
     one induction, driven by [Correct.run_rule_step_compile_rule]. *)
-Lemma run_program_mut_st_compile_chain : forall h rs e p,
+Lemma run_program_flat_compile_chain : forall h rs e p,
   forallb rule_numgen_free rs = true ->
-  run_program_mut_st h (map compile_rule rs) e p = eval_rules_mut_st h rs e p.
+  run_program_flat h (map compile_rule rs) e p = eval_rules_flat h rs e p.
 Proof.
   induction rs as [| r rs IH]; intros e p Hall; [reflexivity|].
   cbn [forallb] in Hall. apply Bool.andb_true_iff in Hall. destruct Hall as [Hr Hrs].
-  cbn [map]. rewrite run_program_mut_st_cons, eval_rules_mut_st_cons.
+  cbn [map]. rewrite run_program_flat_cons, eval_rules_flat_cons.
   rewrite (Correct.run_rule_step_compile_rule h r e p Hr).
   destruct (rule_step h r e p) as [[v |] [e' p']].
   - destruct (terminal v); [reflexivity | apply IH; exact Hrs].
   - apply IH; exact Hrs.
 Qed.
 
-(** The state VM run of a chain: the [run_program_mut_st] fold, falling through
+(** The state VM run of a chain: the [run_program_flat] fold, falling through
     to the chain policy on no verdict — the full-state ((env, packet)-returning)
-    twin of [run_chain_mut_env]. *)
-Definition run_chain_mut_st (h : hook_id) (prog : program) (policy : verdict)
+    twin of [run_chain_flat_env]. *)
+Definition run_chain_flat (h : hook_id) (prog : program) (policy : verdict)
     (e : env) (p : packet) : verdict * (env * packet) :=
-  match run_program_mut_st h prog e p with
+  match run_program_flat h prog e p with
   | (Some v, s) => (v, s)
   | (None, s)   => (policy, s)
   end.
 
 (** Plain-compile full-state correctness: the compiled chain's VM run
     reproduces the DSL state fold — verdict AND resulting (env, packet). *)
-Theorem compile_chain_mut_st_correct : forall h c e p,
+Theorem compile_chain_flat_correct : forall h c e p,
   forallb rule_numgen_free (c_rules c) = true ->
-  run_chain_mut_st h (compile_chain c) (c_policy c) e p = eval_chain_mut_st h c e p.
+  run_chain_flat h (compile_chain c) (c_policy c) e p = eval_chain_flat h c e p.
 Proof.
   intros h c e p Hall.
-  unfold run_chain_mut_st, eval_chain_mut_st, compile_chain.
-  rewrite run_program_mut_st_compile_chain by exact Hall.
-  destruct (eval_rules_mut_st h (c_rules c) e p) as [[v|] s]; reflexivity.
+  unfold run_chain_flat, eval_chain_flat, compile_chain.
+  rewrite run_program_flat_compile_chain by exact Hall.
+  destruct (eval_rules_flat h (c_rules c) e p) as [[v|] s]; reflexivity.
 Qed.
 
 (* ================================================================== *)
@@ -483,33 +483,33 @@ Qed.
     under the single [rule_numgen_free] hypothesis (discharged for every
     frontend-emitted chain by [Lower_Proofs.lower_ruleset_numgen_free]).  Re-exported
     as the Main headline [Main.main_compile_chain_default_correct]. *)
-Theorem compile_chain_default_mut_st_correct : forall h c e p,
+Theorem compile_chain_default_flat_correct : forall h c e p,
   forallb rule_numgen_free (c_rules c) = true ->
-  run_chain_mut_st h (compile_chain_default c) (c_policy c) e p
-  = eval_chain_mut_st h c e p.
+  run_chain_flat h (compile_chain_default c) (c_policy c) e p
+  = eval_chain_flat h c e p.
 Proof.
   intros h c e p Hall.
   unfold compile_chain_default.
   change (c_policy c) with (c_policy (linearize_chain c)).
-  rewrite (compile_chain_mut_st_correct h (linearize_chain c) e p
+  rewrite (compile_chain_flat_correct h (linearize_chain c) e p
              (linearize_chain_numgen_free c Hall)).
-  apply linearize_chain_mut_st.
+  apply linearize_chain_flat.
 Qed.
 
 (* ================================================================== *)
 (** ** HEADLINE (optimizer axis, full state): the shipped optimize∘default-compile
     guarantee over the effect-observing state fold.  Re-exported as the Main
-    headline [Main.main_optimize_table_uncond_compile_mut_st_correct].
+    headline [Main.main_optimize_table_uncond_compile_flat_correct].
 
     Run the shipped 18-stage `nft -o` consolidation
     ([Optimize_Uncond.optimize_table_uncond]), DEFAULT-compile the optimised
     chain, and run the bytecode on the state VM: the result — verdict AND the
     resulting (env, packet) the [rule_step] fold leaves — is exactly the source
-    chain's DSL state fold.  Composed from [compile_chain_default_mut_st_correct]
+    chain's DSL state fold.  Composed from [compile_chain_default_flat_correct]
     (the compiled optimised chain reproduces its own state fold, under the single
     [rule_numgen_free] hypothesis every frontend chain discharges via
     [Lower_Proofs.lower_ruleset_numgen_free]) and
-    [Optimize_MutEnv.optimize_table_uncond_mut_st_correct] (the pipeline
+    [Optimize_MutEnv.optimize_table_uncond_flat_correct] (the pipeline
     preserves the source chain's state fold at every hook).
 
     Both sides run under [env_with_sets base d'].  A verdict-only chain semantics
@@ -519,21 +519,21 @@ Qed.
     and must appear on both sides for the returned (env, packet) pairs to match —
     reading the source at [empty_decls] would drop [d'] from the returned env and
     break the equality. *)
-Theorem optimize_table_uncond_compile_mut_st_correct :
+Theorem optimize_table_uncond_compile_flat_correct :
   forall h c base p n' d' c',
   forallb rule_numgen_free (c_rules c') = true ->
   Optimize_Uncond.optimize_table_uncond c = (n', d', c') ->
-  run_chain_mut_st h (compile_chain_default c') (c_policy c')
+  run_chain_flat h (compile_chain_default c') (c_policy c')
                    (env_with_sets base d') p
-  = eval_chain_mut_st h c (env_with_sets base d') p.
+  = eval_chain_flat h c (env_with_sets base d') p.
 Proof.
   intros h c base p n' d' c' Hng H.
-  rewrite (compile_chain_default_mut_st_correct
+  rewrite (compile_chain_default_flat_correct
              h c' (env_with_sets base d') p Hng).
-  exact (Optimize_MutEnv.optimize_table_uncond_mut_st_correct h c base p n' d' c' H).
+  exact (Optimize_MutEnv.optimize_table_uncond_flat_correct h c base p n' d' c' H).
 Qed.
 
 (** Axiom-freedom audit (build-time guard; enforcement is `make axioms`). *)
-Print Assumptions linearize_chain_mut_st.
-Print Assumptions compile_chain_default_mut_st_correct.
-Print Assumptions optimize_table_uncond_compile_mut_st_correct.
+Print Assumptions linearize_chain_flat.
+Print Assumptions compile_chain_default_flat_correct.
+Print Assumptions optimize_table_uncond_compile_flat_correct.

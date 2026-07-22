@@ -59,12 +59,12 @@ Definition pkt_mark0 : packet := mkpkt base_meta [3;3].
 
 (* The fold's walk sees the intra-rule write: the match reads the mark the
    preceding set statement just wrote. *)
-Theorem setread_accepted : eval_chain_mut h setread_chain env0 pkt_mark0 = Accept.
+Theorem setread_accepted : eval_chain_flat_verdict h setread_chain env0 pkt_mark0 = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The compiled VM agrees (both sides are kernel-faithful). *)
 Theorem vm_setread_accepted :
-  run_chain_mut h (compile_chain setread_chain) Drop env0 pkt_mark0 = Accept.
+  run_chain_flat_verdict h (compile_chain setread_chain) Drop env0 pkt_mark0 = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* Non-vacuity: a rule whose comparison wants a DIFFERENT mark still drops —
@@ -77,10 +77,10 @@ Definition setread_wrong_chain : chain :=
   {| c_policy := Drop; c_rules := [setread_wrong_rule] |}.
 
 Theorem setread_wrong_dropped :
-  eval_chain_mut h setread_wrong_chain env0 pkt_mark0 = Drop.
+  eval_chain_flat_verdict h setread_wrong_chain env0 pkt_mark0 = Drop.
 Proof. vm_compute. reflexivity. Qed.
 Theorem vm_setread_wrong_dropped :
-  run_chain_mut h (compile_chain setread_wrong_chain) Drop env0 pkt_mark0 = Drop.
+  run_chain_flat_verdict h (compile_chain setread_wrong_chain) Drop env0 pkt_mark0 = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 (* ------------------------------------------------------------------------ *)
@@ -100,11 +100,11 @@ Definition dynset_feedback_chain : chain :=
   {| c_policy := Drop; c_rules := [dynset_feedback_rule] |}.
 
 Theorem dynset_feedback_accepted :
-  eval_chain_mut h dynset_feedback_chain env0 pkt_mark9 = Accept.
+  eval_chain_flat_verdict h dynset_feedback_chain env0 pkt_mark9 = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem vm_dynset_feedback_accepted :
-  run_chain_mut h (compile_chain dynset_feedback_chain) Drop env0 pkt_mark9 = Accept.
+  run_chain_flat_verdict h (compile_chain dynset_feedback_chain) Drop env0 pkt_mark9 = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* Non-vacuity: WITHOUT the dynset add, the same lookup misses and the chain
@@ -117,7 +117,7 @@ Definition lookup_only_chain : chain :=
   {| c_policy := Drop; c_rules := [lookup_only_rule] |}.
 
 Theorem lookup_only_dropped :
-  eval_chain_mut h lookup_only_chain env0 pkt_mark9 = Drop.
+  eval_chain_flat_verdict h lookup_only_chain env0 pkt_mark9 = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 (* ------------------------------------------------------------------------ *)

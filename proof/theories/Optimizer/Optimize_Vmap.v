@@ -350,7 +350,7 @@ Proof. reflexivity. Qed.
     [tcp dport vmap { 22:accept, 80:drop, 443:accept }].  Unlike the value->set and
     concat families (single shared verdict), the vmap rule's OUTCOME is value-
     DEPENDENT, so this needs a dedicated N-way collapse rather than the shared-verdict
-    [Optimize_MutEnv.eval_rules_mut_st_run_collapse]. *)
+    [Optimize_MutEnv.eval_rules_flat_run_collapse]. *)
 
 Definition vmap_pt (vw : data * verdict) : data * data * verdict :=
   (fst vw, fst vw, snd vw).

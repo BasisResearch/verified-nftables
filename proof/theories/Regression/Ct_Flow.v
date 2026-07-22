@@ -184,11 +184,11 @@ Definition stateful_chain : chain :=
   {| c_policy := Drop; c_rules := [ estab_accept_rule ] |}.
 
 Theorem unsolicited_new_packet_dropped :
-  forall e p, flow_is_new e p -> eval_chain_mut h stateful_chain e p = Drop.
+  forall e p, flow_is_new e p -> eval_chain_flat_verdict h stateful_chain e p = Drop.
 Proof.
   intros e p Hnew.
   pose proof (new_flow_not_established e p Hnew) as Hf.
-  unfold eval_chain_mut, stateful_chain. cbn [c_rules c_policy]. rewrite ?eval_rules_mut_cons, ?eval_rules_mut_nil.
+  unfold eval_chain_flat_verdict, stateful_chain. cbn [c_rules c_policy]. rewrite ?eval_rules_flat_verdict_cons, ?eval_rules_flat_verdict_nil.
   assert (Hov : fst (rule_step h estab_accept_rule e p) = None).
   { unfold rule_step.
     cbn [estab_accept_rule r_body body_step match_consume]. rewrite Hf. reflexivity. }
@@ -203,13 +203,13 @@ Definition flow_is_established (e : env) (p : packet) : Prop :=
   /\ e_ct e (pkt_flow p) CKstate = st_estab.
 
 Theorem established_flow_accepted :
-  forall e p, flow_is_established e p -> eval_chain_mut h stateful_chain e p = Accept.
+  forall e p, flow_is_established e p -> eval_chain_flat_verdict h stateful_chain e p = Accept.
 Proof.
   intros e p [Hunt [Hpres Hentry]].
   assert (Hm : eval_matchcond m_estab e p = true).
   { unfold m_estab, eval_matchcond, eval_matchcond_body, match_loadable, field_value, do_load.
     cbn. rewrite Hunt, Hpres, Hentry. vm_compute. reflexivity. }
-  unfold eval_chain_mut, stateful_chain. cbn [c_rules c_policy]. rewrite ?eval_rules_mut_cons, ?eval_rules_mut_nil.
+  unfold eval_chain_flat_verdict, stateful_chain. cbn [c_rules c_policy]. rewrite ?eval_rules_flat_verdict_cons, ?eval_rules_flat_verdict_nil.
   assert (Hov : fst (rule_step h estab_accept_rule e p) = Some Accept).
   { unfold rule_step.
     cbn [estab_accept_rule r_body body_step match_consume]. rewrite Hm. reflexivity. }

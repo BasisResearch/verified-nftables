@@ -2065,7 +2065,7 @@ Print Assumptions cidr_interval_agrees_prefix_expand.
     incremental `numgen`, so every rule in every chain of every table a
     successful [lower_ruleset] emits satisfies [rule_numgen_free].  This is the
     theorem that discharges the ONLY hypothesis of the mutation-strand compiler
-    theorems ([Correct.compile_chain_mut_correct] and friends) for every
+    theorems ([Correct.compile_chain_flat_verdict_correct] and friends) for every
     program the frontend can produce — quantified over ALL lowerings, not a
     per-ruleset spot check. *)
 

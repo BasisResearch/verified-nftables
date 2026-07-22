@@ -380,7 +380,7 @@ Qed.
     interface addresses, limiter buckets — the [env] above) is NOT part of a
     packet: every evaluator takes the env as an explicit parameter beside the
     packet, and the mutation evaluators return the env they leave
-    ([Semantics.eval_rules_mut_env : list rule -> env -> packet ->
+    ([Semantics.eval_rules_flat_env : list rule -> env -> packet ->
     option verdict * env]), so a type signature shows exactly which state flows
     where. *)
 Record packet : Type := {

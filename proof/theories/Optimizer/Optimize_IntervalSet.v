@@ -25,7 +25,7 @@
     so the merged head is EXACTLY the [existsb] disjunction of the run's ranges —
     with NO fixed-width side-condition ([data_le] does not truncate, unlike [MCmp]'s
     prefix equality).  The first-match merge is certified over the state fold by
-    [Optimize_MutEnv.eval_rules_mut_st_run_merge_abs].  Axiom-free. *)
+    [Optimize_MutEnv.eval_rules_flat_run_merge_abs].  Axiom-free. *)
 
 From Stdlib Require Import Ascii String.
 From Stdlib Require Import List PeanoNat Bool Lia Wellfounded Arith.Wf_nat.
