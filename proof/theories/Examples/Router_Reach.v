@@ -103,13 +103,6 @@ Definition saddr_private (e : env) (p : packet) : bool :=
 Definition oif_ppp0 (e : env) (p : packet) : bool :=
   eval_matchcond (MEq FMetaOifname if_ppp0) e p.
 
-(* [rule_applies] for the masq rule = both matches pass. *)
-Lemma masq_rule_applies_eq : forall e p,
-  rule_applies masq_rule e p = saddr_private e p && oif_ppp0 e p.
-Proof.
-  intros e p. unfold rule_applies, masq_rule, saddr_private, oif_ppp0; cbn [r_body].
-  cbn [rule_applies_walk]. now rewrite Bool.andb_true_r.
-Qed.
 
 (* The single fold on the masq rule: the two matches walk (no writes), and the
    NAT terminal — reached only when both pass — performs the data-plane effect:
@@ -250,11 +243,11 @@ Print Assumptions nat_masquerade_fires.
 (* When the rule does NOT apply (saddr not in /16 OR oif <> ppp0), the postrouting
    chain returns the packet BYTE-FOR-BYTE UNCHANGED: no source rewrite, no leak. *)
 Theorem nat_masquerade_does_not_fire : forall e p,
-  rule_applies masq_rule e p = false ->
+  saddr_private e p && oif_ppp0 e p = false ->
   chain_out Hpostrouting global_postrouting e p = p
   /\ chain_out_env Hpostrouting global_postrouting e p = e.
 Proof.
-  intros e p Happ. rewrite masq_rule_applies_eq in Happ.
+  intros e p Happ.
   unfold chain_out, chain_out_env.
   rewrite masq_chain_u, Happ. split; reflexivity.
 Qed.
@@ -267,8 +260,8 @@ Theorem nat_no_leak : forall e p,
   /\ chain_out_env Hpostrouting global_postrouting e p = e.
 Proof.
   intros e p Hor.
-  assert (Happ : rule_applies masq_rule e p = false).
-  { rewrite masq_rule_applies_eq. destruct Hor as [H|H]; rewrite H;
+  assert (Happ : saddr_private e p && oif_ppp0 e p = false).
+  { destruct Hor as [H|H]; rewrite H;
       [reflexivity | now rewrite Bool.andb_false_r]. }
   destruct (nat_masquerade_does_not_fire e p Happ) as [Hp He].
   rewrite Hp, He. split; reflexivity.

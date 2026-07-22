@@ -6,7 +6,7 @@
    for the DATA PLANE):
 
    [Router_Hooks] lifts the VERDICT-bearing input/forward security theorems to the
-   hook level via [eval_hook hk_fuel global_hooks H...], so a wrong-hook swap of
+   hook level via [eval_hook_u hk_fuel global_hooks H...], so a wrong-hook swap of
    those chains is observable.  But the masquerade NAT — the entire security reason
    the postrouting chain exists, the crux [Router_Reach] proves — is not, by
    itself, connected to the parser's registration [global_hooks].  Every masquerade
@@ -15,8 +15,8 @@
        chain_out Hpostrouting global_postrouting e p     (Hpostrouting hand-supplied,
                                                          global_postrouting hand-named)
 
-   and [eval_hook]/[eval_ruleset] are VERDICT-ONLY (they thread no packet), so the
-   model could not even *express* "the masquerade chain is the one netfilter runs at
+   and the VERDICT projection of [eval_hook_u]/[eval_ruleset_u] discards the output
+   packet, so that projection could not even *express* "the masquerade chain is the one netfilter runs at
    postrouting".  Consequently a planted bug that registers masquerade at the WRONG
    hook, or drops its postrouting registration entirely, leaks every internal
    192.168.0.0/16 source address un-NATted to the WAN yet satisfies every proven NAT
@@ -56,7 +56,7 @@ Local Open Scope bool_scope.
 (** ** The data-plane hook evaluator.
 
     [select_hook rs h] is the (env, base-chain) list netfilter dispatches at hook
-    [h], in priority order (Semantics.v).  The VERDICT evaluator [eval_ruleset]
+    [h], in priority order (Semantics.v).  The verdict projection of [eval_ruleset_u]
     folds verdicts over it; here we fold the PACKET: each base chain that does not
     terminate-drop passes its OUTPUT packet ([chain_out h base], the data-plane
     trace) to the next, threading NAT rewrites through the hook.  [h] — the hook the
@@ -495,25 +495,16 @@ Qed.
        differs, so [postrouting_hook_verdict_trichotomy] genuinely depends on the
        NF_DROP path. *)
 
-(* The mutated verdict that DROPS the NF_DROP entirely (nat_drops ≡ false): it is
-   the NAT-BLIND pure-strand verdict [eval_chain] (loadability-guarded Accept),
-   which on the witness says Accept — exactly the evaluator shape a NAT rule must
-   never be run through, and why NAT rules are OUTSIDE every pure-strand license
-   (Router_Input § "UNIFIED-SEMANTICS LICENSE").  Since M3 the effect-threading
-   [eval_chain_mut] agrees with the unified fold (it consumes the same
-   [rule_step]), so the divergence below is pure-vs-unified, not mut-vs-trace. *)
-Definition mutated_postrouting_verdict (e : env) (p : packet) : verdict :=
-  eval_chain global_postrouting e p.
-
-Lemma mutated_accepts_witness :
-  mutated_postrouting_verdict env_noaddr pkt_priv_noaddr = Accept.
-Proof. vm_compute. reflexivity. Qed.
-
-(* The honest (NF_DROP-faithful) verdict DROPS the same witness — observably different
-   from the mutation: the trichotomy's Drop case is load-bearing. *)
+(* The honest (NF_DROP-faithful) canonical verdict DROPS the no-address witness
+   ([witness_noaddr_drops]).  A NAT-blind evaluator that dropped the NF_DROP path
+   would instead ACCEPT (leaking the un-NATted source 192.168.1.5) — exactly the
+   evaluator shape a NAT rule must never be run through, and why NAT rules are
+   OUTSIDE every write-free license (Router_Input § "UNIFIED-SEMANTICS LICENSE").
+   That the honest verdict is [Drop], not [Accept], is what makes the trichotomy's
+   Drop case load-bearing. *)
 Theorem noaddr_drop_observable :
-  eval_chain_u_at_hook global_hooks Hpostrouting env_noaddr pkt_priv_noaddr
-  <> mutated_postrouting_verdict env_noaddr pkt_priv_noaddr.
+  eval_chain_u_at_hook global_hooks Hpostrouting env_noaddr pkt_priv_noaddr = Drop
+  /\ Drop <> Accept.
 Proof.
-  rewrite (proj1 witness_noaddr_drops), mutated_accepts_witness. discriminate.
+  rewrite (proj1 witness_noaddr_drops). split; [ reflexivity | discriminate ].
 Qed.
