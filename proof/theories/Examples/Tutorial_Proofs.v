@@ -207,8 +207,8 @@ Proof. Fail now nft_decide. Abort.
 (* ================================================================== *)
 (** ** The tutorial config is write-free, so every verdict above — stated over
     the canonical unified evaluator [eval_table_u] at every hook — is
-    hook-independent and coincides with the pure jump strand
-    ([Semantics.eval_table_u_writefree]); [nft_writefree] is the check. *)
+    hook-independent ([Nft_Tactics.eval_table_u_hookindep_writefree]);
+    [nft_writefree] is the check. *)
 Example tutorial_license :
   nft_writefree tutorial_chains tutorial_input = true.
 Proof. vm_compute. reflexivity. Qed.

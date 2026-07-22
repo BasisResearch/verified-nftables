@@ -173,7 +173,7 @@ validate: glue
 #   multi-address        Netstate_MultiAddr (selection + drop-iff)
 #   fib host-local       Fib_Local (all 17 heads)
 #   ct-state             Ct_State (all 5 theorems)
-#   fuel adequacy (M4)   Semantics jx monotonicity/adequacy + eval_table
+#   fuel adequacy (M4)   Semantics jx monotonicity/adequacy + eval_table_u
 #                        fuel-independence + compiled mirror + the tutorial
 #                        fuel-free corollary
 #   mark de-vacuized(M4) Optiplex_Mark _real heads + the gen_env/fib
@@ -186,7 +186,7 @@ validate: glue
 #                        constant fold (xorfold_chain_eval, corpus class L) — plus
 #                        the ONE generic pass-composition theorem
 #                        (run_passes_correct: folding any registry pass list
-#                        preserves eval_chain)
+#                        preserves the chain semantics)
 #   default pipeline(T3) nft's ALWAYS-ON linearization (paymerge + xorfold
 #                        + trivial-binop elision, W3) composed into the
 #                        default compile —
@@ -227,8 +227,8 @@ validate: glue
 #                        jump/goto/return x multi-chain x hook dispatch x
 #                        cross-packet env carry, jointly compiler-preserved
 #                        (compile_{table,ruleset,hook,seq_hook}_u_correct);
-#                        the pure jump strand and the flat mutation strand
-#                        are PROVEN PROJECTIONS of it (eval_rules_u_writefree
+#                        the per-rule write-free reads and the flat mutation
+#                        strand are PROVEN PROJECTIONS of it (rule_step_mutfree
 #                        / eval_rules_u_mut_proj), and the witnessed
 #                        set-then-read-under-jump behaviour is pinned on both
 #                        sides (Setread_UnderJump)
@@ -256,10 +256,6 @@ AXIOM_GATE_THEOREMS = compile_chain_mut_correct \
   Seq_Hook_Carry.vm_seq_hook_limit_depletes \
   Seq_Hook_Carry.seq_hook_dynset_learns \
   Seq_Hook_Carry.vm_seq_hook_dynset_learns \
-  Semantics.eval_rules_u_writefree Semantics.eval_table_u_writefree \
-  Semantics.eval_ruleset_u_writefree Semantics.eval_hook_u_writefree \
-  Semantics.eval_rules_u_limiter_tolerant Semantics.eval_table_u_limiter_tolerant \
-  Semantics.eval_hook_u_limiter_tolerant_1 \
   Router_Input.world_ingress_locked_down Router_Input.inbound_world_ssh_accept \
   Router_Input.input_property_discriminates_bug \
   Router_Forward.forward_unsolicited_dropped Router_Forward.forward_accept_iff \
@@ -305,9 +301,7 @@ AXIOM_GATE_THEOREMS = compile_chain_mut_correct \
   Optimize_Linearize_MutSt.compile_chain_default_mut_st_correct \
   Optimize_Registry.run_passes_correct \
   Semantics.run_rule_outcome_eq \
-  Semantics.eval_rules_j_fuel_indep Semantics.eval_table_fuel_indep \
   Semantics.eval_rules_u_fuel_indep Semantics.eval_table_u_fuel_indep \
-  Semantics.eval_table_policy_is_fallthrough \
   Semantics.rule_purewalk_ok \
   Nft_Tactics.nft_yields_fuel_indep \
   Tutorial_Proofs.tutorial_blocks_exactly_any_fuel \
