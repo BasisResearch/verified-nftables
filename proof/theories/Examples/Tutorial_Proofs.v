@@ -110,7 +110,7 @@ Print Assumptions tutorial_accepts_rest.
     static [Drop]), so [Semantics.chain_ranked] holds by [vm_compute],
     [sufficient_fuel] computes to 4, and the headline holds VERBATIM at every
     fuel >= 4 — [tutorial_blocks_exactly] is the [fuel = tut_fuel] instance.
-    See Semantics.v § "Fuel discipline for the unified evaluator" for why the bound
+    See Semantics.v § "Fuel discipline" for why the bound
     is needed at all (the policy fallback on exhaustion). *)
 
 Lemma tutorial_ranked : forall e h, chain_ranked h (fun _ => O) tutorial_chains e.

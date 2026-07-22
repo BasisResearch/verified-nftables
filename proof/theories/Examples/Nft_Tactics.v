@@ -137,8 +137,8 @@ Open Scope nft_scope.
     [vm_compute]-able number), the stated property is the SAME at every adequate
     budget — so a theorem proved at one budget is fuel-free above the bound.
     Worked instance: [Tutorial_Proofs.tutorial_blocks_exactly_any_fuel]; the full
-    rationale (including why naive fuel monotonicity is FALSE for the jump strand)
-    sits on Semantics.v § "Fuel discipline for the unified evaluator", and the user
+    rationale (including why naive fuel monotonicity is FALSE for jump loops)
+    sits on Semantics.v § "Fuel discipline", and the user
     guidance in proof/CONFIG_PROOFS.md § "Choosing the fuel budget". *)
 
 Lemma nft_yields_fuel_indep : forall rank cs c e p v fuel fuel',

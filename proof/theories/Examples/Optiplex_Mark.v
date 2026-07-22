@@ -22,8 +22,8 @@
     rule-by-rule through the SINGLE fold (the NAT data plane included — there is
     no side trace evaluator since M3); [chain_out] is the packet it leaves.
 
-    M4 NOTE — [_real] vs the SUPERSEDED-vacuous originals: the pre-M4 theorems
-    pinned the WHOLE env ([e = gen_env]) while also hypothesising a firing
+    M4 NOTE — [_real] vs the SUPERSEDED-vacuous originals: those originals
+    pin the WHOLE env ([e = gen_env]) while also hypothesising a firing
     `fib daddr type local` — jointly unsatisfiable, since [gen_env] has no
     routes ([genenv_fib_local_contradiction] below).  The [_real] forms relax
     the pin to exactly the three [e_set] contents the chain's lookups read

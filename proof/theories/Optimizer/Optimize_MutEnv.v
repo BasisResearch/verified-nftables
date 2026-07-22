@@ -17,14 +17,14 @@
     — the optimised chain, run in the deployed environment (the synthesised
     declarations [d'] present), yields for EVERY packet the SAME verdict, the
     SAME resulting environment AND the SAME resulting packet as the original
-    chain in that same environment.  No hypothesis on [c]: a stage can no
-    longer preserve every verdict while altering a write a later hook
+    chain in that same environment.  No hypothesis on [c]: a stage cannot
+    preserve every verdict while altering a write a later hook
     observes — the env half (dynset learning, limiter/quota depletion, ct/nat
     stores) because it is carried to the next packet ([seq_eval_env]), and the
     PACKET half (meta mark/priority/nftrace, the notrack latch, the NAT
     rewrite) because the unified semantics' own priority dispatch hands the
     mutated packet to the next base chain at the same hook ([eval_ruleset]);
-    Part H pins a pair of chains that agree under the old (verdict, env)
+    Part H pins a pair of chains that agree under the (verdict, env)
     observable yet differ here.  The (verdict, env) form
     [optimize_table_uncond_flat_env_correct] survives as a projection corollary
     ([Semantics.eval_chain_flat_env_st]).
@@ -3870,7 +3870,7 @@ Proof.
 Qed.
 
 (** dedup: the pass fires ONLY on [rule_mutfree] rules (the new guard), where
-    both sides' steps are the state-invariant pure projections and the historical
+    both sides' steps are the state-invariant write-free projections and the
     verdict equalities apply. *)
 Lemma forallb_bim_map_bmatch : forall l,
   forallb body_item_mutfree (map BMatch l) = forallb match_consumefree l.
@@ -5737,7 +5737,7 @@ Qed.
     quota/connlimit consumption and the NAT data plane at their own body
     positions, with nothing of the threaded state dropped from the observable.
 
-    A pipeline stage can therefore no longer preserve every verdict while
+    A pipeline stage therefore cannot preserve every verdict while
     altering a write a later hook observes: BOTH halves of the state ARE the
     theorem's observable — the env half is what [seq_eval_env] carries to the
     next packet, the packet half (e.g. a `meta mark set`) is what

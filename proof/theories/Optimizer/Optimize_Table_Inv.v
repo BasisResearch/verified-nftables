@@ -85,9 +85,8 @@ Proof.
   apply in_flat_map. exists m. split; [exact Hm |]. rewrite Hnm. left; reflexivity.
 Qed.
 
-(* (loadability predicates no longer take the env at all, so the old
-   [match_loadable_env]-style stability lemmas are gone: stability is now a
-   typing fact, visible in the signatures.) *)
+(* (loadability predicates take no env, so their stability is a typing fact
+   visible in the signatures, not a separate env-stability lemma.) *)
 
 (** A body all of whose items are matchconds (no statements).  Every lookup rule a
     merge pass emits ([MConcatSet] head + clean match tail, or a vmap rule whose
