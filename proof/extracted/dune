@@ -49,7 +49,7 @@
  (modules example)
  (libraries nftc))
 
-; An executable witness of compile_chain_correct / optimize_chain_correct: run
+; An executable witness of compile_chain_mut_correct / optimize_chain_correct: run
 ; the extracted DSL semantics, bytecode VM, and compiler on concrete packets.
 (executable
  (name semtest)
