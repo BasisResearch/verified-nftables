@@ -11,7 +11,7 @@
     are checked against a verdict-only semantics), a data-map merge changes the
     packet's META state (the `mark`), which a verdict-only semantics cannot observe.
     So the soundness here is stated over the DSL STATE-threading semantics
-    [eval_rules_mut h] / [dsl_step] (which thread each rule's [body_writes] meta
+    [eval_rules_flat_verdict h] / [dsl_step] (which thread each rule's [body_writes] meta
     effect).  This is the non-vacuous content: the map yields exactly the right
     mark.  The verdict side is trivial (all rules are verdict-neutral [Continue], so
     they fall through for ANY environment), hence composing the pass preserves the
@@ -245,21 +245,21 @@ Proof.
     [destruct (vsrc_loadable (VMap [f] [] mapname) p) |]; reflexivity.
 Qed.
 
-Lemma eval_rules_mut_continue : forall r rest e p,
+Lemma eval_rules_flat_verdict_continue : forall r rest e p,
   fst (rule_step h r e p) = None ->
-  eval_rules_mut h (r :: rest) e p
-  = (let '(e', p') := dsl_step h r e p in eval_rules_mut h rest e' p').
+  eval_rules_flat_verdict h (r :: rest) e p
+  = (let '(e', p') := dsl_step h r e p in eval_rules_flat_verdict h rest e' p').
 Proof.
-  intros r rest e p Ho. rewrite ?eval_rules_mut_cons, ?eval_rules_mut_nil.
+  intros r rest e p Ho. rewrite ?eval_rules_flat_verdict_cons, ?eval_rules_flat_verdict_nil.
   unfold dsl_step.
   destruct (rule_step h r e p) as [v [e' p']]. cbn [fst] in Ho. subst v.
   reflexivity.
 Qed.
 
 (** *** THE per-pass STATE correctness (non-vacuous): replacing the two originals by
-    the merged map rule preserves the STATE-threading evaluation [eval_rules_mut h] on
+    the merged map rule preserves the STATE-threading evaluation [eval_rules_flat_verdict h] on
     every packet (so the rest of the chain sees the SAME mark). *)
-Theorem eval_rules_mut_map_merge : forall (f : field) (v1 v2 M1 M2 : data)
+Theorem eval_rules_flat_verdict_map_merge : forall (f : field) (v1 v2 M1 M2 : data)
     (setname mapname : string) (k : meta_key) (rest : list rule) (e : env) (p : packet),
   is_payload_load f = true ->
   e_set e setname = map2_set v1 v2 ->
@@ -267,15 +267,15 @@ Theorem eval_rules_mut_map_merge : forall (f : field) (v1 v2 M1 M2 : data)
   field_fixed_len f = Some (List.length v1) ->
   field_fixed_len f = Some (List.length v2) ->
   data_eqb v1 v2 = false ->
-  eval_rules_mut h (mk_map_rule f setname mapname k :: rest) e p
-  = eval_rules_mut h (orig_map_rule f v1 M1 k :: orig_map_rule f v2 M2 k :: rest) e p.
+  eval_rules_flat_verdict h (mk_map_rule f setname mapname k :: rest) e p
+  = eval_rules_flat_verdict h (orig_map_rule f v1 M1 k :: orig_map_rule f v2 M2 k :: rest) e p.
 Proof.
   intros f v1 v2 M1 M2 setname mapname k rest e p Hpl Hset Hmap Hfx1 Hfx2 Hne.
-  rewrite (eval_rules_mut_continue _ rest e p (step_mk_map_none f setname mapname k e p)).
-  rewrite (eval_rules_mut_continue _ _ e p (step_orig_map_none f v1 M1 k e p)).
+  rewrite (eval_rules_flat_verdict_continue _ rest e p (step_mk_map_none f setname mapname k e p)).
+  rewrite (eval_rules_flat_verdict_continue _ _ e p (step_orig_map_none f v1 M1 k e p)).
   rewrite (dsl_step_map_merge f v1 v2 M1 M2 setname mapname k e p Hpl Hset Hmap Hfx1 Hfx2 Hne).
   destruct (dsl_step h (orig_map_rule f v1 M1 k) e p) as [e1 p1].
-  rewrite (eval_rules_mut_continue _ rest e1 p1 (step_orig_map_none f v2 M2 k e1 p1)).
+  rewrite (eval_rules_flat_verdict_continue _ rest e1 p1 (step_orig_map_none f v2 M2 k e1 p1)).
   reflexivity.
 Qed.
 
@@ -291,7 +291,7 @@ Qed.
     default [] on a miss (gap flagged at [Bytes.v]'s [map_lookup_data]), whereas
     the kernel NFT_BREAKs and leaves the mark untouched — so a guard-less merged
     rule would clobber the mark to [] off-key.  On-key the lookup always hits, so
-    the guarded merge is exactly equivalent ([eval_rules_mut_map_merge]); the
+    the guarded merge is exactly equivalent ([eval_rules_flat_verdict_map_merge]); the
     verdict is preserved even without the guard ([eval_rules_map_merge]).  The
     lemmas below pin the off-key divergence of the bare form, axiom-free. *)
 
@@ -459,7 +459,7 @@ Definition map_merge_pair (r1 r2 : rule)
          field could be rewritten by the first rule's own `meta set`, making the
          second original re-fire where the merged map rule runs once.  This is
          exactly the [is_payload_load] hypothesis of the effect certificate
-         [eval_rules_mut_map_merge]; the recogniser now checks it so the
+         [eval_rules_flat_verdict_map_merge]; the recogniser now checks it so the
          certificate composes through the pipeline. *)
       if negb (is_payload_load f1) then None else
       match field_fixed_len f1 with
@@ -713,6 +713,6 @@ Qed.
 
 (** Axiom-freedom guards. *)
 Print Assumptions dsl_step_map_merge.
-Print Assumptions eval_rules_mut_map_merge.
+Print Assumptions eval_rules_flat_verdict_map_merge.
 
 End AtHook.

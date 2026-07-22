@@ -125,15 +125,15 @@ Proof. vm_compute. reflexivity. Qed.
    the same per-rule fold, so its verdict is the same Drop — there is no separate
    data-plane layer that could diverge from the verified verdict. *)
 Theorem mut_agrees_nat_drop :
-  eval_chain_mut Hprerouting redir_chain env_noaddr pkt_noaddr = Drop
-  /\ eval_chain_mut Hpostrouting masq_chain env_noaddr pkt_noaddr = Drop.
+  eval_chain_flat_verdict Hprerouting redir_chain env_noaddr pkt_noaddr = Drop
+  /\ eval_chain_flat_verdict Hpostrouting masq_chain env_noaddr pkt_noaddr = Drop.
 Proof. split; vm_compute; reflexivity. Qed.
 
 (* VM twin: the COMPILED redirect/masquerade drops identically — the NAT drop is
    certified through the compiler, not a DSL-only annotation. *)
 Theorem vm_nat_drop_agrees :
-  run_chain_mut Hprerouting (compile_chain redir_chain) (c_policy redir_chain)
+  run_chain_flat_verdict Hprerouting (compile_chain redir_chain) (c_policy redir_chain)
     env_noaddr pkt_noaddr = Drop
-  /\ run_chain_mut Hpostrouting (compile_chain masq_chain) (c_policy masq_chain)
+  /\ run_chain_flat_verdict Hpostrouting (compile_chain masq_chain) (c_policy masq_chain)
        env_noaddr pkt_noaddr = Drop.
 Proof. split; vm_compute; reflexivity. Qed.

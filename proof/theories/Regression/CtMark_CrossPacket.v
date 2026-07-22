@@ -10,7 +10,7 @@
     In the model the writable+persistent conntrack keys ([ct_writable]: mark/label)
     live in the SHARED, flow-keyed env table [e_ct]: [set_ct] writes
     [e_ct (pkt_flow p) CKmark] and [do_load (LCt CKmark)] reads it back, so
-    [eval_chain_mut_env h] (which RETURNS the env the traversal leaves) carries the
+    [eval_chain_flat_env h] (which RETURNS the env the traversal leaves) carries the
     mark to the next packet of the flow.
 
     Regression gate: [ctmark_set_persists_in_env], [packet2_sees_packet1_ctmark_set],
@@ -50,7 +50,7 @@ Definition ctmark_chain : chain :=
 Theorem ctmark_set_persists_in_env :
   forall (e : env) (p1 : packet),
     pkt_ct_present p1 = true ->
-    let e1 := snd (eval_chain_mut_env h ctmark_chain e p1) in
+    let e1 := snd (eval_chain_flat_env h ctmark_chain e p1) in
     e_ct e1 (pkt_flow p1) CKmark = [1].
 Proof.
   intros e p1 Hpres. cbn. unfold set_ct. rewrite Hpres. cbn.
@@ -65,10 +65,10 @@ Theorem packet2_sees_packet1_ctmark_set :
   forall (e : env) (p1 p2 : packet),
     pkt_ct_present p1 = true ->
     pkt_flow p2 = pkt_flow p1 ->
-    let e1 := snd (eval_chain_mut_env h ctmark_chain e p1) in
+    let e1 := snd (eval_chain_flat_env h ctmark_chain e p1) in
     field_value FCtMark e1 p2 = [1;0;0;0].
 Proof.
-  intros e p1 p2 Hpres Hflow. cbn - [eval_chain_mut_env].
+  intros e p1 p2 Hpres Hflow. cbn - [eval_chain_flat_env].
   unfold field_value, do_load, ct_load. cbn. unfold set_ct. rewrite Hpres. cbn.
   rewrite Hflow. rewrite data_eqb_refl. reflexivity.
 Qed.
@@ -81,7 +81,7 @@ Theorem flow_mark_overrides_packet2_oracle :
   forall (e : env) (p1 p2 : packet),
     pkt_ct_present p1 = true ->
     pkt_flow p2 = pkt_flow p1 ->
-    let e1 := snd (eval_chain_mut_env h ctmark_chain e p1) in
+    let e1 := snd (eval_chain_flat_env h ctmark_chain e p1) in
     field_value FCtMark e1 p2 = [1;0;0;0] /\
     field_value FCtMark e1 p2 <> [9].
 Proof.
@@ -98,10 +98,10 @@ Theorem other_flow_unaffected :
   forall (e : env) (p1 p2 : packet),
     pkt_ct_present p1 = true ->
     pkt_flow p2 <> pkt_flow p1 ->
-    let e1 := snd (eval_chain_mut_env h ctmark_chain e p1) in
+    let e1 := snd (eval_chain_flat_env h ctmark_chain e p1) in
     field_value FCtMark e1 p2 = ct_load CKmark (e_ct e (pkt_flow p2) CKmark).
 Proof.
-  intros e p1 p2 Hpres Hflow. cbn - [eval_chain_mut_env].
+  intros e p1 p2 Hpres Hflow. cbn - [eval_chain_flat_env].
   unfold field_value, do_load. cbn. unfold set_ct. rewrite Hpres. cbn.
   destruct (data_eqb (pkt_flow p1) (pkt_flow p2)) eqn:Heq.
   - apply data_eqb_true_iff in Heq. symmetry in Heq. contradiction.
@@ -119,7 +119,7 @@ Qed.
 Theorem ctmark_set_no_entry_is_noop :
   forall (e : env) (p1 : packet),
     pkt_ct_present p1 = false ->
-    let e1 := snd (eval_chain_mut_env h ctmark_chain e p1) in
+    let e1 := snd (eval_chain_flat_env h ctmark_chain e p1) in
     e_ct e1 (pkt_flow p1) CKmark = e_ct e (pkt_flow p1) CKmark.
 Proof.
   intros e p1 Hpres. cbn. unfold set_ct. rewrite Hpres. cbn. reflexivity.
@@ -134,10 +134,10 @@ Theorem no_entry_set_invisible_to_packet2 :
   forall (e : env) (p1 p2 : packet),
     pkt_ct_present p1 = false ->
     pkt_flow p2 = pkt_flow p1 ->
-    let e1 := snd (eval_chain_mut_env h ctmark_chain e p1) in
+    let e1 := snd (eval_chain_flat_env h ctmark_chain e p1) in
     field_value FCtMark e1 p2 = ct_load CKmark (e_ct e (pkt_flow p1) CKmark).
 Proof.
-  intros e p1 p2 Hpres Hflow. cbn - [eval_chain_mut_env].
+  intros e p1 p2 Hpres Hflow. cbn - [eval_chain_flat_env].
   unfold field_value, do_load. cbn. unfold set_ct. rewrite Hpres. cbn.
   rewrite Hflow. reflexivity.
 Qed.

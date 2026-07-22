@@ -17,7 +17,7 @@
     The transfer holds for ANY register value (bytewise xor is involutive with
     no width or byte-range side condition), so the pass is SELF-GUARDING and its
     correctness is UNCONDITIONAL: its state-fold preservation
-    [Optimize_Linearize_MutSt.xorfold_chain_mut_st] holds for every chain, env
+    [Optimize_Linearize_MutSt.xorfold_chain_flat] holds for every chain, env
     and packet — no hypotheses.  Restricted to the
     all-ones mask so it fires on `xor` alone and never on an `and`/`or` mask
     (which nft does not fold).  Axiom-free.

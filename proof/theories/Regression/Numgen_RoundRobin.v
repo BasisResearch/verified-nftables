@@ -9,7 +9,7 @@
     `numgen inc mod 2 ... map {0: A, 1: B}` a real per-connection load balancer.
 
     In the model `numgen inc` reads the SHARED counter [e_numgen] in the env and
-    the VM mutation evaluator ([run_program_mut_env h]) ADVANCES it per evaluation,
+    the VM mutation evaluator ([run_program_flat_env h]) ADVANCES it per evaluation,
     threading it across packets exactly like the ct/nat/dynset env writes.  (The
     RANDOM generator, ng_random = true, remains the per-packet oracle
     [pkt_numgen] — nft_ng_random_gen draws get_random_u32 per packet.)
@@ -63,10 +63,10 @@ Definition ng_of (e : env) (p : packet) : data := do_load (LNumgen ng2) e p.
 Definition p1 : packet := mkpkt [1;1].
 
 (* The env AFTER packet 1 has fired the numgen rule: its counter has ADVANCED. *)
-Definition env_after_p1 : env := snd (run_program_mut_env h [prog_ng] env0 p1).
+Definition env_after_p1 : env := snd (run_program_flat_env h [prog_ng] env0 p1).
 
 (* Packet 2 of the traversal, carrying the env packet 1 left (the threaded shared
-   state) — exactly how [run_program_mut_env h]/[seq_eval_env] sequence packets. *)
+   state) — exactly how [run_program_flat_env h]/[seq_eval_env] sequence packets. *)
 Definition p2 : packet := mkpkt [2;2].
 
 (* ---- The kernel-correct round-robin facts. ---- *)
@@ -98,7 +98,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 (* And the cross-packet soundness: a THIRD packet wraps back to 0 (mod 2), so the
    sequence is genuinely 0,1,0,… — a real round-robin load balancer. *)
-Definition env_after_p2 : env := snd (run_program_mut_env h [prog_ng] env_after_p1 p2).
+Definition env_after_p2 : env := snd (run_program_flat_env h [prog_ng] env_after_p1 p2).
 Definition p3 : packet := mkpkt [3;3].
 Theorem ng_p3_wraps : ng_of env_after_p2 p3 = [0;0;0;0].
 Proof. vm_compute. reflexivity. Qed.

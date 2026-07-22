@@ -66,7 +66,7 @@ Theorem main_compile_seq_hook_correct : forall h fuel rs e packets,
 Proof. exact compile_seq_hook_correct. Qed.
 Print Assumptions main_compile_seq_hook_correct.
 
-(** ** Axis 1 — mutation and cross-packet learning ([compile_seq_mut_correct]).
+(** ** Axis 1 — mutation and cross-packet learning ([compile_seq_flat_verdict_correct]).
 
     For a single chain [c] whose rules are numgen-free ([rule_numgen_free] —
     the ONLY hypothesis of the mutation strand; incremental `numgen` has no
@@ -84,18 +84,18 @@ Print Assumptions main_compile_seq_hook_correct.
     `add @s {…}` on an earlier packet provably reaches a `lookup @s` on a later
     one.  This strand is flat
     (single chain, no chain environment): it is the TRANSFER-FREE projection
-    of axis 0 ([Semantics.eval_table_mut_proj] licenses it on [rule_plain]
+    of axis 0 ([Semantics.eval_table_flat_verdict_proj] licenses it on [rule_plain]
     chains; a chain that realises a jump/goto/return is evaluated by axis 0's
     unified evaluator). *)
-Theorem main_compile_seq_mut_correct : forall h c e packets,
+Theorem main_compile_seq_flat_verdict_correct : forall h c e packets,
   forallb rule_numgen_free (c_rules c) = true ->
-  seq_eval_env (fun e' p => run_chain_mut_env h (compile_chain c) (c_policy c) e' p) e packets
-  = seq_eval_env (fun e' p => eval_chain_mut_env h c e' p) e packets.
-Proof. exact compile_seq_mut_correct. Qed.
-Print Assumptions main_compile_seq_mut_correct.
+  seq_eval_env (fun e' p => run_chain_flat_env h (compile_chain c) (c_policy c) e' p) e packets
+  = seq_eval_env (fun e' p => eval_chain_flat_env h c e' p) e packets.
+Proof. exact compile_seq_flat_verdict_correct. Qed.
+Print Assumptions main_compile_seq_flat_verdict_correct.
 
 (** ** Axis 2 — the optimizer pipeline, end-to-end to the bytecode, over the
-    effect-observing STATE fold ([eval_chain_mut_st]): verdict AND the resulting
+    effect-observing STATE fold ([eval_chain_flat]): verdict AND the resulting
     (env, packet) the [rule_step] fold leaves, nothing dropped.
 
     For every input chain [c] — NO cleanliness or freshness precondition beyond
@@ -109,27 +109,27 @@ Print Assumptions main_compile_seq_mut_correct.
     reproduces the DSL state fold of the ORIGINAL chain, for every packet and
     every base environment.  Scope: PER CHAIN — the optimizer is quantified over a
     single chain and all environments/packets.  Composed from
-    [Optimize_Linearize_MutSt.compile_chain_default_mut_st_correct] (the compiled
+    [Optimize_Linearize_MutSt.compile_chain_default_flat_correct] (the compiled
     optimised chain's VM run reproduces its own DSL state fold) and
-    [Optimize_MutEnv.optimize_table_uncond_mut_st_correct] (the consolidation
+    [Optimize_MutEnv.optimize_table_uncond_flat_correct] (the consolidation
     preserves the source chain's state fold at every hook).
 
     Both sides run under [env_with_sets base d']: the state fold RETURNS the
     threaded env, so the synthesised declarations [d'] the compiled side needs to
     resolve its set/map lookups are part of the observable and must appear on both
     sides for the returned (env, packet) pairs to match. *)
-Theorem main_optimize_table_uncond_compile_mut_st_correct :
+Theorem main_optimize_table_uncond_compile_flat_correct :
   forall h c base p n' d' c',
   forallb rule_numgen_free (c_rules c') = true ->
   optimize_table_uncond c = (n', d', c') ->
-  run_chain_mut_st h (compile_chain_default c') (c_policy c')
+  run_chain_flat h (compile_chain_default c') (c_policy c')
                    (env_with_sets base d') p
-  = eval_chain_mut_st h c (env_with_sets base d') p.
-Proof. exact Optimize_Linearize_MutSt.optimize_table_uncond_compile_mut_st_correct. Qed.
-Print Assumptions main_optimize_table_uncond_compile_mut_st_correct.
+  = eval_chain_flat h c (env_with_sets base d') p.
+Proof. exact Optimize_Linearize_MutSt.optimize_table_uncond_compile_flat_correct. Qed.
+Print Assumptions main_optimize_table_uncond_compile_flat_correct.
 
 (** ** Axis 2b — the DEFAULT compile pipeline over the STATE fold
-    ([Optimize_Linearize_MutSt.compile_chain_default_mut_st_correct]).
+    ([Optimize_Linearize_MutSt.compile_chain_default_flat_correct]).
 
     nft applies three single-rule rewrites UNCONDITIONALLY at netlink
     linearization — no `nft -o` involved: the adjacent-payload-load merge
@@ -144,9 +144,9 @@ Print Assumptions main_optimize_table_uncond_compile_mut_st_correct.
     [Lower_Proofs.lower_ruleset_numgen_free]. *)
 Theorem main_compile_chain_default_correct : forall h c e p,
   forallb rule_numgen_free (c_rules c) = true ->
-  run_chain_mut_st h (compile_chain_default c) (c_policy c) e p
-  = eval_chain_mut_st h c e p.
-Proof. exact compile_chain_default_mut_st_correct. Qed.
+  run_chain_flat h (compile_chain_default c) (c_policy c) e p
+  = eval_chain_flat h c e p.
+Proof. exact compile_chain_default_flat_correct. Qed.
 Print Assumptions main_compile_chain_default_correct.
 
 (* ================================================================== *)
@@ -163,29 +163,29 @@ Print Assumptions main_compile_chain_default_correct.
     under [e'].  Every proof is [exact]/[apply] of the new theorem — no new
     proof terms, so strength is preserved in both directions by definition. *)
 
-Corollary pre_split_compile_chain_mut_correct : forall h c (s : pstate),
+Corollary pre_split_compile_chain_flat_verdict_correct : forall h c (s : pstate),
   forallb rule_numgen_free (c_rules c) = true ->
-  run_chain_mut h (compile_chain c) (c_policy c) (ps_env s) (ps_wire s)
-  = eval_chain_mut h c (ps_env s) (ps_wire s).
-Proof. intros h c s H. apply compile_chain_mut_correct. exact H. Qed.
-Print Assumptions pre_split_compile_chain_mut_correct.
+  run_chain_flat_verdict h (compile_chain c) (c_policy c) (ps_env s) (ps_wire s)
+  = eval_chain_flat_verdict h c (ps_env s) (ps_wire s).
+Proof. intros h c s H. apply compile_chain_flat_verdict_correct. exact H. Qed.
+Print Assumptions pre_split_compile_chain_flat_verdict_correct.
 
-Corollary pre_split_compile_chain_mut_env_correct : forall h c (s : pstate),
+Corollary pre_split_compile_chain_flat_env_correct : forall h c (s : pstate),
   forallb rule_numgen_free (c_rules c) = true ->
-  run_chain_mut_env h (compile_chain c) (c_policy c) (ps_env s) (ps_wire s)
-  = eval_chain_mut_env h c (ps_env s) (ps_wire s).
-Proof. intros h c s H. apply compile_chain_mut_env_correct. exact H. Qed.
-Print Assumptions pre_split_compile_chain_mut_env_correct.
+  run_chain_flat_env h (compile_chain c) (c_policy c) (ps_env s) (ps_wire s)
+  = eval_chain_flat_env h c (ps_env s) (ps_wire s).
+Proof. intros h c s H. apply compile_chain_flat_env_correct. exact H. Qed.
+Print Assumptions pre_split_compile_chain_flat_env_correct.
 
-(** Pre-split [compile_seq_mut_correct] ran each traversal on
+(** Pre-split [compile_seq_flat_verdict_correct] ran each traversal on
     [set_env p e'] — the sequence packet's WIRE under the THREADED env [e'] —
     so the transported claim quantifies over pre-split packets ([pstate]s) and
     evaluates their wire halves under the threaded env. *)
-Corollary pre_split_compile_seq_mut_correct : forall h c e (packets : list pstate),
+Corollary pre_split_compile_seq_flat_verdict_correct : forall h c e (packets : list pstate),
   forallb rule_numgen_free (c_rules c) = true ->
-  seq_eval_env (fun e' s => run_chain_mut_env h (compile_chain c) (c_policy c) e' s)
+  seq_eval_env (fun e' s => run_chain_flat_env h (compile_chain c) (c_policy c) e' s)
                e (map ps_wire packets)
-  = seq_eval_env (fun e' s => eval_chain_mut_env h c e' s) e (map ps_wire packets).
-Proof. intros h c e packets H. apply compile_seq_mut_correct. exact H. Qed.
-Print Assumptions pre_split_compile_seq_mut_correct.
+  = seq_eval_env (fun e' s => eval_chain_flat_env h c e' s) e (map ps_wire packets).
+Proof. intros h c e packets H. apply compile_seq_flat_verdict_correct. exact H. Qed.
+Print Assumptions pre_split_compile_seq_flat_verdict_correct.
 

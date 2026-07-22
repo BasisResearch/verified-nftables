@@ -15,7 +15,7 @@
     The pass is SELF-GUARDING: it rewrites ONLY where the syntactic precondition
     (two adjacent full-width payload equalities) holds, so its correctness is
     UNCONDITIONAL — its state-fold preservation
-    [Optimize_Linearize_MutSt.paymerge_chain_mut_st] holds for every chain, env
+    [Optimize_Linearize_MutSt.paymerge_chain_flat] holds for every chain, env
     and packet, no hypotheses.  The load-bearing fact is that a
     payload read splits at any interior offset ([read_payload_split]) and its
     loadability splits the same way ([read_payload_ok_split]) — both hold for

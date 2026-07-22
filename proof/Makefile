@@ -30,7 +30,7 @@ lib: proofs
 example: proofs
 	cd extracted && dune exec ./example.exe
 
-# Build+run the executable witness of compile_chain_mut_correct / optimize_chain_correct:
+# Build+run the executable witness of compile_chain_flat_verdict_correct / optimize_chain_correct:
 # run the extracted DSL semantics, bytecode VM, and compiler on concrete packets.
 semtest: proofs
 	cd extracted && dune exec ./semtest.exe
@@ -229,7 +229,7 @@ validate: glue
 #                        (compile_{table,ruleset,hook,seq_hook}_correct);
 #                        the per-rule write-free reads and the flat mutation
 #                        strand are PROVEN PROJECTIONS of it (rule_step_mutfree
-#                        / eval_rules_mut_proj), and the witnessed
+#                        / eval_rules_flat_verdict_proj), and the witnessed
 #                        set-then-read-under-jump behaviour is pinned on both
 #                        sides (Setread_UnderJump)
 #   in-fold limiter (M2) limit/quota/connlimit consumption (and the VM numgen
@@ -249,7 +249,7 @@ validate: glue
 #                        (limiter depletion, dynset learning, each under a
 #                        jump + hook dispatch) are pinned in Seq_Hook_Carry
 # Any NEW README-claimed result must be added here in the same commit.
-AXIOM_GATE_THEOREMS = compile_chain_mut_correct \
+AXIOM_GATE_THEOREMS = compile_chain_flat_verdict_correct \
   compile_table_correct compile_ruleset_correct compile_hook_correct \
   compile_seq_hook_correct \
   Seq_Hook_Carry.seq_hook_limit_depletes \
@@ -267,8 +267,8 @@ AXIOM_GATE_THEOREMS = compile_chain_mut_correct \
   Router_Realistic.inbound_eth1_accept_iff_real Router_Realistic.input_hook_world_locked_real \
   Nft_Demo_Concrete.demo_dns_accepted_unified \
   Nft_Demo_Concrete.demo_smtp_denied_unified \
-  Semantics.eval_rules_mut_proj Semantics.eval_table_mut_proj \
-  Semantics.eval_rules_mut_st_proj Semantics.eval_table_mut_st_proj \
+  Semantics.eval_rules_flat_verdict_proj Semantics.eval_table_flat_verdict_proj \
+  Semantics.eval_rules_flat_proj Semantics.eval_table_flat_proj \
   Correct.run_rule_step_compile_rule \
   Setread_UnderJump.setread_under_jump_accepted \
   Setread_UnderJump.vm_setread_under_jump_accepted \
@@ -286,19 +286,19 @@ AXIOM_GATE_THEOREMS = compile_chain_mut_correct \
   Known_Infidelities.vm_vmaphit_no_mapping \
   Nat_NoAddr_Drop.mut_agrees_nat_drop Nat_NoAddr_Drop.vm_nat_drop_agrees \
   Router_Reach.nat_masquerade_fires Router_Reach.nat_no_leak \
-  compile_chain_mut_env_correct compile_seq_mut_correct \
-  Optimize_Linearize_MutSt.optimize_table_uncond_compile_mut_st_correct \
-  Optimize_MutEnv.optimize_table_uncond_mut_st_correct \
-  Optimize_MutEnv.optimize_table_uncond_mut_env_correct \
-  Optimize_MutEnv.eval_rules_mut_st_run_merge_abs \
-  Optimize_MutEnv.eval_rules_mut_st_run_collapse \
+  compile_chain_flat_env_correct compile_seq_flat_verdict_correct \
+  Optimize_Linearize_MutSt.optimize_table_uncond_compile_flat_correct \
+  Optimize_MutEnv.optimize_table_uncond_flat_correct \
+  Optimize_MutEnv.optimize_table_uncond_flat_env_correct \
+  Optimize_MutEnv.eval_rules_flat_run_merge_abs \
+  Optimize_MutEnv.eval_rules_flat_run_collapse \
   Optimize_MutEnv.mutst_pin_distinguishes \
-  Optimize_Linearize_MutSt.paymerge_chain_mut_st \
-  Optimize_Linearize_MutSt.xorfold_chain_mut_st \
-  Optimize_Linearize_MutSt.elide_chain_mut_st \
-  Optimize_Linearize_MutSt.linearize_chain_mut_st \
-  Optimize_Linearize_MutSt.compile_chain_mut_st_correct \
-  Optimize_Linearize_MutSt.compile_chain_default_mut_st_correct \
+  Optimize_Linearize_MutSt.paymerge_chain_flat \
+  Optimize_Linearize_MutSt.xorfold_chain_flat \
+  Optimize_Linearize_MutSt.elide_chain_flat \
+  Optimize_Linearize_MutSt.linearize_chain_flat \
+  Optimize_Linearize_MutSt.compile_chain_flat_correct \
+  Optimize_Linearize_MutSt.compile_chain_default_flat_correct \
   Optimize_Registry.run_passes_correct \
   Semantics.eval_rules_fuel_indep Semantics.eval_table_fuel_indep \
   Nft_Tactics.nft_yields_fuel_indep \

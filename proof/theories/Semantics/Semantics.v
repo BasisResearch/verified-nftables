@@ -44,10 +44,10 @@
 
       projection            | licensed sub-domain          | coincidence theorem
       ----------------------+------------------------------+--------------------
-      eval_rules_mut_st /   | transfer-free rules          | eval_rules_mut_st_proj /
-        eval_chain_mut_st   | ([rule_plain]: no realisable | eval_table_mut_st_proj
-        (full state; _mut / | jump/goto/return under the   | (whole-triple equality;
-        _env project it)    | run's verdict maps)          | _mut/_env: eval_rules_mut_proj)
+      eval_rules_flat /   | transfer-free rules          | eval_rules_flat_proj /
+        eval_chain_flat   | ([rule_plain]: no realisable | eval_table_flat_proj
+        (full state; _flat_verdict / | jump/goto/return under the   | (whole-triple equality;
+        _env project it)    | run's verdict maps)          | _flat_verdict/_env: eval_rules_flat_verdict_proj)
 
     A mut-free rule's [rule_step] leaves the state at the entry [(e, p)]
     ([rule_step_state_mutfree]); a nat-free rule's verdict is the same at every
@@ -64,10 +64,10 @@
 
     Within the flat mutation strand every evaluator consumes ONE step function
     per side — [rule_step] (DSL) / [run_rule_step empty_rf] (VM), each
-    returning (guarded verdict, state left).  [eval_rules_mut_st] exports that
-    fold IN FULL — verdict and the exact (env, packet) left — and the _mut /
-    _mut_env evaluators are its projections ([eval_rules_mut_env_st],
-    [eval_rules_mut_env_fst] / [run_program_mut_env_fst]), so their compiler
+    returning (guarded verdict, state left).  [eval_rules_flat] exports that
+    fold IN FULL — verdict and the exact (env, packet) left — and the _flat_verdict /
+    _flat_env evaluators are its projections ([eval_rules_flat_env_st],
+    [eval_rules_flat_env_fst] / [run_program_flat_env_fst]), so their compiler
     proofs are derived, not re-proved.  Consumption of every limiter/numgen is
     evaluated in-fold at its own break-aware position, so the folds need no
     separate whole-body sweep.
@@ -77,8 +77,8 @@
     other evaluator above is a NON-RECURSIVE Definition (stdlib fold /
     nat_rect on the fuel) with [_nil]/[_cons] (or [_0]/[_S]) unfolding
     equations restating the historical recursion verbatim, and the flat
-    [_mut]/[_mut_env] forms are projections BY DEFINITION of the one
-    full-state fold per side ([eval_rules_mut_st]/[run_program_mut_st]).
+    [_flat_verdict]/[_flat_env] forms are projections BY DEFINITION of the one
+    full-state fold per side ([eval_rules_flat]/[run_program_flat]).
     Fuel adequacy is stated at the unified semantics too
     ([eval_rules_fuel_indep]), not only at the pure projection. *)
 
@@ -1226,7 +1226,7 @@ Fixpoint run_rule (rf : regfile) (is : rule_prog) (e : env) (p : packet) : optio
     left-to-right walk against the running state).  The primitives below
     ([set_meta]/[set_ct]/[env_set_upd]/[env_map_upd]) are the write effects;
     [run_rule_step] (bytecode) and [rule_step] (DSL) fold them into one
-    per-rule traversal, and [eval_chain_mut]/[run_chain_mut] thread the state
+    per-rule traversal, and [eval_chain_flat_verdict]/[run_chain_flat_verdict] thread the state
     a rule leaves across rules (and, via the _env forms, across packets). *)
 
 Definition meta_eq_dec : forall a b : meta_key, {a = b} + {a <> b}.
@@ -2808,19 +2808,19 @@ Proof. intros r e p Hnat Hmf. exact (rule_step_state_after_free r e p Hnat Hmf).
     happens whether or not the rule's verdict matched — a non-applicable rule
     still ran the statements up to its failing match).
 
-    ONE flat export, three views (M6): [eval_rules_mut_st] is the FULL-STATE
+    ONE flat export, three views (M6): [eval_rules_flat] is the FULL-STATE
     flat (transfer-free) fold of [rule_step] — verdict AND the exact
     (env, packet) left, nothing dropped.  It is NON-RECURSIVE: a [fold_left]
     of the per-rule step with an absorbing "stopped" accumulator (the ONE
     recursive rule-list traversal on the DSL side is the unified
     [eval_rules]; on transfer-free rules this fold is its whole-triple
-    projection, [eval_rules_mut_st_proj]).  [eval_rules_mut] /
-    [eval_rules_mut_env] are BY DEFINITION its verdict / (verdict, env)
+    projection, [eval_rules_flat_proj]).  [eval_rules_flat_verdict] /
+    [eval_rules_flat_env] are BY DEFINITION its verdict / (verdict, env)
     projections — no re-proved bridge, the projection IS the definition.
     Proofs step all three with the [_nil]/[_cons] equations below, which
     restate the historical unfoldings verbatim.  The optimizer's effect-level
-    pipeline theorem ([Optimize_MutEnv.optimize_table_uncond_mut_st_correct])
-    is stated against [eval_chain_mut_st], so a pass cannot alter a
+    pipeline theorem ([Optimize_MutEnv.optimize_table_uncond_flat_correct])
+    is stated against [eval_chain_flat], so a pass cannot alter a
     packet-half write while preserving verdict and env. *)
 
 Definition mut_st_step (r : rule) (acc : option verdict * (env * packet))
@@ -2835,11 +2835,11 @@ Definition mut_st_step (r : rule) (acc : option verdict * (env * packet))
       end
   end.
 
-Definition eval_rules_mut_st (rs : list rule) (e : env) (p : packet)
+Definition eval_rules_flat (rs : list rule) (e : env) (p : packet)
   : option verdict * (env * packet) :=
   fold_left (fun acc r => mut_st_step r acc) rs (None, (e, p)).
 
-Arguments eval_rules_mut_st : simpl never.
+Arguments eval_rules_flat : simpl never.
 
 (** A stopped accumulator absorbs the rest of the fold — the early exit of the
     historical recursion, as a lemma. *)
@@ -2847,19 +2847,19 @@ Lemma mut_st_fold_stopped : forall rs v s,
   fold_left (fun acc r => mut_st_step r acc) rs (Some v, s) = (Some v, s).
 Proof. induction rs as [| r rs IH]; intros; [reflexivity | apply IH]. Qed.
 
-Lemma eval_rules_mut_st_nil : forall e p,
-  eval_rules_mut_st [] e p = (None, (e, p)).
+Lemma eval_rules_flat_nil : forall e p,
+  eval_rules_flat [] e p = (None, (e, p)).
 Proof. reflexivity. Qed.
 
-Lemma eval_rules_mut_st_cons : forall r rest e p,
-  eval_rules_mut_st (r :: rest) e p
+Lemma eval_rules_flat_cons : forall r rest e p,
+  eval_rules_flat (r :: rest) e p
   = match rule_step r e p with
     | (Some v, (e', p')) => if terminal v then (Some v, (e', p'))
-                            else eval_rules_mut_st rest e' p'
-    | (None,   (e', p')) => eval_rules_mut_st rest e' p'
+                            else eval_rules_flat rest e' p'
+    | (None,   (e', p')) => eval_rules_flat rest e' p'
     end.
 Proof.
-  intros r rest e p. unfold eval_rules_mut_st. cbn [fold_left].
+  intros r rest e p. unfold eval_rules_flat. cbn [fold_left].
   unfold mut_st_step at 2.
   destruct (rule_step r e p) as [[v|] [e' p']].
   - destruct (terminal v); [apply mut_st_fold_stopped | reflexivity].
@@ -2867,32 +2867,32 @@ Proof.
 Qed.
 
 (** The verdict projection of the full-state fold. *)
-Definition eval_rules_mut (rs : list rule) (e : env) (p : packet) : option verdict :=
-  fst (eval_rules_mut_st rs e p).
+Definition eval_rules_flat_verdict (rs : list rule) (e : env) (p : packet) : option verdict :=
+  fst (eval_rules_flat rs e p).
 
-Arguments eval_rules_mut : simpl never.
+Arguments eval_rules_flat_verdict : simpl never.
 
-Lemma eval_rules_mut_nil : forall e p, eval_rules_mut [] e p = None.
+Lemma eval_rules_flat_verdict_nil : forall e p, eval_rules_flat_verdict [] e p = None.
 Proof. reflexivity. Qed.
 
-Lemma eval_rules_mut_cons : forall r rest e p,
-  eval_rules_mut (r :: rest) e p
+Lemma eval_rules_flat_verdict_cons : forall r rest e p,
+  eval_rules_flat_verdict (r :: rest) e p
   = match rule_step r e p with
-    | (Some v, (e', p')) => if terminal v then Some v else eval_rules_mut rest e' p'
-    | (None,   (e', p')) => eval_rules_mut rest e' p'
+    | (Some v, (e', p')) => if terminal v then Some v else eval_rules_flat_verdict rest e' p'
+    | (None,   (e', p')) => eval_rules_flat_verdict rest e' p'
     end.
 Proof.
-  intros r rest e p. unfold eval_rules_mut. rewrite eval_rules_mut_st_cons.
+  intros r rest e p. unfold eval_rules_flat_verdict. rewrite eval_rules_flat_cons.
   destruct (rule_step r e p) as [[v|] [e' p']]; [destruct (terminal v)|]; reflexivity.
 Qed.
 
-(** VM full-state flat fold, mirroring [eval_rules_mut_st].  The state a rule
+(** VM full-state flat fold, mirroring [eval_rules_flat].  The state a rule
     LEAVES carries its [run_rule_step] meta/ct/env writes, its `numgen inc`
     counter advance, AND the consumption of every `limit`/`quota`/`connlimit`
     it evaluated (all applied in-fold at their positions); the next rule (and,
     through the env, the next packet) sees all three.  NON-RECURSIVE (M6):
     the ONE recursive program traversal on the VM side is [run_rules]. *)
-Definition vm_mut_st_step (rp : rule_prog) (acc : option verdict * (env * packet))
+Definition vm_flat_step (rp : rule_prog) (acc : option verdict * (env * packet))
   : option verdict * (env * packet) :=
   match acc with
   | (Some v, s) => (Some v, s)
@@ -2904,162 +2904,162 @@ Definition vm_mut_st_step (rp : rule_prog) (acc : option verdict * (env * packet
       end
   end.
 
-Definition run_program_mut_st (prog : program) (e : env) (p : packet)
+Definition run_program_flat (prog : program) (e : env) (p : packet)
   : option verdict * (env * packet) :=
-  fold_left (fun acc rp => vm_mut_st_step rp acc) prog (None, (e, p)).
+  fold_left (fun acc rp => vm_flat_step rp acc) prog (None, (e, p)).
 
-Arguments run_program_mut_st : simpl never.
+Arguments run_program_flat : simpl never.
 
-Lemma vm_mut_st_fold_stopped : forall prog v s,
-  fold_left (fun acc rp => vm_mut_st_step rp acc) prog (Some v, s) = (Some v, s).
+Lemma vm_flat_fold_stopped : forall prog v s,
+  fold_left (fun acc rp => vm_flat_step rp acc) prog (Some v, s) = (Some v, s).
 Proof. induction prog as [| rp prog IH]; intros; [reflexivity | apply IH]. Qed.
 
-Lemma run_program_mut_st_nil : forall e p,
-  run_program_mut_st [] e p = (None, (e, p)).
+Lemma run_program_flat_nil : forall e p,
+  run_program_flat [] e p = (None, (e, p)).
 Proof. reflexivity. Qed.
 
-Lemma run_program_mut_st_cons : forall rp rest e p,
-  run_program_mut_st (rp :: rest) e p
+Lemma run_program_flat_cons : forall rp rest e p,
+  run_program_flat (rp :: rest) e p
   = match run_rule_step empty_rf rp e p with
     | (Some v, (e', p')) => if terminal v then (Some v, (e', p'))
-                            else run_program_mut_st rest e' p'
-    | (None,   (e', p')) => run_program_mut_st rest e' p'
+                            else run_program_flat rest e' p'
+    | (None,   (e', p')) => run_program_flat rest e' p'
     end.
 Proof.
-  intros rp rest e p. unfold run_program_mut_st. cbn [fold_left].
-  unfold vm_mut_st_step at 2.
+  intros rp rest e p. unfold run_program_flat. cbn [fold_left].
+  unfold vm_flat_step at 2.
   destruct (run_rule_step empty_rf rp e p) as [[v|] [e' p']].
-  - destruct (terminal v); [apply vm_mut_st_fold_stopped | reflexivity].
+  - destruct (terminal v); [apply vm_flat_fold_stopped | reflexivity].
   - reflexivity.
 Qed.
 
-Definition run_program_mut (prog : program) (e : env) (p : packet) : option verdict :=
-  fst (run_program_mut_st prog e p).
+Definition run_program_flat_verdict (prog : program) (e : env) (p : packet) : option verdict :=
+  fst (run_program_flat prog e p).
 
-Arguments run_program_mut : simpl never.
+Arguments run_program_flat_verdict : simpl never.
 
-Lemma run_program_mut_nil : forall e p, run_program_mut [] e p = None.
+Lemma run_program_flat_verdict_nil : forall e p, run_program_flat_verdict [] e p = None.
 Proof. reflexivity. Qed.
 
-Lemma run_program_mut_cons : forall rp rest e p,
-  run_program_mut (rp :: rest) e p
+Lemma run_program_flat_verdict_cons : forall rp rest e p,
+  run_program_flat_verdict (rp :: rest) e p
   = match run_rule_step empty_rf rp e p with
-    | (Some v, (e', p')) => if terminal v then Some v else run_program_mut rest e' p'
-    | (None,   (e', p')) => run_program_mut rest e' p'
+    | (Some v, (e', p')) => if terminal v then Some v else run_program_flat_verdict rest e' p'
+    | (None,   (e', p')) => run_program_flat_verdict rest e' p'
     end.
 Proof.
-  intros rp rest e p. unfold run_program_mut. rewrite run_program_mut_st_cons.
+  intros rp rest e p. unfold run_program_flat_verdict. rewrite run_program_flat_cons.
   destruct (run_rule_step empty_rf rp e p) as [[v|] [e' p']];
     [destruct (terminal v)|]; reflexivity.
 Qed.
 
-Definition eval_chain_mut (c : chain) (e : env) (p : packet) : verdict :=
-  match eval_rules_mut (c_rules c) e p with Some v => v | None => c_policy c end.
-Definition run_chain_mut (prog : program) (policy : verdict) (e : env) (p : packet) : verdict :=
-  match run_program_mut prog e p with Some v => v | None => policy end.
+Definition eval_chain_flat_verdict (c : chain) (e : env) (p : packet) : verdict :=
+  match eval_rules_flat_verdict (c_rules c) e p with Some v => v | None => c_policy c end.
+Definition run_chain_flat_verdict (prog : program) (policy : verdict) (e : env) (p : packet) : verdict :=
+  match run_program_flat_verdict prog e p with Some v => v | None => policy end.
 
 (** ** Cross-packet persistence of learned state.
 
     A `dynset` learns an element into a named set; that learning must persist to
     the NEXT packet (per-source rate limiting, learning sets, …).  Within one
-    packet [eval_rules_mut]/[run_program_mut] thread the mutated packet (hence its
+    packet [eval_rules_flat_verdict]/[run_program_flat_verdict] thread the mutated packet (hence its
     env) across rules; to thread it across PACKETS we expose the final
-    environment.  [eval_rules_mut_env]/[run_program_mut_env] mirror the verdict
+    environment.  [eval_rules_flat_env]/[run_program_flat_env] mirror the verdict
     evaluators but also return the env left after the chain ran (the shared
     set/map/limiter state, NOT the per-packet meta/ct fields, which are local to
     each packet).  On a terminal verdict the env still reflects the writes the
     final rule's body made before the verdict. *)
-Definition eval_rules_mut_env (rs : list rule) (e : env) (p : packet)
+Definition eval_rules_flat_env (rs : list rule) (e : env) (p : packet)
   : option verdict * env :=
-  let '(v, (e', _)) := eval_rules_mut_st rs e p in (v, e').
+  let '(v, (e', _)) := eval_rules_flat rs e p in (v, e').
 
-Arguments eval_rules_mut_env : simpl never.
+Arguments eval_rules_flat_env : simpl never.
 
-Lemma eval_rules_mut_env_nil : forall e p,
-  eval_rules_mut_env [] e p = (None, e).
+Lemma eval_rules_flat_env_nil : forall e p,
+  eval_rules_flat_env [] e p = (None, e).
 Proof. reflexivity. Qed.
 
-Lemma eval_rules_mut_env_cons : forall r rest e p,
-  eval_rules_mut_env (r :: rest) e p
+Lemma eval_rules_flat_env_cons : forall r rest e p,
+  eval_rules_flat_env (r :: rest) e p
   = match rule_step r e p with
     | (Some v, (e', p')) => if terminal v then (Some v, e')
-                            else eval_rules_mut_env rest e' p'
-    | (None,   (e', p')) => eval_rules_mut_env rest e' p'
+                            else eval_rules_flat_env rest e' p'
+    | (None,   (e', p')) => eval_rules_flat_env rest e' p'
     end.
 Proof.
-  intros r rest e p. unfold eval_rules_mut_env. rewrite eval_rules_mut_st_cons.
+  intros r rest e p. unfold eval_rules_flat_env. rewrite eval_rules_flat_cons.
   destruct (rule_step r e p) as [[v|] [e' p']]; [destruct (terminal v)|]; reflexivity.
 Qed.
 
-Definition run_program_mut_env (prog : program) (e : env) (p : packet)
+Definition run_program_flat_env (prog : program) (e : env) (p : packet)
   : option verdict * env :=
-  let '(v, (e', _)) := run_program_mut_st prog e p in (v, e').
+  let '(v, (e', _)) := run_program_flat prog e p in (v, e').
 
-Arguments run_program_mut_env : simpl never.
+Arguments run_program_flat_env : simpl never.
 
-Lemma run_program_mut_env_nil : forall e p,
-  run_program_mut_env [] e p = (None, e).
+Lemma run_program_flat_env_nil : forall e p,
+  run_program_flat_env [] e p = (None, e).
 Proof. reflexivity. Qed.
 
-Lemma run_program_mut_env_cons : forall rp rest e p,
-  run_program_mut_env (rp :: rest) e p
+Lemma run_program_flat_env_cons : forall rp rest e p,
+  run_program_flat_env (rp :: rest) e p
   = match run_rule_step empty_rf rp e p with
     | (Some v, (e', p')) => if terminal v then (Some v, e')
-                            else run_program_mut_env rest e' p'
-    | (None,   (e', p')) => run_program_mut_env rest e' p'
+                            else run_program_flat_env rest e' p'
+    | (None,   (e', p')) => run_program_flat_env rest e' p'
     end.
 Proof.
-  intros rp rest e p. unfold run_program_mut_env. rewrite run_program_mut_st_cons.
+  intros rp rest e p. unfold run_program_flat_env. rewrite run_program_flat_cons.
   destruct (run_rule_step empty_rf rp e p) as [[v|] [e' p']];
     [destruct (terminal v)|]; reflexivity.
 Qed.
 
 (** Run a base chain in mutation mode, returning the verdict AND the env the chain
     leaves (with any dynset-learned elements), so a packet sequence can thread it. *)
-Definition eval_chain_mut_env (c : chain) (e : env) (p : packet) : verdict * env :=
-  match eval_rules_mut_env (c_rules c) e p with
+Definition eval_chain_flat_env (c : chain) (e : env) (p : packet) : verdict * env :=
+  match eval_rules_flat_env (c_rules c) e p with
   | (Some v, e') => (v, e') | (None, e') => (c_policy c, e') end.
-Definition run_chain_mut_env (prog : program) (policy : verdict) (e : env) (p : packet)
+Definition run_chain_flat_env (prog : program) (policy : verdict) (e : env) (p : packet)
   : verdict * env :=
-  match run_program_mut_env prog e p with
+  match run_program_flat_env prog e p with
   | (Some v, e') => (v, e') | (None, e') => (policy, e') end.
 
 (** The env-returning evaluators RESTRICT to the verdict-only ones: the verdict
-    component of [eval_rules_mut_env]/[run_program_mut_env] is exactly
-    [eval_rules_mut]/[run_program_mut].  Since M6 both are DEFINED as
+    component of [eval_rules_flat_env]/[run_program_flat_env] is exactly
+    [eval_rules_flat_verdict]/[run_program_flat_verdict].  Since M6 both are DEFINED as
     projections of the same full-state fold, so the bridge is one [destruct]
-    (a compiler-correctness proof for the _env pair still yields the _mut pair
-    for free, [Correct.run_program_mut_compile_chain]). *)
-Lemma eval_rules_mut_env_fst : forall rs e p,
-  fst (eval_rules_mut_env rs e p) = eval_rules_mut rs e p.
+    (a compiler-correctness proof for the _env pair still yields the _flat_verdict pair
+    for free, [Correct.run_program_flat_verdict_compile_chain]). *)
+Lemma eval_rules_flat_env_fst : forall rs e p,
+  fst (eval_rules_flat_env rs e p) = eval_rules_flat_verdict rs e p.
 Proof.
-  intros rs e p. unfold eval_rules_mut_env, eval_rules_mut.
-  destruct (eval_rules_mut_st rs e p) as [v [e' p']]; reflexivity.
+  intros rs e p. unfold eval_rules_flat_env, eval_rules_flat_verdict.
+  destruct (eval_rules_flat rs e p) as [v [e' p']]; reflexivity.
 Qed.
 
-Lemma run_program_mut_env_fst : forall prog e p,
-  fst (run_program_mut_env prog e p) = run_program_mut prog e p.
+Lemma run_program_flat_env_fst : forall prog e p,
+  fst (run_program_flat_env prog e p) = run_program_flat_verdict prog e p.
 Proof.
-  intros prog e p. unfold run_program_mut_env, run_program_mut.
-  destruct (run_program_mut_st prog e p) as [v [e' p']]; reflexivity.
+  intros prog e p. unfold run_program_flat_env, run_program_flat_verdict.
+  destruct (run_program_flat prog e p) as [v [e' p']]; reflexivity.
 Qed.
 
 (** Chain-level restriction: the verdict component of the env-returning chain
-    evaluators is the _mut chain verdict. *)
-Lemma eval_chain_mut_env_fst : forall c e p,
-  fst (eval_chain_mut_env c e p) = eval_chain_mut c e p.
+    evaluators is the _flat_verdict chain verdict. *)
+Lemma eval_chain_flat_env_fst : forall c e p,
+  fst (eval_chain_flat_env c e p) = eval_chain_flat_verdict c e p.
 Proof.
-  intros c e p. unfold eval_chain_mut_env, eval_chain_mut.
-  rewrite <- eval_rules_mut_env_fst.
-  destruct (eval_rules_mut_env (c_rules c) e p) as [[v|] e']; reflexivity.
+  intros c e p. unfold eval_chain_flat_env, eval_chain_flat_verdict.
+  rewrite <- eval_rules_flat_env_fst.
+  destruct (eval_rules_flat_env (c_rules c) e p) as [[v|] e']; reflexivity.
 Qed.
 
-Lemma run_chain_mut_env_fst : forall prog policy e p,
-  fst (run_chain_mut_env prog policy e p) = run_chain_mut prog policy e p.
+Lemma run_chain_flat_env_fst : forall prog policy e p,
+  fst (run_chain_flat_env prog policy e p) = run_chain_flat_verdict prog policy e p.
 Proof.
-  intros prog policy e p. unfold run_chain_mut_env, run_chain_mut.
-  rewrite <- run_program_mut_env_fst.
-  destruct (run_program_mut_env prog e p) as [[v|] e']; reflexivity.
+  intros prog policy e p. unfold run_chain_flat_env, run_chain_flat_verdict.
+  rewrite <- run_program_flat_env_fst.
+  destruct (run_program_flat_env prog e p) as [[v|] e']; reflexivity.
 Qed.
 
 (** ** The FULL-STATE base-chain form of the flat fold: verdict AND resulting
@@ -3067,35 +3067,35 @@ Qed.
     `meta mark set` is a packet write that the unified semantics' own priority
     dispatch reads in a later base chain at the same hook ([eval_ruleset]).
     The optimizer's effect-level pipeline theorem
-    ([Optimize_MutEnv.optimize_table_uncond_mut_st_correct]) is stated against
+    ([Optimize_MutEnv.optimize_table_uncond_flat_correct]) is stated against
     it, so a pass cannot alter a packet-half write while preserving verdict
     and env. *)
-Definition eval_chain_mut_st (c : chain) (e : env) (p : packet)
+Definition eval_chain_flat (c : chain) (e : env) (p : packet)
   : verdict * (env * packet) :=
-  match eval_rules_mut_st (c_rules c) e p with
+  match eval_rules_flat (c_rules c) e p with
   | (Some v, s) => (v, s) | (None, s) => (c_policy c, s) end.
 
 (** The (verdict, env) evaluators are the (fst, fst . snd) projections of the
     full-state fold — since M6, by definition. *)
-Lemma eval_rules_mut_env_st : forall rs e p,
-  eval_rules_mut_env rs e p
-  = (fst (eval_rules_mut_st rs e p), fst (snd (eval_rules_mut_st rs e p))).
+Lemma eval_rules_flat_env_st : forall rs e p,
+  eval_rules_flat_env rs e p
+  = (fst (eval_rules_flat rs e p), fst (snd (eval_rules_flat rs e p))).
 Proof.
-  intros rs e p. unfold eval_rules_mut_env.
-  destruct (eval_rules_mut_st rs e p) as [v [e' p']]; reflexivity.
+  intros rs e p. unfold eval_rules_flat_env.
+  destruct (eval_rules_flat rs e p) as [v [e' p']]; reflexivity.
 Qed.
 
-Lemma eval_chain_mut_env_st : forall c e p,
-  eval_chain_mut_env c e p
-  = (fst (eval_chain_mut_st c e p), fst (snd (eval_chain_mut_st c e p))).
+Lemma eval_chain_flat_env_st : forall c e p,
+  eval_chain_flat_env c e p
+  = (fst (eval_chain_flat c e p), fst (snd (eval_chain_flat c e p))).
 Proof.
-  intros c e p. unfold eval_chain_mut_env, eval_chain_mut_st.
-  rewrite (eval_rules_mut_env_st (c_rules c) e p).
-  destruct (eval_rules_mut_st (c_rules c) e p) as [[v|] [e' p']]; reflexivity.
+  intros c e p. unfold eval_chain_flat_env, eval_chain_flat.
+  rewrite (eval_rules_flat_env_st (c_rules c) e p).
+  destruct (eval_rules_flat (c_rules c) e p) as [[v|] [e' p']]; reflexivity.
 Qed.
 
-Lemma eval_rules_mut_st_fst : forall rs e p,
-  fst (eval_rules_mut_st rs e p) = eval_rules_mut rs e p.
+Lemma eval_rules_flat_fst : forall rs e p,
+  fst (eval_rules_flat rs e p) = eval_rules_flat_verdict rs e p.
 Proof. reflexivity. Qed.
 
 
@@ -3253,7 +3253,7 @@ Definition select_hook (rs : list hooked_chain) (h : hook_id)
     are licensed by a coincidence theorem on the sub-domain where they provably
     agree (see the projection matrix in the file header):
     [rule_step_state_mutfree] (write-free rules leave the state pinned) and
-    [eval_rules_mut_proj] (the flat mutation strand, on transfer-free rules). *)
+    [eval_rules_flat_verdict_proj] (the flat mutation strand, on transfer-free rules). *)
 
 Fixpoint eval_rules (fuel : nat) (cs : list (String.string * chain))
                       (rs : list rule) (e : env) (p : packet)
@@ -3472,7 +3472,7 @@ Definition eval_hook (fuel : nat) (rs : list hooked_chain)
 (** Cross-packet env carry at a hook: the per-packet evaluator whose env output
     [seq_eval_env] threads into the next packet — the shared set/map/limiter
     state persists, the per-packet meta/ct fields are local to each packet
-    (exactly [eval_chain_mut_env]'s discipline, now with jumps and multi-chain
+    (exactly [eval_chain_flat_env]'s discipline, now with jumps and multi-chain
     dispatch inside the per-packet run). *)
 Definition eval_hook_env (fuel : nat) (rs : list hooked_chain)
                            (e : env) (p : packet) : verdict * env :=
@@ -3533,7 +3533,7 @@ Qed.
 (** *** Projection 2: the flat mutation strand, licensed on TRANSFER-FREE
     rules.
 
-    [eval_rules_mut]/[eval_rules_mut_env] thread the same per-rule fold but
+    [eval_rules_flat_verdict]/[eval_rules_flat_env] thread the same per-rule fold but
     follow no control transfers (a realised Jump/Goto is a fall-through,
     a Return does not pop).  They are the projection of the unified fold on
     rules that can realise NO transfer verdict: [rule_plain] — every static
@@ -3761,12 +3761,12 @@ Proof.
         [now injection Hstep as <- | now injection Hstep as <- | discriminate Hstep].
 Qed.
 
-Lemma eval_rules_mut_proj_aux : forall rs fuel cs e0 e p,
+Lemma eval_rules_flat_verdict_proj_aux : forall rs fuel cs e0 e p,
   List.length rs < fuel ->
   e_vmap e = e_vmap e0 ->
   forallb (rule_plain e0) rs = true ->
-  fst (eval_rules fuel cs rs e p) = eval_rules_mut rs e p
-  /\ fst (snd (eval_rules fuel cs rs e p)) = snd (eval_rules_mut_env rs e p).
+  fst (eval_rules fuel cs rs e p) = eval_rules_flat_verdict rs e p
+  /\ fst (snd (eval_rules fuel cs rs e p)) = snd (eval_rules_flat_env rs e p).
 Proof.
   induction rs as [| r rest IH]; intros fuel cs e0 e p Hfuel Hvm Hpl;
     (destruct fuel as [| f]; [exfalso; cbn in Hfuel; lia |]).
@@ -3774,7 +3774,7 @@ Proof.
   - cbn [List.length] in Hfuel.
     cbn [forallb] in Hpl. apply Bool.andb_true_iff in Hpl.
     destruct Hpl as [Hr Hrest].
-    rewrite eval_rules_mut_cons, eval_rules_mut_env_cons. cbn [eval_rules].
+    rewrite eval_rules_flat_verdict_cons, eval_rules_flat_env_cons. cbn [eval_rules].
     pose proof (rule_step_vmap r e p) as Hstepvm.
     destruct (rule_step r e p) as [[v|] [e' p']] eqn:Hstep;
       cbn [fst snd] in Hstepvm.
@@ -3790,41 +3790,41 @@ Proof.
 Qed.
 
 (** THE mutation-strand projection: on transfer-free rules the unified fold's
-    verdict is [eval_rules_mut] and its env is [eval_rules_mut_env]'s — the
+    verdict is [eval_rules_flat_verdict] and its env is [eval_rules_flat_env]'s — the
     flat mutation strand is a projection of the unified semantics, licensed by
     this equation (any fuel that can traverse the flat list; no chain
     environment is consulted because no transfer is realisable). *)
-Theorem eval_rules_mut_proj : forall fuel cs rs e p,
+Theorem eval_rules_flat_verdict_proj : forall fuel cs rs e p,
   List.length rs < fuel ->
   forallb (rule_plain e) rs = true ->
-  fst (eval_rules fuel cs rs e p) = eval_rules_mut rs e p
-  /\ fst (snd (eval_rules fuel cs rs e p)) = snd (eval_rules_mut_env rs e p).
+  fst (eval_rules fuel cs rs e p) = eval_rules_flat_verdict rs e p
+  /\ fst (snd (eval_rules fuel cs rs e p)) = snd (eval_rules_flat_env rs e p).
 Proof.
   intros fuel cs rs e p Hfuel Hpl.
-  eapply eval_rules_mut_proj_aux; eauto.
+  eapply eval_rules_flat_verdict_proj_aux; eauto.
 Qed.
 
-Corollary eval_table_mut_proj : forall fuel cs c e p,
+Corollary eval_table_flat_verdict_proj : forall fuel cs c e p,
   List.length (c_rules c) < fuel ->
   forallb (rule_plain e) (c_rules c) = true ->
-  fst (eval_table fuel cs c e p) = eval_chain_mut c e p
-  /\ fst (snd (eval_table fuel cs c e p)) = snd (eval_chain_mut_env c e p).
+  fst (eval_table fuel cs c e p) = eval_chain_flat_verdict c e p
+  /\ fst (snd (eval_table fuel cs c e p)) = snd (eval_chain_flat_env c e p).
 Proof.
   intros fuel cs c e p Hfuel Hpl.
-  destruct (eval_rules_mut_proj fuel cs (c_rules c) e p Hfuel Hpl) as [Hv He].
-  unfold eval_table, eval_chain_mut, eval_chain_mut_env.
-  rewrite <- (eval_rules_mut_env_fst (c_rules c) e p) in *.
+  destruct (eval_rules_flat_verdict_proj fuel cs (c_rules c) e p Hfuel Hpl) as [Hv He].
+  unfold eval_table, eval_chain_flat_verdict, eval_chain_flat_env.
+  rewrite <- (eval_rules_flat_env_fst (c_rules c) e p) in *.
   destruct (eval_rules fuel cs (c_rules c) e p) as [[v|] s];
-    destruct (eval_rules_mut_env (c_rules c) e p) as [[w|] e'];
+    destruct (eval_rules_flat_env (c_rules c) e p) as [[w|] e'];
     cbn [fst snd] in *; subst; try discriminate Hv;
     try (injection Hv as <-); auto.
 Qed.
 
-Lemma eval_rules_mut_st_proj_aux : forall rs fuel cs e0 e p,
+Lemma eval_rules_flat_proj_aux : forall rs fuel cs e0 e p,
   List.length rs < fuel ->
   e_vmap e = e_vmap e0 ->
   forallb (rule_plain e0) rs = true ->
-  eval_rules fuel cs rs e p = eval_rules_mut_st rs e p.
+  eval_rules fuel cs rs e p = eval_rules_flat rs e p.
 Proof.
   induction rs as [| r rest IH]; intros fuel cs e0 e p Hfuel Hvm Hpl;
     (destruct fuel as [| f]; [exfalso; cbn in Hfuel; lia |]).
@@ -3832,7 +3832,7 @@ Proof.
   - cbn [List.length] in Hfuel.
     cbn [forallb] in Hpl. apply Bool.andb_true_iff in Hpl.
     destruct Hpl as [Hr Hrest].
-    rewrite eval_rules_mut_st_cons. cbn [eval_rules].
+    rewrite eval_rules_flat_cons. cbn [eval_rules].
     pose proof (rule_step_vmap r e p) as Hstepvm.
     destruct (rule_step r e p) as [[v|] [e' p']] eqn:Hstep;
       cbn [fst snd] in Hstepvm.
@@ -3849,26 +3849,26 @@ Qed.
 (** The FULL-STATE mutation-strand projection: on transfer-free rules the
     unified fold IS the flat full-state fold — the whole triple
     (verdict, env, packet), not just its verdict/env components.  This is the
-    license under which [eval_rules_mut_st] (and its [eval_rules_mut]/
-    [eval_rules_mut_env] projections) may stand in for the unified semantics. *)
-Theorem eval_rules_mut_st_proj : forall fuel cs rs e p,
+    license under which [eval_rules_flat] (and its [eval_rules_flat_verdict]/
+    [eval_rules_flat_env] projections) may stand in for the unified semantics. *)
+Theorem eval_rules_flat_proj : forall fuel cs rs e p,
   List.length rs < fuel ->
   forallb (rule_plain e) rs = true ->
-  eval_rules fuel cs rs e p = eval_rules_mut_st rs e p.
+  eval_rules fuel cs rs e p = eval_rules_flat rs e p.
 Proof.
   intros fuel cs rs e p Hfuel Hpl.
-  eapply eval_rules_mut_st_proj_aux; eauto.
+  eapply eval_rules_flat_proj_aux; eauto.
 Qed.
 
-Corollary eval_table_mut_st_proj : forall fuel cs c e p,
+Corollary eval_table_flat_proj : forall fuel cs c e p,
   List.length (c_rules c) < fuel ->
   forallb (rule_plain e) (c_rules c) = true ->
-  eval_table fuel cs c e p = eval_chain_mut_st c e p.
+  eval_table fuel cs c e p = eval_chain_flat c e p.
 Proof.
   intros fuel cs c e p Hfuel Hpl.
-  unfold eval_table, eval_chain_mut_st.
-  rewrite (eval_rules_mut_st_proj fuel cs (c_rules c) e p Hfuel Hpl).
-  destruct (eval_rules_mut_st (c_rules c) e p) as [[v|] s]; reflexivity.
+  unfold eval_table, eval_chain_flat.
+  rewrite (eval_rules_flat_proj fuel cs (c_rules c) e p Hfuel Hpl).
+  destruct (eval_rules_flat (c_rules c) e p) as [[v|] s]; reflexivity.
 Qed.
 
 

@@ -17,7 +17,7 @@
 
     The consolidation is certified over the state fold in [Optimize_MutEnv]
     (per-pass state preservation) and composed to the bytecode in
-    [Optimize_Linearize_MutSt.optimize_table_uncond_compile_mut_st_correct]
+    [Optimize_Linearize_MutSt.optimize_table_uncond_compile_flat_correct]
     (re-exported as the Main optimizer headline); this file supplies the
     definitions and freshness lemmas those proofs consume.
 
@@ -520,7 +520,7 @@ Qed.
     false __setN] over the N point values; [mmasked_set_existsb] is the membership
     certificate (with the [data_bitops] width discharged from the fixed-width side
     condition), and the state-fold run-merge substrate
-    [Optimize_MutEnv.eval_rules_mut_st_run_merge_abs] collapses the run (both merged
+    [Optimize_MutEnv.eval_rules_flat_run_merge_abs] collapses the run (both merged
     and run heads share [match_loadable = field_loadable f]). *)
 
 (** *** intervalsethostorder (host-order interval / range set consolidation, Optimize_IntervalSetHostOrder).
@@ -2568,7 +2568,7 @@ Qed.
     The dynset WRITE targets ([SDynset]'s set/map name, the one statement
     family that mutates the shared [e_set]/[e_map] environment) are included
     so the EFFECT-level pipeline theorem
-    ([Optimize_MutEnv.optimize_table_uncond_mut_st_correct]) gets, by construction,
+    ([Optimize_MutEnv.optimize_table_uncond_flat_correct]) gets, by construction,
     that no rule can clobber a minted declaration: a minted [setname]/[mapname]
     is strictly longer than every dynset target.  (The verdict-level theorems
     ignore the extra margin — the seed only grows.) *)

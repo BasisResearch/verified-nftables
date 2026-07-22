@@ -78,12 +78,12 @@ let mk_pkt ~env ?ct ?(protocol = []) ?(l4proto = []) ?(nfproto = [])
    plus one skb.  Every evaluator takes them as SEPARATE arguments
    (eval : ... -> env -> packet -> ...); these helpers apply one to a pair. *)
 let ev_mc m (e, p) = Semantics.eval_matchcond m e p
-let ev_chain c (e, p) = Semantics.eval_chain_mut Semantics.Hprerouting c e p
-let ev_chain_mut c (e, p) = Semantics.eval_chain_mut Semantics.Hprerouting c e p
-let ev_chain_mut_env c (e, p) = Semantics.eval_chain_mut_env Semantics.Hprerouting c e p
+let ev_chain c (e, p) = Semantics.eval_chain_flat_verdict Semantics.Hprerouting c e p
+let ev_chain_flat_verdict c (e, p) = Semantics.eval_chain_flat_verdict Semantics.Hprerouting c e p
+let ev_chain_flat_env c (e, p) = Semantics.eval_chain_flat_env Semantics.Hprerouting c e p
 let ev_chain_u h c (e, p) = Semantics.eval_chain h c e p
 let ev_table fuel cs c (e, p) = fst (Semantics.eval_table Semantics.Hprerouting fuel cs c e p)
-let run_chain_vm prog pol (e, p) = Semantics.run_chain_mut Semantics.Hprerouting prog pol e p
+let run_chain_vm prog pol (e, p) = Semantics.run_chain_flat_verdict Semantics.Hprerouting prog pol e p
 (* A rule "applies" when its body walk does not BREAK (all matches pass and
    load) — read directly off the single fold [body_step]. *)
 let rule_applies_on r (e, p) =
@@ -345,7 +345,7 @@ let check_optiplex_antispoof () =
 
 (* ---------- (E) optiplex.nft firewall mark vs Optiplex_Mark.v ----------
    Parse optiplex.nft and run a packet through WHOLE chains (extracted
-   eval_chain / eval_chain_mut), watching the mark the packet carries
+   eval_chain / eval_chain_flat_verdict), watching the mark the packet carries
    before and after each chain — the end-to-end traversal the proofs establish. *)
 
 let mark99 = [153;0;0;0]   (* 0x99 host-endian (little-endian), matching the LE meta/ct mark encoding *)
@@ -395,7 +395,7 @@ let check_optiplex_mark () =
   check "prerouting accepts" (v_pre = Verdict.Accept);
   check "prerouting marks the packet 0x99" (data_eq (mark_of p_out) mark99);
   (* carry that packet to postrouting; the mark drives masquerade (accept) *)
-  let v_post = ev_chain_mut postrouting p_out in
+  let v_post = ev_chain_flat_verdict postrouting p_out in
   Printf.printf "    postrouting (on marked packet): verdict=%s\n" (verdict_str v_post);
   check "postrouting accepts the marked packet" (v_post = Verdict.Accept);
   (* and the masquerade rule specifically fires on the marked packet *)
@@ -899,8 +899,8 @@ let check_redir_hook () =
              (fv Syntax.FIp4Daddr p_noaddr));
   (* since M3 there is NO separate data-plane strand: the mutation-strand
      verdict consumes the same single fold, so it carries the same NF_DROP. *)
-  check "mut strand agrees: eval_chain_mut DROPS the no-address redirect (single fold)"
-    (ev_chain_mut redir_chain p_noaddr = Verdict.Drop);
+  check "mut strand agrees: eval_chain_flat_verdict DROPS the no-address redirect (single fold)"
+    (ev_chain_flat_verdict redir_chain p_noaddr = Verdict.Drop);
   (* output-hook redirect targets loopback, so it NEVER drops even with no address *)
   check "output-hook redirect with no address still ACCEPTS (loopback target)"
     (fst (ev_chain_u Semantics.Houtput redir_chain p_noaddr) = Verdict.Accept);
@@ -1135,7 +1135,7 @@ let check_ct_state () =
    (WRITE_ONCE(ct->mark)), so a later packet of the SAME flow reads it back
    (nft_ct_get_eval: READ_ONCE(ct->mark)).  The model now stores writable ct keys
    (mark/label) in the flow-keyed env table e_ct (keyed by pkt_flow), threaded across
-   packets by eval_chain_mut_env/set_env — so packet 2 of the flow observes packet 1's
+   packets by eval_chain_flat_env/set_env — so packet 2 of the flow observes packet 1's
    `ct mark set`, and a DIFFERENT flow does not.  Mirrors CtMark_CrossPacket.v. *)
 let check_ct_mark_crosspkt () =
   Printf.printf "=== (I') ct mark set persists across packets of a flow ===\n";
@@ -1156,7 +1156,7 @@ let check_ct_mark_crosspkt () =
   let flow_a = [10;0;0;1] and flow_b = [10;0;0;2] in
   (* packet 1 of flow A runs the chain; capture the env it leaves *)
   let p1 = mk_pkt ~env ~flow:flow_a () in
-  let (v1, e1) = ev_chain_mut_env c p1 in
+  let (v1, e1) = ev_chain_flat_env c p1 in
   check "packet 1 of the flow is accepted (ct mark set; accept)" (v1 = Verdict.Accept);
   check "ct mark set 0x99 is recorded in the shared flow table e_ct"
     (data_eq (e1.Packet.e_ct flow_a Packet.CKmark) mark99);
@@ -1199,7 +1199,7 @@ let check_ct_set_noop () =
   (* packet 1 of flow A has NO conntrack entry (pkt_ct_present = false): the kernel
      no-op case.  Running the chain must NOT write the shared flow table. *)
   let p1 = wire (fun p -> { p with Packet.pkt_ct_present = false }) (mk_pkt ~env ~flow:flow_a ()) in
-  let (v1, e1) = ev_chain_mut_env c p1 in
+  let (v1, e1) = ev_chain_flat_env c p1 in
   check "entryless packet 1 is still accepted by the chain (ct mark set; accept)"
     (v1 = Verdict.Accept);
   check "ct mark set 0x99 on an ENTRYLESS packet leaves e_ct UNCHANGED (kernel no-op)"
@@ -1218,7 +1218,7 @@ let check_ct_set_noop () =
   (* CONTROL: with an ENTRY-PRESENT packet 1, the write DOES land (the persistence
      path is real, not disabled wholesale). *)
   let p1e = wire (fun p -> { p with Packet.pkt_ct_present = true }) (mk_pkt ~env ~flow:flow_a ()) in
-  let (_, e1e) = ev_chain_mut_env c p1e in
+  let (_, e1e) = ev_chain_flat_env c p1e in
   check "CONTROL: ct mark set on an ENTRY-PRESENT packet DOES record 0x99"
     (data_eq (e1e.Packet.e_ct flow_a Packet.CKmark) mark99);
   Printf.printf "\n"
@@ -1310,7 +1310,7 @@ let check_interval_vmap () =
    nft_notrack_eval calls nf_ct_set(skb, NULL, IP_CT_UNTRACKED); nft_ct_get_eval's
    NFT_CT_STATE case then returns NF_CT_STATE_UNTRACKED_BIT.  The model now applies
    set_untracked on SNotrack/INotrack (body_step/run_rule_step), threaded across
-   rules by eval_chain_mut.  set_untracked mirrors nft_notrack_eval's guard
+   rules by eval_chain_flat_verdict.  set_untracked mirrors nft_notrack_eval's guard
    `if (ct || ctinfo == IP_CT_UNTRACKED) return;`: it is a NO-OP when an entry already
    exists (pkt_ct_present = true) and otherwise sets pkt_untracked, so do_load
    (LCt CKstate) returns [0;0;0;64] only on a no-entry packet.  Thus
@@ -1349,14 +1349,14 @@ let check_notrack () =
   (* the threading evaluator ACCEPTS the no-entry packet (kernel-correct);
      without the rule-walk fix it DROPPED it (notrack skipped, stale oracle read) *)
   check "notrack ; ct state untracked accept ACCEPTS a no-entry packet (kernel-correct)"
-    (ev_chain_mut chain p = Verdict.Accept);
+    (ev_chain_flat_verdict chain p = Verdict.Accept);
   (* and the same chain DROPS the packet if rule 1 is removed (no notrack => no-entry
      state INVALID = 1, (1 & 64) = 0 => no match => Drop policy): acceptance is DUE TO
      notrack *)
   let chain_no_notrack : Syntax.chain =
     { Syntax.c_policy = Verdict.Drop; c_rules = [ ctstate_rule ] } in
   check "without the preceding notrack the same packet is DROPPED (effect is real)"
-    (ev_chain_mut chain_no_notrack p = Verdict.Drop);
+    (ev_chain_flat_verdict chain_no_notrack p = Verdict.Drop);
   (* KERNEL GUARD: on a packet that ALREADY has a conntrack ENTRY, notrack is a NO-OP.
      With an ESTABLISHED entry the threaded `ct state` reads the live state [0;0;0;2],
      the `ct state untracked` match FAILS, and the chain DROPS. *)
@@ -1370,7 +1370,7 @@ let check_notrack () =
   check "after a no-op notrack, ct state read returns the live ESTABLISHED state (2)"
     (data_eq (dload (Syntax.LCt Packet.CKstate) p_entry1) [0;0;0;2]);
   check "notrack ; ct state untracked DROPS an entry-present packet (kernel no-op)"
-    (ev_chain_mut chain p_entry = Verdict.Drop);
+    (ev_chain_flat_verdict chain p_entry = Verdict.Drop);
   Printf.printf "\n"
 
 (* exthdr / TCP-option VALUE load not-present guard.  Kernel nft_exthdr_tcp_eval
@@ -1404,15 +1404,15 @@ let check_exthdr_present () =
     (Syntax.field_loadable (Syntax.FExthdr (Packet.EPtcpopt, 2, 0, 0, true)) (snd p_absent));
   check "absent maxseg -> NFT_BREAK -> chain ACCEPTS (eval_chain, kernel-correct)"
     (ev_chain chain p_absent = Verdict.Accept);
-  check "absent maxseg -> chain ACCEPTS (eval_chain_mut, kernel-correct)"
-    (ev_chain_mut chain p_absent = Verdict.Accept);
+  check "absent maxseg -> chain ACCEPTS (eval_chain_flat_verdict, kernel-correct)"
+    (ev_chain_flat_verdict chain p_absent = Verdict.Accept);
   (* PRESENT: existence oracle returns [1]; the value matches -> DROP. *)
   let eh_present _ _ _ _ pr = if pr then [1] else maxseg_val in
   let p_present = wire (fun p -> { p with Packet.pkt_eh = eh_present }) (mk_pkt ~env ()) in
   check "PRESENT maxseg with matching value -> chain DROPS (eval_chain)"
     (ev_chain chain p_present = Verdict.Drop);
-  check "PRESENT maxseg with matching value -> chain DROPS (eval_chain_mut)"
-    (ev_chain_mut chain p_present = Verdict.Drop);
+  check "PRESENT maxseg with matching value -> chain DROPS (eval_chain_flat_verdict)"
+    (ev_chain_flat_verdict chain p_present = Verdict.Drop);
   Printf.printf "\n"
 
 (* (I''') INTRA-RULE notrack->ct-state: `ct notrack ct state untracked accept` in ONE
@@ -1451,8 +1451,8 @@ let check_notrack_intra () =
     (rule_applies_on intra_rule p);
   check "intra-rule: eval_chain ACCEPTS a no-entry packet (kernel-correct)"
     (ev_chain chain p = Verdict.Accept);
-  check "intra-rule: eval_chain_mut ACCEPTS too"
-    (ev_chain_mut chain p = Verdict.Accept);
+  check "intra-rule: eval_chain_flat_verdict ACCEPTS too"
+    (ev_chain_flat_verdict chain p = Verdict.Accept);
   (* the verified compiler agrees: the compiled bytecode runs to the same verdict *)
   check "intra-rule: the COMPILED chain ACCEPTS (compile_chain_correct instance)"
     (run_chain_vm (Compile.compile_chain chain) chain.Syntax.c_policy p
@@ -2021,9 +2021,9 @@ let check_limit_over () =
   let chain_lim = { Syntax.c_policy = Verdict.Drop; c_rules = [rule_accept] } in
   let env_one = { env with Packet.e_limit = (fun _ -> 1) } in
   let p1 = mk_pkt ~env:env_one ~flow:[1;1] () in
-  let (v1, e_after) = ev_chain_mut_env chain_lim p1 in
+  let (v1, e_after) = ev_chain_flat_env chain_lim p1 in
   let p2 = mk_pkt ~env:e_after ~flow:[1;1] () in
-  let (v2, _) = ev_chain_mut_env chain_lim p2 in
+  let (v2, _) = ev_chain_flat_env chain_lim p2 in
   check "consuming bucket: packet 1 ACCEPTED (one token available)"
     (v1 = Verdict.Accept);
   check "consuming bucket: token CONSUMED (env left by packet 1 has 0 tokens)"
@@ -2399,9 +2399,9 @@ let check_connlimit_conn () =
   (* TWO packets of the SAME connection (same flow id). *)
   let flowA = [10;0;0;1] in
   let p1 = mk_pkt ~env:base_env ~flow:flowA () in
-  let (v1, e_after1) = ev_chain_mut_env chain p1 in
+  let (v1, e_after1) = ev_chain_flat_env chain p1 in
   let p2 = mk_pkt ~env:e_after1 ~flow:flowA () in
-  let (v2, e_after2) = ev_chain_mut_env chain p2 in
+  let (v2, e_after2) = ev_chain_flat_env chain p2 in
   check "connlimit 1: packet 1 of a connection ACCEPTED (count 1 <= 1)"
     (v1 = Verdict.Accept);
   check "connlimit 1: packet 2 of the SAME connection ALSO ACCEPTED (dedup, count still 1)"
@@ -2413,7 +2413,7 @@ let check_connlimit_conn () =
   (* a SECOND, DISTINCT connection: count becomes 2 > 1 -> BREAK -> policy DROP. *)
   let flowB = [10;0;0;2] in
   let p3 = mk_pkt ~env:e_after2 ~flow:flowB () in
-  let (v3, _) = ev_chain_mut_env chain p3 in
+  let (v3, _) = ev_chain_flat_env chain p3 in
   check "connlimit 1: a 2nd DISTINCT connection makes count 2 > 1 -> DROPPED"
     (v3 = Verdict.Drop);
   check "connlimit 1: PERMITS up to N+1=2 distinct connections, blocks the 2nd's overflow"
@@ -2441,10 +2441,10 @@ let check_ct_no_entry () =
   let chain = { Syntax.c_policy = Verdict.Drop; c_rules = [rule] } in
   (* TRACKED packet (entry present): rule matches -> ACCEPT *)
   let p_tracked = mk_pkt ~env:base_env ~flow:[1;1] () in
-  let v_tracked = ev_chain_mut chain p_tracked in
+  let v_tracked = ev_chain_flat_verdict chain p_tracked in
   (* NO-ENTRY packet (untracked / INVALID): the same env, but pkt_ct_present = false *)
   let p_noentry = wire (fun p -> { p with Packet.pkt_ct_present = false }) p_tracked in
-  let v_noentry = ev_chain_mut chain p_noentry in
+  let v_noentry = ev_chain_flat_verdict chain p_noentry in
   check "ct mark 0x10: a TRACKED packet (entry present) MATCHES -> ACCEPT"
     (v_tracked = Verdict.Accept);
   check "ct mark 0x10: a NO-ENTRY packet BREAKs the rule -> policy DROP"
@@ -2463,8 +2463,8 @@ let check_ct_no_entry () =
   Printf.printf "\n"
 
 (* ---------- (P) numgen-freedom: discharged by THEOREM, sanity-pinned here ----------
-   The mutation/cross-packet theorems (compile_chain_mut_correct /
-   compile_seq_mut_correct, THEOREMS.md axis 2) hold under the source-AST
+   The mutation/cross-packet theorems (compile_chain_flat_verdict_correct /
+   compile_seq_flat_verdict_correct, THEOREMS.md axis 2) hold under the source-AST
    hypothesis [rule_numgen_free], and Lower_Proofs.lower_ruleset_numgen_free
    discharges it for EVERY successful lowering (lower_rule refuses incremental
    numgen fail-loud, Lower.LEnumgen).  This check is therefore a SANITY pin of

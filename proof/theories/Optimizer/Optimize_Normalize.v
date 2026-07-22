@@ -11,7 +11,7 @@
     yet exposes the head to the value->set / concat / vmap merges.
 
     This pass ([normalize_chain]) does exactly that rewrite over every rule body;
-    its state-fold preservation is [Optimize_MutEnv.normalize_chain_mut_st].
+    its state-fold preservation is [Optimize_MutEnv.normalize_chain_flat].
     [Optimize_Uncond.optimize_table_uncond] runs it FIRST, so the SHIPPED optimizer
     consolidates real parsed rulesets (e.g. three adjacent `ip saddr <a>` rules ->
     one `ip saddr { … }`).  The [normalize_mc_*] extensional-equality lemmas here are

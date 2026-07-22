@@ -615,7 +615,7 @@ Qed.
     that packet, carried to the postrouting hook (as the kernel carries the skb
     mark), is matched by the masquerade rule and the postrouting chain accepts it.
     No rule is applied by hand — each chain is run whole by [eval_chain] /
-    [eval_chain_mut]. *)
+    [eval_chain_flat_verdict]. *)
 Theorem streaming_flow_whole_ruleset_real : forall e p,
   e_set e "__set0" = set_l4proto ->
   e_set e "__set1" = set_iif ->
@@ -638,7 +638,7 @@ Theorem streaming_flow_whole_ruleset_real : forall e p,
      UNLESS the kernel NAT core drops for want of a usable exit address —
      the fold carries that data-plane drop too (M3) *)
   /\ body_step (r_body post1) e' q = BRdone e' q
-  /\ eval_chain_mut Hpostrouting filter_postrouting e' q
+  /\ eval_chain_flat_verdict Hpostrouting filter_postrouting e' q
      = (if nat_drops Hpostrouting post1 e' q then Drop else Accept).
 Proof.
   intros e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok Horig Hnone q e'.
@@ -650,7 +650,7 @@ Proof.
     rewrite (streaming_prerouting_io_real e p Hs0 Hs1 Hs2 Hiif Hfib Hl4 Hdport Hok).
     reflexivity.
   - now apply masquerade_gated_on_mark.
-  - unfold eval_chain_mut. rewrite postrouting_rules_eq. rewrite ?eval_rules_mut_cons, ?eval_rules_mut_nil.
+  - unfold eval_chain_flat_verdict. rewrite postrouting_rules_eq. rewrite ?eval_rules_flat_verdict_cons, ?eval_rules_flat_verdict_nil.
     rewrite (post1_rule_step Hpostrouting e' q Hmark).
     destruct (nat_drops Hpostrouting post1 e' q); [reflexivity|].
     destruct (apply_nat Hpostrouting post1 e' q) as [e2 q2]. reflexivity.
@@ -677,7 +677,7 @@ Theorem streaming_flow_whole_ruleset : forall e p,
   /\ field_value FMetaMark e' q = mark99
   (* postrouting reads the surviving mark and masquerades (terminal accept) *)
   /\ body_step (r_body post1) e' q = BRdone e' q
-  /\ eval_chain_mut Hpostrouting filter_postrouting e' q = Accept.
+  /\ eval_chain_flat_verdict Hpostrouting filter_postrouting e' q = Accept.
 Proof.
   intros e p Henv Hiif Hfib Hl4 Hdport Hok Horig Hnone q e'.
   exact (False_ind _ (genenv_fib_local_contradiction e p Henv Hfib)).
@@ -784,7 +784,7 @@ Theorem streaming_whole_ruleset_witnessed :
   /\ body_step (r_body post1) e' q = BRdone e' q
   (* concrete: the exit interface HAS an address, so the masquerade fires and
      the postrouting verdict is a genuine Accept (no NAT drop) *)
-  /\ eval_chain_mut Hpostrouting filter_postrouting e' q = Accept.
+  /\ eval_chain_flat_verdict Hpostrouting filter_postrouting e' q = Accept.
 Proof.
   repeat split; vm_compute; reflexivity.
 Qed.

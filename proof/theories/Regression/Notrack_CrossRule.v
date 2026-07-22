@@ -25,7 +25,7 @@
     keeps it on any later break.
     [set_untracked] mirrors the kernel guard: it is a NO-OP when [pkt_ct_present = true]
     and otherwise sets the per-packet-traversal flag [pkt_untracked := true].  The
-    cross-rule threader [eval_rules_mut h] carries rule 1's step state (here
+    cross-rule threader [eval_rules_flat_verdict h] carries rule 1's step state (here
     [set_untracked p], = [dsl_writes r1 e p] on this match-free rule)
     into the NEXT rule, whose `ct state` match reads [do_load (LCt CKstate)] = [0;0;0;64]
     on a no-entry packet ([pkt_untracked] override) and the live entry state otherwise.
@@ -106,14 +106,14 @@ Proof. vm_compute. reflexivity. Qed.
 (* The threading evaluator ACCEPTS the no-entry packet — matching the kernel; a
    model that skipped `notrack` would read a stale oracle here and DROP. *)
 Theorem model_accepts_like_kernel :
-  eval_chain_mut h notrack_chain env0 pkt_noentry = Accept.
+  eval_chain_flat_verdict h notrack_chain env0 pkt_noentry = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The kernel-guaranteed property — `notrack; ct state untracked accept` accepts
    every NO-ENTRY packet (ct == NULL at notrack time) — is PROVABLE in the model. *)
 Theorem notrack_forces_untracked_accept :
   forall (e : env) (p : packet), pkt_ct_present p = false ->
-    eval_chain_mut h notrack_chain e p = Accept.
+    eval_chain_flat_verdict h notrack_chain e p = Accept.
 Proof.
   intros e p Hp.
   assert (Hu : pkt_untracked (set_untracked p) = true)
@@ -129,11 +129,11 @@ Proof.
   assert (Hstep2 : rule_step h ctstate_rule e (set_untracked p)
                    = (Some Accept, (e, set_untracked p))).
   { unfold rule_step. cbn [ctstate_rule r_body body_step match_consume]. rewrite Hm. reflexivity. }
-  unfold eval_chain_mut, notrack_chain. cbn [c_rules c_policy].
-  rewrite ?eval_rules_mut_cons, ?eval_rules_mut_nil.
+  unfold eval_chain_flat_verdict, notrack_chain. cbn [c_rules c_policy].
+  rewrite ?eval_rules_flat_verdict_cons, ?eval_rules_flat_verdict_nil.
   replace (rule_step h notrack_only e p)
     with (@None verdict, (e, set_untracked p)) by reflexivity.
-  cbv beta iota. rewrite eval_rules_mut_cons.
+  cbv beta iota. rewrite eval_rules_flat_verdict_cons.
   rewrite Hstep2. reflexivity.
 Qed.
 
@@ -168,7 +168,7 @@ Lemma notrack_noop_on_entry :
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem model_drops_entry_present_like_kernel :
-  eval_chain_mut h notrack_chain env_estab_entry pkt_estab_entry = Drop.
+  eval_chain_flat_verdict h notrack_chain env_estab_entry pkt_estab_entry = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 End AtHook.

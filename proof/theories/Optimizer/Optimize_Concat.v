@@ -450,7 +450,7 @@ Qed.
     [ip saddr A1 dport B1 accept; A2 B2; A3 B3] into ONE
     [ip saddr . tcp dport { A1.B1, A2.B2, A3.B3 } accept].  This section delivers the
     N-way pass, reusing the family-agnostic state-fold collapse
-    [Optimize_MutEnv.eval_rules_mut_st_run_collapse] (all rules in the run share the
+    [Optimize_MutEnv.eval_rules_flat_run_collapse] (all rules in the run share the
     SAME verdict). *)
 
 Definition pack_tuple (ab : data * data) : data * data :=

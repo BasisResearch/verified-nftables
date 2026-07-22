@@ -96,7 +96,7 @@ Lemma gate_match_fails :
   eval_matchcond (MEq FMetaMark [0;0;0;1]) env_lim pkt_nomatch = false.
 Proof. vm_compute. reflexivity. Qed.
 
-Definition gate_res : verdict * env := eval_chain_mut_env Hprerouting gate_chain env_lim pkt_nomatch.
+Definition gate_res : verdict * env := eval_chain_flat_env Hprerouting gate_chain env_lim pkt_nomatch.
 
 (* The verdict is the policy (rule does not apply) — same as the kernel. *)
 Lemma gate_verdict_policy : fst gate_res = Drop.
@@ -109,7 +109,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 (* The compiled VM agrees with the DSL (and with the kernel). *)
 Definition vm_gate_res : verdict * env :=
-  run_chain_mut_env Hprerouting (compile_chain gate_chain) Drop env_lim pkt_nomatch.
+  run_chain_flat_env Hprerouting (compile_chain gate_chain) Drop env_lim pkt_nomatch.
 
 Theorem vm_gate_limit_undrained : e_limit (snd vm_gate_res) lim1 = 1.
 Proof. vm_compute. reflexivity. Qed.

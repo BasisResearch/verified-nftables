@@ -6,13 +6,13 @@
     chain-level stages of the shipped pipeline ([Optimize_Normalize.normalize_chain]
     head normalisation and [Optimize.optimize_chain] the base absorb/DCE pass) are
     each an [opt_pass]: a NAMED [chain -> chain] transform BUNDLED with its
-    [eval_chain_mut_st]-preservation proof.  The certificate is over the full
+    [eval_chain_flat]-preservation proof.  The certificate is over the full
     observable of the effect-threading fold — verdict AND the resulting (env,
     packet) — so a registered pass can alter neither a `meta mark` write nor a
     dynset-learned element, on any hook.
 
     An [opt_pass] is state-preserving BY CONSTRUCTION (the proof is a field), so
-    folding ANY list of passes preserves [eval_chain_mut_st] — [run_passes_correct],
+    folding ANY list of passes preserves [eval_chain_flat] — [run_passes_correct],
     proved ONCE by induction over the list, quantified over every pass list and
     every hook.  The CLI ([-O p1,p2,...]) only parses names into a pass list via
     [resolve_passes] (a lookup into [registry]); it composes NO byte and carries
@@ -20,7 +20,7 @@
     [Optimize_Uncond.optimize_table_uncond], whose correctness changes the
     environment with the synthesised declarations) is NOT a pure [chain -> chain]
     pass and is handled by the CLI's existing table path — see
-    [Optimize_MutEnv.optimize_table_uncond_mut_st_correct].  Axiom-free. *)
+    [Optimize_MutEnv.optimize_table_uncond_flat_correct].  Axiom-free. *)
 
 From Stdlib Require Import List String Bool.
 From Nft Require Import Syntax Semantics
@@ -35,28 +35,28 @@ Record opt_pass : Type := {
   op_name    : string;
   op_fn      : chain -> chain;
   op_correct : forall h c e p,
-    eval_chain_mut_st h (op_fn c) e p = eval_chain_mut_st h c e p
+    eval_chain_flat h (op_fn c) e p = eval_chain_flat h c e p
 }.
 
 Definition pass_normalize : opt_pass :=
   {| op_name := "normalize"; op_fn := normalize_chain;
-     op_correct := normalize_chain_mut_st |}.
+     op_correct := normalize_chain_flat |}.
 
 Definition pass_base : opt_pass :=
   {| op_name := "base"; op_fn := optimize_chain;
-     op_correct := optimize_chain_mut_st |}.
+     op_correct := optimize_chain_flat |}.
 
 Definition pass_paymerge : opt_pass :=
   {| op_name := "paymerge"; op_fn := paymerge_chain;
-     op_correct := paymerge_chain_mut_st |}.
+     op_correct := paymerge_chain_flat |}.
 
 Definition pass_xorfold : opt_pass :=
   {| op_name := "xorfold"; op_fn := xorfold_chain;
-     op_correct := xorfold_chain_mut_st |}.
+     op_correct := xorfold_chain_flat |}.
 
 Definition pass_elide : opt_pass :=
   {| op_name := "elide"; op_fn := elide_chain;
-     op_correct := elide_chain_mut_st |}.
+     op_correct := elide_chain_flat |}.
 
 (** The registry: every pass exposed by name to [-O]. *)
 Definition registry : list opt_pass :=
@@ -71,7 +71,7 @@ Definition run_passes (ps : list opt_pass) (c : chain) : chain :=
     each entry's bundled [op_correct].  No hypothesis on the passes beyond being
     [opt_pass]es. *)
 Theorem run_passes_correct : forall ps h c e p,
-  eval_chain_mut_st h (run_passes ps c) e p = eval_chain_mut_st h c e p.
+  eval_chain_flat h (run_passes ps c) e p = eval_chain_flat h c e p.
 Proof.
   unfold run_passes.
   induction ps as [| pss ps IH]; intros h c e p; [reflexivity|].
@@ -98,7 +98,7 @@ Definition resolve_passes (names : list string) : option (list opt_pass) :=
     them preserves the threaded state — the CLI needs no separate proof. *)
 Theorem resolve_run_correct : forall names ps h c e p,
   resolve_passes names = Some ps ->
-  eval_chain_mut_st h (run_passes ps c) e p = eval_chain_mut_st h c e p.
+  eval_chain_flat h (run_passes ps c) e p = eval_chain_flat h c e p.
 Proof. intros. apply run_passes_correct. Qed.
 
 (** The list of registered names, for [--list-passes]. *)

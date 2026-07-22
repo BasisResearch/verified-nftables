@@ -16,8 +16,8 @@
         residue, [Optimize_Elide].
 
     All three passes are SELF-GUARDING and their state-preservation theorems are
-    UNCONDITIONAL ([Optimize_Linearize_MutSt.paymerge_chain_mut_st] /
-    [xorfold_chain_mut_st] / [elide_chain_mut_st]: no hypothesis on the chain,
+    UNCONDITIONAL ([Optimize_Linearize_MutSt.paymerge_chain_flat] /
+    [xorfold_chain_flat] / [elide_chain_flat]: no hypothesis on the chain,
     env or packet).  This file composes them into [linearize_chain] and defines
     the DEFAULT compile pipeline
 
@@ -27,14 +27,14 @@
     `nftc send`) actually emits, so the shipped default output matches nft's
     default linearization.  The composed default pipeline
     [compile_chain_default] is certified over the state fold by
-    [Optimize_Linearize_MutSt.compile_chain_default_mut_st_correct].
+    [Optimize_Linearize_MutSt.compile_chain_default_flat_correct].
 
     Placement mirrors nft: linearization happens AT EMISSION, after any `-o`
     consolidation — so the stage lives at the compile boundary (applied to
     whatever chain reaches the compiler), NOT inside
     [Optimize_Uncond.optimize_table_uncond]; the optimize path's composed
     headline is
-    [Optimize_Linearize_MutSt.optimize_table_uncond_compile_mut_st_correct],
+    [Optimize_Linearize_MutSt.optimize_table_uncond_compile_flat_correct],
     which is stated over THIS pipeline.  The `-O paymerge` / `-O xorfold`
     registry passes remain (an explicit second application is idempotent in
     effect: both passes only rewrite where their guard still fires). *)
