@@ -14,7 +14,7 @@
 
     [Tutorial_Gen.v] is the PARSER's output for that file (make gen), so what we
     prove below is a property of the parsed ruleset — and, via
-    [Correct.compile_table_u_correct], of the compiled netlink bytecode.
+    [Correct.compile_table_correct], of the compiled netlink bytecode.
 
     The headline is an EXACTNESS statement, universally quantified over packets
     AND over the four source-address bytes:
@@ -107,14 +107,14 @@ Print Assumptions tutorial_accepts_rest.
     [tut_fuel = 16] was an eyeballed budget.  The M4 fuel-adequacy layer
     removes the eyeball: the tutorial chain never realises a jump ([chains_plain]
     computes [true] under every env, since its one rule's terminal is the
-    static [Drop]), so [Semantics.chain_ranked_u] holds by [vm_compute],
+    static [Drop]), so [Semantics.chain_ranked] holds by [vm_compute],
     [sufficient_fuel] computes to 4, and the headline holds VERBATIM at every
     fuel >= 4 — [tutorial_blocks_exactly] is the [fuel = tut_fuel] instance.
     See Semantics.v § "Fuel discipline for the unified evaluator" for why the bound
     is needed at all (the policy fallback on exhaustion). *)
 
-Lemma tutorial_ranked : forall e h, chain_ranked_u h (fun _ => O) tutorial_chains e.
-Proof. intros e h. apply chains_plain_ranked_u. vm_compute. reflexivity. Qed.
+Lemma tutorial_ranked : forall e h, chain_ranked h (fun _ => O) tutorial_chains e.
+Proof. intros e h. apply chains_plain_ranked. vm_compute. reflexivity. Qed.
 
 Example tutorial_sufficient_fuel :
   sufficient_fuel tutorial_chains (c_rules tutorial_input) = 4.
@@ -206,8 +206,8 @@ Proof. Fail now nft_decide. Abort.
 
 (* ================================================================== *)
 (** ** The tutorial config is write-free, so every verdict above — stated over
-    the canonical unified evaluator [eval_table_u] at every hook — is
-    hook-independent ([Nft_Tactics.eval_table_u_hookindep_writefree]);
+    the canonical unified evaluator [eval_table] at every hook — is
+    hook-independent ([Nft_Tactics.eval_table_hookindep_writefree]);
     [nft_writefree] is the check. *)
 Example tutorial_license :
   nft_writefree tutorial_chains tutorial_input = true.

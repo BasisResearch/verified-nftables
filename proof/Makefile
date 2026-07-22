@@ -173,7 +173,7 @@ validate: glue
 #   multi-address        Netstate_MultiAddr (selection + drop-iff)
 #   fib host-local       Fib_Local (all 17 heads)
 #   ct-state             Ct_State (all 5 theorems)
-#   fuel adequacy (M4)   Semantics jx monotonicity/adequacy + eval_table_u
+#   fuel adequacy (M4)   Semantics jx monotonicity/adequacy + eval_table
 #                        fuel-independence + compiled mirror + the tutorial
 #                        fuel-free corollary
 #   mark de-vacuized(M4) Optiplex_Mark _real heads + the gen_env/fib
@@ -223,13 +223,13 @@ validate: glue
 #                        evaluators (Reject_GuardFirst pins + the guard-last
 #                        counterfactual leak)
 #   unified semantics (U1) one effect-threading, jump-following evaluator per
-#                        side (eval_rules_u / run_rules_u): mutation x
+#                        side (eval_rules / run_rules): mutation x
 #                        jump/goto/return x multi-chain x hook dispatch x
 #                        cross-packet env carry, jointly compiler-preserved
-#                        (compile_{table,ruleset,hook,seq_hook}_u_correct);
+#                        (compile_{table,ruleset,hook,seq_hook}_correct);
 #                        the per-rule write-free reads and the flat mutation
 #                        strand are PROVEN PROJECTIONS of it (rule_step_mutfree
-#                        / eval_rules_u_mut_proj), and the witnessed
+#                        / eval_rules_mut_proj), and the witnessed
 #                        set-then-read-under-jump behaviour is pinned on both
 #                        sides (Setread_UnderJump)
 #   in-fold limiter (M2) limit/quota/connlimit consumption (and the VM numgen
@@ -242,7 +242,7 @@ validate: glue
 #                        limiter before it consumes and the write survives
 #                        the break (Limit_SharedBucket positional pins)
 #   cross-packet (M4)    THE sequence semantics is seq_eval_env over the
-#                        unified hook run (eval_hook_env_u): the between-packet
+#                        unified hook run (eval_hook_env): the between-packet
 #                        env is the ruleset's OWN env-out — the external-step
 #                        seq_eval stratum is RETIRED (compile_seq_correct ->
 #                        compile_seq_hook_correct); the cross-packet carries
@@ -250,7 +250,7 @@ validate: glue
 #                        jump + hook dispatch) are pinned in Seq_Hook_Carry
 # Any NEW README-claimed result must be added here in the same commit.
 AXIOM_GATE_THEOREMS = compile_chain_mut_correct \
-  compile_table_u_correct compile_ruleset_u_correct compile_hook_u_correct \
+  compile_table_correct compile_ruleset_correct compile_hook_correct \
   compile_seq_hook_correct \
   Seq_Hook_Carry.seq_hook_limit_depletes \
   Seq_Hook_Carry.vm_seq_hook_limit_depletes \
@@ -267,8 +267,8 @@ AXIOM_GATE_THEOREMS = compile_chain_mut_correct \
   Router_Realistic.inbound_eth1_accept_iff_real Router_Realistic.input_hook_world_locked_real \
   Nft_Demo_Concrete.demo_dns_accepted_unified \
   Nft_Demo_Concrete.demo_smtp_denied_unified \
-  Semantics.eval_rules_u_mut_proj Semantics.eval_table_u_mut_proj \
-  Semantics.eval_rules_u_mut_st_proj Semantics.eval_table_u_mut_st_proj \
+  Semantics.eval_rules_mut_proj Semantics.eval_table_mut_proj \
+  Semantics.eval_rules_mut_st_proj Semantics.eval_table_mut_st_proj \
   Correct.run_rule_step_compile_rule \
   Setread_UnderJump.setread_under_jump_accepted \
   Setread_UnderJump.vm_setread_under_jump_accepted \
@@ -300,7 +300,7 @@ AXIOM_GATE_THEOREMS = compile_chain_mut_correct \
   Optimize_Linearize_MutSt.compile_chain_mut_st_correct \
   Optimize_Linearize_MutSt.compile_chain_default_mut_st_correct \
   Optimize_Registry.run_passes_correct \
-  Semantics.eval_rules_u_fuel_indep Semantics.eval_table_u_fuel_indep \
+  Semantics.eval_rules_fuel_indep Semantics.eval_table_fuel_indep \
   Nft_Tactics.nft_yields_fuel_indep \
   Tutorial_Proofs.tutorial_blocks_exactly_any_fuel \
   Optiplex_Antispoof.antispoof_general_any_env \

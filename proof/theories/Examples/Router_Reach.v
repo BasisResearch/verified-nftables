@@ -9,7 +9,7 @@
     terminal-Accept whose effect lives in the PACKET/env components of the single
     fold ([apply_nat] / [masq_saddr] / [store_nat_mapping], applied at the NAT
     terminal inside [rule_step] and surfaced through
-    [eval_chain_u] / [chain_out]); the chain's policy is `accept`, so a verdict
+    [eval_chain] / [chain_out]); the chain's policy is `accept`, so a verdict
     property pins down NOTHING about the source rewrite — it holds identically whether
     masquerade fires correctly, never fires, or is mutated to source-NAT every packet.
 
@@ -129,16 +129,16 @@ Proof.
   destruct (saddr_private e p && oif_ppp0 e p); reflexivity.
 Qed.
 
-(* Chain form: [eval_chain_u] of the parser's postrouting chain IS the step. *)
-Lemma masq_chain_u : forall h e p,
-  eval_chain_u h global_postrouting e p
+(* Chain form: [eval_chain] of the parser's postrouting chain IS the step. *)
+Lemma masq_chain : forall h e p,
+  eval_chain h global_postrouting e p
   = if saddr_private e p && oif_ppp0 e p
     then (if nat_drops h masq_rule e p then (Drop, (e, p))
           else (Accept, apply_nat h masq_rule e p))
     else (Accept, (e, p)).
 Proof.
-  intros h e p. unfold eval_chain_u, eval_table_u.
-  rewrite global_postrouting_rules. cbn [List.length eval_rules_u].
+  intros h e p. unfold eval_chain, eval_table.
+  rewrite global_postrouting_rules. cbn [List.length eval_rules].
   rewrite masq_rule_step.
   destruct (saddr_private e p && oif_ppp0 e p); [|reflexivity].
   destruct (nat_drops h masq_rule e p); [reflexivity|].
@@ -196,13 +196,13 @@ Theorem nat_masquerade_fires_output : forall e p wan,
   e_nat e (pkt_flow p) = None ->
   e_ifaddr e (field_value FMetaOifname e p) = wan ->
   wan <> [] ->
-  eval_chain_u Hpostrouting global_postrouting e p
+  eval_chain Hpostrouting global_postrouting e p
     = (Accept, (store_nat_mapping e p
                   (Some (slice (pkt_nh p) 12 4), Some wan, None, None),
                 set_saddr nat_fam_ip4 p wan)).
 Proof.
   intros e p wan Hpriv Hppp Horig Hnone Hwan Hne.
-  rewrite masq_chain_u, Hpriv, Hppp. cbn [andb].
+  rewrite masq_chain, Hpriv, Hppp. cbn [andb].
   rewrite (masq_no_drop Hpostrouting e p) by (rewrite Hwan; exact Hne).
   rewrite (masq_apply Hpostrouting e p Horig Hnone), Hwan. reflexivity.
 Qed.
@@ -249,7 +249,7 @@ Theorem nat_masquerade_does_not_fire : forall e p,
 Proof.
   intros e p Happ.
   unfold chain_out, chain_out_env.
-  rewrite masq_chain_u, Happ. split; reflexivity.
+  rewrite masq_chain, Happ. split; reflexivity.
 Qed.
 
 (* Phrased on the security HYPOTHESES: a packet whose source is NOT private OR whose
@@ -349,7 +349,7 @@ Qed.
 (* For the BUGGY chain, the SAME witness has its source REWRITTEN to the WAN address
    (the leak): half (b) is FALSE for [bug_postrouting]. *)
 Theorem bug_breaks_no_fire :
-  saddr4 (snd (snd (eval_chain_u Hpostrouting bug_postrouting env_bug pkt_pub))) = wan_addr.
+  saddr4 (snd (snd (eval_chain Hpostrouting bug_postrouting env_bug pkt_pub))) = wan_addr.
 Proof. vm_compute. reflexivity. Qed.
 
 (* Hence the data-plane property DISCRIMINATES the bug: the correct chain leaves the
@@ -358,7 +358,7 @@ Proof. vm_compute. reflexivity. Qed.
    verdict-only property (both chains accept) cannot make. *)
 Theorem property_discriminates_bug :
   saddr4 (chain_out Hpostrouting global_postrouting env_bug pkt_pub)
-  <> saddr4 (snd (snd (eval_chain_u Hpostrouting bug_postrouting env_bug pkt_pub))).
+  <> saddr4 (snd (snd (eval_chain Hpostrouting bug_postrouting env_bug pkt_pub))).
 Proof.
   rewrite correct_keeps_public_source, bug_breaks_no_fire. discriminate.
 Qed.
@@ -469,7 +469,7 @@ Theorem nat_masq_confirmed_output : forall e p oa wan,
 Proof.
   intros e p oa wan Hpriv Hppp Horig Hsome.
   unfold chain_out.
-  rewrite masq_chain_u, Hpriv, Hppp. cbn [andb].
+  rewrite masq_chain, Hpriv, Hppp. cbn [andb].
   rewrite (masq_no_drop_confirmed Hpostrouting e p _ Hsome).
   rewrite (masq_apply_confirmed_orig Hpostrouting e p oa wan Horig Hsome).
   reflexivity.
@@ -561,7 +561,7 @@ Theorem nat_masq_confirmed_reply_output : forall e p oa wan,
 Proof.
   intros e p oa wan Hpriv Hppp Hrep Hsome.
   unfold chain_out.
-  rewrite masq_chain_u, Hpriv, Hppp. cbn [andb].
+  rewrite masq_chain, Hpriv, Hppp. cbn [andb].
   rewrite (masq_no_drop_confirmed Hpostrouting e p _ Hsome).
   rewrite (masq_apply_confirmed_reply Hpostrouting e p oa wan Hrep Hsome).
   reflexivity.

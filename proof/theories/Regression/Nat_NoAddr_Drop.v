@@ -88,20 +88,20 @@ Definition pkt_withaddr : packet := mk_pkt.
 
 (* redirect at PREROUTING over an address-less interface DROPS. *)
 Theorem redirect_no_inbound_address_drops :
-  eval_chain_u Hprerouting redir_chain env_noaddr pkt_noaddr
+  eval_chain Hprerouting redir_chain env_noaddr pkt_noaddr
   = (Drop, (env_noaddr, pkt_noaddr)).
 Proof. vm_compute. reflexivity. Qed.
 
 (* masquerade at POSTROUTING over an address-less interface DROPS. *)
 Theorem masquerade_no_exit_address_drops :
-  eval_chain_u Hpostrouting masq_chain env_noaddr pkt_noaddr
+  eval_chain Hpostrouting masq_chain env_noaddr pkt_noaddr
   = (Drop, (env_noaddr, pkt_noaddr)).
 Proof. vm_compute. reflexivity. Qed.
 
 (* and the packet is left UNREWRITTEN — no corrupt empty address spliced into the
    destination slot (the drop happens before the address is applied). *)
 Theorem redirect_drop_leaves_packet_unrewritten :
-  snd (eval_chain_u Hprerouting redir_chain env_noaddr pkt_noaddr) = (env_noaddr, pkt_noaddr).
+  snd (eval_chain Hprerouting redir_chain env_noaddr pkt_noaddr) = (env_noaddr, pkt_noaddr).
 Proof. vm_compute. reflexivity. Qed.
 
 (** ** The kernel's NON-drop cases stay Accept. *)
@@ -109,16 +109,16 @@ Proof. vm_compute. reflexivity. Qed.
 (* redirect at the OUTPUT hook always targets the loopback address, so it never
    drops even with an address-less interface (nf_nat_redirect_ipv4 LOCAL_OUT). *)
 Theorem redirect_output_loopback_accepts :
-  fst (eval_chain_u Houtput redir_chain env_noaddr pkt_noaddr) = Accept.
+  fst (eval_chain Houtput redir_chain env_noaddr pkt_noaddr) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* with an interface that HAS an address, redirect/masquerade accept (and rewrite). *)
 Theorem redirect_with_address_accepts :
-  fst (eval_chain_u Hprerouting redir_chain env_withaddr pkt_withaddr) = Accept.
+  fst (eval_chain Hprerouting redir_chain env_withaddr pkt_withaddr) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem masquerade_with_address_accepts :
-  fst (eval_chain_u Hpostrouting masq_chain env_withaddr pkt_withaddr) = Accept.
+  fst (eval_chain Hpostrouting masq_chain env_withaddr pkt_withaddr) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The NAT drop is part of THE (single) semantics: the mutation strand consumes

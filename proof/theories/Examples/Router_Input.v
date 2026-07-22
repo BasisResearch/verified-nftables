@@ -130,7 +130,7 @@ Opaque field_value assoc_verdict eval_matchcond_body field_loadable.
 
     [global_inbound_world] has policy Continue and ONE rule: accept iff
     saddr=81.209.165.42 AND l4proto=tcp AND dport=22.  When evaluated as a jump
-    target, [eval_rules_u] returns [Some Accept] on a hit and [None] on a miss (so
+    target, [eval_rules] returns [Some Accept] on a hit and [None] on a miss (so
     the caller falls through to inbound's policy DROP). *)
 (* The three matches of the inbound_world rule, exactly as the kernel evaluates
    them (firstn-truncated equality compares against the rule's literals). *)
@@ -183,7 +183,7 @@ Qed.
    write-free it leaves the state untouched. *)
 Lemma inbound_world_eval : forall h n e p,
   world_loads p = true ->
-  eval_rules_u h (S n) global_chains (c_rules global_inbound_world) e p =
+  eval_rules h (S n) global_chains (c_rules global_inbound_world) e p =
     (if world_ssh e p then Some Accept else None, (e, p)).
 Proof.
   intros h n e p H. rewrite c_rules_world, eru_cons, (r1_world_step h e p H).
@@ -264,7 +264,7 @@ Lemma inbound_eval_unfold_of_vmap : forall h e p,
   field_loadable FCtState p = true ->
   field_loadable FMetaIifname p = true ->
   world_loads p = true ->
-  fst (eval_table_u h in_fuel global_chains global_inbound e p) =
+  fst (eval_table h in_fuel global_chains global_inbound e p) =
     (if data_eqb cts_established (ct_key e p) then Accept
      else if data_eqb cts_related (ct_key e p) then Accept
      else if data_eqb cts_invalid (ct_key e p) then Drop
@@ -272,12 +272,12 @@ Lemma inbound_eval_unfold_of_vmap : forall h e p,
        if data_eqb if_lo (iif_key e p) then Accept
        else if data_eqb if_ppp0 (iif_key e p) then (if world_ssh e p then Accept else Drop)
        else if data_eqb if_eth1 (iif_key e p)
-            then match fst (eval_rules_u h 6 global_chains (c_rules global_inbound_private) e p) with
+            then match fst (eval_rules h 6 global_chains (c_rules global_inbound_private) e p) with
                  | Some v => v | None => Drop end
             else Drop).
 Proof.
   intros h e p Hvm1 Hvm2 Hct Hiif Hwl.
-  unfold eval_table_u, in_fuel. rewrite c_rules_inbound.
+  unfold eval_table, in_fuel. rewrite c_rules_inbound.
   rewrite eru_cons, (r_ct_step h e p Hct), Hvm1, assoc_map1_eq. unfold ct_key.
   destruct (data_eqb cts_established (field_value FCtState e p)) eqn:He; [reflexivity|].
   destruct (data_eqb cts_related (field_value FCtState e p)) eqn:Hr; [reflexivity|].
@@ -292,7 +292,7 @@ Proof.
   destruct (data_eqb if_eth1 (field_value FMetaIifname e p)) eqn:Heth1.
   { (* eth1 -> JUMP inbound_private (sub-eval left symbolic) *)
     rewrite lookup_private.
-    destruct (eval_rules_u h 6 global_chains (c_rules global_inbound_private) e p)
+    destruct (eval_rules h 6 global_chains (c_rules global_inbound_private) e p)
       as [o s] eqn:Hpriv.
     cbn [fst]. destruct o as [w|]; [reflexivity|].
     destruct s as [e'' p'']. rewrite eru_empty. reflexivity. }
@@ -307,7 +307,7 @@ Lemma inbound_eval_unfold : forall h e p,
   field_loadable FCtState p = true ->
   field_loadable FMetaIifname p = true ->
   world_loads p = true ->
-  fst (eval_table_u h in_fuel global_chains global_inbound e p) =
+  fst (eval_table h in_fuel global_chains global_inbound e p) =
     (if data_eqb cts_established (ct_key e p) then Accept
      else if data_eqb cts_related (ct_key e p) then Accept
      else if data_eqb cts_invalid (ct_key e p) then Drop
@@ -315,7 +315,7 @@ Lemma inbound_eval_unfold : forall h e p,
        if data_eqb if_lo (iif_key e p) then Accept
        else if data_eqb if_ppp0 (iif_key e p) then (if world_ssh e p then Accept else Drop)
        else if data_eqb if_eth1 (iif_key e p)
-            then match fst (eval_rules_u h 6 global_chains (c_rules global_inbound_private) e p) with
+            then match fst (eval_rules h 6 global_chains (c_rules global_inbound_private) e p) with
                  | Some v => v | None => Drop end
             else Drop).
 Proof.
@@ -352,7 +352,7 @@ Theorem world_ingress_locked_down : forall e p,
   field_value FCtState e p = cts_new ->
   field_value FMetaIifname e p = if_ppp0 ->
   world_ssh e p = false ->
-  forall h, fst (eval_table_u h in_fuel global_chains global_inbound e p) = Drop.
+  forall h, fst (eval_table h in_fuel global_chains global_inbound e p) = Drop.
 Proof.
   intros e p Hpe Hct Hiif Hwl Hcts Hppp0 Hssh h.
   rewrite (inbound_eval_unfold h e p Hpe Hct Hiif Hwl).
@@ -371,7 +371,7 @@ Theorem world_ingress_locked_down_disj : forall e p,
   field_value FCtState e p = cts_new ->
   field_value FMetaIifname e p = if_ppp0 ->
   ( m_saddr e p = false \/ m_tcp e p = false \/ m_dport22 e p = false ) ->
-  forall h, fst (eval_table_u h in_fuel global_chains global_inbound e p) = Drop.
+  forall h, fst (eval_table h in_fuel global_chains global_inbound e p) = Drop.
 Proof.
   intros e p Hpe Hct Hiif Hwl Hcts Hppp0 Hdisj.
   apply (world_ingress_locked_down e p Hpe Hct Hiif Hwl Hcts Hppp0).
@@ -401,7 +401,7 @@ Theorem inbound_world_ssh_accept : forall e p,
   field_value FCtState e p = cts_new ->
   field_value FMetaIifname e p = if_ppp0 ->
   world_ssh e p = true ->
-  forall h, fst (eval_table_u h in_fuel global_chains global_inbound e p) = Accept.
+  forall h, fst (eval_table h in_fuel global_chains global_inbound e p) = Accept.
 Proof.
   intros e p Hpe Hct Hiif Hwl Hcts Hppp0 Hssh h.
   rewrite (inbound_eval_unfold h e p Hpe Hct Hiif Hwl).
@@ -419,7 +419,7 @@ Theorem inbound_loopback_accept : forall e p,
   world_loads p = true ->
   field_value FCtState e p = cts_new ->
   field_value FMetaIifname e p = if_lo ->
-  forall h, fst (eval_table_u h in_fuel global_chains global_inbound e p) = Accept.
+  forall h, fst (eval_table h in_fuel global_chains global_inbound e p) = Accept.
 Proof.
   intros e p Hpe Hct Hiif Hwl Hcts Hlo h.
   rewrite (inbound_eval_unfold h e p Hpe Hct Hiif Hwl).
@@ -438,7 +438,7 @@ Theorem inbound_unknown_drop : forall e p,
   data_eqb if_lo   (field_value FMetaIifname e p) = false ->
   data_eqb if_ppp0 (field_value FMetaIifname e p) = false ->
   data_eqb if_eth1 (field_value FMetaIifname e p) = false ->
-  forall h, fst (eval_table_u h in_fuel global_chains global_inbound e p) = Drop.
+  forall h, fst (eval_table h in_fuel global_chains global_inbound e p) = Drop.
 Proof.
   intros e p Hpe Hct Hiif Hwl Hcts Hlo Hppp0 Heth1 h.
   rewrite (inbound_eval_unfold h e p Hpe Hct Hiif Hwl).
@@ -454,7 +454,7 @@ Theorem inbound_invalid_dropped : forall e p,
   field_loadable FMetaIifname p = true ->
   world_loads p = true ->
   field_value FCtState e p = cts_invalid ->
-  forall h, fst (eval_table_u h in_fuel global_chains global_inbound e p) = Drop.
+  forall h, fst (eval_table h in_fuel global_chains global_inbound e p) = Drop.
 Proof.
   intros e p Hpe Hct Hiif Hwl Hcts h.
   rewrite (inbound_eval_unfold h e p Hpe Hct Hiif Hwl).
@@ -469,7 +469,7 @@ Theorem inbound_established_accept : forall e p,
   field_loadable FMetaIifname p = true ->
   world_loads p = true ->
   field_value FCtState e p = cts_established ->
-  forall h, fst (eval_table_u h in_fuel global_chains global_inbound e p) = Accept.
+  forall h, fst (eval_table h in_fuel global_chains global_inbound e p) = Accept.
 Proof.
   intros e p Hpe Hct Hiif Hwl Hcts h.
   rewrite (inbound_eval_unfold h e p Hpe Hct Hiif Hwl).
@@ -482,7 +482,7 @@ Theorem inbound_related_accept : forall e p,
   field_loadable FMetaIifname p = true ->
   world_loads p = true ->
   field_value FCtState e p = cts_related ->
-  forall h, fst (eval_table_u h in_fuel global_chains global_inbound e p) = Accept.
+  forall h, fst (eval_table h in_fuel global_chains global_inbound e p) = Accept.
 Proof.
   intros e p Hpe Hct Hiif Hwl Hcts h.
   rewrite (inbound_eval_unfold h e p Hpe Hct Hiif Hwl).
@@ -529,12 +529,12 @@ Definition pkt_world_bad : packet := mk_in [1;2;3;4]%list.
 
 (* The allowed ssh-from-81.209.165.42 packet is ACCEPTED by the parser's chain. *)
 Theorem pkt_world_ssh_accepted : forall h,
-  fst (eval_table_u h in_fuel global_chains global_inbound env_in pkt_world_ssh) = Accept.
+  fst (eval_table h in_fuel global_chains global_inbound env_in pkt_world_ssh) = Accept.
 Proof. intros h. vm_compute. reflexivity. Qed.
 
 (* The wrong-source ssh packet is DROPPED by the parser's chain (the saddr guard). *)
 Theorem pkt_world_bad_dropped : forall h,
-  fst (eval_table_u h in_fuel global_chains global_inbound env_in pkt_world_bad) = Drop.
+  fst (eval_table h in_fuel global_chains global_inbound env_in pkt_world_bad) = Drop.
 Proof. intros h. vm_compute. reflexivity. Qed.
 
 (* [bug_inbound_world] = inbound_world with the `ip saddr 81.209.165.42` guard
@@ -558,14 +558,14 @@ Definition bug_chains : list (string * chain) :=
 (* Under the bug, the SAME wrong-source ssh packet is ACCEPTED -- the ssh-to-the-
    world hole. *)
 Theorem bug_world_bad_accepted : forall h,
-  fst (eval_table_u h in_fuel bug_chains global_inbound env_in pkt_world_bad) = Accept.
+  fst (eval_table h in_fuel bug_chains global_inbound env_in pkt_world_bad) = Accept.
 Proof. intros h. vm_compute. reflexivity. Qed.
 
 (* Hence the input lockdown DISCRIMINATES the bug: on the same wrong-source ssh
    packet the parser's chain DROPs while the de-guarded chain ACCEPTs. *)
 Theorem input_property_discriminates_bug : forall h,
-  fst (eval_table_u h in_fuel global_chains global_inbound env_in pkt_world_bad)
-  <> fst (eval_table_u h in_fuel bug_chains global_inbound env_in pkt_world_bad).
+  fst (eval_table h in_fuel global_chains global_inbound env_in pkt_world_bad)
+  <> fst (eval_table h in_fuel bug_chains global_inbound env_in pkt_world_bad).
 Proof. intros h. rewrite (pkt_world_bad_dropped h), (bug_world_bad_accepted h). discriminate. Qed.
 
 (* The lockdown hypotheses are SATISFIABLE: the allowed ssh witness meets every

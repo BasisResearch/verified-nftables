@@ -31,10 +31,10 @@ Theorem unlisted_daddr_unconstrained : forall e p,
   field_value Fobrname e p = ifreg "br.20" ->
   read_payload_ok PNetwork 16 4 p = true ->
   set_mem (field_value FIp4Daddr e p) (e_set e "vmaddrs") = false ->
-  forall h, fst (eval_table_u h vm_fuel vmfilter_chains vmfilter_output e p) = Accept.
+  forall h, fst (eval_table h vm_fuel vmfilter_chains vmfilter_output e p) = Accept.
 Proof.
   intros e p Henv Hobr Hok Hnotin h. clear Henv. unfold Fobrname in Hobr.
-  unfold eval_table_u, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
+  unfold eval_table, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
   (* the antispoof rule does NOT fire: `ip daddr @vmaddrs` is false, so the body
      BREAKs at that match and [rule_step] yields no verdict. *)
   erewrite eru_skip by rstep_reduce.
@@ -53,7 +53,7 @@ Theorem spoof_to_unlisted_address : forall e p,
   read_payload_ok PNetwork 16 4 p = true ->
   field_value FIp4Daddr e p = ip4 192 168 51 13 ->        (* not a registered VM *)
   field_value FMetaOifname e p = ifreg "inc-budge" ->     (* a mismatched interface *)
-  forall h, fst (eval_table_u h vm_fuel vmfilter_chains vmfilter_output e p) = Accept.
+  forall h, fst (eval_table h vm_fuel vmfilter_chains vmfilter_output e p) = Accept.
 Proof.
   intros e p Henv Hobr Hok Hdaddr Hoif.
   apply unlisted_daddr_unconstrained; auto.
@@ -73,10 +73,10 @@ Theorem other_bridge_port_bypasses_binding : forall e p,
   field_value Fobrname e p = ifreg "br.3" ->            (* NOT br.20 *)
   field_value FIp4Daddr e p = ip4 192 168 51 20 ->        (* budget's PROTECTED address *)
   field_value FMetaOifname e p = ifreg "vb-evil" ->       (* not budget's interface *)
-  forall h, fst (eval_table_u h vm_fuel vmfilter_chains vmfilter_output e p) = Accept.
+  forall h, fst (eval_table h vm_fuel vmfilter_chains vmfilter_output e p) = Accept.
 Proof.
   intros e p Henv Hobr Hdaddr Hoif h. clear Henv. unfold Fobrname in Hobr.
-  unfold eval_table_u, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
+  unfold eval_table, vm_fuel, vmfilter_output. cbn [c_rules c_policy].
   (* antispoof rule: its `meta obrname br.20` guard is false (we are on br.3) *)
   erewrite eru_skip by rstep_reduce.
   (* hass rule: its `meta obrname br.1` guard is also false *)

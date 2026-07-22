@@ -195,13 +195,13 @@ let () =
       "dport 8080 (mid, in)",       mk_pkt ~env:iv_env ~th:(th ~dport:[31; 144]) ();
       "dport 80 (below range, out)", mk_pkt ~env:iv_env ~th:(th ~dport:[0; 80]) () ];
   (* (4) control flow: a base chain that JUMPs to a user chain "tcp_in" — tests
-     compile_table_u_correct (jump -> callee accept, or fall-through -> resume base
+     compile_table_correct (jump -> callee accept, or fall-through -> resume base
      -> policy drop). The single-base-chain corpus cannot exercise this. *)
   (* Traversal budget.  1000 is far above [Semantics.sufficient_fuel] for every
      chain environment exercised here (each is a handful of chains of a handful
      of rules; the bound is S (|rs| + |cs| * S (max chain len)) — tens, not
      hundreds).  Above that bound the verdict is provably fuel-independent
-     (Semantics.eval_table_u_fuel_indep),
+     (Semantics.eval_table_fuel_indep),
      so this constant is a comfortable over-approximation, not a tuned knob;
      see proof/CONFIG_PROOFS.md § "Choosing the fuel budget". *)
   let fuel = 1000 in
@@ -209,10 +209,10 @@ let () =
   let base   = chain Verdict.Drop     [ rule [ l4_tcp ] (Verdict.Jump "tcp_in") ] in
   let cenv   = [ ("tcp_in", tcp_in) ] in
   let cprog  = Compile.compile_env cenv and bprog = Compile.compile_chain base in
-  Printf.printf "=== base chain `jump tcp_in` then policy (compile_table_u_correct) ===\n";
+  Printf.printf "=== base chain `jump tcp_in` then policy (compile_table_correct) ===\n";
   Stdlib.List.iter (fun (name, (e, p)) ->
-    let dsl = fst (Semantics.eval_table_u hk fuel cenv base e p) in
-    let vm  = fst (Semantics.run_table_u  hk fuel cprog bprog base.Syntax.c_policy e p) in
+    let dsl = fst (Semantics.eval_table hk fuel cenv base e p) in
+    let vm  = fst (Semantics.run_table  hk fuel cprog bprog base.Syntax.c_policy e p) in
     let ok = dsl = vm in
     Printf.printf "  %-32s DSL=%-8s VM=%-8s %s\n"
       name (string_of_verdict dsl) (string_of_verdict vm) (if ok then "ok" else "MISMATCH");
@@ -221,7 +221,7 @@ let () =
       "tcp dport 80 (jump->fallthru->drop)", mk_pkt ~th:(th ~dport:[0; 80]) ();
       "udp (rule skipped -> policy drop)",   mk_pkt ~l4proto:[17] ~th:(th ~dport:[0; 22]) () ];
   Printf.printf "\n";
-  (* (4b) MULTI-TABLE dispatch (compile_ruleset_u_correct): two base chains at a
+  (* (4b) MULTI-TABLE dispatch (compile_ruleset_correct): two base chains at a
      hook run in order with netfilter verdict combination — base1 (policy accept)
      lets the packet continue; base2 drops tcp dport 22.  So a dport-22 packet is
      DROPPED (by base2) while a dport-80 packet is ACCEPTED (both fall through).
@@ -231,10 +231,10 @@ let () =
   let bases = [ ([], base1); ([], base2) ] in
   let cbases = Stdlib.List.map
       (fun (cs, b) -> (Compile.compile_env cs, (Compile.compile_chain b, b.Syntax.c_policy))) bases in
-  Printf.printf "=== two base chains at a hook (compile_ruleset_u_correct, netfilter combine) ===\n";
+  Printf.printf "=== two base chains at a hook (compile_ruleset_correct, netfilter combine) ===\n";
   Stdlib.List.iter (fun (name, (e, p)) ->
-    let dsl = fst (Semantics.eval_ruleset_u hk fuel bases e p) in
-    let vm  = fst (Semantics.run_ruleset_u  hk fuel cbases e p) in
+    let dsl = fst (Semantics.eval_ruleset hk fuel bases e p) in
+    let vm  = fst (Semantics.run_ruleset  hk fuel cbases e p) in
     let ok = dsl = vm in
     Printf.printf "  %-32s DSL=%-8s VM=%-8s %s\n"
       name (string_of_verdict dsl) (string_of_verdict vm) (if ok then "ok" else "MISMATCH");
@@ -280,10 +280,10 @@ let () =
   let lim_chain = chain Verdict.Drop [ rule [ l4_tcp; Syntax.MLimit lim_spec ] Verdict.Accept ] in
   let lim_prog = Compile.compile_chain lim_chain in
   let ev_dsl e p =
-    let (v, (e', _)) = Semantics.eval_table_u hk 10 [] lim_chain e p in (v, e') in
+    let (v, (e', _)) = Semantics.eval_table hk 10 [] lim_chain e p in (v, e') in
   let ev_vm e p =
     let (v, (e', _)) =
-      Semantics.run_table_u hk 10 [] lim_prog lim_chain.Syntax.c_policy e p in (v, e') in
+      Semantics.run_table hk 10 [] lim_prog lim_chain.Syntax.c_policy e p in (v, e') in
   let pkts = [ snd (mk_pkt ~th:(th ~dport:[0; 22]) ()); snd (mk_pkt ~th:(th ~dport:[0; 22]) ());
                snd (mk_pkt ~th:(th ~dport:[0; 22]) ()) ] in
   let dsl_seq = Semantics.seq_eval_env ev_dsl (env_limit 2) pkts in

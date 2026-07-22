@@ -38,13 +38,13 @@ Definition fw_fuel : nat := 8.
 
 (** Symbolically evaluate the parsed table under the canonical unified
     evaluator: unfold this module's parser-emitted chain definitions, then run
-    the shared [eval_fw_core_u] engine (Eval_Fw.v).  [eru_nil]/[eru_cons] step
-    [eval_rules_u]. *)
+    the shared [eval_fw_core] engine (Eval_Fw.v).  [eru_nil]/[eru_cons] step
+    [eval_rules]. *)
 Ltac eval_fw Hpe :=
-  unfold eval_table_u, fw_fuel, firewall_chains,
+  unfold eval_table, fw_fuel, firewall_chains,
          firewall_inbound, firewall_inbound_ipv4, firewall_inbound_ipv6,
          firewall_forward;
-  eval_fw_core_u Hpe.
+  eval_fw_core Hpe.
 
 (** ** The properties (each universally quantified over the packet).
 
@@ -67,14 +67,14 @@ Ltac eval_fw Hpe :=
 Theorem established_accepted : forall e p,
   e = gen_env ->
   field_value FCtState e p = cts_established ->
-  forall h, fst (eval_table_u h fw_fuel firewall_chains firewall_inbound e p) = Accept.
+  forall h, fst (eval_table h fw_fuel firewall_chains firewall_inbound e p) = Accept.
 Proof. intros e p Hpe Hct h. eval_fw Hpe. Qed.
 
 (* Invalid-state packets are dropped (the `invalid : drop` vmap entry). *)
 Theorem invalid_dropped : forall e p,
   e = gen_env ->
   field_value FCtState e p = cts_invalid ->
-  forall h, fst (eval_table_u h fw_fuel firewall_chains firewall_inbound e p) = Drop.
+  forall h, fst (eval_table h fw_fuel firewall_chains firewall_inbound e p) = Drop.
 Proof. intros e p Hpe Hct h. eval_fw Hpe. Qed.
 
 (* Loopback traffic is accepted (new connection -> vmap misses -> iifname lo). *)
@@ -82,7 +82,7 @@ Theorem loopback_accepted : forall e p,
   e = gen_env ->
   field_value FCtState e p = cts_new ->
   field_value FMetaIifname e p = if_lo ->
-  forall h, fst (eval_table_u h fw_fuel firewall_chains firewall_inbound e p) = Accept.
+  forall h, fst (eval_table h fw_fuel firewall_chains firewall_inbound e p) = Accept.
 Proof. intros e p Hpe Hct Hiif h. eval_fw Hpe. Qed.
 
 (* SSH (TCP/22) over IPv4, new connection, real interface: accepted via the jump
@@ -95,7 +95,7 @@ Theorem ssh_accepted : forall e p,
   field_value FMetaL4proto e p = l4_tcp ->
   field_value FThDport e p = port 22 ->
   read_payload_ok PTransport 2 2 p = true ->
-  forall h, fst (eval_table_u h fw_fuel firewall_chains firewall_inbound e p) = Accept.
+  forall h, fst (eval_table h fw_fuel firewall_chains firewall_inbound e p) = Accept.
 Proof. intros e p Hpe Hct Hiif Hpr Hl4 Hdp Hok h. eval_fw Hpe. Qed.
 
 (* A closed TCP port (SMTP/25), new IPv4 connection: dropped by `policy drop` —
@@ -108,7 +108,7 @@ Theorem smtp_dropped : forall e p,
   field_value FMetaL4proto e p = l4_tcp ->
   field_value FThDport e p = port 25 ->
   read_payload_ok PTransport 2 2 p = true ->
-  forall h, fst (eval_table_u h fw_fuel firewall_chains firewall_inbound e p) = Drop.
+  forall h, fst (eval_table h fw_fuel firewall_chains firewall_inbound e p) = Drop.
 Proof. intros e p Hpe Hct Hiif Hpr Hl4 Hdp Hok h. eval_fw Hpe. Qed.
 
 (* IPv6 neighbour discovery is accepted via the jump into inbound_ipv6.
@@ -127,21 +127,21 @@ Theorem ipv6_nd_accepted : forall e p,
   field_value FIcmpType e p = icmp6_nd_nsol ->
   read_payload_ok PTransport 2 2 p = true ->
   read_payload_ok PTransport 0 1 p = true ->
-  forall h, fst (eval_table_u h fw_fuel firewall_chains firewall_inbound e p) = Accept.
+  forall h, fst (eval_table h fw_fuel firewall_chains firewall_inbound e p) = Accept.
 Proof. intros e p Hpe Hct Hiif Hpr Hnfp Hl4 Hty Hok Hok2 h. eval_fw Hpe. Qed.
 
 (* The forward hook drops everything (no rules, policy drop). *)
 Theorem forward_drops_all : forall e p,
-  forall h, fst (eval_table_u h fw_fuel firewall_chains firewall_forward e p) = Drop.
+  forall h, fst (eval_table h fw_fuel firewall_chains firewall_forward e p) = Drop.
 Proof.
-  intros e p h. unfold eval_table_u, fw_fuel, firewall_forward.
-  cbn -[eval_rules_u]. rewrite eru_nil. reflexivity.
+  intros e p h. unfold eval_table, fw_fuel, firewall_forward.
+  cbn -[eval_rules]. rewrite eru_nil. reflexivity.
 Qed.
 
 (* ================================================================== *)
 (** ** The parsed firewall config is write-free, so every verdict above — stated
-    over the canonical unified evaluator [eval_table_u] — is hook-independent
-    ([Nft_Tactics.eval_table_u_hookindep_writefree]); the [forall h] form records
+    over the canonical unified evaluator [eval_table] — is hook-independent
+    ([Nft_Tactics.eval_table_hookindep_writefree]); the [forall h] form records
     that these verdicts hold at every hook. *)
 Example firewall_inbound_license :
   forallb rule_writefree (c_rules firewall_inbound) = true

@@ -18,7 +18,7 @@ From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile
   Correct Optimize Optimize_Table Optimize_Uncond Optimize_Linearize
   Optimize_Linearize_MutSt.
 
-(** ** Axis 0 — THE UNIFIED SEMANTICS ([compile_hook_u_correct] /
+(** ** Axis 0 — THE UNIFIED SEMANTICS ([compile_hook_correct] /
     [compile_seq_hook_correct]): mutation x jump/goto/return x multi-chain
     x hook dispatch, jointly.
 
@@ -38,12 +38,12 @@ From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile
     [compile_nat_effect_correct].  The only hypothesis is
     numgen-freedom, discharged for every frontend-emitted program by
     [Lower_Proofs.lower_ruleset_numgen_free]. *)
-Theorem main_compile_hook_u_correct : forall h fuel rs e p,
+Theorem main_compile_hook_correct : forall h fuel rs e p,
   forallb base_numgen_free (select_hook rs h) = true ->
-  run_ruleset_u h fuel (map compile_base (select_hook rs h)) e p
-  = eval_hook_u h fuel rs e p.
-Proof. exact compile_hook_u_correct. Qed.
-Print Assumptions main_compile_hook_u_correct.
+  run_ruleset h fuel (map compile_base (select_hook rs h)) e p
+  = eval_hook h fuel rs e p.
+Proof. exact compile_hook_correct. Qed.
+Print Assumptions main_compile_hook_correct.
 
 (** NAT data-plane axis (M3): the per-rule bridge under its NAT-effect name —
     the compiled fold performs the identical NAT effect, at every hook. *)
@@ -54,15 +54,15 @@ Proof. exact compile_nat_effect_correct. Qed.
 Print Assumptions main_compile_nat_effect_correct.
 
 (** Cross-packet form — THE sequence semantics: the between-packet env is
-    definitionally the ruleset's OWN env-out ([eval_hook_env_u], the
+    definitionally the ruleset's OWN env-out ([eval_hook_env], the
     [fst]-of-state projection of the unified hook run), so the ruleset's own
     learning (dynset adds, limiter depletion, NAT mappings) threads
     packet-to-packet through jumps and multi-chain dispatch,
     compiler-preserved.  No external step function appears in the statement. *)
 Theorem main_compile_seq_hook_correct : forall h fuel rs e packets,
   forallb base_numgen_free (select_hook rs h) = true ->
-  seq_eval_env (run_ruleset_env_u h fuel (map compile_base (select_hook rs h))) e packets
-  = seq_eval_env (eval_hook_env_u h fuel rs) e packets.
+  seq_eval_env (run_ruleset_env h fuel (map compile_base (select_hook rs h))) e packets
+  = seq_eval_env (eval_hook_env h fuel rs) e packets.
 Proof. exact compile_seq_hook_correct. Qed.
 Print Assumptions main_compile_seq_hook_correct.
 
@@ -84,7 +84,7 @@ Print Assumptions main_compile_seq_hook_correct.
     `add @s {…}` on an earlier packet provably reaches a `lookup @s` on a later
     one.  This strand is flat
     (single chain, no chain environment): it is the TRANSFER-FREE projection
-    of axis 0 ([Semantics.eval_table_u_mut_proj] licenses it on [rule_plain]
+    of axis 0 ([Semantics.eval_table_mut_proj] licenses it on [rule_plain]
     chains; a chain that realises a jump/goto/return is evaluated by axis 0's
     unified evaluator). *)
 Theorem main_compile_seq_mut_correct : forall h c e packets,
