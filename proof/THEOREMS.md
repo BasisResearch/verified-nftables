@@ -10,17 +10,19 @@ axiom-free — without reading 3000 lines of `Correct.v`.
   shared world — restated over the bundled pair `Packet.pstate`
   (`ps_env`/`ps_wire`), each an `exact`/`apply` of its post-split successor.
 - Axiom gate: `make axioms` re-checks every HEADLINE theorem below (plus the
-  supporting strata, the `Lower_Proofs.*_erasure` family, the representation
-  ratchet `Semantics.run_rule_outcome_eq`, **and every result the README
-  claims axiom-free** — anti-spoofing, established-accept, NAT-masquerade,
-  multi-address, fib host-local, ct-state; see §4) from the compiled `.vo`
-  files and fails on anything but `Closed under the global context`.
+  supporting strata, the `Lower_Proofs.*_erasure` family, **and every result
+  the README claims axiom-free** — anti-spoofing, established-accept,
+  NAT-masquerade, multi-address, fib host-local, ct-state; see §4) from the
+  compiled `.vo` files and fails on anything but `Closed under the global
+  context`.
 - Classes used below:
   - **HEADLINE** — the single top theorem of a verified axis; what the project claims.
   - **STAGE** — a per-pass/per-stage theorem composed into a headline.
   - **SUPPORTING** — a stratum or bridge a headline is derived from (or that
     scopes one); not independently a claim.
-  - **SUPERSEDED** — kept for history; subsumed by a successor named in its marker.
+  - **SUPERSEDED** — a config-vacuity or unshipped-pass form kept in the source,
+    subsumed by a successor named in its marker (used only in §5 and for
+    passes outside the shipped pipeline; never for an evaluator).
   - **DEMO** — an executable regression pin / witness (`Example` in the source);
     not part of the claim surface.
 - Where things live: `theories/` is split by trust role — `Core/` (bytes,
@@ -33,18 +35,24 @@ axiom-free — without reading 3000 lines of `Correct.v`.
 
 ## 1. The entry points — exactly one top theorem per verified axis
 
+There is ONE stateful semantics per side (§3).  Every headline below is a
+theorem about that semantics or about the optimizer's flat single-chain state
+fold, which is itself the transfer-free projection of it.
+
 | axis | HEADLINE theorem | file | what it says |
 |---|---|---|---|
-| compiler (rulesets/hooks) | `compile_hook_correct` | `Correct.v` | compiled hook dispatch (jump/goto/return, user chains, multi-table, priority order) = DSL `eval_hook`, for every fuel/ruleset/hook/packet/environment |
-| sequence semantics / cross-packet carry | `compile_seq_hook_correct` | `Correct.v` | the between-packet env is **definitionally the ruleset's OWN env-out** (`seq_eval_env` over `eval_hook_env_u` / `run_ruleset_env_u`, the fst-of-state projections of the unified hook run — no external step function can be instantiated): dynset adds, limiter depletion and NAT mappings thread packet-to-packet through jumps and multi-chain/hook dispatch, compiler-preserved under `base_numgen_free` (discharged for every frontend program by `Lower_Proofs.lower_ruleset_numgen_free`); cross-packet pins `Regression/Seq_Hook_Carry.v`. |
-| mutation / cross-packet learning | `compile_seq_mut_correct` | `Correct.v` | compiled single-chain traversal threading the env each packet LEAVES (meta/ct writes, dynset learning) = DSL sequence, under `rule_numgen_free` (discharged for EVERY frontend program by `Lower_Proofs.lower_ruleset_numgen_free`) |
-| optimizer pipeline | `optimize_table_uncond_compile_correct` | `Optimize_Uncond.v` | the shipped 18-stage `nft -o` pipeline + the DEFAULT compile (`compile_chain_default`) preserves every packet's verdict against the synthesised declarations, for **any input chain** (no `rules_clean`, no freshness precondition) |
-| optimizer pipeline, EFFECT level | `Optimize_MutEnv.optimize_table_uncond_mut_st_correct` | `Optimize_MutEnv.v` | the same shipped pipeline under the FULL-STATE effect-observing `eval_chain_mut_st h`: for **any input chain**, at every hook/base env/packet, the optimised chain in the deployed environment yields the SAME verdict **and** the SAME resulting `(env, packet)` pair as the input — a stage can no longer preserve verdicts while altering an env-half write (dynset learning, limiter depletion, NAT mapping) **or** a packet-half write (`meta mark set`, ct set — pinned: the env-only observable is provably blind to `[meta mark set 0x1]` vs `[]`, `mutst_pin_mut_env_blind`/`mutst_pin_distinguishes`); the `(verdict, env)` form `optimize_table_uncond_mut_env_correct` survives only as a projection corollary. Jump scope: `eval_chain_mut_st` is the flat fold (callees of jump-bearing chains are skipped) — see the scope note below |
-| DEFAULT compile pipeline | `Optimize_Linearize.compile_chain_default_correct` | `Optimize_Linearize.v` | the DEFAULT pipeline `compile_chain_default = compile_chain ∘ elide_chain ∘ xorfold_chain ∘ paymerge_chain` — nft's ALWAYS-ON netlink linearization (classes I + L, including the trivial-binop deletion) — yields exactly the source chain's DSL verdict, for every chain/env/packet; stage composition is `linearize_chain_eval`; non-vacuity Compute-pinned (`default_pipeline_merges_payload_loads`, `default_pipeline_folds_xor` — the folded xor now compiles to a bare load+cmp, NO bitwise — and `default_pipeline_elides_trivial_binop`) |
-| intra-rule pass: adjacent-payload merge | `Optimize_PayMerge.paymerge_chain_eval` | `Optimize_PayMerge.v` | fusing two byte-contiguous full-width payload equalities in the same header into one wider load+compare (nft `payload_can_merge`; corpus class I) preserves `eval_chain` — **UNCONDITIONAL** (`forall c e p`, no hypotheses): the read and its loadability split at any interior offset for every packet |
-| intra-rule pass: bitwise-xor constant fold | `Optimize_XorFold.xorfold_chain_eval` | `Optimize_XorFold.v` | transferring a pure-xor register operand onto the compare value (`(reg & 0xff..) ^ C <op> V  →  ^ 0 <op> V^C`; nft `binop_transfer`; corpus class L) preserves `eval_chain` — **UNCONDITIONAL** (`forall c e p`): bytewise xor is involutive, no width/byte-range side condition. The spent residue is deleted by the next stage (`Optimize_Elide`) |
-| intra-rule pass: trivial-binop elision | `Optimize_Elide.elide_chain_eval` | `Optimize_Elide.v` | deleting the spent binop the xor fold leaves — `(reg & 0xff..ff) ^ 0x00` at the field's kernel register width becomes a bare compare, so no bitwise instruction reaches the wire (nft `binop_transfer_handle_lhs`, OP_XOR: the binop is replaced by its left operand; the class-L residue) — preserves `eval_chain` — **UNCONDITIONAL** (`forall c e p`): a register-normalised read is width-pinned AND octet-clamped BY CONSTRUCTION (`Bytes.fit`/`Bytes.octets` at the `do_load` boundary), so the all-ones/zero bitwise is definitionally the identity on it (`Syntax.do_load_bitops_id`) — no width, byte-range or well-formedness hypothesis |
-| pass composition | `Optimize_Registry.run_passes_correct` | `Optimize_Registry.v` | ONE generic theorem: folding **any** list of registered `opt_pass`es (each bundling its own eval-preservation proof) preserves `eval_chain`, proved once quantified over the list — the `-O p1,p2,...` CLI only parses names into the list (`resolve_passes`) and folds them (`run_passes`) |
+| compiler (rulesets/hooks) | `compile_hook_correct` | `Correct.v` | the compiled VM's hook dispatch = DSL `eval_hook`, for every fuel/ruleset/hook/packet/environment — the one evaluator that BOTH threads every state effect (meta/ct writes, dynset learning, notrack, limiter depletion) AND follows control flow (jump/goto/return, user chains, multi-table and priority dispatch), returning verdict AND the `(env, packet)` the traversal leaves |
+| sequence semantics / cross-packet carry | `compile_seq_hook_correct` | `Correct.v` | the between-packet env is **definitionally the ruleset's OWN env-out** (`seq_eval_env` over `eval_hook_env` / `run_ruleset_env`, the `fst`-of-state projections of the hook run — no external step function can be instantiated): dynset adds, limiter depletion and NAT mappings thread packet-to-packet through jumps and multi-chain/hook dispatch, compiler-preserved under `base_numgen_free` (discharged for every frontend program by `Lower_Proofs.lower_ruleset_numgen_free`); cross-packet pins `Regression/Seq_Hook_Carry.v`. |
+| NAT data plane (per-rule bridge) | `compile_nat_effect_correct` | `Correct.v` | the compiled per-rule fold performs the identical NAT effect at every hook `h`: `run_rule_step h empty_rf (compile_rule r) e p = rule_step h r e p` under `rule_numgen_free` — packet rewrite, flow-keyed `e_nat` establish/reuse, no-usable-address NF_DROP, all at the NAT terminal inside the fold |
+| mutation / cross-packet learning (flat) | `compile_seq_flat_verdict_correct` | `Correct.v` | compiled single-chain traversal threading the env each packet LEAVES (meta/ct writes, dynset learning) = DSL sequence, under `rule_numgen_free` (discharged for EVERY frontend program by `Lower_Proofs.lower_ruleset_numgen_free`); an `add @s {…}` on an earlier packet provably reaches a `lookup @s` on a later one |
+| optimizer pipeline → bytecode | `optimize_table_uncond_compile_flat_correct` | `Optimize_Linearize_MutSt.v` | the shipped 18-stage `nft -o` pipeline (`optimize_table_uncond`, the term the CLI runs) + the DEFAULT compile (`compile_chain_default`) preserves the source chain's STATE fold `eval_chain_flat` (verdict AND resulting `(env, packet)`) against the synthesised declarations, for **any input chain** (no `rules_clean`, no freshness precondition beyond numgen-freedom of the optimised chain) and every base env/packet |
+| optimizer pipeline (consolidation) | `Optimize_MutEnv.optimize_table_uncond_flat_correct` | `Optimize_MutEnv.v` | the consolidation alone, hypothesis-free, under the full-state `eval_chain_flat h`: for **any input chain**, at every hook/base env/packet, the optimised chain yields the SAME verdict **and** the SAME resulting `(env, packet)` as the input — a stage cannot preserve verdicts while altering an env-half write (dynset learning, limiter depletion, NAT mapping) or a packet-half write (`meta mark set`, ct set); the `(verdict, env)` view `optimize_table_uncond_flat_env_correct` is its projection corollary (precision pin: the env-only observable is blind to `[meta mark set 0x1]` vs `[]`, but the full-state one distinguishes them — `mutst_pin_flat_env_blind`/`mutst_pin_distinguishes`).  Jump scope: `eval_chain_flat` is the flat fold (callees of jump-bearing chains are skipped) — see the scope note below |
+| DEFAULT compile pipeline | `Optimize_Linearize_MutSt.compile_chain_default_flat_correct` | `Optimize_Linearize_MutSt.v` | the DEFAULT pipeline `compile_chain_default = compile_chain ∘ elide_chain ∘ xorfold_chain ∘ paymerge_chain` — nft's ALWAYS-ON netlink linearization (classes I + L, including the trivial-binop deletion) — reproduces the source chain's `eval_chain_flat` (verdict AND `(env, packet)`), for every chain/env/packet under `rule_numgen_free`; stage composition is `linearize_chain_flat`; non-vacuity Compute-pinned (`default_pipeline_merges_payload_loads`, `default_pipeline_folds_xor` — the folded xor compiles to a bare load+cmp, NO bitwise — and `default_pipeline_elides_trivial_binop`) |
+| intra-rule pass: adjacent-payload merge | `Optimize_Linearize_MutSt.paymerge_chain_flat` | `Optimize_Linearize_MutSt.v` | fusing two byte-contiguous full-width payload equalities in the same header into one wider load+compare (nft `payload_can_merge`; corpus class I) preserves `eval_chain_flat` — **UNCONDITIONAL** (`forall h c e p`, no hypotheses): the read and its loadability split at any interior offset for every packet |
+| intra-rule pass: bitwise-xor constant fold | `Optimize_Linearize_MutSt.xorfold_chain_flat` | `Optimize_Linearize_MutSt.v` | transferring a pure-xor register operand onto the compare value (`(reg & 0xff..) ^ C <op> V  →  ^ 0 <op> V^C`; nft `binop_transfer`; corpus class L) preserves `eval_chain_flat` — **UNCONDITIONAL**: bytewise xor is involutive, no width/byte-range side condition. The spent residue is deleted by the next stage |
+| intra-rule pass: trivial-binop elision | `Optimize_Linearize_MutSt.elide_chain_flat` | `Optimize_Linearize_MutSt.v` | deleting the spent binop the xor fold leaves — `(reg & 0xff..ff) ^ 0x00` at the field's kernel register width becomes a bare compare (nft `binop_transfer_handle_lhs`, OP_XOR: the class-L residue) — preserves `eval_chain_flat` — **UNCONDITIONAL**: a register-normalised read is width-pinned AND octet-clamped BY CONSTRUCTION (`Bytes.fit`/`Bytes.octets` at the `do_load` boundary), so the all-ones/zero bitwise is definitionally the identity on it (`Syntax.do_load_bitops_id`) — no width, byte-range or well-formedness hypothesis |
+| pass composition | `Optimize_Registry.run_passes_correct` | `Optimize_Registry.v` | ONE generic theorem: folding **any** list of registered `opt_pass`es (each bundling its own eval-preservation proof) preserves the chain's state fold, proved once quantified over the list — the `-O p1,p2,...` CLI only parses names into the list (`resolve_passes`) and folds them (`run_passes`) |
+| single-chain compile | `compile_chain_flat_verdict_correct` / `compile_chain_flat_env_correct` | `Correct.v` | the compiled single chain reproduces its own DSL state fold — verdict only, and verdict + resulting env, respectively — under `rule_numgen_free`; consumed by the sequence and optimizer headlines |
 | typed source lowering (**`typed_erasure`**) | the `Lower_Proofs.*_erasure` family (composed: `txmatch_erasure`) | `Lower_Proofs.v` | the verified lowering of a typed source construct produces exactly the byte IR the compiler consumes, with genuine per-construct obligations — `eq_erasure`/`neq_erasure` (register decode at the value's byteorder), `prefix_erasure` (CIDR: both the byte-aligned truncated-load shortening and the full-width masked compare), `wildcard_erasure` (leading-bytes short compare), `range_erasure_be`/`range_erasure_host` (BE vs host-endian range order), `bitmask_erasure`, `bitfield_erasure` (mask+shift), `set_interval_erasure` (byte-interval = numeric membership), `concat_key_erasure` (slot-padding invertibility), `cidr_interval_agrees_prefix_expand` (one CIDR expansion, not two). Since M6 the generated sources (`*_Gen.v`) carry the **surface** ruleset (`<name>_surface : sruleset`) and define every table/chain/decl as `Lower.lower_ruleset` applied to it, kernel-reduced — **no raw byte is written by hand** and a refused construct fails the generated `<name>_lowers_ok` Example (fail-loud) |
 | register-file discipline (W2) | `RegsValid_Proofs.lower_ruleset_default_regs_valid` (plain-compile mirror: `lower_ruleset_compile_regs_valid`) | `RegsValid_Proofs.v` | EVERY frontend-emitted program passes the kernel register validator: for every ruleset `lower_ruleset` accepts, every chain's DEFAULT-pipeline bytecode satisfies `RegsValid.regs_valid_prog` — `nft_validate_register_load`/`store` (index arithmetic of `nft_parse_register`, the 20-word/80-byte `struct nft_regs` file, data words 4..19, nonzero lengths, 16-byte `nft_data` values) mirrored per register operand of every `Bytecode.instr` constructor with its per-expression kernel length. Enforced BY CONSTRUCTION: `Lower.lower_rule` admits a rule only if its compiled image validates (fail-loud `LEregalloc`), and all three always-on linearization stages preserve validity from their own guards (`paymerge_rule_regs`, `xorfold_rule_regs`, `elide_rule_regs` — the elision only DELETES a spent instruction). No hypothesis |
 
@@ -72,42 +80,37 @@ Scope notes (each also sits on the theorem in the source):
   all environments/packets. Multi-chain/hook preservation is the separate
   `compile_ruleset_correct`/`compile_hook_correct` family — **not composed
   with the optimizer**.
-- The optimizer is certified at **two observation levels**, both unconditional:
-  the VM-run/verdict headline `optimize_table_uncond_compile_correct`
-  (`eval_chain`, through the DEFAULT compile) **and** the EFFECT-level headline
-  `Optimize_MutEnv.optimize_table_uncond_mut_st_correct` — the same shipped
-  pipeline related, at every hook, under the FULL-STATE effect-observing
-  `eval_chain_mut_st h`: verdict **and** the resulting `(env, packet)` pair
-  the `rule_step` fold leaves, nothing dropped (the `(verdict, env)` form
-  `optimize_table_uncond_mut_env_correct` survives as a projection corollary
-  via `Semantics.eval_chain_mut_env_st`). A stage can no longer preserve every
+- The optimizer is certified at the effect-observing STATE level: the shipped
+  pipeline related, at every hook, under the FULL-STATE `eval_chain_flat h`
+  (verdict **and** the resulting `(env, packet)` the `rule_step` fold leaves,
+  nothing dropped), all the way to the bytecode
+  (`optimize_table_uncond_compile_flat_correct`).  A stage cannot preserve a
   verdict while altering a write a later hook observes — env writes because
   `seq_eval_env` carries them to the next packet, packet writes (e.g. `meta
-  mark set`) because `eval_ruleset_u`'s priority dispatch hands the mutated
-  packet to the next base chain (precision pin: `Optimize_MutEnv` Part H —
-  the `[meta mark set 0x1]` chain and the empty chain are identified by the
-  env-only observable but distinguished by the full-state one). Jump scope:
-  `eval_chain_mut_st` is the flat fold (`terminal (Jump _) = false` skips the
-  callee), so for jump-BEARING chains the guarantee is about that flat
-  callee-skipping projection, not `eval_table_u`'s traversal.
-  What makes the effect level compose: every pure-merge recogniser carries an
+  mark set`) because `run_ruleset`'s priority dispatch hands the mutated packet
+  to the next base chain.  Precision pin: the `[meta mark set 0x1]` chain and
+  the empty chain are identified by the `(verdict, env)` projection but
+  distinguished by the full-state fold (`Optimize_MutEnv` Part H).  Jump scope:
+  `eval_chain_flat` is the flat single-chain fold (`terminal (Jump _) = false`
+  skips the callee), so for jump-BEARING chains the guarantee is about that
+  flat callee-skipping fold, not `eval_hook`'s cross-chain traversal.
+  What makes the state level compose: every pure-merge recogniser carries an
   **effect-safety guard** (`rule_mutfree`, `Optimize_ValueSet.value_merge_pair`)
-  so its merges live on the write-free fold projection; the three
+  so its merges live on the write-free part of the fold; the three
   effect-rewriting stages (`datamap`/`dnat`/`snat`) carry fold-level per-shape
-  certificates (`Optimize_MutEnv.eval_rules_mut_st_map_merge` /
+  certificates (`Optimize_MutEnv.eval_rules_flat_map_merge` /
   `_dnat_merge` / `_snat_merge`); the base pass is effect-safe by construction
-  (`dedup_rule` fires only on `rule_mutfree` rules); and `seed_start` now also
+  (`dedup_rule` fires only on `rule_mutfree` rules); and `seed_start` also
   clears every **dynset write target** (`chain_seed` includes
   `rule_dynset_names`), so no rule can clobber a minted declaration.
-- **Mutation × jump/goto is jointly verified** at the UNIFIED evaluator
-  (`Semantics.eval_rules_u`/`run_rules_u`, compile theorems
-  `compile_table_u_correct` / `compile_ruleset_u_correct` /
-  `compile_hook_u_correct` / `compile_seq_hook_correct`): one
-  effect-threading, jump-following fold per side.  The pure jump
-  strand (`eval_rules_j`/`eval_table`/`eval_ruleset`/`eval_hook`) and the flat
-  mutation strand (`eval_rules_mut*`) are **proven projections**
-  of the unified fold on their licensed sub-domains (write-free,
-  respectively transfer-free rules) — see the evaluator matrix, §3.
+- **Mutation × jump/goto is jointly verified** in THE semantics
+  (`Semantics.eval_rules`/`run_rules` and their compile theorems
+  `compile_table_correct` / `compile_ruleset_correct` / `compile_hook_correct` /
+  `compile_seq_hook_correct`): one effect-threading, jump-following fold per
+  side.  The optimizer's flat single-chain fold (`eval_rules_flat` /
+  `eval_chain_flat`) is the **transfer-free projection** of it, proved on
+  `rule_plain` chains by `Semantics.eval_table_flat_verdict_proj` /
+  `eval_rules_flat_proj` — see the evaluator matrix, §3.
 - The mutation/ct axis is **parametric in flow identity**: every ct/NAT
   statement is a congruence over the opaque key `pkt_flow` (and `e_ct`/`e_nat`
   keyed by it). Nothing ties `pkt_flow` to the packet's header bytes — no
@@ -122,14 +125,12 @@ Known-gaps note: the known-infidelity ledger is EMPTY — all three historical
 confirmed divergences are REPAIRED and pinned positively
 (`theories/Regression/Known_Infidelities.v`): the limiter sweep past a failing
 match and the intra-rule set-then-read (position-exact in the break-aware
-fold), and — M3 — the `OVmapNat` vmap-hit trace NAT + spurious `e_nat` store:
-the NAT data-plane effect (packet rewrite, flow-keyed `e_nat` establish/reuse,
-no-usable-address NF_DROP) now lives INSIDE the single per-rule fold at the
-NAT terminal, so a vmap HIT structurally never runs it (outcome provenance),
-on BOTH sides — certified by `compile_nat_effect_correct` and the
-traversal-level `_u` compile theorems, at every netfilter hook `h` (the fold
-and every effect-threading evaluator now carry the hook, because the
-redirect/masquerade data plane is hook-dependent).
+fold), and the `OVmapNat` vmap-hit trace NAT + spurious `e_nat` store: the NAT
+data-plane effect (packet rewrite, flow-keyed `e_nat` establish/reuse,
+no-usable-address NF_DROP) lives INSIDE the single per-rule fold at the NAT
+terminal, so a vmap HIT structurally never runs it (outcome provenance),
+certified by `compile_nat_effect_correct` at every netfilter hook `h` (the fold
+carries the hook because the redirect/masquerade data plane is hook-dependent).
 
 ## 2. Classification of every `Theorem`/`Corollary` in `Correct.v` and `Optimize*.v`
 
@@ -137,36 +138,26 @@ redirect/masquerade data plane is hook-dependent).
 
 | declaration | class | derivation edge |
 |---|---|---|
-| `compile_chain_correct` | SUPPORTING (stratum 1: one chain, pure verdict) | from `run_program_compile_chain`; consumed by the optimizer headline via `compile_chain_sets_correct` |
-| `compile_chain_sets_correct` (Corollary) | SUPPORTING | corollary of `compile_chain_correct` at `env_with_sets`; consumed (via `compile_chain_default_sets_correct`) by `optimize_table_uncond_compile_correct` |
-| `compile_chain_mut_correct` | SUPPORTING (stratum 2: + in-traversal mutation) | **derived**: the `fst` projection of stratum 3 (`run_program_mut_env_fst` / `eval_rules_mut_env_fst`), no second induction |
-| `compile_chain_mut_env_correct` | SUPPORTING (stratum 3: + env the chain leaves) | from `run_program_mut_env_compile_chain`, one induction over the per-rule step equation `run_rule_step_compile_rule` (`run_rule_step empty_rf (compile_rule r) e p = rule_step r e p` under `rule_numgen_free`) |
-| `compile_seq_mut_correct` | **HEADLINE** (mutation/sequence axis) | = `compile_chain_mut_env_correct` + `seq_eval_env_ext` |
-| `compile_table_correct` | SUPPORTING (stratum 5: + jump/goto/return) | from `run_eval_rules_j`; consumed by `compile_ruleset_correct` |
-| `eval_chain_eq_table_jumpfree` | SUPPORTING (fidelity bridge: `eval_chain` = `eval_table` on jump-free chains) | from `eval_rules_jumpfree_eq_j` |
-| `compile_chain_faithful_jumpfree` (Corollary) | SUPPORTING | corollary of `compile_chain_correct` + `eval_chain_eq_table_jumpfree` |
-| `faithful_table_jump_drops` (Example) | DEMO (regression pin: a jump into a dropping chain drops) | computes |
-| `compiled_table_jump_drops` (Example) | DEMO | instance of `compile_table_correct` |
-| `rg_base_not_jumpfree` (Example) | DEMO (the pin's chain is outside `eval_chain`'s faithful domain) | computes |
-| `compile_ruleset_correct` | SUPPORTING (stratum 6: + multi-table dispatch) | from `compile_table_correct` per base chain |
+| `compile_chain_flat_verdict_correct` | SUPPORTING (stratum: one chain, verdict, in-traversal mutation) | the `fst` projection of `compile_chain_flat_env_correct` (`run_program_flat_env_fst` / `eval_rules_flat_env_fst`), no second induction |
+| `compile_chain_flat_env_correct` | SUPPORTING (stratum: + env the chain leaves) | from `run_program_flat_env_compile_chain`, one induction over the per-rule step equation `run_rule_step_compile_rule` (`run_rule_step h empty_rf (compile_rule r) e p = rule_step h r e p` under `rule_numgen_free`) |
+| `compile_seq_flat_verdict_correct` | **HEADLINE** (mutation/sequence axis) | = `compile_chain_flat_env_correct` + `seq_eval_env_ext` |
+| `compile_table_correct` | SUPPORTING (stratum: + jump/goto/return) | from `run_rules_compile`; consumed by `compile_ruleset_correct` |
+| `compile_ruleset_correct` | SUPPORTING (stratum: + multi-table dispatch, state threaded between bases) | from `compile_table_correct` per base chain |
 | `compile_hook_correct` | **HEADLINE** (compiler axis) | = `compile_ruleset_correct` after pure hook selection/ordering |
-| `run_table_fuel_indep_compiled` (Corollary) | SUPPORTING (VM mirror of the M4 fuel-adequacy result, §3) | = `compile_table_correct` (at both fuels) + `Semantics.eval_table_fuel_indep` |
-| `run_rules_u_compile` | SUPPORTING (stratum 8 induction: unified fold, rule list) | one induction over `run_rule_step_compile_rule`, jumps included |
-| `compile_table_u_correct` | **HEADLINE** (stratum 8, unified axis: mutation × jump, one table) | from `run_rules_u_compile` |
-| `compile_ruleset_u_correct` / `compile_hook_u_correct` | **HEADLINE** (stratum 8: + multi-table / hook dispatch, state threaded between bases) | from `compile_table_u_correct` per base chain |
-| `compile_seq_hook_correct` | **HEADLINE** (stratum 8: + cross-packet env carry over the unified per-packet run — THE sequence semantics) | = `compile_ruleset_u_correct` + `seq_eval_env_ext` |
-| `run_table_writefree_compiled` (Corollary) | SUPPORTING (VM-side projection license: pure `run_table` = `fst` of `run_table_u` on compiled write-free chains) | = `compile_table_u_correct` + `compile_table_correct` + `Semantics.eval_table_u_writefree` |
-| `eval_chain_writefree_jumpfree_proj` (Corollary) | SUPPORTING (flat pure strand license, packaged) | = `Semantics.eval_table_u_writefree` + `eval_chain_eq_table_jumpfree` |
-| `rg_jump_not_plain` / `unified_strand_jump_drops` (Examples) | DEMO (license-boundary pins beside `mut_strand_jump_pin`) | compute |
+| `compile_seq_hook_correct` | **HEADLINE** (+ cross-packet env carry over the per-packet run — THE sequence semantics) | = `compile_ruleset_correct` + `seq_eval_env_ext` |
+| `compile_nat_effect_correct` | **HEADLINE** (NAT data-plane axis) | the per-rule bridge `run_rule_step_compile_rule` under its NAT-effect name — the compiled fold performs the identical NAT effect at every hook |
+| `run_rule_step_compile_rule` (Lemma) | SUPPORTING (the one DSL/VM per-rule agreement obligation) | one `run_rule_step` = `rule_step` equation under `rule_numgen_free`, every strata induct over it |
+| `run_rule_step_no_writes` (Lemma) | SUPPORTING (write-free per-rule VM projection) | `no_writes is = true -> run_rule_step h rf is e p = (run_rule rf is e p, (e, p))` |
+| `mut_strand_jump_pin` / `rg_jump_not_plain` / `unified_strand_jump_drops` (Examples) | DEMO (license-boundary pins for the flat fold's transfer-free `rule_plain` domain) | compute |
 
-### `Optimize.v` / `Optimize_ValueSet.v` (base pass and history)
+### `Optimize.v` / `Optimize_ValueSet.v` (base pass and unshipped forms)
 
 | declaration | class | note |
 |---|---|---|
-| `Optimize.optimize_chain_correct` | SUPERSEDED (as a standalone headline) | successor `optimize_table_uncond_correct`; `optimize_chain` survives as the pipeline's base stage and this theorem as that stage's lemma |
-| `Optimize_ValueSet.eval_rules_value_merge` | SUPPORTING | 2-adjacent-rule merge certificate behind the `valueset` recogniser lineage |
-| `Optimize_ValueSet.eval_rules_range_value_merge` | SUPERSEDED, **known-unfaithful** | models `6,7 => 6-7` as a RANGE where `nft -o` emits the SET `{6,7}`; used by no shipped pass (marker on the theorem) |
-| `Optimize_ValueSet.optimize_chain2_correct` | SUPERSEDED | `optimize_chain2` is not composed into the shipped pipeline |
+| `Optimize.optimize_chain_correct` (Lemma) | SUPPORTING (the rule-local base stage) | `optimize_chain` is the pipeline's base pass; the shipped pipeline theorem is `optimize_table_uncond_flat_correct` |
+| `Optimize_ValueSet.eval_rules_value_merge` (Lemma) | SUPPORTING | 2-adjacent-rule merge certificate behind the `valueset` recogniser lineage |
+| `Optimize_ValueSet.eval_rules_range_value_merge` (Lemma) | SUPERSEDED, **known-unfaithful** | models `6,7 => 6-7` as a RANGE where `nft -o` emits the SET `{6,7}`; used by no shipped pass (marker on the lemma) |
+| `Optimize_ValueSet.optimize_chain2_correct` (Lemma) | SUPERSEDED | `optimize_chain2` is not composed into the shipped pipeline |
 
 ### Per-pass certificates and stages (`Optimize_*.v`)
 
@@ -175,163 +166,80 @@ redirect/masquerade data plane is hook-dependent).
 | `Optimize_Vmap.eval_rules_vmap_merge2` | SUPPORTING | certificate consumed by the `vmap` stage lineage |
 | `Optimize_Concat.eval_rules_concat_merge2` | SUPPORTING | certificate for the two-selector concat merge |
 | `Optimize_ConcatMulti.eval_rules_concat_mergeK` | SUPPORTING | K-row concat certificate |
-| `Optimize_DataMap.eval_rules_mut_map_merge` / `eval_rules_map_merge` | SUPPORTING | mark-map merge certificates (`datamap` stage; a labelled sound superset of `nft -o`, see Optimize_Table.v fidelity contract) |
+| `Optimize_DataMap.eval_rules_map_merge` (+ the flat form `Optimize_MutEnv.eval_rules_flat_map_merge`) | SUPPORTING | mark-map merge certificates (`datamap` stage; a labelled sound superset of `nft -o`, see Optimize_Table.v fidelity contract) |
 | `Optimize_DataMap.mapn_bare_diverges_offkey` | DEMO | pins why the head guard cannot be dropped |
-| `Optimize_DataMap.optimize_rules_datamap_eval` | STAGE | composed into `optimize_table` |
-| `Optimize_Dnat.eval_rules_dnat_merge`, `apply_nat_dnat_eq`, `apply_nat_dnat_merge1` (Cor.) | SUPPORTING | bare-NAT-map merge: verdict + data-plane NAT-effect preservation |
-| `Optimize_Snat.eval_rules_snat_merge`, `apply_nat_snat_eq`, `apply_nat_snat_merge1` (Cor.) | SUPPORTING | symmetric snat forms |
-| `Optimize_Normalize.normalize_chain_eval` | STAGE | verdict-preserving head normalisation run first by `optimize_table_uncond` |
-| `Optimize_Uncond.optimize_rules_{dnat,snat}_eval`, `optimize_rules_{valueset,dscp,intervalsethostorder,intervalset,intervalsetguarded,mixedpointrangeguarded,concat,concatguarded,setguarded,concatmulti,vmap,vmapguarded,dscpvmap}_correct_uncond` (15) | STAGE | each tagged `STAGE — composed into [optimize_table_correct_uncond_gen]` in the source |
-| `Optimize_Uncond.optimize_table_correct_uncond_gen` | SUPPORTING | the general `(n, d)`-threaded whole-pipeline form |
-| `Optimize_Uncond.optimize_table_uncond_correct` | SUPPORTING | DSL-level form of the optimizer headline |
-| `Optimize_Uncond.optimize_table_uncond_compile_correct` | **HEADLINE** (optimizer axis) | = `optimize_table_uncond_correct` + `Optimize_Linearize.compile_chain_default_sets_correct` (the DEFAULT compile: always-on paymerge + xorfold + elide, then `compile_chain`) |
-| `Optimize_MutEnv.optimize_table_mut_st_correct_uncond_gen` | SUPPORTING | the general `(n, d)`-threaded whole-pipeline EFFECT form: same `eval_chain_mut_st h` result for output and input under the deployed declarations |
-| `Optimize_MutEnv.optimize_table_uncond_mut_st_correct` | **HEADLINE** (optimizer EFFECT axis) | the shipped `optimize_table_uncond`, hypothesis-free, under the FULL-STATE effect-observing `eval_chain_mut_st h`: verdict AND resulting `(env, packet)` preserved at every hook/base env/packet (built on the per-stage `optimize_rules_*_mut_st` lemmas, the recogniser effect-safety guards, and the fold-level dnat/snat/datamap shape certificates) |
-| `Optimize_MutEnv.optimize_table_uncond_mut_env_correct` | SUPPORTING (corollary) | the `(verdict, env)` view of the full-state headline, via the projection bridge `Semantics.eval_chain_mut_env_st` — kept for the cross-packet (`seq_eval_env`) reading |
-| `Optimize_MutEnv.eval_rules_mut_st_{map,dnat,snat}_merge` | SUPPORTING | fold-level effect certificates for the three effect-rewriting merge shapes, at the full-state evaluator (verdict + `(env, packet)` out) |
-| `Optimize_MutEnv.optimize_rules_*_mut_st` (15) + `optimize_{chain,rules}_absorb/ctmask_mut_st` + `optimize_chain_mut_st` + `normalize_chain_mut_st` | STAGE | each stage of the pipeline preserved under the full-state `eval_rules_mut_st h`, composed into `optimize_table_mut_st_correct_uncond_gen` |
-| `Optimize_MutEnv.mutst_pin_{mut_env_blind,mark_observed,distinguishes}` | PIN | precision regression: `[meta mark set 0x1]` vs `[]` are identified by `eval_chain_mut_env` (packet-blind) but MUST stay distinguished by `eval_chain_mut_st` (the exported packet carries the mark) |
-| `Optimize_Linearize.linearize_chain_eval` | STAGE | the always-on linearization (elide ∘ xorfold ∘ paymerge) preserves `eval_chain`; composed into both default-pipeline headlines |
-| `Optimize_Linearize.compile_chain_default_sets_correct` (Corollary) | SUPPORTING | `compile_chain_default_correct` at `env_with_sets`; consumed by `optimize_table_uncond_compile_correct` |
+| `Optimize_Dnat.eval_rules_dnat_merge`, `apply_nat_dnat_eq` (Cor.) | SUPPORTING | bare-NAT-map merge: verdict + data-plane NAT-effect preservation |
+| `Optimize_Snat.eval_rules_snat_merge`, `apply_nat_snat_eq` (Cor.) | SUPPORTING | symmetric snat forms |
+| `Optimize_MutEnv.normalize_chain_flat` | STAGE | verdict-preserving head normalisation run first by `optimize_table_uncond` |
+| `Optimize_MutEnv.optimize_rules_{valueset,dscp,intervalset,intervalsethostorder,intervalsetguarded,mixedpointrangeguarded,concat,concatguarded,setguarded,concatmulti,vmap,vmapguarded,dscpvmap,dnat,snat,datamap,absorb,ctmask}_flat` + `optimize_chain_flat` | STAGE | each stage of the pipeline preserved under the full-state `eval_rules_flat h`, composed into `optimize_table_flat_correct_uncond_gen` |
+| `Optimize_MutEnv.optimize_table_flat_correct_uncond_gen` | SUPPORTING | the general `(n, d)`-threaded whole-pipeline STATE form: same `eval_chain_flat h` result for output and input under the deployed declarations |
+| `Optimize_MutEnv.optimize_table_uncond_flat_correct` | **HEADLINE** (optimizer axis) | the shipped `optimize_table_uncond`, hypothesis-free, under the FULL-STATE `eval_chain_flat h`: verdict AND resulting `(env, packet)` preserved at every hook/base env/packet (built on the per-stage `optimize_rules_*_flat` lemmas, the recogniser effect-safety guards, and the fold-level dnat/snat/datamap shape certificates) |
+| `Optimize_MutEnv.optimize_table_uncond_flat_env_correct` | SUPPORTING (corollary) | the `(verdict, env)` view of the full-state headline — kept for the cross-packet (`seq_eval_env`) reading |
+| `Optimize_MutEnv.eval_rules_flat_{map,dnat,snat}_merge` | SUPPORTING | fold-level effect certificates for the three effect-rewriting merge shapes, at the full-state evaluator (verdict + `(env, packet)` out) |
+| `Optimize_MutEnv.mutst_pin_{flat_env_blind,mark_observed,distinguishes}` | PIN | precision regression: `[meta mark set 0x1]` vs `[]` are identified by the `(verdict, env)` projection (packet-blind) but MUST stay distinguished by `eval_chain_flat` (the exported packet carries the mark) |
+| `Optimize_Linearize_MutSt.linearize_chain_flat` | STAGE | the always-on linearization (elide ∘ xorfold ∘ paymerge) preserves `eval_chain_flat`; composed into both default-pipeline headlines |
+| `Optimize_Linearize_MutSt.compile_chain_flat_correct` | SUPPORTING | the compiled optimised chain's VM state run reproduces its own DSL state fold; consumed by `optimize_table_uncond_compile_flat_correct` |
 
 ## 3. The evaluator matrix
 
-**THE semantics is the UNIFIED evaluator pair** (`Semantics.v` § "The unified
-semantics"): DSL `eval_rules_u` / `eval_table_u` / `eval_ruleset_u` /
-`eval_hook_u`, VM `run_rules_u` / `run_table_u` / `run_ruleset_u` — one
-fuel-bounded fold per side that **threads every state effect** (packet
-meta/ct writes, dynset env writes, notrack, position-exact
-limiter/quota/connlimit consumption, via the per-rule fold
-`rule_step`/`run_rule_step`) **and
-follows control flow** (jump/goto/return, user chains, multi-table and
-hook/priority dispatch), returning verdict AND the `(env, packet)` the
-traversal leaves; cross-packet env carry is `seq_eval_env` over
-`eval_hook_env_u` / `run_ruleset_env_u`.  A jumped-to chain sees the caller's
-accumulated writes; the callee's writes persist into the resuming caller
-(witness pins: `Regression/Setread_UnderJump.v`).  Compile theorems: stratum
-8 in §2.
+**THE semantics is one stateful evaluator per side** (`Semantics.v` § "THE
+UNIFIED SEMANTICS"): DSL `eval_rules` / `eval_table` / `eval_ruleset` /
+`eval_hook`, VM `run_rules` / `run_table` / `run_ruleset` — one fuel-bounded
+fold per side that **threads every state effect** (packet meta/ct writes,
+dynset env writes, notrack, position-exact limiter/quota/connlimit consumption,
+via the per-rule fold `rule_step`/`run_rule_step`) **and follows control flow**
+(jump/goto/return, user chains, multi-table and hook/priority dispatch),
+returning verdict AND the `(env, packet)` the traversal leaves; cross-packet
+env carry is `seq_eval_env` over `eval_hook_env` / `run_ruleset_env`.  A
+jumped-to chain sees the caller's accumulated writes; the callee's writes
+persist into the resuming caller (witness pins:
+`Regression/Setread_UnderJump.v`).  Compile theorems: §2.
 
-Every OTHER entry point is a **projection** of the unified fold, licensed by
-a coincidence theorem on the sub-domain where it provably agrees — never an
-independent semantics for a rule to be evaluated through.  An input outside
-a projection's licensed sub-domain must be evaluated on the unified
-evaluator.
-
-**Evaluator consolidation (M6): exactly ONE recursive rule-list/jump
-traversal per side** — the Fixpoints `eval_rules_u` (DSL) and `run_rules_u`
-(VM).  Every other entry point is now a NON-RECURSIVE `Definition`: the pure
-strand (`eval_rules`, `run_program`) and the dispatch layers (`eval_ruleset`,
-`run_ruleset`, `eval_ruleset_u`, `run_ruleset_u`) are stdlib folds; the
-fueled pure jump strand (`eval_rules_j`, `run_rules_j`) is a `nat_rect` on
-the fuel; the flat mutation strand is ONE full-state fold per side
-(`eval_rules_mut_st` / `run_program_mut_st`, `fold_left` of
-`rule_step`/`run_rule_step` with an absorbing stopped accumulator) of which
-`eval_rules_mut(_env)` / `run_program_mut(_env)` are **projections BY
-DEFINITION** — the in-strand bridges are `reflexivity`-level, not re-proved
-inductions.  Names, statements and values are UNCHANGED: each conversion
-carries `_nil`/`_cons` (or `_0`/`_S`) unfolding equations restating the
-historical recursion verbatim, and every pre-existing theorem survives as
-stated.  (`run_program_mut_st` is new — the VM twin of `eval_rules_mut_st`,
-added so the VM projections have the same definitional source.)
+**The optimizer's flat single-chain state fold** (`eval_rules_flat` /
+`eval_chain_flat`, VM `run_program_flat` / `run_chain_flat`) is the tool the
+optimizer and default-compile headlines are stated over: ONE `fold_left` of
+`rule_step`/`run_rule_step` with an absorbing stopped accumulator, returning
+verdict AND `(env, packet)`.  Its verdict and env views (`eval_*_flat_verdict`,
+`eval_*_flat_env`) are **projections BY DEFINITION** — the in-strand bridges
+(`eval_rules_flat_env_fst`, `run_program_flat_env_fst`) are `reflexivity`-level.
+And the whole fold is the **transfer-free projection of THE semantics**:
 
 | projection (DSL + VM mirror) | licensed sub-domain | coincidence equation |
 |---|---|---|
-| `eval_rules_j`/`eval_table` (VM `run_rules_j`/`run_table`) | write-free rules everywhere: `rule_writefree` (no meta/ct set, dynset, notrack, limiter/quota/connlimit) on the entry list, `chains_writefree` on the chain env | `eval_rules_u_writefree`: `eval_rules_u fuel cs rs e p = (eval_rules_j fuel cs rs e p, (e, p))`; table form `eval_table_u_writefree`; VM form `Correct.run_table_writefree_compiled` |
-| `eval_rules_j`/`eval_table`/`eval_hook` (limiter-tolerant extension, Semantics.v § Projection 1b) | limiter-tolerant configs: every rule `rule_limiter_tol` = write-free OR a `rule_one_limiter` rule (match-only body whose ONE non-consume-free match is a tolerable limiter — non-inverted `limit`/`quota` or any `connlimit` — in last position, under a static terminal verdict); entry list + `chains_limiter_tol` on the chain env | VERDICT projection only (the unified run's bucket IS depleted): `eval_rules_u_limiter_tolerant`: `fst (eval_rules_u fuel cs rs e p) = eval_rules_j fuel cs rs e p`; table form `eval_table_u_limiter_tolerant`; single-base hook form `eval_hook_u_limiter_tolerant_1` — every fuel/env/packet, jumps, gotos and chain re-entries included |
-| `eval_ruleset`/`eval_hook` (VM `run_ruleset`) | write-free bases (`bases_writefree`) | `eval_ruleset_u_writefree` / `eval_hook_u_writefree` |
-| `eval_rules`/`eval_chain` (VM `run_program`/`run_chain`) | write-free **and** jump-free | `eval_rules_u_writefree` + `eval_rules_jumpfree_eq_j`; packaged as `Correct.eval_chain_writefree_jumpfree_proj`; ENTRY-STATE-FREE form (M6): the SYNTACTIC `chain_jumpfree_syn` (no (env, packet) in the hypothesis; implication `rules_jumpfree_syn_sound`/`chain_jumpfree_syn_sound`) packaged as `Correct.eval_chain_writefree_jumpfree_syn_proj` |
-| `eval_rules_mut_st`/`eval_chain_mut_st` — full state — and its projections `eval_rules_mut(_env)`/`eval_chain_mut(_env)` (VM `run_program_mut(_env)`) | transfer-free rules: `rule_plain` (no realisable Jump/Goto/Return under the run's verdict maps — step-threaded: rule writes provably cannot touch `e_vmap`, `rule_step_vmap`) | `eval_rules_u_mut_st_proj`: `eval_rules_u fuel cs rs e p = eval_rules_mut_st rs e p` (whole verdict × (env, packet) triple); table form `eval_table_u_mut_st_proj`; component forms `eval_rules_u_mut_proj`/`eval_table_u_mut_proj`; in-strand bridges `eval_rules_mut_env_st` (`_env` = (fst, fst∘snd) of `_st`) and `eval_rules_mut_env_fst` |
-| `rule_applies(_walk)`/`outcome`/`rule_loadable` (per-rule bools) | write-free rule (`rule_mutfree`: no mutating statement AND no limiter match — evaluating a limiter writes its bucket) | `rule_step_mutfree` |
-| `rule_applies_walk` alone (the body walk, NOTRACK ADMITTED — its `set_untracked` threading is the SAME transform `body_step`'s `SNotrack` case applies, not a parallel semantics) | `body_purewalk` bodies (consume-free matches, non-mutating statements, `notrack` allowed) that load (`body_loadable_walk`) | `rule_purewalk_ok` (M6): the walk = the break/no-break projection of `body_step` |
-| `run_rule`/`run_program` (per-rule pure VM) | `no_writes` programs (no mutating/limiter/incremental-numgen instruction) | `Correct.run_rule_step_no_writes` |
-| `seq_eval_env` | generic in its per-packet evaluator; THE sequence semantics is its instantiation with the ruleset's own env-out `eval_hook_env_u` | `compile_seq_hook_correct` (unified), `compile_seq_mut_correct` (flat) |
+| `eval_rules_flat`/`eval_chain_flat` (VM `run_program_flat`/`run_chain_flat`) — full state — and its verdict/env views | `rule_plain` chains: no realisable Jump/Goto/Return under the run's verdict maps (step-threaded: rule writes provably cannot touch `e_vmap`, `rule_step_vmap`) | `eval_rules_flat_proj`: `eval_rules fuel cs rs e p = eval_rules_flat rs e p` (whole verdict × (env, packet) triple); table form `eval_table_flat_proj`; verdict-only forms `eval_rules_flat_verdict_proj` / `eval_table_flat_verdict_proj` |
+| `rule_loadable` / `outcome` (per-rule bools) + write-free `run_rule` | write-free rule (`rule_mutfree`: no mutating statement AND no limiter match — evaluating a limiter writes its bucket) | `Semantics.rule_step_state_mutfree`: `rule_mutfree r = true -> rule_step h r e p = (…, (e, p))` (the loadable/outcome verdict on unchanged state); VM twin `Correct.run_rule_step_no_writes` |
+| `seq_eval_env` | generic in its per-packet evaluator; THE sequence semantics is its instantiation with the ruleset's own env-out `eval_hook_env` | `compile_seq_hook_correct` (whole-ruleset), `compile_seq_flat_verdict_correct` (single flat chain) |
 
-**License coverage of the shipped example configs** (the `Nft_Tactics`
-surface `nft_yields` is stated over the `eval_table` projection;
-`nft_yields_unified` upgrades any statement to the unified semantics once the
-one-`reflexivity` check `nft_writefree` holds): `tutorial.nft`
-(`Tutorial_Proofs.tutorial_license`), `ruleset.nft`
-(`Ruleset_Verified.firewall_inbound_license`), and the optiplex `vmfilter`
-bridge table (`Optiplex_Antispoof.vmfilter_output_license`) are
-Compute-verified write-free, so every `eval_table` theorem about them IS a
-theorem about the unified semantics.  The router `global` table contains ONE
-limiter rule (`inbound_private`'s `limit rate 5/second`), whose bucket
-depletion is an env write — outside `rule_writefree` — and it is licensed by
-the LIMITER-TOLERANT projection (the table row above): the config is
-Compute-verified `chains_limiter_tol`, so every `Router_*` /
-`Nft_Demo_Concrete` pure-strand statement is a proven VERDICT projection of
-the unified semantics — per-file license instances
-`Router_Input.inbound_licensed` / `Router_Input.router_rules_licensed` /
-`Router_Forward.forward_licensed` (+ the `bug_*` mutation-kill envs) /
-`Router_Private.private_rules_licensed` /
-`Router_Hooks.input_hook_licensed`/`forward_hook_licensed`
-(+ the swapped-registration bug) / `Router_Realistic.*_licensed_real` /
-`Nft_Demo_Concrete.demo_dns_accepted_unified`/`demo_smtp_denied_unified`,
-all axiom-gated.  **Since M3 a NAT-terminal rule is a WRITE** (packet rewrite
-+ `e_nat` store + possible NF_DROP inside the fold), so a chain environment
-CONTAINING the masquerade chain is genuinely outside every pure-strand
-license (an env whose vmap jumps into it diverges: pure Accept vs kernel
-Drop on an address-less interface); the router licenses are therefore stated
-over the NAT-free chain restriction `Router_Input.global_tol_chains` /
-`Router_Hooks.global_tol_hooks`; the masquerade hook, whose NAT drop / packet
-rewrite is invisible to the write-free projection, is stated directly on the
-unified semantics (`Router_Hooks.postrouting_hook_unified` +
-`Router_NatHook.postrouting_hook_verdict_trichotomy`), and the demo cruxes
-are recomputed against `eval_table_u` at EVERY hook over the FULL chain env.
-The effectful optiplex `filter`/NAT chains are evaluated through the unified
-fold (`eval_chain_u`, `Optiplex_Mark`, `Router_NatHook`, `Router_Reach`).
+**Kept structural predicates.** Load-liveness — `rule_loadable`,
+`body_loadable_walk`, `body_synproxy_stops` — decides whether a rule's body can
+load its operands (a broken load stops the walk); it is correct on effectful
+rules and is consumed by the optimizer's shape obligations.  Write-freeness
+guards — `rule_mutfree`, `is_mut_stmt`, `match_consumefree` — are the boolean
+side conditions that let a merge recogniser fire only where it is effect-safe
+(above).
 
 **Fuel adequacy (RESOLVED, M4 config-proof soundness; RESTATED, M6)**: the
-jump strand is fuel-bounded, and `eval_table` maps fuel EXHAUSTION to the
-chain policy — a verdict the kernel can never produce (nft rejects jump
-loops at load time; kernel jump stack is 16 deep, `NFT_JUMP_STACK_SIZE`).
-Naive fuel monotonicity (`eval_rules_j fuel = Some v -> eval_rules_j (S
-fuel) = Some v`) is **false** — machine-refuted by
-`Semantics.eval_rules_j_not_naively_monotone` (an under-fueled callee's
-exhaustion reads as fall-through and more fuel flips the verdict).  The
-honest results (Semantics.v § "Fuel discipline for the jump strand"): above
-the computable `sufficient_fuel cs rs`, under the `chain_ranked` acyclicity
-witness, the verdict is fuel-independent — proved by ONE direct rank-descent
-induction (`eval_rules_j_fuel_indep_aux`: at adequate fuel, a jump's callee
-and the resumed caller are each adequately fueled, so no branch can exhaust)
-— `eval_rules_j_fuel_indep` / `eval_table_fuel_indep`, and the policy
-fallback is genuine fall-through: a `None` at adequate fuel persists at
-EVERY adequate fuel, which exhaustion (curable by more fuel) cannot
-(`eval_table_policy_is_fallthrough`).  **The unified evaluator carries the
-same discipline itself** (M6, § "Fuel discipline for the unified
-evaluator"): no effect writes the verdict maps (`rule_step_vmap` /
-`eval_rules_u_vmap`), so the `rule_step`-level rank witness `chain_ranked_u`
-— stable under every state the traversal can reach — gives
-`eval_rules_u_fuel_indep` / `eval_table_u_fuel_indep` (verdict AND state),
-with `chains_plain_ranked_u` discharging the witness by computation for
-transfer-free environments; effectful configs are inside the adequacy story,
-not carved out of it.  Compiled mirror:
-`Correct.run_table_fuel_indep_compiled` (via `compile_table_correct`; no
-second VM development — rationale on the corollary).  User surface:
-`Nft_Tactics.nft_*_fuel_indep`, CONFIG_PROOFS.md § "Choosing the fuel
-budget", worked instance `Tutorial_Proofs.tutorial_blocks_exactly_any_fuel`.
-
-**Mutation × jump/goto is jointly verified** (U1): the unified evaluator
-threads writes THROUGH control transfers on both sides, its compile theorems
-(stratum 8, §2) hold for effectful rules under jumps/multi-chain with no
-hypothesis excluding any effect or control-flow shape, and
-`Regression/Setread_UnderJump.v` Compute-pins the behaviour (`meta mark set
-0x1; meta mark 0x1; accept` ACCEPTS inside a jumped-to chain, on DSL and VM;
-caller writes visible in the callee; callee writes surviving the return;
-dynset learning across a jump).  The flat mutation theorems still carry **no
-jump-freedom hypothesis** — they are unconditional DSL=VM agreement facts
-that DO instantiate on a jump-bearing chain, where both sides treat the
-realised `Jump`/`Goto` as a fall-through; their *faithful* domain is now
-delimited **in-theorem** by the projection license `eval_rules_u_mut_proj`
-(the step-threaded `rule_plain` predicate), with the license boundary pinned
-by `Correct.mut_strand_jump_pin` / `rg_jump_not_plain` /
-`unified_strand_jump_drops` (rationale block on the mutation strata in
-`Correct.v`).
+semantics is fuel-bounded, and `eval_table` maps fuel EXHAUSTION to the chain
+policy — a verdict the kernel can never produce (nft rejects jump loops at load
+time; kernel jump stack is 16 deep, `NFT_JUMP_STACK_SIZE`).  Naive fuel
+monotonicity is **false** for jump loops (an under-fueled callee's exhaustion
+reads as fall-through and more fuel flips the verdict), so adequacy is stated
+above a computable bound: no effect writes the verdict maps
+(`rule_step_vmap`), so the `rule_step`-level rank witness `chain_ranked` —
+stable under every state the traversal can reach — gives
+`Semantics.eval_rules_fuel_indep` / `eval_table_fuel_indep` (verdict AND
+state) above `sufficient_fuel cs rs`; effectful configs are inside the adequacy
+story, not carved out of it.  User surface:
+`Nft_Tactics.nft_yields`/`nft_yields_fuel_indep`, CONFIG_PROOFS.md § "Choosing
+the fuel budget", worked instance
+`Tutorial_Proofs.tutorial_blocks_exactly_any_fuel`.  License-boundary pins for
+the flat fold's transfer-free domain: `Correct.mut_strand_jump_pin` /
+`rg_jump_not_plain` / `unified_strand_jump_drops` (a chain that realises a jump
+is evaluated by `eval_hook`, not the flat fold).
 
 The bytecode VM mirrors the DSL rows one-for-one (`run_rule(s)`,
-`run_program(_mut,_mut_env)`, `run_rules_j`/`run_table`, `run_ruleset`); each
-compile theorem in §2 equates one DSL row with its VM mirror.  The VM mirror of
-the `fst` bridge is `run_program_mut_env_fst` / `run_chain_mut_env_fst`.
+`run_program_flat`, `run_table`, `run_ruleset`); each compile theorem in §2
+equates one DSL row with its VM mirror.
 
 Every mutation evaluator consumes the per-rule STEP function directly —
 ONE left-to-right fold per rule, `Semantics.rule_step h` (DSL) /
@@ -371,46 +279,55 @@ program: `Lower.lower_rule` refuses incremental numgen fail-loud
 chain of every successful lowering numgen-free — not a per-ruleset gate
 spot-check.
 
-**Pure-strand projection.**  `rule_applies`/`outcome`/`rule_loadable` and the
-write-free `run_rule` are the pure strand's per-rule evaluator — what
-`eval_rules`/`run_program` and the optimizer theorems consume — proved to be
-the mut-free projection of the single fold: `Semantics.rule_step_mutfree`
-(`rule_mutfree r = true -> rule_step r e p = (if rule_loadable && rule_applies
-then outcome else None, (e, p))`) and `Correct.run_rule_step_no_writes`
-(`no_writes is = true -> run_rule_step rf is e p = (run_rule rf is e p,
-(e, p))`).  `body_writes` is the state projection of the body fold;
-`stmts_after_outcome` coincides with `after_step` on mutation-free statement
-lists (`after_step_mutfree`).
+**Write-free projection.**  `rule_loadable`/`outcome` and the write-free
+`run_rule` are the per-rule evaluator on effect-free rules — proved to be the
+mut-free projection of the single fold: `Semantics.rule_step_state_mutfree`
+(`rule_mutfree r = true -> rule_step h r e p = (if rule_loadable && … then
+outcome else None, (e, p))`) and `Correct.run_rule_step_no_writes`
+(`no_writes is = true -> run_rule_step h rf is e p = (run_rule rf is e p,
+(e, p))`).
 
 ## 4. Axiom-freedom gates
 
 - **`make axioms` is the build-FAILING gate** (`AXIOM_GATE_THEOREMS`,
   proof/Makefile): `Print Assumptions` over the listed theorems, failing on
   anything but `Closed under the global context`.  The list is
-  - the HEADLINE set (§1) + the `Correct.v` strata + the optimizer DSL form +
-    the representation ratchet `Semantics.run_rule_outcome_eq`,
+  - the HEADLINE set (§1) + the `Correct.v` strata
+    (`compile_chain_flat_verdict_correct`/`_env_correct`,
+    `compile_table_correct`, `compile_ruleset_correct`,
+    `compile_seq_flat_verdict_correct`, `run_rule_step_compile_rule`),
+  - the flat-fold projection heads
+    `Semantics.eval_rules_flat_proj` / `eval_table_flat_proj` /
+    `eval_rules_flat_verdict_proj` / `eval_table_flat_verdict_proj`
+    and the write-free projection `Semantics.rule_step_state_mutfree`,
+  - the optimizer STATE forms
+    `Optimize_MutEnv.optimize_table_uncond_flat_correct` / `_flat_env_correct`
+    and `Optimize_Linearize_MutSt.optimize_table_uncond_compile_flat_correct`,
+    the per-stage linearization certs
+    (`paymerge_chain_flat`/`xorfold_chain_flat`/`elide_chain_flat`/`linearize_chain_flat`/`compile_chain_flat_correct`/`compile_chain_default_flat_correct`),
+    and `Optimize_Registry.run_passes_correct`,
   - the fuel-adequacy heads (§3):
-    `Semantics.eval_rules_j_fuel_indep`, `eval_table_fuel_indep`,
-    `eval_rules_u_fuel_indep`, `eval_table_u_fuel_indep`,
-    `eval_table_policy_is_fallthrough`,
-    `Correct.run_table_fuel_indep_compiled`,
+    `Semantics.eval_rules_fuel_indep`, `eval_table_fuel_indep`,
     `Nft_Tactics.nft_yields_fuel_indep`,
-    `Tutorial_Proofs.tutorial_blocks_exactly_any_fuel` (8 theorems),
-    plus the M6 projection heads `Semantics.rule_purewalk_ok` and
-    `Correct.eval_chain_writefree_jumpfree_syn_proj`,
+    `Tutorial_Proofs.tutorial_blocks_exactly_any_fuel`,
+    plus the surface projection `Nft_Tactics.nft_yields_writefree_at`,
   - the M4 de-vacuized config heads (§5):
     `Optiplex_Antispoof.antispoof_general_any_env`,
     `Optiplex_Mark.genenv_fib_local_contradiction` + the three
     `Optiplex_Mark.streaming_*_real` heads +
-    `Optiplex_Mark.streaming_whole_ruleset_witnessed` (6 theorems), and
+    `Optiplex_Mark.streaming_whole_ruleset_witnessed`, the `Router_Realistic.*_real`
+    heads, and
   - **every result the README claims axiom-free** (README § "Headline
-    guarantees are axiom-free", 29 theorems): anti-spoofing
+    guarantees are axiom-free"): anti-spoofing
     (`Optiplex_Antispoof.antispoof_general` + its 3 concrete corollaries),
     established-accept (`Example_Ruleset.established_accepted`),
     NAT-masquerade / multi-address primary selection
     (`Netstate_MultiAddr.masq_saddr_is_selected_primary`,
     `masq_drop_iff_no_eligible_addr`), fib host-local (all 17 `Fib_Local`
-    heads), and ct-state (all 5 `Ct_State` theorems).
+    heads), ct-state (all 5 `Ct_State` theorems), the `Lower_Proofs.*_erasure`
+    family + `lower_ruleset_numgen_free`, and the W1/W2 width/register heads
+    (`Bytes.fit_*`, `Syntax.read_*_length`/`*_load_length`/`do_load_bitops_id`,
+    `RegsValid_Proofs.lower_ruleset_default_regs_valid`/`_compile_regs_valid`).
 
   The rule: **any result the README (or this file) presents as a claim is in
   `AXIOM_GATE_THEOREMS`, in the same commit that adds the claim.**
@@ -429,20 +346,20 @@ lists (`after_step_mutfree`).
   `Main.v` carry in-file prints and are each an `exact`/`apply` of a gated
   theorem, so their assumption sets coincide with gated ones.
 - One-liner (the historical gate):
-  `cd theories && printf 'From Nft Require Import Correct Optimize.\nPrint Assumptions compile_chain_correct.\n' | coqtop -R . Nft`
+  `cd theories && printf 'From Nft Require Import Correct Optimize.\nPrint Assumptions compile_chain_flat_verdict_correct.\n' | coqtop -R . Nft`
   → `Closed under the global context`.
 
 ## 5. Config-proof claim surface (Examples/) — M4 de-vacuization
 
-Per-configuration security theorems used to pin the WHOLE env to the parser's
+Some per-configuration security theorems pin the WHOLE env to the parser's
 `gen_env` (empty conntrack, no routes).  Where such a pin coexists with an
 env-reading field hypothesis the hypotheses are jointly **unsatisfiable** and
 the theorem certifies zero packets.  Status after M4:
 
-| claim | pre-M4 statement | class | successor (headline) | vacuity proof / witness |
+| claim | whole-env-pinned statement | class | successor (headline) | vacuity proof / witness |
 |---|---|---|---|---|
 | optiplex streaming mark, end-to-end | `Optiplex_Mark.streaming_flow_whole_ruleset` (+ `streaming_prerouting_io`/`_mark`, per-rule lemmas) | SUPERSEDED-vacuous (kept verbatim, derived from the contradiction) | `streaming_flow_whole_ruleset_real` (+ `_io_real`/`_mark_real`; env relaxed to the three `e_set` contents the chain reads) | `genenv_fib_local_contradiction`; witness `env_stream`/`pkt_stream` + `streaming_whole_ruleset_witnessed` |
-| optiplex anti-spoofing, general | `Optiplex_Antispoof.antispoof_general` (pin was INERT — memberships already hypothesised over `e_set e`) | SUPPORTING (verbatim corollary of the successor) | `antispoof_general_any_env` (no env pin at all) | proof = pre-M4 proof minus the `?Henv` rewrite; concrete corollaries unchanged (their pin is a satisfiable witnessing choice) |
+| optiplex anti-spoofing, general | `Optiplex_Antispoof.antispoof_general` (pin is INERT — memberships already hypothesised over `e_set e`) | SUPPORTING (verbatim corollary of the successor) | `antispoof_general_any_env` (no env pin at all) | proof = general proof minus the `?Henv` rewrite; concrete corollaries unchanged (their pin is a satisfiable witnessing choice) |
 | router new-conn cruxes (input/forward/private/hooks) | `Router_Input.world_ingress_locked_down` et al. (`e = gen_env` + `cts_new`) | SUPERSEDED-vacuous (M3-era finding; kept verbatim, headers marked) | `Router_Realistic.*_real` + `*_witnessed` | `Router_Realistic.ctstate_under_genenv_never_new` |
 | workstation-firewall ct theorems (baseline + parser twin + notation demos) | `Example_Ruleset.established_accepted`, `Ruleset_Verified.established_accepted`/`smtp_dropped` et al., `Nft_Demo_Symbolic.demo_*` — the ones pairing the whole-env pin with an established/related/new ct hypothesis | **KNOWN-vacuous as stated, OPEN** (marked at the theorem sites; invalid/non-ct theorems in the same files are satisfiable and unaffected) | none yet — recorded follow-up: re-state over the `ctstate` vmap contents per the recipe | same contradiction shape (`ctstate_under_genenv_never_new`; `fw_env`/`gen_env` pin `e_ct` empty) |
 
@@ -458,7 +375,7 @@ replaced:
 
 | change | ratchet |
 |---|---|
-| rule outcome: 1 verdict + 5 optional slots -> `Syntax.outcome` sum | `Semantics.run_rule_outcome_eq`: for every well-formed product (`Syntax.prod_wf`), `outcome (rule_of_prod rp) = outcome_prod rp` on all env/packets (`outcome_prod` is the pre-sum evaluation, verbatim, over the historical record `Syntax.rule_prod`) |
+| rule outcome: 1 verdict + 5 optional slots -> `Syntax.outcome` sum | the outcome sum is the representation the semantics reads directly; per-rule the evaluated outcome is the fold's terminal value (`rule_step`/`run_rule_step`), pinned against the compiler by `run_rule_step_compile_rule` |
 | typed source matches (`Typed.txmatch`) over the byte IR | the `Lower_Proofs.*_erasure` family (`eq/neq/prefix/wildcard_erasure` for the scalar shapes); byte-faithfulness of the typed encodings: `Nftval.encode_*` vm_compute witnesses + `Typed.prefix_aligned_24`/`prefix_unaligned_20`/`elab_port_22`/`elab_wildcard` |
 | `MMasked` polarity bool -> `cmpop` | the eval clause is `eval_cmp op` (the VM's own comparator); `MFlagsSet` names the positive implicit-bitmask idiom (`(field & X) <> 0`, `CNe`) |
 | `nat_kind`/`nat_family`/dynset-op strings -> `Bytecode.nat_op`/`nat_af`/`dynset_op` | rendering strings exist only at the codec/netlink boundary (extracted/codec.ml, nl_send.ml); `make corpus` (2532/2532) pins the rendered bytes unchanged |
@@ -492,34 +409,29 @@ word array — no register byte can exceed 0xff), so the all-ones/zero bitwise
 at the read's register width is DEFINITIONALLY the identity on the read value
 (`Bytes.data_bitops_fit_octets_id`, `Syntax.do_load_bitops_id`, both in
 `make axioms`).  This is what discharges nft's trivial-binop elision as the
-unconditional default pass `Optimize_Elide.elide_chain_eval` (see §1).
-Restatement note: `Optiplex_Mark.mark_after_set` (an example-file lemma) was
-`length v = 4 -> read-after-set = v`; its successor is the STRONGER
-hypothesis-free form `read-after-set = fit 4 (octets v)` — the old statement
-is false for an out-of-range byte the clamp now normalises, and every concrete
-use computes identically.
+unconditional default pass `Optimize_Linearize_MutSt.elide_chain_flat` (see §1).
+Restatement note: `Optiplex_Mark.mark_after_set` (an example-file lemma) is the
+hypothesis-free `read-after-set = fit 4 (octets v)` — the clamp normalises an
+out-of-range byte and every concrete use computes identically.
 
-Statement changes shipped with W1 (all non-headline; every headline theorem
+Width lemmas shipped with W1 (all non-headline; every headline theorem
 in §1/§4 survives verbatim):
 
-- `Syntax.meta_load_len` / `ct_load_len` (conditional on the old partial
-  `meta_fixed_len`/`ct_fixed_len` option tables) are RETIRED with their
-  tables; successors are the UNCONDITIONAL `meta_load_length` /
-  `ct_load_length` / `read_meta_length` (strictly stronger: the old lemmas
-  are the successor instantiated at the keys the old table pinned).
+- `Syntax.meta_load_length` / `ct_load_length` / `read_meta_length` are the
+  UNCONDITIONAL width lemmas (total, no option table) — the read length is
+  always the kernel register width.
 - `Regression/Limit_Over.v` `mtu_packet_overspends_small_quota` /
-  `bytemode_length_is_live`: the `pkt_meta _ MKlen = …` hypotheses now pin
+  `bytemode_length_is_live`: the `pkt_meta _ MKlen = …` hypotheses pin
   the FULL 4-byte u32 register (`[0;0;5;220]` for 1500 etc.) — the
-  kernel-possible oracle value (`skb->len` is a u32; a 1-/2-byte `meta len`
-  was a model artifact).  `quota_consumes_packet_len`'s conclusion reads
+  kernel-possible oracle value (`skb->len` is a u32).
+  `quota_consumes_packet_len`'s conclusion reads
   `read_meta p MKlen` (the normalised read the quota semantics consumes).
-- `Semantics/TypedEval.v` `tev_stuck_undecodable` is RETIRED (its premise —
-  an absent/undecodable ct zone register — is no longer a representable
-  state: every conntrack entry has a zone, default id 0); successor
-  `tev_ctzone_always_decodes` pins the read now EVALUATING (`Some false` on
-  the default zone).
+- `Semantics/TypedEval.v` `tev_ctzone_always_decodes` pins the ct zone read
+  EVALUATING (`Some false` on the default zone): every conntrack entry has a
+  zone (default id 0), so an "absent/undecodable ct zone" is not a
+  representable state.
 - `Optimize_Concat.concat_merge_pair` (and the K-field recogniser via
-  `no_guard_fields`) now excludes the frontend's implicit-guard meta keys
+  `no_guard_fields`) excludes the frontend's implicit-guard meta keys
   (`concat_guard_field`: l4proto, nfproto, iiftype, oiftype, protocol) from
   concat tuples: with every meta key fixed-width, the recognisers would
   otherwise absorb a hoistable guard into the tuple, diverging from `nft -o`
@@ -576,21 +488,20 @@ survive verbatim — the W4 additions are new definitions and gated pins):
   (src/evaluate.c `stmt_reject_gen_dependency` — "Otherwise we'd log things
   that won't be rejected"); every match-synthesised dependency keeps its
   in-place `ensure_dep` position.  The placement is OBSERVABLE for stateful
-  bodies (the audit's earlier "pure placement, packet-equal" claim was wrong
-  and is corrected in the report and DEVELOPMENT.md class E):
+  bodies:
   `Regression/Reject_GuardFirst.v` pins guard-before-effects on BOTH
   evaluators — `udp_guard_breaks_before_mark_write` /
   `tcp_mark_written_and_rejected` (DSL `rule_step`) and their `vm_*`
   twins over `Compile.compile_rule` (VM `run_rule_step`), plus
-  `guard_last_leaks_the_write`, the counterfactual that the PRE-FIX
-  guard-last body runs the write on the same non-TCP packet (all five in
+  `guard_last_leaks_the_write`, the counterfactual that a guard-last body runs
+  the write on the same non-TCP packet (all five in
   `make axioms`; the counter placement itself is pinned structurally by
   `counter_guard_first` — `SCounter`/`ICounter` are verdict-neutral and
   stateless in the model.  Since the M2 in-fold limiter fix the bucket CAN
   witness ordering: `Limit_SharedBucket.limit_before_failing_match_consumed`
   vs `Known_Infidelities.gate_limit_undrained`).
 - **Class R (bare-reject family concretization).**  `Lower.reject_type_code`
-  now takes the rule's pinned network family, computed by
+  takes the rule's pinned network family, computed by
   `Lower.deps_pinned_nfproto` from the per-rule guard/dedup set (`meta
   nfproto` value, or an IPv4/IPv6 ethertype under any of the `layer_class`
   spellings — `meta protocol`, `ether type`, in-frame `payload @

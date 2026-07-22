@@ -1184,7 +1184,7 @@ Qed.
 (** ---- "straight-line" instruction lists: no meta/ct write, no break, no
     terminal.  [run_rule_step] threads through such a prefix to the tail — this
     discharges EVERY non-meta/ct statement (mangle/dup/counter/log/dynset/exthdr/
-    objref/ctsetdir), so the mutation theorem no longer has to exclude them. ---- *)
+    objref/ctsetdir), so the mutation theorem need not exclude them. ---- *)
 Definition straight_instr (i : instr) : bool :=
   match i with
   | ICmp _ _ _ | IRange _ _ _ _ | ILookup _ _ _ | ILookupValBr _ _ _ | IVmap _ _

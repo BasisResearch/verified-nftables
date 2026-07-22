@@ -79,17 +79,16 @@
     equations restating the historical recursion verbatim, and the flat
     [_flat_verdict]/[_flat_env] forms are projections BY DEFINITION of the one
     full-state fold per side ([eval_rules_flat]/[run_program_flat]).
-    Fuel adequacy is stated at the unified semantics too
-    ([eval_rules_fuel_indep]), not only at the pure projection. *)
+    Fuel adequacy is stated at the full stateful fold
+    ([eval_rules_fuel_indep]), not only at its flat write-free projection. *)
 
 From Stdlib Require Import String List NArith ZArith Bool Lia.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode.
 Import ListNotations.
 (* [String] is imported FIRST so that [List] (imported after it) re-shadows the
    names they share ([concat]/[length]) — the body below always means the List
-   ones.  The import exists only for the ["…"%string] literals of the fuel-probe
-   counterexample ([eval_rules_j_not_naively_monotone]); everything else uses
-   the qualified [String.string] / [String.eqb]. *)
+   ones.  Strings are otherwise referred to via the qualified
+   [String.string] / [String.eqb]. *)
 
 (** ** Declarative semantics. *)
 
@@ -2482,8 +2481,8 @@ Fixpoint body_step (body : list body_item) (e : env) (p : packet) : body_res :=
     fall-through — with the SAME threading discipline as body statements: a
     mutating statement's write is applied to the running state (and kept by the
     rule's step), an operand whose load BREAKs abandons the rule, a SYN-proxy
-    stop is terminal Drop.  This is what retires the old "no mutating statement
-    in [r_after]" domain hypothesis: the fold simply runs them. *)
+    stop is terminal Drop.  So [r_after] carries no "no mutating statement"
+    domain restriction: the fold simply runs them. *)
 Fixpoint after_step (ss : list stmt) (e : env) (p : packet)
   : option verdict * (env * packet) :=
   match ss with
@@ -2633,7 +2632,7 @@ Definition dsl_writes (r : rule) (e : env) (p : packet) : env * packet :=
 Definition dsl_step (r : rule) (e : env) (p : packet) : env * packet :=
   snd (rule_step r e p).
 
-(** ** Projections and mut-free coincidence with the pure strand. *)
+(** ** Projections and the write-free (mut-free) coincidence. *)
 
 (** [after_step] over a mut-free statement list is exactly the historical
     [stmts_after_outcome] verdict, with the state unchanged. *)
@@ -2659,9 +2658,9 @@ Qed.
 Definition body_item_mutfree (it : body_item) : bool :=
   match it with BStmt s => negb (is_mut_stmt s) | BMatch m => match_consumefree m end.
 (** A NAT terminal WRITES state (the packet rewrite + the flow-keyed [e_nat]
-    store), so a rule that carries one is NOT mut-free — the pure strand's
-    loadability-guarded Accept is only the projection of the fold on rules
-    without it.  tproxy/fwd/queue terminals remain state-free. *)
+    store), so a rule that carries one is NOT mut-free — the
+    loadability-guarded Accept reading is only the projection of the fold on
+    rules without it.  tproxy/fwd/queue terminals remain state-free. *)
 Definition rule_natfree (r : rule) : bool :=
   match r_nat r with None => true | Some _ => false end.
 Definition rule_mutfree (r : rule) : bool :=
@@ -3125,7 +3124,7 @@ Fixpoint seq_eval_env (ev : env -> packet -> verdict * env)
     NFT_JUMP_STACK_SIZE, include/net/netfilter/nf_tables.h), so the
     interpreters are *fuel-bounded*; the compile-correctness theorem holds for
     every fuel.  Fuel EXHAUSTION, however, is observationally conflated with
-    fall-through ([None]) — see § "Fuel discipline for the jump strand" below
+    fall-through ([None]) — see § "Fuel discipline" below
     for the monotonicity/adequacy lemmas that make a chosen fuel budget a
     checkable hypothesis instead of an unstated side condition. *)
 
@@ -3362,8 +3361,8 @@ Definition chain_out_env (c : chain) (e : env) (p : packet) : env :=
     chains: a base chain that lets the packet proceed hands the NEXT base chain
     the packet (and env) it left — a mark set in an earlier-priority chain is
     visible to a later one, as the kernel carries it on the skb. *)
-(** NON-RECURSIVE (M6): like the pure dispatch, a [fold_left] with a
-    "settled" accumulator -- but carrying the (env, packet) state so each base
+(** NON-RECURSIVE (M6): a [fold_left] with a
+    "settled" accumulator carrying the (env, packet) state so each base
     chain starts from the state the previous one left, and a settling verdict
     freezes the state it settled at.  The ONE recursive traversal stays
     [eval_rules]/[run_rules]; the dispatch layers above them are folds of
@@ -3542,8 +3541,8 @@ Qed.
     map ([rule_step_vmap]: [e_vmap] is invariant under the fold — dynset
     writes named SETS and value MAPS, not verdict maps), the hypothesis is
     checkable once at the ENTRY env and transports itself along the run; this
-    is the step-threaded faithful-domain predicate the mutation strand
-    previously could not state. *)
+    is the step-threaded faithful-domain predicate this projection is stated
+    over. *)
 
 Definition verdict_plain (v : verdict) : bool :=
   match v with Jump _ | Goto _ | Return => false | _ => true end.
@@ -3873,11 +3872,11 @@ Qed.
 
 
 (* ================================================================== *)
-(** ** Fuel discipline for the UNIFIED evaluator: the exhaustion observation
-    lives at the one semantics (M6).
+(** ** Fuel discipline: the exhaustion observation lives at the one
+    semantics (M6).
 
-    The pure strand's rank-descent fuel-independence (§ "Fuel discipline for
-    the jump strand") covers only the write-free projection; stating adequacy
+    The rank-descent fuel-independence of the write-free projection covers
+    only that projection; stating adequacy
     ONLY there would carve effectful configs out of the fuel story.  The same
     induction goes through at [eval_rules] itself: the state a traversal
     accumulates never touches the verdict maps ([rule_step_vmap] /
@@ -3986,8 +3985,8 @@ Proof.
     apply (IH (rank n) (c_rules ch) e' p' f' Hvm' Hch); [ nia | lia ].
 Qed.
 
-(** HEADLINE (fuel axis, unified): above the same computable bound as the
-    pure strand's, the UNIFIED evaluator's whole result -- verdict AND state
+(** HEADLINE (fuel axis): above a computable bound the evaluator's
+    whole result -- verdict AND state
     -- is fuel-independent.  Effectful configs are inside the adequacy story,
     not carved out of it. *)
 Theorem eval_rules_fuel_indep : forall rank cs e,
