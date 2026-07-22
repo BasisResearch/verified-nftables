@@ -1,9 +1,10 @@
 (* Executable witness of the correctness theorems.
 
-   compile_chain_correct proves, in Rocq, that for every chain c and packet p
-       run_chain (compile_chain c) (c_policy c) p = eval_chain c p
-   i.e. the compiled bytecode filters every packet exactly as the DSL says, and
-   optimize_chain_correct proves eval_chain (optimize_chain c) p = eval_chain c p.
+   compile_chain_mut_correct proves, in Rocq, that for every chain c and packet p
+       run_chain_mut h (compile_chain c) (c_policy c) p = eval_chain_mut h c p
+   i.e. the compiled bytecode filters every packet exactly as the DSL's
+   effect-threading fold says, and optimize_chain_correct proves the optimizer
+   preserves that fold.
 
    This runs the *extracted* DSL semantics, the *extracted* bytecode VM, and the
    *extracted* compiler/optimizer on a battery of concrete packets and checks both
@@ -80,6 +81,9 @@ let string_of_verdict = function
   | Verdict.Continue -> "continue" | Verdict.Reject _ -> "reject"
   | Verdict.Queue _ -> "queue"
 
+(* the netfilter hook every effect-threading evaluator carries *)
+let hk = Semantics.Hprerouting
+
 (* run one chain over a battery of packets, checking DSL == VM == optimized at
    every packet; returns the number of mismatches. *)
 let run_battery (fails : int ref) (title : string) (c : Syntax.chain) pkts =
@@ -89,10 +93,10 @@ let run_battery (fails : int ref) (title : string) (c : Syntax.chain) pkts =
   let pol   = c.Syntax.c_policy in
   Printf.printf "=== %s ===\n" title;
   Stdlib.List.iter (fun (name, (e, p)) ->
-    let dsl  = Semantics.eval_chain c e p in            (* what the DSL says *)
-    let dslo = Semantics.eval_chain copt e p in         (* optimizer preserves it *)
-    let vm   = Semantics.run_chain prog  pol e p in     (* compiled bytecode VM *)
-    let vmo  = Semantics.run_chain progo pol e p in     (* optimized + compiled *)
+    let dsl  = Semantics.eval_chain_mut hk c e p in       (* what the DSL says *)
+    let dslo = Semantics.eval_chain_mut hk copt e p in    (* optimizer preserves it *)
+    let vm   = Semantics.run_chain_mut hk prog  pol e p in (* compiled bytecode VM *)
+    let vmo  = Semantics.run_chain_mut hk progo pol e p in (* optimized + compiled *)
     let ok = dsl = vm && dsl = dslo && dsl = vmo in
     Printf.printf "  %-22s DSL=%-8s VM=%-8s opt=%-8s %s\n"
       name (string_of_verdict dsl) (string_of_verdict vm) (string_of_verdict vmo)
@@ -124,7 +128,7 @@ let () =
   let l4_tcp = meq Syntax.FMetaL4proto [6] in
   (* (1) matches, an optimizable singleton range, an ordered cmp, neq, dead rule *)
   run_battery fails
-    "matches / cmp / range / optimizer (compile_chain_correct + optimize_chain_correct)"
+    "matches / cmp / range / optimizer (compile_chain_mut_correct + optimize_chain_correct)"
     (chain Verdict.Drop [
        rule [ l4_tcp; meq Syntax.FThDport [0; 22] ] Verdict.Accept;
        rule [ l4_tcp; mrange Syntax.FThDport [0; 80] [0; 80] ] Verdict.Accept;
@@ -165,7 +169,7 @@ let () =
       "tcp dport 80 (in set)",  mk_pkt ~env:set_env ~th:(th ~dport:[0; 80]) ();
       "tcp dport 443 (not in)", mk_pkt ~env:set_env ~th:(th ~dport:[1; 187]) ();
       "tcp dport 22 but EMPTY set (drop)", mk_pkt ~th:(th ~dport:[0; 22]) () ];
-  (* (3c) sets/maps as DECLARED OBJECTS (compile_chain_sets_correct): the set
+  (* (3c) sets/maps as DECLARED OBJECTS (declared set objects): the set
      "set" is a table declaration with concrete elements; `lookup @set` reads
      exactly the DECLARED elements (e_set_declared).  Declaring {22,80} accepts
      dport 22; re-declaring the SAME-named set as {443} drops it — the verdict
@@ -191,13 +195,13 @@ let () =
       "dport 8080 (mid, in)",       mk_pkt ~env:iv_env ~th:(th ~dport:[31; 144]) ();
       "dport 80 (below range, out)", mk_pkt ~env:iv_env ~th:(th ~dport:[0; 80]) () ];
   (* (4) control flow: a base chain that JUMPs to a user chain "tcp_in" — tests
-     compile_table_correct (jump -> callee accept, or fall-through -> resume base
+     compile_table_u_correct (jump -> callee accept, or fall-through -> resume base
      -> policy drop). The single-base-chain corpus cannot exercise this. *)
   (* Traversal budget.  1000 is far above [Semantics.sufficient_fuel] for every
      chain environment exercised here (each is a handful of chains of a handful
      of rules; the bound is S (|rs| + |cs| * S (max chain len)) — tens, not
      hundreds).  Above that bound the verdict is provably fuel-independent
-     (Semantics.eval_table_fuel_indep / Correct.run_table_fuel_indep_compiled),
+     (Semantics.eval_table_u_fuel_indep),
      so this constant is a comfortable over-approximation, not a tuned knob;
      see proof/CONFIG_PROOFS.md § "Choosing the fuel budget". *)
   let fuel = 1000 in
@@ -205,10 +209,10 @@ let () =
   let base   = chain Verdict.Drop     [ rule [ l4_tcp ] (Verdict.Jump "tcp_in") ] in
   let cenv   = [ ("tcp_in", tcp_in) ] in
   let cprog  = Compile.compile_env cenv and bprog = Compile.compile_chain base in
-  Printf.printf "=== base chain `jump tcp_in` then policy (compile_table_correct) ===\n";
+  Printf.printf "=== base chain `jump tcp_in` then policy (compile_table_u_correct) ===\n";
   Stdlib.List.iter (fun (name, (e, p)) ->
-    let dsl = Semantics.eval_table fuel cenv base e p in
-    let vm  = Semantics.run_table  fuel cprog bprog base.Syntax.c_policy e p in
+    let dsl = fst (Semantics.eval_table_u hk fuel cenv base e p) in
+    let vm  = fst (Semantics.run_table_u  hk fuel cprog bprog base.Syntax.c_policy e p) in
     let ok = dsl = vm in
     Printf.printf "  %-32s DSL=%-8s VM=%-8s %s\n"
       name (string_of_verdict dsl) (string_of_verdict vm) (if ok then "ok" else "MISMATCH");
@@ -217,7 +221,7 @@ let () =
       "tcp dport 80 (jump->fallthru->drop)", mk_pkt ~th:(th ~dport:[0; 80]) ();
       "udp (rule skipped -> policy drop)",   mk_pkt ~l4proto:[17] ~th:(th ~dport:[0; 22]) () ];
   Printf.printf "\n";
-  (* (4b) MULTI-TABLE dispatch (compile_ruleset_correct): two base chains at a
+  (* (4b) MULTI-TABLE dispatch (compile_ruleset_u_correct): two base chains at a
      hook run in order with netfilter verdict combination — base1 (policy accept)
      lets the packet continue; base2 drops tcp dport 22.  So a dport-22 packet is
      DROPPED (by base2) while a dport-80 packet is ACCEPTED (both fall through).
@@ -227,10 +231,10 @@ let () =
   let bases = [ ([], base1); ([], base2) ] in
   let cbases = Stdlib.List.map
       (fun (cs, b) -> (Compile.compile_env cs, (Compile.compile_chain b, b.Syntax.c_policy))) bases in
-  Printf.printf "=== two base chains at a hook (compile_ruleset_correct, netfilter combine) ===\n";
+  Printf.printf "=== two base chains at a hook (compile_ruleset_u_correct, netfilter combine) ===\n";
   Stdlib.List.iter (fun (name, (e, p)) ->
-    let dsl = Semantics.eval_ruleset fuel bases e p in
-    let vm  = Semantics.run_ruleset  fuel cbases e p in
+    let dsl = fst (Semantics.eval_ruleset_u hk fuel bases e p) in
+    let vm  = fst (Semantics.run_ruleset_u  hk fuel cbases e p) in
     let ok = dsl = vm in
     Printf.printf "  %-32s DSL=%-8s VM=%-8s %s\n"
       name (string_of_verdict dsl) (string_of_verdict vm) (if ok then "ok" else "MISMATCH");
@@ -275,7 +279,6 @@ let () =
     { Packet.ls_rate = 1; ls_unit = 0; ls_burst = 2; ls_bytes = false; ls_flags = 0 } in
   let lim_chain = chain Verdict.Drop [ rule [ l4_tcp; Syntax.MLimit lim_spec ] Verdict.Accept ] in
   let lim_prog = Compile.compile_chain lim_chain in
-  let hk = Semantics.Hprerouting in
   let ev_dsl e p =
     let (v, (e', _)) = Semantics.eval_table_u hk 10 [] lim_chain e p in (v, e') in
   let ev_vm e p =
@@ -295,11 +298,9 @@ let () =
      else "WRONG SEQUENCE (no cross-packet depletion observed)");
   if dsl_seq <> vm_seq || dsl_seq <> expected then incr fails;
   (* (5) Phase B: in-traversal mutation.  Rule 1 sets meta mark; rule 2 matches
-     it.  Under the mutation-aware semantics (eval/run_chain_mut) the second rule
-     observes the write and the packet is ACCEPTED; the old verdict-only eval_chain
-     no-ops the set so it reads the original mark and falls through to DROP.  The
-     witness shows (a) the compiler preserves the mutated verdict (DSL_mut = VM_mut)
-     and (b) mutation actually changes the result (mut != no-mut). *)
+     it.  Under the effect-threading semantics (eval/run_chain_mut) the second rule
+     observes the write and the packet is ACCEPTED.  The witness shows the compiler
+     preserves the mutated verdict (DSL_mut = VM_mut). *)
   Printf.printf "=== counter; meta mark set 0x1; log ; meta mark 0x1 accept (mutation, mixed stmts) ===\n";
   (* the first rule MIXES non-set statements (counter, log) with the meta-set —
      the single-fold mutation theorems cover it with no shape hypothesis. *)
@@ -313,14 +314,11 @@ let () =
   Stdlib.List.iter (fun (name, (e, p)) ->
     let dsl_mut   = Semantics.eval_chain_mut Semantics.Hprerouting mut_chain e p in
     let vm_mut    = Semantics.run_chain_mut Semantics.Hprerouting mprog mut_chain.Syntax.c_policy e p in
-    let dsl_nomut = Semantics.eval_chain mut_chain e p in
     let ok = dsl_mut = vm_mut in
-    Printf.printf "  %-22s mut: DSL=%-7s VM=%-7s | verdict-only DSL=%-7s %s\n"
-      name (string_of_verdict dsl_mut) (string_of_verdict vm_mut) (string_of_verdict dsl_nomut)
+    Printf.printf "  %-22s mut: DSL=%-7s VM=%-7s %s\n"
+      name (string_of_verdict dsl_mut) (string_of_verdict vm_mut)
       (if ok then "ok" else "MISMATCH");
-    if not ok then incr fails;
-    if dsl_mut = dsl_nomut then
-      (Printf.printf "    (warning: mutation made no difference for this packet)\n"))
+    if not ok then incr fails)
     [ "mark initially unset", mk_pkt () ];
   Printf.printf "\n";
   (* (5b) dynset feedback loop: the dynamic-SET mutation a `dynset` performs.
@@ -342,14 +340,11 @@ let () =
   Stdlib.List.iter (fun (name, (e, p)) ->
     let dsl_mut   = Semantics.eval_chain_mut Semantics.Hprerouting dyn_chain e p in
     let vm_mut    = Semantics.run_chain_mut Semantics.Hprerouting dprog dyn_chain.Syntax.c_policy e p in
-    let dsl_nomut = Semantics.eval_chain dyn_chain e p in
     let ok = dsl_mut = vm_mut in
-    Printf.printf "  %-26s mut: DSL=%-7s VM=%-7s | verdict-only DSL=%-7s %s\n"
-      name (string_of_verdict dsl_mut) (string_of_verdict vm_mut) (string_of_verdict dsl_nomut)
+    Printf.printf "  %-26s mut: DSL=%-7s VM=%-7s %s\n"
+      name (string_of_verdict dsl_mut) (string_of_verdict vm_mut)
       (if ok then "ok" else "MISMATCH");
-    if not ok then incr fails;
-    if dsl_mut = dsl_nomut then
-      Printf.printf "    (warning: dynset feedback made no difference for this packet)\n")
+    if not ok then incr fails)
     [ "saddr 10.0.0.1 learned", mk_pkt ~nh:(nh ~saddr:[10;0;0;1] ~daddr:[8;8;8;8]) () ];
   Printf.printf "\n";
   (* (5c) MAP dynset feedback: `add @m {ip saddr : tcp dport}` learns a key->value
@@ -365,14 +360,11 @@ let () =
   Stdlib.List.iter (fun (name, (e, p)) ->
     let dsl_mut   = Semantics.eval_chain_mut Semantics.Hprerouting mapdyn_chain e p in
     let vm_mut    = Semantics.run_chain_mut Semantics.Hprerouting mdprog mapdyn_chain.Syntax.c_policy e p in
-    let dsl_nomut = Semantics.eval_chain mapdyn_chain e p in
     let ok = dsl_mut = vm_mut in
-    Printf.printf "  %-26s mut: DSL=%-7s VM=%-7s | verdict-only DSL=%-7s %s\n"
-      name (string_of_verdict dsl_mut) (string_of_verdict vm_mut) (string_of_verdict dsl_nomut)
+    Printf.printf "  %-26s mut: DSL=%-7s VM=%-7s %s\n"
+      name (string_of_verdict dsl_mut) (string_of_verdict vm_mut)
       (if ok then "ok" else "MISMATCH");
-    if not ok then incr fails;
-    if dsl_mut = dsl_nomut then
-      Printf.printf "    (warning: map-dynset feedback made no difference for this packet)\n")
+    if not ok then incr fails)
     [ "saddr->dport learned in @m", mk_pkt ~nh:(nh ~saddr:[10;0;0;1] ~daddr:[8;8;8;8]) ~th:(th ~dport:[0;22]) () ];
   Printf.printf "\n";
   (* (5d) CROSS-PACKET persistence (compile_seq_mut_correct): a learning set that
@@ -426,8 +418,8 @@ let () =
   ] in
   Stdlib.List.iter (fun (_name, proto) ->
     let (e, p) = mk_pkt ~l4proto:[proto] () in
-    let a = Semantics.eval_chain two_rule e p in
-    let b = Semantics.eval_chain merged  e p in
+    let a = Semantics.eval_chain_mut hk two_rule e p in
+    let b = Semantics.eval_chain_mut hk merged  e p in
     let ok = a = b in
     Printf.printf "  proto=%-3d  two-rule=%-7s merged=%-7s %s\n"
       proto (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
@@ -459,8 +451,8 @@ let () =
     (if len_after < len_before then "shrunk: duplicate removed" else "NOT shrunk");
   if not (len_after < len_before) then incr fails;
   Stdlib.List.iter (fun (name, (e, p)) ->
-    let a = Semantics.eval_chain dup_chain e p in
-    let b = Semantics.eval_chain dup_opt  e p in
+    let a = Semantics.eval_chain_mut hk dup_chain e p in
+    let b = Semantics.eval_chain_mut hk dup_opt  e p in
     let ok = a = b in
     Printf.printf "  %-22s orig=%-7s opt2=%-7s %s\n"
       name (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
@@ -481,7 +473,7 @@ let () =
          => OUTPUT  `tcp dport { 22, 80, 443 } accept`  (one anonymous-set rule).
 
      The witness shows it FIRES (3 rules -> 1, the N-element set is synthesised)
-     and that `eval_chain` of the rewritten rule UNDER the synthesised set agrees
+     and that `eval_chain_mut` of the rewritten rule UNDER the synthesised set agrees
      with the original on every packet. *)
   Printf.printf "=== (6c) nft -o value->SET: tcp dport {22,80,443} (anonymous set, the headline pass) ===\n";
   (* This now runs the ACTUAL extracted VERIFIED term — the composed optimizer
@@ -532,8 +524,8 @@ let () =
   Stdlib.List.iter (fun (name, dport) ->
     let (e_in, p_in)  = mk_pkt ~th:(th ~dport) () in
     let (e_o, p_o) = mk_pkt ~env:env_out ~th:(th ~dport) () in
-    let a = Semantics.eval_chain c_in  e_in p_in in
-    let b = Semantics.eval_chain c_out e_o p_o in
+    let a = Semantics.eval_chain_mut hk c_in  e_in p_in in
+    let b = Semantics.eval_chain_mut hk c_out e_o p_o in
     let ok = a = b in
     Printf.printf "  %-26s three-rule=%-7s set-merged=%-7s %s\n"
       name (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
@@ -556,7 +548,7 @@ let () =
        => OUTPUT `ip saddr . ip daddr . ip protocol { 1.2.6 , 3.4.17 } accept`.
 
      Witness: it FIRES (2 rules -> 1, a 2-element 3-field concat set is synthesised)
-     AND `eval_chain` of the rewritten rule UNDER the synthesised set agrees with the
+     AND `eval_chain_mut` of the rewritten rule UNDER the synthesised set agrees with the
      original on every packet.  (All three fields are fixed-width PAYLOAD fields, as
      the merge gate `field_fixed_len = Some` requires.) *)
   Printf.printf "=== (6c-N) nft -o N-field CONCAT: ip saddr . ip daddr . ip protocol ===\n";
@@ -590,8 +582,8 @@ let () =
   Stdlib.List.iter (fun (name, sa, da, pr) ->
     let (e_in, p_in)  = mk_pkt ~nh:(nh3 ~saddr:sa ~daddr:da ~proto:pr) () in
     let (e_o, p_o) = mk_pkt ~env:envk ~nh:(nh3 ~saddr:sa ~daddr:da ~proto:pr) () in
-    let a = Semantics.eval_chain ck_in  e_in p_in in
-    let b = Semantics.eval_chain ck_out e_o p_o in
+    let a = Semantics.eval_chain_mut hk ck_in  e_in p_in in
+    let b = Semantics.eval_chain_mut hk ck_out e_o p_o in
     let ok = a = b in
     Printf.printf "  %-32s two-rule=%-7s concat-merged=%-7s %s\n"
       name (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
@@ -613,7 +605,7 @@ let () =
          => OUTPUT  `tcp dport vmap { 22 : accept, 80 : drop }`  (vmap __vmap0).
 
      The witness shows it FIRES (2 rules -> 1, a vmap declaration is synthesised)
-     and that `eval_chain` of the rewritten rule UNDER the synthesised vmap agrees
+     and that `eval_chain_mut` of the rewritten rule UNDER the synthesised vmap agrees
      with the two-rule original on every packet (dport 22 -> accept, 80 -> drop,
      miss -> policy). *)
   Printf.printf "=== (6d) nft -o value+verdict->VMAP: tcp dport vmap { 22:accept, 80:drop } ===\n";
@@ -662,8 +654,8 @@ let () =
   Stdlib.List.iter (fun (name, dport) ->
     let (e_in, p_in)  = mk_pkt ~th:(th ~dport) () in
     let (e_o, p_o) = mk_pkt ~env:venv_out ~th:(th ~dport) () in
-    let a = Semantics.eval_chain vc_in  e_in p_in in
-    let b = Semantics.eval_chain vc_out e_o p_o in
+    let a = Semantics.eval_chain_mut hk vc_in  e_in p_in in
+    let b = Semantics.eval_chain_mut hk vc_out e_o p_o in
     let ok = a = b in
     Printf.printf "  %-28s two-rule=%-7s vmap-merged=%-7s %s\n"
       name (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
@@ -689,7 +681,7 @@ let () =
          ip saddr . tcp dport { 1.1.1.1 . 22, 2.2.2.2 . 80 } accept
 
      The witness shows it FIRES (2 rules -> 1, a concat set is synthesised) and that
-     `eval_chain` of the rewritten rule UNDER the synthesised set agrees with the
+     `eval_chain_mut` of the rewritten rule UNDER the synthesised set agrees with the
      two-rule original on the matching tuples and on a miss (-> policy). *)
   Printf.printf "=== (6e) nft -o concat->SET: ip saddr . tcp dport { 1.1.1.1 . 22, 2.2.2.2 . 80 } accept ===\n";
   (* Runs the ACTUAL extracted VERIFIED term [Optimize_Concat.optimize_chain_concat]
@@ -732,8 +724,8 @@ let () =
   Stdlib.List.iter (fun (name, saddr, dport) ->
     let (e_in, p_in)  = mk_pkt ~nh:(nh ~saddr ~daddr:[8;8;8;8]) ~th:(th ~dport) () in
     let (e_o, p_o) = mk_pkt ~env:cenv_out ~nh:(nh ~saddr ~daddr:[8;8;8;8]) ~th:(th ~dport) () in
-    let a = Semantics.eval_chain cc_in  e_in p_in in
-    let b = Semantics.eval_chain cc_out e_o p_o in
+    let a = Semantics.eval_chain_mut hk cc_in  e_in p_in in
+    let b = Semantics.eval_chain_mut hk cc_out e_o p_o in
     let ok = a = b in
     Printf.printf "  %-40s two-rule=%-7s concat-merged=%-7s %s\n"
       name (string_of_verdict a) (string_of_verdict b) (if ok then "ok" else "MISMATCH");
@@ -761,10 +753,10 @@ let () =
      NFT_BREAK; see the Optimize_DataMap.v header).  What this witnesses is a SOUND
      state-preserving data-map consolidation, not nft -o byte-fidelity.
 
-     Unlike 6c-6e (which consolidate the VERDICT, checked against verdict-only
-     [eval_chain]), this folds the differing STATEMENT VALUE (the mark) into a data
-     MAP.  The merge is verdict-neutral, so it is invisible to [eval_chain]; the real
-     content is the META STATE.  We therefore run the extracted STATE-threading
+     Unlike 6c-6e (which consolidate the VERDICT, checked against the verdict of
+     [eval_chain_mut]), this folds the differing STATEMENT VALUE (the mark) into a
+     data MAP.  The merge is verdict-neutral, so it is invisible to the verdict; the
+     real content is the META STATE.  We therefore run the extracted STATE-threading
      semantics [Semantics.dsl_step] and read the resulting [MKmark] — the witness of
      [Optimize_DataMap.dsl_step_map_merge] / the [optimize_table_uncond_correct] chain.
 

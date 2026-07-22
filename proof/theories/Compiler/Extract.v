@@ -126,9 +126,9 @@ Extract Constant N.of_nat =>
         Npos (pos_of_int n))".
 
 (* The control-plane compiler/optimizer and the field table are what the glue
-   needs; we also extract the packet semantics ([eval_chain] and the bytecode VM
-   [run_chain]) so an executable test can witness [compile_chain_correct] on
-   concrete packets (semtest.ml). *)
+   needs; we also extract the effect-threading packet semantics
+   ([eval_chain_mut]) and the bytecode VM ([run_chain_mut]) so an executable test
+   can witness [compile_chain_mut_correct] on concrete packets (semtest.ml). *)
 Separate Extraction
   compile_chain
   RegsValid.regs_valid
@@ -151,11 +151,7 @@ Separate Extraction
   optimize_chain_concat
   field_load
   all_fields
-  eval_chain
-  run_chain
   compile_env
-  eval_table
-  run_table
   eval_chain_mut
   run_chain_mut
   eval_chain_mut_env
@@ -171,11 +167,9 @@ Separate Extraction
   apply_nat
   nat_drops
   seq_eval_env
-  eval_ruleset
-  run_ruleset
   env_with_sets
   rule_numgen_free
-  dsl_step dsl_writes rule_step
+  dsl_step dsl_writes rule_step rule_applies
   Nftval.encode
   Typed.elab_tx
   Lower.lower_match

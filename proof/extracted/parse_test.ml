@@ -78,12 +78,12 @@ let mk_pkt ~env ?ct ?(protocol = []) ?(l4proto = []) ?(nfproto = [])
    plus one skb.  Every evaluator takes them as SEPARATE arguments
    (eval : ... -> env -> packet -> ...); these helpers apply one to a pair. *)
 let ev_mc m (e, p) = Semantics.eval_matchcond m e p
-let ev_chain c (e, p) = Semantics.eval_chain c e p
+let ev_chain c (e, p) = Semantics.eval_chain_mut Semantics.Hprerouting c e p
 let ev_chain_mut c (e, p) = Semantics.eval_chain_mut Semantics.Hprerouting c e p
 let ev_chain_mut_env c (e, p) = Semantics.eval_chain_mut_env Semantics.Hprerouting c e p
 let ev_chain_u h c (e, p) = Semantics.eval_chain_u h c e p
-let ev_table fuel cs c (e, p) = Semantics.eval_table fuel cs c e p
-let run_chain_vm prog pol (e, p) = Semantics.run_chain prog pol e p
+let ev_table fuel cs c (e, p) = fst (Semantics.eval_table_u Semantics.Hprerouting fuel cs c e p)
+let run_chain_vm prog pol (e, p) = Semantics.run_chain_mut Semantics.Hprerouting prog pol e p
 let rule_applies_on r (e, p) = Semantics.rule_applies r e p
 let apply_nat_on h r (e, p) = Semantics.apply_nat h r e p
 let dsl_writes_on r (e, p) = Semantics.dsl_writes r e p

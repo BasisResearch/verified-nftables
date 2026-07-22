@@ -30,7 +30,7 @@ lib: proofs
 example: proofs
 	cd extracted && dune exec ./example.exe
 
-# Build+run the executable witness of compile_chain_correct / optimize_chain_correct:
+# Build+run the executable witness of compile_chain_mut_correct / optimize_chain_correct:
 # run the extracted DSL semantics, bytecode VM, and compiler on concrete packets.
 semtest: proofs
 	cd extracted && dune exec ./semtest.exe
@@ -249,7 +249,7 @@ validate: glue
 #                        (limiter depletion, dynset learning, each under a
 #                        jump + hook dispatch) are pinned in Seq_Hook_Carry
 # Any NEW README-claimed result must be added here in the same commit.
-AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
+AXIOM_GATE_THEOREMS = compile_chain_mut_correct \
   compile_table_u_correct compile_ruleset_u_correct compile_hook_u_correct \
   compile_seq_hook_correct \
   Seq_Hook_Carry.seq_hook_limit_depletes \
@@ -274,8 +274,6 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Semantics.eval_rules_u_mut_proj Semantics.eval_table_u_mut_proj \
   Semantics.eval_rules_u_mut_st_proj Semantics.eval_table_u_mut_st_proj \
   Correct.run_rule_step_compile_rule \
-  Correct.run_table_writefree_compiled Correct.eval_chain_writefree_jumpfree_proj \
-  Correct.eval_chain_writefree_jumpfree_syn_proj \
   Setread_UnderJump.setread_under_jump_accepted \
   Setread_UnderJump.vm_setread_under_jump_accepted \
   Setread_UnderJump.caller_write_visible_in_callee \
@@ -292,8 +290,7 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Known_Infidelities.vm_vmaphit_no_mapping \
   Nat_NoAddr_Drop.mut_agrees_nat_drop Nat_NoAddr_Drop.vm_nat_drop_agrees \
   Router_Reach.nat_masquerade_fires Router_Reach.nat_no_leak \
-  compile_chain_mut_env_correct compile_seq_mut_correct compile_table_correct \
-  compile_ruleset_correct compile_hook_correct \
+  compile_chain_mut_env_correct compile_seq_mut_correct \
   Optimize_Linearize_MutSt.optimize_table_uncond_compile_mut_st_correct \
   Optimize_MutEnv.optimize_table_uncond_mut_st_correct \
   Optimize_MutEnv.optimize_table_uncond_mut_env_correct \
@@ -312,7 +309,6 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Semantics.eval_rules_u_fuel_indep Semantics.eval_table_u_fuel_indep \
   Semantics.eval_table_policy_is_fallthrough \
   Semantics.rule_purewalk_ok \
-  Correct.run_table_fuel_indep_compiled \
   Nft_Tactics.nft_yields_fuel_indep \
   Tutorial_Proofs.tutorial_blocks_exactly_any_fuel \
   Optiplex_Antispoof.antispoof_general_any_env \

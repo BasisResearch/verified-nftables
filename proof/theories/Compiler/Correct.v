@@ -7,21 +7,14 @@
     matrix — is in [proof/THEOREMS.md], with machine-checked entry-point
     restatements in [theories/Compiler/Main.v].
 
-      1. [compile_chain_correct]         — one base chain, pure verdict
-                                           ([eval_chain] = [run_chain]).
-      2. [compile_chain_mut_correct]     — + in-traversal mutation
-                                           (meta/ct set, dynset learning).
-      3. [compile_chain_mut_env_correct] — + the env the chain LEAVES.
-      4. [compile_seq_mut_correct]       — + threading that env across a
+      1. [compile_chain_mut_correct]     — one base chain with in-traversal
+                                           mutation (meta/ct set, dynset
+                                           learning).
+      2. [compile_chain_mut_env_correct] — + the env the chain LEAVES.
+      3. [compile_seq_mut_correct]       — + threading that env across a
                                            packet sequence (HEADLINE,
                                            mutation/sequence axis).
-      5. [compile_table_correct]         — + jump/goto/return over a chain
-                                           environment (fuel-bounded).
-      6. [compile_ruleset_correct] / [compile_hook_correct] — + multi-table /
-                                           hook dispatch (HEADLINE, compiler
-                                           axis: the top of the jump-aware
-                                           strand).
-      8. [compile_table_u_correct] / [compile_ruleset_u_correct] /
+      4. [compile_table_u_correct] / [compile_ruleset_u_correct] /
          [compile_hook_u_correct] / [compile_seq_hook_correct]
                                          — THE UNIFIED SEMANTICS (HEADLINE):
                                            mutation x jump/goto/return x
@@ -30,11 +23,11 @@
                                            one effect-threading evaluator per
                                            side ([eval_rules_u]/[run_rules_u]).
 
-    Strata 1–6 are projections of stratum 8: each earlier evaluator pair is
+    Strata 1–3 are projections of stratum 4: each flat mutation evaluator is
     licensed by a coincidence theorem on the sub-domain where it provably
     agrees with the unified fold (the evaluator matrix in Semantics.v's
     header / THEOREMS.md names every license).  Mutation x jump/goto is
-    JOINTLY verified at stratum 8. *)
+    JOINTLY verified at stratum 4. *)
 
 From Stdlib Require Import List NArith Bool Lia PeanoNat.
 From Nft Require Import Bytes Packet Verdict Syntax Bytecode Semantics Compile.
@@ -646,9 +639,7 @@ Context (h : hook_id).
 
     [run_rule_step] is packet-neutral on any instruction list containing no
     [IMetaSet]/[ICtSet]: a rule that does not set meta/ct mutates nothing, so the
-    mutation-aware run threads the packet unchanged.  Hence on the whole verified
-    fragment without meta/ct set, [run_program_mut h] coincides with [run_program]
-    and the mutation semantics conservatively extends [compile_chain_correct]. *)
+    mutation-aware run threads the packet unchanged. *)
 Definition writes_instr (i : instr) : bool :=
   match i with
   | IMetaSet _ _ | ICtSet _ _ | INotrack
@@ -2748,48 +2739,7 @@ Proof.
     apply run_compile_body_break; exact Hbody.
 Qed.
 
-(** Chain level: the compiled program reproduces the rule-list evaluation. *)
-Lemma run_program_compile_chain : forall rs e p,
-  run_program (map compile_rule rs) e p = eval_rules rs e p.
-Proof.
-  induction rs as [| r rs IH]; intros e p.
-  - reflexivity.
-  - cbn [map]. rewrite ?run_program_cons, ?run_program_nil, ?eval_rules_cons, ?eval_rules_nil. destruct (rule_loadable r e p) eqn:Hrl.
-    + rewrite (run_rule_compile_rule r e p Hrl). cbn [andb].
-      destruct (rule_applies r e p); cbn [terminal].
-      * destruct (outcome r e p) as [v |].
-        -- destruct (terminal v); [reflexivity | apply IH].
-        -- apply IH.
-      * apply IH.
-    + rewrite (run_rule_compile_rule_break r e p Hrl). cbn [andb]. apply IH.
-Qed.
-
-(** ** Stratum 1: single-chain semantic preservation (pure verdict).
-
-    The base stratum: for every base chain and every packet, the compiled
-    bytecode yields exactly the verdict of the declarative [eval_chain].  This
-    is the weakest stratum — no mutation threading, no jump dispatch; the
-    ruleset/hook-level result is [compile_hook_correct] below, and the strata
-    map lives in proof/THEOREMS.md. *)
-Theorem compile_chain_correct : forall c e p,
-  run_chain (compile_chain c) (c_policy c) e p = eval_chain c e p.
-Proof.
-  intros c e p. unfold run_chain, eval_chain, compile_chain.
-  rewrite run_program_compile_chain. reflexivity.
-Qed.
-
-(** Sets/maps as declared objects: evaluating a chain against the environment
-    BUILT FROM a table's set/map declarations ([env_with_sets base d]), the
-    compiled VM agrees with the DSL — and every `lookup @s` reads exactly the
-    elements declared for [s] ([e_set_declared]).  So the membership semantics is
-    tied to the declared set object, not to an inlined copy or a disconnected
-    oracle.  (Corollary of [compile_chain_correct], which holds for every env.) *)
-Corollary compile_chain_sets_correct : forall c base d p,
-  run_chain (compile_chain c) (c_policy c) (env_with_sets base d) p
-  = eval_chain c (env_with_sets base d) p.
-Proof. intros. apply compile_chain_correct. Qed.
-
-(** ** Stratum 2: the compiler preserves the single-fold rule step.
+(** ** Stratum 1 scaffolding: the compiler preserves the single-fold rule step.
 
     The end machinery: the compiled verdict-map / terminal / post-outcome tail
     realises exactly the DSL's [end_step] against whatever state the body walk
@@ -3264,13 +3214,10 @@ Qed.
     the kernel verdict where the flat strand's fall-through does not
     ([unified_strand_jump_drops]). *)
 
-(** ** Stratum 5: multi-chain semantic preservation (jump / goto / return +
-    user chains).
+(** ** Jump-dispatch scaffolding (shared by the unified strand below).
 
-    The compiled jump-aware VM agrees with the DSL interpreter for *every* fuel
-    and *every* chain environment — so the compiler preserves the packet verdict
-    of a whole ruleset, not just one base chain. *)
-
+    On a compiled environment [prog_lookup] is the compiled image of the source
+    [chain_lookup] — the lemma every jump-aware run pivots on. *)
 Lemma prog_lookup_compile_env : forall cs n,
   prog_lookup (compile_env cs) n = option_map compile_chain (chain_lookup cs n).
 Proof.
@@ -3279,126 +3226,15 @@ Proof.
   destruct (String.eqb n m); [reflexivity | apply IH].
 Qed.
 
-Lemma run_eval_rules_j : forall fuel cs rs e p,
-  run_rules_j fuel (compile_env cs) (map compile_rule rs) e p = eval_rules_j fuel cs rs e p.
-Proof.
-  induction fuel as [| fuel IH]; intros cs rs e p; [reflexivity |].
-  destruct rs as [| r rest]; [reflexivity |].
-  rewrite run_rules_j_S, eval_rules_j_S. cbn [map].
-  destruct (rule_loadable r e p) eqn:Hrl.
-  2:{ rewrite (run_rule_compile_rule_break r e p Hrl). cbn [andb]. apply IH. }
-  rewrite (run_rule_compile_rule r e p Hrl). cbn [andb].
-  destruct (rule_applies r e p); [| apply IH].
-  destruct (outcome r e p) as [v |]; [| apply IH].
-  destruct v as [ | | | tt cc | lo hi bb ff | n | n | ]; try reflexivity.
-  - apply IH.                                  (* Continue (dead: outcome maps it to None) *)
-  - (* Jump n: run the callee, then resume the caller on fall-through *)
-    rewrite prog_lookup_compile_env. unfold compile_chain.
-    destruct (chain_lookup cs n) as [ch |]; cbn [option_map].
-    + rewrite IH. destruct (eval_rules_j fuel cs (c_rules ch) e p); [reflexivity | apply IH].
-    + apply IH.
-  - (* Goto n: tail-call the callee, do not resume *)
-    rewrite prog_lookup_compile_env. unfold compile_chain.
-    destruct (chain_lookup cs n) as [ch |]; cbn [option_map]; [apply IH | reflexivity].
-Qed.
-
-Theorem compile_table_correct : forall fuel cs base e p,
-  run_table fuel (compile_env cs) (compile_chain base) (c_policy base) e p
-  = eval_table fuel cs base e p.
-Proof.
-  intros fuel cs base e p. unfold run_table, eval_table, compile_chain.
-  rewrite run_eval_rules_j. reflexivity.
-Qed.
-
-(** VM mirror of the fuel-adequacy result (Semantics.v § "Fuel discipline"):
-    above [sufficient_fuel] the COMPILED table's verdict is fuel-independent
-    too.  No second exhaustion-tracking development is needed on the VM side —
-    [compile_table_correct] holds at EVERY fuel, so the DSL-side
-    [eval_table_fuel_indep] transports.  Scope: this covers every program the
-    compiler emits (the only programs the toolchain installs); a hand-written
-    [run_rules_j] program with no source chain has no jump-graph rank to state
-    adequacy against, and is out of scope by design. *)
-Corollary run_table_fuel_indep_compiled : forall rank cs e,
-  chain_ranked rank cs e ->
-  forall base p fuel fuel',
-    sufficient_fuel cs (c_rules base) <= fuel ->
-    sufficient_fuel cs (c_rules base) <= fuel' ->
-    run_table fuel (compile_env cs) (compile_chain base) (c_policy base) e p
-    = run_table fuel' (compile_env cs) (compile_chain base) (c_policy base) e p.
-Proof.
-  intros rank cs e Hcr base p fuel fuel' Hf Hf'.
-  rewrite !compile_table_correct.
-  eauto using eval_table_fuel_indep.
-Qed.
-
-(** ** Fidelity bridge: where the environment-FREE [eval_chain] is faithful.
-
-    [compile_chain_correct] is a genuine *compiler*-correctness fact — the
-    compiled bytecode [run_chain] reproduces the declarative [eval_chain] for
-    every chain.  But [eval_chain] itself is only a faithful model of netfilter on
-    chains whose realised outcomes carry no [Jump]/[Goto]/[Return] (it has no
-    chain environment, so it can only treat a control-transfer verdict as a benign
-    fall-through).  The theorem below pins down EXACTLY that: on a jump-free rule
-    list the cheap [eval_rules] coincides with the faithful, environment-aware
-    [eval_rules_j] for *every* fuel large enough to traverse it and *every* chain
-    environment [cs].  Combined with [compile_chain_correct] and
-    [compile_table_correct] this gives: for a jump-free base chain the compiled
-    single-chain bytecode equals the faithful [eval_table] — and for a chain that
-    DOES jump, the faithful semantics is [eval_table]/[run_table]
-    ([compile_table_correct]), NOT [eval_chain].  ([eval_table] is mutation-free,
-    like [eval_rules]: neither side of this bridge threads writes.) *)
-Lemma eval_rules_jumpfree_eq_j : forall fuel cs rs e p,
-  List.length rs < fuel ->
-  rules_jumpfree rs e p = true ->
-  eval_rules_j fuel cs rs e p = eval_rules rs e p.
-Proof.
-  induction fuel as [| fuel IH]; intros cs rs e p Hlen Hjf; [inversion Hlen|].
-  destruct rs as [| r rest]; [reflexivity|].
-  cbn [List.length] in Hlen. apply Nat.succ_lt_mono in Hlen.
-  cbn [rules_jumpfree forallb] in Hjf. apply Bool.andb_true_iff in Hjf.
-  destruct Hjf as [Hr Hrest].
-  rewrite eval_rules_j_S, eval_rules_cons.
-  destruct (rule_loadable r e p && rule_applies r e p); [| apply IH; assumption].
-  unfold outcome_jumpfree in Hr.
-  destruct (outcome r e p) as [v |]; [| apply IH; assumption].
-  destruct v; cbn [terminal]; try reflexivity; try discriminate;
-    apply IH; assumption.
-Qed.
-
-(** On a jump-free chain the environment-free [eval_chain] equals the faithful
-    [eval_table] (for any fuel that can traverse it and any environment). *)
-Theorem eval_chain_eq_table_jumpfree : forall fuel cs c e p,
-  List.length (c_rules c) < fuel ->
-  chain_jumpfree c e p = true ->
-  eval_chain c e p = eval_table fuel cs c e p.
-Proof.
-  intros fuel cs c e p Hlen Hjf. unfold eval_chain, eval_table, chain_jumpfree in *.
-  rewrite (eval_rules_jumpfree_eq_j fuel cs (c_rules c) e p Hlen Hjf). reflexivity.
-Qed.
-
-(** Hence on a jump-free base chain the COMPILED single-chain bytecode reproduces
-    the faithful environment-aware [eval_table] — the single-chain compiler result
-    and the faithful semantics line up exactly on [eval_chain]'s valid domain.
-    (Corollary of [compile_chain_correct] + [eval_chain_eq_table_jumpfree].) *)
-Corollary compile_chain_faithful_jumpfree : forall fuel cs c e p,
-  List.length (c_rules c) < fuel ->
-  chain_jumpfree c e p = true ->
-  run_chain (compile_chain c) (c_policy c) e p = eval_table fuel cs c e p.
-Proof.
-  intros fuel cs c e p Hlen Hjf.
-  rewrite compile_chain_correct.
-  apply eval_chain_eq_table_jumpfree; assumption.
-Qed.
-
 (** ** Regression pins (DEMO): the faithful semantics does NOT ignore a jump.
 
     A base chain whose only rule is [jump "deny"], with ["deny"] a chain that
     DROPs, must DROP — netfilter runs the target chain (nf_tables_core.c JUMP/GOTO
-    dispatch).  The environment-free [eval_chain] would (consistently with the
-    compiled bytecode) IGNORE the jump and return the base policy [Accept]; this
-    is exactly why [eval_chain] is restricted to its jump-free domain above and the
-    faithful semantics for jump-bearing chains is [eval_table].  Locked in here so
-    the jump-ignoring behaviour can never silently become the certified meaning. *)
+    dispatch).  The flat mutation strand treats a realised [Jump] as a benign
+    fall-through and returns the base policy [Accept], so a jump-bearing chain is
+    OUTSIDE its licensed projection domain and must be evaluated by the unified
+    [eval_table_u h]/[run_table_u h] — pinned here so the jump-ignoring behaviour
+    can never silently become the certified meaning. *)
 From Stdlib Require Import String.
 Local Open Scope string_scope.
 Definition rg_jump_rule : rule :=
@@ -3411,41 +3247,24 @@ Definition rg_base : chain := {| c_policy := Accept; c_rules := [rg_jump_rule] |
 Definition rg_deny : chain := {| c_policy := Accept; c_rules := [rg_drop_rule] |}.
 Definition rg_cs : list (String.string * chain) := [("deny", rg_deny)].
 
-(** (A) the faithful interpreter runs the target chain and DROPs (matches nft). *)
-Example faithful_table_jump_drops : forall e p, eval_table 10 rg_cs rg_base e p = Drop.
-Proof. reflexivity. Qed.
-
-(** (B) and the compiled jump-aware VM agrees (via [compile_table_correct]). *)
-Example compiled_table_jump_drops : forall e p,
-  run_table 10 (compile_env rg_cs) (compile_chain rg_base) (c_policy rg_base) e p = Drop.
-Proof. intros e p. rewrite compile_table_correct. apply faithful_table_jump_drops. Qed.
-
-(** (C) the base chain's only rule is NOT jump-free, so it is correctly OUTSIDE
-    the domain of [eval_chain_eq_table_jumpfree] — i.e. the bridge does not (and
-    cannot) certify the unfaithful [eval_chain] result on it. *)
-Example rg_base_not_jumpfree : forall e p, chain_jumpfree rg_base e p = false.
-Proof. reflexivity. Qed.
-
-(** (D) the MUTATION-strand analogue of (C) — the pin referenced by the
-    "why no jump-freedom hypothesis" note on the mutation strata above.  The
-    same jump-bearing chain SATISFIES [rule_numgen_free] (so every mutation theorem
-    instantiates on it), yet [eval_chain_mut h] treats the realised [Jump] as a
-    fall-through and returns the base policy [Accept] — while the kernel (and
-    the unified evaluator, (F) below) DROPS.  Locked in so the flat strand's
-    jump-as-fall-through can never silently be read as certified-faithful:
-    a jump-bearing chain must be evaluated by the unified
+(** (A) the flat mutation strand treats the realised [Jump] as a fall-through:
+    the jump-bearing chain SATISFIES [rule_numgen_free] (so every mutation theorem
+    instantiates on it), yet [eval_chain_mut h] returns the base policy [Accept] —
+    while the kernel (and the unified evaluator, (C) below) DROPS.  Locked in so
+    the flat strand's jump-as-fall-through can never silently be read as
+    certified-faithful: a jump-bearing chain must be evaluated by the unified
     [eval_table_u h]/[run_table_u h]. *)
 Example mut_strand_jump_pin : forall e p,
   forallb rule_numgen_free (c_rules rg_base) = true /\ eval_chain_mut h rg_base e p = Accept.
 Proof. intros e p. split; reflexivity. Qed.
 
-(** (E) …and the license correctly EXCLUDES it: the jump rule fails
+(** (B) …and the license correctly EXCLUDES it: the jump rule fails
     [rule_plain], so [Semantics.eval_table_u_mut_proj] does not certify the
     flat result on this chain. *)
 Example rg_jump_not_plain : forall e, rule_plain e rg_jump_rule = false.
 Proof. intros e. reflexivity. Qed.
 
-(** (F) the UNIFIED evaluator runs the target chain and DROPS — kernel
+(** (C) the UNIFIED evaluator runs the target chain and DROPS — kernel
     behaviour, with the state threaded (here: unchanged, the probe rules are
     write-free). *)
 Example unified_strand_jump_drops : forall e p,
@@ -3453,37 +3272,14 @@ Example unified_strand_jump_drops : forall e p,
 Proof. intros e p. reflexivity. Qed.
 Local Close Scope string_scope.
 
-(** ** Stratum 6 (HEADLINE, compiler axis): multi-table / multi-hook dispatch.
-
-    Compiling each base chain (and its jump-target environment) and running the
-    netfilter dispatch over the compiled bases reproduces the DSL dispatch — so
-    the compiler preserves the verdict of a whole hook's worth of base chains
-    across tables, not just one chain or one table. *)
+(** Multi-table / multi-hook dispatch scaffolding: [compile_base] compiles one
+    base chain together with its jump-target environment, the per-base unit the
+    unified ruleset/hook dispatch below runs over. *)
 Definition compile_base (cb : list (String.string * chain) * chain)
   : list (String.string * program) * (program * verdict) :=
   (compile_env (fst cb), (compile_chain (snd cb), c_policy (snd cb))).
 
-Theorem compile_ruleset_correct : forall fuel bases e p,
-  run_ruleset fuel (map compile_base bases) e p = eval_ruleset fuel bases e p.
-Proof.
-  induction bases as [| [cs base] rest IH]; intros e p; [reflexivity|].
-  cbn [map]. unfold compile_base at 1. cbn [fst snd].
-  rewrite run_ruleset_cons, eval_ruleset_cons. cbv zeta.
-  rewrite compile_table_correct.
-  destruct (base_continues (eval_table fuel cs base e p)); [apply IH | reflexivity].
-Qed.
-
-(** Full hook dispatch: select+order the base chains for hook [h], compile each,
-    and the netfilter dispatch over the compiled bases reproduces the DSL
-    [eval_hook] — a corollary of [compile_ruleset_correct] (selection/ordering is
-    a pure list operation applied identically on both sides). *)
-Theorem compile_hook_correct : forall fuel rs hk e p,
-  run_ruleset fuel (map compile_base (select_hook rs hk)) e p = eval_hook fuel rs hk e p.
-Proof.
-  intros fuel rs hk e p. unfold eval_hook. apply compile_ruleset_correct.
-Qed.
-
-(** ** Stratum 8 (HEADLINE, unified axis): the UNIFIED semantics is
+(** ** Stratum 4 (HEADLINE, unified axis): the UNIFIED semantics is
     compiler-preserved — mutation x jump/goto/return x multi-chain x hook
     dispatch, jointly.
 
@@ -3603,58 +3399,6 @@ Proof.
   reflexivity.
 Qed.
 
-(** VM-side projection license (completing the matrix): on compiled
-    write-free chains the pure [run_table] is the verdict projection of the
-    unified [run_table_u h], with the state provably untouched.  (Derived
-    through the DSL bridges; the compiled programs are the only programs the
-    toolchain installs.) *)
-Corollary run_table_writefree_compiled : forall fuel cs base e p,
-  chains_numgen_free cs = true ->
-  forallb rule_numgen_free (c_rules base) = true ->
-  forallb rule_writefree (c_rules base) = true ->
-  chains_writefree cs = true ->
-  run_table_u h fuel (compile_env cs) (compile_chain base) (c_policy base) e p
-  = (run_table fuel (compile_env cs) (compile_chain base) (c_policy base) e p,
-     (e, p)).
-Proof.
-  intros fuel cs base e p Hncs Hnb Hwb Hwcs.
-  rewrite (compile_table_u_correct fuel cs base e p Hncs Hnb).
-  rewrite compile_table_correct.
-  now apply eval_table_u_writefree.
-Qed.
-
-(** Flat pure strand license, packaged: write-free + jump-free chains are the
-    domain where the historical [eval_chain] is the unified verdict. *)
-Corollary eval_chain_writefree_jumpfree_proj : forall fuel cs c e p,
-  List.length (c_rules c) < fuel ->
-  forallb rule_writefree (c_rules c) = true ->
-  chains_writefree cs = true ->
-  chain_jumpfree c e p = true ->
-  eval_table_u h fuel cs c e p = (eval_chain c e p, (e, p)).
-Proof.
-  intros fuel cs c e p Hlen Hwb Hwcs Hjf.
-  rewrite (eval_table_u_writefree h fuel cs c e p Hwb Hwcs).
-  rewrite (eval_chain_eq_table_jumpfree fuel cs c e p Hlen Hjf).
-  reflexivity.
-Qed.
-
-(** Entry-state-free packaging (M6): the same license with the jump-freedom
-    hypothesis SYNTACTIC — [chain_jumpfree_syn] mentions no (env, packet), so
-    the license cannot be voided by the state a traversal actually reaches;
-    [chain_jumpfree_syn_sound] discharges the per-state predicate at every
-    state at once. *)
-Corollary eval_chain_writefree_jumpfree_syn_proj : forall fuel cs c e p,
-  List.length (c_rules c) < fuel ->
-  forallb rule_writefree (c_rules c) = true ->
-  chains_writefree cs = true ->
-  chain_jumpfree_syn c = true ->
-  eval_table_u h fuel cs c e p = (eval_chain c e p, (e, p)).
-Proof.
-  intros fuel cs c e p Hlen Hwb Hwcs Hsyn.
-  apply eval_chain_writefree_jumpfree_proj; auto.
-  apply chain_jumpfree_syn_sound; exact Hsyn.
-Qed.
-
 (** ** Axiom-freedom audit (build-time guard; mirrors Optimize_Uncond.v).
 
     Every compiler stratum in this file must print "Closed under the global
@@ -3679,19 +3423,12 @@ Theorem compile_nat_effect_correct : forall h r e p,
   run_rule_step h empty_rf (compile_rule r) e p = rule_step h r e p.
 Proof. intros h r e p Hn. apply run_rule_step_compile_rule; exact Hn. Qed.
 
-Print Assumptions compile_chain_correct.
 Print Assumptions compile_chain_mut_correct.
 Print Assumptions compile_chain_mut_env_correct.
 Print Assumptions compile_seq_mut_correct.
-Print Assumptions compile_table_correct.
-Print Assumptions compile_ruleset_correct.
-Print Assumptions compile_hook_correct.
 Print Assumptions compile_table_u_correct.
 Print Assumptions compile_ruleset_u_correct.
 Print Assumptions compile_hook_u_correct.
 Print Assumptions compile_seq_hook_correct.
-Print Assumptions run_table_writefree_compiled.
-Print Assumptions eval_chain_writefree_jumpfree_proj.
-Print Assumptions eval_chain_writefree_jumpfree_syn_proj.
 Print Assumptions compile_nat_effect_correct.
 
