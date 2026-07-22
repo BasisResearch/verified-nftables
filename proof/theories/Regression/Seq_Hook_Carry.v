@@ -6,7 +6,7 @@
     writes there is what the NEXT packet's traversal reads, regardless of
     which base chain (priority) or user chain (jump) did the writing.  The
     model's sequence semantics is [seq_eval_env] over the unified per-packet
-    hook run [eval_hook_env_u]: the between-packet env is DEFINITIONALLY the
+    hook run [eval_hook_env]: the between-packet env is DEFINITIONALLY the
     ruleset's own env-out — there is no external step function to instantiate
     with a wrong (or empty) model of the ruleset's learning.  Compiler
     theorem: [Correct.compile_seq_hook_correct].
@@ -97,14 +97,14 @@ Definition lim_rs (h : hook_id) : list hooked_chain :=
     inside the callee, the callee falls through, and the base's DROP policy
     applies.  Different verdicts for identical packets: the carry is real. *)
 Theorem seq_hook_limit_depletes : forall h,
-  seq_eval_env (eval_hook_env_u h 10 (lim_rs h)) env_1token [pkt0; pkt0]
+  seq_eval_env (eval_hook_env h 10 (lim_rs h)) env_1token [pkt0; pkt0]
   = [Accept; Drop].
 Proof. intro h; destruct h; vm_compute; reflexivity. Qed.
 
 (** VM twin: the compiled ruleset depletes the same bucket the same way. *)
 Theorem vm_seq_hook_limit_depletes : forall h,
   seq_eval_env
-    (run_ruleset_env_u h 10 (map compile_base (select_hook (lim_rs h) h)))
+    (run_ruleset_env h 10 (map compile_base (select_hook (lim_rs h) h)))
     env_1token [pkt0; pkt0]
   = [Accept; Drop].
 Proof. intro h; destruct h; vm_compute; reflexivity. Qed.
@@ -112,7 +112,7 @@ Proof. intro h; destruct h; vm_compute; reflexivity. Qed.
 (* The state pin behind the verdict flip: packet 1's hook run leaves the
    bucket empty (1 token consumed INSIDE the jumped-to chain). *)
 Example limit_bucket_left_empty : forall h,
-  e_limit (snd (eval_hook_env_u h 10 (lim_rs h) env_1token pkt0)) lim1 = 0.
+  e_limit (snd (eval_hook_env h 10 (lim_rs h) env_1token pkt0)) lim1 = 0.
 Proof. intro h; destruct h; vm_compute; reflexivity. Qed.
 
 (* ------------------------------------------------------------------------ *)
@@ -148,14 +148,14 @@ Definition learn_rs (h : hook_id) : list hooked_chain :=
     EARLIER base: the env written by packet 1 — in a jumped-to chain of the
     LATER base — is the env packet 2's first base reads. *)
 Theorem seq_hook_dynset_learns : forall h,
-  seq_eval_env (eval_hook_env_u h 10 (learn_rs h)) env0 [pkt9; pkt9]
+  seq_eval_env (eval_hook_env h 10 (learn_rs h)) env0 [pkt9; pkt9]
   = [Accept; Drop].
 Proof. intro h; destruct h; vm_compute; reflexivity. Qed.
 
 (** VM twin. *)
 Theorem vm_seq_hook_dynset_learns : forall h,
   seq_eval_env
-    (run_ruleset_env_u h 10 (map compile_base (select_hook (learn_rs h) h)))
+    (run_ruleset_env h 10 (map compile_base (select_hook (learn_rs h) h)))
     env0 [pkt9; pkt9]
   = [Accept; Drop].
 Proof. intro h; destruct h; vm_compute; reflexivity. Qed.
@@ -165,6 +165,6 @@ Proof. intro h; destruct h; vm_compute; reflexivity. Qed.
 Definition nolearn_rs (h : hook_id) : list hooked_chain :=
   [ {| hc_hook := h; hc_prio := (-100)%Z; hc_env := []; hc_base := check_base |} ].
 Example no_learning_no_drop : forall h,
-  seq_eval_env (eval_hook_env_u h 10 (nolearn_rs h)) env0 [pkt9; pkt9]
+  seq_eval_env (eval_hook_env h 10 (nolearn_rs h)) env0 [pkt9; pkt9]
   = [Accept; Accept].
 Proof. intro h; destruct h; vm_compute; reflexivity. Qed.

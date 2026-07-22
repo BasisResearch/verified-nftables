@@ -14,9 +14,9 @@
       - a dynset `add @s {…}` in the callee is visible to an `@s` lookup
         after the return (the env is as global as the skb).
 
-    The unified evaluators ([Semantics.eval_rules_u h]/[run_rules_u h]) model
+    The unified evaluators ([Semantics.eval_rules h]/[run_rules h]) model
     exactly this; these pins Compute-verify all four behaviours on the DSL
-    AND on the compiled VM ([Correct.compile_table_u_correct] equates them
+    AND on the compiled VM ([Correct.compile_table_correct] equates them
     wholesale, but the pins run both sides independently).
 
     They are the control-flow successors of [Setread_IntraRule.v] (the flat
@@ -85,11 +85,11 @@ Definition sr_cs : list (string * chain) := [("sr", sr_chain)].
 Definition sr_base : chain := {| c_policy := Drop; c_rules := [jump_to "sr"] |}.
 
 Theorem setread_under_jump_accepted :
-  fst (eval_table_u h 10 sr_cs sr_base env0 pkt_mark0) = Accept.
+  fst (eval_table h 10 sr_cs sr_base env0 pkt_mark0) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 Theorem vm_setread_under_jump_accepted :
-  fst (run_table_u h 10 (compile_env sr_cs) (compile_chain sr_base)
+  fst (run_table h 10 (compile_env sr_cs) (compile_chain sr_base)
                    (c_policy sr_base) env0 pkt_mark0) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -103,16 +103,16 @@ Definition srw_cs : list (string * chain) :=
   [("sr", {| c_policy := Accept; c_rules := [setread_wrong_rule] |})].
 
 Theorem setread_wrong_under_jump_dropped :
-  fst (eval_table_u h 10 srw_cs sr_base env0 pkt_mark0) = Drop.
+  fst (eval_table h 10 srw_cs sr_base env0 pkt_mark0) = Drop.
 Proof. vm_compute. reflexivity. Qed.
 Theorem vm_setread_wrong_under_jump_dropped :
-  fst (run_table_u h 10 (compile_env srw_cs) (compile_chain sr_base)
+  fst (run_table h 10 (compile_env srw_cs) (compile_chain sr_base)
                    (c_policy sr_base) env0 pkt_mark0) = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 (** …and the write-free hook-independence argument is licensed on NEITHER
     config: its check [rule_writefree] is [false] on the effectful rule, so
-    [Nft_Tactics.eval_rules_u_hookindep_writefree] correctly does not apply — an
+    [Nft_Tactics.eval_rules_hookindep_writefree] correctly does not apply — an
     effect-dropping evaluation would read the callee's match against the ENTRY
     packet (verdict class Drop-by-policy instead of Accept), and the unified
     evaluator above is the only certified path for this config. *)
@@ -138,10 +138,10 @@ Definition caller_base : chain :=
   {| c_policy := Drop; c_rules := [mark_set_rule; jump_to "chk"] |}.
 
 Theorem caller_write_visible_in_callee :
-  fst (eval_table_u h 10 caller_cs caller_base env0 pkt_mark0) = Accept.
+  fst (eval_table h 10 caller_cs caller_base env0 pkt_mark0) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 Theorem vm_caller_write_visible_in_callee :
-  fst (run_table_u h 10 (compile_env caller_cs) (compile_chain caller_base)
+  fst (run_table h 10 (compile_env caller_cs) (compile_chain caller_base)
                    (c_policy caller_base) env0 pkt_mark0) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -157,10 +157,10 @@ Definition retback_base : chain :=
   {| c_policy := Drop; c_rules := [jump_to "setter"; mark_chk_rule] |}.
 
 Theorem callee_write_survives_return :
-  fst (eval_table_u h 10 setter_cs retback_base env0 pkt_mark0) = Accept.
+  fst (eval_table h 10 setter_cs retback_base env0 pkt_mark0) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 Theorem vm_callee_write_survives_return :
-  fst (run_table_u h 10 (compile_env setter_cs) (compile_chain retback_base)
+  fst (run_table h 10 (compile_env setter_cs) (compile_chain retback_base)
                    (c_policy retback_base) env0 pkt_mark0) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -184,10 +184,10 @@ Definition learn_base : chain :=
   {| c_policy := Drop; c_rules := [jump_to "learn"; lookup_rule] |}.
 
 Theorem dynset_learned_under_jump :
-  fst (eval_table_u h 10 learn_cs learn_base env0 pkt_mark9) = Accept.
+  fst (eval_table h 10 learn_cs learn_base env0 pkt_mark9) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 Theorem vm_dynset_learned_under_jump :
-  fst (run_table_u h 10 (compile_env learn_cs) (compile_chain learn_base)
+  fst (run_table h 10 (compile_env learn_cs) (compile_chain learn_base)
                    (c_policy learn_base) env0 pkt_mark9) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -196,15 +196,15 @@ Proof. vm_compute. reflexivity. Qed.
 Definition nolearn_cs : list (string * chain) :=
   [("learn", {| c_policy := Accept; c_rules := [] |})].
 Theorem dynset_not_learned_drops :
-  fst (eval_table_u h 10 nolearn_cs learn_base env0 pkt_mark9) = Drop.
+  fst (eval_table h 10 nolearn_cs learn_base env0 pkt_mark9) = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 (* ------------------------------------------------------------------------ *)
 (** ** (e) the learned env also LEAVES the traversal: cross-packet carry
-    composes with the jump (the env component of [eval_table_u h] records the
+    composes with the jump (the env component of [eval_table h] records the
     callee's dynset add). *)
 Theorem dynset_env_left_by_jump :
-  e_set (fst (snd (eval_table_u h 10 learn_cs learn_base env0 pkt_mark9))) "learn"
+  e_set (fst (snd (eval_table h 10 learn_cs learn_base env0 pkt_mark9))) "learn"
   = [([0;0;0;9], [0;0;0;9])].
 Proof. vm_compute. reflexivity. Qed.
 

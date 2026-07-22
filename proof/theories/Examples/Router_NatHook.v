@@ -6,7 +6,7 @@
    for the DATA PLANE):
 
    [Router_Hooks] lifts the VERDICT-bearing input/forward security theorems to the
-   hook level via [eval_hook_u hk_fuel global_hooks H...], so a wrong-hook swap of
+   hook level via [eval_hook hk_fuel global_hooks H...], so a wrong-hook swap of
    those chains is observable.  But the masquerade NAT — the entire security reason
    the postrouting chain exists, the crux [Router_Reach] proves — is not, by
    itself, connected to the parser's registration [global_hooks].  Every masquerade
@@ -15,7 +15,7 @@
        chain_out Hpostrouting global_postrouting e p     (Hpostrouting hand-supplied,
                                                          global_postrouting hand-named)
 
-   and the VERDICT projection of [eval_hook_u]/[eval_ruleset_u] discards the output
+   and the VERDICT projection of [eval_hook]/[eval_ruleset] discards the output
    packet, so that projection could not even *express* "the masquerade chain is the one netfilter runs at
    postrouting".  Consequently a planted bug that registers masquerade at the WRONG
    hook, or drops its postrouting registration entirely, leaks every internal
@@ -26,7 +26,7 @@
    THE FIX: a DATA-PLANE hook evaluator [chain_out_at_hook] that DERIVES the hook_id
    and the base chain from the PARSED registration [rs] and threads the PACKET (not
    just a verdict) through it — selecting the base chain(s) registered at [h] and
-   running [eval_chain_u h base] with THAT [h] as the [apply_nat] hook.  Then:
+   running [eval_chain h base] with THAT [h] as the [apply_nat] hook.  Then:
 
      - [postrouting_hook_masquerades] : the masquerade crux proven THROUGH
        [global_hooks Hpostrouting] (no hand-supplied hook): a private source
@@ -56,7 +56,7 @@ Local Open Scope bool_scope.
 (** ** The data-plane hook evaluator.
 
     [select_hook rs h] is the (env, base-chain) list netfilter dispatches at hook
-    [h], in priority order (Semantics.v).  The verdict projection of [eval_ruleset_u]
+    [h], in priority order (Semantics.v).  The verdict projection of [eval_ruleset]
     folds verdicts over it; here we fold the PACKET: each base chain that does not
     terminate-drop passes its OUTPUT packet ([chain_out h base], the data-plane
     trace) to the next, threading NAT rewrites through the hook.  [h] — the hook the
@@ -68,8 +68,8 @@ Fixpoint chain_out_bases (h : hook_id)
   match bases with
   | [] => p
   | (_, base) :: rest =>
-      let v := fst (eval_chain_u h base e p) in
-      let s := snd (eval_chain_u h base e p) in
+      let v := fst (eval_chain h base e p) in
+      let s := snd (eval_chain h base e p) in
       if base_continues v then chain_out_bases h rest (fst s) (snd s) else snd s
   end.
 
@@ -86,7 +86,7 @@ Lemma chain_out_at_hook_singleton : forall rs h cs b e p,
   chain_out_at_hook rs h e p = chain_out h b e p.
 Proof.
   intros rs h cs b e p Hsel. unfold chain_out_at_hook, chain_out. rewrite Hsel.
-  cbn [chain_out_bases]. destruct (base_continues (fst (eval_chain_u h b e p)));
+  cbn [chain_out_bases]. destruct (base_continues (fst (eval_chain h b e p)));
     cbn [chain_out_bases]; reflexivity.
 Qed.
 
@@ -252,7 +252,7 @@ Qed.
     internal 192.168.x.y un-NATted to the WAN) would satisfy every other NAT theorem
     verbatim.
 
-    THIS SECTION: (i) a VERDICT-bearing hook companion [eval_chain_u_at_hook] to
+    THIS SECTION: (i) a VERDICT-bearing hook companion [eval_chain_at_hook] to
     the data-plane [chain_out_at_hook] (so the verdict, not just [saddr4], is lifted
     through the parser's registration), and (ii) the third-case theorem
     [postrouting_hook_noaddr_drops] — at the parser-registered postrouting hook the
@@ -268,43 +268,43 @@ Qed.
     [chain_out_bases]/[chain_out_at_hook] thread the PACKET through the hook; their
     verdict companions thread the VERDICT.  At a singleton hook (the postrouting case
     here) the hook verdict is exactly the base chain's trace verdict. *)
-Fixpoint eval_u_bases (h : hook_id)
+Fixpoint eval_bases (h : hook_id)
     (bases : list (list (String.string * chain) * chain)) (e : env) (p : packet) : verdict :=
   match bases with
   | [] => Accept
   | (_, base) :: rest =>
-      let v := fst (eval_chain_u h base e p) in
-      let s := snd (eval_chain_u h base e p) in
-      if base_continues v then eval_u_bases h rest (fst s) (snd s) else v
+      let v := fst (eval_chain h base e p) in
+      let s := snd (eval_chain h base e p) in
+      if base_continues v then eval_bases h rest (fst s) (snd s) else v
   end.
 
-Definition eval_chain_u_at_hook (rs : list hooked_chain) (h : hook_id)
+Definition eval_chain_at_hook (rs : list hooked_chain) (h : hook_id)
     (e : env) (p : packet) : verdict :=
-  eval_u_bases h (select_hook rs h) e p.
+  eval_bases h (select_hook rs h) e p.
 
 (* At a hook with EXACTLY ONE registered base chain whose trace verdict is Accept or
    Drop (the only two the policy-resolved postrouting chain returns — never Continue),
    the hook verdict is exactly that base chain's trace verdict (mirrors
    [chain_out_at_hook_singleton]).  Accept continues to the empty tail, which returns
-   Accept again; Drop is returned directly — both agree with [fst eval_chain_u]. *)
-Lemma eval_chain_u_at_hook_singleton_ad : forall rs h cs b e p,
+   Accept again; Drop is returned directly — both agree with [fst eval_chain]. *)
+Lemma eval_chain_at_hook_singleton_ad : forall rs h cs b e p,
   select_hook rs h = [(cs, b)] ->
-  (fst (eval_chain_u h b e p) = Accept \/ fst (eval_chain_u h b e p) = Drop) ->
-  eval_chain_u_at_hook rs h e p = fst (eval_chain_u h b e p).
+  (fst (eval_chain h b e p) = Accept \/ fst (eval_chain h b e p) = Drop) ->
+  eval_chain_at_hook rs h e p = fst (eval_chain h b e p).
 Proof.
-  intros rs h cs b e p Hsel Had. unfold eval_chain_u_at_hook. rewrite Hsel.
-  cbn [eval_u_bases]. destruct Had as [Ha|Hd]; rewrite ?Ha, ?Hd;
-    cbn [base_continues]; [cbn [eval_u_bases]|]; reflexivity.
+  intros rs h cs b e p Hsel Had. unfold eval_chain_at_hook. rewrite Hsel.
+  cbn [eval_bases]. destruct Had as [Ha|Hd]; rewrite ?Ha, ?Hd;
+    cbn [base_continues]; [cbn [eval_bases]|]; reflexivity.
 Qed.
 
 (* The postrouting chain's trace verdict is always Accept or Drop: it is either the
    NAT-core Drop or the chain's resolved verdict, which for the single-Accept-rule
    accept-policy chain is Accept. *)
 Lemma postrouting_trace_accept_or_drop : forall e p,
-  fst (eval_chain_u Hpostrouting global_postrouting e p) = Accept
-  \/ fst (eval_chain_u Hpostrouting global_postrouting e p) = Drop.
+  fst (eval_chain Hpostrouting global_postrouting e p) = Accept
+  \/ fst (eval_chain Hpostrouting global_postrouting e p) = Drop.
 Proof.
-  intros e p. rewrite masq_chain_u.
+  intros e p. rewrite masq_chain.
   destruct (saddr_private e p && oif_ppp0 e p); [|left; reflexivity].
   destruct (nat_drops Hpostrouting masq_rule e p); [right; reflexivity|].
   left. destruct (apply_nat Hpostrouting masq_rule e p); reflexivity.
@@ -313,11 +313,11 @@ Qed.
 (* The postrouting hook of the PARSER's registration: its verdict is exactly the
    trace verdict of [global_postrouting] under [Hpostrouting] — derived from
    [select_postrouting], not a hand-supplied hook. *)
-Lemma eval_chain_u_postrouting_hook : forall e p,
-  eval_chain_u_at_hook global_hooks Hpostrouting e p
-    = fst (eval_chain_u Hpostrouting global_postrouting e p).
+Lemma eval_chain_postrouting_hook : forall e p,
+  eval_chain_at_hook global_hooks Hpostrouting e p
+    = fst (eval_chain Hpostrouting global_postrouting e p).
 Proof.
-  intros e p. apply (eval_chain_u_at_hook_singleton_ad global_hooks Hpostrouting
+  intros e p. apply (eval_chain_at_hook_singleton_ad global_hooks Hpostrouting
                     global_chains global_postrouting e p).
   - apply select_postrouting.
   - apply postrouting_trace_accept_or_drop.
@@ -376,10 +376,10 @@ Theorem masq_noaddr_drop_output : forall e p,
   pkt_ctdir_orig p = true ->
   e_nat e (pkt_flow p) = None ->
   e_ifaddr e (field_value FMetaOifname e p) = [] ->
-  eval_chain_u Hpostrouting global_postrouting e p = (Drop, (e, p)).
+  eval_chain Hpostrouting global_postrouting e p = (Drop, (e, p)).
 Proof.
   intros e p Hpriv Hppp Horig Hnone Hempty.
-  rewrite masq_chain_u, Hpriv, Hppp. cbn [andb].
+  rewrite masq_chain, Hpriv, Hppp. cbn [andb].
   rewrite (masq_drops_noaddr e p Horig Hnone Hempty). reflexivity.
 Qed.
 
@@ -398,13 +398,13 @@ Theorem postrouting_hook_noaddr_drops : forall e p,
   pkt_ctdir_orig p = true ->
   e_nat e (pkt_flow p) = None ->
   e_ifaddr e (field_value FMetaOifname e p) = [] ->
-  eval_chain_u_at_hook global_hooks Hpostrouting e p = Drop
+  eval_chain_at_hook global_hooks Hpostrouting e p = Drop
   /\ saddr4 (chain_out_at_hook global_hooks Hpostrouting e p) = saddr4 p.
 Proof.
   intros e p Hpriv Hppp Horig Hnone Hempty.
   pose proof (masq_noaddr_drop_output e p Hpriv Hppp Horig Hnone Hempty) as Hout.
   split.
-  - rewrite eval_chain_u_postrouting_hook, Hout. reflexivity.
+  - rewrite eval_chain_postrouting_hook, Hout. reflexivity.
   - rewrite chain_out_postrouting_hook. unfold chain_out. rewrite Hout. reflexivity.
 Qed.
 
@@ -425,14 +425,14 @@ Definition masq_noaddr_cond (e : env) (p : packet) : bool :=
   && (match e_ifaddr e (field_value FMetaOifname e p) with [] => true | _ => false end).
 
 (* The postrouting hook verdict is Drop iff the no-address masquerade condition
-   holds; otherwise Accept — read directly off the single fold ([masq_chain_u]):
+   holds; otherwise Accept — read directly off the single fold ([masq_chain]):
    the ONLY way the hook drops is the in-fold NAT-core NF_DROP. *)
 Theorem postrouting_hook_verdict_trichotomy : forall e p,
-  eval_chain_u_at_hook global_hooks Hpostrouting e p
+  eval_chain_at_hook global_hooks Hpostrouting e p
     = (if masq_noaddr_cond e p then Drop else Accept).
 Proof.
-  intros e p. rewrite eval_chain_u_postrouting_hook.
-  rewrite masq_chain_u.
+  intros e p. rewrite eval_chain_postrouting_hook.
+  rewrite masq_chain.
   unfold masq_noaddr_cond.
   destruct (saddr_private e p && oif_ppp0 e p) eqn:Hsp; cbn [andb]; [|reflexivity].
   unfold nat_drops, nat_drops_c, masq_rule; cbn [r_nat r_outcome].
@@ -477,7 +477,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 (* The witness DROPS at the postrouting hook and does NOT leak its private source. *)
 Theorem witness_noaddr_drops :
-  eval_chain_u_at_hook global_hooks Hpostrouting env_noaddr pkt_priv_noaddr = Drop
+  eval_chain_at_hook global_hooks Hpostrouting env_noaddr pkt_priv_noaddr = Drop
   /\ saddr4 (chain_out_at_hook global_hooks Hpostrouting env_noaddr pkt_priv_noaddr)
      = [192;168;1;5].
 Proof.
@@ -503,7 +503,7 @@ Qed.
    That the honest verdict is [Drop], not [Accept], is what makes the trichotomy's
    Drop case load-bearing. *)
 Theorem noaddr_drop_observable :
-  eval_chain_u_at_hook global_hooks Hpostrouting env_noaddr pkt_priv_noaddr = Drop
+  eval_chain_at_hook global_hooks Hpostrouting env_noaddr pkt_priv_noaddr = Drop
   /\ Drop <> Accept.
 Proof.
   rewrite (proj1 witness_noaddr_drops). split; [ reflexivity | discriminate ].

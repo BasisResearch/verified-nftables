@@ -81,8 +81,8 @@ let ev_mc m (e, p) = Semantics.eval_matchcond m e p
 let ev_chain c (e, p) = Semantics.eval_chain_mut Semantics.Hprerouting c e p
 let ev_chain_mut c (e, p) = Semantics.eval_chain_mut Semantics.Hprerouting c e p
 let ev_chain_mut_env c (e, p) = Semantics.eval_chain_mut_env Semantics.Hprerouting c e p
-let ev_chain_u h c (e, p) = Semantics.eval_chain_u h c e p
-let ev_table fuel cs c (e, p) = fst (Semantics.eval_table_u Semantics.Hprerouting fuel cs c e p)
+let ev_chain_u h c (e, p) = Semantics.eval_chain h c e p
+let ev_table fuel cs c (e, p) = fst (Semantics.eval_table Semantics.Hprerouting fuel cs c e p)
 let run_chain_vm prog pol (e, p) = Semantics.run_chain_mut Semantics.Hprerouting prog pol e p
 (* A rule "applies" when its body walk does not BREAK (all matches pass and
    load) — read directly off the single fold [body_step]. *)
@@ -345,7 +345,7 @@ let check_optiplex_antispoof () =
 
 (* ---------- (E) optiplex.nft firewall mark vs Optiplex_Mark.v ----------
    Parse optiplex.nft and run a packet through WHOLE chains (extracted
-   eval_chain_u / eval_chain_mut), watching the mark the packet carries
+   eval_chain / eval_chain_mut), watching the mark the packet carries
    before and after each chain — the end-to-end traversal the proofs establish. *)
 
 let mark99 = [153;0;0;0]   (* 0x99 host-endian (little-endian), matching the LE meta/ct mark encoding *)

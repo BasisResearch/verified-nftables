@@ -4,7 +4,7 @@
     ct-state (estab/related/invalid) branches, but deliberately left the eth1 branch
     of [global_inbound] as an OPAQUE sub-evaluation of [global_inbound_private]
     ([inbound_eval_unfold] keeps it as
-       [match fst (eval_rules_u h 6 global_chains (c_rules global_inbound_private) e p) with ...]).
+       [match fst (eval_rules h 6 global_chains (c_rules global_inbound_private) e p) with ...]).
     So the entire LAN-ingress path — packets from internal hosts to the box itself
     (the router's DNS resolver, DHCP, ssh management, rate-limited ping) — had an
     UNDETERMINED fate, and the two genuinely-new constructs of router.nft (the
@@ -24,12 +24,12 @@
     This file pins it down against the PARSER-generated [global_inbound_private] /
     [global_inbound] (from [Router_Gen]):
 
-      - [inbound_private_eval] : the private sub-chain's [eval_rules_u] verdict fully
+      - [inbound_private_eval] : the private sub-chain's [eval_rules] verdict fully
             reduced — [Some Accept] iff the packet is icmp-echo AND under the rate
             limit, OR its [ip protocol . th dport] concat key is one of the four
             listed services; else [None] (fall through to inbound's policy DROP).
       - [inbound_eth1_accept_iff] : THE CRUX (mirrors [forward_accept_iff]) — for an
-            eth1, new-conn packet, [fst (eval_table_u … global_inbound) = Accept] IFF
+            eth1, new-conn packet, [fst (eval_table … global_inbound) = Accept] IFF
             (icmp-echo under limit) OR (proto.port in the four services).
       - [inbound_eth1_unlisted_dropped] : the SECURITY half — an eth1 packet that is
             neither icmp-echo nor a listed service is DROPPED.  The box exposes
@@ -171,7 +171,7 @@ Proof.
   discriminate.
 Qed.
 
-(** ** The PRIVATE sub-chain's [eval_rules_u] verdict, fully reduced.
+(** ** The PRIVATE sub-chain's [eval_rules] verdict, fully reduced.
 
     Rule 1 (icmp + limit): accept iff icmp-echo AND under rate.
     Rule 2 (concat vmap __map0): a HIT gives the service verdict (Accept), a MISS
@@ -185,7 +185,7 @@ Lemma inbound_private_eval_of_vmap : forall h n e p,
   e_vmap e "__map0" = map0 ->
   icmp_loads p = true ->
   svc_loads p = true ->
-  fst (eval_rules_u h (S (S n)) global_chains (c_rules global_inbound_private) e p)
+  fst (eval_rules h (S (S n)) global_chains (c_rules global_inbound_private) e p)
     = (if icmp_ok e p then Some Accept else svc_hit e p).
 Proof.
   intros h n e p Hvm Hil Hsl. rewrite c_rules_private.
@@ -216,7 +216,7 @@ Lemma inbound_private_eval : forall h n e p,
   e = gen_env ->
   icmp_loads p = true ->
   svc_loads p = true ->
-  fst (eval_rules_u h (S (S n)) global_chains (c_rules global_inbound_private) e p)
+  fst (eval_rules h (S (S n)) global_chains (c_rules global_inbound_private) e p)
     = (if icmp_ok e p then Some Accept else svc_hit e p).
 Proof.
   intros h n e p Hpe Hil Hsl.
@@ -236,7 +236,7 @@ Lemma inbound_eth1_eval : forall e p,
   svc_loads p = true ->
   field_value FCtState e p = cts_new ->
   field_value FMetaIifname e p = if_eth1 ->
-  forall h, fst (eval_table_u h in_fuel global_chains global_inbound e p) =
+  forall h, fst (eval_table h in_fuel global_chains global_inbound e p) =
     (if icmp_ok e p then Accept
      else match svc_hit e p with Some v => v | None => Drop end).
 Proof.
@@ -308,7 +308,7 @@ Theorem inbound_eth1_accept_iff : forall e p,
   svc_loads p = true ->
   field_value FCtState e p = cts_new ->
   field_value FMetaIifname e p = if_eth1 ->
-  forall h, ( fst (eval_table_u h in_fuel global_chains global_inbound e p) = Accept <->
+  forall h, ( fst (eval_table h in_fuel global_chains global_inbound e p) = Accept <->
     ( icmp_ok e p = true \/
       ( svc_key e p = [6;0;22] \/ svc_key e p = [17;0;53]
         \/ svc_key e p = [6;0;53] \/ svc_key e p = [17;0;67] ) ) ).
@@ -342,7 +342,7 @@ Theorem inbound_eth1_unlisted_dropped : forall e p,
   icmp_ok e p = false ->
   ( svc_key e p <> [6;0;22] /\ svc_key e p <> [17;0;53]
     /\ svc_key e p <> [6;0;53] /\ svc_key e p <> [17;0;67] ) ->
-  forall h, fst (eval_table_u h in_fuel global_chains global_inbound e p) = Drop.
+  forall h, fst (eval_table h in_fuel global_chains global_inbound e p) = Drop.
 Proof.
   intros e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1 Hicmp Hsvc h.
   rewrite (inbound_eth1_eval e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1 h).
@@ -368,7 +368,7 @@ Theorem inbound_icmp_ratelimited_dropped : forall e p,
   icmp_under e p = false ->
   ( svc_key e p <> [6;0;22] /\ svc_key e p <> [17;0;53]
     /\ svc_key e p <> [6;0;53] /\ svc_key e p <> [17;0;67] ) ->
-  forall h, fst (eval_table_u h in_fuel global_chains global_inbound e p) = Drop.
+  forall h, fst (eval_table h in_fuel global_chains global_inbound e p) = Drop.
 Proof.
   intros e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1 Hover Hsvc.
   apply (inbound_eth1_unlisted_dropped e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1); [ | exact Hsvc ].
@@ -387,7 +387,7 @@ Theorem inbound_eth1_service_accept : forall e p,
   field_value FMetaIifname e p = if_eth1 ->
   ( svc_key e p = [6;0;22] \/ svc_key e p = [17;0;53]
     \/ svc_key e p = [6;0;53] \/ svc_key e p = [17;0;67] ) ->
-  forall h, fst (eval_table_u h in_fuel global_chains global_inbound e p) = Accept.
+  forall h, fst (eval_table h in_fuel global_chains global_inbound e p) = Accept.
 Proof.
   intros e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1 Hsvc h.
   apply (inbound_eth1_accept_iff e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1 h).
@@ -442,24 +442,24 @@ Definition pkt_lan_ping : packet := mk_lan 1 (icmp_th 8).
 Definition pkt_lan_smtp : packet := mk_lan 6 (th_dport 25).
 
 Theorem pkt_lan_dns_accepted : forall h,
-  fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_dns) = Accept.
+  fst (eval_table h in_fuel global_chains global_inbound env_lan pkt_lan_dns) = Accept.
 Proof. intros h. vm_compute. reflexivity. Qed.
 
 Theorem pkt_lan_dhcp_accepted : forall h,
-  fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_dhcp) = Accept.
+  fst (eval_table h in_fuel global_chains global_inbound env_lan pkt_lan_dhcp) = Accept.
 Proof. intros h. vm_compute. reflexivity. Qed.
 
 Theorem pkt_lan_ssh_accepted : forall h,
-  fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_ssh) = Accept.
+  fst (eval_table h in_fuel global_chains global_inbound env_lan pkt_lan_ssh) = Accept.
 Proof. intros h. vm_compute. reflexivity. Qed.
 
 Theorem pkt_lan_ping_accepted : forall h,
-  fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_ping) = Accept.
+  fst (eval_table h in_fuel global_chains global_inbound env_lan pkt_lan_ping) = Accept.
 Proof. intros h. vm_compute. reflexivity. Qed.
 
 (* The UNLISTED smtp packet is DROPPED by the parser's chain (the security crux). *)
 Theorem pkt_lan_smtp_dropped : forall h,
-  fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_smtp) = Drop.
+  fst (eval_table h in_fuel global_chains global_inbound env_lan pkt_lan_smtp) = Drop.
 Proof. intros h. vm_compute. reflexivity. Qed.
 
 (* [bug_inbound_private] = inbound_private with rule 2's concat-vmap WIDENED to an
@@ -484,15 +484,15 @@ Definition bug_priv_chains : list (string * chain) :=
 
 (* Under the bug, the SAME unlisted smtp packet is ACCEPTED — the LAN-open hole. *)
 Theorem bug_lan_smtp_accepted : forall h,
-  fst (eval_table_u h in_fuel bug_priv_chains global_inbound env_lan pkt_lan_smtp) = Accept.
+  fst (eval_table h in_fuel bug_priv_chains global_inbound env_lan pkt_lan_smtp) = Accept.
 Proof. intros h. vm_compute. reflexivity. Qed.
 
 (* Hence the private characterisation DISCRIMINATES the catch-all bug that the
    prior (Router_Input) property set could not see: on the same unlisted LAN packet
    the parser's chain DROPs while the widened chain ACCEPTs. *)
 Theorem priv_property_discriminates_bug : forall h,
-  fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_smtp)
-  <> fst (eval_table_u h in_fuel bug_priv_chains global_inbound env_lan pkt_lan_smtp).
+  fst (eval_table h in_fuel global_chains global_inbound env_lan pkt_lan_smtp)
+  <> fst (eval_table h in_fuel bug_priv_chains global_inbound env_lan pkt_lan_smtp).
 Proof. intros h. rewrite (pkt_lan_smtp_dropped h), (bug_lan_smtp_accepted h). discriminate. Qed.
 
 (* The accept-side hypotheses are SATISFIABLE: the dns witness meets every

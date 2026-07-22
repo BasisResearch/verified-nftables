@@ -8,7 +8,7 @@
     tactic FAILS to prove the FALSE claim that the unlisted SMTP packet is
     accepted, and that the claim is in fact refutable.
 
-    SOUNDNESS: [demo_*_def] pin the readable forms to the raw [eval_table_u]
+    SOUNDNESS: [demo_*_def] pin the readable forms to the raw [eval_table]
     statements ([reflexivity]); [demo_smtp_not_accepted] refutes the false
     property; [demo_nft_decide_cannot_prove_false] shows [nft_decide] leaves the
     false goal OPEN (so it cannot be used to "prove" it).  All axiom-free. *)
@@ -24,12 +24,12 @@ Open Scope string_scope.
 
 Example demo_c_accepts_def :
   (global_inbound accepts pkt_lan_dns in env_lan under global_chains budget in_fuel)
-  = (forall h, fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_dns) = Accept).
+  = (forall h, fst (eval_table h in_fuel global_chains global_inbound env_lan pkt_lan_dns) = Accept).
 Proof. reflexivity. Qed.
 
 Example demo_c_denies_def :
   (global_inbound denies pkt_lan_smtp in env_lan under global_chains budget in_fuel)
-  = (forall h, fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_smtp) = Drop).
+  = (forall h, fst (eval_table h in_fuel global_chains global_inbound env_lan pkt_lan_smtp) = Drop).
 Proof. reflexivity. Qed.
 
 (* ------------------------------------------------------------------ *)
@@ -66,7 +66,7 @@ Proof. Fail now nft_decide. Abort.
 (* ------------------------------------------------------------------ *)
 (** ** UNIFIED-SEMANTICS WITNESSES.
 
-    The readable statements above ARE [eval_table_u] statements (at every hook)
+    The readable statements above ARE [eval_table] statements (at every hook)
     ([demo_c_accepts_def]/[demo_c_denies_def]) over the router config, whose one
     effectful rule is the `limit 5/second` limiter ([Router_Private.r_icmp]).
     The two concrete cruxes are re-stated with an explicit [forall h] here so the
@@ -77,11 +77,11 @@ Proof. Fail now nft_decide. Abort.
    never reaches a NAT rule, so the unified verdict is hook-independent and
    computes outright. *)
 Theorem demo_dns_accepted_unified : forall h,
-  fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_dns)
+  fst (eval_table h in_fuel global_chains global_inbound env_lan pkt_lan_dns)
   = Accept.
 Proof. intro h. vm_compute. reflexivity. Qed.
 
 Theorem demo_smtp_denied_unified : forall h,
-  fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_smtp)
+  fst (eval_table h in_fuel global_chains global_inbound env_lan pkt_lan_smtp)
   = Drop.
 Proof. intro h. vm_compute. reflexivity. Qed.

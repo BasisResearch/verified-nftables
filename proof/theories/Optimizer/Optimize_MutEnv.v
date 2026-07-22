@@ -23,7 +23,7 @@
     stores) because it is carried to the next packet ([seq_eval_env]), and the
     PACKET half (meta mark/priority/nftrace, the notrack latch, the NAT
     rewrite) because the unified semantics' own priority dispatch hands the
-    mutated packet to the next base chain at the same hook ([eval_ruleset_u]);
+    mutated packet to the next base chain at the same hook ([eval_ruleset]);
     Part H pins a pair of chains that agree under the old (verdict, env)
     observable yet differ here.  The (verdict, env) form
     [optimize_table_uncond_mut_env_correct] survives as a projection corollary
@@ -32,10 +32,10 @@
     SCOPE (jumps): [eval_chain_mut_st] is the FLAT fold — [terminal (Jump _)]
     is [false], so a jump-bearing rule falls through WITHOUT running the
     callee.  On transfer-free chains ([rule_plain], the flat license) the flat
-    fold IS the unified semantics ([Semantics.eval_table_u_mut_st_proj]); for
+    fold IS the unified semantics ([Semantics.eval_table_mut_st_proj]); for
     jump-BEARING chains this theorem equates the two sides only under the flat
     callee-skipping projection — it does NOT by itself certify the pipeline
-    against [eval_table_u]'s callee-following traversal, and no such claim is
+    against [eval_table]'s callee-following traversal, and no such claim is
     made here.
 
     HOW the proof is structured:
@@ -5741,7 +5741,7 @@ Qed.
     altering a write a later hook observes: BOTH halves of the state ARE the
     theorem's observable — the env half is what [seq_eval_env] carries to the
     next packet, the packet half (e.g. a `meta mark set`) is what
-    [eval_ruleset_u]'s priority dispatch hands to the next base chain at the
+    [eval_ruleset]'s priority dispatch hands to the next base chain at the
     same hook.  (Freshness is discharged BY CONSTRUCTION: [seed_start] mints
     past every name the chain reads AND every dynset write target, so no rule
     can shadow or clobber a minted declaration.  Jump scope: see the header —

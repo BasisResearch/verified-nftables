@@ -7,14 +7,14 @@
     [ruleset.nft] is the stock nftables "workstation" ruleset.  We translate its
     base chain `inbound` (and the chains it jumps to) by hand into the DSL AST of
     [Syntax.v], then prove packet-level security properties against the
-    canonical [eval_table_u] semantics of [Semantics.v] — first-match evaluation
+    canonical [eval_table] semantics of [Semantics.v] — first-match evaluation
     with jump/return and a default policy.
 
     Two things make these proofs meaningful:
-      - They are stated against the *specification* ([eval_table_u]), not the
+      - They are stated against the *specification* ([eval_table]), not the
         compiler, so they are claims about what the ruleset *means*.
-      - [compile_table_u_correct] proves the compiled netlink bytecode reproduces
-        [eval_table_u] exactly, so every property here transports to the installed
+      - [compile_table_correct] proves the compiled netlink bytecode reproduces
+        [eval_table] exactly, so every property here transports to the installed
         ruleset (we show the transport once, in [smtp_dropped_in_bytecode]).
 
     ----------------------------------------------------------------------------
@@ -189,14 +189,14 @@ Definition fw_chains : list (string * chain) :=
    tight because [cbn] symbolically expands the fuel-recursion tree. *)
 Definition fw_fuel : nat := 8.
 
-(** Symbolically evaluate the canonical unified evaluator [eval_table_u] over the
+(** Symbolically evaluate the canonical unified evaluator [eval_table] over the
     concrete chains: unfold this module's own chain definitions, then run the
-    shared [eval_fw_core_u] engine (Eval_Fw.v) which steps one rule at a time (via
+    shared [eval_fw_core] engine (Eval_Fw.v) which steps one rule at a time (via
     each rule's [rule_step]) and rewrites the per-packet field values from the
-    hypotheses.  [eru_nil]/[eru_cons] step [eval_rules_u]. *)
+    hypotheses.  [eru_nil]/[eru_cons] step [eval_rules]. *)
 Ltac eval_fw Hpe :=
-  unfold eval_table_u, fw_fuel, fw_chains, inbound, inbound_ipv4, inbound_ipv6;
-  eval_fw_core_u Hpe.
+  unfold eval_table, fw_fuel, fw_chains, inbound, inbound_ipv4, inbound_ipv6;
+  eval_fw_core Hpe.
 
 (** ** The properties.
 
@@ -221,7 +221,7 @@ Ltac eval_fw Hpe :=
 Theorem established_accepted : forall e p,
   e = fw_env ->
   field_value FCtState e p = cts_established ->
-  forall h, fst (eval_table_u h fw_fuel fw_chains inbound e p) = Accept.
+  forall h, fst (eval_table h fw_fuel fw_chains inbound e p) = Accept.
 Proof. intros e p Hpe Hct h. eval_fw Hpe. Qed.
 (** Axiom-freedom print (INFORMATIONAL: it goes to the build log but cannot
     fail the build; the build-FAILING check is `make axioms`, which gates
@@ -235,7 +235,7 @@ Print Assumptions established_accepted.
 Theorem invalid_dropped : forall e p,
   e = fw_env ->
   field_value FCtState e p = cts_invalid ->
-  forall h, fst (eval_table_u h fw_fuel fw_chains inbound e p) = Drop.
+  forall h, fst (eval_table h fw_fuel fw_chains inbound e p) = Drop.
 Proof. intros e p Hpe Hct h. eval_fw Hpe. Qed.
 
 (* Loopback traffic is accepted (for a fresh/new connection, so the ct-state
@@ -244,7 +244,7 @@ Theorem loopback_accepted : forall e p,
   e = fw_env ->
   field_value FCtState e p = cts_new ->
   field_value FMetaIifname e p = if_lo ->
-  forall h, fst (eval_table_u h fw_fuel fw_chains inbound e p) = Accept.
+  forall h, fst (eval_table h fw_fuel fw_chains inbound e p) = Accept.
 Proof. intros e p Hpe Hct Hiif h. eval_fw Hpe. Qed.
 
 (* SSH (TCP/22) over IPv4 from a new connection on a real interface is accepted:
@@ -258,7 +258,7 @@ Theorem ssh_accepted : forall e p,
   field_value FMetaL4proto e p = l4_tcp ->
   field_value FThDport e p = port 22 ->
   read_payload_ok PTransport 2 2 p = true ->
-  forall h, fst (eval_table_u h fw_fuel fw_chains inbound e p) = Accept.
+  forall h, fst (eval_table h fw_fuel fw_chains inbound e p) = Accept.
 Proof. intros e p Hpe Hct Hiif Hpr Hl4 Hdp Hok h. eval_fw Hpe. Qed.
 
 (* A closed TCP port (e.g. 25/SMTP) on a new IPv4 connection is dropped: every
@@ -272,7 +272,7 @@ Theorem smtp_dropped : forall e p,
   field_value FMetaL4proto e p = l4_tcp ->
   field_value FThDport e p = port 25 ->
   read_payload_ok PTransport 2 2 p = true ->
-  forall h, fst (eval_table_u h fw_fuel fw_chains inbound e p) = Drop.
+  forall h, fst (eval_table h fw_fuel fw_chains inbound e p) = Drop.
 Proof. intros e p Hpe Hct Hiif Hpr Hl4 Hdp Hok h. eval_fw Hpe. Qed.
 
 (* The IPv6 path: a new IPv6 TCP connection to a closed port is also dropped.
@@ -287,7 +287,7 @@ Theorem ipv6_closed_port_dropped : forall e p,
   field_value FThDport e p = port 25 ->
   read_payload_ok PTransport 2 2 p = true ->
   read_payload_ok PTransport 0 1 p = true ->
-  forall h, fst (eval_table_u h fw_fuel fw_chains inbound e p) = Drop.
+  forall h, fst (eval_table h fw_fuel fw_chains inbound e p) = Drop.
 Proof. intros e p Hpe Hct Hiif Hpr Hl4 Hdp Hok Hok2 h. eval_fw Hpe. Qed.
 
 (* IPv6 neighbour discovery is accepted via the jump into inbound_ipv6. *)
@@ -299,23 +299,23 @@ Theorem ipv6_nd_accepted : forall e p,
   field_value FMetaL4proto e p = l4_icmp6 ->
   field_value FIcmpType e p = icmp6_nd_nsol ->
   read_payload_ok PTransport 0 1 p = true ->
-  forall h, fst (eval_table_u h fw_fuel fw_chains inbound e p) = Accept.
+  forall h, fst (eval_table h fw_fuel fw_chains inbound e p) = Accept.
 Proof. intros e p Hpe Hct Hiif Hpr Hl4 Hty Hok h. eval_fw Hpe. Qed.
 
 (* The forward hook drops everything (it has no rules and `policy drop`), for
    every packet and every set/map state — no hypotheses needed. *)
 Theorem forward_drops_all : forall e p,
-  forall h, fst (eval_table_u h fw_fuel fw_chains forward e p) = Drop.
+  forall h, fst (eval_table h fw_fuel fw_chains forward e p) = Drop.
 Proof.
-  intros e p h. unfold eval_table_u, fw_fuel, forward.
-  cbn -[eval_rules_u]. rewrite eru_nil. reflexivity.
+  intros e p h. unfold eval_table, fw_fuel, forward.
+  cbn -[eval_rules]. rewrite eru_nil. reflexivity.
 Qed.
 
 (** ** Transport to the compiled bytecode.
 
-    Every property above is about the canonical evaluator [eval_table_u], the
-    specification.  Via [compile_table_u_correct], the compiled netlink bytecode
-    evaluated by [run_table_u] computes the identical verdict — so the property
+    Every property above is about the canonical evaluator [eval_table], the
+    specification.  Via [compile_table_correct], the compiled netlink bytecode
+    evaluated by [run_table] computes the identical verdict — so the property
     holds of the ruleset that actually gets installed.  We show it once for
     [smtp_dropped]. *)
 Theorem smtp_dropped_in_bytecode : forall e p,
@@ -326,11 +326,11 @@ Theorem smtp_dropped_in_bytecode : forall e p,
   field_value FMetaL4proto e p = l4_tcp ->
   field_value FThDport e p = port 25 ->
   read_payload_ok PTransport 2 2 p = true ->
-  forall h, fst (run_table_u h fw_fuel (compile_env fw_chains) (compile_chain inbound)
+  forall h, fst (run_table h fw_fuel (compile_env fw_chains) (compile_chain inbound)
                              (c_policy inbound) e p) = Drop.
 Proof.
   intros e p Hpe Hct Hiif Hpr Hl4 Hdp Hok h.
-  rewrite (compile_table_u_correct h fw_fuel fw_chains inbound e p
+  rewrite (compile_table_correct h fw_fuel fw_chains inbound e p
              ltac:(vm_compute; reflexivity) ltac:(vm_compute; reflexivity)).
   apply smtp_dropped; assumption.
 Qed.

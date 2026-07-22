@@ -14,14 +14,14 @@
       3. [compile_seq_mut_correct]       — + threading that env across a
                                            packet sequence (HEADLINE,
                                            mutation/sequence axis).
-      4. [compile_table_u_correct] / [compile_ruleset_u_correct] /
-         [compile_hook_u_correct] / [compile_seq_hook_correct]
+      4. [compile_table_correct] / [compile_ruleset_correct] /
+         [compile_hook_correct] / [compile_seq_hook_correct]
                                          — THE UNIFIED SEMANTICS (HEADLINE):
                                            mutation x jump/goto/return x
                                            multi-chain x hook dispatch x
                                            cross-packet env carry, jointly, on
                                            one effect-threading evaluator per
-                                           side ([eval_rules_u]/[run_rules_u]).
+                                           side ([eval_rules]/[run_rules]).
 
     Strata 1–3 are projections of stratum 4: each flat mutation evaluator is
     licensed by a coincidence theorem on the sub-domain where it provably
@@ -2761,9 +2761,9 @@ Qed.
         fact.
 
     (2) That bridge EXISTS: the jump-aware mutating evaluator is the unified
-        [eval_rules_u h]/[eval_table_u h] (Semantics.v § "The unified
-        semantics"), and [Semantics.eval_rules_u_mut_proj] /
-        [eval_table_u_mut_proj] prove the flat mutation strand is its
+        [eval_rules h]/[eval_table h] (Semantics.v § "The unified
+        semantics"), and [Semantics.eval_rules_mut_proj] /
+        [eval_table_mut_proj] prove the flat mutation strand is its
         projection on transfer-free rules ([rule_plain]: no realisable
         Jump/Goto/Return under the run's verdict maps — a STEP-THREADED
         faithful-domain predicate: it is checked once at the entry env and
@@ -2798,7 +2798,7 @@ Qed.
     dispatch).  The flat mutation strand treats a realised [Jump] as a benign
     fall-through and returns the base policy [Accept], so a jump-bearing chain is
     OUTSIDE its licensed projection domain and must be evaluated by the unified
-    [eval_table_u h]/[run_table_u h] — pinned here so the jump-ignoring behaviour
+    [eval_table h]/[run_table h] — pinned here so the jump-ignoring behaviour
     can never silently become the certified meaning. *)
 From Stdlib Require Import String.
 Local Open Scope string_scope.
@@ -2818,13 +2818,13 @@ Definition rg_cs : list (String.string * chain) := [("deny", rg_deny)].
     while the kernel (and the unified evaluator, (C) below) DROPS.  Locked in so
     the flat strand's jump-as-fall-through can never silently be read as
     certified-faithful: a jump-bearing chain must be evaluated by the unified
-    [eval_table_u h]/[run_table_u h]. *)
+    [eval_table h]/[run_table h]. *)
 Example mut_strand_jump_pin : forall e p,
   forallb rule_numgen_free (c_rules rg_base) = true /\ eval_chain_mut h rg_base e p = Accept.
 Proof. intros e p. split; reflexivity. Qed.
 
 (** (B) …and the license correctly EXCLUDES it: the jump rule fails
-    [rule_plain], so [Semantics.eval_table_u_mut_proj] does not certify the
+    [rule_plain], so [Semantics.eval_table_mut_proj] does not certify the
     flat result on this chain. *)
 Example rg_jump_not_plain : forall e, rule_plain e rg_jump_rule = false.
 Proof. intros e. reflexivity. Qed.
@@ -2833,7 +2833,7 @@ Proof. intros e. reflexivity. Qed.
     behaviour, with the state threaded (here: unchanged, the probe rules are
     write-free). *)
 Example unified_strand_jump_drops : forall e p,
-  fst (eval_table_u h 10 rg_cs rg_base e p) = Drop.
+  fst (eval_table h 10 rg_cs rg_base e p) = Drop.
 Proof. intros e p. reflexivity. Qed.
 Local Close Scope string_scope.
 
@@ -2871,16 +2871,16 @@ Proof.
   eapply forallb_forall in Hcs; [| exact Hlk]. exact Hcs.
 Qed.
 
-Lemma run_rules_u_compile : forall fuel cs rs e p,
+Lemma run_rules_compile : forall fuel cs rs e p,
   chains_numgen_free cs = true ->
   forallb rule_numgen_free rs = true ->
-  run_rules_u h fuel (compile_env cs) (map compile_rule rs) e p
-  = eval_rules_u h fuel cs rs e p.
+  run_rules h fuel (compile_env cs) (map compile_rule rs) e p
+  = eval_rules h fuel cs rs e p.
 Proof.
   induction fuel as [| f IH]; intros cs rs e p Hcs Hrs; [reflexivity|].
   destruct rs as [| r rest]; [reflexivity|].
   cbn [forallb] in Hrs. apply Bool.andb_true_iff in Hrs. destruct Hrs as [Hr Hrest].
-  cbn [run_rules_u eval_rules_u map].
+  cbn [run_rules eval_rules map].
   rewrite (run_rule_step_compile_rule r e p Hr).
   destruct (rule_step h r e p) as [[v|] [e' p']]; [| now apply IH].
   destruct v as [ | | | tc cc | lo hi bp fo | n | n | ];
@@ -2893,7 +2893,7 @@ Proof.
     unfold compile_chain.
     rewrite (IH cs (c_rules ch) e' p' Hcs
                (chains_numgen_free_lookup cs n ch Hcs Hlk)).
-    destruct (eval_rules_u h f cs (c_rules ch) e' p') as [[w|] [e'' p'']];
+    destruct (eval_rules h f cs (c_rules ch) e' p') as [[w|] [e'' p'']];
       [reflexivity | now apply IH].
   - (* Goto *)
     rewrite prog_lookup_compile_env.
@@ -2903,24 +2903,24 @@ Proof.
     apply IH; [exact Hcs | eapply chains_numgen_free_lookup; eauto].
 Qed.
 
-Theorem compile_table_u_correct : forall fuel cs base e p,
+Theorem compile_table_correct : forall fuel cs base e p,
   chains_numgen_free cs = true ->
   forallb rule_numgen_free (c_rules base) = true ->
-  run_table_u h fuel (compile_env cs) (compile_chain base) (c_policy base) e p
-  = eval_table_u h fuel cs base e p.
+  run_table h fuel (compile_env cs) (compile_chain base) (c_policy base) e p
+  = eval_table h fuel cs base e p.
 Proof.
   intros fuel cs base e p Hcs Hb.
-  unfold run_table_u, eval_table_u, compile_chain.
-  rewrite run_rules_u_compile by assumption. reflexivity.
+  unfold run_table, eval_table, compile_chain.
+  rewrite run_rules_compile by assumption. reflexivity.
 Qed.
 
 Definition base_numgen_free
     (cb : list (String.string * chain) * chain) : bool :=
   chains_numgen_free (fst cb) && forallb rule_numgen_free (c_rules (snd cb)).
 
-Theorem compile_ruleset_u_correct : forall fuel bases e p,
+Theorem compile_ruleset_correct : forall fuel bases e p,
   forallb base_numgen_free bases = true ->
-  run_ruleset_u h fuel (map compile_base bases) e p = eval_ruleset_u h fuel bases e p.
+  run_ruleset h fuel (map compile_base bases) e p = eval_ruleset h fuel bases e p.
 Proof.
   intros fuel bases. induction bases as [| [cs base] rest IHb]; intros e p Hb;
     [reflexivity|].
@@ -2928,25 +2928,25 @@ Proof.
   unfold base_numgen_free in Hhd. apply Bool.andb_true_iff in Hhd.
   destruct Hhd as [Hcs Hbase]. cbn [fst snd] in Hcs, Hbase.
   cbn [map]. unfold compile_base at 1. cbn [fst snd].
-  rewrite run_ruleset_u_cons, eval_ruleset_u_cons.
-  rewrite (compile_table_u_correct fuel cs base e p Hcs Hbase).
-  destruct (eval_table_u h fuel cs base e p) as [v [e' p']].
+  rewrite run_ruleset_cons, eval_ruleset_cons.
+  rewrite (compile_table_correct fuel cs base e p Hcs Hbase).
+  destruct (eval_table h fuel cs base e p) as [v [e' p']].
   destruct (base_continues v); [now apply IHb | reflexivity].
 Qed.
 
-Theorem compile_hook_u_correct : forall fuel rs e p,
+Theorem compile_hook_correct : forall fuel rs e p,
   forallb base_numgen_free (select_hook rs h) = true ->
-  run_ruleset_u h fuel (map compile_base (select_hook rs h)) e p
-  = eval_hook_u h fuel rs e p.
+  run_ruleset h fuel (map compile_base (select_hook rs h)) e p
+  = eval_hook h fuel rs e p.
 Proof.
-  intros fuel rs e p Hn. unfold eval_hook_u.
-  now apply compile_ruleset_u_correct.
+  intros fuel rs e p Hn. unfold eval_hook.
+  now apply compile_ruleset_correct.
 Qed.
 
 (** Cross-packet env carry over the unified per-packet run (HEADLINE, the
     sequence form of stratum 8): the between-packet env is
-    definitionally the ruleset's OWN env-out ([eval_hook_env_u] /
-    [run_ruleset_env_u] — the [fst]-of-state projections of the unified hook
+    definitionally the ruleset's OWN env-out ([eval_hook_env] /
+    [run_ruleset_env] — the [fst]-of-state projections of the unified hook
     run), so the ruleset's own learning (dynset adds, limiter depletion, NAT
     mappings) threads from packet to packet through jumps and multi-chain /
     hook dispatch, compiler-preserved.  No external step function appears:
@@ -2955,12 +2955,12 @@ Qed.
     Regression/Seq_Hook_Carry.v. *)
 Theorem compile_seq_hook_correct : forall fuel rs e packets,
   forallb base_numgen_free (select_hook rs h) = true ->
-  seq_eval_env (run_ruleset_env_u h fuel (map compile_base (select_hook rs h))) e packets
-  = seq_eval_env (eval_hook_env_u h fuel rs) e packets.
+  seq_eval_env (run_ruleset_env h fuel (map compile_base (select_hook rs h))) e packets
+  = seq_eval_env (eval_hook_env h fuel rs) e packets.
 Proof.
   intros fuel rs e packets Hn. apply seq_eval_env_ext. intros e' p.
-  unfold run_ruleset_env_u, eval_hook_env_u, eval_hook_u.
-  rewrite (compile_ruleset_u_correct fuel (select_hook rs h) e' p Hn).
+  unfold run_ruleset_env, eval_hook_env, eval_hook.
+  rewrite (compile_ruleset_correct fuel (select_hook rs h) e' p Hn).
   reflexivity.
 Qed.
 
@@ -2981,7 +2981,7 @@ End AtHook.
     before it — Regression/Known_Infidelities.v [vmaphit_*] positive pins).
     This is the per-rule bridge [run_rule_step_compile_rule] restated under
     its NAT-effect name; the traversal-level statements are
-    [compile_table_u_correct] / [compile_ruleset_u_correct] etc., whose
+    [compile_table_correct] / [compile_ruleset_correct] etc., whose
     per-rule step this equation is. *)
 Theorem compile_nat_effect_correct : forall h r e p,
   rule_numgen_free r = true ->
@@ -2991,9 +2991,9 @@ Proof. intros h r e p Hn. apply run_rule_step_compile_rule; exact Hn. Qed.
 Print Assumptions compile_chain_mut_correct.
 Print Assumptions compile_chain_mut_env_correct.
 Print Assumptions compile_seq_mut_correct.
-Print Assumptions compile_table_u_correct.
-Print Assumptions compile_ruleset_u_correct.
-Print Assumptions compile_hook_u_correct.
+Print Assumptions compile_table_correct.
+Print Assumptions compile_ruleset_correct.
+Print Assumptions compile_hook_correct.
 Print Assumptions compile_seq_hook_correct.
 Print Assumptions compile_nat_effect_correct.
 
