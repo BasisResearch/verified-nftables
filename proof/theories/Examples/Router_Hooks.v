@@ -3,11 +3,11 @@
 
    The per-chain files (Router_Input / Router_Forward / Router_Private /
    Router_Reach) characterise each base chain IN ISOLATION via
-       eval_table fuel global_chains global_<chain> p = V,
+       fst (eval_table_u h fuel global_chains global_<chain> p) = V,
    with the *prover* hand-selecting which chain corresponds to which hook.  But
    netfilter's actual data-plane decision for a packet is
 
-       eval_hook fuel <ruleset> h p              (Semantics.v)
+       fst (eval_hook_u h fuel <ruleset> p)       (Semantics.v)
 
    which select+orders the base chains REGISTERED at hook [h] (select_hook /
    sort_hc, by priority) and combines their verdicts (base_continues).  The
@@ -81,29 +81,33 @@ Qed.
 (** ** Generic singleton-hook bridge: at a hook with exactly one registered base
     chain, the hook verdict is [Drop] iff the base chain's table verdict is
     [Drop], and [Accept] iff it is [Accept] (the only two verdicts the
-    policy-resolved [eval_table] returns for these chains). *)
+    policy-resolved [eval_table_u] returns for these chains). *)
 
-Lemma eval_ruleset_singleton : forall f cs b e p,
-  eval_ruleset f [(cs, b)] e p =
-  (if base_continues (eval_table f cs b e p) then Accept else eval_table f cs b e p).
+Lemma eval_ruleset_u_singleton : forall h f cs b e p,
+  fst (eval_ruleset_u h f [(cs, b)] e p) =
+  (if base_continues (fst (eval_table_u h f cs b e p)) then Accept
+   else fst (eval_table_u h f cs b e p)).
 Proof.
-  intros. rewrite eval_ruleset_cons. cbv zeta.
-  destruct (base_continues (eval_table f cs b e p)); reflexivity.
+  intros h f cs b e p. rewrite eval_ruleset_u_cons.
+  destruct (eval_table_u h f cs b e p) as [v [e' p']] eqn:E. cbn [fst].
+  destruct (base_continues v) eqn:Hv;
+    [rewrite eval_ruleset_u_nil; reflexivity | reflexivity].
 Qed.
 
-Lemma singleton_hook_drop : forall f cs b e p,
-  eval_ruleset f [(cs, b)] e p = Drop <-> eval_table f cs b e p = Drop.
+Lemma singleton_hook_drop : forall h f cs b e p,
+  fst (eval_ruleset_u h f [(cs, b)] e p) = Drop
+  <-> fst (eval_table_u h f cs b e p) = Drop.
 Proof.
-  intros f cs b e p. rewrite eval_ruleset_singleton.
-  destruct (eval_table f cs b e p) eqn:E; cbn; split; intro H;
+  intros h f cs b e p. rewrite eval_ruleset_u_singleton.
+  destruct (fst (eval_table_u h f cs b e p)) eqn:E; cbn; split; intro H;
     try discriminate; try reflexivity; try assumption.
 Qed.
 
-Lemma singleton_hook_accept : forall f cs b e p,
-  eval_table f cs b e p = Accept ->
-  eval_ruleset f [(cs, b)] e p = Accept.
+Lemma singleton_hook_accept : forall h f cs b e p,
+  fst (eval_table_u h f cs b e p) = Accept ->
+  fst (eval_ruleset_u h f [(cs, b)] e p) = Accept.
 Proof.
-  intros f cs b e p H. rewrite eval_ruleset_singleton, H. reflexivity.
+  intros h f cs b e p H. rewrite eval_ruleset_u_singleton, H. reflexivity.
 Qed.
 
 (* ------------------------------------------------------------------ *)
@@ -112,18 +116,18 @@ Qed.
     every per-chain result transfer to the hook the packet actually hits. *)
 
 Theorem input_hook_drop_iff_inbound_drop : forall e p,
-  eval_hook hk_fuel global_hooks Hinput e p = Drop
-  <-> eval_table hk_fuel global_chains global_inbound e p = Drop.
+  fst (eval_hook_u Hinput hk_fuel global_hooks e p) = Drop
+  <-> fst (eval_table_u Hinput hk_fuel global_chains global_inbound e p) = Drop.
 Proof.
-  intros e p. unfold eval_hook. rewrite select_input.
+  intros e p. unfold eval_hook_u. rewrite select_input.
   apply singleton_hook_drop.
 Qed.
 
 Theorem forward_hook_drop_iff_forward_drop : forall e p,
-  eval_hook hk_fuel global_hooks Hforward e p = Drop
-  <-> eval_table hk_fuel global_chains global_forward e p = Drop.
+  fst (eval_hook_u Hforward hk_fuel global_hooks e p) = Drop
+  <-> fst (eval_table_u Hforward hk_fuel global_chains global_forward e p) = Drop.
 Proof.
-  intros e p. unfold eval_hook. rewrite select_forward.
+  intros e p. unfold eval_hook_u. rewrite select_forward.
   apply singleton_hook_drop.
 Qed.
 
@@ -144,7 +148,7 @@ Theorem input_hook_world_locked : forall e p,
   field_value FCtState e p = Router_Input.cts_new ->
   field_value FMetaIifname e p = Router_Input.if_ppp0 ->
   Router_Input.world_ssh e p = false ->
-  eval_hook hk_fuel global_hooks Hinput e p = Drop.
+  fst (eval_hook_u Hinput hk_fuel global_hooks e p) = Drop.
 Proof.
   intros e p Hpe Hl1 Hl2 Hwl Hct Hppp0 Hssh.
   apply input_hook_drop_iff_inbound_drop.
@@ -158,7 +162,7 @@ Theorem forward_hook_unsolicited_dropped : forall e p,
   e = gen_env ->
   field_value FCtState e p = Router_Forward.cts_new ->
   Router_Forward.iif_eth1 e p = false ->
-  eval_hook hk_fuel global_hooks Hforward e p = Drop.
+  fst (eval_hook_u Hforward hk_fuel global_hooks e p) = Drop.
 Proof.
   intros e p Hpe Hct Hiif.
   apply forward_hook_drop_iff_forward_drop.
@@ -182,22 +186,22 @@ Definition global_hooks_bug : list hooked_chain :=
 (* At the CORRECT input hook the parser registers, the unlisted LAN service is
    dropped (inbound_private's service filter rejects tcp/25). *)
 Theorem input_hook_smtp_correct_drop :
-  eval_hook hk_fuel global_hooks Hinput env_lan pkt_lan_smtp = Drop.
+  fst (eval_hook_u Hinput hk_fuel global_hooks env_lan pkt_lan_smtp) = Drop.
 Proof. vm_compute. reflexivity. Qed.
 
 (* At the BUGGED input hook (global_forward registered there), the bare
    `iif eth1 accept` rule accepts the unlisted LAN service unconditionally —
    bypassing inbound_private's whole service filter. *)
 Theorem input_hook_smtp_bug_accept :
-  eval_hook hk_fuel global_hooks_bug Hinput env_lan pkt_lan_smtp = Accept.
+  fst (eval_hook_u Hinput hk_fuel global_hooks_bug env_lan pkt_lan_smtp) = Accept.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The observable: the parser's registration and the swapped one disagree on a
    real packet — so the hook-level theorems genuinely depend on the registration
    the parser emitted, not a chain the prover named. *)
 Theorem hook_swap_observable :
-  eval_hook hk_fuel global_hooks     Hinput env_lan pkt_lan_smtp
-  <> eval_hook hk_fuel global_hooks_bug Hinput env_lan pkt_lan_smtp.
+  fst (eval_hook_u Hinput hk_fuel global_hooks     env_lan pkt_lan_smtp)
+  <> fst (eval_hook_u Hinput hk_fuel global_hooks_bug env_lan pkt_lan_smtp).
 Proof.
   rewrite input_hook_smtp_correct_drop, input_hook_smtp_bug_accept. discriminate.
 Qed.
@@ -207,98 +211,5 @@ Qed.
    forward chain it puts at input accepts the LAN smtp packet that the locked
    input must drop.  (We witness the discriminating verdict directly.) *)
 Theorem bug_breaks_input_lockdown :
-  eval_hook hk_fuel global_hooks_bug Hinput env_lan pkt_lan_smtp <> Drop.
+  fst (eval_hook_u Hinput hk_fuel global_hooks_bug env_lan pkt_lan_smtp) <> Drop.
 Proof. rewrite input_hook_smtp_bug_accept. discriminate. Qed.
-
-(* ------------------------------------------------------------------ *)
-(** ** UNIFIED-SEMANTICS LICENSE (Semantics.v § "Projection 1b").
-
-    The registration dispatches to the `global` chain env, which carries the
-    ONE limiter rule ([Router_Private.r_icmp]) — not write-free, but
-    LIMITER-TOLERANT — and, since M3, the postrouting MASQUERADE, whose NAT
-    data plane (packet rewrite + [e_nat] store + possible NF_DROP) lives
-    inside the fold and is OUTSIDE every pure-strand license (see
-    [Router_Input] § "UNIFIED-SEMANTICS LICENSE").  The filter hooks are
-    licensed over the NAT-free registration [global_tol_hooks] (their bases
-    and jump env restricted to [Router_Input.global_tol_chains]); the
-    postrouting hook is stated over the unified semantics ONLY
-    ([postrouting_hook_masquerades] below; data-plane characterisation in
-    Router_Reach / Router_NatHook; compiler axis in
-    [Correct.compile_hook_u_correct]). *)
-
-Definition global_tol_hooks : list hooked_chain :=
-  map (fun hc => {| hc_hook := hc_hook hc; hc_prio := hc_prio hc;
-                    hc_env := global_tol_chains; hc_base := hc_base hc |})
-      (filter (fun hc => forallb rule_natfree (c_rules (hc_base hc))) global_hooks).
-
-Lemma select_input_tol :
-  select_hook global_tol_hooks Hinput = [(global_tol_chains, global_inbound)].
-Proof. vm_compute. reflexivity. Qed.
-Lemma select_forward_tol :
-  select_hook global_tol_hooks Hforward = [(global_tol_chains, global_forward)].
-Proof. vm_compute. reflexivity. Qed.
-(* the masquerade hook has NO NAT-free registration: it is unified-only *)
-Lemma select_postrouting_tol :
-  select_hook global_tol_hooks Hpostrouting = [].
-Proof. vm_compute. reflexivity. Qed.
-
-Theorem input_hook_licensed : forall fuel e p,
-  eval_hook fuel global_tol_hooks Hinput e p
-  = fst (eval_hook_u Hinput fuel global_tol_hooks e p).
-Proof.
-  intros fuel e p. symmetry.
-  apply (eval_hook_u_limiter_tolerant_1 Hinput fuel global_tol_hooks
-           global_tol_chains global_inbound);
-    [exact select_input_tol | vm_compute; reflexivity
-     | exact global_chains_limiter_tol].
-Qed.
-
-Theorem forward_hook_licensed : forall fuel e p,
-  eval_hook fuel global_tol_hooks Hforward e p
-  = fst (eval_hook_u Hforward fuel global_tol_hooks e p).
-Proof.
-  intros fuel e p. symmetry.
-  apply (eval_hook_u_limiter_tolerant_1 Hforward fuel global_tol_hooks
-           global_tol_chains global_forward);
-    [exact select_forward_tol | vm_compute; reflexivity
-     | exact global_chains_limiter_tol].
-Qed.
-
-(* The masquerade hook is stated on the unified semantics: the write-free
-   projection cannot see the NAT drop / packet rewrite, so the masquerade hook
-   is characterised here on [eval_hook_u], with the data-plane facts in
-   Router_Reach. *)
-Theorem postrouting_hook_unified : forall fuel e p,
-  eval_hook_u Hpostrouting (S fuel) global_hooks e p
-  = match eval_table_u Hpostrouting (S fuel) global_chains global_postrouting e p with
-    | (v, s) => if base_continues v then (Accept, s) else (v, s)
-    end.
-Proof.
-  intros fuel e p. unfold eval_hook_u. rewrite select_postrouting.
-  rewrite eval_ruleset_u_cons.
-  destruct (eval_table_u Hpostrouting (S fuel) global_chains global_postrouting e p)
-    as [v [e' p']].
-  destruct (base_continues v); reflexivity.
-Qed.
-
-(** The mutation-kill registration (inbound<->forward swapped) is licensed
-    too — over its NAT-free restriction, like the parser's. *)
-Definition global_tol_hooks_bug : list hooked_chain :=
-  map (fun hc => {| hc_hook := hc_hook hc; hc_prio := hc_prio hc;
-                    hc_env := global_tol_chains; hc_base := hc_base hc |})
-      (filter (fun hc => forallb rule_natfree (c_rules (hc_base hc))) global_hooks_bug).
-
-Lemma select_input_bug :
-  select_hook global_tol_hooks_bug Hinput = [(global_tol_chains, global_forward)].
-Proof. vm_compute. reflexivity. Qed.
-
-Theorem input_hook_bug_licensed : forall fuel e p,
-  eval_hook fuel global_tol_hooks_bug Hinput e p
-  = fst (eval_hook_u Hinput fuel global_tol_hooks_bug e p).
-Proof.
-  intros fuel e p. symmetry.
-  apply (eval_hook_u_limiter_tolerant_1 Hinput fuel global_tol_hooks_bug
-           global_tol_chains global_forward);
-    [exact select_input_bug | vm_compute; reflexivity
-     | exact global_chains_limiter_tol].
-Qed.

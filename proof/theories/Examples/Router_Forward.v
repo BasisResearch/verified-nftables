@@ -82,9 +82,9 @@ Definition map3 : list (data * data * verdict) :=
    (cts_related, cts_related, Accept);
    (cts_invalid, cts_invalid, Drop)].
 
-(** The one-step unfolding lemmas [erj_nil]/[erj_cons] for the fuel-recursive
-    interpreter (and [Global Opaque eval_rules_j], so [cbn] reduces only the
-    current rule) come from [Eval_Fw] — the single shared source of truth. *)
+(** The one-step unfolding lemmas [eru_cons]/[eru_empty] for the fuel-recursive
+    unified interpreter, and the generic [vmap_single_step], come from [Eval_Fw]
+    — the single shared source of truth. *)
 
 (** ** A clean classification of the ct-state vmap [__map3].
 
@@ -138,66 +138,67 @@ Definition r2_fwd : rule :=
   {| r_body := [BMatch (MEq FMetaIifname if_eth1)];
      r_outcome := OVerdict Accept; r_after := [] |}.
 
-(* Its load always succeeds (a meta iifname read never BREAKs). *)
-Lemma r2_loadable : forall e p, rule_loadable r2_fwd e p = true.
-Proof. intros e p. reflexivity. Qed.
-
-(* It applies exactly when the iifname is eth1. *)
-Lemma r2_applies : forall e p, rule_applies r2_fwd e p = iif_eth1 e p.
+(* The single [rule_step] of the iifname rule: a write-free match, terminal Accept
+   exactly when the iifname is eth1 (state untouched). *)
+Lemma r2_fwd_step : forall h e p,
+  rule_step h r2_fwd e p = (if iif_eth1 e p then Some Accept else None, (e, p)).
 Proof.
-  intros e p. unfold rule_applies, r2_fwd; cbn [r_body rule_applies_walk].
-  unfold eval_matchcond, iif_eth1.
-  rewrite Bool.andb_true_r.
-  (* [match_loadable (MEq FMetaIifname _) p = field_loadable FMetaIifname p = true]. *)
-  reflexivity.
+  intros h e p. unfold rule_step, r2_fwd. cbn [r_body body_step].
+  unfold eval_matchcond, match_loadable, match_consume, iif_eth1. cbn [andb].
+  destruct (eval_matchcond_body (MEq FMetaIifname if_eth1) e p);
+    cbn [body_step]; unfold end_step, terminal_step;
+    cbn [r_vmap r_outcome has_effect_terminal r_nat r_tproxy r_fwd r_queue r_verdict];
+    reflexivity.
 Qed.
-
-(* When it applies, its outcome is the terminal Accept (no vmap, static verdict). *)
-Lemma r2_outcome : forall e p, outcome r2_fwd e p = Some Accept.
-Proof. intros e p. reflexivity. Qed.
 
 (* The forward chain's verdict, fully symbolically reduced from [global_forward]:
    stepping rule 1 (ct vmap) then rule 2 (iifname) then policy DROP.  Since the ct
    vmap [__map3] can only yield Accept/Drop/MISS (no Continue/Jump — see
    [assoc_map3_eq]), the verdict is a closed cascade of byte-equality tests with NO
-   undetermined branch. *)
-Lemma forward_eval_unfold : forall e p,
-  e = gen_env ->
-  eval_table fw_fuel global_chains global_forward e p =
+   undetermined branch.  The CORE is parametrised by the [__map3] CONTENTS (not the
+   whole env), so a realistic NEW packet satisfies it. *)
+Lemma forward_eval_unfold_of_vmap : forall h e p,
+  e_vmap e "__map3" = map3 ->
+  fst (eval_table_u h fw_fuel global_chains global_forward e p) =
     (if data_eqb cts_established (field_value FCtState e p) then Accept
      else if data_eqb cts_related (field_value FCtState e p) then Accept
      else if data_eqb cts_invalid (field_value FCtState e p) then Drop
      else if iif_eth1 e p then Accept else Drop).
 Proof.
-  intros e p Hpe.
-  unfold eval_table, fw_fuel, global_forward, global_chains.
+  intros h e p Hvm.
+  unfold eval_table_u, fw_fuel, global_forward, global_chains.
   cbn [c_rules c_policy].
-  rewrite erj_cons.
-  (* rule 1: ct-state vmap.  rule_loadable: empty body, vmap key meta-load = ok. *)
-  unfold rule_loadable, rule_applies, outcome, outcome_core;
-    cbn -[eval_rules_j assoc_verdict field_value iif_eth1].
-  (* the ct vmap key is [field_value FCtState e p] (vm_keyf = Some (FCtState, []), no
-     transforms), and the lookup table under [e = gen_env] is exactly [map3]. *)
-  replace (e_vmap e "__map3") with map3 by (rewrite Hpe; reflexivity).
-  rewrite assoc_map3_eq.
-  destruct (data_eqb cts_established (field_value FCtState e p)) eqn:He;
-    [ cbn -[eval_rules_j]; reflexivity | ].
-  destruct (data_eqb cts_related (field_value FCtState e p)) eqn:Hr;
-    [ cbn -[eval_rules_j]; reflexivity | ].
-  destruct (data_eqb cts_invalid (field_value FCtState e p)) eqn:Hi;
-    [ cbn -[eval_rules_j]; reflexivity | ].
+  rewrite eru_cons.
+  (* rule 1: the ct-state vmap rule; a ct-state read is always loadable. *)
+  rewrite (vmap_single_step h e p FCtState "__map3"
+             (eq_refl : field_loadable FCtState p = true)).
+  rewrite Hvm, assoc_map3_eq.
+  destruct (data_eqb cts_established (field_value FCtState e p)) eqn:He; [reflexivity|].
+  destruct (data_eqb cts_related (field_value FCtState e p)) eqn:Hr; [reflexivity|].
+  destruct (data_eqb cts_invalid (field_value FCtState e p)) eqn:Hi; [reflexivity|].
+  cbn [fst snd].
   (* vmap MISS: fall through to rule 2 (iifname eth1). *)
-  cbn -[eval_rules_j data_eqb field_value eval_matchcond_body iif_eth1].
-  rewrite erj_cons.
+  rewrite eru_cons.
   (* fold the parser's literal rule into [r2_fwd] (the iifname literal IS [if_eth1]),
-     then use its [loadable]/[applies]/[outcome] lemmas — no [firstn] unrolling. *)
+     then step it with [r2_fwd_step]. *)
   change {| r_body := [BMatch (MEq FMetaIifname
               [101;116;104;49;0;0;0;0;0;0;0;0;0;0;0;0])];
      r_outcome := OVerdict Accept; r_after := [] |}
     with r2_fwd.
-  rewrite r2_loadable, r2_applies, r2_outcome. cbn [andb].
-  destruct (iif_eth1 e p) eqn:Heq;
-    cbn -[eval_rules_j iif_eth1]; rewrite ?erj_nil; reflexivity.
+  rewrite (r2_fwd_step h e p).
+  destruct (iif_eth1 e p) eqn:Heq; [reflexivity | rewrite eru_empty; reflexivity].
+Qed.
+
+(* The whole-env-pinned unfold, a corollary of the CORE. *)
+Lemma forward_eval_unfold : forall h e p,
+  e = gen_env ->
+  fst (eval_table_u h fw_fuel global_chains global_forward e p) =
+    (if data_eqb cts_established (field_value FCtState e p) then Accept
+     else if data_eqb cts_related (field_value FCtState e p) then Accept
+     else if data_eqb cts_invalid (field_value FCtState e p) then Drop
+     else if iif_eth1 e p then Accept else Drop).
+Proof.
+  intros h e p Hpe. apply forward_eval_unfold_of_vmap. rewrite Hpe. reflexivity.
 Qed.
 
 (** ** The security corollaries. *)
@@ -208,10 +209,10 @@ Theorem forward_unsolicited_dropped : forall e p,
   e = gen_env ->
   field_value FCtState e p = cts_new ->
   iif_eth1 e p = false ->
-  eval_table fw_fuel global_chains global_forward e p = Drop.
+  forall h, fst (eval_table_u h fw_fuel global_chains global_forward e p) = Drop.
 Proof.
   intros e p Hpe Hct Hiif.
-  rewrite (forward_eval_unfold e p Hpe), Hct, Hiif. vm_compute. reflexivity.
+  intros h. rewrite (forward_eval_unfold h e p Hpe), Hct, Hiif. vm_compute. reflexivity.
 Qed.
 
 (* The same crux phrased directly on ppp0 (the world interface): a new packet
@@ -220,7 +221,7 @@ Theorem forward_ppp0_dropped : forall e p,
   e = gen_env ->
   field_value FCtState e p = cts_new ->
   field_value FMetaIifname e p = if_ppp0 ->
-  eval_table fw_fuel global_chains global_forward e p = Drop.
+  forall h, fst (eval_table_u h fw_fuel global_chains global_forward e p) = Drop.
 Proof.
   intros e p Hpe Hct Hiif.
   apply forward_unsolicited_dropped; auto.
@@ -233,10 +234,10 @@ Qed.
 Theorem forward_invalid_dropped : forall e p,
   e = gen_env ->
   field_value FCtState e p = cts_invalid ->
-  eval_table fw_fuel global_chains global_forward e p = Drop.
+  forall h, fst (eval_table_u h fw_fuel global_chains global_forward e p) = Drop.
 Proof.
   intros e p Hpe Hct.
-  rewrite (forward_eval_unfold e p Hpe), Hct. vm_compute. reflexivity.
+  intros h. rewrite (forward_eval_unfold h e p Hpe), Hct. vm_compute. reflexivity.
 Qed.
 
 (** ** The accept paths (non-vacuity of the drop properties' contrapositive). *)
@@ -245,20 +246,20 @@ Qed.
 Theorem forward_established_accepted : forall e p,
   e = gen_env ->
   field_value FCtState e p = cts_established ->
-  eval_table fw_fuel global_chains global_forward e p = Accept.
+  forall h, fst (eval_table_u h fw_fuel global_chains global_forward e p) = Accept.
 Proof.
   intros e p Hpe Hct.
-  rewrite (forward_eval_unfold e p Hpe), Hct. vm_compute. reflexivity.
+  intros h. rewrite (forward_eval_unfold h e p Hpe), Hct. vm_compute. reflexivity.
 Qed.
 
 (* Related connections are forwarded (the vmap `related -> accept`). *)
 Theorem forward_related_accepted : forall e p,
   e = gen_env ->
   field_value FCtState e p = cts_related ->
-  eval_table fw_fuel global_chains global_forward e p = Accept.
+  forall h, fst (eval_table_u h fw_fuel global_chains global_forward e p) = Accept.
 Proof.
   intros e p Hpe Hct.
-  rewrite (forward_eval_unfold e p Hpe), Hct. vm_compute. reflexivity.
+  intros h. rewrite (forward_eval_unfold h e p Hpe), Hct. vm_compute. reflexivity.
 Qed.
 
 (* A new connection ingressing on the LAN (eth1) IS forwarded (the `iifname eth1
@@ -269,10 +270,10 @@ Theorem forward_eth1_accepted : forall e p,
   e = gen_env ->
   field_value FCtState e p = cts_new ->
   field_value FMetaIifname e p = if_eth1 ->
-  eval_table fw_fuel global_chains global_forward e p = Accept.
+  forall h, fst (eval_table_u h fw_fuel global_chains global_forward e p) = Accept.
 Proof.
   intros e p Hpe Hct Hiif.
-  rewrite (forward_eval_unfold e p Hpe), Hct.
+  intros h. rewrite (forward_eval_unfold h e p Hpe), Hct.
   unfold iif_eth1, eval_matchcond_body. rewrite Hiif.
   vm_compute. reflexivity.
 Qed.
@@ -282,14 +283,14 @@ Qed.
 
 Theorem forward_accept_iff : forall e p,
   e = gen_env ->
-  ( eval_table fw_fuel global_chains global_forward e p = Accept
+  forall h, ( fst (eval_table_u h fw_fuel global_chains global_forward e p) = Accept
     <->
     ( field_value FCtState e p = cts_established
       \/ field_value FCtState e p = cts_related
       \/ ( field_value FCtState e p <> cts_invalid
            /\ iif_eth1 e p = true ) ) ).
 Proof.
-  intros e p Hpe. rewrite (forward_eval_unfold e p Hpe).
+  intros e p Hpe h. rewrite (forward_eval_unfold h e p Hpe).
   destruct (data_eqb cts_established (field_value FCtState e p)) eqn:Hest.
   { (* established *)
     apply data_eqb_true_iff in Hest. split; [ intros _ | reflexivity ]. auto. }
@@ -351,9 +352,9 @@ Lemma pkt_world_iif : iif_eth1 env_fwd pkt_world = false.
 Proof. vm_compute. reflexivity. Qed.
 
 (* The CORRECT forward chain DROPS this unsolicited world packet. *)
-Theorem pkt_world_dropped :
-  eval_table fw_fuel global_chains global_forward env_fwd pkt_world = Drop.
-Proof. vm_compute. reflexivity. Qed.
+Theorem pkt_world_dropped : forall h,
+  fst (eval_table_u h fw_fuel global_chains global_forward env_fwd pkt_world) = Drop.
+Proof. intros h. vm_compute. reflexivity. Qed.
 
 (* [bug_forward] = the forward chain with the `iifname eth1` GUARD REMOVED, so rule 2
    accepts EVERY ingress interface (an open-forwarding hole: it forwards traffic from
@@ -370,46 +371,14 @@ Definition bug_forward : chain :=
 (* Under the bug, the SAME unsolicited world packet is ACCEPTED — the catastrophic
    open-forwarding leak that [forward_unsolicited_dropped] / [pkt_world_dropped] rule
    out: the Internet would reach internal hosts. *)
-Theorem bug_world_accepted :
-  eval_table fw_fuel global_chains bug_forward env_fwd pkt_world = Accept.
-Proof. vm_compute. reflexivity. Qed.
+Theorem bug_world_accepted : forall h,
+  fst (eval_table_u h fw_fuel global_chains bug_forward env_fwd pkt_world) = Accept.
+Proof. intros h. vm_compute. reflexivity. Qed.
 
 (* Hence the forward verdict property DISCRIMINATES the bug: on the same world packet
    the parser's chain DROPs while the de-guarded chain ACCEPTs — the discrimination a
    forward property had to make, and which the prior postrouting-only set could not. *)
-Theorem forward_property_discriminates_bug :
-  eval_table fw_fuel global_chains global_forward env_fwd pkt_world
-  <> eval_table fw_fuel global_chains bug_forward env_fwd pkt_world.
-Proof. rewrite pkt_world_dropped, bug_world_accepted. discriminate. Qed.
-
-(* ============================================================ *)
-(** ** UNIFIED-SEMANTICS LICENSE (Semantics.v § "Projection 1b").
-
-    The NAT-free chain env [Router_Input.global_tol_chains] is not
-    write-free (`inbound_private`'s `limit rate 5/second` is an env write),
-    but it IS limiter-tolerant ([Semantics.chains_limiter_tol]), so the
-    forward-table statements are the proven VERDICT projection of the
-    unified effect-threading semantics
-    ([Semantics.eval_table_u_limiter_tolerant]) at every hook, fuel, env
-    and packet — see the license header in [Router_Input]
-    § "UNIFIED-SEMANTICS LICENSE" (which also explains why the masquerade
-    chain is OUTSIDE every pure-strand license since M3). *)
-
-Theorem forward_licensed : forall h fuel e p,
-  eval_table fuel global_tol_chains global_forward e p
-  = fst (eval_table_u h fuel global_tol_chains global_forward e p).
-Proof.
-  intros h fuel e p. symmetry.
-  apply eval_table_u_limiter_tolerant;
-    [vm_compute; reflexivity | exact global_chains_limiter_tol].
-Qed.
-
-(** The mutation-kill base chain is licensed under the same chain env. *)
-Theorem bug_forward_licensed : forall h fuel e p,
-  eval_table fuel global_tol_chains bug_forward e p
-  = fst (eval_table_u h fuel global_tol_chains bug_forward e p).
-Proof.
-  intros h fuel e p. symmetry.
-  apply eval_table_u_limiter_tolerant;
-    [vm_compute; reflexivity | exact global_chains_limiter_tol].
-Qed.
+Theorem forward_property_discriminates_bug : forall h,
+  fst (eval_table_u h fw_fuel global_chains global_forward env_fwd pkt_world)
+  <> fst (eval_table_u h fw_fuel global_chains bug_forward env_fwd pkt_world).
+Proof. intros h. rewrite (pkt_world_dropped h), (bug_world_accepted h). discriminate. Qed.

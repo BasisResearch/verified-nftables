@@ -260,10 +260,16 @@ AXIOM_GATE_THEOREMS = compile_chain_correct compile_chain_mut_correct \
   Semantics.eval_ruleset_u_writefree Semantics.eval_hook_u_writefree \
   Semantics.eval_rules_u_limiter_tolerant Semantics.eval_table_u_limiter_tolerant \
   Semantics.eval_hook_u_limiter_tolerant_1 \
-  Router_Input.inbound_licensed Router_Input.router_rules_licensed \
-  Router_Forward.forward_licensed Router_Private.private_rules_licensed \
-  Router_Hooks.input_hook_licensed Router_Hooks.forward_hook_licensed \
-  Router_Realistic.inbound_licensed_real Nft_Demo_Concrete.demo_dns_accepted_unified \
+  Router_Input.world_ingress_locked_down Router_Input.inbound_world_ssh_accept \
+  Router_Input.input_property_discriminates_bug \
+  Router_Forward.forward_unsolicited_dropped Router_Forward.forward_accept_iff \
+  Router_Private.inbound_eth1_accept_iff Router_Private.inbound_eth1_unlisted_dropped \
+  Router_Private.priv_property_discriminates_bug \
+  Router_Hooks.input_hook_world_locked Router_Hooks.forward_hook_unsolicited_dropped \
+  Router_Hooks.hook_swap_observable \
+  Router_Realistic.world_ingress_locked_down_real Router_Realistic.forward_unsolicited_dropped_real \
+  Router_Realistic.inbound_eth1_accept_iff_real Router_Realistic.input_hook_world_locked_real \
+  Nft_Demo_Concrete.demo_dns_accepted_unified \
   Nft_Demo_Concrete.demo_smtp_denied_unified \
   Semantics.eval_rules_u_mut_proj Semantics.eval_table_u_mut_proj \
   Semantics.eval_rules_u_mut_st_proj Semantics.eval_table_u_mut_st_proj \

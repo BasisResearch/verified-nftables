@@ -3,8 +3,8 @@
     The INPUT hook ([Router_Input]) proved the WORLD (ppp0), LOOPBACK (lo) and
     ct-state (estab/related/invalid) branches, but deliberately left the eth1 branch
     of [global_inbound] as an OPAQUE sub-evaluation of [global_inbound_private]
-    ([inbound_eval_unfold] line ~317 keeps it as
-       [match eval_rules_j 6 global_chains (c_rules global_inbound_private) e p with ...]).
+    ([inbound_eval_unfold] keeps it as
+       [match fst (eval_rules_u h 6 global_chains (c_rules global_inbound_private) e p) with ...]).
     So the entire LAN-ingress path — packets from internal hosts to the box itself
     (the router's DNS resolver, DHCP, ssh management, rate-limited ping) — had an
     UNDETERMINED fate, and the two genuinely-new constructs of router.nft (the
@@ -24,12 +24,12 @@
     This file pins it down against the PARSER-generated [global_inbound_private] /
     [global_inbound] (from [Router_Gen]):
 
-      - [inbound_private_eval] : the private sub-chain's [eval_rules_j] result fully
+      - [inbound_private_eval] : the private sub-chain's [eval_rules_u] verdict fully
             reduced — [Some Accept] iff the packet is icmp-echo AND under the rate
             limit, OR its [ip protocol . th dport] concat key is one of the four
             listed services; else [None] (fall through to inbound's policy DROP).
       - [inbound_eth1_accept_iff] : THE CRUX (mirrors [forward_accept_iff]) — for an
-            eth1, new-conn packet, [eval_table … global_inbound = Accept] IFF
+            eth1, new-conn packet, [fst (eval_table_u … global_inbound) = Accept] IFF
             (icmp-echo under limit) OR (proto.port in the four services).
       - [inbound_eth1_unlisted_dropped] : the SECURITY half — an eth1 packet that is
             neither icmp-echo nor a listed service is DROPPED.  The box exposes
@@ -50,6 +50,7 @@ From Stdlib Require Import List String NArith.
 From Nft Require Import Bytes Verdict Packet Syntax Semantics Router_Gen Router_Input Eval_Fw.
 Import ListNotations.
 Open Scope string_scope.
+Local Open Scope bool_scope.
 
 (** ** The icmp / limit rule (rule 1 of inbound_private), named. *)
 Definition icmp_spec : limit_spec :=
@@ -121,56 +122,42 @@ Definition svc_loads (p : packet) : bool :=
 
 Opaque field_value assoc_verdict eval_matchcond_body field_loadable.
 
-Lemma r_icmp_loadable : forall e p,
-  icmp_loads p = true -> rule_loadable r_icmp e p = true.
+(* The single [rule_step] of the icmp/limit rule: its three matches walk (the
+   `limit` match consuming its bucket at its own position — the ONE env write of
+   this config), and the terminal Accept fires iff icmp-echo under the rate.  The
+   state half records the limiter consumption when the walk reaches the limit. *)
+Lemma r_icmp_step : forall h e p,
+  icmp_loads p = true ->
+  rule_step h r_icmp e p =
+    (if icmp_ok e p then Some Accept else None,
+     ((if m_icmpproto e p && m_icmpecho e p then set_limit e p icmp_spec else e), p)).
 Proof.
-  intros e p H. unfold icmp_loads in H.
+  intros h e p H. unfold icmp_loads in H.
   apply Bool.andb_true_iff in H as [H1 H2].
-  unfold rule_loadable, r_icmp. cbn.
-  rewrite H1, H2. reflexivity.
-Qed.
-
-Lemma r_svc_loadable : forall e p,
-  svc_loads p = true -> rule_loadable r_svc e p = true.
-Proof.
-  intros e p H. unfold svc_loads in H.
-  apply Bool.andb_true_iff in H as [H1 H2].
-  unfold rule_loadable, r_svc. cbn.
+  unfold rule_step, r_icmp. cbn [r_body body_step].
+  unfold eval_matchcond, match_loadable, match_consume, icmp_ok, m_icmpproto, m_icmpecho, icmp_under.
   rewrite H1, H2. cbn [andb].
-  destruct (assoc_verdict _ (e_vmap e "__map0")); reflexivity.
+  destruct (eval_matchcond_body (MEq FMetaL4proto [1]) e p); [ | reflexivity ].
+  destruct (eval_matchcond_body (MEq FIcmpType [8]) e p); [ cbn [andb] | reflexivity ].
+  destruct (eval_matchcond_body (MLimit icmp_spec) e p);
+    cbn [body_step]; unfold end_step, terminal_step;
+    cbn [r_vmap r_outcome has_effect_terminal r_nat r_tproxy r_fwd r_queue r_verdict];
+    reflexivity.
 Qed.
 
-(** The icmp rule applies (when its loads succeed) iff icmp-echo under the limit. *)
-Lemma r_icmp_applies : forall e p,
-  icmp_loads p = true -> rule_applies r_icmp e p = icmp_ok e p.
+(* The single [rule_step] of the concat-vmap rule (write-free): exactly the
+   verdict-map lookup on the [ip protocol . th dport] concat key, a MISS falling
+   through ([Continue] terminal = [None]), state untouched. *)
+Lemma r_svc_step : forall h e p,
+  svc_loads p = true ->
+  rule_step h r_svc e p =
+    (match assoc_verdict (svc_key e p) (e_vmap e "__map0") with
+     | Some v => Some v | None => None end, (e, p)).
 Proof.
-  intros e p H. unfold icmp_loads in H.
-  apply Bool.andb_true_iff in H as [H1 H2].
-  unfold rule_applies, r_icmp, icmp_ok; cbn [r_body rule_applies_walk].
-  unfold eval_matchcond, match_loadable.
-  (* match_loadable for MLimit is [true]; for MEq it is [field_loadable]. *)
-  rewrite H1, H2. cbn [andb].
-  unfold m_icmpproto, m_icmpecho, icmp_under.
-  generalize (eval_matchcond_body (MEq FMetaL4proto [1]) e p) as b1;
-  generalize (eval_matchcond_body (MEq FIcmpType [8]) e p) as b2;
-  generalize (eval_matchcond_body (MLimit icmp_spec) e p) as b3;
-  intros b3 b2 b1. now destruct b1, b2, b3.
+  intros h e p H. unfold r_svc, svc_key. apply vmap_concat_step.
+  unfold svc_loads in H. apply Bool.andb_true_iff in H as [H1 H2].
+  unfold fields_loadable. cbn [forallb]. rewrite H1, H2. reflexivity.
 Qed.
-
-(* When the icmp rule applies its outcome is the terminal Accept. *)
-Lemma r_icmp_outcome : forall e p, outcome r_icmp e p = Some Accept.
-Proof. reflexivity. Qed.
-
-Lemma r_svc_applies : forall e p, rule_applies r_svc e p = true.
-Proof. reflexivity. Qed.
-
-(* The concat rule's outcome: a vmap HIT gives the service verdict, a MISS falls
-   through ([Continue] terminal = [None]). *)
-Lemma r_svc_outcome : forall e p,
-  outcome r_svc e p =
-    match assoc_verdict (svc_key e p) (e_vmap e "__map0") with
-    | Some v => Some v | None => None end.
-Proof. reflexivity. Qed.
 
 (* Every entry of [__map0] maps to Accept, so a HIT is necessarily [Some Accept]. *)
 Lemma svc_hit_accept : forall e p v, svc_hit e p = Some v -> v = Accept.
@@ -184,7 +171,7 @@ Proof.
   discriminate.
 Qed.
 
-(** ** The PRIVATE sub-chain's [eval_rules_j] result, fully reduced.
+(** ** The PRIVATE sub-chain's [eval_rules_u] verdict, fully reduced.
 
     Rule 1 (icmp + limit): accept iff icmp-echo AND under rate.
     Rule 2 (concat vmap __map0): a HIT gives the service verdict (Accept), a MISS
@@ -192,36 +179,48 @@ Qed.
     Since [icmp_ok = true] makes rule 1 ACCEPT (terminal), and otherwise we fall to
     the vmap, the sub-chain returns [Some Accept] iff [icmp_ok] OR a service hit,
     else [None] (back to inbound's policy DROP). *)
-Lemma inbound_private_eval : forall n e p,
+(* The CORE reduction, parametrised by the [__map0] CONTENTS (not the whole env),
+   so a realistic packet satisfies it. *)
+Lemma inbound_private_eval_of_vmap : forall h n e p,
+  e_vmap e "__map0" = map0 ->
+  icmp_loads p = true ->
+  svc_loads p = true ->
+  fst (eval_rules_u h (S (S n)) global_chains (c_rules global_inbound_private) e p)
+    = (if icmp_ok e p then Some Accept else svc_hit e p).
+Proof.
+  intros h n e p Hvm Hil Hsl. rewrite c_rules_private.
+  rewrite eru_cons, (r_icmp_step h e p Hil).
+  destruct (icmp_ok e p) eqn:Hok; [reflexivity|].
+  cbn [fst snd].
+  (* icmp rule does not fire: fall through to rule 2 (the concat vmap), at the state
+     the icmp body left — its only write is the limiter, invisible to the vmap
+     lookup ([field_value_set_limit] / [e_vmap_set_limit]). *)
+  set (e2 := if m_icmpproto e p && m_icmpecho e p then set_limit e p icmp_spec else e).
+  rewrite eru_cons, (r_svc_step h e2 p Hsl).
+  assert (Hkv : svc_key e2 p = svc_key e p /\ e_vmap e2 "__map0" = e_vmap e "__map0").
+  { unfold e2. destruct (m_icmpproto e p && m_icmpecho e p).
+    - split; [ unfold svc_key; cbn [map List.concat]; rewrite !field_value_set_limit; reflexivity
+             | rewrite e_vmap_set_limit; reflexivity ].
+    - split; reflexivity. }
+  destruct Hkv as [Hk Hv]. rewrite Hk, Hv, Hvm.
+  unfold svc_hit.
+  destruct (assoc_verdict (svc_key e p) map0) as [v|] eqn:Hh.
+  - (* vmap HIT: a service verdict — necessarily Accept, hence terminal. *)
+    assert (Hva : v = Accept) by (apply (svc_hit_accept e p); unfold svc_hit; exact Hh).
+    subst v. cbn [fst]. reflexivity.
+  - rewrite eru_empty. reflexivity.
+Qed.
+
+(* The whole-env-pinned reduction, a corollary of the CORE. *)
+Lemma inbound_private_eval : forall h n e p,
   e = gen_env ->
   icmp_loads p = true ->
   svc_loads p = true ->
-  eval_rules_j (S (S n)) global_chains (c_rules global_inbound_private) e p =
-    (if icmp_ok e p then Some Accept
-     else svc_hit e p).
+  fst (eval_rules_u h (S (S n)) global_chains (c_rules global_inbound_private) e p)
+    = (if icmp_ok e p then Some Accept else svc_hit e p).
 Proof.
-  intros n e p Hpe Hil Hsl.
-  rewrite c_rules_private.
-  (* rule 1 *)
-  rewrite erj_cons.
-  rewrite (r_icmp_loadable e p Hil), (r_icmp_applies e p Hil). cbn [andb].
-  destruct (icmp_ok e p) eqn:Hok.
-  { rewrite r_icmp_outcome. reflexivity. }
-  (* icmp rule does not fire: fall through to rule 2 (the concat vmap) *)
-  rewrite erj_cons.
-  rewrite (r_svc_loadable e p Hsl), r_svc_applies. cbn [andb].
-  rewrite r_svc_outcome.
-  rewrite (e_vmap_map0 e Hpe).
-  unfold svc_hit, svc_key.
-  destruct (assoc_verdict
-              (List.concat (map (fun f => field_value f e p) [FIp4Protocol; FThDport]))
-              map0) eqn:Hhit.
-  { (* vmap HIT: a service verdict — necessarily Accept (every [__map0] entry is
-       Accept), so it is terminal -> [Some Accept]. *)
-    assert (Hv : v = Accept) by (apply (svc_hit_accept e p); unfold svc_hit, svc_key; exact Hhit).
-    subst v. reflexivity. }
-  (* vmap MISS: rule 2 outcome [None] -> fall through to the empty tail. *)
-  rewrite erj_empty. reflexivity.
+  intros h n e p Hpe Hil Hsl.
+  apply inbound_private_eval_of_vmap; [ apply (e_vmap_map0 e Hpe) | assumption | assumption ].
 Qed.
 
 (** ** The eth1 branch of [global_inbound], characterised.
@@ -237,21 +236,21 @@ Lemma inbound_eth1_eval : forall e p,
   svc_loads p = true ->
   field_value FCtState e p = cts_new ->
   field_value FMetaIifname e p = if_eth1 ->
-  eval_table in_fuel global_chains global_inbound e p =
+  forall h, fst (eval_table_u h in_fuel global_chains global_inbound e p) =
     (if icmp_ok e p then Accept
      else match svc_hit e p with Some v => v | None => Drop end).
 Proof.
-  intros e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1.
-  rewrite (inbound_eval_unfold e p Hpe Hct Hiif Hwl).
+  intros e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1 h.
+  rewrite (inbound_eval_unfold h e p Hpe Hct Hiif Hwl).
   unfold ct_key, iif_key. rewrite Hcts, Heth1.
   rewrite new_neq_estab, new_neq_rel, new_neq_inv.
   (* if_lo =? if_eth1 and if_ppp0 =? if_eth1 are false; the eth1 guard is refl-true *)
   change (data_eqb if_lo if_eth1) with false.
   change (data_eqb if_ppp0 if_eth1) with false.
   rewrite data_eqb_refl.
-  (* the opaque eth1 sub-eval -> [inbound_private_eval] (fuel 6 = S (S 4)) *)
+  (* the symbolic eth1 sub-eval -> [inbound_private_eval] (fuel 6 = S (S 4)) *)
   change 6 with (S (S 4)).
-  rewrite (inbound_private_eval 4 e p Hpe Hil Hsl).
+  rewrite (inbound_private_eval h 4 e p Hpe Hil Hsl).
   destruct (icmp_ok e p); [ reflexivity | ].
   destruct (svc_hit e p) as [v|]; reflexivity.
 Qed.
@@ -309,13 +308,13 @@ Theorem inbound_eth1_accept_iff : forall e p,
   svc_loads p = true ->
   field_value FCtState e p = cts_new ->
   field_value FMetaIifname e p = if_eth1 ->
-  ( eval_table in_fuel global_chains global_inbound e p = Accept <->
+  forall h, ( fst (eval_table_u h in_fuel global_chains global_inbound e p) = Accept <->
     ( icmp_ok e p = true \/
       ( svc_key e p = [6;0;22] \/ svc_key e p = [17;0;53]
         \/ svc_key e p = [6;0;53] \/ svc_key e p = [17;0;67] ) ) ).
 Proof.
-  intros e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1.
-  rewrite (inbound_eth1_eval e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1).
+  intros e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1 h.
+  rewrite (inbound_eth1_eval e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1 h).
   split.
   - intro H. destruct (icmp_ok e p) eqn:Hok; [ now left | ].
     right. apply svc_hit_iff.
@@ -343,10 +342,10 @@ Theorem inbound_eth1_unlisted_dropped : forall e p,
   icmp_ok e p = false ->
   ( svc_key e p <> [6;0;22] /\ svc_key e p <> [17;0;53]
     /\ svc_key e p <> [6;0;53] /\ svc_key e p <> [17;0;67] ) ->
-  eval_table in_fuel global_chains global_inbound e p = Drop.
+  forall h, fst (eval_table_u h in_fuel global_chains global_inbound e p) = Drop.
 Proof.
-  intros e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1 Hicmp Hsvc.
-  rewrite (inbound_eth1_eval e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1).
+  intros e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1 Hicmp Hsvc h.
+  rewrite (inbound_eth1_eval e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1 h).
   rewrite Hicmp.
   destruct (svc_hit e p) as [v|] eqn:Hh; [ | reflexivity ].
   exfalso. apply svc_hit_accept in Hh as Hv. subst v.
@@ -369,7 +368,7 @@ Theorem inbound_icmp_ratelimited_dropped : forall e p,
   icmp_under e p = false ->
   ( svc_key e p <> [6;0;22] /\ svc_key e p <> [17;0;53]
     /\ svc_key e p <> [6;0;53] /\ svc_key e p <> [17;0;67] ) ->
-  eval_table in_fuel global_chains global_inbound e p = Drop.
+  forall h, fst (eval_table_u h in_fuel global_chains global_inbound e p) = Drop.
 Proof.
   intros e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1 Hover Hsvc.
   apply (inbound_eth1_unlisted_dropped e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1); [ | exact Hsvc ].
@@ -388,10 +387,10 @@ Theorem inbound_eth1_service_accept : forall e p,
   field_value FMetaIifname e p = if_eth1 ->
   ( svc_key e p = [6;0;22] \/ svc_key e p = [17;0;53]
     \/ svc_key e p = [6;0;53] \/ svc_key e p = [17;0;67] ) ->
-  eval_table in_fuel global_chains global_inbound e p = Accept.
+  forall h, fst (eval_table_u h in_fuel global_chains global_inbound e p) = Accept.
 Proof.
-  intros e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1 Hsvc.
-  apply (inbound_eth1_accept_iff e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1).
+  intros e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1 Hsvc h.
+  apply (inbound_eth1_accept_iff e p Hpe Hct Hiif Hwl Hil Hsl Hcts Heth1 h).
   now right.
 Qed.
 
@@ -442,26 +441,26 @@ Definition pkt_lan_ping : packet := mk_lan 1 (icmp_th 8).
 (* smtp over tcp (proto 6, dport 25): UNLISTED, not icmp -> DROP. *)
 Definition pkt_lan_smtp : packet := mk_lan 6 (th_dport 25).
 
-Theorem pkt_lan_dns_accepted :
-  eval_table in_fuel global_chains global_inbound env_lan pkt_lan_dns = Accept.
-Proof. vm_compute. reflexivity. Qed.
+Theorem pkt_lan_dns_accepted : forall h,
+  fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_dns) = Accept.
+Proof. intros h. vm_compute. reflexivity. Qed.
 
-Theorem pkt_lan_dhcp_accepted :
-  eval_table in_fuel global_chains global_inbound env_lan pkt_lan_dhcp = Accept.
-Proof. vm_compute. reflexivity. Qed.
+Theorem pkt_lan_dhcp_accepted : forall h,
+  fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_dhcp) = Accept.
+Proof. intros h. vm_compute. reflexivity. Qed.
 
-Theorem pkt_lan_ssh_accepted :
-  eval_table in_fuel global_chains global_inbound env_lan pkt_lan_ssh = Accept.
-Proof. vm_compute. reflexivity. Qed.
+Theorem pkt_lan_ssh_accepted : forall h,
+  fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_ssh) = Accept.
+Proof. intros h. vm_compute. reflexivity. Qed.
 
-Theorem pkt_lan_ping_accepted :
-  eval_table in_fuel global_chains global_inbound env_lan pkt_lan_ping = Accept.
-Proof. vm_compute. reflexivity. Qed.
+Theorem pkt_lan_ping_accepted : forall h,
+  fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_ping) = Accept.
+Proof. intros h. vm_compute. reflexivity. Qed.
 
 (* The UNLISTED smtp packet is DROPPED by the parser's chain (the security crux). *)
-Theorem pkt_lan_smtp_dropped :
-  eval_table in_fuel global_chains global_inbound env_lan pkt_lan_smtp = Drop.
-Proof. vm_compute. reflexivity. Qed.
+Theorem pkt_lan_smtp_dropped : forall h,
+  fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_smtp) = Drop.
+Proof. intros h. vm_compute. reflexivity. Qed.
 
 (* [bug_inbound_private] = inbound_private with rule 2's concat-vmap WIDENED to an
    unconditional static accept ([r_body := []; r_outcome := OVerdict Accept]) — modelling
@@ -484,17 +483,17 @@ Definition bug_priv_chains : list (string * chain) :=
    ("forward", global_forward)].
 
 (* Under the bug, the SAME unlisted smtp packet is ACCEPTED — the LAN-open hole. *)
-Theorem bug_lan_smtp_accepted :
-  eval_table in_fuel bug_priv_chains global_inbound env_lan pkt_lan_smtp = Accept.
-Proof. vm_compute. reflexivity. Qed.
+Theorem bug_lan_smtp_accepted : forall h,
+  fst (eval_table_u h in_fuel bug_priv_chains global_inbound env_lan pkt_lan_smtp) = Accept.
+Proof. intros h. vm_compute. reflexivity. Qed.
 
 (* Hence the private characterisation DISCRIMINATES the catch-all bug that the
    prior (Router_Input) property set could not see: on the same unlisted LAN packet
    the parser's chain DROPs while the widened chain ACCEPTs. *)
-Theorem priv_property_discriminates_bug :
-  eval_table in_fuel global_chains global_inbound env_lan pkt_lan_smtp
-  <> eval_table in_fuel bug_priv_chains global_inbound env_lan pkt_lan_smtp.
-Proof. rewrite pkt_lan_smtp_dropped, bug_lan_smtp_accepted. discriminate. Qed.
+Theorem priv_property_discriminates_bug : forall h,
+  fst (eval_table_u h in_fuel global_chains global_inbound env_lan pkt_lan_smtp)
+  <> fst (eval_table_u h in_fuel bug_priv_chains global_inbound env_lan pkt_lan_smtp).
+Proof. intros h. rewrite (pkt_lan_smtp_dropped h), (bug_lan_smtp_accepted h). discriminate. Qed.
 
 (* The accept-side hypotheses are SATISFIABLE: the dns witness meets every
    hypothesis of [inbound_eth1_service_accept]. *)
@@ -522,36 +521,3 @@ Lemma pkt_lan_smtp_facts :
   icmp_ok env_lan pkt_lan_smtp = false /\
   svc_key env_lan pkt_lan_smtp = [6;0;25].
 Proof. repeat split; try (vm_compute; reflexivity). Qed.
-
-(* ============================================================ *)
-(** ** UNIFIED-SEMANTICS LICENSE (Semantics.v § "Projection 1b").
-
-    [r_icmp] is the ONE effectful rule of the router config: its
-    `limit 5/second` consumption is an env write, so this file's theorems
-    could not ride the write-free license.  They are licensed by the
-    LIMITER-TOLERANT projection instead ([r_icmp] is a [rule_one_limiter]
-    rule: non-inverted limiter, last body position, terminal `accept`):
-    - the inbound filter table (over the NAT-free chain env
-      [Router_Input.global_tol_chains]) is a unified-semantics statement
-      by [Router_Input.inbound_licensed];
-    - the sub-chain lemma [inbound_private_eval] (an [eval_rules_j]
-      statement over [r_icmp; r_svc] itself) is licensed by
-      [private_rules_licensed] below;
-    - the mutation-kill env [bug_priv_chains] by [bug_priv_chains_licensed].
-    So the limiter rule is never modelled by an unlicensed pure
-    evaluator — the pure strand is a PROVEN verdict projection here. *)
-
-Theorem private_rules_licensed : forall h fuel e p,
-  eval_rules_j fuel global_tol_chains (c_rules global_inbound_private) e p
-  = fst (eval_rules_u h fuel global_tol_chains (c_rules global_inbound_private) e p).
-Proof.
-  intros h fuel e p. apply router_rules_licensed. vm_compute. reflexivity.
-Qed.
-
-Theorem bug_priv_chains_licensed : forall h fuel e p,
-  eval_table fuel bug_priv_chains global_inbound e p
-  = fst (eval_table_u h fuel bug_priv_chains global_inbound e p).
-Proof.
-  intros h fuel e p. symmetry.
-  apply eval_table_u_limiter_tolerant; vm_compute; reflexivity.
-Qed.
