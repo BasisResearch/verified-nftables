@@ -174,8 +174,9 @@ Proof. intros. now apply nft_yields_fuel_indep with (rank := rank). Qed.
     [nft_yields] quantifies the verdict over EVERY hook.  For a WRITE-FREE
     config (no meta/ct set, dynset, notrack, limiter/quota/connlimit anywhere
     in the evaluated table) the unified evaluator's verdict is hook-independent:
-    every rule's [rule_step] leaves the state untouched and reduces to the
-    hook-free per-rule fold ([Semantics.rule_step_writefree]), so the whole
+    every rule's [rule_step] leaves the state untouched
+    ([Semantics.rule_step_writefree_state]) and — being nat-free — steps to the
+    same verdict at every hook ([rule_step_natfree_hookindep]), so the whole
     traversal is the same at every hook.  The quantified statement is then
     exactly "the config's verdict is [v]".  [nft_writefree] is the one-[vm_compute]
     check that a config is in this class; a config with writes is OUTSIDE it and
@@ -185,10 +186,51 @@ Proof. intros. now apply nft_yields_fuel_indep with (rank := rank). Qed.
 Definition nft_writefree (cs : list (string * chain)) (c : chain) : bool :=
   forallb rule_writefree (c_rules c) && chains_writefree cs.
 
+(** A nat-free rule's terminal takes no hook-dependent NAT decision (its data
+    plane is [r_nat] = None: [nat_drops] is [false], [apply_nat] is the
+    identity), so it steps identically at every hook. *)
+Lemma terminal_step_natfree_hookindep : forall (h1 h2 : hook_id) r e p,
+  rule_natfree r = true ->
+  terminal_step h1 r e p = terminal_step h2 r e p.
+Proof.
+  intros h1 h2 r e p Hnat. unfold rule_natfree in Hnat.
+  unfold terminal_step, has_effect_terminal, nat_drops, apply_nat.
+  destruct (r_nat r) as [n|]; [discriminate Hnat|]. reflexivity.
+Qed.
+
+Lemma end_step_natfree_hookindep : forall (h1 h2 : hook_id) r e p,
+  rule_natfree r = true ->
+  end_step h1 r e p = end_step h2 r e p.
+Proof.
+  intros h1 h2 r e p Hnat. unfold end_step.
+  destruct (r_vmap r) as [vm|]; [| apply terminal_step_natfree_hookindep; exact Hnat].
+  destruct (vmap_loadable (Some vm) p); [| reflexivity].
+  cbv zeta.
+  destruct (vm_keyf vm) as [[f ts]|].
+  - destruct (assoc_verdict (apply_transforms ts (field_value f e p))
+                            (e_vmap e (vm_name vm)));
+      [reflexivity | apply terminal_step_natfree_hookindep; exact Hnat].
+  - destruct (assoc_verdict
+                (List.concat (map (fun f => field_value f e p) (vm_fields vm)))
+                (e_vmap e (vm_name vm)));
+      [reflexivity | apply terminal_step_natfree_hookindep; exact Hnat].
+Qed.
+
+(** A nat-free rule steps to the same result at every hook: the body walk is
+    hook-free and the end takes no hook-dependent NAT decision. *)
+Lemma rule_step_natfree_hookindep : forall (h1 h2 : hook_id) r e p,
+  rule_natfree r = true ->
+  rule_step h1 r e p = rule_step h2 r e p.
+Proof.
+  intros h1 h2 r e p Hnat. unfold rule_step.
+  destruct (body_step (r_body r) e p) as [e' p'|e' p'|e' p']; try reflexivity.
+  apply end_step_natfree_hookindep; exact Hnat.
+Qed.
+
 (** Hook-independence of the unified rule traversal on write-free rules: each
-    [rule_step] leaves the state at [(e,p)] and its verdict is the hook-free
-    per-rule outcome ([rule_step_writefree]), so the whole fold agrees at any
-    two hooks. *)
+    [rule_step] leaves the state at [(e,p)] and — being nat-free — steps to the
+    same verdict at every hook ([rule_step_natfree_hookindep]), so the whole fold
+    agrees at any two hooks. *)
 Lemma eval_rules_u_hookindep_writefree : forall (h1 h2 : hook_id) fuel cs rs e p,
   forallb rule_writefree rs = true ->
   chains_writefree cs = true ->
@@ -197,16 +239,18 @@ Proof.
   induction fuel as [| f IH]; intros cs rs e p Hrs Hcs; [reflexivity|].
   destruct rs as [| r rest]; [reflexivity|].
   cbn [forallb] in Hrs. apply Bool.andb_true_iff in Hrs. destruct Hrs as [Hr Hrest].
+  assert (Hnat : rule_natfree r = true).
+  { unfold rule_writefree, rule_mutfree in Hr.
+    apply Bool.andb_true_iff in Hr as [_ Hn]. exact Hn. }
   cbn [eval_rules_u].
-  rewrite (rule_step_writefree h1 r e p Hr), (rule_step_writefree h2 r e p Hr).
-  destruct (andb (rule_loadable r e p) (rule_applies r e p)); [| now apply IH].
-  destruct (outcome r e p) as [v|]; [| now apply IH].
+  rewrite (rule_step_natfree_hookindep h1 h2 r e p Hnat).
+  destruct (rule_step h2 r e p) as [[v|] [e' p']]; [| now apply IH].
   destruct v as [ | | | tc cc | lo hi bp fo | n | n | ];
     try reflexivity; try (now apply IH).
   - (* Jump *)
     destruct (chain_lookup cs n) as [ch|] eqn:Hlk; [| now apply IH].
-    rewrite (IH cs (c_rules ch) e p (chains_writefree_lookup cs n ch Hcs Hlk) Hcs).
-    destruct (eval_rules_u h2 f cs (c_rules ch) e p) as [[w|] [e2 p2]];
+    rewrite (IH cs (c_rules ch) e' p' (chains_writefree_lookup cs n ch Hcs Hlk) Hcs).
+    destruct (eval_rules_u h2 f cs (c_rules ch) e' p') as [[w|] [e2 p2]];
       [reflexivity | now apply IH].
   - (* Goto *)
     destruct (chain_lookup cs n) as [ch|] eqn:Hlk; [| reflexivity].

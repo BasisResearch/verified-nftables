@@ -300,9 +300,7 @@ AXIOM_GATE_THEOREMS = compile_chain_mut_correct \
   Optimize_Linearize_MutSt.compile_chain_mut_st_correct \
   Optimize_Linearize_MutSt.compile_chain_default_mut_st_correct \
   Optimize_Registry.run_passes_correct \
-  Semantics.run_rule_outcome_eq \
   Semantics.eval_rules_u_fuel_indep Semantics.eval_table_u_fuel_indep \
-  Semantics.rule_purewalk_ok \
   Nft_Tactics.nft_yields_fuel_indep \
   Tutorial_Proofs.tutorial_blocks_exactly_any_fuel \
   Optiplex_Antispoof.antispoof_general_any_env \
@@ -341,7 +339,7 @@ AXIOM_GATE_THEOREMS = compile_chain_mut_correct \
   Lower_Proofs.lower_ruleset_numgen_free \
   RegsValid_Proofs.lower_ruleset_default_regs_valid \
   RegsValid_Proofs.lower_ruleset_compile_regs_valid \
-  Semantics.rule_step_mutfree \
+  Semantics.rule_step_state_mutfree \
   Known_Infidelities.gate_limit_undrained \
   Known_Infidelities.vm_gate_limit_undrained \
   Limit_SharedBucket.limit_before_failing_match_consumed \

@@ -913,62 +913,6 @@ Definition r_fwd (r : rule) : option fwd_spec :=
 Definition r_queue (r : rule) : option queue_spec :=
   match r_outcome r with OQueue s => Some s | _ => None end.
 
-(** *** The historical product encoding of a rule and its translation.
-
-    A rule used to carry a PRODUCT of one always-present verdict plus five
-    optional terminal specs, with dummy fillers ([Continue]/[None]) occupying
-    the unused slots.  [rule_prod] is that encoding, kept solely to state the
-    representation-change ratchet: [rule_of_prod] translates it into the
-    outcome sum along the old evaluation precedence (vmap first; then
-    nat > tproxy > fwd > queue; then the static verdict, [Continue] = fall
-    through), and [Semantics.run_rule_outcome_eq] proves the translation
-    evaluation-equal to the old product semantics for every well-formed
-    product ([prod_wf]: at most one populated slot, and a filler [Continue]
-    verdict under a vmap — exactly the shapes the frontend ever produced). *)
-Record rule_prod : Type := {
-  rp_body    : list body_item;
-  rp_verdict : verdict;
-  rp_vmap    : option vmap_spec;
-  rp_nat     : option nat_spec;
-  rp_tproxy  : option tproxy_spec;
-  rp_fwd     : option fwd_spec;
-  rp_queue   : option queue_spec;
-  rp_after   : list stmt;
-}.
-
-Definition outcome_of_prod (rp : rule_prod) : outcome :=
-  match rp_vmap rp with
-  | Some s => match rp_nat rp with
-              | Some ns => OVmapNat s ns
-              | None => OVmap s
-              end
-  | None =>
-  match rp_nat rp with Some s => ONat s | None =>
-  match rp_tproxy rp with Some s => OTproxy s | None =>
-  match rp_fwd rp with Some s => OFwd s | None =>
-  match rp_queue rp with Some s => OQueue s | None =>
-  match rp_verdict rp with Continue => ONone | v => OVerdict v end
-  end end end end end.
-
-Definition rule_of_prod (rp : rule_prod) : rule :=
-  {| r_body := rp_body rp; r_outcome := outcome_of_prod rp; r_after := rp_after rp |}.
-
-(** Well-formed products: at most one outcome slot is populated — except the
-    genuine vmap-then-NAT combination ([OVmapNat]) — and a pure vmap rule
-    carries the filler [Continue] verdict (its miss falls through). *)
-Definition prod_wf (rp : rule_prod) : bool :=
-  match rp_vmap rp, rp_nat rp, rp_tproxy rp, rp_fwd rp, rp_queue rp with
-  | Some _, Some _, None, None, None => true
-  | Some _, None, None, None, None =>
-      match rp_verdict rp with Continue => true | _ => false end
-  | None, None, None, None, None => true
-  | None, Some _, None, None, None => true
-  | None, None, Some _, None, None => true
-  | None, None, None, Some _, None => true
-  | None, None, None, None, Some _ => true
-  | _, _, _, _, _ => false
-  end.
-
 (** *** Source-side numgen-freedom.
 
     An incremental `numgen` ([FNumgen] with [ng_random = false]) has no
